@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mustard · gasto</title>
+<style>
+/* A página do gasto do Mustard (mostarda e carvão): um template igual para
+   toda máquina, que lê do banco de dados da página o resumo da máquina e uma
+   linha por dia e por projeto. */
+:root{
+  --paper:#FAFAF7;--surface:#FFFFFF;--ink:#2B2B29;--muted:#6B6A64;--rule:#E6E4DC;--rule-soft:#EFEDE6;
+  --mustard:#E1AD01;--mustard-text:#8A6700;--mustard-soft:#FBF1CF;--mustard-line:#EFD27A;
+  --code:#F0EEE7;
+  --sans:"Geist","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --paper:#1C1C1A;--surface:#232321;--ink:#ECEAE3;--muted:#A7A59C;--rule:#363532;--rule-soft:#2C2B29;
+  --mustard:#E8B923;--mustard-text:#F0C849;--mustard-soft:#352E17;--mustard-line:#6B5717;
+  --code:#2C2B28;
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{overflow-x:clip}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+.page{max-width:1120px;padding:0 40px 20vh;margin:0 auto}
+header.top{padding:34px 0 6px}
+.eyebrow{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mustard-text);margin:0 0 10px}
+header.top h1{font-size:32px;font-weight:650;letter-spacing:-.02em;line-height:1.2;margin:0 0 12px}
+.empty{margin:40px 0;padding:18px 20px;border:1px dashed var(--rule);border-radius:10px;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:14px 16px}
+.card .head{display:flex;align-items:center;gap:8px;margin:0 0 6px}
+.card .label{font:500 11px/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0}
+.card .badge{font:500 10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--mustard-text);background:var(--mustard-soft);border:1px solid var(--mustard-line);border-radius:999px;padding:3px 7px}
+.card .value{font-size:22px;font-weight:650;letter-spacing:-.01em;line-height:1.25;margin:0}
+.card .sub{font-size:12.5px;color:var(--muted);margin:4px 0 0}
+p.note{font-size:12.5px;color:var(--muted);margin:10px 0 0}
+section.block{margin:28px 0 0}
+section.block h2{font-size:15.5px;font-weight:600;margin:0 0 10px}
+.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+table.days{border-collapse:collapse;width:100%;font-size:13.5px}
+table.days th,table.days td{padding:8px 12px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--rule-soft)}
+table.days th{font-weight:600;color:var(--muted);background:var(--surface);position:sticky;top:0}
+table.days th:first-child,table.days td:first-child,table.days th:nth-child(2),table.days td:nth-child(2){text-align:left}
+table.days td:first-child{font-family:var(--mono);font-size:12.5px}
+table.days tr:last-child td{border-bottom:0}
+[hidden]{display:none!important}
+@media (max-width:700px){
+  .page{padding:0 16px 20vh}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="application/json" id="mustard-catalog">{}</script>
+<script id="mustard-page">
+// O script da página do gasto. Ele lê do banco de dados da página uma linha por
+// dia e por projeto (tokens, ações e procuras de código), mostra no topo o
+// resumo da máquina inteira (hoje até agora, ontem, as médias e a previsão do
+// Jev, um documento que o Mustard calcula e troca a cada cópia) e a tabela de
+// cada dia, com a parte das ações que são procuras de código. A linha do dia
+// aberto vem marcada como parcial. A página se atualiza sozinha quando uma
+// linha chega. Sem banco, ou com o banco vazio, ela diz que ainda não há dados.
+(function () {
+  'use strict';
+  var W = window, D = document;
+  var CAT = {};
+  try { CAT = JSON.parse(D.getElementById('mustard-catalog').textContent || '{}'); } catch (_) { CAT = {}; }
+  var L = CAT.labels || {};
+  function t(key) { return Object.prototype.hasOwnProperty.call(L, key) ? L[key] : key; }
+  function say(key, vars) {
+    var s = t(key);
+    Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(String(vars[k])); });
+    return s;
+  }
+  var DBP = CAT.db || { days: 'days', summary: 'summary/current' };
+  var LIMIT = CAT.limit || 1000;
+  if (CAT.lang) D.documentElement.setAttribute('lang', CAT.lang);
+
+  function str(v) { return typeof v === 'string' && v ? v : null; }
+  function count(v) { return typeof v === 'number' && isFinite(v) && v > 0 ? Math.round(v) : 0; }
+  function num(n) {
+    var sep = CAT.lang === 'en-US' ? ',' : '.';
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+  }
+  function money(micro) {
+    var v = (micro / 1000000).toFixed(4);
+    return 'US$ ' + (CAT.lang === 'en-US' ? v : v.replace('.', ','));
+  }
+  function percent(part, whole) { return whole > 0 ? Math.round(100 * part / whole) : 0; }
+  function h(tag, attrs, kids) {
+    var el = D.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'text') el.textContent = String(v);
+      else el.setAttribute(k, v === true ? '' : String(v));
+    });
+    (kids || []).forEach(function (c) { if (c) el.appendChild(typeof c === 'string' ? D.createTextNode(c) : c); });
+    return el;
+  }
+
+  var app = D.getElementById('app');
+  var statusEl = h('p', { class: 'empty', id: 'status', text: t('page.loading') });
+  var box = h('div', { id: 'spend' });
+  app.appendChild(h('div', { class: 'page' }, [
+    h('header', { class: 'top' }, [h('p', { class: 'eyebrow', text: 'Mustard · ' + t('page.spend.kind') }), h('h1', { text: t('page.spend.title') })]),
+    statusEl, box]));
+  app.setAttribute('data-state', 'loading');
+  var RENDERS = 0;
+  function done(state) {
+    RENDERS++;
+    app.setAttribute('data-state', state);
+    app.setAttribute('data-renders', String(RENDERS));
+  }
+  function empty(state, message) {
+    box.textContent = '';
+    statusEl.textContent = message;
+    statusEl.hidden = false;
+    done(state);
+  }
+  function noData() { empty('empty', t('page.no_data')); }
+  // O banco recusou ou perdeu a leitura: ele pode ter dado, então dizer que
+  // não há dados seria falso. A página conta que a leitura falhou.
+  function readFailed() { empty('failed', t('page.read_failed')); }
+
+  // Cada documento do banco vira uma linha; o que não tem dia ou projeto fica
+  // de fora. Do dia mais novo para o mais velho, e por projeto dentro do dia.
+  function rowsOf(docs) {
+    var rows = [];
+    docs.forEach(function (d) {
+      var b = d.data ? d.data() : null;
+      if (!b || !str(b.day) || !str(b.project)) return;
+      rows.push({ day: b.day, project: b.project, tokens: count(b.tokens), actions: count(b.actions),
+        searches: count(b.code_searches), partial: b.partial === true });
+    });
+    return rows.sort(function (a, b) {
+      if (a.day !== b.day) return a.day < b.day ? 1 : -1;
+      return a.project < b.project ? -1 : a.project > b.project ? 1 : 0;
+    });
+  }
+  // Cada título de coluna é uma chave inteira, para o catálogo levar o texto.
+  var COLS = ['page.spend.col.day', 'page.spend.col.project', 'page.spend.col.tokens', 'page.spend.col.actions',
+    'page.spend.col.searches', 'page.spend.col.share'];
+  function table(rows) {
+    var head = h('tr', null, COLS.map(function (c) { return h('th', { text: t(c) }); }));
+    var body = rows.map(function (r) {
+      var cells = [r.partial ? r.day + ' (' + t('page.spend.summary.partial') + ')' : r.day, r.project,
+        num(r.tokens), num(r.actions), num(r.searches), percent(r.searches, r.actions) + '%'];
+      return h('tr', { 'data-day': r.day, 'data-project': r.project }, cells.map(function (c) { return h('td', { text: c }); }));
+    });
+    return h('section', { class: 'block' }, [
+      h('div', { class: 'tablewrap' }, [h('table', { class: 'days', id: 'days' }, [h('thead', null, [head]), h('tbody', null, body)])])]);
+  }
+  function card(id, label, value, subs, badge) {
+    var head = [h('p', { class: 'label', text: label })];
+    if (badge) head.push(h('span', { class: 'badge', text: badge }));
+    var kids = [h('div', { class: 'head' }, head), h('p', { class: 'value', text: value })];
+    subs.forEach(function (sub) { kids.push(h('p', { class: 'sub', text: sub })); });
+    return h('div', { class: 'card', 'data-card': id }, kids);
+  }
+  // O resumo da máquina inteira, como o Mustard o calculou: cada número vem
+  // pronto no documento; a página só o escreve no jeito do idioma.
+  function summaryBlock(d) {
+    var tokens = function (n) { return num(count(n)) + ' ' + t('page.spend.summary.tokens'); };
+    var day = function (o) { return say('page.spend.summary.day_actions', { day: str((o || {}).day) || '', n: num(count((o || {}).actions)) }); };
+    var used = function (o) { return say('page.spend.summary.days_used', { n: count((o || {}).days) }); };
+    var f = d.forecast || {};
+    var detail = function (spent, daily) { return say('page.spend.summary.forecast_detail', { spent: spent, daily: daily, left: count(f.days_left) }); };
+    var cards = [
+      card('today', t('page.spend.summary.today'), tokens((d.today || {}).tokens), [day(d.today)], t('page.spend.summary.partial')),
+      card('yesterday', t('page.spend.summary.yesterday'), tokens((d.yesterday || {}).tokens), [day(d.yesterday)]),
+      card('avg3', t('page.spend.summary.avg3'), tokens((d.last_3 || {}).tokens), [used(d.last_3)]),
+      card('avg7', t('page.spend.summary.avg7'), tokens((d.last_7 || {}).tokens), [used(d.last_7)]),
+      card('month', t('page.spend.summary.avg_month'), tokens((d.month || {}).tokens), [used(d.month)]),
+      card('forecast', t('page.spend.summary.forecast'), money(count(f.micro_usd)),
+        [detail(money(count(f.spent_micro_usd)), money(count(f.daily_micro_usd))),
+         tokens(f.tokens) + ' · ' + detail(num(count(f.spent_tokens)), num(count(f.daily_tokens)))])
+    ];
+    return h('section', { class: 'block', id: 'summary' }, [
+      h('h2', { text: t('page.spend.summary.title') }),
+      h('div', { class: 'cards' }, cards),
+      h('p', { class: 'note', text: say('page.spend.summary.note', { min: count(d.min_actions) }) })]);
+  }
+
+  // O que já chegou do banco: as linhas dos dias (`null` até a primeira
+  // leitura) e o documento do resumo (`null` enquanto ele não existe). A
+  // página só se desenha depois da leitura dos dias; o resumo que chega
+  // depois a redesenha.
+  var rows = null, summary = null;
+  function paint() {
+    if (rows === null) return;
+    if (!rows.length) { noData(); return; }
+    box.textContent = '';
+    if (summary) box.appendChild(summaryBlock(summary));
+    box.appendChild(table(rows));
+    statusEl.hidden = true;
+    done('ready');
+  }
+
+  var ready = W.claude && typeof W.claude.use === 'function' ? W.claude.use('db') : Promise.resolve(null);
+  Promise.resolve(ready).then(function (db) {
+    if (!db) { noData(); return; }
+    db.collection(DBP.days).orderBy('day', 'desc').limit(LIMIT).onSnapshot(function (snap) { rows = rowsOf(snap.docs); paint(); }, function () { if (!RENDERS) readFailed(); });
+    // O resumo é um documento à parte: sem ele a página mostra o resto.
+    db.doc(DBP.summary).onSnapshot(function (snap) {
+      var d = snap && snap.exists ? snap.data() : null;
+      summary = d && typeof d === 'object' ? d : null;
+      paint();
+    }, function () { summary = null; });
+  }, readFailed);
+})();
+</script>
+</body>
+</html>

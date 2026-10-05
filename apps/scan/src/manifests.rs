@@ -29,10 +29,17 @@ struct ManifestDef {
     /// Precompiled package-name regex (`package_pattern`); `None` when the def
     /// declares none.
     package_regex: Option<Regex>,
+    /// Precompiled namespace regex (`namespace_pattern`); `None` when the def
+    /// declares none.
+    namespace_regex: Option<Regex>,
+    /// Precompiled `extra_dep_pattern`: each first-group capture, anywhere in
+    /// the file, is one more dependency. `None` when the def declares none.
+    extra_dep_regex: Option<Regex>,
 }
 
 struct Registry {
     skip_dirs: Vec<String>,
+    output_dirs: Vec<String>,
     manifests: Vec<ManifestDef>,
 }
 
@@ -41,9 +48,17 @@ fn registry() -> &'static Registry {
     R.get_or_init(|| parse_registry(include_str!("../manifests.toml")))
 }
 
-/// Directories to skip while walking (build/dependency output).
+/// As pastas que a caminhada sempre pula, pelo nome: as que nunca guardam
+/// código do projeto.
 pub fn skip_dirs() -> &'static [String] {
     &registry().skip_dirs
+}
+
+/// As pastas de saída de compilação e de dependências, pelo nome: a
+/// caminhada as pula, salvo quando o índice do git guarda nelas algum
+/// arquivo de código.
+pub fn output_dirs() -> &'static [String] {
+    &registry().output_dirs
 }
 
 /// Cheap filename check so we only read files that are manifests.
@@ -59,27 +74,35 @@ pub(crate) struct Parsed {
     pub name: String,
     /// The package's own name, when the manifest declares one.
     pub package: Option<String>,
+    /// The namespace the manifest declares as its project's default, when it
+    /// declares one.
+    pub namespace: Option<String>,
 }
 
 /// Parse a manifest's content into kind + dependencies + scripts (+ this unit's
 /// own module path, for languages that declare one) and the project name.
 pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
     let def = find_def(filename)?;
-    let deps = match def.format.as_str() {
+    let mut deps = match def.format.as_str() {
         "json" => json_deps(content, &def.deps),
         "xml-attr" | "xml-text" => def.dep_regex.as_ref().map(|re| captures_all(content, re)).unwrap_or_default(),
         "toml-sections" => toml_sections(content, &def.deps),
         "yaml-section" => yaml_sections(content, &def.deps),
         "gomod" => def.dep_regex.as_ref().map(|re| captures_per_line(content, re)).unwrap_or_default(),
+        "lines" => line_deps(content),
         _ => Vec::new(),
     };
+    if let Some(re) = &def.extra_dep_regex {
+        deps.extend(captures_all(content, re));
+    }
     let scripts = match (&def.format, &def.scripts) {
         (f, Some(path)) if f == "json" => json_scripts(content, path),
         _ => Vec::new(),
     };
     let module = def.module_regex.as_ref().and_then(|re| first_line_capture(content, re));
     let package = def.package_regex.as_ref().and_then(|re| first_line_capture(content, re));
-    Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name), package })
+    let namespace = def.namespace_regex.as_ref().and_then(|re| first_line_capture(content, re));
+    Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name), package, namespace })
 }
 
 fn find_def(filename: &str) -> Option<&'static ManifestDef> {
@@ -154,18 +177,31 @@ fn toml_sections(txt: &str, sections: &[String]) -> Vec<String> {
     out
 }
 
+/// As chaves das seções de dependência de um YAML. Só a chave do primeiro
+/// nível abaixo da seção é dependência: a de dentro dela (`sdk` em
+/// `flutter: sdk: flutter`) é a forma da dependência, não outra. O primeiro
+/// nível é o recuo da primeira chave da seção.
 fn yaml_sections(txt: &str, sections: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_deps = false;
+    let mut level: Option<usize> = None;
     for line in txt.lines() {
         let trimmed = line.trim_end();
         if sections.iter().any(|s| trimmed.starts_with(&format!("{s}:"))) {
             in_deps = true;
+            level = None;
             continue;
         }
         if in_deps {
             if !trimmed.is_empty() && !trimmed.starts_with(' ') {
                 in_deps = false;
+                continue;
+            }
+            let indent = trimmed.len() - trimmed.trim_start().len();
+            if trimmed.trim_start().is_empty() || trimmed.trim_start().starts_with('#') {
+                continue;
+            }
+            if *level.get_or_insert(indent) != indent {
                 continue;
             }
             if let Some(idx) = trimmed.find(':') {
@@ -177,6 +213,21 @@ fn yaml_sections(txt: &str, sections: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// O manifesto de uma dependência por linha: o nome é o que vem antes do
+/// primeiro `=`, `<`, `>`, `~`, `!`, `[`, `;` ou espaço (a versão, os extras
+/// e a condição ficam de fora). A linha vazia, o comentário (`#`) e a opção
+/// (começa por `-`, como `-r outro.txt` e `--index-url`) não são dependência.
+fn line_deps(txt: &str) -> Vec<String> {
+    txt.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
+        .filter_map(|l| {
+            let end = l.find(|c: char| matches!(c, '=' | '<' | '>' | '~' | '!' | '[' | ';') || c.is_whitespace());
+            Some(l[..end.unwrap_or(l.len())].to_string()).filter(|name| !name.is_empty())
+        })
+        .collect()
 }
 
 /// First-group captures scanned per line (go.mod `require` lines). The regex is
@@ -201,6 +252,7 @@ fn parse_registry(src: &str) -> Registry {
             .unwrap_or_default()
     };
     let skip_dirs = strs(v.get("skip_dirs"));
+    let output_dirs = strs(v.get("output_dirs"));
     let mut manifests = Vec::new();
     if let Some(arr) = v.get("manifest").and_then(|x| x.as_array()) {
         for m in arr {
@@ -231,6 +283,8 @@ fn parse_registry(src: &str) -> Registry {
             };
             let module_regex = g("module_pattern").and_then(|p| Regex::new(&p).ok());
             let package_regex = g("package_pattern").and_then(|p| Regex::new(&p).ok());
+            let namespace_regex = g("namespace_pattern").and_then(|p| Regex::new(&p).ok());
+            let extra_dep_regex = g("extra_dep_pattern").and_then(|p| Regex::new(&p).ok());
             manifests.push(ManifestDef {
                 kind: g("kind").unwrap_or_default(),
                 filename: g("filename"),
@@ -242,8 +296,52 @@ fn parse_registry(src: &str) -> Registry {
                 dep_regex,
                 module_regex,
                 package_regex,
+                namespace_regex,
+                extra_dep_regex,
             });
         }
     }
-    Registry { skip_dirs, manifests }
+    Registry { skip_dirs, output_dirs, manifests }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    /// `flutter: sdk: flutter` é a dependência `flutter`, dada pelo kit: a
+    /// chave de dentro dela não é outra dependência.
+    #[test]
+    fn a_key_inside_a_dependency_is_not_another_dependency() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/flutter_app/pubspec.yaml");
+        let content = std::fs::read_to_string(path).expect("the fixture manifest");
+        let parsed = parse("pubspec.yaml", "pubspec.yaml", &content).expect("a known manifest");
+        assert_eq!(parsed.deps, ["flutter", "collection", "flutter_test", "flutter_lints"]);
+    }
+
+    /// O namespace que o manifesto declara sai da primeira linha que o traz,
+    /// sozinha ou entre outras marcas; o escrito em comentário, o que nomeia
+    /// outra propriedade e o manifesto sem ele não declaram nenhum.
+    #[test]
+    fn the_declared_namespace_comes_from_the_first_line_that_names_it() {
+        let namespace = |body: &str| {
+            let text = format!("<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n{body}\n  </PropertyGroup>\n</Project>\n");
+            parse("Web/Loja.Web.csproj", "Loja.Web.csproj", &text).unwrap().namespace
+        };
+        assert_eq!(namespace("    <RootNamespace>Loja.Site</RootNamespace>").as_deref(), Some("Loja.Site"));
+        assert_eq!(namespace("    <RootNamespace> Loja.Site </RootNamespace>\n    <RootNamespace>Outro</RootNamespace>").as_deref(), Some("Loja.Site"));
+        assert_eq!(namespace("<TargetFramework>net8.0</TargetFramework><RootNamespace>Loja.Site</RootNamespace>").as_deref(), Some("Loja.Site"));
+        assert_eq!(namespace("    <!-- <RootNamespace>Velho</RootNamespace> -->"), None);
+        assert_eq!(namespace("    <RootNamespace>$(MSBuildProjectName)</RootNamespace>"), None);
+        assert_eq!(namespace("    <TargetFramework>net8.0</TargetFramework>"), None);
+        let package = parse("package.json", "package.json", "{\"name\": \"loja\"}\n").unwrap();
+        assert_eq!(package.namespace, None, "a manifest whose registry row has no pattern declares none");
+    }
+
+    /// O nome do próprio pacote sai da primeira linha `name:` do manifesto.
+    #[test]
+    fn the_package_name_comes_from_the_name_line() {
+        let parsed = parse("pubspec.yaml", "pubspec.yaml", "name: loja\ndependencies:\n  http: ^1.0.0\n").unwrap();
+        assert_eq!(parsed.package.as_deref(), Some("loja"));
+        assert_eq!(parsed.deps, ["http"]);
+    }
 }

@@ -54,7 +54,6 @@
 |---|---|
 | F3.0 Baseline: tamanho binário, tempo de hook | Orquestrador |
 | F3.1 profile.release (strip/lto/cu1/panic) + profile.dev | Orquestrador (trivial) |
-| F3.2 scan feature-bundle (4 spawns → 1) | general-purpose |
 | F3.3 Memos no Ctx (ProjectConfig, spec/session) + count_active + canonicalize | general-purpose |
 | F3.4 read_workspace_events memo por mtime | general-purpose |
 | F3.5 Gramáticas tree-sitter atrás de feature (rt no piso textual) | general-purpose |

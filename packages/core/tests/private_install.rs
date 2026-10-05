@@ -26,9 +26,9 @@
 //! - A footprint path the host ALREADY tracks is named as residue, and
 //!   nothing is unlinked.
 //! - The regression guard: a shared install writes the same paths and
-//!   the same bytes it wrote before the mode existed.
+//!   the same bytes it wrote before the mode existed, plus the one key both
+//!   modes put in the local layer — the folder of the project's copies.
 
-#[cfg(unix)]
 // Unix-only: the refusal fixture seals a directory with mode 0o555, an API and a
 // semantic Windows does not have (an NTFS read-only directory still accepts new
 // files, so the same seal would refuse nothing there).
@@ -37,8 +37,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use mustard_core::domain::config::AgentSettings;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED};
+use mustard_core::{
+    detect_install_mode, footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED,
+};
 
 // ---------------------------------------------------------------------------
 // The clone-local exclude file
@@ -99,6 +102,56 @@ fn private_upsert_writes_clone_local_exclude() {
     let second = upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");
     assert!(second.excluded.is_empty(), "a second run appends nothing: {second:?}");
     assert_eq!(read(&exclude), Some(body), "…and the file is byte-identical");
+}
+
+/// The repository model the scan keeps in `.claude/` (the SQLite file and the
+/// files it leaves beside it while a connection is open) is Mustard's, not the
+/// client's: a private install hides all of them, and an exclude file written before the map
+/// moved to that file — the private marks in it, the map rules not — is
+/// completed by the next update, which detects the mode from those marks.
+#[test]
+fn private_install_hides_the_map_and_an_update_completes_an_older_exclude_file() {
+    use mustard_core::io::project_map::{MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    init_repo(root);
+    let exclude = exclude_file(root);
+    upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");
+
+    // The files the scan leaves, exactly as it names them.
+    for name in [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME] {
+        write(&root.join(".claude").join(name), "SQLite format 3\0");
+    }
+    assert_eq!(git_status(root), "", "git must not see the map nor the files beside it");
+
+    // The exclude file of an install that predates the map: same marks, same
+    // rules, none for the map.
+    let complete = read(&exclude).expect("the exclude file exists");
+    let older: String = complete
+        .lines()
+        .filter(|line| !line.contains(MAP_FILE_NAME))
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    assert_ne!(older, complete, "the fixture really removes the map rules");
+    write(&exclude, &older);
+    assert!(
+        git_status(root).contains(&format!(".claude/{MAP_FILE_NAME}")),
+        "without its rules the map shows to git: {:?}",
+        git_status(root),
+    );
+
+    // An update finds the mode from the marks and gives the rules back.
+    assert_eq!(detect_install_mode(root), InstallMode::Private, "the older file still carries the marks");
+    let updated = upsert_project(root, Some("9.9.9"), detect_install_mode(root)).expect("update");
+    let mut restored = updated.excluded.clone();
+    restored.sort();
+    assert_eq!(
+        restored,
+        footprint_rules().into_iter().filter(|rule| rule.contains(MAP_FILE_NAME)).collect::<Vec<_>>(),
+        "the update appends the map rules and nothing else",
+    );
+    assert_eq!(git_status(root), "", "the map is hidden again");
 }
 
 // ---------------------------------------------------------------------------
@@ -197,13 +250,12 @@ fn shared_install_is_byte_identical_to_today() {
         report.created,
         vec![
             ".claude/settings.json",
+            ".claude/settings.local.json",
             ".claude/mustard/session-map.md",
             ".claude/mustard/pages/spec.html",
             ".claude/mustard/pages/project.html",
             ".claude/agents/mustard/wave.md",
             ".claude/agents/mustard/review.md",
-            ".claude/agents/mustard/skill.md",
-            ".claude/agents/mustard/wave-solo.md",
             ".claude/.gitignore",
             "mustard.json",
         ],
@@ -218,17 +270,21 @@ fn shared_install_is_byte_identical_to_today() {
         serde_json::to_string_pretty(&seed).expect("re-render the seed"),
     );
     assert_eq!(read(&root.join(".claude/settings.json")), Some(expected_settings));
-    for (rel, body) in harness_texts(Locale::PtBr) {
+    for (rel, body) in harness_texts(Locale::PtBr, AgentSettings::default()) {
         assert_eq!(read(&root.join(".claude").join(&rel)), Some(body), "{rel}");
     }
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
 
-    // 3. Nothing of the private mode happened: no local layer, no exclude write,
-    //    and the report carries no private key at all.
-    assert!(
-        !root.join(".claude/settings.local.json").exists(),
-        "the local layer belongs to the private mode only",
+    // 3. Nothing of the private mode happened: the local layer holds only the
+    //    folder of the project's copies, which is this machine's path and so
+    //    never goes to the team's file; no exclude write, and the report
+    //    carries no private key at all.
+    let copies = mustard_core::io::wave_prompt::copies_dir(root).to_string_lossy().into_owned();
+    assert_eq!(
+        read(&root.join(".claude/settings.local.json")).and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()),
+        Some(serde_json::json!({ "permissions": { "additionalDirectories": [copies] } })),
+        "the rest of the local layer belongs to the private mode only",
     );
     assert_eq!(read(&exclude), exclude_before, "the exclude file was not touched");
     assert!(!report.private);

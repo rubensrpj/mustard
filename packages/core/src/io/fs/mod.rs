@@ -111,16 +111,6 @@ pub trait Fs {
     /// created, the tempfile cannot be written, or the rename fails.
     fn write_atomic(&self, path: &Path, contents: &[u8]) -> Result<()>;
 
-    /// Append `line` to `path` with a single trailing `\n`, creating the file
-    /// and any missing parent directory. Backs append-only logs (NDJSON
-    /// metrics). The caller passes the line *without* a trailing newline.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Io`](crate::platform::error::Error::Io) if the directory cannot be
-    /// created or the write fails.
-    fn append_line(&self, path: &Path, line: &str) -> Result<()>;
-
     /// `true` if `path` exists on disk.
     fn exists(&self, path: &Path) -> bool;
 
@@ -158,16 +148,6 @@ pub trait Fs {
     /// expose a modified time or the metadata read fails.
     fn modified(&self, path: &Path) -> Result<SystemTime>;
 
-    /// Rename (move) `from` to `to`, replacing `to` if it exists. The source
-    /// and destination should reside on the same filesystem so the rename is
-    /// atomic. Use [`Fs::write_atomic`] for cross-device writes.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotFound`](crate::platform::error::Error::NotFound) when `from` does not
-    /// exist; [`Error::Io`](crate::platform::error::Error::Io) otherwise.
-    fn rename(&self, from: &Path, to: &Path) -> Result<()>;
-
     /// Recursively remove `path` and all of its contents. A no-op (success) when
     /// `path` does not exist, mirroring the fail-open convention of the other
     /// removal helpers.
@@ -177,23 +157,23 @@ pub trait Fs {
     /// [`Error::Io`](crate::platform::error::Error::Io) if any entry beneath `path` cannot
     /// be removed.
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
+}
 
-    /// Remove an empty directory at `path`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotFound`](crate::platform::error::Error::NotFound) when `path` does not
-    /// exist; [`Error::Io`](crate::platform::error::Error::Io) if the directory is
-    /// non-empty or another OS error occurs.
-    fn remove_dir(&self, path: &Path) -> Result<()>;
+/// Se a gravação espera o disco confirmar que guardou: sempre, a menos que
+/// `MUSTARD_DISK_SYNC` valha `off`. A espera existe para não perder linha da
+/// spec se a máquina cair; os testes a desligam, porque a pasta deles é
+/// apagada no fim e a confirmação só os deixa lentos, muito mais no Windows.
+/// A variável é lida a cada gravação, sem guardar o valor.
+#[must_use]
+pub fn disk_sync() -> bool {
+    disk_sync_for(std::env::var("MUSTARD_DISK_SYNC").ok().as_deref())
+}
 
-    /// Resolve `path` to an absolute, canonical path with all symlinks resolved.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotFound`](crate::platform::error::Error::NotFound) when `path` does not
-    /// exist; [`Error::Io`](crate::platform::error::Error::Io) otherwise.
-    fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
+/// A decisão de [`disk_sync`] sobre o valor da variável, separada da leitura
+/// do ambiente para o teste não mexer na variável de um processo com testes
+/// em paralelo.
+fn disk_sync_for(value: Option<&str>) -> bool {
+    value != Some("off")
 }
 
 /// The process-wide default [`Fs`] backing the module-level free functions.
@@ -201,15 +181,6 @@ pub trait Fs {
 /// `RealFs` is zero-sized and stateless, so a `const` instance is free and
 /// needs no synchronisation.
 const DEFAULT: real::RealFs = real::RealFs;
-
-/// A shared reference to the default real filesystem.
-///
-/// Handy when a `&dyn Fs` is required but the call site genuinely wants the
-/// real disk (e.g. wiring a production struct that takes a port).
-#[must_use]
-pub fn real() -> &'static dyn Fs {
-    &DEFAULT
-}
 
 // ---------------------------------------------------------------------------
 // Module-level convenience free functions (backed by the default `RealFs`).
@@ -247,16 +218,6 @@ pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>> {
 /// [`Error::Io`](crate::platform::error::Error::Io) on failure.
 pub fn write_atomic(path: impl AsRef<Path>, contents: &[u8]) -> Result<()> {
     DEFAULT.write_atomic(path.as_ref(), contents)
-}
-
-/// Append a newline-terminated `line` to `path` via the default real
-/// filesystem. See [`Fs::append_line`].
-///
-/// # Errors
-///
-/// [`Error::Io`](crate::platform::error::Error::Io) on failure.
-pub fn append_line(path: impl AsRef<Path>, line: &str) -> Result<()> {
-    DEFAULT.append_line(path.as_ref(), line)
 }
 
 /// `true` if `path` exists. See [`Fs::exists`].
@@ -308,17 +269,6 @@ pub fn modified(path: impl AsRef<Path>) -> Result<SystemTime> {
     DEFAULT.modified(path.as_ref())
 }
 
-/// Rename (move) `from` to `to` via the default real filesystem. See
-/// [`Fs::rename`].
-///
-/// # Errors
-///
-/// [`Error::NotFound`](crate::platform::error::Error::NotFound) when `from` is absent,
-/// else [`Error::Io`](crate::platform::error::Error::Io).
-pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
-    DEFAULT.rename(from.as_ref(), to.as_ref())
-}
-
 /// Recursively remove `path` and all its contents via the default real
 /// filesystem. See [`Fs::remove_dir_all`].
 ///
@@ -327,28 +277,6 @@ pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
 /// [`Error::Io`](crate::platform::error::Error::Io) on failure.
 pub fn remove_dir_all(path: impl AsRef<Path>) -> Result<()> {
     DEFAULT.remove_dir_all(path.as_ref())
-}
-
-/// Remove an empty directory at `path` via the default real filesystem. See
-/// [`Fs::remove_dir`].
-///
-/// # Errors
-///
-/// [`Error::NotFound`](crate::platform::error::Error::NotFound) on absence, else
-/// [`Error::Io`](crate::platform::error::Error::Io).
-pub fn remove_dir(path: impl AsRef<Path>) -> Result<()> {
-    DEFAULT.remove_dir(path.as_ref())
-}
-
-/// Resolve `path` to an absolute canonical path via the default real
-/// filesystem. See [`Fs::canonicalize`].
-///
-/// # Errors
-///
-/// [`Error::NotFound`](crate::platform::error::Error::NotFound) on absence, else
-/// [`Error::Io`](crate::platform::error::Error::Io).
-pub fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf> {
-    DEFAULT.canonicalize(path.as_ref())
 }
 
 /// Os arquivos de um módulo dividido em partes que passam do teto de linhas
@@ -383,4 +311,17 @@ pub fn files_over_code_line_cap(gate: &Path) -> std::result::Result<Vec<(PathBuf
         }
     }
     Ok(over)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disk_sync_for;
+
+    #[test]
+    fn the_disk_sync_is_off_only_when_the_variable_says_off() {
+        assert!(!disk_sync_for(Some("off")), "off turns the confirmation off");
+        assert!(disk_sync_for(None), "without the variable the disk confirms every write");
+        assert!(disk_sync_for(Some("on")));
+        assert!(disk_sync_for(Some("")), "any other value keeps the confirmation");
+    }
 }

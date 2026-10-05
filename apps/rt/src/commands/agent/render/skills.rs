@@ -8,7 +8,8 @@ use std::path::Path;
 
 /// Build `{skills_list}` — the target subproject's skill shelf: one line per
 /// `<subproject>/.claude/skills/*/SKILL.md` (`- name — description`), sorted
-/// by folder name for byte-stable output, preceded by the load instruction.
+/// by folder name for byte-stable output, preceded by the line telling the
+/// reviewer that each module is checked against its matching skill.
 /// Names and trigger descriptions only — never bodies — so the `## SKILLS`
 /// section stays PREFIX-STABLE (cache-safe) exactly as the agent-prompt ref
 /// documents. Empty (the section collapses) when the subproject has no
@@ -36,9 +37,9 @@ pub(crate) fn build_skills_list(project: &Path, subproject: &str) -> String {
     }
     rows.sort();
     let mut out = String::from(
-        "This subproject has skills — its module molds and conventions. BEFORE creating \
-         or refactoring a module of a kind listed below, load the matching skill (Skill \
-         tool, or Read its SKILL.md) and follow it; deviations are review findings:\n",
+        "The subproject's skills — the molds and conventions of its modules. Code that \
+         creates or refactors a module of a kind listed below is checked against the \
+         matching skill (read its SKILL.md):\n",
     );
     for (name, description) in rows {
         if description.is_empty() {
@@ -88,6 +89,15 @@ mod tests {
             out.find("api-service-pattern").unwrap(),
         );
         assert!(log < odd && odd < svc, "shelf must be sorted: {out}");
+        // The header speaks to whoever reviews — what is checked against the
+        // shelf — in plain case: the file name is the only capitalised word.
+        let header = out.lines().next().unwrap();
+        assert!(header.contains("is checked against the matching skill"), "{header}");
+        let shouts = header
+            .replace("SKILL.md", "")
+            .split(|c: char| !c.is_alphabetic())
+            .any(|word| word.chars().count() > 1 && word.chars().all(char::is_uppercase));
+        assert!(!shouts, "the header shouts: {header}");
         // No skills dir → empty (the ## SKILLS section collapses).
         assert!(build_skills_list(root, "apps/none").is_empty());
     }

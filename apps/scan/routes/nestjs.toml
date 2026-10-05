@@ -1,0 +1,54 @@
+# As rotas do NestJS. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `nestjs/routes.scm`, e o que cada captura dela diz,
+# em `src/routes.rs`. O caminho da rota junta o prefixo do `@Controller('…')`
+# da classe, ou do `path` do objeto de opções dele
+# (`@Controller({ path: 'v1/pedidos', version: '2' })`), e o do decorador do
+# método (`@Get(':id')`, `@Post('edit')`). O `version` fica de fora: o prefixo
+# de versão depende do `enableVersioning` escrito em outro arquivo.
+#
+# A árvore de rotas dos módulos,
+# `RouterModule.register([{ path: 'api', module: ApiModule, children: [...] }])`,
+# põe o `path` de cada item na frente das rotas dos controladores que o
+# `@Module({ controllers: [...] })` do `module` dele lista, somado ao `path`
+# dos itens de fora, de fora para dentro. Todo objeto com `path` e `module`,
+# ou com `path` e `children`, num arquivo que liga a regra, é um item dessa
+# árvore.
+#
+# O prefixo global, `app.setGlobalPrefix('api')`, escrito no arquivo que sobe
+# a aplicação, vale para toda rota do NestJS no projeto dele: a pasta do
+# manifesto mais perto acima do arquivo (`route.prefix.global`). O `exclude`
+# do segundo argumento tira dele as rotas de cada item (`route.exclude`): o
+# texto (`'saude'`) ou o `path` do objeto
+# (`{ path: 'saude', method: RequestMethod.GET }`), com o `method` dele
+# (`route.exclude.method`), que junta ao caminho pelo objeto
+# (`route.exclude.item`). O caminho do item se compara padronizado, como o da
+# rota (`:id` vira `{}`); o método se lê na tabela `methods` sem olhar
+# maiúsculas, e o `ALL` vale qualquer um.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`@nestjs/common/…`). O
+#   `@nestjs/core` é o do arquivo que sobe a aplicação e escreve o prefixo
+#   global.
+# - `methods`: o nome do decorador e o método HTTP que ele diz; `"*"` é
+#   qualquer método. O decorador fora da tabela não faz rota.
+# - `param_prefixes`: o começo do pedaço de caminho que é parâmetro (`:id`).
+# - `exclude_wildcards`: o fim do item de `exclude` que o faz valer para toda
+#   rota que começa pelo resto (`'saude/(.*)'`, `'saude*'`).
+
+language = ["typescript", "tsx", "javascript"]
+imports = ["@nestjs/common", "@nestjs/core"]
+param_prefixes = [":"]
+exclude_wildcards = ["(.*)", "*"]
+
+[methods]
+Get = "GET"
+Post = "POST"
+Put = "PUT"
+Patch = "PATCH"
+Delete = "DELETE"
+Head = "HEAD"
+Options = "OPTIONS"
+All = "*"

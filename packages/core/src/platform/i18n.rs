@@ -8,8 +8,7 @@
 //! across three or more files. There was no single place to:
 //!
 //! - declare the canonical locale codes (BCP-47, never short forms);
-//! - translate a banner key into the user's language;
-//! - slugify free-form text in a way that respects PT-vs-EN accent rules.
+//! - translate a banner key into the user's language.
 //!
 //! This module is now that single place, a boundary-typed module exported
 //! from `mustard_core`.
@@ -161,6 +160,7 @@ mod session;
 mod map;
 mod events;
 mod page;
+mod measure;
 mod install;
 mod spec_text;
 
@@ -179,9 +179,10 @@ type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
 /// - `map` — o mapa do projeto;
 /// - `events` — o arquivo de eventos da spec;
 /// - `page` — as páginas;
+/// - `measure` — a medição do uso real;
 /// - `install` — o diagnóstico da instalação;
-/// - `spec_text` — o texto da spec em markdown.
-const PARTS: [Part; 11] = [
+/// - `spec_text` — o rótulo da onda.
+const PARTS: [Part; 12] = [
     (flow::PREFIXES, flow::text),
     (survey::PREFIXES, survey::text),
     (prompt::PREFIXES, prompt::text),
@@ -191,6 +192,7 @@ const PARTS: [Part; 11] = [
     (map::PREFIXES, map::text),
     (events::PREFIXES, events::text),
     (page::PREFIXES, page::text),
+    (measure::PREFIXES, measure::text),
     (install::PREFIXES, install::text),
     (spec_text::PREFIXES, spec_text::text),
 ];
@@ -226,146 +228,11 @@ fn key_as_static(_key: &str) -> &'static str {
     "<missing-key>"
 }
 
-/// Slugify `text` to a kebab-case identifier, lang-aware.
-///
-/// PT locale strips Latin diacritics (`ç → c`, `ã → a`, …) before kebab-casing
-/// so spec slugs round-trip cleanly. EN locale keeps the input as-is (no
-/// Unicode normalisation): accents are removed only in PT.
-/// Stopword lists differ per locale (basic articles/prepositions are dropped).
-///
-/// The output never contains leading/trailing dashes and never collapses to an
-/// empty string — fully non-alphanumeric input degrades to `"x"`, mirroring
-/// the existing `apps/rt/src/run/scan/interpret.rs::slugify` contract.
-#[must_use]
-pub fn slugify(text: &str, lang: Locale) -> String {
-    let normalised = match lang {
-        Locale::PtBr => crate::domain::text::fold_accents(text),
-        Locale::EnUs => text.to_string(),
-    };
-    let stopwords: &[&str] = match lang {
-        Locale::PtBr => crate::domain::text::SLUG_STOPWORDS_PT,
-        Locale::EnUs => crate::domain::text::SLUG_STOPWORDS_EN,
-    };
-    // 1. lowercase + split on non-alphanumeric.
-    let mut tokens: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for ch in normalised.chars() {
-        let lc = ch.to_ascii_lowercase();
-        if lc.is_ascii_alphanumeric() {
-            cur.push(lc);
-        } else if !cur.is_empty() {
-            tokens.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        tokens.push(cur);
-    }
-    // 2. drop stopwords — but only when at least one token in the input is
-    //    longer than a single character. Pure single-char inputs (e.g.
-    //    `"ç ã õ"`) and pure-stopword inputs keep every token so callers
-    //    always get *something* slug-shaped back. After filtering, if nothing
-    //    is left, fall back to the original tokens.
-    let has_long = tokens.iter().any(|tok| tok.chars().count() > 1);
-    let kept: Vec<String> = if has_long {
-        let filtered: Vec<String> = tokens
-            .iter()
-            .filter(|tok| !stopwords.contains(&tok.as_str()))
-            .cloned()
-            .collect();
-        if filtered.is_empty() { tokens } else { filtered }
-    } else {
-        tokens
-    };
-    let joined = kept.join("-");
-    if joined.is_empty() {
-        "x".to_string()
-    } else {
-        joined
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
-// ---------------------------------------------------------------------------
-
 /// Catalogue-backed locale — the closed set Mustard ships translations for.
 ///
 /// `SupportedLocale` is a type alias for the original [`Locale`] enum, so each
 /// callsite could move to the new name without breaking every consumer at once.
 pub type SupportedLocale = Locale;
-
-/// User-declared BCP-47 locale, as a spec records it.
-///
-/// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
-/// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
-/// etc. Parse the raw tag into a [`SupportedLocale`] when a banner needs to
-/// render, falling back to the default when the locale is not in the catalogue.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserLocale {
-    /// The raw BCP-47 tag as supplied by the user.
-    pub raw: String,
-}
-
-impl UserLocale {
-    /// Construct a `UserLocale` from a BCP-47 string.  No validation is
-    /// performed — any non-empty string is accepted so fail-open callers never
-    /// have to handle an error for syntactically arbitrary user input.
-    #[must_use]
-    pub fn new(raw: impl Into<String>) -> Self {
-        Self { raw: raw.into() }
-    }
-}
-
-impl fmt::Display for UserLocale {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.raw)
-    }
-}
-
-impl FromStr for UserLocale {
-    type Err = UserLocaleError;
-
-    /// Parse a BCP-47 string into a `UserLocale`. Rejects empty strings and
-    /// shapes that are not `<lang>-<REGION>` (2-3 lowercase letters, hyphen,
-    /// 2 uppercase letters). Short forms like `pt`/`en` and unhyphenated
-    /// blobs like `ptbr` are rejected so callers can rely on a canonical tag.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(UserLocaleError::Empty);
-        }
-        let (lang, region) = trimmed
-            .split_once('-')
-            .ok_or_else(|| UserLocaleError::Malformed(trimmed.to_string()))?;
-        let lang_ok = (2..=3).contains(&lang.len())
-            && lang.chars().all(|c| c.is_ascii_lowercase());
-        let region_ok = region.len() == 2 && region.chars().all(|c| c.is_ascii_uppercase());
-        if !lang_ok || !region_ok {
-            return Err(UserLocaleError::Malformed(trimmed.to_string()));
-        }
-        Ok(Self { raw: trimmed.to_string() })
-    }
-}
-
-/// Errors returned by [`UserLocale::from_str`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UserLocaleError {
-    /// Empty or whitespace-only input.
-    Empty,
-    /// Input does not match the `<lang>-<REGION>` shape.
-    Malformed(String),
-}
-
-impl fmt::Display for UserLocaleError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => f.write_str("locale string is empty"),
-            Self::Malformed(raw) => write!(f, "locale `{raw}` is not BCP-47 `<lang>-<REGION>`"),
-        }
-    }
-}
-
-impl std::error::Error for UserLocaleError {}
 
 /// Render a wave label given a locale + 1-based wave index.
 ///
@@ -380,68 +247,11 @@ pub fn wave_label(n: u32, lang: Locale) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// File-operation markers (`## Files` bullet annotations)
-// ---------------------------------------------------------------------------
-
-/// Every catalogue locale, EN canonical first — the iteration order of
-/// [`file_marker_synonyms`], so the EN spelling is always `synonyms[0]`.
-const CATALOGUE_LOCALES: &[Locale] = &[Locale::EnUs, Locale::PtBr];
-
-/// A file-operation marker recognised in a spec's `## Files` bullet lines —
-/// e.g. ``- `src/Payable.cs` (create)``. `Create` declares a net-new file
-/// (validators must not flag it as missing); `Edit` declares a change to an
-/// existing file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FileMarker {
-    /// Net-new file — `(create)` / `(new)` / `(novo)` / `(criar)`.
-    Create,
-    /// Existing file to change — `(edit)` / `(editar)`.
-    Edit,
-}
-
-impl FileMarker {
-    /// Catalogue key carrying this marker's per-locale synonyms.
-    fn catalogue_key(self) -> &'static str {
-        match self {
-            Self::Create => "marker.create",
-            Self::Edit => "marker.edit",
-        }
-    }
-}
-
-/// Every accepted spelling of `marker`, across ALL catalogue locales, deduped,
-/// EN canonical first (`(create)` for [`FileMarker::Create`]). The synonyms
-/// are data in the [`translate`] catalogue (`marker.*` keys, `|`-separated per
-/// locale) — the SINGLE origin shared by the drafter and every validator
-/// (`analyze-validation`, scope-classify), so a localized marker like the
-/// pt-BR `(novo)` can never drift out of recognition.
-///
-/// Spellings are lowercase literals including the surrounding parentheses;
-/// match with [`line_has_file_marker`] (case-insensitive `contains`).
-#[must_use]
-pub fn file_marker_synonyms(marker: FileMarker) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for lang in CATALOGUE_LOCALES {
-        for syn in translate(marker.catalogue_key(), *lang).split('|') {
-            let syn = syn.trim();
-            if !syn.is_empty() && !out.contains(&syn) {
-                out.push(syn);
-            }
-        }
-    }
-    out
-}
-
-/// Whether `line` carries `marker` in ANY of its accepted spellings
-/// (case-insensitive substring, like the historical `(create)` check).
-/// Fail-open helper for `## Files` bullet validation: a line such as
-/// ``- `src/Payable.cs` (novo)`` matches [`FileMarker::Create`].
-#[must_use]
-pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
-    let lower = line.to_lowercase();
-    file_marker_synonyms(marker).iter().any(|syn| lower.contains(syn))
-}
+/// A regra das palavras em maiúsculas nas frases do programa, que os testes
+/// dos quatro pacotes conferem pelo mesmo arquivo.
+#[cfg(test)]
+#[path = "../../tests/support/shouting_words.rs"]
+mod shouting_words;
 
 #[cfg(test)]
 mod tests {
@@ -454,16 +264,7 @@ mod tests {
     /// são os que a parte gravou. Uma chave que sai, que vai para a parte
     /// errada ou que muda de texto derruba a conferência.
     pub(super) fn assert_part_unchanged(source: &str, prefixes: &[&str], keys: usize, fingerprint: u64) {
-        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
-        let mut found = BTreeSet::new();
-        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
-            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
-            assert!(
-                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
-                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
-            );
-            found.insert(key);
-        }
+        let found = part_keys(source);
         // A impressão é o FNV-1a de 64 bits sobre chave, idioma e texto, na
         // ordem das chaves: estável entre versões do Rust, ao contrário do
         // hasher da biblioteca padrão.
@@ -492,6 +293,232 @@ mod tests {
              write these two numbers in the part's test",
             found.len()
         );
+    }
+
+    /// As chaves de uma parte, lidas do texto do arquivo dela: cada braço do
+    /// `match` antes dos testes, no formato `("chave", Locale::PtBr) =>`,
+    /// `("chave", Locale::EnUs) =>` ou `("chave", _) =>`.
+    fn part_keys(source: &str) -> BTreeSet<&str> {
+        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let mut found = BTreeSet::new();
+        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
+            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
+            assert!(
+                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
+                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
+            );
+            found.insert(key);
+        }
+        found
+    }
+
+    /// O texto de cada parte do catálogo, na mesma ordem de `PARTS`. O tamanho
+    /// vem de `PARTS`: uma parte nova não compila sem o texto dela aqui.
+    const PART_SOURCES: [&str; PARTS.len()] = [
+        include_str!("i18n/flow.rs"),
+        include_str!("i18n/survey.rs"),
+        include_str!("i18n/prompt.rs"),
+        include_str!("i18n/gates.rs"),
+        include_str!("i18n/pending.rs"),
+        include_str!("i18n/session.rs"),
+        include_str!("i18n/map.rs"),
+        include_str!("i18n/events.rs"),
+        include_str!("i18n/page.rs"),
+        include_str!("i18n/measure.rs"),
+        include_str!("i18n/install.rs"),
+        include_str!("i18n/spec_text.rs"),
+    ];
+
+    /// O texto com cada marcador (`{spec}`, `{count}`…) trocado por uma
+    /// palavra, como ele chega a quem lê. Chave com outra coisa dentro, como o
+    /// JSON de um exemplo, fica como está.
+    fn with_markers_filled(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}') {
+                Some(close) if close > 0 && after[..close].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+                    out.push_str("item");
+                    rest = &after[close + 1..];
+                }
+                _ => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Os defeitos de escrita de um texto do catálogo, cada um com a chave e o
+    /// idioma: os da conferência das respostas e, além deles, cada palavra
+    /// toda em maiúsculas fora de crase. O texto é medido com as lacunas já
+    /// preenchidas.
+    fn catalog_text_defects(key: &str, lang: Locale, raw: &str) -> Vec<String> {
+        let text = with_markers_filled(raw);
+        let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+        let mut defects: Vec<String> =
+            report.defects(lang).into_iter().map(|defect| format!("{key} ({lang}): {defect}")).collect();
+        for word in shouting_words::uppercase_words(&text) {
+            defects.push(format!("{key} ({lang}): uppercase word {word} outside backticks"));
+        }
+        defects
+    }
+
+    /// Toda frase do catálogo, nos dois idiomas, passa na mesma conferência de
+    /// escrita das respostas: frase de até 25 palavras, sigla explicada, nenhum
+    /// código interno, leitura fácil e o idioma certo. Além dela, nenhuma
+    /// palavra toda em maiúsculas fora de crase, salvo a lista curta de
+    /// exceções. Cada texto é medido sozinho, com os
+    /// marcadores já trocados por uma palavra, porque é assim que ele chega a
+    /// quem lê. A falha lista cada chave, o idioma e o defeito.
+    #[test]
+    fn every_catalog_text_reads_clearly() {
+        let mut failures = Vec::new();
+        let mut measured = 0;
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    measured += 1;
+                    failures.extend(catalog_text_defects(key, lang, translate(key, lang)));
+                }
+            }
+        }
+        assert!(measured > 1_000, "the measure reached every part, in both languages: {measured} texts");
+        assert!(
+            failures.is_empty(),
+            "{} catalog texts fail the writing check:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// As posições, no texto, de cada vez que ele cita `grep`, `Grep` ou
+    /// `Glob` como palavra inteira (`pgrep` não conta).
+    fn search_tool_mentions(text: &str) -> Vec<usize> {
+        let lower = text.to_ascii_lowercase();
+        let mut found = Vec::new();
+        for word in ["grep", "glob"] {
+            for (at, _) in lower.match_indices(word) {
+                let before = lower[..at].chars().next_back();
+                let after = lower[at + word.len()..].chars().next();
+                if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
+                    found.push(at);
+                }
+            }
+        }
+        found.sort_unstable();
+        found
+    }
+
+    /// Nenhum texto do catálogo, nos dois idiomas, manda achar código com
+    /// `Grep`, `Glob` ou `grep` antes de o mapa não achar nada. Só quatro
+    /// chaves as citam: a linha do não achou, o aviso de que o achado pode não
+    /// ser o lugar, a dica do mapa, que diz que essas buscas passam pelo
+    /// Mustard, e o portão da chave, em que `glob` é o parâmetro da busca e
+    /// não uma ferramenta a usar.
+    #[test]
+    fn no_catalog_text_sends_the_reader_to_grep_or_glob_before_the_map_finds_nothing() {
+        let mut cited = BTreeSet::new();
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    let text = translate(key, lang);
+                    let mentions = search_tool_mentions(text);
+                    let Some(first) = mentions.first().copied() else { continue };
+                    cited.insert(key);
+                    match key {
+                        "map.search.not_found" | "map.search.use_tools" | "config_key.swept_tool" => {}
+                        "scan.map.pointer" => {
+                            let through = text.find("passam pelo Mustard").or_else(|| text.find("go through Mustard"));
+                            assert!(through.is_some_and(|at| first < at), "{key} ({lang}): the hint says the search goes through Mustard: {text}");
+                        }
+                        _ => panic!("{key} ({lang}) sends the reader to a search tool to find code: {text}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            cited.into_iter().collect::<Vec<_>>(),
+            ["config_key.swept_tool", "map.search.not_found", "map.search.use_tools", "scan.map.pointer"],
+            "the four keys are the only ones that cite a search tool"
+        );
+    }
+
+    /// A conferência do catálogo mede o texto como ele chega a quem lê: o
+    /// marcador vira uma palavra, e a frase que passa de 25 palavras só com
+    /// ele cai.
+    #[test]
+    fn a_marker_counts_as_one_word_in_the_catalog_measure() {
+        assert_eq!(with_markers_filled("A spec {spec} tem {count} itens."), "A spec item tem item itens.");
+        assert_eq!(with_markers_filled("O exemplo {\"class\":\"x\"} fica."), "O exemplo {\"class\":\"x\"} fica.");
+        assert_eq!(with_markers_filled("Sem par { aqui."), "Sem par { aqui.");
+        let words = |n: usize| vec!["palavra"; n].join(" ");
+        let measure = |text: &str| crate::domain::clarity::measure(&with_markers_filled(text), &[], None);
+        assert!(measure(&format!("{} {{spec}}.", words(24))).long_sentences.is_empty(), "25 words pass");
+        assert_eq!(measure(&format!("{} {{spec}}.", words(25))).long_sentences.len(), 1, "26 words fail");
+    }
+
+    /// Palavra toda em maiúsculas fora de crase derruba o texto do catálogo,
+    /// com a chave, o idioma e a palavra: o "NÃO" solto, o nome de código e a
+    /// sigla fora da lista, mesmo explicada. Entre crases ela passa, e as
+    /// exceções da lista também.
+    #[test]
+    fn an_uppercase_word_outside_backticks_fails_the_catalog_measure() {
+        let key = "spec_events.report_carries_return_line";
+        let defect = |word: &str| format!("{key} (pt-BR): uppercase word {word} outside backticks");
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "Isso NÃO apaga nada."), vec![defect("NÃO")]);
+        assert_eq!(
+            catalog_text_defects(key, Locale::PtBr, "O relatório leva as linhas USAGE, PAUSED e USAGE de novo."),
+            vec![defect("USAGE"), defect("PAUSED")]
+        );
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "Busque pelo código, como DEC-0142."), vec![defect("DEC")]);
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "O PR (pull request) de {spec} saiu."), vec![defect("PR")]);
+        for calm in [
+            "Isso `NÃO` apaga nada.",
+            "O relatório leva as linhas `USAGE` e `PAUSED`.",
+            "Busque pelo código, como `DEC-0142`.",
+            "O JSON em UTF-8 passa de 2 MB, longe de 1 GB.",
+            "O item A de {spec} saiu.",
+        ] {
+            assert_eq!(catalog_text_defects(key, Locale::PtBr, calm), Vec::<String>::new(), "{calm}");
+        }
+    }
+
+    /// Nenhum texto do catálogo, em nenhuma das duas línguas, diz que o mapa
+    /// ou o terreno já está na janela de quem lê: o mapa não vem mais
+    /// injetado no início da sessão, e um texto que dissesse isso mandaria o
+    /// modelo confiar num resumo que não existe.
+    #[test]
+    fn no_catalog_text_says_the_map_is_in_the_window() {
+        let says_in_window = |text: &str, window: &str, subjects: &[&str]| {
+            let text = text.to_lowercase();
+            let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
+            words.contains(&window) && subjects.iter().any(|subject| words.contains(subject))
+        };
+        let mut found = Vec::new();
+        let mut swept = 0;
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for (lang, window, subjects) in [
+                    (Locale::PtBr, "janela", &["mapa", "terreno", "resumo"][..]),
+                    (Locale::EnUs, "window", &["map", "terrain", "summary"][..]),
+                ] {
+                    swept += 1;
+                    if says_in_window(translate(key, lang), window, subjects) {
+                        found.push(format!("{key} ({lang})"));
+                    }
+                }
+            }
+        }
+        assert!(swept > 1_000, "the sweep reached every part, in both languages: {swept} texts");
+        assert!(found.is_empty(), "these texts put the map in the window: {found:?}");
+        assert!(says_in_window("O terreno já está na sua janela.", "janela", &["terreno"]));
+        assert!(says_in_window("The map is already in your window.", "window", &["map"]));
+        assert!(!says_in_window("Começa numa janela limpa.", "janela", &["mapa", "terreno", "resumo"]));
     }
 
     /// Cada começo de chave é respondido por uma parte só do catálogo.
@@ -550,8 +577,6 @@ mod tests {
         );
         assert_eq!(translate("wave.label", Locale::PtBr), "Onda");
         assert_eq!(translate("wave.label", Locale::EnUs), "W");
-        assert_eq!(translate("ac.label", Locale::PtBr), "CA");
-        assert_eq!(translate("ac.label", Locale::EnUs), "AC");
     }
 
     #[test]
@@ -559,40 +584,6 @@ mod tests {
         // Missing keys return a stable sentinel rather than panicking.
         assert_eq!(translate("banner.missing.xyz", Locale::PtBr), "<missing-key>");
         assert_eq!(translate("banner.missing.xyz", Locale::EnUs), "<missing-key>");
-    }
-
-    #[test]
-    fn slugify_pt_strips_accents() {
-        assert_eq!(slugify("Configuração do Idioma", Locale::PtBr), "configuracao-idioma");
-        assert_eq!(slugify("São Paulo é grande", Locale::PtBr), "sao-paulo-grande");
-        assert_eq!(slugify("ç ã õ", Locale::PtBr), "c-a-o");
-    }
-
-    #[test]
-    fn slugify_pt_drops_em_a_contractions() {
-        // `no` ("em o") is a stopword now: it must not eat a token slot and leave
-        // a `...-erro-no` tail — the meaningful word (`nome`) survives instead.
-        assert_eq!(slugify("erro no nome", Locale::PtBr), "erro-nome");
-        assert_eq!(slugify("tratamento na base", Locale::PtBr), "tratamento-base");
-        assert_eq!(slugify("volta ao topo", Locale::PtBr), "volta-topo");
-    }
-
-    #[test]
-    fn slugify_en_keeps_input_keeps_no_accents() {
-        // EN never had accents to strip in the first place; stopwords differ.
-        assert_eq!(slugify("The Quick Brown Fox", Locale::EnUs), "quick-brown-fox");
-        // PT stopwords are NOT applied in EN mode.
-        assert_eq!(slugify("de para", Locale::EnUs), "de-para");
-    }
-
-    #[test]
-    fn slugify_handles_empty_and_punctuation() {
-        // Mirror the existing `interpret::slugify` floor — degrade to "x".
-        assert_eq!(slugify("///", Locale::PtBr), "x");
-        assert_eq!(slugify("", Locale::EnUs), "x");
-        // A single-token input is preserved even if it would be a stopword,
-        // so callers always get *something* slug-shaped back.
-        assert_eq!(slugify("the", Locale::EnUs), "the");
     }
 
     #[test]
@@ -605,36 +596,5 @@ mod tests {
     fn wave_label_formats_per_locale() {
         assert_eq!(wave_label(3, Locale::PtBr), "Onda 3");
         assert_eq!(wave_label(3, Locale::EnUs), "W3");
-    }
-
-    #[test]
-    fn file_marker_synonyms_merge_locales_en_canonical_first() {
-        let create = file_marker_synonyms(FileMarker::Create);
-        assert_eq!(create[0], "(create)", "EN canonical leads: {create:?}");
-        for syn in ["(create)", "(new)", "(novo)", "(criar)"] {
-            assert!(create.contains(&syn), "{syn} accepted: {create:?}");
-        }
-        let edit = file_marker_synonyms(FileMarker::Edit);
-        assert_eq!(edit[0], "(edit)");
-        assert!(edit.contains(&"(editar)"));
-        // Deduped — no spelling twice.
-        let mut sorted = create.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), create.len(), "no duplicates: {create:?}");
-    }
-
-    #[test]
-    fn line_has_file_marker_matches_localized_and_case_insensitive() {
-        assert!(line_has_file_marker("- `a.rs` (create)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (novo)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (criar)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (NOVO)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (editar)", FileMarker::Edit));
-        // No marker / wrong marker → no match.
-        assert!(!line_has_file_marker("- `a.rs`", FileMarker::Create));
-        assert!(!line_has_file_marker("- `a.rs` (editar)", FileMarker::Create));
-        // A prose parenthetical is not a marker.
-        assert!(!line_has_file_marker("- `a.rs` (new format)", FileMarker::Create));
     }
 }

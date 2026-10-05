@@ -7,6 +7,7 @@ description = "Mustard enforcement runtime: a single binary that replaces the pe
 license = "MIT"
 publish = false
 build = "build.rs"
+autotests = false
 
 [[bin]]
 name = "mustard-rt"
@@ -28,6 +29,11 @@ test = false
 name = "mustard_rt"
 path = "src/lib.rs"
 
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
 # Dependency versions live in the workspace `[workspace.dependencies]` table
 # (root Cargo.toml); each crate references them with `{ workspace = true }`.
 [dependencies]
@@ -42,8 +48,7 @@ clap = { workspace = true }
 chrono = { workspace = true }
 
 # The pull-request calls against Azure DevOps go over HTTP. `ureq` is the
-# workspace's blocking, runtime-free HTTP client — the same one `mustard-cli`
-# uses; no async runtime is pulled in.
+# workspace's blocking, runtime-free HTTP client; no async runtime is pulled in.
 ureq = { workspace = true }
 
 # `tempfile` stages the scratch directories the work-unit and capability
@@ -58,8 +63,8 @@ tempfile = { workspace = true }
 # `util::sha256`. Both were removed rather than wired up: adding an import to
 # keep a manifest line honest is the wrong direction.
 
-# Regex engine for the `qa-run` `Expect:` evidence matcher: an AC may declare
-# `Expect: `<regex>`` and qa-run matches it against the command's own output, so
+# Regex engine for the QA run's `Expect:` evidence matcher: an AC may declare
+# `Expect: `<regex>`` and the QA run matches it against the command's own output, so
 # a green command that prints no expected evidence still fails. Declared inline
 # (mirrors `apps/scan`, the workspace's other regex user) — not yet a workspace
 # dependency; the `1` line is the one already resolved in Cargo.lock via scan.

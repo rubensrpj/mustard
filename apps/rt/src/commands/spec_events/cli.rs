@@ -19,14 +19,49 @@ use crate::commands::spec_events;
 /// The `run` subcommands owned by the spec event file (`spec_events/`).
 #[derive(Debug, Subcommand)]
 pub enum SpecEventsCmd {
-    /// Read ONE block of a spec's event file (`.claude/spec/<spec>/spec.ndjson`
+    /// Read one block of a spec's event file (`.claude/spec/<spec>/spec.ndjson`
     /// of the main checkout), never the whole file: `state`, `metrics`,
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
     /// left out; a line that does not parse is skipped with a warning.
+    /// `wave-list` lists one short line per wave, by number: its code, the
+    /// first line of its text and the waves it depends on. `dispatch-<n>` reads, in one go, every item the request of wave `n`
+    /// lists, each with its code, and its lessons, by the same selection
+    /// that builds the request. `request-<n>` prints, as plain text, the
+    /// exact request recorded when wave `n` went out: the agent reads its own
+    /// request this way. `request-review` does the same for the final
+    /// review, which has no wave: the close answer hands the reviewer this
+    /// command instead of the request. `request-review-preview` prints, as
+    /// plain text, the final review request the close would build now,
+    /// recording nothing: the user sees the real request before it counts.
+    /// `delivered-<n>` reads the wave's
+    /// current delivery (the one the round took over, else the agent's own),
+    /// keeping only the agreed items not met. `backlog` lists the tasks not yet delivered,
+    /// each with its code, current version, wave, file count and the pending
+    /// tasks it waits on, then the totals. `calls` sums the calls of each
+    /// command, one line per command: how many, the failures by reason, the
+    /// median, p90 and worst of the call time and of the filter time, and
+    /// the tokens and cost added up; `--term` names the one command.
+    /// `item-MSTD-TASK-NNNN` reads the item's current version and `item-<n>`
+    /// that version, each with `changed` (what changed from the previous
+    /// version); a removed item says
+    /// `removed`, and a user message shows its whole text like any other item.
+    /// The `state` block also gives `last_user_message`, the number of the
+    /// user's latest message, without its text. Reading an item, a lesson
+    /// (`lessons --term <n>`) or `dispatch-<n>` from inside the copy of an
+    /// open request is recorded as read: the delivery of a wave request, and
+    /// the verdict of the final review, are refused while an item the
+    /// request lists was not read. From inside that copy an item line comes
+    /// without `v`, `at`, `author` and `keys` (a user message keeps `at` and
+    /// `author`). `metrics` read without `--term` lists the send, the
+    /// injection and the delivery without their `text`: `item-MSTD-INJ-NNNN`
+    /// reads the whole line, and `delivered-<n>` the delivery.
     #[command(display_order = 8)]
     Read {
-        /// The block to read, e.g. `state` or `wave-2`.
+        /// The block to read, e.g. `state`, `wave-list`, `wave-2`, `dispatch-2`,
+        /// `request-2`, `request-review`, `request-review-preview`,
+        /// `delivered-2`, `backlog`, `calls` or
+        /// `item-MSTD-TASK-0003`.
         block: String,
         /// The spec whose file is read. Without it, the current spec: the
         /// `MUSTARD_ACTIVE_SPEC` override, then the spec of the checkout's
@@ -34,15 +69,16 @@ pub enum SpecEventsCmd {
         #[arg(long)]
         spec: Option<String>,
         /// Keep only the events whose words or item code match this term —
-        /// the conversation searched for a subject, or an item found by the
-        /// code the page shows, like `MSTD-CRIT-NNNN`.
+        /// the conversation searched for a subject, an item found by the
+        /// code the page shows, like `MSTD-CRIT-NNNN`, or the calls of a
+        /// command by its name, like `map search`.
         #[arg(long)]
         term: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Write ONE event to a spec's event file, the only way it is written.
+    /// Write one event to a spec's event file, the only way it is written.
     /// Refuses an unknown type, an empty required field, a `task` missing one
     /// of its three mandatory declarations (what it does, the files it
     /// touches, which tasks it depends on) and, on a `point`, a fact without
@@ -51,7 +87,17 @@ pub enum SpecEventsCmd {
     /// point at an item by its event number or by the code the page shows,
     /// like `MSTD-RULE-NNNN`. A `remove` by the code takes out the whole
     /// item, every version of it; by the number, only that version, and the
-    /// version it replaced comes back. With the `lesson` type it writes one lesson to
+    /// version it replaced comes back, except on a `task`, where any version
+    /// takes out the whole task. A new agreed item written here comes
+    /// in three parts: a short `title` (up to 70 characters), the user's part
+    /// in `text`, which says why by the effect the user sees and carries no
+    /// backtick, file path or item code, and the agent's part in `agent`, in
+    /// markdown, with files, lines, commands and what to test. A `request` or
+    /// `note` needs the title and the text, a `criterion` only the title. The
+    /// title and the user's part go through the writing check that ends a
+    /// response, and the refusal lists every defect at once. A new version of
+    /// an item written before this form, or a write by the program itself,
+    /// is not held to it. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"environment_trap","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A
@@ -167,6 +213,20 @@ mod tests {
         cmd: SpecEventsCmd,
     }
 
+    /// A ajuda do comando de ler diz que a mensagem do usuário sai com o
+    /// texto inteiro e que a leitura de dentro da cópia de um pedido aberto
+    /// fica registrada; a frase antiga, que escondia o texto, não volta.
+    #[test]
+    fn the_read_help_says_a_message_shows_its_text_and_the_reading_is_recorded() {
+        let mut tree = Harness::command();
+        let read = tree.find_subcommand_mut("read").expect("the read command is registered");
+        let help = read.render_long_help().to_string();
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("a user message shows its whole text like any other item"), "{help}");
+        assert!(flat.contains("is recorded as read"), "{help}");
+        assert!(!flat.contains("shows only its number and type"), "{help}");
+    }
+
     /// A ajuda do comando de gravar lista os campos de cada tipo, um tipo por
     /// linha: os obrigatórios, com a origem nos tipos que o assistente grava,
     /// e os que podem faltar entre parênteses.
@@ -178,8 +238,8 @@ mod tests {
         for spec in TYPES {
             assert!(help.contains(&format!("\n  {}: ", spec.name)), "the help has no line for {}:\n{help}", spec.name);
         }
-        assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, no_code)"), "{help}");
-        assert!(help.contains("\n  message: text (witness)"), "{help}");
+        assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, every_wave, no_code, title, agent)"), "{help}");
+        assert!(help.contains("\n  message: text (witness, during)"), "{help}");
         assert!(
             help.contains("a `task` missing one of its three mandatory declarations"),
             "the help does not name the task-declaration refusal:\n{help}"

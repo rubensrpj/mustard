@@ -1,7 +1,7 @@
 //! O pedido de cada onda, montado do disco: o arquivo de eventos da spec, o
 //! banco de lições, os arquivos das skills que as tarefas nomeiam, os
-//! comandos de compilar e testar que o projeto declara e o mapa do projeto,
-//! que diz se ele tem uma parte Rust.
+//! comandos de compilar, testar e preparar a cópia que o projeto declara e os
+//! arquivos locais dele.
 //!
 //! A regra de escrever o pedido mora em `domain::wave_prompt`, sem disco;
 //! aqui ficam só as leituras. Os dois leitores do pedido — o passo do plano,
@@ -13,41 +13,92 @@
 //! agente da onda lê no disco. O texto ainda é lido aqui porque é nele que a
 //! conferência acontece — a skill que cita um caminho que não existe ou passa
 //! do tamanho máximo é recusada — e porque o "quando usar" da linha sai da
-//! descrição do frontmatter. A skill cujo exemplo mudou no git depois dela
-//! sai marcada como a revisar.
+//! descrição do frontmatter. O caminho recomendado é o absoluto, no projeto
+//! principal: a pasta das skills fica fora do git e não chega à cópia da
+//! onda. A skill cujo arquivo citado mudou no git depois do arquivo dela sai
+//! marcada como a revisar.
 
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::domain::config::Setting;
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
-use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
+use crate::domain::pattern::Pattern;
+use crate::domain::normalize::Languages;
+use crate::domain::project_map::{
+    check_skill, cited_paths, examples_following, file_history, lineage_fresh_in, recipe_for_existing, recipe_for_new,
+    recipe_from_lineage, tests_for, FileLineage, History, MapModule, MapRefusal, ProjectMap, QualityCuts, Recipe,
+    MAX_COMMITS, MOVES_FOLLOWED,
+};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
-use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
+use crate::domain::wave_prompt::{
+    self, tasks_text, wave_files, Choice, Execution, Material, PatternExample, Skill, TaskPattern, WaveCopy,
+};
+use crate::io::project_map::{MapReader, Need};
+use crate::io::wave_size;
 use crate::platform::i18n::Locale;
+
+mod changed;
+mod rules;
+
+pub use rules::{project_rules, touched_files};
+
+/// O pedido do revisor final, como o disco o entrega.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalReview {
+    /// O texto do pedido.
+    pub text: String,
+    /// O que o pedido lista, para o veredito conferir a leitura: o código de
+    /// cada item, uma vez só. É a lista que imprimiu as linhas do texto
+    /// ([`wave_prompt::listed_final_review`]), não um segundo cálculo.
+    pub listed: Vec<String>,
+}
 
 /// O pedido de uma onda, como o disco o entrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WavePrompt {
     /// O número da onda.
     pub wave: u64,
-    /// O nome do agente escolhido para este lote, pelo número de tarefas
-    /// ([`wave_prompt::agent_role`]): `"wave-solo"` numa tarefa só, `"wave"`
-    /// em várias — o molde que o projeto instalou com esse nome.
+    /// O nome do agente que recebe a onda: sempre `"wave"`, numa tarefa só
+    /// ou em várias — o molde que o projeto instalou com esse nome.
     pub agent: String,
-    /// O modelo pedido para a onda: fixo, pelo papel `wave`
-    /// ([`wave_prompt::requested_model`]).
+    /// O modelo pedido para a onda: o que o `mustard.json` declara para os
+    /// agentes ([`Execution::requested_model`]).
     pub model: String,
+    /// O esforço pedido para a onda: o que o `mustard.json` declara para os
+    /// agentes ([`Execution::requested_effort`]).
+    pub effort: String,
     /// O texto do pedido, sempre: a página mostra mesmo o pedido recusado,
     /// que é justamente o que precisa ser visto antes da aprovação.
     pub text: String,
     /// Quantas linhas ele tem.
     pub lines: usize,
+    /// O que o pedido lista, para a entrega conferir a leitura: o código de
+    /// cada item e `lesson-<número>` de cada lição. É a lista que imprimiu as
+    /// linhas do texto ([`wave_prompt::listed`]), não um segundo cálculo.
+    pub listed: Vec<String>,
     /// As skills que a conferência recusou, pelo nome.
     pub bad_skills: Vec<(String, MapRefusal)>,
     /// As skills que a onda usa e que precisam de revisão, pelo nome.
     pub stale_skills: Vec<String>,
+    /// Os números do `mustard.json` que a montagem leu, não valiam e caíram
+    /// no padrão. A montagem não tem sessão: quem despacha o pedido decide
+    /// onde o aviso sai e quantas vezes.
+    pub bad_settings: Vec<BadSetting>,
+}
+
+/// Um número do `mustard.json` que o pedido leu e que não vale — zero,
+/// negativo ou texto —, com o aviso pronto. Vale o padrão, e o aviso diz a
+/// chave e o padrão que valeu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadSetting {
+    /// A chave da seção `map`, como o arquivo a escreve (`historyMoves`).
+    pub key: &'static str,
+    /// O aviso, no idioma do texto.
+    pub message: String,
 }
 
 /// As ondas que estão fora, como quem monta os pedidos as vê.
@@ -68,18 +119,200 @@ pub struct Flight {
 /// que estão fora em `flight`.
 #[must_use]
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
+    let trace = |file: &str, moves: usize| {
+        crate::Scan::locate().history(root, &crate::io::project_map::model_path(root), file, moves).is_ok()
+    };
+    prompts_reading(root, spec, log, lang, flight, &|need| crate::io::project_map::read_for(root, need), &trace)
+}
+
+/// Como a montagem lê do git, na hora, a história de um arquivo cujo último
+/// commit ficou fora da janela do mapa, seguindo a declaração até `moves`
+/// vezes para o arquivo de onde ela veio: pelo `scan history`, que a grava
+/// no mapa. `true` quando gravou.
+pub type Trace<'t> = dyn Fn(&str, usize) -> bool + 't;
+
+/// A história do arquivo `file` além da janela do mapa, quando o último
+/// commit dele ficou fora dela: a janela cheia, com a história da branch de
+/// partida, e nenhum commit do arquivo nela. Vale a guardada no mapa, pela
+/// mesma validade da pergunta da história de uma declaração; senão, `trace`
+/// a lê do git na hora, seguindo até `moves` mudanças de arquivo, e a grava
+/// no mapa, e a pergunta seguinte não relê o git. `None` quando a janela
+/// ainda guarda a história inteira, quando o arquivo tem commit nela ou
+/// quando a leitura falha.
+fn history_beyond_window(
+    read: &MapReader<'_>,
+    trace: &Trace<'_>,
+    history: &History,
+    file: &str,
+    moves: impl FnOnce() -> usize,
+) -> Option<FileLineage> {
+    if file_history(history, file).is_some() || history.commits.len() < MAX_COMMITS || history.missing.is_some() {
+        return None;
+    }
+    let stored = |part: ProjectMap| part.lineage.into_iter().find(|lineage| lineage.path == file);
+    let part = read(Need::Lineage(file)).ok()?;
+    let comments = part.pulls.comments.len();
+    let mark = part.census_mark.clone();
+    // O número só se lê aqui, quando a história além da janela vai mesmo ser
+    // comparada com a guardada ou lida do git.
+    let moves = moves();
+    if let Some(found) = stored(part).filter(|l| lineage_fresh_in(l, history, &mark, comments, moves)) {
+        return Some(found);
+    }
+    if !trace(file, moves) {
+        return None;
+    }
+    read(Need::Lineage(file)).ok().and_then(stored)
+}
+
+/// A receita do git do alvo `target` do projeto `root`, a mesma no pedido
+/// da onda e nos exemplos do mapa. Quem diz se o alvo existe é o disco, não
+/// o mapa, que pode estar atrás dele: o arquivo apagado que o mapa ainda
+/// lista vai ser criado de novo, e o criado depois da última passada do scan
+/// vai ser mudado.
+///
+/// - o caminho que termina em `/`, ou a pasta que existe: a receita de criar
+///   um arquivo qualquer nela;
+/// - o arquivo que não existe: a de criar um do tipo dele na pasta dele;
+/// - o arquivo que existe: a de mudá-lo, pelos commits da janela do mapa
+///   `map`; ou, quando o mapa o conhece e o último commit dele ficou fora
+///   da janela, pela história lida do git na hora
+///   ([`history_beyond_window`]), seguindo o número de mudanças de arquivo
+///   que `moves` dá, pedido só quando essa leitura acontece.
+///
+/// O arquivo que mudou junto e não existe mais sai dela ([`recipe_on_disk`]).
+pub fn recipe_for(
+    root: &Path,
+    read: &MapReader<'_>,
+    trace: &Trace<'_>,
+    map: &ProjectMap,
+    target: &str,
+    moves: impl FnOnce() -> usize,
+) -> Option<Recipe> {
+    let history = &map.history;
+    let on_disk = root.join(target);
+    let found = if target.ends_with('/') {
+        recipe_for_new(history, target)
+    } else if on_disk.is_dir() {
+        recipe_for_new(history, &format!("{target}/"))
+    } else if !on_disk.exists() {
+        recipe_for_new(history, target)
+    } else if file_history(history, target).is_some() {
+        recipe_for_existing(history, target)
+    } else if map.module(target).is_some() {
+        history_beyond_window(read, trace, history, target, moves).as_ref().and_then(recipe_from_lineage)
+    } else {
+        None
+    };
+    found.and_then(|recipe| recipe_on_disk(root, recipe))
+}
+
+/// A receita `recipe` do jeito que ela chega a quem a lê, no projeto `root`:
+/// o arquivo que mudou junto e não existe mais sai dela, e a receita que fica
+/// sem nada a dizer, sem arquivo junto e sem teste, não sai.
+fn recipe_on_disk(root: &Path, recipe: Recipe) -> Option<Recipe> {
+    recipe_keeping(recipe, |path| root.join(path).exists())
+}
+
+/// A receita `recipe` só com os arquivos que mudaram junto que `keep`
+/// guarda; nenhuma, quando ela fica sem arquivo junto e sem teste.
+fn recipe_keeping(mut recipe: Recipe, keep: impl Fn(&str) -> bool) -> Option<Recipe> {
+    recipe.together.retain(|(path, _)| keep(path));
+    (!recipe.together.is_empty() || recipe.tests.is_some()).then_some(recipe)
+}
+
+/// Os pedidos de [`prompts`], com o mapa do projeto lido por `read`, cada
+/// parte pela pergunta dela, e a história além da janela lida por `trace`.
+fn prompts_reading(
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    lang: Locale,
+    flight: &Flight,
+    read: &MapReader<'_>,
+    trace: &Trace<'_>,
+) -> Vec<WavePrompt> {
     let bank = lesson_bank(root);
-    let map = crate::io::project_map::read(root).ok();
-    let commands = crate::ProjectConfig::load(root).commands();
-    let base = Execution {
+    let base = project_execution(root);
+    let languages = Languages::of_project(root);
+    let map = MapParts::new(root, read, trace);
+    let context = Context {
+        root,
+        spec,
+        log,
+        bank: bank.as_ref(),
+        map: &map,
+        base: &base,
+        flight,
+        lang,
+        languages: &languages,
+    };
+    let mut built: Vec<WavePrompt> = log.planned_waves().into_iter().map(|n| one(&context, n)).collect();
+    // O aviso do número inválido vai em todo pedido da montagem, e não só no
+    // da onda cuja receita o leu primeiro: quem despacha pega os pedidos das
+    // ondas que saem agora, e a receita guardada serve às seguintes.
+    if map.moves_bad_read.get() {
+        let bad = BadSetting {
+            key: MOVES_KEY,
+            message: crate::platform::i18n::translate("map.history.bad_setting", lang)
+                .replace("{key}", MOVES_KEY)
+                .replace("{default}", &MOVES_FOLLOWED.to_string()),
+        };
+        for prompt in &mut built {
+            prompt.bad_settings.push(bad.clone());
+        }
+    }
+    built
+}
+
+/// A chave de `map.historyMoves` no `mustard.json`, como o aviso do valor
+/// inválido a diz.
+const MOVES_KEY: &str = "historyMoves";
+
+/// O que os dois pedidos leem do `mustard.json` do projeto `root`: os
+/// comandos de compilar e de testar, o de preparo, os arquivos locais e os
+/// idiomas, com o repositório principal.
+fn project_execution(root: &Path) -> Execution {
+    let config = crate::ProjectConfig::load(root);
+    let commands = config.commands();
+    Execution {
         build: commands.build,
         test: commands.test,
+        prepare: commands.prepare,
+        local_files: local_files(&config),
         root: shown(root),
-        rust: has_rust_part(map.as_ref()),
+        language: config.language(),
+        model: config.agent_model().to_string(),
+        effort: config.agent_effort().to_string(),
         ..Execution::default()
-    };
-    let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
-    log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
+    }
+}
+
+/// Os arquivos locais que o projeto declara (`localFiles`) e que uma cópia
+/// pode receber ([`local_file_inside`]), na ordem da lista, sem as entradas
+/// em branco. Vazia quando a lista falta ou está vazia.
+#[must_use]
+pub fn local_files(config: &crate::ProjectConfig) -> Vec<String> {
+    config
+        .local_files
+        .iter()
+        .flatten()
+        .map(|file| file.trim())
+        .filter(|file| local_file_inside(file))
+        .map(str::to_string)
+        .collect()
+}
+
+/// O item da lista de arquivos locais é um caminho relativo que fica dentro
+/// do projeto: nem absoluto, nem com `..`, nem vazio. Só esse chega a uma
+/// cópia; o outro escreveria fora dela, ou sobre o próprio arquivo do
+/// repositório principal.
+#[must_use]
+pub fn local_file_inside(item: &str) -> bool {
+    use std::path::Component;
+    let path = Path::new(item);
+    path.components().all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        && path.components().any(|part| matches!(part, Component::Normal(_)))
 }
 
 /// O banco de lições do projeto `root`; `None` quando ele não existe ou não
@@ -98,9 +331,11 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// que cita um arquivo vai só à onda que mexe nele, e a onda só de texto não
 /// recebe lição do projeto todo nem do subprojeto ([`serving_wave`]). São as
 /// que a rodada mostra ao orquestrador antes do envio, e as que o pedido
-/// leva, menos as que a escolha dele tirou.
+/// leva, menos as que a escolha dele tirou. A lição que diz os arquivos onde
+/// vale chega assim a toda onda que mexe neles, e por isso o levantamento
+/// não pergunta por ela ([`crate::domain::lessons::reaches_waves_by_files`]).
 #[must_use]
-pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
+pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);
     let skills = skills_named(log, wave);
     let mut found: Vec<&SpecEvent> = Vec::new();
@@ -112,26 +347,108 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a 
             }
         }
     }
-    serving_wave(related_to_tasks(found, &tasks_text(log, wave)), &files, &skills)
+    serving_wave(related_to_tasks(found, &tasks_text(log, wave), languages), &files, &skills)
 }
 
-/// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
-/// do checkout `root`: a do agente da onda, ou a do revisor dela
-/// (`review`). A rodada cria a primeira; o pedido da revisão manda criar a
-/// segunda.
+/// A pasta das cópias separadas do projeto do checkout principal `root`,
+/// fora da pasta dele: é o único lugar onde nascem a cópia de cada onda e a
+/// do revisor final. Dentro do projeto, as ferramentas dele — o lint do
+/// gancho de commit, o editor — enxergariam a cópia como parte do projeto.
+///
+/// A base é a pasta que `MUSTARD_COPIES_DIR` indicar, ou a pasta de cache do
+/// usuário, `.cache/mustard/copias` sob a pasta pessoal
+/// ([`crate::platform::harness::home_dir`]); sem nenhuma das duas, a pasta
+/// temporária do sistema. Dentro dela, uma
+/// pasta por projeto: o nome da pasta do checkout e um código curto do
+/// caminho dele, que separa dois projetos de mesmo nome e não muda de uma
+/// chamada para outra — o caminho é lido já resolvido, então o atalho e a
+/// barra invertida não mudam o código.
 #[must_use]
-pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
-    let name = if review { format!("mustard-{spec}-{wave}-review") } else { format!("mustard-{spec}-{wave}") };
-    crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(name)
+pub fn copies_dir(root: &Path) -> PathBuf {
+    project_folder(root, "MUSTARD_COPIES_DIR", "copias")
 }
 
-/// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
-/// cópias das ondas. Quem a cria, no commit de [`final_review_commit`], e a
-/// apaga no fim é o fechamento (`mustard-rt run close`), pela mesma porta das
-/// cópias de onda; o pedido do revisor só diz onde ela está.
+/// A pasta onde nasce o programa compilado da versão em construção do
+/// projeto do checkout principal `root`: o `mustard-rt`, o `scan` e o
+/// `mustard` ficam em `<pasta>/release/`.
+///
+/// Mora ao lado das cópias, com a mesma chave por projeto de [`copies_dir`], e
+/// fora da pasta de compilação que o fechamento apaga: o programa que a sessão
+/// roda tem de sobreviver ao fechamento da spec. A base é a pasta que
+/// `MUSTARD_BUILD_DIR` indicar, ou `.cache/mustard/build` sob a pasta pessoal;
+/// sem nenhuma das duas, a pasta temporária do sistema.
 #[must_use]
-pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
-    crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
+pub fn development_build_dir(root: &Path) -> PathBuf {
+    project_folder(root, "MUSTARD_BUILD_DIR", "build")
+}
+
+/// A pasta de `leaf` do projeto de `root`: a base que a variável `var`
+/// indicar, ou `.cache/mustard/<leaf>` sob a pasta pessoal, ou a pasta
+/// temporária, e dentro dela `<nome>-<código>`. A chave é uma só para toda
+/// pasta por projeto, para que duas delas nunca discordem sobre qual projeto
+/// é qual.
+fn project_folder(root: &Path, var: &str, leaf: &str) -> PathBuf {
+    let base = std::env::var_os(var)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::platform::harness::home_dir().map(|home| home.join(".cache").join("mustard").join(leaf)))
+        .unwrap_or_else(|| std::env::temp_dir().join("mustard").join(leaf));
+    let main = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let name = main.file_name().map_or_else(|| String::from("projeto"), |name| name.to_string_lossy().into_owned());
+    let code = crate::platform::page_templates::fingerprint(&shown(&main)) >> 32;
+    base.join(format!("{name}-{code:08x}"))
+}
+
+/// A pasta das cópias da spec `spec`, dentro da pasta das cópias do projeto
+/// ([`copies_dir`]): cada vaga da obra mora nela, e o fechamento e o
+/// descarte a apagam inteira.
+#[must_use]
+pub fn spec_copies_dir(root: &Path, spec: &str) -> PathBuf {
+    copies_dir(root).join(spec)
+}
+
+/// O nome da vaga de número `slot`, contado do zero: `a` a `z` e, daí em
+/// diante, o número dela contado do um (`27`, `28`…).
+#[must_use]
+pub fn slot_name(slot: usize) -> String {
+    match u8::try_from(slot).ok().filter(|n| *n < 26) {
+        Some(n) => char::from(b'a' + n).to_string(),
+        None => (slot + 1).to_string(),
+    }
+}
+
+/// A pasta da vaga de número `slot` da spec `spec`: a cópia fixa que passa de
+/// uma onda para a seguinte, com a compilação dentro dela. Quem a cria e a
+/// zera é a rodada.
+#[must_use]
+pub fn slot_path(root: &Path, spec: &str, slot: usize) -> PathBuf {
+    spec_copies_dir(root, spec).join(slot_name(slot))
+}
+
+/// A cópia `copy`, como o envio a grava, é uma vaga da spec `spec`: mora
+/// direto na pasta das cópias dela. O endereço antigo, `<spec>-<onda>` ao
+/// lado das outras specs, não é vaga.
+#[must_use]
+pub fn is_slot_of(root: &Path, spec: &str, copy: &str) -> bool {
+    let parent = Path::new(copy).parent().map(shown);
+    parent.as_deref() == Some(shown(&spec_copies_dir(root, spec)).as_str())
+}
+
+/// A pasta da cópia do revisor final da spec `spec`: a vaga do último envio
+/// de onda que gravou uma vaga desta spec, que já tem a compilação da obra.
+/// Sem envio assim — a spec sem nenhum envio de onda, ou só com envios de
+/// endereço antigo —, a vaga `a`. Quem a prepara, no commit de [`final_review_commit`], é o
+/// fechamento (`mustard-rt run close`); o pedido do revisor só diz onde ela
+/// está.
+#[must_use]
+pub fn final_copy_path(root: &Path, spec: &str, log: &SpecLog) -> PathBuf {
+    log.visible()
+        .into_iter()
+        .rev()
+        .filter(|e| e.event_type == "send" && e.str_field("role") != Some("review"))
+        .filter_map(|e| e.str_field("copy"))
+        .find(|copy| is_slot_of(root, spec, copy))
+        .map_or_else(|| slot_path(root, spec, 0), PathBuf::from)
 }
 
 /// O commit em que o revisor final confere a obra: o mais novo que a spec
@@ -156,17 +473,36 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// ondas do plano com as tarefas, as emendas gravadas para elas, a entrega
 /// mais nova de cada onda, os critérios, os commits que já entraram na branch
 /// e a cópia do revisor, no commit mais novo da spec e na pasta de compilação
-/// que a última onda enviada usou.
+/// que a última onda enviada usou. No fim vêm as regras do projeto: os
+/// arquivos de regras da raiz e das pastas dos arquivos que a obra mexe
+/// ([`project_rules`], [`touched_files`]), quando algum existe com texto.
 ///
-/// Uma onda cuja última revisão reprovou e que já entregou o conserto (o
-/// fechamento só chega aqui depois disso: veja
-/// [`crate::domain::spec_events::SpecLog::last_rejected`]) restringe as
-/// ondas, as emendas e as entregas a ela: o agente confere só o conserto, sem
-/// reabrir a obra inteira.
+/// Depois de um veredito final que reprovou, o pedido é o da revisão de
+/// volta: ele lista o que mudou desde esse veredito
+/// ([`wave_prompt::since_last_verdict`]), e o revisor confere isso e o
+/// encaixe no resto, sem repetir o que o veredito já concluiu. É o mesmo
+/// pedido quando o veredito aponta uma onda: ele aparece uma vez só, na parte
+/// do que mudou, sem parte de conserto à parte. Nesse caso, as ondas e as
+/// entregas do pedido ficam restritas à onda reprovada, que já entregou o
+/// conserto (o fechamento só chega aqui depois disso: veja
+/// [`crate::domain::spec_events::SpecLog::last_rejected`]), e o parágrafo do
+/// que olhar da revisão de volta diz esse recorte. O recorte sai do mesmo
+/// veredito que abre a revisão de volta ([`wave_prompt::last_final_rejection`]):
+/// ele nunca acontece sem ela. Uma onda reprovada antes de um veredito final
+/// mais novo não recorta o pedido. Os requisitos acordados continuam todos no
+/// pedido, porque o veredito responde por cada um.
+///
+/// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
+/// para o fechamento gravá-la no envio e o veredito conferir a leitura.
+///
+/// Só lê o disco, nunca grava: o fechamento grava o envio com o que ela
+/// devolve, e a leitura `request-review-preview` imprime o mesmo texto sem
+/// gravar nada, para o usuário ver o pedido real antes de ele valer.
 #[must_use]
-pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
+pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
     let planned = log.planned_waves();
-    let fixing: BTreeSet<u64> = log.last_rejected().into_keys().filter(|n| planned.contains(n)).collect();
+    let fixing: BTreeSet<u64> =
+        wave_prompt::last_final_rejection(log).and_then(SpecEvent::wave).filter(|n| planned.contains(n)).into_iter().collect();
     let scope: &BTreeSet<u64> = if fixing.is_empty() { &planned } else { &fixing };
     let visible = log.block(BlockQuery::Block(Block::Waves));
     let block: Vec<&SpecEvent> = visible
@@ -189,61 +525,245 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
     agreed.sort_by_key(|e| e.id);
     let changes: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
-    let fix: Vec<&SpecEvent> = if fixing.is_empty() {
-        Vec::new()
-    } else {
-        let verdicts = log.verdicts_by_wave();
-        fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
-    };
     let commit = final_review_commit(root, log);
-    let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
-    let commands = crate::ProjectConfig::load(root).commands();
     let execution = Execution {
-        build: commands.build,
-        test: commands.test,
         commit,
-        root: shown(root),
-        review: WaveCopy {
-            path: shown(&final_copy_path(root, spec)),
-            build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
-        },
-        rust: has_rust_part(crate::io::project_map::read(root).ok().as_ref()),
-        ..Execution::default()
+        copy: Some(WaveCopy { path: shown(&final_copy_path(root, spec, log)), reused: None }),
+        ..project_execution(root)
     };
     let material = Material {
         spec: spec.to_string(),
         block,
         criteria,
         agreed,
-        fix,
         own_delivered,
         changes,
+        since_verdict: wave_prompt::since_last_verdict(log),
         execution,
         codes: log.codes(),
+        project_rules: project_rules(root, &touched_files(root, Some(log))),
         ..Material::default()
     };
-    wave_prompt::write_final_review(&material, lang)
+    FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
 }
 
-/// A cópia gravada no envio mais novo da onda `wave`, com a pasta de
-/// compilação dele. `None` quando esse envio não criou cópia.
+/// A cópia gravada no envio mais novo da onda `wave`. `None` quando esse
+/// envio não criou cópia. O envio antigo que gravou também uma pasta de
+/// compilação à parte é lido do mesmo jeito: só a cópia conta.
 #[must_use]
 pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
     let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
     let path = sent.str_field("copy")?.to_string();
-    Some(WaveCopy { path, build_dir: sent.str_field("build_dir").map(str::to_string) })
+    Some(WaveCopy { path, reused: None })
 }
 
-/// O mapa do projeto marca alguma parte dele como `cargo`? Só então os
-/// pedidos mandam compilar na pasta de compilação da cópia, com o nome do
-/// Cargo. Sem mapa, o Mustard não sabe que o projeto é Rust, e a frase fica
-/// fora; a pasta continua escolhida, porque é ela a vaga das ondas que rodam
-/// juntas.
 /// Um caminho como o pedido e o envio gravado o mostram: sempre com barras
 /// normais, que o terminal e o controle de versão aceitam nos três sistemas.
 #[must_use]
 pub fn shown(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// O que o pedido de uma onda lista: os itens da spec e as lições do banco.
+#[derive(Debug, Default)]
+pub struct RequestItems<'a> {
+    /// Os itens da spec, em ordem de número.
+    pub items: Vec<&'a SpecEvent>,
+    /// As lições do banco, em ordem de número.
+    pub lessons: Vec<&'a SpecEvent>,
+    /// O que as tarefas da onda atendem, pelo número com que a tarefa o cita
+    /// ([`wave_prompt::attended`]). Também está em `items`.
+    pub attended: BTreeMap<u64, &'a SpecEvent>,
+}
+
+/// O que o pedido da onda `wave` lista, pela mesma conta que o monta: os
+/// itens que a montagem escolhe ([`wave_prompt::dispatch_items`]), o que as
+/// tarefas da onda atendem — o critério, o combinado e a mensagem que elas
+/// citam — e as lições que casam com a onda ([`wave_lessons`]), menos as que
+/// a escolha tirou. A escolha é a dada (`fresh`) ou, sem ela, a gravada no
+/// envio da onda — a mesma do pedido que a rodada mandou.
+///
+/// O envio, a entrega e os passos da própria onda ficam de fora: são o
+/// registro de um pedido, não parte dele. A entrega que a reprovação julgou
+/// fica, porque o conserto a cita ([`wave_prompt::fix_lines`]); a entrega das
+/// ondas de que esta depende também, e o resumo que a onda continua
+/// ([`wave_prompt::summary_of`]). O item combinado que uma versão nova
+/// substituiu não entra, mesmo que a escolha o tenha posto: a escolha só vale
+/// dentro dos candidatos de agora ([`wave_prompt::Choice::within`]), e a versão
+/// antiga já não é candidata.
+#[must_use]
+pub fn request_items<'a>(
+    log: &'a SpecLog,
+    bank: Option<&'a SpecLog>,
+    wave: u64,
+    fresh: Option<&Choice>,
+    languages: &Languages,
+) -> RequestItems<'a> {
+    let choice = wave_prompt::choice_for(log, wave, fresh);
+    let fix: BTreeSet<u64> = wave_prompt::fix_lines(log, wave).iter().map(|e| e.id).collect();
+    let attended = wave_prompt::attended(log, wave);
+    let mut items: Vec<&SpecEvent> = wave_prompt::dispatch_items(log, wave, choice.as_ref())
+        .into_iter()
+        .filter(|e| match e.event_type.as_str() {
+            "send" | "step" => false,
+            "delivered" => e.wave() != Some(wave) || fix.contains(&e.id),
+            _ => true,
+        })
+        .collect();
+    // O resumo que a onda continua é o primeiro item que o pedido manda ler.
+    for item in attended.values().copied().chain(wave_prompt::summary_of(log, wave)) {
+        if !items.iter().any(|had| had.id == item.id) {
+            items.push(item);
+        }
+    }
+    items.sort_by_key(|e| e.id);
+    let lessons = bank
+        .map(|bank| wave_lessons(bank, log, wave, languages))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
+        .collect();
+    RequestItems { items, lessons, attended }
+}
+
+/// O mapa do projeto como o pedido o lê: cada parte pela pergunta dela, sem
+/// o mapa inteiro. Os caminhos e a história se leem uma vez só por montagem;
+/// as declarações e os testes, a cada arquivo que pede. Um mapa que falta ou
+/// não se entende responde nada, como se não houvesse mapa.
+struct MapParts<'a> {
+    root: &'a Path,
+    /// Quantas vezes a história de uma declaração segue para o arquivo de
+    /// onde ela veio (`map.historyMoves`), como o `mustard.json` a escreve.
+    /// Lida só por [`Self::moves`].
+    moves: Setting,
+    /// Se a montagem pediu o número e ele estava inválido: o pedido leva o
+    /// aviso ([`BadSetting`]) só quando o padrão valeu de fato.
+    moves_bad_read: Cell<bool>,
+    trace: &'a Trace<'a>,
+    /// A receita do git de cada arquivo de tarefa, pelo caminho, calculada
+    /// uma vez só por montagem.
+    recipes: RefCell<BTreeMap<String, Option<Recipe>>>,
+    read: &'a MapReader<'a>,
+    paths: OnceCell<Option<ProjectMap>>,
+    summary: OnceCell<Option<ProjectMap>>,
+    pattern: OnceCell<Option<ProjectMap>>,
+    learned: OnceCell<Option<Pattern>>,
+    /// Os exemplos de cada arquivo de tarefa, pelo caminho, e o exemplo de
+    /// cada arquivo escolhido: o mesmo arquivo volta em várias ondas, e se
+    /// calcula uma vez só por montagem.
+    picks: RefCell<BTreeMap<String, Vec<String>>>,
+    examples: RefCell<BTreeMap<String, Option<PatternExample>>>,
+}
+
+impl<'a> MapParts<'a> {
+    /// O mapa do projeto `root` lido por `read`, sem nada lido ainda, com a
+    /// história além da janela lida por `trace`. É o mesmo para o pedido da
+    /// onda e para a medida do padrão, que precisam ler as mesmas partes do
+    /// mesmo jeito.
+    fn new(root: &'a Path, read: &'a MapReader<'a>, trace: &'a Trace<'a>) -> Self {
+        Self {
+            root,
+            moves: crate::ProjectConfig::load(root).history_moves(),
+            moves_bad_read: Cell::new(false),
+            trace,
+            recipes: RefCell::default(),
+            read,
+            paths: OnceCell::new(),
+            summary: OnceCell::new(),
+            pattern: OnceCell::new(),
+            learned: OnceCell::new(),
+            picks: RefCell::default(),
+            examples: RefCell::default(),
+        }
+    }
+}
+
+impl MapParts<'_> {
+    /// Quantas vezes a história segue para o arquivo de origem: o número do
+    /// `mustard.json` ou, sem ele ou inválido, o padrão. O inválido deixa
+    /// marcado que o padrão valeu no lugar dele.
+    fn moves(&self) -> usize {
+        if self.moves == Setting::Invalid {
+            self.moves_bad_read.set(true);
+        }
+        self.moves.or(MOVES_FOLLOWED)
+    }
+
+    /// O caminho de cada arquivo do mapa, na ordem dele.
+    fn paths(&self) -> Option<&ProjectMap> {
+        self.paths.get_or_init(|| (self.read)(Need::Paths).ok()).as_ref()
+    }
+
+    /// A história do git que o mapa guarda.
+    fn history(&self) -> Option<&History> {
+        self.summary.get_or_init(|| (self.read)(Need::Summary).ok()).as_ref().map(|map| &map.history)
+    }
+
+    /// As declarações chamadas `name` no arquivo `file`, com ele.
+    fn declarations(&self, file: &str, name: &str) -> Option<ProjectMap> {
+        (self.read)(Need::Declarations { file: Some(file), name }).ok()
+    }
+
+    /// O arquivo `file` com os testes que o cobrem.
+    fn tests(&self, file: &str) -> Option<ProjectMap> {
+        (self.read)(Need::Tests(file)).ok()
+    }
+
+    /// O que o padrão do projeto e os exemplos leem: cada arquivo com as
+    /// importações, o tamanho, a classe, os testes e os nomes que declara, a
+    /// história e os subprojetos. Lido uma vez só por montagem.
+    fn pattern(&self) -> Option<&ProjectMap> {
+        self.pattern
+            .get_or_init(|| {
+                let mut map = (self.read)(Need::Examples { words: true }).ok()?;
+                let summary = self.summary.get_or_init(|| (self.read)(Need::Summary).ok()).as_ref();
+                map.projects = summary.map(|s| s.projects.clone()).unwrap_or_default();
+                Some(map)
+            })
+            .as_ref()
+    }
+
+    /// O exemplo do padrão no arquivo `path` ([`pattern_example`]),
+    /// calculado uma vez só por montagem.
+    fn example(&self, read: &ProjectMap, path: &str) -> Option<PatternExample> {
+        let known = self.examples.borrow().get(path).cloned();
+        known.unwrap_or_else(|| {
+            let found = pattern_example(self, read, path);
+            self.examples.borrow_mut().insert(path.to_string(), found.clone());
+            found
+        })
+    }
+
+    /// A receita do git do arquivo `file` de uma tarefa, pela mesma escolha
+    /// dos exemplos do mapa ([`recipe_for`]). Calculada uma vez só por
+    /// montagem.
+    fn recipe(&self, read: &ProjectMap, file: &str) -> Option<Recipe> {
+        if let Some(known) = self.recipes.borrow().get(file) {
+            return known.clone();
+        }
+        let found = recipe_for(self.root, self.read, self.trace, read, file, || self.moves());
+        self.recipes.borrow_mut().insert(file.to_string(), found.clone());
+        found
+    }
+
+    /// O padrão do projeto aprendido de [`Self::pattern`], com os arquivos
+    /// `new_files` que o mapa ainda não tem: o papel de um arquivo que uma
+    /// tarefa cria sai do nome dele, como o de um que já existe. Aprendido
+    /// uma vez só por montagem.
+    fn learned(&self, new_files: impl FnOnce() -> Vec<String>) -> Option<&Pattern> {
+        self.learned
+            .get_or_init(|| {
+                let read = self.pattern()?;
+                let mut with_new = read.clone();
+                for path in new_files() {
+                    if with_new.module(&path).is_none() {
+                        with_new.modules.push(MapModule { path, ..MapModule::default() });
+                    }
+                }
+                Some(crate::domain::pattern::learn(&with_new))
+            })
+            .as_ref()
+    }
 }
 
 /// O que é igual para o pedido de todas as ondas de uma montagem.
@@ -252,72 +772,48 @@ struct Context<'a> {
     spec: &'a str,
     log: &'a SpecLog,
     bank: Option<&'a SpecLog>,
-    map: Option<&'a ProjectMap>,
+    map: &'a MapParts<'a>,
     /// Os comandos do projeto.
     base: &'a Execution,
     flight: &'a Flight,
     lang: Locale,
+    /// As línguas em que as palavras das buscas são cortadas.
+    languages: &'a Languages,
 }
 
 fn one(context: &Context, wave: u64) -> WavePrompt {
-    let Context { root, spec, log, bank, map, lang, .. } = *context;
+    let Context { root, spec, log, bank, map, lang, languages, .. } = *context;
     // O que a montagem escolhe, com a escolha do orquestrador antes do envio:
     // a que a rodada traz agora ou a gravada no envio da onda.
     let fresh = context.flight.choices.get(&wave);
-    let read = wave_prompt::dispatch_items(log, wave, fresh);
+    // Os itens e as lições saem da mesma conta que a leitura do pedido usa,
+    // e por isso as duas nunca discordam.
+    let RequestItems { items: read, lessons, attended } = request_items(log, bank, wave, fresh, languages);
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
+    // A onda e as tarefas dela, de onde saem a frase que abre o pedido, a
+    // ordem de execução e um passo por tarefa; o resto do que ela cita
+    // entra pelo que as tarefas atendem.
     let block: Vec<&SpecEvent> = read
         .iter()
         .copied()
-        // O envio e o entregou são o REGISTRO de um pedido, não parte dele:
-        // repeti-los dentro do pedido novo seria contar a mesma coisa duas
-        // vezes. O entregou das ondas de que esta depende entra à parte.
-        .filter(|e| e.block() == Some(Block::Waves) && !matches!(e.event_type.as_str(), "send" | "delivered"))
-        .collect();
-    let delivered: Vec<&SpecEvent> = read
-        .iter()
-        .copied()
-        .filter(|e| e.event_type == "delivered" && e.wave() != Some(wave))
-        .collect();
-    // O revisor confere o que a onda entregou depois da última revisão dela:
-    // no conserto, as entregas do conserto, mesmo as que vieram pela linha de
-    // outra onda.
-    let judged = log.verdicts_by_wave().get(&wave).and_then(|v| v.last()).map_or(0, |v| v.id);
-    let own_delivered: Vec<&SpecEvent> = read
-        .iter()
-        .copied()
-        .filter(|e| e.event_type == "delivered" && e.wave() == Some(wave) && e.id > judged)
+        .filter(|e| e.block() == Some(Block::Waves) && matches!(e.event_type.as_str(), "wave" | "task"))
         .collect();
     let agreed: Vec<&SpecEvent> = read
         .iter()
         .copied()
         .filter(|e| e.block() == Some(Block::Agreed))
         .collect();
-    let specification: Vec<&SpecEvent> = read
-        .iter()
-        .copied()
-        .filter(|e| e.block() == Some(Block::Specification))
-        .collect();
 
     let files = wave_files(log, wave);
-    let choice = wave_prompt::choice_for(log, wave, fresh);
-    // As skills que as tarefas nomeiam de saída e as que a escolha antes do
-    // envio confirmou, juntas, sem repetir.
+    // As skills que as tarefas nomeiam.
     let mut named = skills_named(log, wave);
-    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).flat_map(|t| t.skills.iter()) {
-        if !named.contains(chosen) {
-            named.push(chosen.clone());
-        }
-    }
     named.sort();
-    // Os arquivos de leitura de cada tarefa: os que ela já declara em
-    // `must_read` — obrigatórios, sem passar pela escolha do orquestrador,
-    // como os itens que a onda já faz — e os que a escolha antes do envio
-    // confirmou. Um caminho que não existe no projeto (a parte antes do `#`,
-    // quando ele aponta uma função) fica de fora; a tarefa sem nenhum arquivo
-    // não entra.
+    // Os arquivos de leitura de cada tarefa: os que ela declara em
+    // `must_read`. Um caminho que não existe no projeto (a parte antes do
+    // `#`, quando ele aponta uma função) fica de fora; a tarefa sem nenhum
+    // arquivo não entra.
     let codes = log.codes();
     let mut task_reads: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     for task in of_type("task") {
@@ -329,11 +825,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             .unwrap_or_default()
             .iter()
             .filter_map(Value::as_str)
-            .filter(|file| cited_exists(root, file));
+            .filter(|file| cited_exists(root, map, file));
         task_reads.entry(task.id).or_default().extend(must_read.map(str::to_string));
-    }
-    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).filter(|t| !t.files.is_empty()) {
-        task_reads.entry(chosen.task).or_default().extend(chosen.files.iter().cloned());
     }
     let task_reads: Vec<(String, Vec<String>)> = task_reads
         .into_iter()
@@ -351,67 +844,75 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // arquivo que o mapa não conhece, ou sem teste externo conhecido, fica
     // de fora — a linha continua como hoje, sem inventar nada.
     let file_tests = task_file_tests(map, &of_type("task"));
-    // As lições que casam com a onda, menos as que a escolha do orquestrador
-    // tirou. O pedido da revisão leva as mesmas.
-    let lessons: Vec<&SpecEvent> = bank
-        .map(|bank| wave_lessons(bank, log, wave))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
-        .collect();
+    let task_patterns = task_patterns(map, log, &of_type("task"), &codes, lang);
+    // O aviso de arquivo mudado depois do texto sai só na onda que está fora
+    // ou sai agora: as outras montagens do pedido não leem o git por tarefa.
+    let task_changes = if context.flight.running.contains(&wave) {
+        changed::since_text(root, log, &of_type("task"), &codes)
+    } else {
+        BTreeMap::new()
+    };
 
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
     let mut stale_skills = Vec::new();
     for name in &named {
-        let Some((text, path)) = read_skill(root, &files, name) else {
+        let Some((text, file)) = read_skill(root, &files, name) else {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
             continue;
         };
-        if let Err(refusal) = check_skill(&text, |cited| cited_exists(root, cited)) {
+        if let Err(refusal) = check_skill(&text, |cited| cited_exists(root, map, cited)) {
             bad_skills.push((name.clone(), refusal));
             continue;
         }
-        let stale = examples_changed_after(log, map, name);
+        let stale = cited_changed_after(map, &text, &file);
         if stale {
             stale_skills.push(name.clone());
         }
-        skills.push(Skill { name: name.clone(), when: when_to_use(&text), path, stale });
+        skills.push(Skill { name: name.clone(), when: when_to_use(&text), path: shown(&file), stale });
     }
 
     let material = Material {
         spec: spec.to_string(),
         wave,
         block,
-        criteria: of_type("criterion"),
-        specification,
+        criteria: Vec::new(),
         agreed,
-        delivered,
+        attended,
         // A linha do conserto que a análise tirou do pedido sai também daqui.
         fix: wave_prompt::fix_lines(log, wave).into_iter().filter(|line| read.iter().any(|e| e.id == line.id)).collect(),
-        own_delivered,
+        summary: wave_prompt::summary_of(log, wave),
+        // O que a própria onda entregou é o que o revisor confere, e o
+        // pedido da onda não o lista.
+        own_delivered: Vec::new(),
         execution: execution(context, wave),
         lessons,
         skills,
         task_reads,
         file_tests,
         changes: Vec::new(),
+        since_verdict: Vec::new(),
         codes,
+        task_patterns,
+        task_changes,
+        // As regras do projeto vão só ao revisor: o agente da onda recebe o
+        // arquivo dele e este pedido.
+        project_rules: Vec::new(),
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
-    // O nome do agente, pelo número de tarefas do lote: o molde com esse
-    // nome mora no projeto, e o envio grava só o nome.
-    let agent = wave_prompt::agent_role(of_type("task").len()).to_string();
-    let model = wave_prompt::requested_model(&agent).to_string();
-    WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills }
+    // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
+    // molde com esse nome mora no projeto, e o envio grava só o nome.
+    let agent = "wave".to_string();
+    let model = context.base.requested_model().to_string();
+    let effort = context.base.requested_effort().to_string();
+    let listed = wave_prompt::listed(&material);
+    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new() }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
-/// ondas em andamento com os arquivos delas, a cópia da onda — a que sai agora
-/// ou a gravada no envio da que está em andamento — e a cópia do revisor, no
-/// commit mais novo que leva a onda e na pasta de compilação que a cópia da
-/// onda usou.
+/// ondas em andamento com os arquivos delas e a cópia da onda — a que sai
+/// agora ou a gravada no envio da que está em andamento.
 fn execution(context: &Context, wave: u64) -> Execution {
     let (log, flight) = (context.log, context.flight);
     let running = flight
@@ -420,22 +921,14 @@ fn execution(context: &Context, wave: u64) -> Execution {
         .filter(|n| **n != wave)
         .map(|n| (*n, wave_files(log, *n)))
         .collect();
-    let commit = log
-        .block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .rev()
-        .filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave))
-        .find_map(|e| e.str_field("sha").map(str::to_string));
-    let recorded = recorded_copy(log, wave);
     let copy = match flight.copies.get(&wave) {
         Some(copy) => Some(copy.clone()),
-        None => recorded.clone().filter(|_| flight.running.contains(&wave)),
+        None => recorded_copy(log, wave).filter(|_| flight.running.contains(&wave)),
     };
-    let review = WaveCopy {
-        path: shown(&copy_path(context.root, context.spec, wave, true)),
-        build_dir: recorded.and_then(|copy| copy.build_dir),
-    };
-    Execution { running, commit, copy, review, ..context.base.clone() }
+    // A linha do tamanho é da onda que está fora ou que sai agora, e só ela
+    // lê o git.
+    let wave_median = flight.running.contains(&wave).then(|| wave_size::median_added(context.root, context.lang)).flatten();
+    Execution { running, copy, wave_median, ..context.base.clone() }
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -456,9 +949,11 @@ fn skill_file(name: &str) -> String {
 
 /// O arquivo de uma skill, procurado nas pastas dos arquivos da onda e, por
 /// último, na raiz do projeto: a skill mora no subprojeto em que a tarefa
-/// mexe. Devolve o texto, que a conferência lê, e o caminho do arquivo a
-/// partir da raiz do projeto, que é o que o pedido recomenda.
-fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, String)> {
+/// mexe. Devolve o texto, que a conferência lê, e o caminho absoluto do
+/// arquivo no projeto principal, que é o que o pedido recomenda: a pasta das
+/// skills fica fora do git, então a cópia da onda não a tem, e o agente só a
+/// abre de primeira pelo projeto principal.
+fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, PathBuf)> {
     let mut folders: Vec<PathBuf> = Vec::new();
     for file in files {
         let mut folder = root.join(file);
@@ -474,17 +969,11 @@ fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, Stri
     for folder in folders {
         let path = folder.join(".claude").join("skills").join(name).join("SKILL.md");
         if let Ok(text) = std::fs::read_to_string(&path) {
-            return Some((text, from_root(root, &path)));
+            let absolute = std::path::absolute(&path).unwrap_or(path);
+            return Some((text, absolute));
         }
     }
     None
-}
-
-/// Um caminho a partir da raiz do projeto, sempre com barras normais: o
-/// pedido é lido por gente e por agente, e a barra invertida do Windows não
-/// serve para nenhum dos dois.
-fn from_root(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 /// Quando usar a skill, tirado da descrição do frontmatter dela e reduzido a
@@ -501,13 +990,12 @@ fn when_to_use(text: &str) -> String {
 /// existe? A conferência olha só a parte antes do `#`: a leitura obrigatória
 /// aceita `caminho#função`, e a função não é um arquivo. Pode citar só o fim
 /// do caminho, então a busca é pelo que o projeto tem.
-fn cited_exists(root: &Path, cited: &str) -> bool {
+fn cited_exists(root: &Path, map: &MapParts<'_>, cited: &str) -> bool {
     let cited = cited.split('#').next().unwrap_or(cited);
     if root.join(cited).exists() {
         return true;
     }
-    crate::io::project_map::read(root)
-        .is_ok_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
+    map.paths().is_some_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
 }
 
 /// Um arquivo de leitura obrigatória `caminho#função`, com as linhas atuais
@@ -518,7 +1006,7 @@ fn cited_exists(root: &Path, cited: &str) -> bool {
 /// mudança: [`wave_prompt::WavePrompt::text`] então só manda ler a função
 /// pelo nome, como antes. Um caminho sozinho (sem `#`) também volta sem
 /// mudança.
-fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
+fn with_current_lines(map: &MapParts<'_>, file: String) -> String {
     let Some((path, name)) = file.split_once('#') else { return file };
     if path.is_empty() || name.is_empty() {
         return file;
@@ -532,8 +1020,7 @@ fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
 /// citado pelas tarefas `tasks`, pelo caminho como a tarefa o escreve. Sem
 /// mapa, ou para um arquivo que ele não conhece ou sem teste externo
 /// conhecido, o arquivo fica de fora.
-fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<String, Vec<String>> {
-    let Some(map) = map else { return BTreeMap::new() };
+fn task_file_tests(map: &MapParts<'_>, tasks: &[&SpecEvent]) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for task in tasks {
         let paths = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
@@ -541,7 +1028,7 @@ fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<S
             if out.contains_key(path) {
                 continue;
             }
-            if let Ok(coverage) = tests_for(map, path)
+            if let Some(coverage) = map.tests(path).and_then(|map| tests_for(&map, path).ok())
                 && !coverage.files.is_empty()
             {
                 out.insert(path.to_string(), coverage.files);
@@ -551,47 +1038,154 @@ fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<S
     out
 }
 
+/// O padrão do projeto sob cada tarefa de `tasks`, pelo código dela: as
+/// regras dos papéis que os arquivos dela tocam, os arquivos dela que passam
+/// do corte de tamanho do projeto, a receita do git de cada arquivo dela e
+/// os exemplos que seguem as regras fortes. O papel de um arquivo que uma
+/// tarefa do plano `log` cria sai do nome dele, como o de um arquivo que já
+/// existe. Os exemplos saem dos arquivos da tarefa, um de cada por vez, o
+/// melhor de cada primeiro ([`pattern_example`]), e só com regra. O arquivo
+/// que a própria tarefa já lista sai da receita. Sem mapa, nada; a tarefa
+/// sem regra, sem arquivo grande e sem receita fica de fora.
+fn task_patterns(
+    map: &MapParts<'_>,
+    log: &SpecLog,
+    tasks: &[&SpecEvent],
+    codes: &BTreeMap<u64, String>,
+    lang: Locale,
+) -> BTreeMap<String, TaskPattern> {
+    let files_of = |task: &SpecEvent| -> Vec<String> {
+        let files = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        files.iter().filter_map(|file| file.get("path").and_then(Value::as_str)).map(str::to_string).collect()
+    };
+    let every_task = || log.events.iter().filter(|e| e.event_type == "task").flat_map(files_of).collect();
+    let (Some(read), Some(pattern)) = (map.pattern(), map.learned(every_task)) else { return BTreeMap::new() };
+    let cuts = QualityCuts::of(&read.modules);
+    let mut out = BTreeMap::new();
+    for task in tasks {
+        let files = files_of(task);
+        let roles: BTreeSet<&str> = files.iter().filter_map(|path| pattern.roles.get(path)).map(String::as_str).collect();
+        let mut found = wave_prompt::rules_for(pattern, &roles);
+        found.large = files.iter().filter(|path| read.module(path).is_some_and(|m| cuts.large(m))).cloned().collect();
+        found.recipes = files
+            .iter()
+            .filter_map(|file| map.recipe(read, file))
+            .filter_map(|recipe| recipe_keeping(recipe, |path| !files.iter().any(|file| file == path)))
+            .collect();
+        let ruled = !found.strong.is_empty() || !found.info.is_empty();
+        if !ruled && found.large.is_empty() && found.recipes.is_empty() {
+            continue;
+        }
+        if ruled {
+            let picks: Vec<Vec<String>> = files
+                .iter()
+                .map(|file| {
+                    let known = map.picks.borrow().get(file).cloned();
+                    known.unwrap_or_else(|| {
+                        let found: Vec<String> =
+                            examples_following(read, file, lang, pattern).picks.into_iter().map(|p| p.path).collect();
+                        map.picks.borrow_mut().insert(file.clone(), found.clone());
+                        found
+                    })
+                })
+                .collect();
+            let deepest = picks.iter().map(Vec::len).max().unwrap_or_default();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            for path in (0..deepest).flat_map(|rank| picks.iter().filter_map(move |list| list.get(rank))) {
+                if seen.insert(path.clone())
+                    && let Some(example) = map.example(read, path)
+                {
+                    found.examples.push(example);
+                }
+            }
+        }
+        out.insert(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()), found);
+    }
+    out
+}
+
+/// Quantas declarações de um arquivo o exemplo lê, uma a uma, atrás de uma
+/// função.
+const EXAMPLE_NAMES_READ: usize = 6;
+
+/// O exemplo do padrão no arquivo `path`, com as linhas: a declaração com o
+/// nome do arquivo (sem a extensão e sem diferença de caixa, `_` ou `-`);
+/// senão, a primeira função ou método entre as primeiras
+/// [`EXAMPLE_NAMES_READ`] que ele declara; senão, a primeira delas com
+/// linhas. `None` quando nenhuma tem linhas conhecidas.
+fn pattern_example(map: &MapParts<'_>, read: &ProjectMap, path: &str) -> Option<PatternExample> {
+    let module = read.module(path)?;
+    let plain = |text: &str| -> String { text.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase() };
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let stem = plain(file.split('.').next().unwrap_or(file));
+    let mut names: Vec<&str> = Vec::new();
+    for name in module.declarations.iter().map(|d| d.name.as_str()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.sort_by_key(|name| plain(name) != stem);
+    let mut first: Option<PatternExample> = None;
+    for name in names.into_iter().take(EXAMPLE_NAMES_READ) {
+        let Some(named) = map.declarations(path, name) else { continue };
+        let mut found = named.modules.iter().filter(|m| m.path == path).flat_map(|m| &m.declarations);
+        let Some(decl) = found.find(|d| d.name == name && d.end_line > 0) else { continue };
+        let example = PatternExample { name: name.to_string(), path: path.to_string(), start: decl.line, end: decl.end_line };
+        if plain(name) == stem || matches!(decl.kind.as_str(), "function" | "method") {
+            return Some(example);
+        }
+        first.get_or_insert(example);
+    }
+    first
+}
+
 /// As faixas de linha (começo, fim) de cada declaração de nome `name` no
-/// módulo `path` — mais de uma quando o nome se repete no arquivo. `None`
-/// quando o mapa não tem o módulo, ou quando nenhuma ocorrência tem a linha
-/// final resolvida.
-fn decl_lines(map: Option<&ProjectMap>, path: &str, name: &str) -> Option<Vec<(u64, u64)>> {
-    let module = map?.modules.iter().find(|m| m.path == path || m.path.ends_with(path))?;
+/// módulo `path` — mais de uma quando o nome se repete no arquivo. O módulo é
+/// o primeiro do mapa com esse caminho, ou terminado nele. `None` quando o
+/// mapa não tem o módulo, ou quando nenhuma ocorrência tem a linha final
+/// resolvida.
+fn decl_lines(map: &MapParts<'_>, path: &str, name: &str) -> Option<Vec<(u64, u64)>> {
+    let found = map.paths()?.modules.iter().find(|m| m.path == path || m.path.ends_with(path))?.path.clone();
+    let named = map.declarations(&found, name)?;
+    let module = named.modules.iter().find(|m| m.path == found)?;
     let ranges: Vec<(u64, u64)> =
         module.declarations.iter().filter(|d| d.name == name && d.end_line > 0).map(|d| (d.line, d.end_line)).collect();
     (!ranges.is_empty()).then_some(ranges)
 }
 
-/// Algum exemplo que a skill usou mudou no git depois de ela ter sido
-/// gravada?
-fn examples_changed_after(log: &SpecLog, map: Option<&ProjectMap>, name: &str) -> bool {
-    let Some(map) = map else { return false };
-    let Some(event) = log
-        .visible()
-        .into_iter()
-        .rfind(|e| e.event_type == "skill" && e.str_field("name") == Some(name))
-    else {
-        return false;
-    };
-    let Ok(at) = chrono::DateTime::parse_from_rfc3339(event.at()) else {
-        return false;
-    };
-    let written = at.timestamp();
-    event
-        .fields
-        .get("examples")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
+/// Algum arquivo que a skill cita mudou no git depois do próprio arquivo
+/// dela? A skill vale pelo que estava no código quando foi escrita: a data
+/// do arquivo dela é a da última escrita, e a de cada arquivo citado é a do
+/// commit mais novo que o mudou, pelo histórico do mapa. O citado pode trazer
+/// só o fim do caminho, como a conferência aceita; a pasta citada não conta,
+/// porque não tem commit próprio. Sem mapa, ou sem a data do arquivo da
+/// skill, não há marca.
+fn cited_changed_after(map: &MapParts<'_>, text: &str, skill: &Path) -> bool {
+    let Some(history) = map.history() else { return false };
+    let Some(written) = modified_at(skill) else { return false };
+    cited_paths(text)
         .iter()
-        .filter_map(|example| example.get("path").and_then(Value::as_str))
-        .any(|path| file_history(&map.history, path).is_some_and(|h| h.last_at > written))
+        .filter(|cited| !cited.ends_with('/'))
+        .flat_map(|cited| {
+            let tail = format!("/{cited}");
+            history.paths.iter().filter(move |path| *path == cited || path.ends_with(&tail))
+        })
+        .any(|path| file_history(history, path).is_some_and(|h| h.last_at > written))
+}
+
+/// A data da última escrita de um arquivo, em segundos desde 1970, a mesma
+/// régua das datas de commit do histórico do mapa.
+fn modified_at(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).and_then(|meta| meta.modified()).ok()?;
+    let seconds = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    i64::try_from(seconds).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::spec_events::{parse_log, render_line, stamp};
+    use crate::domain::wave_prompt::Reuse;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -625,34 +1219,44 @@ mod tests {
         std::fs::write(dir.join("SKILL.md"), text).unwrap();
     }
 
-    /// O mapa de teste, gravado como o scan o grava: cria a pasta `.claude`
-    /// antes de escrever o arquivo do mapa.
+    /// O mapa de teste, gravado pela porta do mapa, como o scan o grava.
     fn write_map(root: &Path, model: &Value) {
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
+        crate::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
-    /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e
-    /// pelo quando usar da descrição dela, sem o texto; e ela é procurada no
-    /// subprojeto em que a tarefa mexe.
+    /// O caminho do arquivo da skill como o pedido o escreve: absoluto, no
+    /// projeto principal `root`, com barras normais.
+    fn skill_path_in(root: &Path, subproject: &str, name: &str) -> String {
+        shown(&root.join(subproject).join(".claude").join("skills").join(name).join("SKILL.md"))
+    }
+
+    /// A skill que a tarefa nomeia entra no pedido pelo caminho absoluto do
+    /// arquivo no projeto principal, que existe mesmo com a onda saindo numa
+    /// cópia fora dele, e pelo quando usar da descrição dela, sem o texto; e
+    /// ela é procurada no subprojeto em que a tarefa mexe. O caminho nunca é o
+    /// da cópia: a pasta das skills fica fora do git e não chega lá.
     #[test]
-    fn the_skill_a_task_names_reaches_the_request_by_path_and_never_by_text() {
+    fn the_skill_reaches_the_request_by_the_absolute_path_in_the_main_project() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        let elsewhere = tempdir().unwrap();
+        let copy = shown(&elsewhere.path().join("copia"));
         write_skill(
             root,
             "apps/rt",
             "somar",
             "---\nname: somar\ndescription: Use ao somar dois números no motor.\n---\n\n# Somar\n\nUm passo por linha.\n",
         );
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
+        let chosen = WaveCopy { path: copy.clone(), reused: None };
+        let flight = Flight { running: [1].into(), copies: [(1, chosen)].into(), ..Flight::default() };
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &flight);
         assert_eq!(built.len(), 1);
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-        assert!(
-            built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"),
-            "{}",
-            built[0].text
-        );
+        let path = skill_path_in(root, "apps/rt", "somar");
+        assert!(Path::new(&path).is_absolute() && Path::new(&path).is_file(), "{path}");
+        assert!(built[0].text.contains(&format!("— `{path}`")), "{}", built[0].text);
+        assert!(!built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"), "{}", built[0].text);
+        assert!(!built[0].text.contains(&format!("{copy}/apps/rt/.claude")), "{}", built[0].text);
         assert!(built[0].text.contains("Use ao somar dois números no motor."), "{}", built[0].text);
         assert!(!built[0].text.contains("Um passo por linha."), "{}", built[0].text);
     }
@@ -666,11 +1270,8 @@ mod tests {
         write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-        assert!(
-            built[0].text.contains("- **somar** — `apps/rt/.claude/skills/somar/SKILL.md`"),
-            "{}",
-            built[0].text
-        );
+        let path = skill_path_in(root, "apps/rt", "somar");
+        assert!(built[0].text.contains(&format!("- **somar** — `{path}`")), "{}", built[0].text);
     }
 
     /// A skill que cita um caminho que não existe, e a que passa do tamanho
@@ -709,8 +1310,9 @@ mod tests {
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
     }
 
-    /// Um item revisto entra na lista do pedido só na versão nova; a linha da
-    /// antiga fica fora, e o número dela não aparece.
+    /// Um item revisto entra na lista do pedido só na versão nova, com o
+    /// título dela; a linha da antiga fica fora, e nem o número nem o texto
+    /// dela aparecem.
     #[test]
     fn a_revised_item_reaches_the_request_only_in_its_new_version() {
         let dir = tempdir().unwrap();
@@ -727,10 +1329,35 @@ mod tests {
             ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        assert!(items.contains(&"`agreed`: MSTD-LIMIT-0001"), "{}", built[0].text);
+        let obey = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.obey", Locale::PtBr));
+        assert!(obey.contains(&"Limite MSTD-LIMIT-0001 — O pedido cabe em 500 linhas."), "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
-        assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
+        assert!(!built[0].text.contains("400 linhas"), "a versão antiga não entra: {}", built[0].text);
+    }
+
+    /// A escolha gravada antes de um item combinado ser revisto ainda cita a
+    /// versão antiga; o pedido lista só a nova, e a antiga não entra na lista
+    /// de leitura por mais que a escolha a tenha posto.
+    #[test]
+    fn a_choice_that_added_the_old_version_of_a_revised_item_lists_only_the_new_one() {
+        let log = log_of(&[
+            ("limit", json!({"text": "O pedido cabe em 400 linhas.", "value": "400 linhas", "keys": ["pedido"]})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Cortar o pedido", "files": [{"path": "apps/rt/src/a.rs"}]})),
+            (
+                "limit",
+                json!({"text": "O pedido cabe em 500 linhas.", "value": "500 linhas", "keys": ["pedido"], "replaces": 1}),
+            ),
+        ]);
+        let choice = Choice {
+            added: vec![(1, String::from("a regra do pedido serve à onda")), (4, String::from("a regra do pedido serve à onda"))],
+            ..Choice::default()
+        };
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let got = request_items(&log, None, 1, Some(&choice), &languages);
+        let ids: Vec<u64> = got.items.iter().map(|e| e.id).collect();
+        assert!(ids.contains(&4), "a versão nova entra: {ids:?}");
+        assert!(!ids.contains(&1), "a versão antiga não entra: {ids:?}");
     }
 
     /// O arquivo que uma tarefa cita, e cujos testes o mapa do projeto
@@ -755,19 +1382,19 @@ mod tests {
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(
-            built[0].text.contains("  - quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"),
+            built[0].text.contains("   - Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"),
             "{}",
             built[0].text
         );
-        assert!(!built[0].text.contains("quem testa `apps/rt/src/b.rs`"), "{}", built[0].text);
+        assert!(!built[0].text.contains("Quem testa `apps/rt/src/b.rs`"), "{}", built[0].text);
     }
 
     /// A leitura obrigatória de uma tarefa que aponta uma função
     /// (`caminho#função`) faz a linha da tarefa dizer o que ler antes, e
-    /// manda ler só aquela função, não o arquivo inteiro. As frases de ler
-    /// por trecho, rodar só os testes do que mudou e a suíte inteira uma vez
-    /// no fim, em primeiro plano, saíram do catálogo — moraram para o molde
-    /// do agente — e não voltam a aparecer no pedido.
+    /// manda ler só aquela função, não o arquivo inteiro. As frases de achar
+    /// e ler o código pelo mapa, rodar só os testes do que mudou e a suíte
+    /// inteira uma vez no fim, em primeiro plano, saíram do catálogo —
+    /// moraram para o molde do agente — e não voltam a aparecer no pedido.
     #[test]
     fn the_wave_request_asks_to_read_by_excerpt() {
         let dir = tempdir().unwrap();
@@ -780,9 +1407,9 @@ mod tests {
                             "must_read": ["apps/rt/src/a.rs#soma"]})),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(built[0].text.contains("leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
+        assert!(built[0].text.contains("   - Leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
-        for phrase in ["Leia por trecho", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
+        for phrase in ["Ache e leia o código pelo mapa", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
             assert!(!built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
         }
     }
@@ -894,72 +1521,339 @@ mod tests {
         assert!(!built[0].text.contains(read_before), "{}", built[0].text);
     }
 
-    /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
-    /// ela criou para ela —, lista só os códigos: cada parte traz uma linha
-    /// por bloco da spec, com os códigos em sequência, e as tarefas ganham
-    /// linha própria, na ordem de execução que a onda declara. O comando de
-    /// leitura aparece uma vez só, no exemplo, com o caminho do repositório
-    /// principal, e nenhum item repete o comando nem o código.
+    /// A seção de como ler, no pedido de uma onda montado como a rodada e o
+    /// despacho o montam: os dois comandos — o que lê um item pelo código e o
+    /// que lê uma lição pelo número —, com a spec e, quando a onda tem cópia,
+    /// o caminho do repositório principal, e o aviso de que a entrega sem a
+    /// leitura completa é recusada. Ela vem antes de "O que fazer" e não
+    /// manda ler o pedido inteiro nem tudo antes de começar. Sem cópia, o
+    /// agente roda no repositório principal, e o caminho sai dos dois
+    /// comandos. O pedido da revisão final traz a mesma seção, com o aviso da
+    /// recusa do veredito, e também lê item por item.
     #[test]
-    fn the_wave_request_lists_only_the_codes_per_block_with_one_example() {
+    fn the_wave_request_tells_how_to_read_each_item_and_warns_of_the_refusal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let main = shown(root);
+        let mut events = Vec::new();
+        for n in 1..=3 {
+            events.push(("wave", json!({"n": n, "text": "Uma onda", "criteria": [], "done_when": "passa"})));
+            events.push(("task", json!({"wave": n, "text": "Somar", "files": [{"path": format!("src/{n}.rs")}]})));
+        }
+        let log = log_of(&events);
+        let copy = WaveCopy { path: "/c/tres".into(), reused: None };
+        let in_copy = Flight { running: [3].into(), copies: [(3, copy)].into(), ..Flight::default() };
+        for (lang, heading, do_heading, read_item, read_lesson, warning, gone, final_line) in [
+            (
+                Locale::PtBr,
+                "## Como ler cada item",
+                "## O que fazer",
+                "- tarefa, regra, decisão, mensagem ou outro item: `mustard-rt run read item-<código> {root}--spec teste`",
+                "- lição: `mustard-rt run read lessons --term <número> {root}--spec teste`",
+                "A entrega é recusada se algum item deste pedido não foi lido. A recusa diz qual.",
+                "Antes de começar",
+                (
+                    "- onda, tarefa, requisito acordado, entrega, critério, commit ou outro item: `mustard-rt run read item-<código> {root}--spec teste`",
+                    "O veredito é recusado se algum item deste pedido não foi lido. A recusa diz qual.",
+                ),
+            ),
+            (
+                Locale::EnUs,
+                "## How to read each item",
+                "## What to do",
+                "- task, rule, decision, message or any other item: `mustard-rt run read item-<item-code> {root}--spec teste`",
+                "- lesson: `mustard-rt run read lessons --term <number> {root}--spec teste`",
+                "The delivery is refused if any item of this request was not read. The refusal says which.",
+                "Before you start",
+                (
+                    "- wave, task, agreed requirement, delivery, criterion, commit or any other item: `mustard-rt run read item-<item-code> {root}--spec teste`",
+                    "The verdict is refused if any item of this request was not read. The refusal says which.",
+                ),
+            ),
+        ] {
+            for (flight, flag) in [(&in_copy, format!("--root {main} ")), (&Flight::default(), String::new())] {
+                let built = prompts(root, "teste", &log, lang, flight);
+                let wave = &built.iter().find(|p| p.wave == 3).expect("the third wave's request").text;
+                let at = wave.find(heading).unwrap_or_else(|| panic!("{lang:?}: {wave}"));
+                let to_do = wave.find(do_heading).unwrap_or_else(|| panic!("{lang:?}: {wave}"));
+                assert!(at < to_do, "the reading comes before what to do: {wave}");
+                let section = &wave[at..to_do];
+                for line in [read_item, read_lesson, warning] {
+                    let line = line.replace("{root}", &flag);
+                    assert!(section.contains(&line), "{flag:?} {lang:?}: {line}\n{wave}");
+                }
+                assert!(!wave.contains("dispatch-"), "the request is not read whole: {wave}");
+                assert_eq!(wave.matches("--term <").count(), 1, "one command reads a lesson: {wave}");
+                assert_eq!(wave.matches("--root").count(), if flag.is_empty() { 0 } else { 2 }, "{wave}");
+                assert!(!wave.contains(gone), "reading everything first is gone: {wave}");
+            }
+            let last = final_review(root, "teste", &log, lang).text;
+            let (final_item, final_warning) = final_line;
+            let flag = format!("--root {main} ");
+            for line in [final_item.replace("{root}", &flag), read_lesson.replace("{root}", &flag), final_warning.to_string()] {
+                assert!(last.contains(&line), "{lang:?}: {line}\n{last}");
+            }
+            assert!(last.contains(heading) && !last.contains(warning), "the verdict, not the delivery, is refused: {last}");
+            assert!(!last.contains("dispatch-"), "the final review keeps reading item by item: {last}");
+        }
+    }
+
+    /// O pedido da onda e o da revisão final dizem no cabeçalho os dois
+    /// idiomas lidos do `mustard.json`: o do texto e o dos nomes no código.
+    /// O projeto que declara o código em português recebe os nomes em
+    /// português, mesmo com o texto em inglês; o que não declara o do código
+    /// recebe os nomes em inglês. A linha sai uma vez só em cada pedido.
+    #[test]
+    fn every_request_opens_with_the_languages_the_project_declares() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = plan_log();
+        let line = |code: &str| {
+            crate::platform::i18n::translate("prompt.languages", Locale::EnUs)
+                .replace("{text}", "en-US")
+                .replace("{code}", code)
+        };
+        let mut missing = Vec::new();
+        for (config, code) in [
+            (r#"{"language":{"text":"en-US","code":"pt-BR"}}"#, "pt-BR"),
+            (r#"{"language":{"text":"en-US"}}"#, "en-US"),
+        ] {
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+            let expected = line(code);
+            assert!(expected.contains(&format!("in {code}: names")), "{expected}");
+            let built = prompts(root, "teste", &log, Locale::EnUs, &Flight::default());
+            let wave = built.first().expect("the first wave's request").text.clone();
+            let last = final_review(root, "teste", &log, Locale::EnUs).text;
+            for (name, text) in [("wave", wave), ("final review", last)] {
+                let header = text.split("\n\n").take(3).collect::<Vec<_>>();
+                if text.matches(&expected).count() != 1 || !header.contains(&expected.as_str()) {
+                    missing.push(format!("{config}: the {name} request\n{text}"));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "requests without the languages line in the header:\n{}", missing.join("\n\n"));
+    }
+
+    /// As linhas de `body` que citam o nome de teste (`test_name`) junto de
+    /// um idioma do texto (`text_languages`), com a linha contada de 0.
+    fn lines_tying_a_test_name_to_the_text_language<'a>(
+        body: &'a str,
+        test_name: &str,
+        text_languages: [&str; 2],
+    ) -> Vec<(usize, &'a str)> {
+        body.lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let lower = line.to_lowercase();
+                lower.contains(test_name) && text_languages.iter().any(|language| lower.contains(language))
+            })
+            .collect()
+    }
+
+    /// O cabeçalho de todo pedido põe o nome de teste na lista do código, e a
+    /// lista vale mesmo quando o arquivo já traz nomes em outro idioma; a
+    /// parte do texto (comentários, entregas e commits) não o cita. E nenhum
+    /// molde de agente junta o nome de teste ao idioma do texto: o molde da
+    /// onda diz que ele é código e segue o idioma do código. Sem isso o
+    /// agente lê "comentário e nome de teste" como texto e escreve o teste
+    /// em português num projeto de código em inglês. Nos dois idiomas.
+    #[test]
+    fn the_header_lists_tests_with_the_code_and_no_template_ties_a_test_name_to_the_text_language() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = plan_log();
+        let old_pt = "- Comentários seguem o idioma do texto e, como o nome de teste, descrevem o comportamento.";
+        let old_en = "- Comments follow the text language and, like the test name, describe behavior.";
+        assert_eq!(
+            lines_tying_a_test_name_to_the_text_language(old_pt, "nome de teste", ["idioma do texto", "idioma do projeto"]),
+            vec![(0, old_pt)],
+            "the sentence that ties the test name to the text is not pointed out",
+        );
+        assert_eq!(
+            lines_tying_a_test_name_to_the_text_language(old_en, "test name", ["text language", "project's language"]),
+            vec![(0, old_en)],
+            "the English sentence that ties the test name to the text is not pointed out",
+        );
+        for (config, locale, code_marker, tests, other_names, test_name, code_language, text_languages) in [
+            (
+                r#"{"language":{"text":"pt-BR","code":"en-US"}}"#,
+                Locale::PtBr,
+                "O código sai em",
+                "testes",
+                "mesmo quando o arquivo já traz nomes em outro idioma",
+                "nome de teste",
+                "idioma do código",
+                ["idioma do texto", "idioma do projeto"],
+            ),
+            (
+                r#"{"language":{"text":"en-US","code":"pt-BR"}}"#,
+                Locale::EnUs,
+                "Code is written in",
+                "tests",
+                "even when the file already has names in another language",
+                "test name",
+                "code language",
+                ["text language", "project's language"],
+            ),
+        ] {
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+            let wave = prompts(root, "teste", &log, locale, &Flight::default()).first().expect("the first wave's request").text.clone();
+            let last = final_review(root, "teste", &log, locale).text;
+            for (name, request) in [("wave", wave), ("final review", last)] {
+                let header = request
+                    .split("\n\n")
+                    .take(3)
+                    .find(|part| part.contains(code_marker))
+                    .unwrap_or_else(|| panic!("{locale:?}: the {name} request has no languages line:\n{request}"));
+                let (text_part, code_part) = header.split_once(code_marker).expect("the line holds the code marker");
+                assert!(!text_part.contains(tests), "{locale:?}: the {name} request puts tests with the text: {header}");
+                assert!(code_part.contains(tests), "{locale:?}: the {name} request leaves tests out of the code list: {header}");
+                assert!(code_part.contains(other_names), "{locale:?}: the {name} request does not say the list holds over the file's names: {header}");
+            }
+
+            let mut tied = Vec::new();
+            for (agent, body) in crate::platform::seeds::agent_texts(locale) {
+                if agent == "wave" {
+                    assert!(
+                        body.lines().any(|line| {
+                            let lower = line.to_lowercase();
+                            lower.contains(test_name) && lower.contains(code_language)
+                        }),
+                        "{locale:?}: the wave template does not say a test name follows the code language",
+                    );
+                }
+                for (index, line) in lines_tying_a_test_name_to_the_text_language(body, test_name, text_languages) {
+                    tied.push(format!("{locale:?} {agent}.md:{}: {line}", index + 1));
+                }
+            }
+            assert!(tied.is_empty(), "templates that tie a test name to the text language:\n{}", tied.join("\n"));
+        }
+    }
+
+    /// O pedido da onda lista cada item numa linha — o tipo por extenso, o
+    /// código e o título —, sem o texto nem a parte do agente: a tarefa é um
+    /// passo de "O que fazer", com o que ela atende logo abaixo, e a regra e a
+    /// decisão que valem para a onda vão em "O que obedecer". O contexto e o
+    /// critério que nenhuma tarefa atende, a onda e o que as ondas anteriores
+    /// entregaram não entram. A ordem das tarefas é a que a onda declara, e os
+    /// comandos de leitura aparecem uma vez só, na seção de como ler, com o
+    /// caminho do repositório principal.
+    #[test]
+    fn the_wave_request_lists_each_item_in_one_line_and_leaves_out_what_no_task_attends() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
         let log = log_of(&[
-            ("context", json!({"text": "O objetivo da obra.", "keys": ["objetivo"], "label": "objetivo"})),
-            ("context", json!({"text": "Como reproduzir.", "keys": ["reproduzir"], "label": "reproduzir"})),
-            ("decision", json!({"text": "Os códigos em sequência.", "keys": ["códigos"], "why": "menos linhas",
+            ("context", json!({"title": "O objetivo", "text": "A obra encurta o pedido. Ele cabe numa leitura.",
+                               "agent": "- medir o pedido\n\n  - contar as linhas", "keys": ["objetivo"],
+                               "label": "objetivo"})),
+            ("context", json!({"text": "Como reproduzir. Rode a rodada duas vezes.\n\nConfira o log.",
+                               "keys": ["reproduzir"], "label": "reproduzir"})),
+            ("decision", json!({"title": "Título no lugar do texto", "text": "O agente lê menos. O porquê fica na spec.",
+                                "agent": "- `item_line`", "keys": ["títulos"], "why": "menos leitura",
                                 "applies_to": everywhere})),
-            ("rule", json!({"text": "Um exemplo só.", "keys": ["exemplo"], "example": "e", "applies_to": everywhere})),
-            ("criterion", json!({"when": "a rodada monta", "then": "a lista sai curta", "proof": "cargo test"})),
-            ("wave", json!({"n": 1, "text": "A onda", "criteria": [5], "done_when": "passa", "order": [8, 7]})),
-            ("task", json!({"wave": 1, "text": "Montar a lista", "files": [{"path": "src/a.rs"}]})),
-            ("task", json!({"wave": 1, "text": "Trocar o texto", "files": [{"path": "src/b.rs"}]})),
+            ("rule", json!({"title": "Um exemplo só", "text": "A linha de leitura aparece uma vez.",
+                            "agent": "- contar os comandos", "keys": ["exemplo"], "example": "um pedido de exemplo",
+                            "applies_to": everywhere})),
+            ("criterion", json!({"title": "A lista sai curta", "when": "a rodada monta", "then": "cada item tem uma linha",
+                                 "proof": "cargo test -p criterio"})),
+            ("criterion", json!({"when": "o critério é antigo", "then": "ele fica sem corpo", "proof": "cargo test -p velho"})),
+            ("wave", json!({"n": 1, "text": "A onda. Ela abre o pedido.", "criteria": [5, 6], "done_when": "passa",
+                            "order": [9, 8]})),
+            ("task", json!({"wave": 1, "title": "Montar a lista", "text": "Hoje a lista só tem códigos.",
+                            "agent": "- src/a.rs: `items`\n  - teste: `cargo test -p lista`", "covers": [5, 6],
+                            "files": [{"path": "src/a.rs"}]})),
+            ("task", json!({"wave": 1, "text": "Trocar o texto. Ele diz como ler.", "covers": [1],
+                            "files": [{"path": "src/b.rs"}]})),
             ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
         ]);
-        let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
+        let copy = WaveCopy { path: "/c/um".into(), reused: None };
         let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let example = part("prompt.read")
-            .replace("{root}", &format!("--root {} ", shown(root)))
-            .replace("{spec}", "teste");
-        let command = format!("`mustard-rt run read <bloco> --root {} --spec teste --term <código>`", shown(root));
-        assert!(example.contains(&command), "{example}");
+        let example = part("prompt.read.wave").replace("{root}", &format!("--root {} ", shown(root))).replace("{spec}", "teste");
+        assert!(example.contains(&format!("`mustard-rt run read lessons --term <número> --root {} --spec teste`", shown(root))), "{example}");
         let wave = &built[0].text;
 
-        // A onda tem `order: [8, 7]`: a tarefa 2 (id 8) vem antes da 1 (id 7).
-        let tasks = ["`MSTD-TASK-0002`: `src/b.rs`", "`MSTD-TASK-0001`: `src/a.rs`"];
-        // Onda, critérios, especificação e combinado saem juntos, sob um
-        // título só: "Itens da onda".
-        let items = section_lines(wave, part("prompt.part.items"));
-        for code in [
-            "`waves`: MSTD-WAVE-0001",
-            "`criteria`: MSTD-CRIT-0001",
-            "`specification`: MSTD-CTX-0001, MSTD-CTX-0002",
-            "`agreed`: MSTD-DEC-0001, MSTD-RULE-0001",
-        ] {
-            assert!(items.contains(&code), "{code}: {wave}");
-        }
-        assert_eq!(section_lines(wave, part("prompt.part.tasks")), tasks, "{wave}");
+        // A onda tem `order: [9, 8]`: a tarefa 2 (id 9) vem antes da 1 (id 8),
+        // e cada uma leva abaixo o que atende.
+        let to_do: Vec<&str> = wave
+            .split_once(&format!("## {}\n\n", part("prompt.part.do")))
+            .map(|(_, rest)| rest)
+            .unwrap_or_default()
+            .split("\n\n")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .collect();
+        assert_eq!(
+            to_do,
+            [
+                "1. Leia o texto inteiro de cada item de \"O que obedecer\".",
+                "2. Faça a tarefa MSTD-TASK-0002 — Trocar o texto.",
+                "   - Atende: contexto MSTD-CTX-0001 — O objetivo",
+                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
+                "   - Arquivo: `src/b.rs`",
+                "3. Faça a tarefa MSTD-TASK-0001 — Montar a lista",
+                "   - Atende: critério MSTD-CRIT-0001 — A lista sai curta",
+                "   - Atende: critério MSTD-CRIT-0002",
+                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
+                "   - Arquivo: `src/a.rs`",
+                "4. Grave a entrega, como diz \"O que devolver\".",
+            ],
+            "{wave}"
+        );
+        assert_eq!(
+            section_lines(wave, part("prompt.part.obey")),
+            [
+                "Decisão MSTD-DEC-0001 — Título no lugar do texto",
+                "Regra MSTD-RULE-0001 — Um exemplo só",
+                "Lições: nenhuma vale para os arquivos desta onda.",
+            ],
+            "{wave}"
+        );
 
         assert!(wave.contains(&example), "{wave}");
-        for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
+        // Os dois comandos de leitura, só na seção de como ler.
+        for twice in ["mustard-rt run read", "--root"] {
+            assert_eq!(wave.matches(twice).count(), 2, "{twice}: {wave}");
+        }
+        for once in ["--term", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CTX-0001", "MSTD-CRIT-0001", "MSTD-CRIT-0002"] {
             assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
         }
-        for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
+        for out in ["MSTD-WAVE-0001", "MSTD-CTX-0002", "MSTD-DELIV-0001"] {
+            assert!(!wave.contains(out), "{out} não é item deste pedido: {wave}");
+        }
+        for copied in [
+            "A obra encurta o pedido",
+            "O agente lê menos",
+            "menos leitura",
+            "A linha de leitura aparece uma vez",
+            "um pedido de exemplo",
+            "Ela abre o pedido",
+            "Como reproduzir",
+            "a rodada monta",
+            "cada item tem uma linha",
+            "cargo test -p criterio",
+            "o critério é antigo",
+            "cargo test -p velho",
+            "Hoje a lista só tem códigos",
+            "medir o pedido",
+            "`items`",
+            "A lista saiu.",
+        ] {
             assert!(!wave.contains(copied), "{copied} foi copiado: {wave}");
         }
     }
 
-    /// O pedido cai de quinze seções para quatro: os itens da onda (a
-    /// própria onda, os critérios, a especificação e o combinado, tudo sob
-    /// um título só), as tarefas, o que as ondas anteriores entregaram e as
-    /// regras da execução — nenhum título a mais, e nenhum dos antigos
-    /// (onda, critérios, especificação e combinado, cada um com o título
-    /// próprio) sobra.
+    /// O pedido tem seis seções, sempre na mesma ordem — o que a onda entrega,
+    /// como ler cada item, o que fazer, o que obedecer, o que devolver e como
+    /// trabalhar — e nenhuma outra: a onda, os critérios, a especificação, o
+    /// combinado e o que as ondas anteriores entregaram não têm título
+    /// próprio. "Como trabalhar" só aparece quando a onda tem cópia ou o
+    /// projeto declara um comando de compilar.
     #[test]
-    fn the_wave_request_has_four_sections_not_fifteen() {
+    fn the_wave_request_has_six_sections_in_order_and_no_other() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
@@ -973,20 +1867,24 @@ mod tests {
             ("wave", json!({"n": 2, "text": "A onda", "criteria": [3], "done_when": "passa", "depends_on": [1]})),
             ("task", json!({"wave": 2, "text": "Fazer", "files": [{"path": "src/b.rs"}]})),
         ]);
-        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let wave = &built.iter().find(|p| p.wave == 2).expect("onda 2 no plano").text;
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let headings: Vec<String> = wave.lines().filter(|line| line.starts_with("## ")).map(String::from).collect();
-        assert_eq!(
-            headings,
-            [
-                format!("## {}", part("prompt.part.items")),
-                format!("## {}", part("prompt.part.tasks")),
-                format!("## {}", part("prompt.part.delivered")),
-                format!("## {}", part("prompt.part.execution")),
-            ],
-            "{wave}"
-        );
+        let five = ["delivers", "read", "do", "obey", "return"].map(|name| format!("## {}", part(&format!("prompt.part.{name}"))));
+        let with_copy = Flight {
+            running: [2].into(),
+            copies: [(2, WaveCopy { path: "/c/dois".into(), reused: None })].into(),
+            ..Flight::default()
+        };
+        for (flight, sixth) in [(&Flight::default(), false), (&with_copy, true)] {
+            let built = prompts(root, "teste", &log, Locale::PtBr, flight);
+            let wave = &built.iter().find(|p| p.wave == 2).expect("onda 2 no plano").text;
+            let headings: Vec<String> = wave.lines().filter(|line| line.starts_with("## ")).map(String::from).collect();
+            let mut expected = five.to_vec();
+            if sixth {
+                expected.push(format!("## {}", part("prompt.part.work")));
+            }
+            assert_eq!(headings, expected, "{wave}");
+            assert!(!wave.contains("Entregue.") && !wave.contains("MSTD-DELIV"), "{wave}");
+        }
     }
 
     /// As linhas de uma seção do pedido, sem o "- " do começo; vazio quando
@@ -1037,12 +1935,12 @@ mod tests {
         // Ids 2 a 6 no banco: os cinco defeitos fortes, na ordem em que
         // entraram — `loose[0]` ocupa o 1, e o sexto e o oitavo (o fraco e o
         // outro solto) ficam fora.
-        let expected: Vec<String> = (2u64..=6).map(|id| format!("`lessons`: {id}")).collect();
-        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        let lessons: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
+        let expected: Vec<String> = (2u64..=6).zip(&strong).map(|(id, text)| format!("Lição {id} — {text}")).collect();
+        let obey = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.obey", Locale::PtBr));
+        let lessons: Vec<&str> = obey.iter().copied().filter(|line| line.starts_with("Lição ")).collect();
         assert_eq!(lessons, expected.iter().map(String::as_str).collect::<Vec<_>>(), "o pedido da onda: {}", built[0].text);
-        for out in strong.iter().map(String::as_str).chain([weak, loose[0], loose[1], "Resposta curta."]) {
-            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        for out in [weak, loose[0], loose[1], "Resposta curta."] {
+            assert!(!built[0].text.contains(out), "{out} não é lição desta onda: {}", built[0].text);
         }
     }
 
@@ -1092,16 +1990,16 @@ mod tests {
         ]);
 
         let bank = crate::io::lessons::read(&path.join("lessons.ndjson")).unwrap().unwrap();
-        let by_text = crate::domain::lessons::matching(&bank, STATUS_BAR_TASK);
+        let by_text = crate::domain::lessons::matching_among(&crate::domain::lessons::kept(&bank), STATUS_BAR_TASK, &Languages::new(["pt-BR", "en-US"]));
         assert!(by_text.iter().any(|hit| hit.id == 1), "pelo texto inteiro, a lição do envio entraria: {by_text:?}");
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let items = section_lines(&built[0].text, part("prompt.part.items"));
-        let lessons: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
-        assert_eq!(lessons, ["`lessons`: 96"], "{lessons:?}");
-        for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "O teste tem de falhar"] {
-            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        let obey = section_lines(&built[0].text, part("prompt.part.obey"));
+        let lessons: Vec<&str> = obey.iter().copied().filter(|line| line.starts_with("Lição ")).collect();
+        assert_eq!(lessons, ["Lição 96 — O teste tem de falhar quando o código está errado."], "{lessons:?}");
+        for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "Teste na divisa"] {
+            assert!(!built[0].text.contains(out), "{out} não deve aparecer: só o título da lição entra");
         }
     }
 
@@ -1114,10 +2012,10 @@ mod tests {
     /// de markdown, 7 pelo arquivo citado que a onda não toca — e nenhuma das
     /// mantidas se perde.
     #[test]
-    fn as_licoes_que_o_orquestrador_tirou_nao_chegam_e_as_mantidas_continuam() {
+    fn the_lessons_the_orchestrator_removed_do_not_arrive_and_the_kept_ones_continue() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/licoes-por-onda.json"
+            "/tests/fixtures/lessons-by-wave.json"
         )))
         .unwrap();
         let ids = |value: &Value| -> BTreeSet<u64> {
@@ -1162,7 +2060,7 @@ mod tests {
                 ("task", json!({"wave": n, "text": wave["text"], "files": paths})),
             ]);
 
-            let got: BTreeSet<u64> = wave_lessons(&bank, &log, n).iter().map(|l| l.id).collect();
+            let got: BTreeSet<u64> = wave_lessons(&bank, &log, n, &Languages::new(["pt-BR", "en-US"])).iter().map(|l| l.id).collect();
             let avoided: BTreeSet<u64> = arrived.difference(&got).copied().collect();
             assert!(got.is_subset(&arrived), "onda {n}: {got:?} fora de {arrived:?}");
             let lost: Vec<&u64> = kept.difference(&got).collect();
@@ -1218,64 +2116,598 @@ mod tests {
         ]);
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        let shown: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
+        let obey = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.obey", Locale::PtBr));
+        let shown: Vec<&str> = obey.iter().copied().filter(|line| line.starts_with("Lição ")).collect();
         // Ids 501 a 505: as cinco regras fortes, gravadas depois das 500
         // "Regra N"; id 509: a preferência, cujo texto também divide
         // "total" e "fatura" com a tarefa. Id 508, o defeito sem palavra em
         // comum, fica fora.
-        let expected: Vec<String> =
-            (501u64..=505).chain(std::iter::once(509)).map(|id| format!("`lessons`: {id}")).collect();
+        let mut expected: Vec<String> =
+            (501u64..=505).zip(&strong).map(|(id, text)| format!("Lição {id} — {text}")).collect();
+        expected.push("Lição 509 — O total da fatura sai em reais.".to_string());
         assert_eq!(shown, expected.iter().map(String::as_str).collect::<Vec<_>>(), "{shown:?}");
-        for out in strong.iter().chain(&weak).map(String::as_str).chain(["Apagar a pasta perde trabalho.", "O total da fatura sai em reais."]) {
-            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        for out in weak.iter().map(String::as_str).chain(["Apagar a pasta perde trabalho."]) {
+            assert!(!built[0].text.contains(out), "{out} não é lição desta onda");
         }
         assert_eq!(shown.len(), 6, "{shown:?}");
     }
 
-    /// A skill cujo arquivo de exemplo mudou no git depois dela sai marcada
-    /// como a revisar; a que não mudou não sai marcada.
-    #[test]
-    fn a_skill_whose_example_changed_after_it_is_marked_for_review() {
-        let written = chrono::DateTime::parse_from_rfc3339("2026-09-15T10:00:00-03:00").unwrap().timestamp();
-        for (moved, marked) in [(written + 3_600, true), (written - 3_600, false)] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            write_skill(root, "apps/rt", "somar", "# O molde\n\nUm passo por linha.\n");
+    /// Uma skill que cita dois arquivos — o segundo escrito como `cited` —,
+    /// com a data do próprio arquivo em `written` (segundos desde 1970), num
+    /// projeto cujo mapa guarda um commit em `moved` que mudou o segundo
+    /// citado, e com o mapa só quando `with_map`; devolve o pedido da onda.
+    /// Nenhum evento `skill` é gravado: a marca sai só das datas.
+    fn request_with_skill_written_at(written: i64, moved: i64, with_map: bool, cited: &str) -> WavePrompt {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join("apps/rt/src/exemplo.rs"), "fn dois() {}\n").unwrap();
+        write_skill(
+            root,
+            "apps/rt",
+            "somar",
+            &format!("# O molde\n\nExemplos usados: `apps/rt/src/a.rs` e `{cited}`.\n"),
+        );
+        let skill = root.join("apps/rt/.claude/skills/somar/SKILL.md");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(written).unwrap());
+        std::fs::File::options().write(true).open(&skill).unwrap().set_modified(at).unwrap();
+        if with_map {
             write_map(
                 root,
                 &json!({
+                    "modules": [{"path": "apps/rt/src/a.rs"}, {"path": "apps/rt/src/exemplo.rs"}],
                     "history": {
-                        "paths": ["apps/rt/src/exemplo.rs"],
-                        "commits": [{"id": "abc1234", "at": moved, "changed": [0]}],
+                        "paths": ["apps/rt/src/a.rs", "apps/rt/src/exemplo.rs"],
+                        "commits": [
+                            {"id": "abc1234", "at": written - 7_200, "changed": [0]},
+                            {"id": "def5678", "at": moved, "changed": [1]},
+                        ],
                     }
                 }),
             );
-            let mut events = vec![
-                ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
-                (
-                    "task",
-                    json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}], "skill": "somar"}),
-                ),
-            ];
-            events.push((
-                "skill",
-                json!({"name": "somar", "action": "create", "text": "O molde", "sha": "3f9a1c2e",
-                       "examples": [{"path": "apps/rt/src/exemplo.rs", "why": "mesma pasta"}]}),
-            ));
-            let built = prompts(root, "teste", &log_of(&events), Locale::PtBr, &Flight::default());
-            assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-            assert_eq!(built[0].stale_skills.is_empty(), !marked, "mudou em {moved}");
-            let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
-            assert_eq!(built[0].text.contains(&format!("**somar** ({review})")), marked);
-            assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
+        }
+        prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default()).remove(0)
+    }
+
+    /// Um projeto em que o pedido da onda usa cada parte do mapa: a leitura
+    /// obrigatória e a skill citam caminhos só pelo fim, que só o mapa acha;
+    /// a função citada tem as linhas no mapa, num arquivo cujo fim também
+    /// casa com outro, que vem antes e não a declara; o arquivo da tarefa tem
+    /// teste conhecido; e o arquivo que a skill cita mudou depois dela. Com
+    /// `broken`, cada arquivo guarda um texto onde o mapa guarda a lista das
+    /// importações, coluna que o pedido não lê. Devolve a pasta e o plano.
+    fn project_using_every_map_part(broken: bool) -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let written: i64 = 1_789_000_000;
+        write_skill(root, "apps/rt", "somar", "# O molde\n\nExemplo usado: `src/exemplo.rs`.\n");
+        let skill = root.join("apps/rt/.claude/skills/somar/SKILL.md");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(written).unwrap());
+        std::fs::File::options().write(true).open(&skill).unwrap().set_modified(at).unwrap();
+        let deps = if broken { json!("um texto no lugar da lista") } else { json!(["apps/rt/src/exemplo.rs"]) };
+        write_map(
+            root,
+            &json!({
+                "modules": [
+                    {"path": "lib/src/a.rs", "declarations": [{"kind": "function", "name": "outra", "line": 1, "end_line": 2}]},
+                    {"path": "apps/rt/src/a.rs", "tests": ["apps/rt/tests/a_test.rs"], "deps": deps,
+                     "declarations": [{"kind": "function", "name": "soma", "line": 3, "end_line": 5},
+                                      {"kind": "function", "name": "soma", "line": 9, "end_line": 12}]},
+                    {"path": "apps/rt/src/exemplo.rs", "deps": deps},
+                    {"path": "apps/rt/tests/a_test.rs", "deps": ["apps/rt/src/a.rs"]}
+                ],
+                "history": {
+                    "paths": ["apps/rt/src/a.rs", "apps/rt/src/exemplo.rs"],
+                    "commits": [{"id": "abc1234", "at": written - 7_200, "changed": [0]}, {"id": "def5678", "at": written + 3_600, "changed": [1]}]
+                }
+            }),
+        );
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "skill": "somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["rt/src/a.rs#soma", "src/a.rs#soma", "lib/src/a.rs#outra"]})),
+        ]);
+        (dir, log)
+    }
+
+    /// O pedido da onda lê cada parte do mapa pela pergunta dela e sai igual,
+    /// byte a byte, ao que saía com o mapa inteiro lido.
+    #[test]
+    fn the_wave_request_reading_only_its_map_parts_is_the_one_the_whole_map_gave() {
+        let (dir, log) = project_using_every_map_part(false);
+        let root = dir.path();
+        let by_question = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &|_| {
+            crate::io::project_map::read(root)
+        }, &|_, _| false);
+        assert_eq!(by_question, whole);
+        let text = &by_question[0].text;
+        assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
+        assert!(text.contains("leia só `soma` em `src/a.rs`"), "the first file ending in the path wins: {text}");
+        assert!(text.contains("Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
+        assert_eq!(by_question[0].stale_skills, ["somar"]);
+    }
+
+    /// Um mapa em que uma coluna que o pedido não lê guarda o tipo errado: a
+    /// leitura do mapa inteiro o recusa, e o pedido, que lê só os caminhos,
+    /// as declarações com o nome, os testes do arquivo e a história, ainda
+    /// traz as linhas, os testes, a skill e a marca de revisar.
+    #[test]
+    fn the_wave_request_reads_its_map_parts_even_when_a_column_it_does_not_read_is_broken() {
+        let (dir, log) = project_using_every_map_part(true);
+        let root = dir.path();
+        assert!(crate::io::project_map::read(root).is_err(), "the whole map refuses the broken column");
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let text = &built[0].text;
+        assert!(built[0].bad_skills.is_empty(), "the map finds the path the skill cites: {:?}", built[0].bad_skills);
+        assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
+        assert!(text.contains("Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
+        assert_eq!(built[0].stale_skills, ["somar"]);
+    }
+
+    /// Um projeto com dois pares de papéis, cada um com regra forte:
+    /// controller importa service em 24 de 25 importações (a que vai contra
+    /// é do `service4`, testado e o mais recente da pasta) e repository
+    /// importa entity em todas as 25. Cada arquivo declara a classe com o
+    /// nome dele, com as linhas, e o código dele está no disco. A onda tem
+    /// uma tarefa que cria um controller e outra que cria um service.
+    fn project_with_a_pattern() -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let named = |role: &str, n: usize| format!("src/{role}/{role}{n}.{role}.ts");
+        let mut modules = Vec::new();
+        for (from, to) in [("controller", "service"), ("repository", "entity")] {
+            for a in 0..5 {
+                let mut deps: Vec<String> = (0..5).map(|b| named(to, b)).collect();
+                if from == "controller" && a == 4 {
+                    deps.pop();
+                }
+                modules.push(json!({"path": named(from, a), "language": "typescript", "loc": 50, "deps": deps,
+                    "declarations": [{"kind": "class", "name": format!("{}{a}", capitalized(from)), "line": 3, "end_line": 9}]}));
+            }
+            for b in 0..5 {
+                let against = from == "controller" && b == 4;
+                let deps = if against { vec![named(from, 4)] } else { Vec::new() };
+                let tests = if against { vec![format!("test/{to}{b}.spec.ts")] } else { Vec::new() };
+                modules.push(json!({"path": named(to, b), "language": "typescript", "loc": 50, "deps": deps, "tests": tests,
+                    "declarations": [{"kind": "class", "name": format!("{}{b}", capitalized(to)), "line": 2, "end_line": 8}]}));
+            }
+        }
+        for module in &modules {
+            let path = root.join(module["path"].as_str().unwrap());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "export class Example {\n  handle() {\n    return this.orders.list();\n  }\n}\n").unwrap();
+        }
+        write_map(
+            root,
+            &json!({
+                "modules": modules,
+                "history": {"paths": [named("service", 4)], "commits": [{"id": "abc1234", "at": 1_789_000_000, "changed": [0]}]}
+            }),
+        );
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Criar o controller", "files": [{"path": named("controller", 5)}]})),
+            ("task", json!({"wave": 1, "text": "Criar o service", "files": [{"path": named("service", 5)}]})),
+        ]);
+        (dir, log)
+    }
+
+    fn capitalized(word: &str) -> String {
+        let mut chars = word.chars();
+        chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    }
+
+    /// As linhas de uma tarefa no pedido: o passo dela e as de baixo, até o
+    /// próximo passo.
+    fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
+        let mut lines = text.lines().skip_while(|line| !line.contains(title));
+        let first = lines.next().into_iter();
+        first.chain(lines.take_while(|line| !line.starts_with(|c: char| c.is_ascii_digit()) && !line.is_empty())).collect()
+    }
+
+    #[test]
+    fn a_task_request_carries_the_rules_of_its_roles_and_examples_that_follow_them() {
+        let (dir, log) = project_with_a_pattern();
+        let root = dir.path();
+        let by_question = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &|_| {
+            crate::io::project_map::read(root)
+        }, &|_, _| false);
+        assert_eq!(by_question, whole, "the map parts give the same pattern as the whole map");
+        let text = &by_question[0].text;
+        let controller = task_lines(text, "Criar o controller").join("\n");
+        assert!(controller.contains("regra: controller importa service em 24 de 25 importações"), "{controller}");
+        // Só a regra do papel que a tarefa toca: a do repository fica fora.
+        assert!(!controller.contains("repository"), "{controller}");
+        assert!(controller.contains("exemplo: `Controller0` em `src/controller/controller0.controller.ts`, linhas 3 a 9"), "{controller}");
+        let service = task_lines(text, "Criar o service").join("\n");
+        assert!(service.contains("regra: controller importa service"), "{service}");
+        assert!(service.contains("exemplo: `Service0`"), "{service}");
+        // O service que importa um controller vai contra a regra: nunca é
+        // exemplo, mesmo testado e o mais recente da pasta.
+        assert!(!service.contains("service4"), "{service}");
+        // O exemplo é nome, arquivo e linhas: o código dele não entra.
+        assert!(!text.contains("return this.orders"), "{text}");
+        assert!(!text.contains("export class"), "{text}");
+    }
+
+    #[test]
+    fn a_project_without_rules_gets_no_pattern_block() {
+        let (dir, log) = project_using_every_map_part(false);
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let head = crate::platform::i18n::translate("prompt.pattern.head", Locale::PtBr);
+        assert!(!built[0].text.contains(head), "{}", built[0].text);
+        assert!(!built[0].text.contains("regra:") && !built[0].text.contains("costume:"), "{}", built[0].text);
+    }
+
+    /// Um arquivo com o texto de sempre, na pasta do projeto `root`.
+    fn touch(root: &Path, path: &str) {
+        let at = root.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, "pub fn run() {}\n").unwrap();
+    }
+
+    /// Um projeto sem regra de importação: vinte e cinco arquivos medidos,
+    /// entre eles o maior do projeto, `src/big.rs`, e uma tarefa em cada um
+    /// dos dois, o grande e um pequeno.
+    fn project_with_one_large_file() -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let mut modules = vec![json!({"path": "src/big.rs", "language": "rust", "loc": 5200, "quality": {"size": 5000}})];
+        for n in 0..24 {
+            modules.push(json!({"path": format!("src/small{n}.rs"), "language": "rust", "loc": 100 + n, "quality": {"size": 90 + n}}));
+        }
+        for module in &modules {
+            touch(root, module["path"].as_str().unwrap());
+        }
+        write_map(root, &json!({"modules": modules}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Mexer no grande", "files": [{"path": "src/big.rs"}]})),
+            ("task", json!({"wave": 1, "text": "Mexer no pequeno", "files": [{"path": "src/small3.rs"}]})),
+        ]);
+        (dir, log)
+    }
+
+    #[test]
+    fn a_task_touching_the_largest_file_gets_the_line_and_one_on_a_small_file_does_not() {
+        let (dir, log) = project_with_one_large_file();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        assert_eq!(built.len(), 1);
+        let text = &built[0].text;
+        let big = task_lines(text, "Mexer no grande").join("\n");
+        assert!(big.contains("Entre os 5% maiores arquivos do projeto: `src/big.rs`. Ponha o código novo num arquivo novo."), "{big}");
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert!(big.contains(head), "{big}");
+        let small = task_lines(text, "Mexer no pequeno").join("\n");
+        assert!(!small.contains("maiores arquivos") && !small.contains(head), "{small}");
+        // O tamanho só informa: o pedido sai inteiro, sem recusa.
+        assert!(built[0].bad_skills.is_empty() && built[0].stale_skills.is_empty());
+        assert!(text.contains("Mexer no pequeno"), "{text}");
+    }
+
+    /// Um projeto sem regra de importação cuja história tem dez commits que
+    /// criaram um comando em `apps/rt/src/commands`: nove registram o comando
+    /// no índice e, com `tested`, sete criam o teste dele. A tarefa cria um
+    /// comando novo.
+    fn project_creating_a_command(tested: bool) -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let dir_of = "apps/rt/src/commands";
+        let mut paths: Vec<String> = vec![format!("{dir_of}/mod.rs"), "packages/core/src/i18n.rs".to_string()];
+        for n in 0..10 {
+            paths.push(format!("{dir_of}/cmd_{n}.rs"));
+            paths.push(format!("apps/rt/tests/cmd_{n}.rs"));
+        }
+        paths.sort();
+        let at = |path: &str| paths.iter().position(|p| p == path).unwrap();
+        let commits: Vec<Value> = (0..10)
+            .map(|n| {
+                let mut added = vec![at(&format!("{dir_of}/cmd_{n}.rs"))];
+                if tested && n < 7 {
+                    added.push(at(&format!("apps/rt/tests/cmd_{n}.rs")));
+                }
+                let mut changed = Vec::new();
+                if n < 9 {
+                    changed.push(at(&format!("{dir_of}/mod.rs")));
+                }
+                if n < 3 {
+                    changed.push(at("packages/core/src/i18n.rs"));
+                }
+                added.sort_unstable();
+                changed.sort_unstable();
+                json!({"id": format!("c{n}"), "at": 1_789_000_000 + n, "added": added, "changed": changed})
+            })
+            .collect();
+        let modules: Vec<Value> = paths
+            .iter()
+            .filter(|p| !p.contains("/tests/"))
+            .map(|p| json!({"path": p, "language": "rust", "loc": 40}))
+            .collect();
+        for module in &modules {
+            touch(root, module["path"].as_str().unwrap());
+        }
+        write_map(root, &json!({"modules": modules, "history": {"base": "main", "paths": paths, "commits": commits}}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Criar o comando", "files": [{"path": format!("{dir_of}/novo.rs")}]})),
+        ]);
+        (dir, log)
+    }
+
+    #[test]
+    fn a_task_creating_a_command_gets_the_registry_and_the_test_in_a_block_with_only_the_recipe() {
+        let (dir, log) = project_creating_a_command(true);
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert!(lines.contains(head), "{lines}");
+        assert!(lines.contains("Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/*.rs`:"), "{lines}");
+        assert!(lines.contains("      - mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
+        assert!(lines.contains("      - criou um teste em 7 de 10"), "{lines}");
+        // O texto mudou junto em só 3 dos 10: fica fora.
+        assert!(!lines.contains("i18n.rs"), "{lines}");
+        // Sem regra de importação, o bloco não fala de regra nem de exemplo.
+        assert!(!lines.contains("regra:") && !lines.contains("exemplo:"), "{lines}");
+        // A receita sai do programa: nenhum pedido chama o agente de skill.
+        assert_eq!(built[0].agent, "wave");
+        assert!(!built[0].text.contains("mustard-skill") && !built[0].text.contains("new_skill"), "{}", built[0].text);
+    }
+
+    #[test]
+    fn a_project_without_any_test_gets_no_test_line_in_the_recipe() {
+        let (dir, log) = project_creating_a_command(false);
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(lines.contains("mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
+        assert!(!lines.contains("criou um teste"), "{lines}");
+    }
+
+    /// O índice dos comandos, que mudou junto em 9 dos 10 commits, não existe
+    /// mais no projeto: sai da receita, e fica a linha do teste. Sem teste
+    /// nenhum na história, a receita fica sem nada a dizer e o bloco não sai.
+    #[test]
+    fn a_file_that_no_longer_exists_leaves_the_recipe_and_a_recipe_left_with_nothing_leaves_the_request() {
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        let (dir, log) = project_creating_a_command(true);
+        std::fs::remove_file(dir.path().join("apps/rt/src/commands/mod.rs")).unwrap();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(lines.contains("Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/*.rs`:"), "{lines}");
+        assert!(lines.contains("      - criou um teste em 7 de 10"), "{lines}");
+        assert!(!lines.contains("mod.rs"), "{lines}");
+
+        let (dir, log) = project_creating_a_command(false);
+        std::fs::remove_file(dir.path().join("apps/rt/src/commands/mod.rs")).unwrap();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(!lines.contains("Receita do git") && !lines.contains(head), "no block at all: {lines}");
+    }
+
+    #[test]
+    fn a_new_project_without_history_gets_no_recipe() {
+        let (dir, log) = project_creating_a_command(true);
+        let mut map = crate::io::project_map::read(dir.path()).unwrap();
+        map.history = History::default();
+        write_map(dir.path(), &serde_json::to_value(&map).unwrap());
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(!lines.contains("Receita do git"), "{lines}");
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert!(!lines.contains(head), "no block at all: {lines}");
+    }
+
+    /// Um projeto cuja janela do mapa está cheia, com `MAX_COMMITS` commits
+    /// que nunca tocam `src/old.rs`: o último commit dele ficou fora dela.
+    fn project_with_a_file_older_than_the_window() -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for path in ["src/old.rs", "src/registry.rs", "src/busy.rs"] {
+            touch(root, path);
+        }
+        let commits: Vec<Value> =
+            (0..MAX_COMMITS).map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]})).collect();
+        let modules = json!([
+            {"path": "src/old.rs", "language": "rust", "loc": 30},
+            {"path": "src/registry.rs", "language": "rust", "loc": 30},
+            {"path": "src/busy.rs", "language": "rust", "loc": 30}
+        ]);
+        write_map(root, &json!({"modules": modules, "history": {"base": "main", "paths": ["src/busy.rs"], "commits": commits}}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Mudar o antigo", "files": [{"path": "src/old.rs"}]})),
+        ]);
+        (dir, log)
+    }
+
+    #[test]
+    fn a_file_older_than_the_window_gets_its_history_on_the_spot_and_the_next_request_does_not_read_git_again() {
+        let (dir, log) = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+        // O `scan history` de mentira: grava no mapa a história do arquivo,
+        // como o de verdade, com três commits que mudaram o registro junto.
+        let trace = |file: &str, moves: usize| {
+            calls.set(calls.get() + 1);
+            let mark = crate::io::project_map::read_for(root, Need::Lineage(file)).unwrap().census_mark;
+            let commit = |id: &str| crate::domain::project_map::LineageCommit {
+                id: id.to_string(),
+                files: crate::domain::project_map::CommitFiles {
+                    changed: vec![file.to_string(), "src/registry.rs".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let lineage = FileLineage {
+                path: file.to_string(),
+                base: "main".to_string(),
+                mark,
+                moves: u32::try_from(moves).unwrap(),
+                commits: vec![commit("a1"), commit("a2"), commit("a3")],
+                ..FileLineage::default()
+            };
+            crate::io::project_map::save_lineage_at(&crate::io::project_map::model_path(root), &lineage).unwrap();
+            true
+        };
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        for round in 0..2 {
+            let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+            let lines = task_lines(&built[0].text, "Mudar o antigo").join("\n");
+            assert!(lines.contains("Receita do git, de 3 commits que mudaram `src/old.rs`:"), "round {round}: {lines}");
+            assert!(lines.contains("mudou `src/registry.rs` em 3 de 3"), "round {round}: {lines}");
+        }
+        assert_eq!(calls.get(), 1, "the second request reads the history kept in the map, not git");
+    }
+
+    /// Com a janela do mapa longe de cheia, a história que ela guarda é a
+    /// inteira: o arquivo sem commit nela não tem história a ler do git.
+    #[test]
+    fn a_file_without_commits_in_a_window_that_is_not_full_never_reads_git() {
+        let (dir, log) = project_with_one_large_file();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+        let trace = |_: &str, _: usize| {
+            calls.set(calls.get() + 1);
+            false
+        };
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        assert_eq!(calls.get(), 0);
+    }
+
+    /// Os pedidos do projeto da janela cheia
+    /// ([`project_with_a_file_older_than_the_window`]) com o `mustard.json`
+    /// `config`, ou sem arquivo, quando `None`. Devolve o número de mudanças
+    /// de arquivo que a leitura da história pediu ao scan e os pedidos.
+    fn moves_asked_with(config: Option<&str>) -> (Vec<usize>, Vec<WavePrompt>) {
+        let (dir, log) = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        if let Some(config) = config {
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+        }
+        let asked = RefCell::new(Vec::new());
+        let trace = |_: &str, moves: usize| {
+            asked.borrow_mut().push(moves);
+            false
+        };
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        (asked.into_inner(), built)
+    }
+
+    /// Sem a chave, a história segue o padrão; com ela, o número escrito. Nos
+    /// dois casos o pedido não traz aviso nenhum.
+    #[test]
+    fn the_history_moves_follow_the_config_and_the_default_without_a_warning() {
+        let (asked, built) = moves_asked_with(None);
+        assert_eq!(asked, [MOVES_FOLLOWED], "no key: the default");
+        assert!(built.iter().all(|p| p.bad_settings.is_empty()), "{built:?}");
+
+        let (asked, built) = moves_asked_with(Some(r#"{"map": {"historyMoves": 2}}"#));
+        assert_eq!(asked, [2], "the key: its number");
+        assert!(built.iter().all(|p| p.bad_settings.is_empty()), "{built:?}");
+    }
+
+    /// O número inválido — zero, negativo, fração ou texto — cai no padrão, e
+    /// o pedido leva o aviso com a chave e o padrão que valeu, nos dois
+    /// idiomas: a montagem não tem sessão, então quem despacha o pedido diz
+    /// onde o aviso sai.
+    #[test]
+    fn an_invalid_history_moves_falls_back_to_the_default_and_the_request_carries_the_warning() {
+        for bad in ["0", "-3", "1.5", r#""tres""#] {
+            let config = format!(r#"{{"map": {{"historyMoves": {bad}}}}}"#);
+            let (asked, built) = moves_asked_with(Some(&config));
+            assert_eq!(asked, [MOVES_FOLLOWED], "{bad}: the default is what the history follows");
+            assert_eq!(built.len(), 1, "{bad}");
+            let [warning] = built[0].bad_settings.as_slice() else { panic!("{bad}: {:?}", built[0].bad_settings) };
+            assert_eq!(warning.key, "historyMoves", "{bad}");
+            assert!(
+                warning.message.contains("map.historyMoves") && warning.message.contains(&MOVES_FOLLOWED.to_string()),
+                "{bad}: {}",
+                warning.message
+            );
+        }
+    }
+
+    /// Só avisa quando o padrão valeu de fato: o número inválido que o pedido
+    /// nunca leu — nenhuma receita precisou da história além da janela — não
+    /// gera aviso.
+    #[test]
+    fn an_invalid_history_moves_is_not_warned_when_no_recipe_reads_it() {
+        let (dir, log) = project_with_one_large_file();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"map": {"historyMoves": 0}}"#).unwrap();
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        let trace = |_: &str, _: usize| panic!("no recipe reads the history beyond the window");
+        let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        assert!(built.iter().all(|p| p.bad_settings.is_empty()), "{built:?}");
+    }
+
+    /// A receita guardada serve às ondas seguintes sem ler o número de novo:
+    /// o aviso vai em todo pedido da montagem, e não só no da onda que o leu
+    /// primeiro, porque quem despacha pega só os pedidos das ondas que saem.
+    #[test]
+    fn the_warning_of_an_invalid_history_moves_goes_in_every_request_of_the_assembly() {
+        let (dir, _) = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"map": {"historyMoves": -1}}"#).unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Mudar o antigo", "files": [{"path": "src/old.rs"}]})),
+            ("wave", json!({"n": 2, "text": "Outra onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Mudar o movimentado", "files": [{"path": "src/busy.rs"}]})),
+        ]);
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        let trace = |_: &str, _: usize| false;
+        let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        assert_eq!(built.iter().map(|p| p.wave).collect::<Vec<_>>(), [1, 2]);
+        for prompt in &built {
+            assert_eq!(prompt.bad_settings.len(), 1, "wave {}: {:?}", prompt.wave, prompt.bad_settings);
+            assert_eq!(prompt.bad_settings[0].key, "historyMoves");
+        }
+    }
+
+    /// O pedido marca a skill como a revisar pelo que diz a linha dela: `true`
+    /// quando o nome sai seguido da marca.
+    fn marked_for_review(prompt: &WavePrompt) -> bool {
+        let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
+        prompt.text.contains(&format!("**somar** ({review})"))
+    }
+
+    /// A skill cujo arquivo citado teve commit depois da data do arquivo
+    /// dela sai marcada como a revisar, também quando a citação traz só o fim
+    /// do caminho e a linha: a data vem do próprio arquivo, sem precisar de
+    /// nenhum registro da skill na spec.
+    #[test]
+    fn a_skill_whose_cited_file_changed_after_it_is_marked_for_review() {
+        let written = 1_789_000_000;
+        let built = request_with_skill_written_at(written, written + 3_600, true, "src/exemplo.rs:12");
+        assert!(built.bad_skills.is_empty(), "{:?}", built.bad_skills);
+        assert_eq!(built.stale_skills, ["somar"]);
+        assert!(marked_for_review(&built), "{}", built.text);
+    }
+
+    /// A skill mais nova que os commits de todos os arquivos que ela cita sai
+    /// sem a marca; sem o mapa do projeto, não há histórico e também não há
+    /// marca.
+    #[test]
+    fn a_skill_newer_than_its_cited_files_or_without_a_map_is_not_marked() {
+        let written = 1_789_000_000;
+        for (moved, with_map) in [(written - 3_600, true), (written + 3_600, false)] {
+            let built = request_with_skill_written_at(written, moved, with_map, "apps/rt/src/exemplo.rs");
+            assert!(built.bad_skills.is_empty(), "{:?}", built.bad_skills);
+            assert!(built.stale_skills.is_empty(), "commit em {moved}, mapa {with_map}: {:?}", built.stale_skills);
+            assert!(!marked_for_review(&built), "{}", built.text);
+            assert!(built.text.contains("skills/somar/SKILL.md"), "{}", built.text);
         }
     }
 
     /// O pedido da onda que sai agora traz a cópia que a rodada escolheu; o da
     /// onda em andamento, a cópia gravada no envio dela, e o da onda que não
-    /// está fora não fala de cópia. O projeto é Rust: o mapa marca a raiz
-    /// como `cargo`.
+    /// está fora não fala de cópia. O envio antigo, que gravava também uma
+    /// pasta de compilação à parte, ainda é lido: só a cópia dele vale.
     #[test]
     fn the_request_carries_the_copy_the_round_chose_or_recorded() {
         let dir = tempdir().unwrap();
@@ -1292,43 +2724,37 @@ mod tests {
                        "author": "binary", "copy": "/c/um", "build_dir": "/t/a"}),
             ),
         ]);
-        let chosen = WaveCopy { path: "/c/dois".into(), build_dir: Some("/t/b".into()) };
+        let chosen = WaveCopy { path: "/c/dois".into(), reused: None };
         let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
-        let rule = |key: &str, from: &str, to: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace(from, to);
-        assert!(built[0].text.contains(&rule("prompt.execution.build_dir", "{dir}", "/t/a")), "{}", built[0].text);
-        assert!(built[0].text.contains("`/c/um`"), "{}", built[0].text);
-        assert!(built[1].text.contains("`/c/dois`") && built[1].text.contains("CARGO_TARGET_DIR=/t/b"), "{}", built[1].text);
+        assert_eq!(recorded_copy(&log, 1), Some(WaveCopy { path: "/c/um".into(), reused: None }));
+        assert!(built[0].text.contains("`/c/um`") && !built[0].text.contains("/t/a"), "{}", built[0].text);
+        assert!(built[1].text.contains("`/c/dois`"), "{}", built[1].text);
         assert!(built[0].text.contains(&format!("--root {} --spec teste", shown(root))), "{}", built[0].text);
 
         let still = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(!still[0].text.contains("/c/um") && !still[0].text.contains("CARGO_TARGET_DIR"), "{}", still[0].text);
+        assert!(!still[0].text.contains("/c/um"), "{}", still[0].text);
         assert!(!still[0].text.contains("--root"), "sem cópia, o agente lê a spec de onde está: {}", still[0].text);
     }
 
     /// Os pedidos que a rodada monta — o da onda e o da revisão final — num
-    /// projeto sem mapa, num só com parte Node, num com
-    /// uma parte Node e uma Rust e num só Rust. A onda tem a cópia e a pasta
-    /// de compilação que a rodada escolheu nos quatro, mas só os dois com
-    /// parte `cargo` no mapa trazem a frase da pasta e citam o Cargo e a
-    /// pasta `target/copias`; a cópia aparece em todos.
+    /// projeto sem mapa, num só com parte Node, num com uma parte Node e uma
+    /// Rust e num só Rust: nenhum cita pasta de compilação à parte, o Cargo
+    /// ou a variável dele. A compilação mora dentro da cópia, e a cópia
+    /// aparece em todos. O envio antigo com a pasta gravada não a traz de
+    /// volta.
     #[test]
-    fn the_build_folder_rule_goes_only_to_rust_projects() {
+    fn no_request_names_a_build_folder_in_any_project() {
         let node = json!({"name": "web", "dir": "web", "kind": "npm", "code_files": 3});
         let rust = json!({"name": "api", "dir": "api", "kind": "cargo", "code_files": 3});
-        for (map, cites) in [
-            (None, false),
-            (Some(json!([node])), false),
-            (Some(json!([node, rust])), true),
-            (Some(json!([rust])), true),
-        ] {
+        for map in [None, Some(json!([node])), Some(json!([node, rust])), Some(json!([rust]))] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             if let Some(projects) = &map {
                 write_map(root, &json!({"projects": projects}));
             }
             let folder = shown(&root.join("target").join("copias").join("a"));
-            let copy = shown(&copy_path(root, "teste", 1, false));
+            let copy = shown(&slot_path(root, "teste", 0));
             let log = log_of(&[
                 ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
                 ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -1341,16 +2767,413 @@ mod tests {
             let flight = Flight { running: [1].into(), ..Flight::default() };
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let built = prompts(root, "teste", &log, lang, &flight);
-                let last = final_review(root, "teste", &log, lang);
-                let sentence = crate::platform::i18n::translate("prompt.execution.build_dir", lang).replace("{dir}", &folder);
+                let last = final_review(root, "teste", &log, lang).text;
                 for (what, text) in [("wave", &built[0].text), ("final", &last)] {
-                    assert_eq!(text.contains(&sentence), cites, "{map:?} {lang:?} {what}: {text}");
-                    assert_eq!(text.contains("Cargo"), cites, "{map:?} {lang:?} {what}: {text}");
-                    assert_eq!(text.contains("target/copias"), cites, "{map:?} {lang:?} {what}: {text}");
+                    assert!(text.contains(&format!("`{copy}`")), "{map:?} {lang:?} {what}: {text}");
+                    for word in ["CARGO_TARGET_DIR", "Cargo", "target/copias", &folder] {
+                        assert!(!text.contains(word), "{map:?} {lang:?} {what} cita {word}: {text}");
+                    }
                 }
-                assert!(built[0].text.contains(&format!("`{copy}`")), "{map:?} {lang:?}: {}", built[0].text);
             }
         }
+    }
+
+    /// O revisor final trabalha na vaga do último envio de onda que gravou
+    /// uma vaga desta spec, a que já tem a compilação da obra. O envio de
+    /// revisão e o envio com o endereço antigo (`<spec>-<onda>`) não contam.
+    /// Sem envio de onda com vaga — a spec sem nenhum envio —, a vaga `a`.
+    #[test]
+    fn the_final_review_uses_the_slot_of_the_last_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let slot = |n: usize| shown(&slot_path(root, "teste", n));
+        let send = |wave: u64, copy: &str| {
+            ("send", json!({"wave": wave, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
+                            "mustard": "0", "author": "binary", "copy": copy}))
+        };
+        let old = shown(&copies_dir(root).join("teste-3"));
+        let review = ("send", json!({"role": "review", "text": "p", "lines": 1, "chars": 1, "mustard": "0",
+                                      "author": "binary", "copy": slot(2)}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            send(1, &slot(0)),
+            send(2, &slot(1)),
+            send(3, &old),
+            review,
+        ]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &log)), slot(1));
+        assert!(final_review(root, "teste", &log, Locale::PtBr).text.contains(&format!("`{}`", slot(1))));
+
+        let unsent = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &unsent)), slot(0));
+        let other_spec = log_of(&[send(1, &shown(&slot_path(root, "outra", 3)))]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &other_spec)), slot(0));
+        assert_eq!(slot_name(0), "a");
+        assert_eq!(slot_name(25), "z");
+        assert_eq!(slot_name(26), "27");
+        assert_eq!(slot_path(root, "teste", 1), copies_dir(root).join("teste").join("b"));
+    }
+
+    /// A pasta do programa compilado leva a mesma chave por projeto da pasta
+    /// das cópias — o nome da pasta do checkout e o código do caminho dele —,
+    /// separa dois projetos de mesmo nome e nunca é a pasta das cópias nem
+    /// fica dentro do projeto.
+    #[test]
+    fn the_build_folder_carries_the_same_project_key_as_the_copies() {
+        let place = tempdir().unwrap();
+        let named = |parent: &str| {
+            let root = place.path().join(parent).join("mustard");
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        };
+        let (one, other) = (named("um"), named("outro"));
+        assert_eq!(development_build_dir(&one).file_name(), copies_dir(&one).file_name());
+        assert!(development_build_dir(&one).file_name().unwrap().to_string_lossy().starts_with("mustard-"));
+        assert_ne!(development_build_dir(&one), development_build_dir(&other), "dois projetos de mesmo nome ficam separados");
+        assert_ne!(development_build_dir(&one), copies_dir(&one));
+        assert!(!development_build_dir(&one).starts_with(&one), "o fechamento só apaga o que está dentro do projeto");
+        assert_eq!(development_build_dir(&one), development_build_dir(&one.join(".")), "o caminho é lido já resolvido");
+    }
+
+    /// A obra da revisão de volta: três requisitos acordados, um critério, a
+    /// onda e o commit dela, e o veredito final que reprovou um requisito.
+    /// Depois dele, um commit novo, a versão nova de outro requisito, um
+    /// requisito novo e um critério novo. `verdict` troca o veredito: `None`
+    /// tira ele e tudo o que veio depois; `Some("approved")` o grava
+    /// aprovando.
+    fn reviewed_again(root: &Path, verdict: Option<&str>) -> SpecLog {
+        let repo = root.file_name().unwrap().to_string_lossy().to_string();
+        let commit = |sha: &str| {
+            ("commit", json!({"sha": sha, "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": repo}))
+        };
+        let mut events = vec![
+            ("rule", json!({"text": "Atendida antes", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("decision", json!({"text": "Reprovada", "keys": ["b"], "why": "w"})),
+            ("decision", json!({"text": "Regravada", "keys": ["c"], "why": "w"})),
+            ("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [4], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+            commit("aaa1111"),
+        ];
+        let Some(result) = verdict else { return log_of(&events) };
+        let agreed = json!([{"item": 1, "met": true}, {"item": 2, "met": false, "text": "falta"}, {"item": 3, "met": true}]);
+        events.push(("verdict", json!({"final": true, "result": result, "text": "v", "agreed": agreed})));
+        events.push(commit("bbb2222"));
+        events.push(("decision", json!({"text": "Regravada de novo", "keys": ["c"], "why": "w", "replaces": 3})));
+        events.push(("rule", json!({"text": "Nova", "keys": ["d"], "example": "e", "applies_to": {"files": ["**"]}})));
+        events.push(("criterion", json!({"when": "a volta roda", "then": "passa", "proof": "true"})));
+        log_of(&events)
+    }
+
+    /// As linhas de lista da parte `heading` de um pedido; vazia quando a
+    /// parte não existe.
+    fn part_lines(text: &str, heading: &str) -> Vec<String> {
+        let Some((_, rest)) = text.split_once(&format!("## {heading}\n")) else { return Vec::new() };
+        let part = rest.split("\n## ").next().unwrap_or_default();
+        part.lines().filter(|line| line.starts_with("- ")).map(str::to_string).collect()
+    }
+
+    /// Os códigos das linhas de uma parte do pedido, na ordem: a linha de um
+    /// item abre com o tipo por extenso e traz o código logo depois.
+    fn line_codes(lines: Vec<String>) -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|line| line.find("MSTD-").map(|at| line[at..].split(' ').next().unwrap_or_default().to_string()))
+            .collect()
+    }
+
+    /// A revisão que volta depois de um veredito final que reprovou traz a
+    /// parte do que mudou desde ele: o veredito, só os commits gravados
+    /// depois dele, o requisito que ele deu como não atendido, o regravado e
+    /// o novo depois dele e o critério novo. O resto não entra nessa parte,
+    /// mas todos os requisitos acordados continuam no pedido, porque o
+    /// veredito responde por cada um. A primeira revisão, e a que vem depois
+    /// de uma aprovação, conferem a obra inteira, sem essa parte. Nenhuma
+    /// manda rodar a suíte: dizem que ela passou no fechamento, no commit da
+    /// cópia, e mandam rodar só os testes em volta de cada corte. Nos dois
+    /// idiomas.
+    #[test]
+    fn a_review_after_a_rejection_lists_only_what_changed_since_the_verdict() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let config = json!({"buildCommand": "make", "testCommand": "make test"});
+        std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+        let again = reviewed_again(root, Some("rejected"));
+        let codes = again.codes();
+        let code = |id: u64| codes[&id].clone();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+            let since = t("prompt.part.since_verdict");
+            let whole_suite = t("prompt.step.suite").replace("{command}", "make test");
+            let build = format!("- {}", t("prompt.execution.build").replace("{command}", "make"));
+
+            let last = final_review(root, "teste", &again, lang).text;
+            assert_eq!(
+                line_codes(part_lines(&last, since)),
+                [code(8), code(9), code(2), code(10), code(11), code(12)],
+                "{lang:?}: {last}"
+            );
+            assert!(!part_lines(&last, since).concat().contains(&code(7)), "o commit de antes fica fora: {last}");
+            assert_eq!(
+                line_codes(part_lines(&last, t("prompt.part.agreed"))),
+                [code(1), code(2), code(10), code(11)],
+                "o pedido ainda traz todos os requisitos acordados: {last}"
+            );
+            assert!(last.contains(t("prompt.final.look_again")) && !last.contains(t("prompt.final.look")), "{last}");
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "bbb2222");
+            assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
+            assert!(!last.contains(&whole_suite), "a revisão não roda a suíte inteira: {last}");
+
+            for (what, log) in [("primeira", reviewed_again(root, None)), ("aprovada", reviewed_again(root, Some("approved")))] {
+                let first = final_review(root, "teste", &log, lang).text;
+                assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{what}: {first}");
+                assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{what}: {first}");
+                assert!(!first.contains(&whole_suite), "{what}: a revisão não roda a suíte inteira: {first}");
+                let sha = if log.max_id() > 7 { "bbb2222" } else { "aaa1111" };
+                let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
+                assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");
+            }
+        }
+    }
+
+    /// O que o fechamento grava no envio da revisão como leitura obrigatória
+    /// é o que o pedido imprime: o código de cada linha de item, na ordem, uma
+    /// vez só mesmo quando o requisito sai em duas partes — o novo depois do
+    /// veredito sai em "o que mudou" e em "requisitos acordados".
+    #[test]
+    fn the_review_reading_list_is_the_codes_of_the_lines_the_request_prints() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let again = reviewed_again(root, Some("rejected"));
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let review = final_review(root, "teste", &again, lang);
+            let all: Vec<String> = review.text.lines().filter(|line| line.starts_with("- ")).map(str::to_string).collect();
+            let mut printed: Vec<String> = Vec::new();
+            for code in line_codes(all) {
+                if !printed.contains(&code) {
+                    printed.push(code);
+                }
+            }
+            assert!(printed.len() > 6, "{}", review.text);
+            assert_eq!(review.listed, printed, "{lang:?}: {}", review.text);
+        }
+    }
+
+    /// Até onde vai a obra de duas ondas de [`two_waves_reviewed`].
+    enum Reviewed {
+        /// Nenhum veredito final ainda.
+        First,
+        /// O veredito final reprovou a onda 1, e o conserto dela entrou.
+        WaveRejected,
+        /// O veredito final reprovou a obra sem apontar onda.
+        WorkRejected,
+        /// Depois do conserto da onda 1, um veredito final aprovou a obra.
+        ApprovedAfter,
+    }
+
+    /// Uma obra de duas ondas entregues e comitadas, com os vereditos finais
+    /// que `reviewed` pede. Cada reprovação vem com o conserto entregue e
+    /// comitado depois dela.
+    fn two_waves_reviewed(reviewed: &Reviewed) -> SpecLog {
+        let commit = |sha: &str, waves: Value| ("commit", json!({"sha": sha, "title": "t", "waves": waves, "files": ["src/a.rs"]}));
+        let mut events = vec![
+            ("rule", json!({"text": "Do projeto", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "A outra", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Subtrair", "files": [{"path": "src/b.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "Feito", "files": ["src/a.rs"]})),
+            ("delivered", json!({"wave": 2, "text": "Feita", "files": ["src/b.rs"]})),
+            commit("aaa1111", json!([1, 2])),
+        ];
+        if matches!(reviewed, Reviewed::First) {
+            return log_of(&events);
+        }
+        let mut rejected = json!({"final": true, "result": "rejected", "text": "Falta o teste",
+                                  "agreed": [{"item": 1, "met": false, "text": "falta"}]});
+        if !matches!(reviewed, Reviewed::WorkRejected) {
+            rejected["wave"] = json!(1);
+        }
+        events.push(("verdict", rejected));
+        events.push(("delivered", json!({"wave": 1, "text": "Consertado", "files": ["src/a.rs"]})));
+        events.push(commit("bbb2222", json!([1])));
+        if matches!(reviewed, Reviewed::ApprovedAfter) {
+            let approved = json!({"final": true, "result": "approved", "text": "Pronta", "agreed": [{"item": 1, "met": true}]});
+            events.push(("verdict", approved));
+        }
+        log_of(&events)
+    }
+
+    /// A revisão de volta de um veredito que reprovou uma onda cita esse
+    /// veredito uma vez só, na parte do que mudou, e nenhuma outra parte o
+    /// repete nem manda conferir o conserto à parte: o pedido tem as mesmas
+    /// partes da revisão de volta de uma obra inteira. Ela diz, no parágrafo
+    /// do que olhar, que as ondas e as entregas do pedido trazem só essa onda,
+    /// e as partes trazem só ela, com a entrega do conserto. A primeira
+    /// revisão não diz o recorte e traz as duas ondas. O veredito que reprovou a obra sem
+    /// apontar onda traz as duas ondas na revisão de volta. Um veredito final
+    /// que aprovou depois da reprovação de uma onda faz a revisão seguinte
+    /// conferir a obra inteira, sem recorte e sem a frase dele. Nos dois
+    /// idiomas.
+    #[test]
+    fn a_review_after_a_rejected_wave_says_it_carries_only_that_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+            let scope_phrase = match lang {
+                Locale::PtBr => {
+                    "Se ele reprovou uma onda, as partes das ondas e das entregas trazem só essa onda; senão, \
+                     trazem todas as ondas."
+                }
+                Locale::EnUs => {
+                    "If it rejected one wave, the waves and deliveries parts carry only that wave; otherwise, \
+                     they carry every wave."
+                }
+            };
+            // Se a parte das ondas traz a onda 1 e a onda 2.
+            let wave_codes = |log: &SpecLog, text: &str| -> Vec<bool> {
+                let codes = log.codes();
+                let listed = part_lines(text, t("prompt.part.waves")).concat();
+                [3, 5].iter().map(|id| listed.contains(codes[id].as_str())).collect()
+            };
+
+            let log = two_waves_reviewed(&Reviewed::WaveRejected);
+            let again = final_review(root, "teste", &log, lang).text;
+            assert!(again.contains(scope_phrase), "{lang:?}: a revisão de volta diz o recorte: {again}");
+            assert_eq!(again.matches(scope_phrase).count(), 1, "o recorte é dito uma vez só: {again}");
+            assert_eq!(wave_codes(&log, &again), [true, false], "só a onda reprovada: {again}");
+            let codes = log.codes();
+            let code = |id: u64| codes[&id].clone();
+            assert_eq!(again.matches(code(10).as_str()).count(), 1, "o veredito aparece uma vez só: {again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.since_verdict"))).first(), Some(&code(10)), "{again}");
+            let headings: Vec<&str> = again.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+            let expected: Vec<&str> = [
+                "prompt.part.read",
+                "prompt.part.since_verdict",
+                "prompt.part.waves",
+                "prompt.part.agreed",
+                "prompt.part.each_delivered",
+                "prompt.part.criteria",
+                "prompt.part.branch_changes",
+                "prompt.part.execution",
+            ]
+            .into_iter()
+            .map(t)
+            .collect();
+            assert_eq!(headings, expected, "nenhuma parte de conserto à parte: {again}");
+            assert!(again.contains(t("prompt.final.look_again")), "{lang:?}: {again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.waves"))), [code(3), code(4)], "{again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.each_delivered"))), [code(11)], "{again}");
+
+            let log = two_waves_reviewed(&Reviewed::First);
+            let first = final_review(root, "teste", &log, lang).text;
+            assert!(!first.contains(scope_phrase), "{lang:?}: a primeira revisão não diz recorte: {first}");
+            assert_eq!(wave_codes(&log, &first), [true, true], "{first}");
+
+            let log = two_waves_reviewed(&Reviewed::WorkRejected);
+            let whole = final_review(root, "teste", &log, lang).text;
+            assert!(whole.contains(t("prompt.final.look_again")), "{lang:?}: {whole}");
+            assert_eq!(wave_codes(&log, &whole), [true, true], "a obra reprovada traz todas as ondas: {whole}");
+
+            let log = two_waves_reviewed(&Reviewed::ApprovedAfter);
+            let after = final_review(root, "teste", &log, lang).text;
+            assert!(after.contains(t("prompt.final.look")) && !after.contains(scope_phrase), "{lang:?}: {after}");
+            assert_eq!(wave_codes(&log, &after), [true, true], "depois da aprovação, a obra inteira: {after}");
+        }
+    }
+
+    /// Num projeto que declara o preparo (`npm ci`) e os arquivos locais, o
+    /// pedido da onda e o do revisor mandam rodar o preparo dentro da cópia
+    /// antes de compilar — a linha vem antes da de compilar — e devolver ao
+    /// commit, pelo `git checkout`, o arquivo versionado que ele mudar, salvo
+    /// o que a tarefa declara. Só o pedido do revisor lista os arquivos
+    /// locais, a copiar pelo conteúdo do repositório principal, sem o item
+    /// que sairia do projeto. Sem os dois — chaves ausentes, ou comando vazio
+    /// e lista vazia —, nenhum pedido traz essas linhas. Nos dois idiomas.
+    #[test]
+    fn the_wave_requests_cite_the_prepare_command_and_the_local_files() {
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let declared = json!({"buildCommand": "npm run build", "prepareCommand": "npm ci",
+            "localFiles": [".env", "apps/api/.env.local", "../fora.env", "/etc/fora.env"]});
+        let empty = json!({"buildCommand": "npm run build", "prepareCommand": "  ", "localFiles": []});
+        let absent = json!({"buildCommand": "npm run build"});
+        for (config, cites) in [(declared, true), (empty, false), (absent, false)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            let copy = WaveCopy { path: "/c/um".into(), reused: None };
+            let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                let t = |key: &str| crate::platform::i18n::translate(key, lang);
+                let new_copy = t("prompt.execution.prepare_new").replace("{command}", "npm ci");
+                let review = t("prompt.execution.prepare").replace("{command}", "npm ci");
+                let build = t("prompt.execution.build").replace("{command}", "npm run build");
+                let local = t("prompt.review.local_files")
+                    .replace("{files}", "`.env`, `apps/api/.env.local`")
+                    .replace("{root}", &shown(root));
+                let wave = prompts(root, "teste", &log, lang, &flight).remove(0).text;
+                let last = final_review(root, "teste", &log, lang).text;
+                for (what, text, prepare) in [("wave", &wave, &new_copy), ("final", &last, &review)] {
+                    assert_eq!(text.contains(prepare.as_str()), cites, "{config} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("npm ci"), cites, "{config} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("git checkout --"), cites, "{config} {lang:?} {what}: {text}");
+                    if cites {
+                        let (at, built_at) = (text.find(prepare.as_str()).unwrap(), text.find(&build).unwrap());
+                        assert!(at < built_at, "o preparo vem antes de compilar: {lang:?} {what}: {text}");
+                    }
+                    assert!(!text.contains("fora.env"), "{lang:?} {what}: {text}");
+                }
+                assert_eq!(last.contains(&local), cites, "{config} {lang:?}: {last}");
+                assert!(!wave.contains(".env"), "a cópia da onda já recebe os arquivos da rodada: {lang:?}: {wave}");
+            }
+        }
+    }
+
+    /// A vaga nova pede o preparo sempre. A reaproveitada lista os arquivos
+    /// que mudaram desde o último uso dela e pede o preparo só se um deles
+    /// declara dependências, sem dizer quais são: o agente julga pela lista.
+    /// Sem nada mudado, ela manda não preparar de novo. A lista longa para no
+    /// teto e diz quantos faltam, com o comando que lista todos.
+    #[test]
+    fn a_reused_copy_lists_the_changed_files_and_prepares_only_when_needed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), json!({"prepareCommand": "npm ci"}).to_string()).unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let with = |reused: Option<Reuse>| {
+            let copy = WaveCopy { path: "/c/a".into(), reused };
+            let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
+            prompts(root, "teste", &log, Locale::PtBr, &flight).remove(0).text
+        };
+        let t = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace("{command}", "npm ci");
+        let reuse = |changed: Vec<String>| Some(Reuse { since: "abc1234".into(), changed });
+
+        let fresh = with(None);
+        assert!(fresh.contains(&t("prompt.execution.prepare_new")), "{fresh}");
+
+        let listed = with(reuse(vec!["package.json".into(), "src/a.ts".into()]));
+        let line = t("prompt.execution.prepare_reused").replace("{files}", "`package.json`, `src/a.ts`");
+        assert!(listed.contains(&line), "{listed}");
+        assert!(!listed.contains(&t("prompt.execution.prepare_new")), "{listed}");
+
+        let same = with(reuse(Vec::new()));
+        assert!(same.contains(&t("prompt.execution.prepare_same")), "{same}");
+
+        let many: Vec<String> = (0..45).map(|n| format!("src/{n}.ts")).collect();
+        let long = with(reuse(many));
+        let more = crate::platform::i18n::translate("prompt.execution.prepare_more", Locale::PtBr)
+            .replace("{n}", "5")
+            .replace("{diff}", "git diff --name-only abc1234 HEAD");
+        assert!(long.contains("`src/39.ts`, ") && long.contains(&more), "{long}");
+        assert!(!long.contains("`src/40.ts`"), "{long}");
     }
 
     /// A skill que a tarefa nomeia e que não está no disco é recusada, com o
@@ -1364,44 +3187,28 @@ mod tests {
         assert!(built[0].bad_skills[0].1.message(Locale::PtBr).contains("somar"));
     }
 
-    /// Com a spec real desta obra: nenhum item combinado fica sem dono, e o
-    /// pedido de cada onda, montado como a rodada o monta, só cita item
-    /// combinado dela ou do projeto. A spec fica fora do git, então o teste
-    /// roda à mão (`--ignored`); `MUSTARD_SPEC_FILE` aponta outra cópia dela.
+    /// A onda que continua o resumo de uma onda que parou o lista pelo código,
+    /// em primeiro lugar, na lista de leitura da entrega e no bloco do começo
+    /// do pedido; o texto do resumo não entra, e a onda que não o continua
+    /// não o lista.
     #[test]
-    #[ignore = "lê a spec real, que fica fora do git"]
-    fn with_the_real_spec_every_agreed_item_has_an_owner_and_each_request_cites_only_its_own() {
-        use crate::domain::mustard_id;
-        use crate::domain::wave_prompt::Owner;
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let file = std::env::var_os("MUSTARD_SPEC_FILE")
-            .map_or_else(|| root.join(".claude/spec/mustard-enxuto/spec.ndjson"), PathBuf::from);
-        let log = crate::io::spec_events::read(&file).expect("a spec se lê").expect("a spec existe");
-        let spec = file.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().to_string()).unwrap();
-        let codes = log.codes();
-        let unowned: Vec<&String> = wave_prompt::unowned(&log).iter().filter_map(|e| codes.get(&e.id)).collect();
-        assert!(unowned.is_empty(), "{} itens combinados sem dono: {unowned:?}", unowned.len());
+    fn the_wave_that_continues_a_summary_lists_it_first_and_the_text_never_enters() {
+        let dir = tempdir().unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "Uma.", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar o dia.", "files": [{"path": "src/a.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "Parei no meio da soma.", "undone": ["MSTD-TASK-0002"]})),
+            ("wave", json!({"n": 2, "text": "Duas.", "criteria": [], "done_when": "passa", "summary": 3})),
+            ("task", json!({"wave": 2, "text": "Mostrar o total.", "files": [{"path": "src/b.rs"}]})),
+        ]);
+        let code = log.codes()[&3].clone();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let (first, second) = (&built[0], &built[1]);
+        assert_eq!((first.wave, second.wave), (1, 2));
 
-        let owners = wave_prompt::owners(&log);
-        let by_code: std::collections::BTreeMap<&str, u64> =
-            codes.iter().map(|(id, code)| (code.as_str(), *id)).collect();
-        let built = prompts(&root, &spec, &log, Locale::PtBr, &Flight::default());
-        assert_eq!(built.len(), log.planned_waves().len());
-        for prompt in &built {
-            for (start, end) in mustard_id::find(&prompt.text) {
-                let code = &prompt.text[start..end];
-                let Some(item) = by_code.get(code).and_then(|id| log.get(*id)) else { continue };
-                if item.block() != Some(Block::Agreed) {
-                    continue;
-                }
-                match owners.get(&item.id) {
-                    Some(Owner::Project) => {}
-                    Some(Owner::Waves(waves)) if waves.contains(&prompt.wave) => {}
-                    Some(Owner::Files(_))
-                        if wave_prompt::agreed_for(&log, prompt.wave).iter().any(|e| e.id == item.id) => {}
-                    other => panic!("o pedido da onda {} cita {code}, que é de {other:?}", prompt.wave),
-                }
-            }
-        }
+        assert_eq!(second.listed.first(), Some(&code), "{:?}", second.listed);
+        assert!(second.text.contains(&format!("run read item-{code} --spec teste")), "{}", second.text);
+        assert!(!second.text.contains("Parei no meio da soma."), "{}", second.text);
+        assert!(!first.listed.contains(&code), "the wave that continues nothing does not list it: {:?}", first.listed);
     }
 }

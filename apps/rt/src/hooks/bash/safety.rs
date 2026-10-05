@@ -55,6 +55,17 @@ impl Danger {
         }
     }
 
+    /// The catalogue key of the allowed way to do the same job, when there is
+    /// one. Only a folder deleted by force has it: the project copy or the
+    /// build folder in the temp directory goes through the command that checks
+    /// the folder before deleting it.
+    fn instead(&self) -> Option<&'static str> {
+        match self {
+            Self::RecursiveForceDelete => Some("command_guard.rm_recursive_force_instead"),
+            _ => None,
+        }
+    }
+
     /// The branch an integration-branch deletion names.
     fn detail(&self) -> Option<&str> {
         match self {
@@ -272,10 +283,15 @@ pub(super) fn bash_safety(segments: &[Segment], cmd: &str, ctx: &Ctx) -> Option<
     Some(Verdict::Deny { reason: refusal(&danger, cmd, lang) })
 }
 
+/// The refusal text. When the danger has an allowed way, its line goes right
+/// after the command line.
 fn refusal(danger: &Danger, cmd: &str, lang: SupportedLocale) -> String {
-    translate("command_guard.deny", lang)
-        .replace("{reason}", &danger.reason(lang))
-        .replace("{command}", truncate(cmd, 120))
+    let command = truncate(cmd, 120);
+    let command = match danger.instead() {
+        Some(key) => format!("{command}\n{}", translate(key, lang)),
+        None => command.to_string(),
+    };
+    translate("command_guard.deny", lang).replace("{reason}", &danger.reason(lang)).replace("{command}", &command)
 }
 
 #[cfg(test)]
@@ -556,8 +572,9 @@ mod tests {
         assert_eq!(
             reason,
             "Comando barrado: apagar pasta à força (`rm` com `-r` e `-f`). Isso apaga trabalho sem \
-             volta.\nComando: rm -rf pasta\nSe for isso mesmo, peça ao usuário para rodar o comando no \
-             terminal dele."
+             volta.\nComando: rm -rf pasta\nPara apagar a cópia do projeto ou a pasta de compilação no \
+             temporário, rode `mustard-rt run clean --path <pasta>`: ele confere a pasta antes de \
+             apagar.\nSe for isso mesmo, peça ao usuário para rodar o comando no terminal dele."
         );
 
         ctx.config.language.text = Some("en-US".to_string());
@@ -567,8 +584,10 @@ mod tests {
         assert_eq!(
             reason,
             "Command blocked: deleting a folder by force (`rm` with `-r` and `-f`). This destroys \
-             work with no way back.\nCommand: rm -rf pasta\nIf this is really what you want, ask the \
-             user to run the command in their own terminal."
+             work with no way back.\nCommand: rm -rf pasta\nTo delete the project copy or the build \
+             folder in the temp directory, run `mustard-rt run clean --path <folder>`: it checks the \
+             folder before deleting it.\nIf this is really what you want, ask the user to run the \
+             command in their own terminal."
         );
 
         ctx.config.git.flow.insert("*".to_string(), "develop".to_string());
@@ -577,5 +596,43 @@ mod tests {
             panic!("{branch} must be denied");
         };
         assert!(reason.contains("deleting the integration branch `develop`"), "{reason}");
+        assert!(!reason.contains("clean --path"), "only the forced folder delete points to the allowed way: {reason}");
+    }
+
+    /// The refusal of a folder deleted by force, in any spelling, names the
+    /// command that deletes the project copy or the build folder after
+    /// checking it, in both languages. Every other danger is refused without
+    /// that line: the allowed way does not do their job.
+    #[test]
+    fn only_the_forced_folder_delete_points_to_the_allowed_way() {
+        let mut ctx = Ctx::for_test(String::new(), None);
+        ctx.config.git.flow.insert("*".to_string(), "develop".to_string());
+        let deny = |cmd: &str, ctx: &Ctx| match bash_safety(&segments(cmd), cmd, ctx) {
+            Some(Verdict::Deny { reason }) => reason,
+            other => panic!("{cmd} must be denied: {other:?}"),
+        };
+        for (language, allowed) in [
+            ("pt-BR", "rode `mustard-rt run clean --path <pasta>`"),
+            ("en-US", "run `mustard-rt run clean --path <folder>`"),
+        ] {
+            ctx.config.language.text = Some(language.to_string());
+            for cmd in ["rm -rf /tmp/copia", "rm -r -f build", "rm --recursive --force target", "bash -c \"rm -fr x\""] {
+                let reason = deny(cmd, &ctx);
+                assert!(reason.contains(allowed), "{language} {cmd}: {reason}");
+                let (command_line, allowed_line) = (reason.find(truncate(cmd, 120)).unwrap(), reason.find(allowed).unwrap());
+                assert!(command_line < allowed_line, "{language} {cmd}: the allowed way follows the command: {reason}");
+            }
+            for cmd in [
+                "git push --force",
+                "git reset --hard",
+                "git clean -fd",
+                "git checkout -- .",
+                "git restore .",
+                "git branch -D develop",
+            ] {
+                let reason = deny(cmd, &ctx);
+                assert!(!reason.contains("clean --path"), "{language} {cmd}: {reason}");
+            }
+        }
     }
 }

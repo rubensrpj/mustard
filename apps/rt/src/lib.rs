@@ -30,6 +30,9 @@
     )
 )]
 
+// A linha de comando que o binário lê, declarada aqui também para o teste da
+// ajuda percorrer a árvore a partir da raiz.
+pub mod cli;
 pub mod commands;
 pub mod shared;
 pub mod util;
@@ -43,3 +46,13 @@ mod report;
 // declares it too but no longer runs any test (`test = false`), which is what
 // stops every `#[cfg(test)]` block under `src/` from executing twice.
 mod hook_output;
+
+// A pasta do pacote lida na hora de rodar, para os testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+pub(crate) mod manifest_dir;
+
+// O programa falso que os testes de dentro de `src/` gravam e depois rodam.
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+pub(crate) mod executable;

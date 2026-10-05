@@ -8,13 +8,6 @@
     "pr": ""
   },
   "env": {
-    "MUSTARD_SKILL_SIZE_MODE": "warn",
-    "MUSTARD_SKILL_VALIDATE_GATE_MODE": "warn",
-    "MUSTARD_CHECKLIST_GATE_MODE": "strict",
-    "MUSTARD_BOUNDARY_MODE": "warn",
-    "MUSTARD_MAIN_BUDGET_MODE": "warn",
-    "MUSTARD_DELEGATION_WARN_MODE": "warn",
-    "MUSTARD_HARNESS_DUAL_EMIT": "1",
     "FORCE_HYPERLINK": "1"
   },
   "permissions": {
@@ -34,7 +27,8 @@
       "Bash",
       "Bash(mustard-rt run read:*)",
       "Bash(mustard-rt run close:*)",
-      "Bash(mustard-rt run pr-merge:*)"
+      "Bash(mustard-rt run pr-merge:*)",
+      "Bash(mustard-rt run spend:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",

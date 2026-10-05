@@ -47,6 +47,8 @@ pub fn detect_commands(root: &Path) -> Commands {
         test: None,
         lint: None,
         type_check: None,
+        prepare: None,
+        build_output: Vec::new(),
     }
 }
 
@@ -93,6 +95,10 @@ fn detect_native(dir: &Path) -> Option<Commands> {
             test: Some("cargo test".into()),
             lint: Some("cargo clippy".into()),
             type_check: Some("cargo check".into()),
+            prepare: None,
+            // A pasta que guarda cada versão compilada ao lado das velhas e só
+            // cresce: o fechamento a apaga.
+            build_output: vec!["target".into()],
         });
     }
     if dir.join("go.mod").is_file() {
@@ -101,6 +107,8 @@ fn detect_native(dir: &Path) -> Option<Commands> {
             test: Some("go test ./...".into()),
             lint: None,
             type_check: Some("go vet ./...".into()),
+            prepare: None,
+            build_output: Vec::new(),
         });
     }
     if dir.join("Makefile").is_file() || dir.join("makefile").is_file() {
@@ -109,6 +117,8 @@ fn detect_native(dir: &Path) -> Option<Commands> {
             test: Some("make test".into()),
             lint: None,
             type_check: None,
+            prepare: None,
+            build_output: Vec::new(),
         });
     }
     None
@@ -207,6 +217,8 @@ fn js_commands(pm: &str, scripts: &[String]) -> Commands {
             test: Some(format!("{pm} test")),
             lint: Some(format!("{pm} run lint")),
             type_check: Some("tsc --noEmit".into()),
+            prepare: None,
+            build_output: Vec::new(),
         };
     }
 
@@ -223,7 +235,8 @@ fn js_commands(pm: &str, scripts: &[String]) -> Commands {
     let type_check = find_script(scripts, &["typecheck", "type-check", "check"])
         .map(|name| format!("{pm} run {name}"));
 
-    Commands { build, test, lint, type_check }
+    // O preparo é do projeto: nenhuma pilha o deduz.
+    Commands { build, test, lint, type_check, prepare: None, build_output: Vec::new() }
 }
 
 #[cfg(test)]
@@ -246,6 +259,28 @@ mod tests {
         let c = detect_commands(d.path());
         assert_eq!(c.build.as_deref(), Some("cargo build"));
         assert_eq!(c.lint.as_deref(), Some("cargo clippy"));
+    }
+
+    /// Só a pilha cuja compilação guarda as versões velhas ao lado das novas
+    /// declara a pasta que o fechamento apaga: a do Rust declara `target`, e
+    /// as de JS, Go e Make, que escrevem por cima, não declaram nada — nem a
+    /// pilha desconhecida.
+    #[test]
+    fn only_the_stack_whose_build_keeps_growing_declares_a_build_output() {
+        let rust = tempdir().unwrap();
+        touch(rust.path(), "Cargo.toml", "[package]");
+        assert_eq!(detect_commands(rust.path()).build_output, vec!["target".to_string()]);
+
+        for (name, body, build) in
+            [("pnpm-lock.yaml", "", "pnpm run build"), ("go.mod", "module x", "go build ./..."), ("Makefile", "all:", "make")]
+        {
+            let d = tempdir().unwrap();
+            touch(d.path(), name, body);
+            let c = detect_commands(d.path());
+            assert_eq!(c.build.as_deref(), Some(build), "{name} is recognised");
+            assert!(c.build_output.is_empty(), "{name} declares no build output");
+        }
+        assert!(detect_commands(tempdir().unwrap().path()).build_output.is_empty());
     }
 
     #[test]

@@ -31,6 +31,12 @@ pub enum MaintCmd {
     /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
+    ///
+    /// Sem `--path`, lista também as cópias de obra do projeto da pasta
+    /// atual: saem as de obra fechada, descartada ou que não existe mais, sem
+    /// regra de idade; a de obra aberta fica. A cópia da página de um
+    /// descarte sai só com mais de um dia; a de descarte recém-feito fica. A
+    /// pasta principal nunca entra.
     #[command(name = "clean")]
     #[command(display_order = 18)]
     ScratchGc {
@@ -56,14 +62,13 @@ pub enum MaintCmd {
     /// `.claude/settings.json` — plus `.claude/.gitignore` and the
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
-    /// backfilled. Mustard's own texts — the session map
-    /// `.claude/mustard/session-map.md`, the two page templates under
-    /// `.claude/mustard/pages/` and the three agents under
-    /// `.claude/agents/mustard/` — are ALWAYS rewritten, in the language of
-    /// `language.text`: they are the harness's own text, not project
-    /// configuration, so a copy you edited is replaced and listed under
-    /// `updated`, while one that already matched the shipped text comes back
-    /// under `preserved` because there was nothing left to write. Emits the
+    /// backfilled. Mustard's own texts are always rewritten, in the language
+    /// of `language.text`: the session map `.claude/mustard/session-map.md`,
+    /// the two page templates under `.claude/mustard/pages/` and the two
+    /// agents, wave and review, under `.claude/agents/mustard/`. They are the
+    /// harness's own text, not project configuration. So a copy you edited is replaced and
+    /// listed under `updated`. One that already matched the shipped text comes
+    /// back under `preserved`, because there was nothing left to write. Emits the
     /// `UpsertReport` as deterministic pretty JSON.
     ///
     /// What an older Mustard wrote into files that are not its own — the
@@ -73,8 +78,25 @@ pub enum MaintCmd {
     /// project's pending list, in one item, never to the lesson bank, and
     /// `cleanup` and `cleaned` say what left. A file without a mark is only
     /// listed. The commit stays with the person.
+    ///
+    /// The local settings also allow the folder of the project's separate
+    /// copies, which live outside the project. While `mustard.json` has no
+    /// `localFiles`, the answer carries `localFilesFound`: the files git
+    /// ignores outside an ignored folder (such as `.env`), for the person to
+    /// confirm once. `--local-files` records the confirmed list and
+    /// `--prepare` the command that prepares each copy before it compiles.
     #[command(display_order = 19)]
-    Upsert,
+    Upsert {
+        /// The local files each copy receives, comma-separated and relative
+        /// to the project root, as the person confirmed them; an empty value
+        /// records that the project needs none.
+        #[arg(long, value_name = "a,b")]
+        local_files: Option<String>,
+        /// The command that brings the dependencies into each copy, such as
+        /// `npm ci`; an empty value records that the project has none.
+        #[arg(long, value_name = "command")]
+        prepare: Option<String>,
+    },
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
@@ -88,7 +110,9 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Upsert => maint::upsert::run(),
+        MaintCmd::Upsert { local_files, prepare } => {
+            maint::upsert::run(&maint::upsert::UpsertOpts { local_files, prepare });
+        }
     }
 }
 
@@ -135,5 +159,30 @@ mod tests {
     fn upsert_takes_no_confirm_code() {
         assert!(Probe::try_parse_from(["probe", "upsert"]).is_ok());
         assert!(Probe::try_parse_from(["probe", "upsert", "--confirm", "abcd1234"]).is_err());
+    }
+
+    /// O `upsert` recebe a lista confirmada e o comando de preparo, e o valor
+    /// vazio chega como resposta, não como falta dela.
+    #[test]
+    fn upsert_takes_the_local_files_and_the_prepare_command() {
+        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare } }) = Probe::try_parse_from([
+            "probe",
+            "upsert",
+            "--local-files",
+            ".env,apps/api/.env.local",
+            "--prepare",
+            "pnpm install --frozen-lockfile",
+        ]) else {
+            panic!("both options must parse");
+        };
+        assert_eq!(local_files.as_deref(), Some(".env,apps/api/.env.local"));
+        assert_eq!(prepare.as_deref(), Some("pnpm install --frozen-lockfile"));
+
+        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare } }) =
+            Probe::try_parse_from(["probe", "upsert", "--local-files", "", "--prepare", ""])
+        else {
+            panic!("empty answers must parse");
+        };
+        assert_eq!((local_files.as_deref(), prepare.as_deref()), (Some(""), Some("")));
     }
 }

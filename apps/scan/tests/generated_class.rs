@@ -1,92 +1,41 @@
-//! End-to-end contract over machine-written-file classification (classify.rs
-//! + generated-markers.toml + the digest demotion), driven through the binary.
-//!
-//! Two surfaces:
-//!   * the committed `tests/fixtures/generated_mix` project — a generator
-//!     banner, a `.gitattributes` override in BOTH directions, and a
-//!     hand-written control — proves scan stamps `file_class`/`marker`
-//!     additively on the model and that overrides beat the catalog;
-//!   * synthetic models (the digest is a projection — never a re-scan) prove
-//!     the index policy: lockfile|minified leave the term index,
-//!     generated|vendored stay demoted by the catalog multiplier and never
-//!     surface as samples/anchors/hubs, and a query landing only on generated
-//!     code answers `reason = "generated_only"` instead of a bare empty list.
+//! End-to-end contract over machine-written-file classification
+//! (classify.rs and generated-markers.toml), driven through the binary: the
+//! committed `tests/fixtures/generated_mix` project — a generator banner, a
+//! `.gitattributes` override in BOTH directions, and a hand-written control —
+//! proves scan stamps `file_class`/`marker` additively on the model and that
+//! overrides beat the catalog.
 //!
 //! Every tool/ecosystem marker name lives in the fixture and in the catalog
 //! (generated-markers.toml); `src/` stays agnostic.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
+
+use std::path::PathBuf;
 
 /// The committed fixture root, resolved from the crate manifest dir.
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("generated_mix")
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join("generated_mix")
 }
 
-/// Scan the fixture into a temp `grain.model.json` and return (temp dir,
-/// model path, parsed model). The `label` keeps each test's temp dir distinct
-/// — tests run in parallel in one binary, so a pid-only path would collide.
-fn scan_fixture(label: &str) -> (tempfile::TempDir, PathBuf, serde_json::Value) {
+/// Scan the fixture into a temp map and return (temp dir,
+/// parsed model). The `label` keeps each test's temp dir distinct — tests run
+/// in parallel in one binary, so a pid-only path would collide.
+fn scan_fixture(label: &str) -> (tempfile::TempDir, serde_json::Value) {
     let temp = tempfile::Builder::new().prefix(&format!("scan-generated-mix-{}-", label)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture().to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    (temp, model, v)
-}
-
-/// Write a synthetic `grain.model.json` (every model field is additive /
-/// defaulted) into a temp dir owned by the test.
-fn write_model(label: &str, body: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
-    let temp = tempfile::Builder::new().prefix(&format!("scan-generated-class-{}-", label)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    std::fs::write(&model, serde_json::to_string_pretty(&body).unwrap()).unwrap();
-    (temp, model)
-}
-
-/// One synthetic module carrying declaration names and an optional file class.
-fn module(path: &str, decls: &[&str], file_class: &str) -> serde_json::Value {
-    let declarations: Vec<serde_json::Value> =
-        decls.iter().map(|n| serde_json::json!({ "kind": "class", "name": n, "line": 1 })).collect();
-    if file_class.is_empty() {
-        serde_json::json!({ "path": path, "declarations": declarations })
-    } else {
-        serde_json::json!({ "path": path, "declarations": declarations, "file_class": file_class, "marker": "test" })
-    }
-}
-
-/// Run `digest` over a model (`query` empty = full digest) and parse the output.
-fn run_digest(model: &Path, query: &str, out_name: &str) -> serde_json::Value {
-    let out_file = model.parent().unwrap().join(out_name);
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["digest", model.to_str().unwrap(), "--query", query, "--out", out_file.to_str().unwrap()])
-        .output()
-        .expect("run digest over model");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&out_file).expect("read digest")).expect("valid digest JSON")
+    let (v, _) = model::scan(&fixture(), temp.path(), &[]);
+    (temp, v)
 }
 
 fn find_module<'a>(model: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
     model["modules"].as_array().unwrap().iter().find(|m| m["path"] == path).unwrap_or_else(|| panic!("module {path} present"))
 }
 
-fn find_term<'a>(digest: &'a serde_json::Value, term: &str) -> &'a serde_json::Value {
-    digest["terms"].as_array().unwrap().iter().find(|t| t["term"] == term).unwrap_or_else(|| panic!("term `{term}` indexed"))
-}
-
-fn samples(term: &serde_json::Value) -> Vec<&str> {
-    term["samples"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect()
-}
-
 #[test]
 fn fixture_modules_carry_class_and_provenance() {
-    let (_dir, _model_path, v) = scan_fixture("model");
+    let (_dir, v) = scan_fixture("model");
 
     // Banner-marked file: classed generated, marker = the catalog literal.
     let banner = find_module(&v, "src/api_client.ts");
@@ -118,134 +67,92 @@ fn fixture_modules_carry_class_and_provenance() {
         migration["file_class"], "generated",
         "timestamp-prefixed migration classed by path: {migration}"
     );
-
 }
 
-#[test]
-fn digest_keeps_generated_terms_without_samples_and_honors_override() {
-    let (_dir, model_path, _v) = scan_fixture("digest");
-    let digest = run_digest(&model_path, "", "digest.json");
-
-    // The generated module's vocabulary STAYS in the index (a query must still
-    // land) but never offers the generated file as a sample to read.
-    let payment = find_term(&digest, "payment");
-    assert!(payment["count"].as_u64().unwrap() >= 1, "demoted but present: {payment}");
-    assert!(samples(payment).is_empty(), "generated file never samples: {payment}");
-
-    // Hand-written control anchors normally.
-    let ledger = find_term(&digest, "ledger");
-    assert_eq!(samples(ledger), vec!["src/handwritten.ts"], "hand-written sample survives");
-
-    // The negative .gitattributes override propagates downstream: the file
-    // with a banner but pinned hand-written samples like any other module.
-    let billing = find_term(&digest, "billing");
-    assert_eq!(samples(billing), vec!["src/override_banner.ts"], "override honored by the digest");
-
+/// A documentação longa da função dos dois arquivos: mais que o teto da
+/// documentação curta, para a inteira ficar guardada à parte.
+fn long_doc() -> String {
+    (0..60).map(|n| format!("regra{n:03}")).collect::<Vec<_>>().join(" ")
 }
 
-#[test]
-fn query_landing_only_on_generated_answers_generated_only() {
-    let (_dir, model_path, _v) = scan_fixture("query");
-
-    // "payment" lives ONLY in the generated client: matched (not a miss), but
-    // with no anchorable surface — the reason says WHY instead of handing the
-    // caller an empty files list to misread as "no precedent".
-    let q = run_digest(&model_path, "payment", "query-gen.json");
-    assert_eq!(q["miss"], false, "the term matched: {q}");
-    assert!(!q["matched_terms"].as_array().unwrap().is_empty(), "matched terms surface: {q}");
-    assert!(q["files"].as_array().unwrap().is_empty(), "no generated anchor offered: {q}");
-    assert_eq!(q["reason"], "generated_only", "the caller learns why: {q}");
-
-    // A hand-written hit carries anchors and no reason at all (field skipped).
-    let q = run_digest(&model_path, "ledger", "query-hand.json");
-    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert!(files.contains(&"src/handwritten.ts"), "hand-written anchor present: {files:?}");
-    assert!(q.get("reason").is_none(), "no reason on an anchorable answer: {q}");
-
+/// O mesmo arquivo, escrito por máquina ou à mão pela primeira linha: com o
+/// aviso de máquina ou sem ele, nas mesmas linhas. Cada um dos cinco campos do
+/// texto de dentro das peças tem o que guardar: o comentário do começo, a
+/// documentação longa, o comentário e os nomes de dentro da função e o
+/// comentário depois dela.
+fn cart(first_line: &str) -> String {
+    format!(
+        "{first_line}\n\nuse std::fmt;\n\n/// {}\npub fn somar(itens: &[u32]) -> u32 {{\n    // o total começa do zero\n    \
+         itens.iter().sum()\n}}\n\n// fim do carrinho\n",
+        long_doc()
+    )
 }
 
-#[test]
-fn lockfile_and_minified_leave_the_index_entirely() {
-    let (_dir, model) = write_model(
-        "out-of-index",
-        serde_json::json!({
-            "root": "x",
-            "modules": [
-                module("src/real.ts", &["InvoicePolicy"], ""),
-                module("deps.lock.ts", &["ZebraPinned"], "lockfile"),
-                module("bundle.min.ts", &["YakBundled"], "minified"),
-            ]
-        }),
-    );
-    let digest = run_digest(&model, "", "digest.json");
-
-    let terms: Vec<&str> = digest["terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
-    assert!(terms.contains(&"invoice"), "hand-written vocabulary indexed: {terms:?}");
-    assert!(!terms.contains(&"zebra"), "lockfile vocabulary out of the index: {terms:?}");
-    assert!(!terms.contains(&"yak"), "minified vocabulary out of the index: {terms:?}");
-
+/// Um projeto no git com os arquivos, já no primeiro commit.
+fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let temp = tempfile::Builder::new().prefix("scan-generated-text-").tempdir().unwrap();
+    let dir = temp.path();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    for (rel, body) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "primeiro"]);
+    temp
 }
 
-#[test]
-fn multiplier_demotes_machine_counts_but_keeps_presence() {
-    // 8 occurrences in a generated module vs 1 hand-written: with the catalog
-    // multiplier 0.25 the demoted side contributes max(1, floor(8*0.25)) = 2,
-    // so the total is 3 — present, never dominant (raw would be 9).
-    let gen_decls = ["OmegaAlpha", "OmegaBravo", "OmegaCharlie", "OmegaDelta", "OmegaEcho", "OmegaFox", "OmegaGolf", "OmegaHotel"];
-    let (_dir, model) = write_model(
-        "multiplier",
-        serde_json::json!({
-            "root": "x",
-            "modules": [
-                module("src/real.ts", &["OmegaReal"], ""),
-                module("src/generated_client.ts", &gen_decls, "generated"),
-            ]
-        }),
-    );
-    let digest = run_digest(&model, "", "digest.json");
-
-    let omega = find_term(&digest, "omega");
-    assert_eq!(omega["count"], 3, "1 hand-written + scaled machine share: {omega}");
-    assert_eq!(samples(omega), vec!["src/real.ts"], "only the hand-written file samples: {omega}");
-
+/// Os cinco campos do texto de dentro das peças de um arquivo do mapa: os
+/// comentários do arquivo e, de cada declaração, a documentação inteira, os
+/// comentários e os nomes.
+fn inner_text(module: &serde_json::Value) -> Vec<String> {
+    let field = |value: &serde_json::Value, key: &str| value.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let mut out = vec![field(module, "file_doc"), field(module, "file_comment")];
+    for decl in module["declarations"].as_array().unwrap() {
+        out.extend(["whole_doc", "body_comment", "body_names"].map(|key| field(decl, key)));
+    }
+    out
 }
 
+/// O arquivo escrito por máquina guarda as declarações e sai sem o texto de
+/// dentro das peças; o arquivo de mão igual guarda os cinco campos.
 #[test]
-fn hubs_and_touchpoints_exclude_machine_written_modules() {
-    // The generated registry has the highest degree, but a machine-written
-    // file is never the file to read or edit — vendored counts the same.
-    let (_dir, model) = write_model(
-        "hubs",
-        serde_json::json!({
-            "root": "x",
-            "modules": [
-                module("src/gen_registry.ts", &["WiredAll"], "generated"),
-                module("src/vendored_lib.ts", &["BorrowedCode"], "vendored"),
-                module("src/real_hub.ts", &["RealWiring"], ""),
-            ],
-            "graph": {
-                "nodes": 3, "edges": 4, "cyclic": false,
-                "top_fan_in": [
-                    { "module": "src/gen_registry.ts", "degree": 9 },
-                    { "module": "src/vendored_lib.ts", "degree": 5 },
-                    { "module": "src/real_hub.ts", "degree": 3 }
-                ],
-                "top_fan_out": [],
-                "layers": [],
-                "touchpoints": [
-                    { "module": "src/gen_registry.ts", "fan_out": 9, "breadth": 4 },
-                    { "module": "src/real_hub.ts", "fan_out": 2, "breadth": 2 }
-                ]
-            }
-        }),
-    );
-    let digest = run_digest(&model, "", "digest.json");
+fn a_machine_written_file_keeps_its_declarations_and_none_of_their_inner_text() {
+    let generated = cart("// <auto-generated> Soma os itens do carrinho.");
+    let by_hand = cart("// Soma os itens do carrinho.");
+    let temp = project_with(&[("src/gerado.rs", &generated), ("src/mao.rs", &by_hand)]);
+    let (map, _) = model::scan(temp.path(), &temp.path().join(".claude"), &[]);
+    let machine_module = find_module(&map, "src/gerado.rs");
+    let hand_module = find_module(&map, "src/mao.rs");
+    assert_eq!(machine_module["file_class"], "generated", "{machine_module}");
 
-    let hubs: Vec<&str> =
-        digest["graph"]["top_fan_in"].as_array().unwrap().iter().map(|h| h["module"].as_str().unwrap()).collect();
-    assert_eq!(hubs, vec!["src/real_hub.ts"], "machine-written hubs dropped: {hubs:?}");
-    let touch: Vec<&str> =
-        digest["graph"]["touchpoints"].as_array().unwrap().iter().map(|t| t["module"].as_str().unwrap()).collect();
-    assert_eq!(touch, vec!["src/real_hub.ts"], "machine-written touchpoints dropped: {touch:?}");
+    let header = |module: &serde_json::Value| -> Vec<(String, String, u64, u64, String)> {
+        module["declarations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                let text = |key: &str| d[key].as_str().unwrap_or_default().to_string();
+                (text("kind"), text("name"), d["line"].as_u64().unwrap(), d["end_line"].as_u64().unwrap(), text("signature"))
+            })
+            .collect()
+    };
+    assert!(header(machine_module).iter().any(|(_, name, ..)| name == "somar"), "{machine_module}");
+    assert_eq!(header(machine_module), header(hand_module), "the same declarations in both files");
 
+    let kept = inner_text(hand_module);
+    assert!(kept.iter().all(|text| !text.is_empty()), "the hand-written file keeps all five: {kept:?}");
+    assert!(kept.iter().any(|text| text.contains("o total começa do zero")), "{kept:?}");
+    let dropped = inner_text(machine_module);
+    assert!(dropped.iter().all(String::is_empty), "the machine-written file keeps none: {dropped:?}");
 }

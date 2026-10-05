@@ -22,8 +22,10 @@
 //!   lista do provedor que decide se a branch sai.
 //! - O provedor não responde: o aviso diz isso, e nada muda.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -90,7 +92,10 @@ impl Scene {
         std::fs::write(work.join(".git/info/exclude"), ".claude/\nmustard.json\n").unwrap();
         let config = json!({
             "language": {"text": "pt-BR"},
-            "git": {"flow": {"*": "dev"}, "provider": "github", "deleteRemoteBranch": delete_remote}
+            "git": {"flow": {"*": "dev"}, "provider": "github", "deleteRemoteBranch": delete_remote,
+                // O texto dos pull requests da história do mapa é outra
+                // pergunta ao provedor, que este teste não conta.
+                "pullRequestText": false}
         });
         std::fs::write(work.join("mustard.json"), config.to_string()).unwrap();
         std::fs::write(work.join("README.md"), "loja\n").unwrap();
@@ -142,8 +147,7 @@ impl Scene {
         // O `gh` falso.
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("gh"), FAKE_GH).unwrap();
-        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable::write_executable(&bin.join("gh"), FAKE_GH);
 
         let scene = Self { dir, work };
         assert_eq!(scene.phase(), "closed", "the spec starts closed");
@@ -162,7 +166,30 @@ impl Scene {
             !scene.work.join(".claude/pending/charges.json").exists(),
             "opening the pull request arms no charge"
         );
+        scene.install_the_map();
         scene
+    }
+
+    /// O mapa que a instalação deixa no projeto: sem ele, o primeiro início de
+    /// sessão o criaria antes de qualquer aviso, e o que essa criação fizesse
+    /// entraria na conta deste teste. O que o provedor falso receber aqui não
+    /// conta.
+    fn install_the_map(&self) {
+        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "map", "search", "--query", "entrega", "--root"])
+            .arg(&self.work)
+            .current_dir(&self.work)
+            .env("PATH", self.path())
+            .env("FAKE_GH_LOG", self.dir.path().join("gh-map.log"))
+            .env("FAKE_GH_EXIT", "1")
+            .env_remove("MUSTARD_ACTIVE_SPEC")
+            .output()
+            .expect("run mustard-rt");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            mustard_core::io::project_map::model_path(&self.work).is_file(),
+            "the map is on disk, as the install leaves it"
+        );
     }
 
     /// Roda o `pr-open` da spec pelo binário, com o `gh` falso. Devolve a
@@ -197,16 +224,16 @@ impl Scene {
     /// merge normal, ou um squash, que o git não reconhece como merge da
     /// branch.
     fn merged_by_someone_else(&self, squash: bool) {
-        let colega = self.dir.path().join("colega");
+        let colleague = self.dir.path().join("colega");
         let origin = self.dir.path().join("origin.git");
-        git(self.dir.path(), &["clone", "-q", "-b", "dev", origin.to_str().unwrap(), colega.to_str().unwrap()]);
+        git(self.dir.path(), &["clone", "-q", "-b", "dev", origin.to_str().unwrap(), colleague.to_str().unwrap()]);
         if squash {
-            git(&colega, &["merge", "-q", "--squash", &format!("origin/{BRANCH}")]);
-            git(&colega, &["commit", "-q", "-m", "A entrega (#7)"]);
+            git(&colleague, &["merge", "-q", "--squash", &format!("origin/{BRANCH}")]);
+            git(&colleague, &["commit", "-q", "-m", "A entrega (#7)"]);
         } else {
-            git(&colega, &["merge", "-q", "--no-ff", "-m", "Merge do PR #7", &format!("origin/{BRANCH}")]);
+            git(&colleague, &["merge", "-q", "--no-ff", "-m", "Merge do PR #7", &format!("origin/{BRANCH}")]);
         }
-        git(&colega, &["push", "-q", "origin", "dev"]);
+        git(&colleague, &["push", "-q", "origin", "dev"]);
     }
 
     /// A lista que o provedor dá da branch da spec depois do merge: o pull

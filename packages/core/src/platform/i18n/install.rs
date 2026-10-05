@@ -17,12 +17,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
         ("doctor.protection.flow_missing", Locale::PtBr) => {
             "Este projeto não declara base nenhuma em `mustard.json#git.flow`, então nenhuma \
-             branch fica protegida: nem aqui, nem no servidor, e não há o que perguntar ao \
-             provedor."
+             branch fica protegida, nem aqui nem no servidor. Não há o que perguntar ao provedor."
         }
         ("doctor.protection.flow_missing", Locale::EnUs) => {
-            "This project declares no base in `mustard.json#git.flow`, so no branch is protected \
-             — not here, not on the server — and there is nothing to ask the provider about."
+            "This project declares no base in `mustard.json#git.flow`, so no branch is protected, \
+             here or on the server. There is nothing to ask the provider about."
         }
         ("doctor.protection.protected", Locale::PtBr) => {
             "`{base}`: protegida no {provider}."
@@ -98,6 +97,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Claude Code's signature on commits and pull requests is on in \
              .claude/settings.local.json (`attribution`). Run `mustard-rt run upsert` to turn it off."
         }
+        ("doctor.switches.language_unknown", Locale::PtBr) => {
+            "O campo `{field}` do mustard.json vale `{value}`, que não é um idioma aceito: use \
+             `pt-BR` ou `en-US`. Até lá, o campo é lido como ausente."
+        }
+        ("doctor.switches.language_unknown", Locale::EnUs) => {
+            "The `{field}` field in mustard.json is `{value}`, which is not an accepted language: \
+             use `pt-BR` or `en-US`. Until then, the field is read as absent."
+        }
         ("doctor.claude_md.leftovers", Locale::PtBr) => {
             "Sobras do Mustard em arquivos que não são dele: {paths}. Rode `mustard-rt run upsert`: \
              ele as tira."
@@ -123,8 +130,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("install.rs"),
             super::PREFIXES,
-            11,
-            0xb79b_cf24_c042_b5a1,
+            12,
+            0xe463_9b76_dc84_1c2a,
         );
     }
 
@@ -137,6 +144,7 @@ mod tests {
             ("doctor.switches.rtk_missing", &[][..]),
             ("doctor.switches.rtk_left", &[][..]),
             ("doctor.switches.signature_on", &[][..]),
+            ("doctor.switches.language_unknown", &["{field}", "{value}"][..]),
             ("doctor.claude_md.leftovers", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

@@ -52,6 +52,14 @@
 //!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
 //!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
+//! ## Cópias de obra
+//!
+//! Sem `--path`, a limpeza olha também as cópias de obra do projeto da pasta
+//! atual ([`super::work_copies`]): lista as de obra fechada, descartada ou
+//! que não existe mais, e deixa a de obra aberta, com o motivo. A regra de
+//! idade não vale para elas, e o `--apply` as tira pelo git. A cópia da
+//! página de um descarte não é cópia de obra: entra só a de mais de um dia.
+//!
 //! ## Compilação compartilhada
 //!
 //! As cópias descartáveis compilam em `~/.cache/mustard/scratch-target`. Acima
@@ -164,6 +172,11 @@ pub(crate) struct ScratchGcReport {
     pub removed: Vec<String>,
     pub errors: Vec<ErrorRecord>,
     pub shared_target: Option<SharedTargetRecord>,
+    /// As cópias de obra do projeto da pasta atual: as de obra que acabou ou
+    /// não existe mais, e as de obra aberta, que ficam. Fora de projeto, e no
+    /// `--path`, não sai.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copies: Option<super::work_copies::CopiesReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +212,7 @@ impl ScratchRoots {
             cap_bytes: cap_bytes_from_env(),
             current_session: session_id(),
             current_dir: std::env::current_dir().ok(),
-            home: crate::util::home_dir(),
+            home: mustard_core::platform::harness::home_dir(),
             clock: AgeClock::Changed,
             owner_uid: current_uid(),
             now: SystemTime::now(),
@@ -281,7 +294,7 @@ pub(crate) fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self")
         .ok()
-        .or_else(|| crate::util::home_dir().and_then(|h| std::fs::metadata(h).ok()))
+        .or_else(|| mustard_core::platform::harness::home_dir().and_then(|h| std::fs::metadata(h).ok()))
         .map(|m| m.uid())
 }
 
@@ -315,7 +328,7 @@ fn is_real_dir(path: &Path) -> bool {
 
 /// `~/.cache/mustard/scratch-target` — onde as cópias descartáveis compilam.
 pub fn shared_target_dir() -> Option<PathBuf> {
-    crate::util::home_dir().map(|h| h.join(".cache").join("mustard").join("scratch-target"))
+    mustard_core::platform::harness::home_dir().map(|h| h.join(".cache").join("mustard").join("scratch-target"))
 }
 
 /// O teto em bytes: `MUSTARD_SCRATCH_TARGET_CAP_BYTES` quando é um número,
@@ -615,6 +628,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
                 removed: Vec::new(),
                 errors: vec![ErrorRecord { path: roots.temp_root.display().to_string(), error }],
                 shared_target: None,
+                copies: None,
             };
             return (report, true);
         }
@@ -630,6 +644,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
         removed: Vec::new(),
         errors: Vec::new(),
         shared_target: survey.shared_target,
+        copies: None,
     };
     if !apply {
         return (report, false);
@@ -760,6 +775,7 @@ fn path_report(target: &Path, roots: &ScratchRoots) -> (ScratchGcReport, bool) {
         removed: Vec::new(),
         errors: Vec::new(),
         shared_target: None,
+        copies: None,
     };
     let refused = match remove_path(target, roots) {
         Ok(dir) => {
@@ -802,10 +818,14 @@ pub(crate) fn human_bytes(n: u64) -> String {
 pub fn run(opts: ScratchGcOpts) {
     let _started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
-    let (report, refused) = match opts.path.as_deref() {
+    let (mut report, refused) = match opts.path.as_deref() {
         Some(target) => path_report(target, &roots),
         None => gc(&roots, opts.apply),
     };
+    if opts.path.is_none() && !refused {
+        let here = std::env::current_dir().unwrap_or_default();
+        report.copies = super::work_copies::clean(&here, opts.apply);
+    }
 
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
@@ -845,7 +865,7 @@ pub(crate) fn backdate_tree(root: &Path, hours: u64) {
 /// basta ao dono (`futimens`); no Windows a pasta só abre com
 /// `FILE_FLAG_BACKUP_SEMANTICS`, e mudar a data pede `FILE_WRITE_ATTRIBUTES`.
 #[cfg(test)]
-fn set_mtime(path: &Path, when: SystemTime) {
+pub(crate) fn set_mtime(path: &Path, when: SystemTime) {
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true);
     #[cfg(windows)]

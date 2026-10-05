@@ -1,0 +1,27 @@
+# As rotas do Symfony. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `symfony/routes.scm`, e o que cada captura dela
+# diz, em `src/routes.rs`. A rota é o atributo
+# `#[Route('/pedidos/{id}', name: 'x', methods: ['GET'])]` no método, que é
+# quem a atende: uma rota por método escrito em `methods` e, sem ele, a do
+# método padrão. O `#[Route('/api')]` da classe é o prefixo das rotas dela.
+# A rota escrita fora do código — o arquivo de rotas em YAML e a anotação num
+# comentário de documentação — fica de fora.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador
+#   (`Symfony\Component\Routing\Attribute\Route`).
+# - `default_method`: o método da rota em que a consulta não captura método
+#   nenhum (o atributo sem `methods`); `"*"` é qualquer método. O caminho
+#   com método escrito não ganha também o padrão. Sem tabela `methods`: o
+#   método só se escreve como texto (`route.method.text`), que vale sem as
+#   aspas, em maiúsculas.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{id<\d+>}`).
+
+language = ["php"]
+imports = ["Symfony\\Component\\Routing"]
+default_method = "*"
+param_wrappers = [["{", "}"]]

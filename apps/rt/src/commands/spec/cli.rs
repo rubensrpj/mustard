@@ -26,7 +26,7 @@ pub enum SpecCmd {
     ///
     /// Com `--body` e `--out`, gera uma página avulsa (análise, relatório,
     /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
-    /// HTML. Sem `--title`, o título é a primeira linha `# Título`.
+    /// `HTML`. Sem `--title`, o título é a primeira linha `# Título`.
     /// Devolve `{ok, path}`.
     #[command(name = "page")]
     #[command(display_order = 17)]
@@ -51,6 +51,55 @@ pub enum SpecCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Conta o gasto de cada dia pelas conversas da máquina e prepara a cópia
+    /// dele para a página do gasto.
+    ///
+    /// Sem argumento, conta os dias fechados que faltam (um dia fechado é
+    /// contado uma vez e guardado num arquivo da máquina, fora de qualquer
+    /// projeto), conta hoje de novo (o dia aberto vai à página como parcial e
+    /// nunca ao arquivo dos fechados) e prepara o template, os lotes, com o
+    /// resumo da máquina, e a ordem do que fazer: publicar a página, se ela
+    /// ainda não tem endereço, e copiar os lotes. A cópia preparada vale como
+    /// feita. Recontar é apagar o arquivo do gasto: o comando o refaz pelas
+    /// conversas. Com `--republish`, prepara a publicação nova e a cópia de
+    /// todos os dias, para quem perdeu o link da página. Com `--url`, grava o
+    /// endereço que a publicação devolveu. Funciona sem spec aberta.
+    #[command(name = "spend")]
+    #[command(display_order = 23)]
+    Spend {
+        /// Prepara a publicação nova da página e a cópia de todos os dias.
+        #[arg(long, conflicts_with = "url")]
+        republish: bool,
+        /// Grava o endereço que a publicação da página devolveu.
+        #[arg(long)]
+        url: Option<String>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Mede o gasto do Claude no projeto antes e depois da marca de uma
+    /// versão do Mustard.
+    ///
+    /// A marca é a primeira sessão de cada compilação do Mustard no projeto,
+    /// gravada pelo início da sessão. Compara os dias contados (fechados, com
+    /// 100 ações ou mais) dos dois lados, pela mesma conta da página do gasto,
+    /// e diz o veredito numa frase, com quantas buscas o Mustard respondeu
+    /// desde a marca. Só lê: não grava nada e não chama o Jev.
+    #[command(name = "measure")]
+    #[command(display_order = 24)]
+    Measure {
+        /// O instante da marca, em `RFC 3339` ou `AAAA-MM-DD`; sem ele, a última
+        /// marca do projeto.
+        #[arg(long)]
+        since: Option<String>,
+        /// Uma linha JSON por busca que o Mustard respondeu desde a marca, no
+        /// lugar da resposta.
+        #[arg(long)]
+        lines: bool,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -58,6 +107,12 @@ pub fn dispatch(cmd: SpecCmd) {
     match cmd {
         SpecCmd::Page { body, out, title, subtitle, kind, root } => {
             spec::page::run(&spec::page::PageOpts { root, body, out, title, subtitle, kind });
+        }
+        SpecCmd::Spend { republish, url, root } => {
+            spec::spend::run(&spec::spend::SpendOpts { root, republish, url });
+        }
+        SpecCmd::Measure { since, lines, root } => {
+            spec::measure::run(&spec::measure::MeasureOpts { root, since, lines });
         }
     }
 }

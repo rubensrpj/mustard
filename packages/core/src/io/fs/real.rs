@@ -4,13 +4,13 @@
 //! This is the **only** module in `mustard-core` that calls `std::fs`
 //! directly. Every other call site routes through the [`fs`](super) free
 //! functions or a `&dyn Fs`, so the cross-cutting policy (fail-open `NotFound`
-//! mapping, atomic writes) lives in exactly one place. The atomic-write and
-//! append primitives were lifted verbatim from the former `store::fs` module,
-//! which now re-exports them from here.
+//! mapping, atomic writes) lives in exactly one place. The atomic-write
+//! primitive was lifted verbatim from the former `store::fs` module, which now
+//! re-exports it from here.
 
 use super::{DirEntry, Fs};
 use crate::platform::error::{Error, Result};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,7 +80,9 @@ impl Fs for RealFs {
             let mut file = File::create(&temp)?;
             file.write_all(contents)?;
             file.flush()?;
-            file.sync_all()?;
+            if super::disk_sync() {
+                file.sync_all()?;
+            }
             Ok(())
         })();
 
@@ -94,15 +96,6 @@ impl Fs for RealFs {
             let _ = fs::remove_file(&temp);
             return Err(Error::from(err));
         }
-        Ok(())
-    }
-
-    fn append_line(&self, path: &Path, line: &str) -> Result<()> {
-        ensure_parent_dir(path)?;
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
-        file.flush()?;
         Ok(())
     }
 
@@ -140,24 +133,12 @@ impl Fs for RealFs {
         meta.modified().map_err(Error::from)
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        fs::rename(from, to).map_err(|e| map_io(from, e))
-    }
-
     fn remove_dir_all(&self, path: &Path) -> Result<()> {
         match fs::remove_dir_all(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::from(e)),
         }
-    }
-
-    fn remove_dir(&self, path: &Path) -> Result<()> {
-        fs::remove_dir(path).map_err(|e| map_io(path, e))
-    }
-
-    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
-        fs::canonicalize(path).map_err(|e| map_io(path, e))
     }
 }
 
@@ -206,13 +187,33 @@ mod tests {
         assert_eq!(entries[0].file_name, "state.json");
     }
 
+    /// Sem a posição atômica de fim, quem grava de vários lados no mesmo arquivo
+    /// se exclui pela trava do `LockedFile`: com ela, nenhuma linha se perde
+    /// nem se mistura com a do vizinho.
     #[test]
-    fn append_line_adds_trailing_newline() {
+    fn appends_from_many_threads_through_the_lock_lose_no_line() {
+        use super::super::lock::LockedFile;
+        const THREADS: usize = 4;
+        const LINES: usize = 10;
         let dir = tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        fs().append_line(&path, "{\"a\":1}").unwrap();
-        fs().append_line(&path, "{\"a\":2}").unwrap();
-        assert_eq!(fs().read_to_string(&path).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let path = &path;
+                scope.spawn(move || {
+                    for n in 0..LINES {
+                        let mut file = LockedFile::exclusive(path).unwrap();
+                        file.append_line(&format!("{{\"t\":{thread},\"n\":{n}}}")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), THREADS * LINES, "every appended line is in the file");
+        lines.sort_unstable();
+        lines.dedup();
+        assert_eq!(lines.len(), THREADS * LINES, "no line was overwritten by another");
     }
 
     #[test]
@@ -270,28 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn rename_moves_file() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src.txt");
-        let dst = dir.path().join("dst.txt");
-        fs().write_atomic(&src, b"payload").unwrap();
-        fs().rename(&src, &dst).unwrap();
-        assert!(!fs().exists(&src));
-        assert_eq!(fs().read_to_string(&dst).unwrap(), "payload");
-    }
-
-    #[test]
-    fn rename_missing_is_not_found() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("ghost.txt");
-        let dst = dir.path().join("nowhere.txt");
-        match fs().rename(&src, &dst) {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("expected NotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn remove_dir_all_removes_tree() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("tree");
@@ -306,41 +285,5 @@ mod tests {
         let dir = tempdir().unwrap();
         // Calling remove_dir_all on a path that never existed must succeed.
         fs().remove_dir_all(&dir.path().join("does_not_exist")).unwrap();
-    }
-
-    #[test]
-    fn remove_dir_removes_empty_dir() {
-        let dir = tempdir().unwrap();
-        let empty = dir.path().join("empty");
-        fs().create_dir_all(&empty).unwrap();
-        fs().remove_dir(&empty).unwrap();
-        assert!(!fs().exists(&empty));
-    }
-
-    #[test]
-    fn remove_dir_missing_is_not_found() {
-        let dir = tempdir().unwrap();
-        match fs().remove_dir(&dir.path().join("ghost")) {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("expected NotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn canonicalize_resolves_existing_path() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("canon.txt");
-        fs().write_atomic(&path, b"c").unwrap();
-        let canon = fs().canonicalize(&path).unwrap();
-        assert!(canon.is_absolute());
-    }
-
-    #[test]
-    fn canonicalize_missing_is_not_found() {
-        let dir = tempdir().unwrap();
-        match fs().canonicalize(&dir.path().join("absent")) {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("expected NotFound, got {other:?}"),
-        }
     }
 }

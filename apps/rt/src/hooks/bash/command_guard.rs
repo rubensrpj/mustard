@@ -1,7 +1,7 @@
 //! `command_guard` — a trava de comandos, no `PreToolUse` do Bash.
 //!
 //! O comando é lido uma vez, como o terminal o parte ([`lex`]), e passa por
-//! três conferências, nesta ordem:
+//! quatro conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
 //! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
@@ -10,7 +10,15 @@
 //! - [`waiting`] — recusa o laço que espera outro processo (`while`/`until`
 //!   com `pgrep`, `pidof` ou `ps`) e corrige, sem recusar, a compilação ou o
 //!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
-//!   completo.
+//!   completo;
+//! - [`reading`] — recusa a leitura do `mustard.json` que guarda a chave do
+//!   Jev, com o arquivo sem a chave no motivo, e responde a busca por palavra
+//!   em pastas de código com a marca do mapa: a resposta agrupada por função
+//!   no lugar da busca que mostra linhas, quando o mapa crava; a busca comum
+//!   com a nota do mapa junto, quando a marca é parcial (ela passa antes pelo
+//!   filtro do mapa, pela mesma porta da busca por assunto); a busca comum com
+//!   uma linha da marca quando ela só lista nomes ou conta, ou, sem achado, a
+//!   busca comum com uma linha do que o mapa não achou.
 //!
 //! A primeira que decide vence. Trocar o `cargo` da linha de comando por
 //! `rtk` não é feito aqui: o gancho do próprio rtk faz isso; `waiting` só
@@ -19,7 +27,7 @@
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 
-use super::{lex, safety, waiting, windows_redirect};
+use super::{lex, reading, safety, waiting, windows_redirect};
 
 /// A trava de comandos do Bash.
 pub struct CommandGuard;
@@ -32,7 +40,7 @@ impl CommandGuard {
 }
 
 impl Check for CommandGuard {
-    /// Roda as duas conferências no `PreToolUse` do Bash; qualquer outro
+    /// Roda as quatro conferências no `PreToolUse` do Bash; qualquer outro
     /// evento ou ferramenta passa.
     ///
     /// A trava dos comandos que destroem trabalho não tem modo: ela sempre
@@ -56,6 +64,9 @@ impl Check for CommandGuard {
             return Ok(verdict);
         }
         if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             return Ok(verdict);
         }
         Ok(Verdict::Allow)
@@ -94,14 +105,6 @@ mod tests {
             Verdict::Deny { reason } => assert!(reason.contains(danger), "reason: {reason}"),
             other => panic!("expected Deny, got {other:?}"),
         }
-    }
-
-    /// O envio forçado escrito depois da branch continua recusado; a forma
-    /// segura, com `--force-with-lease`, passa.
-    #[test]
-    fn force_push_denied_lease_allowed_through_chain() {
-        assert!(verdict_for("git push origin dev --force").is_blocking());
-        assert!(!verdict_for("git push --force-with-lease origin dev").is_blocking());
     }
 
     /// O redirecionamento para um caminho do Windows é reescrito, com uma

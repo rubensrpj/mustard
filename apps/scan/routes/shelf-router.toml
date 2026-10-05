@@ -1,0 +1,42 @@
+# As rotas do roteador do shelf, no Dart. O nome deste arquivo é o nome do
+# framework; a consulta que acha as rotas está em `shelf-router/routes.scm`,
+# e o que cada captura dela diz, em `src/routes.rs`.
+#
+# A rota pela chamada: `router.get('/pedidos/<id>', ler)`, pelo nome do
+# método; quem atende é o último argumento. O `router.mount('/api/', outro)`
+# e o `router.mount('/api/', outro.call)` somam o prefixo às rotas
+# registradas em `outro`, ou escritas na função `outro`, no mesmo arquivo ou
+# no arquivo de onde o nome vem.
+#
+# A rota pela anotação: `@Route.get('/x')` no método, que a atende; ela se
+# registra no roteador da classe. O `@Route.mount('/api/')` no getter que
+# devolve o roteador de outra classe (`Router get _api => Outra().router;`)
+# soma o prefixo às rotas anotadas dessa classe.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador
+#   (`package:shelf_router/shelf_router.dart`).
+# - `methods`: o nome do método ou da anotação e o método HTTP que ele diz;
+#   `"*"` é qualquer método. O nome fora da tabela não faz rota.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`<id>`,
+#   `<id|[0-9]+>`).
+# - `path_starts`: o começo que todo caminho de rota tem. O texto sem ele é
+#   outra coisa, e não faz rota.
+
+language = ["dart"]
+imports = ["package:shelf_router"]
+param_wrappers = [["<", ">"]]
+path_starts = ["/"]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+head = "HEAD"
+options = "OPTIONS"
+all = "*"

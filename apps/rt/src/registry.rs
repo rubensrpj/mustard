@@ -5,16 +5,20 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São onze, e só eles: a trava de comandos, o portão de escrita, o pedido do
-//! subagente, a testemunha da aprovação, a entrada da mensagem, o início da
-//! sessão, o conserto da barra de status, o sinal de vida da onda, o aviso
-//! antes de compactar, a faxina do fim da sessão e a conferência do fim da
-//! resposta.
+//! São quatorze, e só eles: a trava de comandos, o portão de escrita, o pedido
+//! do subagente, a testemunha da aprovação, a testemunha da cópia da página,
+//! a entrada da mensagem, o início da sessão, o conserto da barra de status,
+//! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
+//! de compactar, o aviso de tamanho da conversa, que também recusa o agente
+//! de onda que gastou a folga depois do limite, a faxina do fim da sessão e
+//! a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
+use crate::hooks::observe::copy_witness::CopyWitness;
+use crate::hooks::observe::glossary_witness::GlossaryWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
-use crate::hooks::session::conversation_size::PrecompactNotice;
+use crate::hooks::session::conversation_size::{PrecompactNotice, SizeNotice};
 use crate::hooks::session::prompt_entry::PromptEntry;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -23,6 +27,7 @@ use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::write::write_gate::WriteGate;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
+use mustard_core::platform::project_seed::PAGE_DATABASE_TOOL;
 
 /// Em que ferramenta uma entrada do registro roda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +72,14 @@ impl Module {
     }
 }
 
-/// As ferramentas que escrevem ou leem arquivo, que o portão de escrita
-/// confere.
-const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"];
+/// As ferramentas que escrevem, leem ou buscam arquivo, que o portão de
+/// escrita confere: a busca por palavra (`Grep`) e a busca por nome
+/// (`Glob`).
+const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"];
+
+/// As ferramentas que editam arquivo de texto, cuja edição ensina o
+/// glossário do mapa.
+const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
 
 /// As ferramentas que despacham um subagente.
 const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
@@ -93,10 +103,11 @@ impl Registry {
                 check: Some(Box::new(CommandGuard)),
                 observer: None,
             },
-            // O portão de escrita, nas cinco ferramentas de arquivo. As
-            // regras, em ordem: segredo, arquivos que só o binário escreve,
-            // aprovação, a branch da spec (só aviso) e a base do `git.flow`.
-            // A primeira que responde decide.
+            // O portão de escrita, nas cinco ferramentas de arquivo e nas
+            // duas buscas (por palavra e por nome). As regras, em ordem: segredo, a chave do Jev, arquivos
+            // que só o binário escreve, aprovação, a branch da spec (só
+            // aviso), a base do `git.flow`, a leitura inteira grande e a
+            // leitura cortada. A primeira que responde decide.
             Module {
                 id: "write_gate",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS))],
@@ -121,8 +132,17 @@ impl Registry {
                 check: Some(Box::new(ApprovalWitness)),
                 observer: None,
             },
+            // A testemunha da cópia: no resultado de um lote mandado ao banco
+            // da página da spec, guarda as versões que o banco devolveu e,
+            // quando o último lote volta, grava a cópia. Nunca barra.
+            Module {
+                id: "copy_witness",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named(PAGE_DATABASE_TOOL))],
+                check: Some(Box::new(CopyWitness)),
+                observer: None,
+            },
             // A entrada da mensagem, numa chamada só: a trava de instalação,
-            // a mensagem gravada e a linha curta.
+            // a mensagem gravada e a correção da escrita, quando houver.
             Module {
                 id: "prompt_entry",
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
@@ -153,12 +173,32 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WaveAliveObserver)),
             },
+            // A testemunha do glossário do mapa: depois de cada edição, a
+            // declaração mudada que a última busca da sessão entregou ganha a
+            // marca das palavras da pergunta. Nunca barra.
+            Module {
+                id: "glossary_witness",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::OneOf(EDIT_TOOLS))],
+                check: None,
+                observer: Some(Box::new(GlossaryWitness)),
+            },
             // O aviso antes de compactar: em toda compactação, manual ou
             // automática, injeta o bloco de retomada pronto para colar.
             Module {
                 id: "precompact_notice",
                 applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
                 check: Some(Box::new(PrecompactNotice)),
+                observer: None,
+            },
+            // O tamanho da conversa nos dois lados de cada ferramenta. Depois
+            // dela: a quem conduz, o aviso de limpar ou compactar; ao agente
+            // de onda, o de parar no limite. Antes dela: só o agente de onda
+            // que gastou a folga depois desse aviso é recusado, menos para
+            // gravar na spec e compilar.
+            Module {
+                id: "size_notice",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any), (Trigger::PreToolUse, ToolMatch::Any)],
+                check: Some(Box::new(SizeNotice)),
                 observer: None,
             },
             // A faxina do fim da sessão.
@@ -169,8 +209,9 @@ impl Registry {
                 observer: Some(Box::new(SessionCleanupObserver)),
             },
             // A conferência do fim da resposta, o único gancho do `Stop`: a
-            // regra das pendências bloqueia; a de clareza nunca bloqueia, só
-            // grava o erro para a mensagem seguinte.
+            // regra das pendências bloqueia; a de clareza só bloqueia a
+            // resposta fora do idioma do projeto, e os outros erros ela grava
+            // para a mensagem seguinte.
             Module {
                 id: "end_of_turn_check",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
@@ -196,19 +237,6 @@ impl Registry {
         self.modules.iter().map(|m| m.id).collect()
     }
 
-    /// Os eventos em que algum gancho roda. Quem lê é o mesmo teste.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn triggers(&self) -> Vec<Trigger> {
-        let mut out: Vec<Trigger> = Vec::new();
-        for (trigger, _) in self.modules.iter().flat_map(|m| m.applies_to.iter()) {
-            if !out.contains(trigger) {
-                out.push(*trigger);
-            }
-        }
-        out
-    }
-
     /// O gancho de nome `id`, em qualquer evento.
     #[cfg(test)]
     #[must_use]
@@ -232,9 +260,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os onze ganchos que ficam, e só eles.
+    /// O registro tem os quatorze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_eleven_hooks() {
+    fn the_registry_holds_exactly_the_fourteen_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -243,11 +271,14 @@ mod tests {
             [
                 "approval_witness",
                 "command_guard",
+                "copy_witness",
                 "end_of_turn_check",
+                "glossary_witness",
                 "precompact_notice",
                 "prompt_entry",
                 "session_cleanup_observer",
                 "session_start_inject",
+                "size_notice",
                 "statusline_heal_observer",
                 "subagent_inject",
                 "wave_alive_observer",
@@ -270,45 +301,56 @@ mod tests {
         assert!(!ToolMatch::Named("Bash").matches(Some("bash")));
     }
 
-    /// A trava de comandos roda só no `PreToolUse` do Bash; o sinal de vida
-    /// da onda, que roda depois de toda ferramenta, continua no
-    /// `PostToolUse`.
+    /// A trava de comandos roda só no `PreToolUse` do Bash, e o aviso de
+    /// tamanho depois dela; o sinal de vida da onda, que roda depois de toda
+    /// ferramenta, continua no `PostToolUse`.
     #[test]
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
-        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard", "size_notice"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer", "size_notice"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
-    /// O portão de escrita roda antes das cinco ferramentas de arquivo, e só
-    /// delas; o sinal de vida da onda segue rodando depois de cada uma.
+    /// O portão de escrita roda antes das cinco ferramentas de arquivo e das
+    /// duas buscas (por palavra e por nome), e só delas, com o aviso de
+    /// tamanho depois dele; o sinal de vida da
+    /// onda segue rodando depois de cada uma, e a testemunha do glossário, só
+    /// depois das três que editam texto: a leitura nunca ensina.
     #[test]
-    fn the_write_gate_runs_on_the_five_file_tools() {
+    fn the_write_gate_runs_on_the_file_tools_and_the_searches() {
         let registry = Registry::new();
-        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate", "size_notice"], "{tool}");
+            let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
+                &["wave_alive_observer", "glossary_witness", "size_notice"]
+            } else {
+                &["wave_alive_observer", "size_notice"]
+            };
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), after, "{tool}");
         }
-        for tool in ["Bash", "Task", "Agent", "Skill"] {
+        let module = registry.by_id("glossary_witness").expect("registered");
+        assert!(module.check.is_none() && module.observer.is_some());
+        for tool in ["Bash", "Task", "Agent", "Skill", "WebFetch"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }
         let module = registry.by_id("write_gate").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
     }
 
-    /// O pedido do subagente roda no despacho de um agente, e o início e o
-    /// fim de subagente não têm gancho nenhum.
+    /// O pedido do subagente roda no despacho de um agente, com o aviso de
+    /// tamanho depois dele, e o início e o fim de subagente não têm gancho
+    /// nenhum.
     #[test]
     fn the_agent_dispatch_runs_only_the_subagent_inject() {
         let registry = Registry::new();
         for tool in ["Task", "Agent"] {
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject", "size_notice"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "size_notice"], "{tool}");
         }
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")), ["size_notice"]);
     }
 
     /// A testemunha roda só depois da pergunta com opções, e é uma trava que
@@ -319,25 +361,38 @@ mod tests {
         let registry = Registry::new();
         assert_eq!(
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")),
-            ["approval_witness", "wave_alive_observer"]
+            ["approval_witness", "wave_alive_observer", "size_notice"]
         );
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")), ["size_notice"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer", "size_notice"]);
         let module = registry.by_id("approval_witness").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
     }
 
-    /// O sinal de vida roda depois de qualquer ferramenta, e só depois: nunca
-    /// antes, e é um observador puro, sem veredito.
+    /// O sinal de vida é um observador puro, sem veredito.
     #[test]
-    fn wave_alive_observer_runs_after_every_tool_only() {
+    fn wave_alive_observer_is_a_pure_observer() {
         let registry = Registry::new();
-        for tool in ["Bash", "Write", "Task", "AskUserQuestion"] {
-            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"wave_alive_observer"), "{tool}");
-            assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"wave_alive_observer"), "{tool}");
-        }
         let module = registry.by_id("wave_alive_observer").expect("registered");
         assert!(module.check.is_none() && module.observer.is_some());
+    }
+
+    /// O aviso de tamanho roda nos dois lados de qualquer ferramenta — depois
+    /// dela, junto do sinal de vida, para avisar, e antes dela, para recusar o
+    /// agente de onda que gastou a folga — e em nenhum outro evento, e é uma
+    /// trava que devolve veredito, não um observador.
+    #[test]
+    fn size_notice_runs_after_every_tool() {
+        let registry = Registry::new();
+        for tool in ["Bash", "Write", "Task", "Grep"] {
+            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
+            assert!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
+        }
+        for trigger in [Trigger::UserPromptSubmit, Trigger::PreCompact, Trigger::Stop, Trigger::SessionStart] {
+            assert!(!applicable_ids(&registry, trigger, None).contains(&"size_notice"), "{trigger:?}");
+        }
+        let module = registry.by_id("size_notice").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
     }
 
     /// O fim da resposta é uma conferência só, um `Check` puro.
@@ -362,16 +417,5 @@ mod tests {
         );
         assert_eq!(applicable_ids(&registry, Trigger::SessionEnd, None), ["session_cleanup_observer"]);
         assert_eq!(applicable_ids(&registry, Trigger::PreCompact, None), ["precompact_notice"]);
-    }
-
-    /// Os eventos com gancho são exatamente os que o registro nomeia.
-    #[test]
-    fn the_triggers_are_the_events_with_a_hook() {
-        let mut names: Vec<&str> = Registry::new().triggers().into_iter().map(Trigger::as_event_name).collect();
-        names.sort_unstable();
-        assert_eq!(
-            names,
-            ["PostToolUse", "PreCompact", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]
-        );
     }
 }

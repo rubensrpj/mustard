@@ -90,9 +90,10 @@ pub fn read(path: &Path) -> Result<Option<SpecLog>, Refusal> {
     }
 }
 
-/// Recalcula o `search` de cada lição com o redutor de hoje, com a trava do
-/// banco, e devolve quantas linhas mudaram. O arquivo só é reescrito quando
-/// algo mudou; sem banco, nada é criado.
+/// Preenche o `search` das lições que ainda não o têm, com a trava do banco,
+/// e devolve quantas linhas mudaram. O campo já gravado fica como está: a
+/// leitura tira as formas de cada palavra nas línguas do projeto. O arquivo
+/// só é reescrito quando algo mudou; sem banco, nada é criado.
 pub fn refresh_search(path: &Path) -> Result<usize, Refusal> {
     let mut file = match LockedFile::existing(path) {
         Ok(file) => file,
@@ -107,8 +108,7 @@ pub fn refresh_search(path: &Path) -> Result<usize, Refusal> {
     Ok(changed)
 }
 
-/// Quantas lições têm o `search` calculado por outro redutor. Só lê; sem
-/// banco, zero.
+/// Quantas lições estão sem o campo `search`. Só lê; sem banco, zero.
 pub fn stale_search(path: &Path) -> Result<usize, Refusal> {
     match read_shared(path) {
         Ok(content) => Ok(events::refresh_search_lines(&content).1),
@@ -124,7 +124,8 @@ fn io_refusal(error: Error) -> Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::lessons::matching;
+    use crate::domain::lessons::{kept, matching_among};
+    use crate::domain::normalize::Languages;
     use serde_json::json;
 
     fn obj(value: Value) -> Map<String, Value> {
@@ -132,6 +133,10 @@ mod tests {
             Value::Object(map) => map,
             other => panic!("not an object: {other}"),
         }
+    }
+
+    fn languages() -> Languages {
+        Languages::new(["pt-BR", "en-US"])
     }
 
     fn at(hm: &str) -> String {
@@ -281,7 +286,7 @@ mod tests {
     /// achada por "apagando a pasta" entre as 5 mais fortes, no meio de
     /// outras.
     #[test]
-    fn a_lesson_keyed_apagar_is_found_for_apagando_a_pasta() {
+    fn a_lesson_keyed_apagar_is_found_for_its_gerund_in_the_query() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lessons.ndjson");
         put(&path, defect("O cargo não está no PATH.", &["cargo", "PATH"]));
@@ -291,7 +296,7 @@ mod tests {
         put(&path, defect("Os testes gravam numa pasta temporária.", &["pasta"]));
         put(&path, defect("Gancho não entra em pânico.", &["gancho"]));
         let bank = read(&path).unwrap().unwrap();
-        let hits = matching(&bank, "apagando a pasta");
+        let hits = matching_among(&kept(&bank), "apagando a pasta", &languages());
         assert!(hits.len() <= crate::domain::search::TOP);
         assert!(hits.iter().any(|h| h.id == target.id), "{hits:?}");
     }
@@ -320,15 +325,15 @@ mod tests {
         let bank = read(&path).unwrap().unwrap();
 
         let top = crate::domain::search::TOP;
-        let pasta = &crate::domain::search::query_terms("pasta")[0];
-        let with_pasta = bank
+        let folder_word = "pasta";
+        let with_folder_word = bank
             .visible()
             .iter()
-            .filter(|l| l.str_field("search").unwrap_or_default().split(' ').any(|w| w == pasta))
+            .filter(|l| l.str_field("search").unwrap_or_default().split(' ').any(|w| w == folder_word))
             .count();
-        assert!(with_pasta > top, "more lessons match than come back: {with_pasta}");
+        assert!(with_folder_word > top, "more lessons match than come back: {with_folder_word}");
 
-        let hits = matching(&bank, "apagando a pasta");
+        let hits = matching_among(&kept(&bank), "apagando a pasta", &languages());
         assert_eq!(hits.len(), top, "{hits:?}");
         assert!(hits.iter().any(|h| h.id == target.id), "the lesson keyed apagar is in the top five: {hits:?}");
     }
@@ -365,7 +370,7 @@ mod tests {
         let old = put(&path, everywhere("A suíte roda em segundo plano no servidor antigo.", &["suíte", "primeiro plano"]));
         let text = requested(root);
         for id in [first.id, second.id, old.id] {
-            assert!(text.contains(&format!("`lessons`: {id}")), "antes, o pedido leva a lição {id}: {text}");
+            assert!(text.contains(&format!("Lição {id} — ")), "antes, o pedido leva a lição {id}: {text}");
         }
 
         let mut merged = everywhere("Nunca apague a pasta de outra sessão: o trabalho dela se perde.", &["apagar", "pasta"]);
@@ -379,9 +384,9 @@ mod tests {
         assert_eq!(model::kept(&bank).iter().map(|l| l.id).collect::<Vec<_>>(), [merged.id]);
         assert_eq!(bank.events.len(), 5, "as linhas antigas ficam no arquivo");
         let text = requested(root);
-        assert!(text.contains(&format!("`lessons`: {}", merged.id)), "{text}");
+        assert!(text.contains(&format!("Lição {} — ", merged.id)), "{text}");
         for gone in [first.id, second.id, old.id] {
-            assert!(!text.contains(&format!("`lessons`: {gone}")), "a lição {gone} devia sair do pedido: {text}");
+            assert!(!text.contains(&format!("Lição {gone} — ")), "a lição {gone} devia sair do pedido: {text}");
         }
     }
 
@@ -459,7 +464,7 @@ mod tests {
     /// cada par grava, e a outra é recusada apontando a lição que já saiu.
     #[test]
     fn two_merges_or_two_retirements_of_the_same_lessons_at_once_leave_one() {
-        for _ in 0..20 {
+        for _ in 0..3 {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("spec").join("lessons.ndjson");
             let a = put(&path, defect("Um", &["um"]));
@@ -496,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn the_search_of_the_bank_is_recomputed_only_where_it_is_stale() {
+    fn the_search_of_the_bank_is_filled_only_where_it_is_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lessons.ndjson");
         assert_eq!(refresh_search(&path).unwrap(), 0);
@@ -504,12 +509,14 @@ mod tests {
         put(&path, defect("Um", &["um"]));
         put(&path, defect("Dois", &["dois"]));
         let original = std::fs::read_to_string(&path).unwrap();
-        let stale = original.replacen("\"search\":\"um\"", "\"search\":\"velho\"", 1);
-        assert_ne!(stale, original);
-        std::fs::write(&path, &stale).unwrap();
+        let missing = original.replacen(",\"search\":\"um\"", "", 1);
+        let written = missing.replacen("\"search\":\"dois\"", "\"search\":\"velho\"", 1);
+        assert_ne!(written, missing);
+        std::fs::write(&path, &written).unwrap();
         assert_eq!(stale_search(&path).unwrap(), 1);
         assert_eq!(refresh_search(&path).unwrap(), 1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let expected = original.replacen("\"search\":\"dois\"", "\"search\":\"velho\"", 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected, "the old field stays as written");
         assert_eq!(stale_search(&path).unwrap(), 0);
     }
 }

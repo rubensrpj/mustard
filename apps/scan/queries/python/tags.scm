@@ -1,8 +1,34 @@
 ; Python — imports and definitions. A module is a file, so no @namespace.
 (import_statement name: (dotted_name) @import)
-(import_statement name: (aliased_import (dotted_name) @import))
-(import_from_statement module_name: (dotted_name) @import)
-(import_from_statement module_name: (relative_import) @import)
+; Sem apelido, `import util` traz ao arquivo só o primeiro nome escrito, o do
+; módulo (`loja` em `import loja.servico`): `util.ler()` alcança o módulo, e
+; `ler()` sozinho não o vê.
+(import_statement name: (dotted_name . (identifier) @imported))
+; O apelido de `import loja.servico as s` é o nome que o import traz: o
+; próprio módulo, escrito antes de outro nome (`s.buscar()`).
+(import_statement name: (aliased_import name: (dotted_name) @import alias: (identifier) @imported))
+
+; O repasse: a língua não tem `export`, e o nome que um módulo importa é
+; importável dele. Por isso todo `from x import a, b`, com ou sem ponto na
+; frente, oferece a quem importa o arquivo os nomes que traz, e o
+; `from x import *`, tudo o que `x` oferece. O repasse é também import do
+; arquivo.
+(import_from_statement module_name: (dotted_name) @reexport)
+(import_from_statement module_name: (relative_import (dotted_name)) @reexport)
+
+; `from . import models`: o import é só os pontos, uma pasta, e cada nome que
+; ele traz é um arquivo dela. Capturados juntos, o motor lê o import como
+; `.models` (veja `relative_import` no languages.toml).
+(import_from_statement
+  module_name: (relative_import . (import_prefix) .) @import
+  name: (dotted_name) @imported)
+(import_from_statement
+  module_name: (relative_import . (import_prefix) .) @import
+  name: (aliased_import name: (dotted_name) @imported))
+; `from . import *` não traz arquivo pelo nome: o import fica a pasta.
+(import_from_statement
+  module_name: (relative_import . (import_prefix) .) @import
+  (wildcard_import))
 
 (class_definition name: (identifier) @name) @definition.class
 
@@ -15,7 +41,10 @@
 ; The names `from m import limite` brings into the file: what it brought, not
 ; a use of it.
 (import_from_statement name: (dotted_name) @imported)
-(import_from_statement name: (aliased_import) @imported)
+; `from m import a as b` traz `b`, que o import e o repasse tiram de `m`
+; pelo nome `a`.
+(import_from_statement
+  name: (aliased_import name: (dotted_name) @imported.original alias: (identifier) @imported))
 
 ; Functions — a module-level function is a UNIT, a method is a MEMBER. Python
 ; spells both with `function_definition`, so the line is drawn by CONTEXT: a
@@ -29,10 +58,10 @@
 (class_definition
   body: (block (function_definition name: (identifier) @name) @definition.method))
 
-; Members — class-level attributes (`name = ""` / `name: str = ""` in a class
-; body), the closest Python syntax has to a field declaration. Member kinds feed
-; the digest's domain-term index only: the miner's significance gate (mine.rs)
-; never treats them as units.
+; Membros — atributos no corpo da classe (`name = ""` / `name: str = ""`), o
+; mais perto que o Python tem de uma declaração de campo. Os kinds de membro
+; chegam ao mapa com as outras declarações do arquivo, e o grafo lista cada um
+; sob o tipo dono dele.
 (class_definition
   body: (block
     (expression_statement
@@ -81,3 +110,39 @@
 ; declaration it adorns: the engine passes over it to find the comment above
 ; and reads no call out of it.
 (decorator) @decoration
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(assignment left: (identifier) @local)
+(assignment left: (pattern_list (identifier) @local))
+(parameters (identifier) @local)
+(default_parameter name: (identifier) @local)
+(typed_parameter (identifier) @local)
+(typed_default_parameter name: (identifier) @local)
+(lambda_parameters (identifier) @local)
+(for_statement left: (identifier) @local)
+
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`map(dobro, xs)`, `sorted(xs, key=chave)`,
+; `Thread(target=self.rodar)`) ou à direita de uma atribuição (`f = dobro`). O
+; motor liga o nome só a uma função ou a um método à vista.
+(argument_list (identifier) @call.value)
+(argument_list (attribute attribute: (identifier) @call.value))
+(keyword_argument value: (identifier) @call.value)
+(keyword_argument value: (attribute attribute: (identifier) @call.value))
+(assignment right: (identifier) @call.value)
+(assignment right: (attribute attribute: (identifier) @call.value))
+
+; O atributo escrito depois do objeto, sem chamada ali: o campo lido ou
+; escrito (`pedido.total`, `self.total`). O motor liga o nome só a um campo,
+; como liga a chamada de método escrita depois do mesmo objeto.
+(attribute attribute: (identifier) @member)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string) @text
+
+; A string escrita sozinha no começo do módulo é a documentação dele, e não
+; texto fixo.
+(module . (expression_statement (string (string_content) @doc)))

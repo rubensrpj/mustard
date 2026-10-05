@@ -1,0 +1,39 @@
+# O arquivo de entrada de pasta, por língua — dados embutidos na compilação
+# (include_str!) e lidos uma vez. Mudar uma lista é mudar dado, nunca a regra:
+# a regra, em `conventions.rs`, só compara o nome do arquivo com o que está
+# aqui, sem saber de língua nenhuma.
+#
+# Arquivo de entrada é o que responde pela pasta em que mora: quem importa a
+# pasta, e não um arquivo dela, chega a ele. O nome dele é o mesmo em toda
+# pasta por regra da língua, não por escolha do time, e por isso não diz a
+# camada do arquivo.
+#
+# A chave é o `name` da língua em `apps/scan/languages.toml`; a compilação do
+# scan para com a chave que o registro não declara. O valor é a lista dos
+# nomes, sem a extensão, na ordem em que a importação os procura. O nome se
+# compara inteiro, com a caixa como está, com o nome do arquivo sem a última
+# extensão. A língua sem chave não tem arquivo de entrada.
+#
+# Quem lê estes dados: a importação do scan (o import que nomeia uma pasta
+# chega ao arquivo de entrada dela; os módulos escritos num arquivo de entrada
+# moram na pasta dele) e o padrão do projeto (o arquivo de entrada nunca ganha
+# papel pelo nome).
+#
+# Por que cada língua:
+# - as três da família do TypeScript: o Node abre só o `index` de uma pasta.
+#   `main` fica de fora: é campo do `package.json`, não nome de arquivo;
+# - o Python: o `__init__` responde pelo pacote. O `__main__` fica de fora: ele
+#   roda o pacote, e ninguém o importa;
+# - o Rust: o `mod` responde pela pasta, e o `main` e o `lib` são a raiz do
+#   crate — o `crate::` e o `super::` de um módulo de topo os abrem, e os
+#   módulos filhos deles moram na pasta deles. O `main` vem antes do `lib` para
+#   o crate que tem os dois continuar chegando ao `main`, como chegava;
+# - o C# e o PHP importam namespace; o Go importa a pasta inteira, e o
+#   `main.go` nunca é importado; o Dart importa o arquivo pelo nome, e o arquivo
+#   da biblioteca leva o nome do pacote. Nenhum dos quatro tem chave.
+
+typescript = ["index"]
+tsx = ["index"]
+javascript = ["index"]
+python = ["__init__"]
+rust = ["mod", "main", "lib"]

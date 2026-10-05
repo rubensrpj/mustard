@@ -1,6 +1,9 @@
 ; Go — package (namespace), imports, top-level types and funcs.
 (package_clause (package_identifier) @namespace)
 (import_spec path: (interpreted_string_literal) @import)
+; O apelido de `import s "strings"` é o nome que o import traz: o próprio
+; pacote, escrito antes de outro nome (`s.Join()`).
+(import_spec name: (package_identifier) @imported)
 
 (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct
 (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface
@@ -15,13 +18,54 @@
 (const_spec (identifier) @name) @definition.const
 (const_spec (identifier) @name value: (_) @value) @definition.const
 
-; Members — receiver methods and struct fields. Member kinds feed the digest's
-; domain-term index only: the miner's significance gate (mine.rs) is kind-based
-; and never sees them. The method tag follows the upstream tree-sitter-go
-; tags.scm (MIT) — see queries/README.md.
+; Membros — métodos com receptor e campos de struct. Os kinds de membro chegam
+; ao mapa com as outras declarações do arquivo, e o grafo lista cada um sob o
+; tipo dono dele. A tag de método segue o tags.scm do tree-sitter-go (MIT) —
+; veja queries/README.md.
 (method_declaration name: (field_identifier) @name) @definition.method
+; O método com receptor é escrito fora do corpo do tipo: o dono dele é o tipo
+; do receptor, com ou sem ponteiro e sem os argumentos de tipo.
+(method_declaration
+  receiver: (parameter_list (parameter_declaration type: [
+    (type_identifier) @owner
+    (pointer_type (type_identifier) @owner)
+    (generic_type type: (type_identifier) @owner)
+    (pointer_type (generic_type type: (type_identifier) @owner))]))
+  name: (field_identifier) @name) @definition.method
 (field_declaration name: (field_identifier) @name) @definition.field
 
 ; An interface method is a member like a receiver method; left uncaptured, its
 ; header was read as a call.
 (method_elem name: (field_identifier) @name) @definition.method
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(short_var_declaration left: (expression_list (identifier) @local))
+(var_spec name: (identifier) @local)
+(parameter_declaration name: (identifier) @local)
+(range_clause left: (expression_list (identifier) @local))
+
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`sort.Slice(xs, menor)`, `http.HandleFunc("/", rotas.Inicio)`),
+; à direita de uma declaração ou de uma atribuição (`f := dobro`) ou como
+; valor de um campo (`Handler{Run: rodar}`). O motor liga o nome só a uma
+; função ou a um método à vista.
+(argument_list (identifier) @call.value)
+(argument_list (selector_expression field: (field_identifier) @call.value))
+(short_var_declaration right: (expression_list (identifier) @call.value))
+(short_var_declaration right: (expression_list (selector_expression field: (field_identifier) @call.value)))
+(assignment_statement right: (expression_list (identifier) @call.value))
+(assignment_statement right: (expression_list (selector_expression field: (field_identifier) @call.value)))
+(var_spec value: (expression_list (identifier) @call.value))
+(keyed_element value: (literal_element (identifier) @call.value))
+
+; O campo escrito depois do objeto, sem chamada ali: o lido ou escrito
+; (`pedido.Total`, `p.Total`). O motor liga o nome só a um campo, como liga a
+; chamada de método escrita depois do mesmo objeto.
+(selector_expression field: (field_identifier) @member)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(interpreted_string_literal) @text
+(raw_string_literal) @text

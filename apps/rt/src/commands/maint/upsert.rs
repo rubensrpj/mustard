@@ -3,7 +3,7 @@
 //! The plugin's bootstrap door: everything the harness needs in a project —
 //! `.claude/settings.local.json`, Mustard's own texts (the session map under
 //! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
-//! and the three agents under `.claude/agents/mustard/`),
+//! and the two agents under `.claude/agents/mustard/`),
 //! `.claude/.gitignore`, and the project-root `mustard.json` — is seeded by
 //! `mustard_core::upsert_project`, idempotently.
 //! The settings file is the LOCAL one because the install is always
@@ -13,7 +13,7 @@
 //! preserved, and only what is missing is created or backfilled. Mustard's
 //! own texts — `.claude/mustard/session-map.md`,
 //! `.claude/mustard/pages/{spec,project}.html` and
-//! `.claude/agents/mustard/{wave,review,skill}.md` — are ALWAYS rewritten, in
+//! `.claude/agents/mustard/{wave,review}.md` — are ALWAYS rewritten, in
 //! the language of `language.text`: they are the harness's own text, not
 //! project configuration, so a copy that diverged is replaced and reported as
 //! `Updated`, while a copy already byte-identical to the shipped text is
@@ -45,8 +45,43 @@
 //! do by itself comes back in `codeToolWarnings`, each sentence naming the
 //! command a person runs to finish it; nothing it meets stops the upsert.
 //!
+//! O comando inteiro tem um orçamento de tempo só, [`UPSERT_BUDGET`] (100 s),
+//! para tudo o que ele roda fora do processo: os dois passos do plugin (cada
+//! um com o teto de [`REFRESH_TIMEOUT`], 45 s) e a etapa das ferramentas de
+//! código. Cada comando roda com o menor entre o prazo dele e o que resta do
+//! orçamento, e a etapa das ferramentas mantém o teto de 60 s
+//! (`mustard_core::platform::code_tools::STEP_BUDGET`) dentro do que resta.
+//! O que passa do prazo é cortado e volta como uma frase de "timed out"; com o
+//! orçamento esgotado o passo seguinte nem roda, e volta como a mesma frase,
+//! com o comando para a pessoa rodar. Assim a atualização nunca espera por uma
+//! instalação parada, e o pior caso é o orçamento — 100 s —, abaixo dos 2
+//! minutos que o Bash do Claude Code dá a quem a chama. O plugin roda antes
+//! das ferramentas, e as duas partes tiram do mesmo orçamento.
+//!
+//! The local settings also allow the folder where the project's separate
+//! copies live, outside the project. Two answers of the person travel as
+//! options and land in `mustard.json`: `--prepare`, the command that brings the
+//! dependencies into each copy, and `--local-files`, the files git ignores that
+//! each copy receives. While `localFiles` is absent — not asked yet — the
+//! report carries `localFilesFound`, the files git ignores outside an ignored
+//! folder, for the person to confirm once. No rule of any language decides
+//! either answer: both are the project's. A `--local-files` item git does not
+//! ignore is refused before anything is written — each copy already gets it
+//! through git, in the commit's version, and copying it over would swap that
+//! version for the main folder's — with the same check the copy runs
+//! ([`crate::commands::flow::round::local_file_ignored`]).
+//!
+//! Once the files are written, the lines of the specs and of the lesson bank
+//! that have no search field get it, once, by the same core function
+//! `mustard init` calls (`mustard_core::io::spec_index::refresh_search`); a
+//! field already written stays as it is, and a project without the specs
+//! folder gets nothing created. A failure is a warning in the report,
+//! `searchWarning`, naming the command that fills it later; it never stops
+//! the upsert.
+//!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
-//! `UpsertReport` flattened, with `pluginRefresh` and `codeToolWarnings`
+//! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings`, on a
+//! failed search `searchWarning` and, while unasked, `localFilesFound`
 //! appended — deterministic
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
@@ -72,8 +107,9 @@
 //!
 //! UPDATING is a pair of commands the host already publishes —
 //! `claude plugin marketplace update <marketplace>` then
-//! `claude plugin update <plugin>` — so this command runs them as its last step
-//! and reports the version the registry records afterwards.
+//! `claude plugin update <plugin>` — so this command runs them right after the
+//! files are written, before the code tools, and reports the version the
+//! registry records afterwards.
 //!
 //! APPLYING is not reachable from here at all. `claude plugin update --help`
 //! says `(restart required to apply)`: a session loads its plugin at start and
@@ -89,9 +125,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use mustard_core::platform::code_tools::{self, MachineRunner, ToolRunner};
+use mustard_core::platform::code_tools::{self, whole_seconds, Budget, MachineRunner, ToolRunner};
 use mustard_core::platform::project_seed::{upsert_project_with, PendingList};
-use mustard_core::InstallMode;
+use mustard_core::{InstallMode, ProjectConfig};
 use serde::Serialize;
 
 use crate::commands::event::pending::add_for_the_project;
@@ -104,16 +140,23 @@ use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 // permanent skip nobody could see.
 use mustard_core::{claude_config_dir, INSTALLED_PLUGINS, PLUGIN_NAME};
 
-/// How long one refresh step may take. Both steps reach the network (the
-/// marketplace update is a git fetch), so an unbounded wait would hang the
+/// How long one refresh step may take, at most. Both steps reach the network
+/// (the marketplace update is a git fetch), so an unbounded wait would hang the
 /// installation door on a stalled connection.
 ///
-/// Two steps run, so this is HALF the budget the door has. The `/mustard:upsert`
-/// prose calls this command from a Bash tool call whose own timeout the host
-/// enforces; a per-step ceiling that let the pair outlast it would have the door
-/// killed from outside, and then nothing reports at all — the module's own
-/// deadline is the only one that can produce a `skipped` a person reads.
+/// The `/mustard:upsert` prose calls this command from a Bash tool call whose
+/// own timeout the host enforces (2 minutes); a wait that let the command
+/// outlast it would have the door killed from outside, and then nothing reports
+/// at all — the module's own deadline is the only one that can produce a
+/// `skipped` a person reads. So this is only the ceiling of one step: both steps
+/// and the code-tool step draw from the one [`UPSERT_BUDGET`], and a step that
+/// finds it spent does not run.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// O tempo que o comando inteiro tem para tudo o que roda fora do processo: os
+/// dois passos do plugin e a etapa das ferramentas de código. Abaixo dos 2
+/// minutos do Bash do Claude Code, com folga para gravar os arquivos.
+const UPSERT_BUDGET: Duration = Duration::from_secs(100);
 
 /// The two words `pluginRefresh.state` can carry. Both steps ran and were
 /// accepted, or the refresh did not happen and says why.
@@ -178,7 +221,8 @@ struct PluginRefresh {
 ///
 /// The engine's report is flattened, so every key callers already read
 /// (`installedBefore`, `created`, `private`, …) keeps its name and its place;
-/// `pluginRefresh` and `codeToolWarnings` are appended after them.
+/// `pluginRefresh`, `codeToolWarnings` and `searchWarning` are appended after
+/// them.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Report {
@@ -191,6 +235,29 @@ struct Report {
     /// the project involves has its program and its plugin, or that it
     /// involves none.
     code_tool_warnings: Vec<String>,
+    /// O aviso de que o campo de busca que falta nas specs não foi posto, com
+    /// o comando que o põe depois
+    /// ([`mustard_core::io::spec_index::refresh_search`]).
+    /// Presente só quando a busca falhou.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_warning: Option<String>,
+    /// Os arquivos que o git ignora fora de uma pasta ignorada, para a pessoa
+    /// confirmar uma vez ([`ignored_files`]). Presente só enquanto o
+    /// `mustard.json` não tem `localFiles`; vazia quando não há nenhum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_files_found: Option<Vec<String>>,
+}
+
+/// As respostas da pessoa que a instalação grava no `mustard.json`, pelas
+/// opções do comando. Ausente, a resposta não veio nesta chamada, e o que já
+/// está gravado fica.
+#[derive(Debug, Default)]
+pub struct UpsertOpts {
+    /// `--local-files`: a lista confirmada, separada por vírgula; vazia
+    /// quando o projeto confirmou que não precisa de nenhum arquivo.
+    pub local_files: Option<String>,
+    /// `--prepare`: o comando de preparo; vazio quando o projeto não tem.
+    pub prepare: Option<String>,
 }
 
 /// Execute `mustard-rt run upsert`.
@@ -200,7 +267,7 @@ struct Report {
 /// (`CLAUDE_PLUGIN_ROOT`), the core crate's own version otherwise. The field
 /// records "which harness last set this project up"; a legacy 3.1.x CLI stamp
 /// reads as drift once and this very command realigns it.
-pub fn run() {
+pub fn run(opts: &UpsertOpts) {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
@@ -209,7 +276,7 @@ pub fn run() {
     // The code-tool commands find and spawn their programs against this
     // process's own PATH, the way `mustard init` hands the same step its own.
     let path_env = std::env::var("PATH").unwrap_or_default();
-    match upsert(&root, &MachineRunner::new(&path_env), refresh_plugin) {
+    match upsert(&root, opts, &MachineRunner::new(&path_env), refresh_plugin) {
         Ok(outcome) => {
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
@@ -241,16 +308,19 @@ pub fn run() {
     }
 }
 
-/// The whole door, short of printing: seed the project, set up the code tools
-/// of every language it involves, refresh the plugin.
+/// The whole door, short of printing: seed the project, record the person's
+/// answers, fill the missing search of the specs, set up the code tools of
+/// every language it involves, refresh the plugin.
 ///
 /// `runner` runs the code-tool commands and `refresh` performs the plugin
 /// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
 /// a canned refresh, so what they drive is the same sequence the command runs.
-fn upsert(
+/// The refresh is handed the [`UPSERT_BUDGET`] it shares with the code tools.
+fn upsert<R: ToolRunner>(
     root: &Path,
-    runner: &impl ToolRunner,
-    refresh: impl FnOnce(&Path) -> PluginRefresh,
+    opts: &UpsertOpts,
+    runner: &R,
+    refresh: impl FnOnce(&Path, &Budget<'_, R>) -> PluginRefresh,
 ) -> mustard_core::platform::error::Result<Report> {
     // Unconditional. The mode is not read from anywhere and not asked for
     // anywhere: a harness that installs itself into someone else's repository
@@ -258,22 +328,114 @@ fn upsert(
     // reach it is the same failure with an extra step.
     let mode = InstallMode::Private;
 
+    // A lista de arquivos locais que traz um arquivo que o git não ignora é
+    // recusada antes de qualquer escrita: nada é gravado.
+    if let Some(file) = listed_local_files(opts).find(|file| !crate::commands::flow::round::local_file_ignored(root, file))
+    {
+        let lang = ProjectConfig::load(root).language().text_or_default();
+        let refusal = mustard_core::platform::i18n::translate("round.local_file_tracked", lang).replace("{file}", file);
+        return Err(mustard_core::platform::error::Error::Config(refusal));
+    }
+
     let version = mustard_core::harness_version();
-    let project = upsert_project_with(root, Some(&version), mode, &ProjectPending { root })?;
+    let mut project = upsert_project_with(root, Some(&version), mode, &ProjectPending { root })?;
+
+    // As respostas vão ao `mustard.json` que o passo de cima já deixou no
+    // lugar; a lista para confirmar só vem enquanto a dos arquivos locais não
+    // foi gravada, nesta chamada ou numa anterior.
+    if record_answers(root, opts)? {
+        project.record_mustard_json_change();
+    }
+    let local_files_found = ProjectConfig::load(root).local_files.is_none().then(|| ignored_files(root));
+
+    // A busca que uma versão anterior deixou nas specs e no banco de lições
+    // se acerta aqui, uma vez, como na instalação pelo terminal: a gravação
+    // comum só acrescenta a linha nova. A falha vira aviso, nunca aborta.
+    let search_warning = mustard_core::io::spec_index::refresh_search(root).err().map(|failed| failed.to_string());
 
     // Both steps below run only on the path where the project was really
-    // seeded: a run that wrote nothing has no installation to finish. The
-    // code tools come after the files, so a step that fails or stalls leaves
-    // the project already updated, and each failure is a sentence in the
-    // report, never an abort.
+    // seeded: a run that wrote nothing has no installation to finish. They come
+    // after the files, so a step that fails or stalls leaves the project
+    // already updated, and each failure is a sentence in the report, never an
+    // abort. The two draw from ONE budget: the plugin refresh goes first, and
+    // the code tools get what it leaves — a step with no time left does not
+    // run, and comes back as the sentence with its command.
+    let budget = Budget::start(runner, UPSERT_BUDGET);
+    let plugin_refresh = refresh(root, &budget);
     let code_tool_warnings =
-        code_tools::ensure_code_tools(root, &mustard_core::io::project_map::model_path(root), runner)
+        code_tools::ensure_code_tools_in(root, &mustard_core::io::project_map::model_path(root), &budget)
             .iter()
             .map(ToString::to_string)
             .collect();
 
-    // The refresh is the LAST step.
-    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings })
+    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, local_files_found })
+}
+
+/// Grava no `mustard.json` as respostas que vieram em `opts`: o comando de
+/// preparo, sem os espaços das pontas, e a lista dos arquivos locais, sem as
+/// entradas em branco. Uma resposta vazia também é gravada: ela diz que o
+/// projeto não tem preparo, ou não precisa de arquivo local. `true` quando o
+/// arquivo mudou.
+fn record_answers(root: &Path, opts: &UpsertOpts) -> mustard_core::platform::error::Result<bool> {
+    if opts.local_files.is_none() && opts.prepare.is_none() {
+        return Ok(false);
+    }
+    let mut config = ProjectConfig::load(root);
+    let mut changed = false;
+    if let Some(prepare) = opts.prepare.as_deref().map(str::trim)
+        && config.prepare_command.as_deref() != Some(prepare)
+    {
+        config.prepare_command = Some(prepare.to_string());
+        changed = true;
+    }
+    if opts.local_files.is_some() {
+        let files: Vec<String> = listed_local_files(opts).map(str::to_string).collect();
+        if config.local_files.as_ref() != Some(&files) {
+            config.local_files = Some(files);
+            changed = true;
+        }
+    }
+    if changed {
+        config.write(root)?;
+    }
+    Ok(changed)
+}
+
+/// Os itens de `--local-files`, na ordem em que vieram, sem os espaços das
+/// pontas e sem as entradas em branco.
+fn listed_local_files(opts: &UpsertOpts) -> impl Iterator<Item = &str> {
+    opts.local_files.as_deref().unwrap_or_default().split(',').map(str::trim).filter(|file| !file.is_empty())
+}
+
+/// Os arquivos que o git ignora na pasta `root` e que não estão dentro de uma
+/// pasta ignorada, como o `.env`, em caminhos relativos a ela.
+///
+/// Com `--directory`, o git escreve a pasta ignorada inteira numa linha só,
+/// terminada em barra — as dependências instaladas, a saída da compilação — e
+/// essas linhas ficam de fora: a cópia as recebe pelo comando de preparo, não
+/// por cópia de arquivo. Os arquivos do próprio assistente também ficam de
+/// fora ([`harness_own`]). `-z` porque um nome com caractere especial viria
+/// entre aspas. Sem git ou fora de um repositório, a lista vem vazia.
+fn ignored_files(root: &Path) -> Vec<String> {
+    let args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"];
+    let Some(out) = mustard_core::platform::git::run(root, &args).out() else {
+        return Vec::new();
+    };
+    out.split('\0')
+        .filter(|line| !line.is_empty() && !line.ends_with('/') && !harness_own(line))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Um arquivo que a instalação ou o Claude Code põem no projeto, e não o
+/// projeto: o que a instalação escreve (o `mustard.json`, as configurações
+/// locais), tudo o que mora numa pasta `.claude` e as instruções locais
+/// `CLAUDE.local.md`, em qualquer pasta. A instalação privada os esconde do
+/// git, e sem esta regra eles apareceriam na lista a confirmar de todo projeto.
+fn harness_own(path: &str) -> bool {
+    mustard_core::is_written_footprint(path)
+        || path.split('/').any(|part| part == ".claude")
+        || path.rsplit('/').next() == Some(mustard_core::CLAUDE_LOCAL_MD)
 }
 
 /// The project's pending list, the same `.claude/pending/ledger.json` that
@@ -303,7 +465,7 @@ impl PendingList for ProjectPending<'_> {
 /// The binary name defaults to `claude` and can be pointed elsewhere with
 /// `MUSTARD_CLAUDE_BIN`, the way the rtk economy reader
 /// (`packages/core/src/domain/economy/sources/rtk.rs`) takes `MUSTARD_RTK_BIN`.
-fn refresh_plugin(root: &Path) -> PluginRefresh {
+fn refresh_plugin<R: ToolRunner>(root: &Path, budget: &Budget<'_, R>) -> PluginRefresh {
     let binary = std::env::var("MUSTARD_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
     let target = claude_config_dir()
         .and_then(|dir| std::fs::read_to_string(dir.join(INSTALLED_PLUGINS)).ok())
@@ -314,7 +476,7 @@ fn refresh_plugin(root: &Path) -> PluginRefresh {
     // another scope would be reported as the result of an update that never
     // touched it.
     let acted_on = target.as_ref().map(|t| (t.id.clone(), t.scope.clone()));
-    fold_refresh(&binary, target, |command| run_step(command, root), move || {
+    fold_refresh(&binary, target, |command| run_step(command, root, budget), move || {
         let (id, scope) = acted_on?;
         let raw = std::fs::read_to_string(claude_config_dir()?.join(INSTALLED_PLUGINS)).ok()?;
         installed_version_of(&raw, &id, &scope)
@@ -421,15 +583,29 @@ fn skipped(plugin: Option<String>, reason: String) -> PluginRefresh {
     }
 }
 
-/// Run one refresh step under [`REFRESH_TIMEOUT`]. `Ok` only on exit 0; every
-/// other path — an absent binary, a refusal, a stall, a lost child — is an
-/// `Err` carrying the excerpt the report names.
+/// Run one refresh step under [`REFRESH_TIMEOUT`] and what is left of the
+/// budget. `Ok` only on exit 0; every other path — an absent binary, a refusal,
+/// a stall, a lost child, no time left to start — is an `Err` carrying the
+/// excerpt the report names.
 ///
 /// Shares the spawn/drain/deadline machinery with the verify and QA runners
 /// ([`run_shell_with_deadline`]), including the concurrent pipe drain that
 /// keeps a chatty child from deadlocking on a full OS pipe buffer.
-fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
-    match run_shell_with_deadline(command, cwd, REFRESH_TIMEOUT) {
+fn run_step<R: ToolRunner>(command: &str, cwd: &Path, budget: &Budget<'_, R>) -> Result<(), String> {
+    step_within(budget, |limit| run_shell_with_deadline(command, cwd, limit))
+}
+
+/// The budget half of [`run_step`]: `run` is handed the deadline the step gets —
+/// the smaller of [`REFRESH_TIMEOUT`] and what is left of the budget — and the
+/// step does not run at all when nothing is left.
+fn step_within<R: ToolRunner>(
+    budget: &Budget<'_, R>,
+    run: impl FnOnce(Duration) -> ShellOutcome,
+) -> Result<(), String> {
+    let Some((limit, outcome)) = budget.within(REFRESH_TIMEOUT, |limit| (limit, run(limit))) else {
+        return Err(format!("no time left: the {}s of the update were already spent", whole_seconds(budget.total())));
+    };
+    match outcome {
         ShellOutcome::Exited { status, stdout, stderr } => {
             if status.success() {
                 return Ok(());
@@ -441,9 +617,7 @@ fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
         // that change on every run, and this line lands in a `run`-face report
         // the guard asks to stay byte-stable. The ceiling is also the useful
         // number: it is the one a reader could raise.
-        ShellOutcome::TimedOut { .. } => {
-            Err(format!("timed out after {}s", REFRESH_TIMEOUT.as_secs()))
-        }
+        ShellOutcome::TimedOut { .. } => Err(format!("timed out after {}s", whole_seconds(limit))),
         ShellOutcome::SpawnFailed { error } => Err(error),
     }
 }
@@ -783,6 +957,8 @@ mod tests {
             },
             plugin_refresh: skipped(None, "no install".to_string()),
             code_tool_warnings: Vec::new(),
+            search_warning: None,
+            local_files_found: None,
         };
         let first = serde_json::to_string_pretty(&outcome).expect("serialize");
         let second = serde_json::to_string_pretty(&outcome).expect("serialize again");
@@ -808,6 +984,13 @@ mod tests {
         failing: Vec<&'static str>,
         log: std::cell::RefCell<Vec<String>>,
         seeded_when_called: std::cell::RefCell<Vec<bool>>,
+        /// A command line containing one of these takes that long, on the
+        /// fake clock, and is cut if the deadline it was given is shorter.
+        taking: Vec<(&'static str, Duration)>,
+        /// The deadline each command was given, in the order they came.
+        limits: std::cell::RefCell<Vec<Duration>>,
+        started: std::time::Instant,
+        spent: std::cell::Cell<Duration>,
     }
 
     impl FakeRunner {
@@ -819,7 +1002,16 @@ mod tests {
                 failing: Vec::new(),
                 log: std::cell::RefCell::new(Vec::new()),
                 seeded_when_called: std::cell::RefCell::new(Vec::new()),
+                taking: Vec::new(),
+                limits: std::cell::RefCell::new(Vec::new()),
+                started: std::time::Instant::now(),
+                spent: std::cell::Cell::new(Duration::ZERO),
             }
+        }
+
+        /// Lets `by` of the fake clock go by, as a command that took that long.
+        fn spend(&self, by: Duration) {
+            self.spent.set(self.spent.get() + by);
         }
     }
 
@@ -843,9 +1035,279 @@ mod tests {
             true
         }
 
+        fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> code_tools::RunOutcome {
+            let line = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+            self.limits.borrow_mut().push(limit);
+            let cost = self.taking.iter().find(|(t, _)| line.contains(t)).map_or(Duration::ZERO, |(_, cost)| *cost);
+            if cost > limit {
+                self.spend(limit);
+                self.log.borrow_mut().push(line);
+                return code_tools::RunOutcome::TimedOut { after: limit };
+            }
+            self.spend(cost);
+            if self.run(program, args) {
+                code_tools::RunOutcome::Succeeded
+            } else {
+                code_tools::RunOutcome::Failed
+            }
+        }
+
         fn found_off_path(&self, _program: &str) -> Option<PathBuf> {
             None
         }
+
+        fn now(&self) -> std::time::Instant {
+            self.started + self.spent.get()
+        }
+    }
+
+    /// O orçamento curto que o teste dá à etapa inteira, no lugar dos 60 s de
+    /// verdade.
+    #[cfg(unix)]
+    const SHORT_BUDGET: Duration = Duration::from_secs(1);
+
+    /// O executor da máquina por dentro, com o orçamento curto da etapa,
+    /// anotando quanto tempo os comandos da etapa levaram, somados: o que a
+    /// etapa espera, sem o tempo que a atualização gasta gravando os
+    /// arquivos, que a carga da máquina estica.
+    #[cfg(unix)]
+    struct Timed<'a> {
+        inner: &'a MachineRunner,
+        in_commands: std::cell::Cell<Duration>,
+    }
+
+    #[cfg(unix)]
+    impl ToolRunner for Timed<'_> {
+        fn on_path(&self, program: &str) -> bool {
+            self.inner.on_path(program)
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> bool {
+            self.inner.run(program, args)
+        }
+
+        fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> code_tools::RunOutcome {
+            let started = std::time::Instant::now();
+            let outcome = self.inner.run_outcome(program, args, limit);
+            self.in_commands.set(self.in_commands.get() + started.elapsed());
+            outcome
+        }
+
+        fn found_off_path(&self, program: &str) -> Option<PathBuf> {
+            self.inner.found_off_path(program)
+        }
+
+        fn budget(&self) -> Duration {
+            SHORT_BUDGET
+        }
+
+        fn command_deadline(&self) -> Duration {
+            self.inner.command_deadline()
+        }
+    }
+
+    /// A etapa roda no executor da máquina, que dá à etapa inteira um
+    /// orçamento de tempo: um `claude` que nunca responde é morto quando o
+    /// orçamento acaba, o passo seguinte nem roda e volta como frase de prazo,
+    /// com o comando para a pessoa rodar, e a atualização termina e relata os
+    /// arquivos dela. Só o primeiro comando chega a rodar (o registro do
+    /// programa falso tem uma linha), e os comandos levam, somados, perto do
+    /// orçamento, não da soma dos prazos. Só no Unix: os programas falsos são
+    /// scripts.
+    #[test]
+    #[cfg(unix)]
+    fn update_with_a_stalled_command_returns_the_deadline_warning_and_finishes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        let bin = tempfile::tempdir().expect("temp dir");
+        let ran = bin.path().join("ran.log");
+        crate::executable::write_executable(&bin.path().join("rust-analyzer"), "#!/bin/sh\nexit 0\n");
+        crate::executable::write_executable(
+            &bin.path().join("claude"),
+            &format!("#!/bin/sh\necho \"$*\" >> \"{}\"\nexec /bin/sleep 8\n", ran.display()),
+        );
+        let machine = MachineRunner::new(&bin.path().display().to_string());
+        let runner = Timed { inner: &machine, in_commands: std::cell::Cell::new(Duration::ZERO) };
+
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
+            .expect("a plain project is seeded");
+        let took = runner.in_commands.get();
+
+        assert!(took >= Duration::from_millis(500), "the stalled command ran until the budget ended: {took:?}");
+        assert!(took < Duration::from_secs(3), "the stalled command was cut at the budget, not waited for: {took:?}");
+        let value = serde_json::to_value(&outcome).expect("serialize");
+        assert_eq!(
+            value["codeToolWarnings"],
+            serde_json::json!([
+                "rust: timed out after 1s - run manually: claude plugin install rust-analyzer-lsp@claude-plugins-official",
+                "rust: timed out after 1s - run manually: claude plugin enable rust-analyzer-lsp@claude-plugins-official",
+            ]),
+        );
+        let started_commands = std::fs::read_to_string(&ran).expect("the first command ran");
+        assert_eq!(
+            started_commands.lines().collect::<Vec<_>>(),
+            vec!["plugin install rust-analyzer-lsp@claude-plugins-official"],
+            "with the budget spent, the second command does not even start",
+        );
+        assert!(
+            value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")),
+            "the upsert itself went through: {value}",
+        );
+    }
+
+    /// A step that exited with `code`, for the plugin steps a test drives by hand.
+    #[cfg(unix)]
+    fn exited(code: i32) -> ShellOutcome {
+        use std::os::unix::process::ExitStatusExt;
+        ShellOutcome::Exited { status: std::process::ExitStatus::from_raw(code << 8), stdout: String::new(), stderr: String::new() }
+    }
+
+    /// The plugin refresh as `run upsert` makes it, with the two host commands
+    /// replaced by `step`: each one is handed the deadline it got from the
+    /// shared budget, and reports what happened.
+    #[cfg(unix)]
+    fn refresh_with<R: ToolRunner>(
+        budget: &Budget<'_, R>,
+        mut step: impl FnMut(Duration) -> ShellOutcome,
+    ) -> PluginRefresh {
+        fold_refresh("claude", refresh_target(REGISTRY), |_| step_within(budget, &mut step), || None)
+    }
+
+    /// The plugin steps and the code tools draw from ONE budget of 100 s. With
+    /// the two plugin steps spending 45 s each, the code tools get the 10 s that
+    /// are left: the first command is handed 10 s, the next the 4 s that remain
+    /// after it took 6, and the language after that does not run at all — each
+    /// of its steps comes back as the "timed out" sentence with its command.
+    /// With the plugin steps quick, every command runs.
+    #[test]
+    #[cfg(unix)]
+    fn the_plugin_steps_and_the_code_tools_share_one_budget() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("go.mod"), "module x\n").expect("write go.mod");
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        let go_plugin = "gopls-lsp@claude-plugins-official";
+        let rust_plugin = "rust-analyzer-lsp@claude-plugins-official";
+
+        let mut runner = FakeRunner::new(root, &["gopls", "rustup", "claude"]);
+        runner.brings.push(("rustup", "rust-analyzer"));
+        runner.taking.push(("claude plugin install gopls-lsp", Duration::from_secs(6)));
+        runner.taking.push(("claude plugin enable gopls-lsp", Duration::from_secs(4)));
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, budget| {
+            refresh_with(budget, |limit| {
+                runner.spend(Duration::from_secs(45).min(limit));
+                exited(0)
+            })
+        })
+        .expect("a plain project is seeded");
+
+        let value = serde_json::to_value(&outcome).expect("serialize");
+        assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(REFRESHED), "both plugin steps ran");
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![format!("claude plugin install {go_plugin}"), format!("claude plugin enable {go_plugin}")],
+            "the language after the one that spent the rest does not run",
+        );
+        assert_eq!(*runner.limits.borrow(), vec![Duration::from_secs(10), Duration::from_secs(4)]);
+        assert_eq!(
+            value["codeToolWarnings"],
+            serde_json::json!([
+                "rust: timed out after 10s - run manually: rustup component add rust-analyzer",
+                format!("rust: timed out after 10s - run manually: claude plugin install {rust_plugin}"),
+                format!("rust: timed out after 10s - run manually: claude plugin enable {rust_plugin}"),
+            ]),
+        );
+
+        let mut quick = FakeRunner::new(root, &["gopls", "rustup", "claude"]);
+        quick.brings.push(("rustup", "rust-analyzer"));
+        quick.taking.push(("claude plugin install gopls-lsp", Duration::from_secs(6)));
+        quick.taking.push(("claude plugin enable gopls-lsp", Duration::from_secs(4)));
+        let outcome = upsert(root, &UpsertOpts::default(), &quick, |_, budget| {
+            refresh_with(budget, |_| {
+                quick.spend(Duration::from_secs(5));
+                exited(0)
+            })
+        })
+        .expect("a plain project is seeded");
+        let value = serde_json::to_value(&outcome).expect("serialize");
+        assert_eq!(value["codeToolWarnings"], serde_json::json!([]), "with time to spare, nothing is cut");
+        assert_eq!(quick.log.borrow().len(), 5, "{:?}", quick.log.borrow());
+        assert_eq!(
+            quick.limits.borrow()[0],
+            Duration::from_secs(60),
+            "the code tools keep their own 60 s ceiling inside what is left",
+        );
+    }
+
+    /// A plugin step with no time left does not run: the refresh comes back
+    /// skipped, naming the command a person runs, and the step that would have
+    /// run is never started. A step that runs on a short remainder is cut at
+    /// that remainder, not at the 45 s.
+    #[test]
+    #[cfg(unix)]
+    fn a_plugin_step_with_no_time_left_does_not_run_and_names_its_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runner = FakeRunner::new(dir.path(), &[]);
+        let budget = Budget::start(&runner, UPSERT_BUDGET);
+        runner.spend(UPSERT_BUDGET);
+        let mut started = false;
+        let refresh = refresh_with(&budget, |_| {
+            started = true;
+            exited(0)
+        });
+        assert!(!started, "no time left: the step never starts");
+        assert_eq!(refresh.state, SKIPPED);
+        let reason = refresh.skipped.expect("skipped says why");
+        assert!(reason.contains("claude plugin marketplace update mustard-local"), "the command is named: {reason}");
+        assert!(reason.contains("no time left: the 100s of the update were already spent"), "{reason}");
+
+        let runner = FakeRunner::new(dir.path(), &[]);
+        let budget = Budget::start(&runner, UPSERT_BUDGET);
+        runner.spend(Duration::from_secs(70));
+        let mut given = Vec::new();
+        let refresh = refresh_with(&budget, |limit| {
+            given.push(limit);
+            ShellOutcome::TimedOut { after: limit }
+        });
+        assert_eq!(given, vec![Duration::from_secs(30)], "cut at what is left, not at the 45 s");
+        assert!(refresh.skipped.expect("skipped").ends_with("timed out after 30s"));
+    }
+
+    /// A refresh step that really runs is cut at what is left of the budget, not
+    /// at the 45 s, and the step after it finds nothing left and does not start
+    /// (the marker file it would have written is never created).
+    #[test]
+    #[cfg(unix)]
+    fn a_real_plugin_step_is_cut_at_the_budget_and_the_next_one_does_not_start() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let machine = MachineRunner::new(&std::env::var("PATH").unwrap_or_default());
+        let budget = Budget::start(&machine, Duration::from_secs(1));
+
+        let started = std::time::Instant::now();
+        let first = run_step("sleep 8", dir.path(), &budget);
+        assert_eq!(first, Err("timed out after 1s".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(5), "cut at the budget: {:?}", started.elapsed());
+
+        let marker = dir.path().join("second-step-ran");
+        let second = run_step(&format!("touch {}", marker.display()), dir.path(), &budget);
+        assert!(second.expect_err("no time left").starts_with("no time left"), "the second step is refused");
+        assert!(!marker.exists(), "the second step never started");
+    }
+
+    /// The command's own page tells the assistant to hand the person every
+    /// sentence of `codeToolWarnings`: without that line the warnings the step
+    /// collects stop at the JSON and the person never learns what is left.
+    #[test]
+    fn the_upsert_page_tells_to_relay_the_code_tool_warnings() {
+        let page = include_str!("../../../../../plugin/commands/upsert.md");
+        let step = page
+            .split("\n3. ")
+            .nth(1)
+            .and_then(|rest| rest.split("\n4. ").next())
+            .expect("step 3 of the install");
+        assert!(step.contains("`codeToolWarnings`"), "{step}");
+        assert!(step.contains("command"), "the page asks for the ready command: {step}");
     }
 
     /// A project in C# and Rust, updated: the files are written first, then the
@@ -857,7 +1319,7 @@ mod tests {
     /// runs. Both warnings reach the report the command prints, and the rest
     /// of the report — the files and the plugin refresh — is still there.
     #[test]
-    fn a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo() {
+    fn update_runs_the_code_tools_step() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
@@ -867,7 +1329,7 @@ mod tests {
         runner.brings.push(("rustup", "rust-analyzer"));
         runner.failing.push("claude plugin install csharp-lsp@claude-plugins-official");
 
-        let outcome = upsert(root, &runner, |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("a plain project is seeded");
 
         assert_eq!(
@@ -894,7 +1356,8 @@ mod tests {
         assert_eq!(
             value["codeToolWarnings"],
             serde_json::json!([
-                "csharp: csharp-ls not found on PATH - install manually: dotnet tool install --global csharp-ls",
+                "csharp: csharp-ls not found on PATH - install manually: \
+                 dotnet tool install --global csharp-ls --version 0.18.0",
                 "csharp: could not install the csharp-lsp@claude-plugins-official plugin - run manually: \
                  claude plugin install csharp-lsp@claude-plugins-official",
             ]),
@@ -914,7 +1377,7 @@ mod tests {
     /// and no code-tool command runs at all.
     #[test]
     #[cfg(unix)]
-    fn a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo_so_depois_dos_arquivos() {
+    fn update_runs_the_code_tools_step_only_after_the_files() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -936,7 +1399,7 @@ mod tests {
         std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o555)).expect("seal");
 
         let runner = FakeRunner::new(root, &["rustup", "claude"]);
-        let refused = upsert(root, &runner, |_| panic!("no refresh without a seeded project"));
+        let refused = upsert(root, &UpsertOpts::default(), &runner, |_, _| panic!("no refresh without a seeded project"));
 
         // Unseal before asserting, so the temp dir can always be removed.
         std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o755)).expect("unseal");
@@ -974,12 +1437,12 @@ mod tests {
     /// item só da lista de pendências do projeto, com o texto dela e o
     /// arquivo de onde saiu. Nenhuma vai ao banco de lições.
     #[test]
-    fn as_regras_do_bloco_vao_a_um_item_da_lista_de_pendencias_e_nao_ao_banco() {
+    fn block_rules_go_to_a_pending_list_item_and_not_to_the_database() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         lay_out_rules(root);
 
-        let outcome = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the project is seeded");
         let done = outcome.project.cleaned.clone().expect("the cleanup ran");
         assert!(done.failed.is_empty(), "{done:?}");
@@ -990,7 +1453,7 @@ mod tests {
         assert_eq!(items[0]["id"], "P-1");
         assert_eq!(items[0]["status"], "open");
         let title = items[0]["title"].as_str().expect("title");
-        assert!(title.contains("(2)"), "o título conta as regras: {title}");
+        assert!(title.contains("(2, lote "), "o título conta as regras e marca o lote: {title}");
         let detail = items[0]["detail"].as_str().expect("detail");
         for rule in ["Reuse the shared client. (saiu de apps/api/CLAUDE.md)", "Never block the render. (saiu de apps/web/CLAUDE.md)"] {
             assert!(detail.contains(rule), "cada regra com o arquivo de onde saiu: {rule} em {detail}");
@@ -1003,7 +1466,7 @@ mod tests {
         assert!(!root.join("apps/web/CLAUDE.md").exists(), "o arquivo que era só do scan saiu");
 
         // A segunda atualização não acha regra e não repete o item.
-        let again = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let again = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the second run");
         assert!(again.project.cleaned.is_none(), "{:?}", again.project.cleaned);
         assert_eq!(ledger_items(root).len(), 1, "a lista segue com um item");
@@ -1012,14 +1475,14 @@ mod tests {
     /// Sem conseguir gravar a lista de pendências, nenhum arquivo muda: a
     /// regra nunca sai do arquivo sem ficar escrita em algum lugar.
     #[test]
-    fn sem_gravar_a_lista_de_pendencias_nenhum_arquivo_muda() {
+    fn without_writing_the_pending_list_no_file_changes() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         let (team, only_ours) = lay_out_rules(root);
         // A lista não se grava: no lugar do arquivo dela há uma pasta.
         std::fs::create_dir_all(root.join(".claude/pending/ledger.json")).expect("block the pending list");
 
-        let outcome = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the seeding itself goes through");
         let done = outcome.project.cleaned.clone().expect("the cleanup says what it could not do");
         assert!(done.failed.iter().any(|why| why.starts_with("pending:")), "{done:?}");
@@ -1028,6 +1491,372 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("apps/api/CLAUDE.md")).expect("api"), team, "o arquivo do time fica igual");
         assert_eq!(std::fs::read_to_string(root.join("apps/web/CLAUDE.md")).expect("web"), only_ours, "o arquivo do scan fica");
         assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nada vai ao banco de lições");
+    }
+
+    /// Um plano de limpeza só com as regras `rules` (texto e arquivo de onde
+    /// saíram), sem arquivo a mudar.
+    fn plan_of(rules: &[(&str, &str)]) -> mustard_core::platform::project_seed::CleanupPlan {
+        use mustard_core::platform::project_seed::cleanup::LeavingRule;
+        mustard_core::platform::project_seed::CleanupPlan {
+            rules: rules
+                .iter()
+                .map(|(text, source)| LeavingRule { text: (*text).to_string(), sources: vec![(*source).to_string()] })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Um projeto vazio com o `mustard.json`, onde mora a lista de pendências.
+    fn project_for_the_list() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("mustard.json"), "{}").expect("mustard.json");
+        dir
+    }
+
+    /// Duas limpezas que tiram o mesmo número de regras, mas regras diferentes,
+    /// viram dois itens: a segunda não é recusada como título repetido, e
+    /// nenhuma das regras fica sem lugar escrito.
+    #[test]
+    fn two_cleanups_with_as_many_rules_keep_two_items() {
+        let dir = project_for_the_list();
+        let root = dir.path();
+        let list = ProjectPending { root };
+        let first = plan_of(&[("Reuse the shared client.", "apps/api/CLAUDE.md"), ("Never block the render.", "apps/web/CLAUDE.md")]);
+        let second = plan_of(&[("Charge in cents.", "apps/billing/CLAUDE.md"), ("Log every refund.", "apps/billing/CLAUDE.md")]);
+
+        let one = mustard_core::platform::project_seed::cleanup::apply(root, &first, &list).expect("first");
+        let two = mustard_core::platform::project_seed::cleanup::apply(root, &second, &list).expect("second");
+        assert!(one.failed.is_empty() && two.failed.is_empty(), "{one:?} {two:?}");
+        assert_eq!(one.pending.as_deref(), Some("P-1"));
+        assert_eq!(two.pending.as_deref(), Some("P-2"), "the second cleanup has an item of its own");
+
+        let items = ledger_items(root);
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert_ne!(items[0]["title"], items[1]["title"], "the titles tell the cleanups apart");
+        assert!(items[0]["detail"].as_str().unwrap().contains("Never block the render."));
+        assert!(items[1]["detail"].as_str().unwrap().contains("Log every refund."));
+    }
+
+    /// A mesma limpeza rodada duas vezes deixa um item só, e o segundo passe
+    /// responde o número do item que já existia.
+    #[test]
+    fn the_same_cleanup_twice_keeps_one_item() {
+        let dir = project_for_the_list();
+        let root = dir.path();
+        let list = ProjectPending { root };
+        let plan = plan_of(&[("Reuse the shared client.", "apps/api/CLAUDE.md"), ("Never block the render.", "apps/web/CLAUDE.md")]);
+        let apply = || mustard_core::platform::project_seed::cleanup::apply(root, &plan, &list).expect("apply");
+        let (one, two) = (apply(), apply());
+        assert!(one.failed.is_empty() && two.failed.is_empty(), "{one:?} {two:?}");
+        assert_eq!(one.pending, two.pending, "the same item answers both");
+        assert_eq!(ledger_items(root).len(), 1);
+    }
+
+    /// Duas limpezas ao mesmo tempo, com regras diferentes, terminam em dois
+    /// itens com as regras inteiras; com as mesmas regras, num item só.
+    #[test]
+    fn cleanups_at_the_same_time_neither_lose_a_rule_nor_repeat_an_item() {
+        let dir = project_for_the_list();
+        let root = dir.path();
+        let a = plan_of(&[("Reuse the shared client.", "apps/api/CLAUDE.md"), ("Never block the render.", "apps/web/CLAUDE.md")]);
+        let b = plan_of(&[("Charge in cents.", "apps/billing/CLAUDE.md"), ("Log every refund.", "apps/billing/CLAUDE.md")]);
+        let run = |plan: &mustard_core::platform::project_seed::CleanupPlan| {
+            mustard_core::platform::project_seed::cleanup::apply(root, plan, &ProjectPending { root }).expect("apply")
+        };
+        let done: Vec<_> = std::thread::scope(|scope| {
+            let jobs = [&a, &b, &a, &b].map(|plan| scope.spawn(|| run(plan)));
+            jobs.into_iter().map(|job| job.join().expect("thread")).collect()
+        });
+        assert!(done.iter().all(|d| d.failed.is_empty()), "{done:?}");
+        let items = ledger_items(root);
+        assert_eq!(items.len(), 2, "one item per distinct cleanup: {items:?}");
+        let details: String = items.iter().map(|i| i["detail"].as_str().unwrap().to_string()).collect();
+        for rule in ["Reuse the shared client.", "Never block the render.", "Charge in cents.", "Log every refund."] {
+            assert!(details.contains(rule), "{rule} was lost: {details}");
+        }
+    }
+
+    /// A porta da lista pelo projeto tem dois ramos para o título repetido: o
+    /// mesmo título com o mesmo detalhe responde o item que já existe, e o
+    /// mesmo título com outro detalhe é recusado, apontando o item aberto.
+    #[test]
+    fn a_repeated_title_answers_the_open_item_or_is_refused() {
+        use crate::commands::event::pending::add_for_the_project;
+        let dir = project_for_the_list();
+        let root = dir.path();
+        assert_eq!(add_for_the_project(root, "Regras que saíram", "um detalhe").as_deref(), Ok("P-1"));
+        assert_eq!(add_for_the_project(root, "regras que sairam", "um detalhe").as_deref(), Ok("P-1"), "same text: the open item");
+        let refused = add_for_the_project(root, "Regras que saíram", "outro detalhe").expect_err("another detail");
+        assert!(refused.contains("P-1"), "the refusal points at the open item: {refused}");
+        assert_eq!(ledger_items(root).len(), 1);
+    }
+
+    /// O upsert pelo mesmo caminho do comando, com as respostas `opts`, e a
+    /// resposta como o comando a imprime.
+    fn upsert_json(root: &Path, opts: &UpsertOpts) -> serde_json::Value {
+        let outcome = upsert(root, opts, &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
+            .expect("the project is seeded");
+        serde_json::to_value(&outcome).expect("the report serializes")
+    }
+
+    /// Um repositório git novo em `root`, sem commit.
+    fn git_repo(root: &Path) {
+        assert!(mustard_core::platform::git::run(root, &["init", "--quiet"]).ok, "git init");
+    }
+
+    /// O `mustard.json` do projeto em `root`, como está no disco.
+    fn mustard_json(root: &Path) -> serde_json::Map<String, serde_json::Value> {
+        let raw = std::fs::read_to_string(root.join("mustard.json")).expect("mustard.json");
+        serde_json::from_str(&raw).expect("mustard.json is an object")
+    }
+
+    /// Sem a opção, a resposta traz os arquivos que o git ignora soltos — sem
+    /// as pastas ignoradas inteiras, sem o que não é ignorado e sem os arquivos
+    /// da própria instalação — e o `mustard.json` fica sem `localFiles`. Com a
+    /// opção, a lista confirmada vai ao `mustard.json`, e a resposta, desta vez
+    /// e da seguinte, não traz mais a lista. Num projeto sem arquivo ignorado,
+    /// a lista vem vazia.
+    #[test]
+    fn the_upsert_lists_ignored_files_outside_ignored_folders_until_confirmed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        std::fs::write(root.join(".gitignore"), ".env\nnode_modules/\ndist/\n*.local\n").expect("gitignore");
+        for (rel, body) in [
+            (".env", "A=1\n"),
+            ("apps/api/.env.local", "B=2\n"),
+            ("node_modules/pkg/index.js", "x\n"),
+            ("dist/app.js", "y\n"),
+            ("src/main.ts", "z\n"),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(path, body).expect("write");
+        }
+
+        let asked = upsert_json(root, &UpsertOpts::default());
+        assert_eq!(asked["localFilesFound"], serde_json::json!([".env", "apps/api/.env.local"]), "{asked:#}");
+        assert!(!mustard_json(root).contains_key("localFiles"), "nothing is recorded before the person confirms");
+
+        let confirmed = upsert_json(
+            root,
+            &UpsertOpts { local_files: Some(" .env, apps/api/.env.local ,".to_string()), prepare: None },
+        );
+        assert!(confirmed.get("localFilesFound").is_none(), "{confirmed:#}");
+        assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env", "apps/api/.env.local"]));
+        assert!(
+            confirmed["updated"].as_array().is_some_and(|names| names.iter().any(|n| n == "mustard.json")),
+            "the report says mustard.json changed: {confirmed:#}",
+        );
+        let next = upsert_json(root, &UpsertOpts::default());
+        assert!(next.get("localFilesFound").is_none(), "the next upsert does not ask again: {next:#}");
+        assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env", "apps/api/.env.local"]));
+
+        let clean = tempfile::tempdir().expect("temp dir");
+        git_repo(clean.path());
+        std::fs::write(clean.path().join("main.rs"), "fn main() {}\n").expect("write");
+        let none = upsert_json(clean.path(), &UpsertOpts::default());
+        assert_eq!(none["localFilesFound"], serde_json::json!([]), "{none:#}");
+    }
+
+    /// Um item de `--local-files` que o git não ignora — o `config/app.json`,
+    /// versionado no commit — é recusado com a frase que diz qual e por quê, e
+    /// nada é gravado: nem a lista, nem o resto da instalação. O mesmo pedido
+    /// só com o que o git ignora grava a lista.
+    #[test]
+    fn the_upsert_refuses_a_local_file_that_git_does_not_ignore() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        std::fs::write(root.join(".gitignore"), ".env\n").expect("gitignore");
+        std::fs::create_dir_all(root.join("config")).expect("mkdir");
+        std::fs::write(root.join("config/app.json"), "{\"porta\":1}\n").expect("write");
+        let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
+        git(&["add", "-A"]);
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "semente"]);
+        std::fs::write(root.join(".env"), "A=1\n").expect("write");
+
+        let asked = UpsertOpts { local_files: Some(".env, config/app.json".to_string()), prepare: None };
+        let refused = upsert(root, &asked, &FakeRunner::new(root, &[]), |_, _| -> PluginRefresh {
+            panic!("a refused upsert refreshes nothing")
+        });
+        let Err(mustard_core::platform::error::Error::Config(text)) = refused else {
+            panic!("the versioned file is refused: {refused:?}");
+        };
+        assert!(text.starts_with("O arquivo `config/app.json` não entra"), "names the file: {text}");
+        assert!(text.contains("o git não o ignora") && text.contains("versão do commit"), "says why: {text}");
+        assert!(text.contains("Nada foi gravado"), "{text}");
+        assert!(!root.join("mustard.json").exists(), "nothing is written");
+        assert!(!root.join(".claude").exists(), "nothing of the install is written");
+
+        upsert_json(root, &UpsertOpts { local_files: Some(".env".to_string()), prepare: None });
+        assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env"]));
+    }
+
+    /// O comando de preparo vai ao `mustard.json` logo depois dos comandos de
+    /// build e de teste, e chega a quem lê os comandos do projeto. Sem a
+    /// opção, o `mustard.json` fica sem `prepareCommand`; com o valor vazio,
+    /// fica gravado que o projeto não tem preparo, e nada roda.
+    #[test]
+    fn the_prepare_command_is_recorded_next_to_the_build_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"buildCommand":"npm run build","testCommand":"npm test"}"#)
+            .expect("mustard.json");
+
+        upsert_json(root, &UpsertOpts { local_files: None, prepare: Some("pnpm install --frozen-lockfile".to_string()) });
+
+        let config = mustard_json(root);
+        assert_eq!(config["prepareCommand"], serde_json::json!("pnpm install --frozen-lockfile"));
+        assert_eq!(config["buildCommand"], serde_json::json!("npm run build"), "the build command stays");
+        let keys: Vec<&str> = config.keys().map(String::as_str).collect();
+        let at = |key: &str| keys.iter().position(|k| *k == key).unwrap_or(usize::MAX);
+        assert_eq!(at("prepareCommand"), at("testCommand") + 1, "next to the project's commands: {keys:?}");
+        assert!(!config.contains_key("localFiles"), "one answer does not record the other");
+        assert_eq!(ProjectConfig::load(root).commands().prepare.as_deref(), Some("pnpm install --frozen-lockfile"));
+
+        let other = tempfile::tempdir().expect("temp dir");
+        upsert_json(other.path(), &UpsertOpts::default());
+        assert!(!mustard_json(other.path()).contains_key("prepareCommand"), "without the option, nothing is recorded");
+
+        upsert_json(other.path(), &UpsertOpts { local_files: None, prepare: Some(String::new()) });
+        assert_eq!(mustard_json(other.path())["prepareCommand"], serde_json::json!(""), "no prepare is an answer too");
+        assert_eq!(ProjectConfig::load(other.path()).commands().prepare, None, "and runs nothing");
+    }
+
+    /// O projeto instalado antes da pasta de compilação declarada a ganha na
+    /// atualização pelo plugin, pela mesma detecção da instalação nova: o
+    /// projeto em Rust passa a declarar `target`, e a atualização seguinte não
+    /// muda mais nada. O projeto que a detecção não reconhece fica sem a
+    /// chave, e a lista que o projeto gravou, mesmo vazia, fica como está.
+    #[test]
+    fn an_installed_project_gains_the_detected_build_output_on_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        std::fs::write(root.join("mustard.json"), r#"{"buildCommand":"cargo build"}"#).expect("mustard.json");
+
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(mustard_json(root)["buildOutput"], serde_json::json!(["target"]));
+        assert_eq!(mustard_json(root)["buildCommand"], serde_json::json!("cargo build"), "the rest stays");
+        let written = std::fs::read(root.join("mustard.json")).expect("mustard.json");
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(std::fs::read(root.join("mustard.json")).expect("mustard.json"), written, "nothing more to add");
+
+        let js = tempfile::tempdir().expect("temp dir");
+        std::fs::write(js.path().join("package.json"), "{}").expect("package.json");
+        std::fs::write(js.path().join("pnpm-lock.yaml"), "").expect("lockfile");
+        std::fs::write(js.path().join("mustard.json"), "{}").expect("mustard.json");
+        upsert_json(js.path(), &UpsertOpts::default());
+        assert!(!mustard_json(js.path()).contains_key("buildOutput"), "nothing detected, nothing written");
+
+        let declared = tempfile::tempdir().expect("temp dir");
+        std::fs::write(declared.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        std::fs::write(declared.path().join("mustard.json"), r#"{"buildOutput":[]}"#).expect("mustard.json");
+        upsert_json(declared.path(), &UpsertOpts::default());
+        assert_eq!(mustard_json(declared.path())["buildOutput"], serde_json::json!([]), "the project's answer stays");
+    }
+
+    /// A instalação nova grava a pasta de compilação detectada no
+    /// `mustard.json` que ela cria, ao lado do comando de compilação; o
+    /// projeto que a detecção não reconhece nasce sem a chave.
+    #[test]
+    fn a_fresh_install_declares_the_detected_build_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(mustard_json(root)["buildOutput"], serde_json::json!(["target"]));
+
+        let js = tempfile::tempdir().expect("temp dir");
+        std::fs::write(js.path().join("package.json"), "{}").expect("package.json");
+        std::fs::write(js.path().join("pnpm-lock.yaml"), "").expect("lockfile");
+        upsert_json(js.path(), &UpsertOpts::default());
+        assert!(!mustard_json(js.path()).contains_key("buildOutput"), "nothing detected, nothing written");
+    }
+
+    /// Uma versão anterior gravou numa spec uma decisão sem o campo de busca.
+    /// A atualização pelo plugin o põe, como a instalação pelo terminal: só a
+    /// linha sem ele muda, ganhando o campo, a resposta não traz aviso e a
+    /// atualização seguinte não tem mais o que pôr. O `.git/config` fica byte
+    /// a byte como estava.
+    #[test]
+    fn the_upsert_fills_the_missing_search_of_the_specs_once() {
+        use mustard_core::domain::spec_events::refresh_search_lines;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        let git_config = std::fs::read(root.join(".git").join("config")).expect("the git config");
+        let paths = mustard_core::ClaudePaths::for_project(root).expect("the project paths");
+        let events = paths.spec_dir().join("teste").join("spec.ndjson");
+        let message = serde_json::json!({"author": "user", "text": "combine"}).as_object().cloned().expect("an object");
+        mustard_core::io::spec_events::write_at(&events, "message", message, &[], "2026-09-11T10:00:00-03:00")
+            .expect("the spec is written");
+        let mut spec = std::fs::read_to_string(&events).expect("the spec");
+        spec.push_str(
+            "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1}\n",
+        );
+        std::fs::write(&events, &spec).expect("the line without search");
+        let missing = |text: &str| refresh_search_lines(text).1;
+        assert_eq!(missing(&spec), 1, "the fixture has one line without search");
+
+        let report = upsert_json(root, &UpsertOpts::default());
+        assert!(report.get("searchWarning").is_none(), "{report:#}");
+        let fixed = std::fs::read_to_string(&events).expect("the spec");
+        assert_eq!(missing(&fixed), 0, "the upsert left a line without search:\n{fixed}");
+        let (before, after): (Vec<&str>, Vec<&str>) = (spec.lines().collect(), fixed.lines().collect());
+        assert_eq!(after.len(), before.len(), "{fixed}");
+        assert_eq!(after[0], before[0], "the line with today's search stays byte for byte");
+        let parse = |line: &str| -> serde_json::Map<String, serde_json::Value> {
+            serde_json::from_str(line).expect("a JSON line")
+        };
+        let (old, mut new) = (parse(before[1]), parse(after[1]));
+        assert!(new.remove("search").is_some(), "the old line got its search");
+        assert_eq!(old, new, "only the search field was added to the old line");
+
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(std::fs::read_to_string(&events).expect("the spec"), fixed, "a second upsert has nothing to fill");
+        assert_eq!(
+            std::fs::read(root.join(".git").join("config")).expect("the git config"),
+            git_config,
+            "the upsert never writes the git config",
+        );
+    }
+
+    /// Num projeto sem a pasta das specs não há busca a acertar: a
+    /// atualização não cria a pasta nem o índice, e a resposta não traz aviso.
+    #[test]
+    fn the_upsert_without_the_specs_folder_creates_nothing_for_the_search() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+
+        let report = upsert_json(root, &UpsertOpts::default());
+
+        assert!(report.get("searchWarning").is_none(), "{report:#}");
+        let paths = mustard_core::ClaudePaths::for_project(root).expect("the project paths");
+        assert!(!paths.spec_dir().exists(), "the specs folder is not created");
+        assert!(root.join(".claude").join("settings.local.json").is_file(), "the seeding happened");
+    }
+
+    /// Quando a busca não pode ser refeita — aqui, o índice das specs é uma
+    /// pasta —, a atualização termina assim mesmo, e a resposta traz o aviso
+    /// com o motivo e o comando que refaz a busca depois.
+    #[test]
+    fn an_upsert_whose_search_cannot_be_recomputed_warns_and_finishes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let paths = mustard_core::ClaudePaths::for_project(root).expect("the project paths");
+        std::fs::create_dir_all(paths.spec_index_path()).expect("the index is a folder");
+
+        let report = upsert_json(root, &UpsertOpts::default());
+
+        let warning = report["searchWarning"].as_str().unwrap_or_else(|| panic!("a warning: {report:#}"));
+        assert!(warning.starts_with("the missing search of the specs was not filled ("), "{warning}");
+        assert!(warning.ends_with("; run `mustard-rt run index` in the project"), "{warning}");
+        assert!(root.join(".claude").join("settings.local.json").is_file(), "the seeding happened");
+        assert!(report["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")), "{report:#}");
     }
 
     /// A failed step's output becomes one bounded line — the report stays a

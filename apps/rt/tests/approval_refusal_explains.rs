@@ -15,9 +15,9 @@
 //! Roda `mustard-rt on PostToolUse` como processo, porque os ganchos são
 //! privados da biblioteca, e confere o `state` da spec no `spec.ndjson`.
 //!
-//! Mora em `tests/` porque o critério roda `cargo test -p mustard-rt
-//! approval_refusal_names_the_unmet_condition -- --exact`, e o `--exact` só
-//! casa o nome da função na raiz de um binário de teste de integração.
+//! No programa único de integração do pacote, o nome completo do teste leva o
+//! do módulo: `approval_refusal_explains::approval_refusal_names_the_unmet_condition`.
+//! Um critério que rode o teste com `--exact` cita esse caminho inteiro.
 
 use std::fs;
 use std::io::Write;

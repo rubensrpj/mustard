@@ -1,0 +1,102 @@
+# O que é arquivo de teste — dados embutidos na compilação (include_str!) e
+# lidos uma vez. Mudar uma lista é mudar dado, nunca a regra: a regra, em
+# `conventions.rs`, só compara o caminho com o que está aqui, sem saber de
+# língua, framework ou ferramenta.
+#
+# Toda comparação é sem caixa e com a barra invertida trocada pela normal. As
+# pastas se comparam com o nome inteiro de cada pasta do caminho, nunca com um
+# pedaço dele: `attestation/` tem as letras de `test` e não é pasta de teste.
+#
+# Quem lê estes dados: o mapa de testes do scan (quais testes cobrem cada
+# arquivo), os pontos de registro do grafo (teste não conta), a evidência de
+# pilha do projeto e de cada subprojeto (arquivo de teste não diz o que o
+# projeto é), o mapa do projeto (busca e exemplos) e o padrão do projeto.
+
+# Pastas que guardam teste, dado de teste, fixture ou mock em qualquer
+# profundidade. Nenhum projeto dá esses nomes a uma pasta do domínio, por isso
+# eles valem em qualquer ponto do caminho: `e2e/` e `cypress/` guardam os
+# testes de ponta a ponta de um site, com os ajudantes deles.
+dirs = [
+  "test",
+  "tests",
+  "__tests__",
+  "testdata",
+  "fixtures",
+  "__mocks__",
+  "e2e",
+  "cypress",
+]
+
+# Pastas que só são de teste perto do topo, porque o mesmo nome é também uma
+# pasta comum do domínio. `spec/` ao lado do código é a pasta de testes do
+# projeto; `spec/` dentro do código é a pasta que trata de especificações, e a
+# diferença está no lugar, não no nome. Tomar a palavra como decisiva em
+# qualquer profundidade já tirou da busca 46 módulos de produção e 1.419
+# declarações de um projeto — a família inteira de comandos sobre
+# especificações e o núcleo dela —, sem erro nenhum: os arquivos só nunca
+# eram candidatos. `integration/` segue a mesma regra: no topo é a pasta dos
+# testes de integração; lá dentro, é a das integrações com outro sistema.
+ambiguous_dirs = [
+  "spec",
+  "specs",
+  "integration",
+]
+
+# Até que posição do caminho a pasta ambígua ainda conta, contando a primeira
+# pasta como 0. A convenção põe a pasta de testes na raiz do projeto que ela
+# testa: `spec/…` num repositório de projeto único, ou `<subprojeto>/spec/…`
+# sob um ou dois níveis de monorepo — posições 0 a 2. Mais fundo, ela está
+# dentro do código e nomeia um conceito do domínio.
+ambiguous_max_depth = 2
+
+# Terminações do nome de uma pasta de projeto de teste. A pasta cujo nome
+# inteiro termina numa delas guarda um projeto de teste, em qualquer
+# profundidade: `MeuApp.Tests/Helpers/Fixture.cs` é teste. A terminação leva o
+# ponto, por isso `Contests/` não é pasta de teste. Vale só para pasta, nunca
+# para o nome do arquivo.
+project_dir_endings = [
+  ".tests",
+  ".test",
+  ".unittests",
+  ".integrationtests",
+  ".specs",
+]
+
+# Sufixos do nome do arquivo sem a última extensão, nos separadores usados
+# (`.`, `_`, `-`), mais o plural `tests` colado. `login.cy.ts` é o teste de
+# ponta a ponta de `login`.
+stem_suffixes = [
+  ".test",
+  ".spec",
+  "_test",
+  "_spec",
+  "-test",
+  "-spec",
+  "tests",
+  ".cy",
+]
+
+# Sufixos aceitos só quando começam uma palavra camelCase no nome: a letra
+# antes é minúscula ou algarismo e o sufixo começa em maiúscula no nome
+# original. `FooSpec` e `OrderTest` são teste; `latest` e `attest` terminam
+# nas mesmas letras e não são.
+camel_suffixes = [
+  "test",
+  "spec",
+]
+
+# Prefixos do nome do arquivo. Só `test_`: as convenções de especificação em
+# uso são sufixos (`foo_spec.rb`, `foo.spec.ts`), já cobertos acima, e não
+# existe convenção de teste `spec_foo`, enquanto `spec_views` e `spec_doc`
+# são nomes comuns de módulos que tratam de especificações. O prefixo
+# `spec_` escondia quatro desses módulos de produção, um deles o maior
+# arquivo do seu subprojeto.
+stem_prefixes = [
+  "test_",
+]
+
+# Marcadores de teste dentro do arquivo: o arquivo cujo conteúdo traz um deles
+# guarda os próprios testes, e o mapa diz que ele cobre a si mesmo.
+inline_markers = [
+  "#[cfg(test)]",
+]

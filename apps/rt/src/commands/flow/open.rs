@@ -54,7 +54,6 @@ use crate::commands::event::work_branch::{
     checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
 };
-use crate::commands::scan::default_model_path;
 use crate::commands::spec_events::{self, write::record_open};
 use crate::shared::spec_state::DiskSpecState;
 use crate::shared::work_kind::WorkKind;
@@ -426,10 +425,13 @@ fn opened(
     report
 }
 
-/// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade.
-/// Nunca entra em pânico.
+/// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade
+/// e, com o mapa gravado, a leitura da história dos arquivos dele começada em
+/// segundo plano. Nunca entra em pânico.
 pub(crate) fn open_at(opts: &OpenOpts) -> Value {
-    open_with(opts, |root| Scan::locate().scan(root, &default_model_path(root)).map_err(|e| e.to_string()))
+    open_with(opts, |root| {
+        Scan::locate().scan_then_read_history(root, &mustard_core::io::project_map::model_path(root)).map_err(|e| e.to_string())
+    })
 }
 
 /// O `open`, com quem atualiza o mapa do projeto dado por quem chama.
@@ -566,7 +568,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 
     // O checkout: a mesma pergunta do corte da branch, que também atualiza a
     // base pelo `origin`.
-    let position = CheckoutPosition::at(current.as_deref(), Some(target.as_str()), Some(base.as_str()));
+    let position = CheckoutPosition::at(current.as_deref(), &target, &base);
     if let CensusSettlement::Refuse(busy) = settle(&root, position, &config) {
         return refuse(OpenRefusal::Busy(busy));
     }
@@ -611,13 +613,10 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::event::work_branch::{
-        cut_pending_work_branch, slug_of_work_branch, CutOutcome,
-    };
+    use crate::commands::event::work_branch::slug_of_work_branch;
     use crate::commands::spec_events::write::{seed_at, WriteOpts};
     use crate::hooks::write::write_gate::WriteGate;
     use crate::shared::context::checkout::spec_of_checkout_branch;
-use crate::shared::context::pending_branch::set_pending_branch;
     use crate::shared::spec_state::active_spec;
     use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
     use tempfile::tempdir;
@@ -944,27 +943,6 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert_eq!(branches(root), vec!["dev".to_string(), "feature/outra".to_string(), "main".to_string()]);
     }
 
-    /// O `open` e o corte antigo da branch recusam o mesmo checkout ocupado,
-    /// pelos mesmos caminhos: nenhuma proteção do corte se perde.
-    #[test]
-    fn open_and_the_old_cut_refuse_the_same_busy_checkout() {
-        let dir = repo(DEV_MAIN);
-        let root = dir.path();
-        git(root, &["checkout", "-q", "-b", "feature/outra"]);
-        std::fs::write(root.join("src").join("main.rs"), "fn main() { todo!() }\n").unwrap();
-        std::fs::write(root.join("src").join("novo.rs"), "fn novo() {}\n").unwrap();
-
-        set_pending_branch(&root.to_string_lossy(), "sess-lado", "feature/x", Some("dev"));
-        let CutOutcome::Refused(busy) = cut_pending_work_branch(root, "sess-lado") else {
-            panic!("the old cut refuses the busy checkout");
-        };
-        let report = open(root, Some("feature"), Some("x"), Some("dev"));
-        assert_eq!(report["reason"], json!("tree-holds-work"), "{report}");
-        let paths = named_paths(&busy).expect("the cut measured the paths");
-        assert!(report["hint"].as_str().unwrap().contains(&paths), "{report} vs {paths}");
-        assert_eq!(head(root), "feature/outra");
-    }
-
     /// Aberta de um worktree, a branch nasce no worktree, e a spec, no
     /// checkout principal, com a branch nova no `state`.
     #[test]
@@ -1021,7 +999,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
 
     /// A pendência que virou a spec `spec`, pela leitura do merge.
     fn became(root: &Path, spec: &str) -> Option<String> {
-        crate::commands::event::pending::became_of(root, spec)
+        crate::commands::event::pending::carried_by(root, spec).into_iter().next()
     }
 
     /// Nada foi criado: nem branch nova, nem pasta de spec, e a lista de
@@ -1280,6 +1258,26 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert_eq!(log.events.len(), 1, "the birth is the only event");
     }
 
+    /// A base escolhida entre várias fica no registro da própria spec, e o
+    /// passo que abre o pull request a lê de lá: o nome da branch não diz a
+    /// base, e o fluxo declarado, com duas, também não.
+    #[test]
+    fn the_base_picked_at_open_reaches_the_pull_request_step() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        open(root, Some("hotfix"), Some("urgente"), Some("main"));
+        let now = state(root, "urgente");
+        assert_eq!(now.base.as_deref(), Some("main"), "the pick is in the spec's record");
+
+        let config = mustard_core::ProjectConfig::load(root);
+        let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
+        assert_eq!(flow.base_of("hotfix/urgente").known(), None, "the flow alone cannot say");
+
+        let line = crate::commands::flow::resume::step_command("pr-open", "urgente", &now)
+            .expect("the record carries branch and base");
+        assert!(line.contains("--base main --head hotfix/urgente"), "{line}");
+    }
+
     /// O portão de escrita barra o código de uma spec aberta pelo `open`: ela
     /// está em levantamento, e não aprovada.
     #[test]
@@ -1382,14 +1380,17 @@ use crate::shared::context::pending_branch::set_pending_branch;
         let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
         let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
         let said = said.expect("the hook records the user's answer");
-        let context = |text: &str| {
+        // O card vai em duas partes: o que o usuário lê em `text`, e o
+        // caminho dos documentos antigos na parte do agente.
+        let context = |text: &str, agent: &str| {
             write_at(&WriteOpts {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 event_type: "context".into(),
-                json: json!({ "text": text, "origin": said }).to_string(),
+                json: json!({ "title": "O objetivo da obra", "agent": agent, "text": text, "origin": said }).to_string(),
             })
         };
+        let (card_text, card_agent) = card.split_once("\nDocumentos antigos: ").expect("the card cites the old documents");
         let events = || std::fs::read_to_string(spec_dir(root, "x").join("spec.ndjson")).unwrap().lines().count();
         let before = events();
         let state = log.visible().into_iter().find(|e| e.event_type == "state").map(|e| e.id);
@@ -1398,12 +1399,12 @@ use crate::shared::context::pending_branch::set_pending_branch;
             root: root.to_path_buf(),
             spec: Some("x".into()),
             event_type: "context".into(),
-            json: json!({ "text": goal, "origin": state }).to_string(),
+            json: json!({ "title": "O objetivo da obra", "agent": "- conferir o objetivo", "text": goal, "origin": state }).to_string(),
         });
         assert_eq!(refused["reason"], json!("goal-origin-not-user"), "{refused}");
         assert_eq!(events(), before, "a refusal writes nothing");
-        assert_eq!(context(goal)["ok"], json!(true));
-        assert_eq!(context(card)["ok"], json!(true));
+        assert_eq!(context(goal, "- conferir o objetivo")["ok"], json!(true));
+        assert_eq!(context(card_text, &format!("- documentos antigos: {card_agent}"))["ok"], json!(true));
 
         let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
         let recorded = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");

@@ -31,6 +31,9 @@
 //! - `mustard-rt run <nome>` — um comando: lê os argumentos, nunca o stdin, e
 //!   imprime o próprio relatório.
 
+// A linha de comando mora num módulo que a biblioteca também declara, para o
+// teste da ajuda percorrer a árvore inteira a partir da raiz.
+mod cli;
 mod dispatch;
 mod registry;
 mod hooks;
@@ -43,43 +46,31 @@ mod hook_output;
 mod commands;
 mod shared;
 mod util;
+// A pasta do pacote lida na hora de rodar, que os testes de dentro de `src/`
+// usam: a conferência de todos os alvos também compila esta face como teste.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+mod manifest_dir;
+// O programa falso que os testes de dentro de `src/` gravam e depois rodam.
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+mod executable;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use cli::{Cli, Command};
 use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};
 use std::io::{Read, Write};
 
-/// The `mustard-rt` command line.
-#[derive(Debug, Parser)]
-#[command(name = "mustard-rt", version = env!("MUSTARD_VERSION_FULL"), about = "Mustard enforcement runtime")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-/// As faces do binário. `Run` não lê o stdin.
-#[derive(Debug, Subcommand)]
-#[allow(clippy::large_enum_variant)] // CLI parser enum — single-use stack alloc, indirection adds no value
-enum Command {
-    /// Roda os ganchos de um evento do Claude Code.
-    On {
-        /// O nome do evento, como `PreToolUse` ou `Stop`.
-        event: String,
-    },
-    /// Roda um comando. Recebe argumentos, não o stdin.
-    Run {
-        #[command(subcommand)]
-        command: commands::RunCmd,
-    },
-}
-
 fn main() {
-    // Before ANY face runs: if the plugin registry records a strictly newer
-    // install of this binary, hand the whole invocation to it. This is what
-    // makes the version of a system-installed copy (`.deb`, `.pkg`, `.exe`)
-    // irrelevant — every entry door (statusline, `run upsert`, a terminal
-    // call) converges on the plugin's self-updated binary, on every OS,
-    // without any installer changing. See `mustard_core::newer_installed_rt`
-    // for why the handover lives here and not in the installers.
+    // Before ANY face runs: inside the Mustard source repository, hand the
+    // whole invocation to the program compiled from the branch; otherwise, if
+    // the plugin registry records a strictly newer install of this binary,
+    // hand it to that. This is what makes the version of a system-installed
+    // copy (`.deb`, `.pkg`, `.exe`) irrelevant — every entry door (statusline,
+    // `run upsert`, a terminal call) converges on the plugin's self-updated
+    // binary, on every OS, without any installer changing. See
+    // `mustard_core::newer_installed_rt` for why the handover lives here and
+    // not in the installers.
     delegate_to_newer_install();
 
     let cli = Cli::parse_from(std::env::args());
@@ -100,19 +91,35 @@ fn main() {
     }
 }
 
-/// Hand this whole invocation to the newer `mustard-rt` the plugin registry
-/// records, when there is one; return and run as ourselves otherwise.
+/// Hand this whole invocation to another `mustard-rt` when there is one that
+/// should answer, and return to run as ourselves otherwise.
 ///
-/// The decision (is there a strictly newer install, and where is its binary?)
-/// lives in `mustard_core::newer_installed_rt`; this function only performs
-/// the handover, which is why it belongs in `main.rs`: it is argv routing —
-/// to another process.
+/// Two programs can take the call, tried in this order:
+///
+/// 1. Inside the Mustard source repository, the program COMPILED from the
+///    branch (`mustard_core::development_rt`): the session of the Mustard's own
+///    work runs the code it is changing, not the release the plugin shipped.
+///    Only an installed program hands over; one the repository built itself
+///    never does, so `cargo test` tests the program it just built. Without a
+///    compiled program, or when it does not open, the next one is tried.
+/// 2. The newer install the plugin registry records
+///    (`mustard_core::newer_installed_rt`), which makes the version of a
+///    system-installed copy (`.deb`, `.pkg`, `.exe`) irrelevant: every entry
+///    door (statusline, `run upsert`, a terminal call) converges on the
+///    plugin's self-updated binary, on every OS, without any installer
+///    changing.
+///
+/// The decisions live in `mustard_core`; this function only performs the
+/// handover, which is why it belongs in `main.rs`: it is argv routing — to
+/// another process.
 ///
 /// One hop only: the delegate runs with `MUSTARD_RT_DELEGATED` set and never
-/// delegates again. The version check already makes a loop impossible (the
-/// newest install is not behind itself), so the variable is a belt over
-/// braces — it also covers a corrupted install whose directory holds an older
-/// binary than the registry claims.
+/// delegates again. For the registry the version check already makes a loop
+/// impossible (the newest install is not behind itself), so the variable is a
+/// belt over braces — it also covers a corrupted install whose directory holds
+/// an older binary than the registry claims. For the compiled program it is the
+/// whole guard: a compiled program that handed over again would answer with
+/// the release the plugin shipped.
 ///
 /// Fail-open, like every path in this binary: if the handover cannot start,
 /// we answer with this binary — exactly what happened before it existed.
@@ -120,10 +127,18 @@ fn delegate_to_newer_install() {
     if std::env::var_os("MUSTARD_RT_DELEGATED").is_some() {
         return;
     }
-    let Some(target) = mustard_core::newer_installed_rt() else {
-        return;
-    };
-    let mut cmd = std::process::Command::new(&target);
+    let compiled = std::env::current_exe()
+        .ok()
+        .zip(std::env::current_dir().ok())
+        .and_then(|(running, here)| mustard_core::development_rt(&here, &running));
+    for target in compiled.into_iter().chain(mustard_core::newer_installed_rt()) {
+        hand_over_to(&target);
+    }
+}
+
+/// Run this whole invocation as `target`; return only when it could not start.
+fn hand_over_to(target: &std::path::Path) {
+    let mut cmd = std::process::Command::new(target);
     cmd.args(std::env::args_os().skip(1)).env("MUSTARD_RT_DELEGATED", "1");
     #[cfg(unix)]
     {

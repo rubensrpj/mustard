@@ -10,9 +10,10 @@
 //! manda copiá-la pela mesma porta, [`end_milestone`], e quem copia é o
 //! orquestrador, sem agente. A primeira vez de cada página, o marco manda
 //! antes publicar o template dela e gravar o endereço, e a primeira cópia da
-//! spec leva a spec inteira. A página publicada com um molde de outro carimbo
-//! é publicada de novo no mesmo endereço, antes dos lotes, e o banco dela
-//! continua lá. A spec antiga, cuja página uma versão antiga publicou
+//! spec leva a spec inteira. A página publicada com outra versão de layout
+//! não é publicada de novo sozinha: o marco avisa o usuário uma vez por
+//! versão, e ela só sai de novo quando ele pede; o banco dela segue
+//! recebendo a cópia. A spec antiga, cuja página uma versão antiga publicou
 //! inteira, ganha o template num link novo.
 //!
 //! O item que guarda um trecho com cara de segredo não vai para o banco, e
@@ -25,7 +26,7 @@
 //! de uma spec e a do projeto só existem como template mais banco de dados.
 
 pub(crate) mod copy;
-pub(crate) mod secret;
+pub(crate) mod spend;
 
 use std::path::Path;
 
@@ -95,10 +96,10 @@ fn purge_pending(spec: &str, withheld: &[String], lang: Locale) -> String {
 
 /// O fim de um passo que é um marco (`approval`, `round` ou `close`) da spec
 /// `spec`, com a cópia preparada: a resposta diz em `copy` os lotes de cada
-/// página, em `publish` as páginas que o marco publica — a que ainda não tem
-/// endereço e a publicada com um molde de outro carimbo, de novo no mesmo
-/// endereço —, e manda, em `next`, publicar cada uma delas antes dos lotes,
-/// com o carimbo do molde, copiar os lotes, gravar cada
+/// página, em `publish` as páginas que o marco publica — só as que ainda não
+/// têm endereço —, e manda, em `next`, publicar cada uma delas antes dos
+/// lotes, com o carimbo do molde, contar ao usuário a página que saiu ou o
+/// desenho que mudou de versão, copiar os lotes, gravar cada
 /// cópia feita e expurgar o item que guarda um trecho com cara de segredo, e
 /// segue com `then`. Quando a cópia não pôde ser preparada, o motivo vai
 /// para os avisos e a resposta não manda copiar nada.

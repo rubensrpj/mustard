@@ -10,4 +10,4 @@ argument-hint: [spec-name]
 4. A spec in the plan phase still waits for the approval question, after its page is published. Typing this command approves nothing.
 5. The answer carries no page link: the link lives in the status line.
 
-Only on the user's word: `mustard-rt run reopen --reason "<why>"` takes the spec back to the survey, and `mustard-rt run discard` drops it, in two calls with a code. To look without moving: `mustard-rt run read <block>`. A missing or diverging index: `mustard-rt run index`.
+Only on the user's word: `mustard-rt run reopen --reason "<why>"` reopens the spec, and `mustard-rt run discard` drops it, in two calls with a code. To look without moving: `mustard-rt run read <block>`. A missing or diverging index: `mustard-rt run index`.

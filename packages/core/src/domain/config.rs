@@ -3,11 +3,10 @@
 //! ## Why this module exists
 //!
 //! Before it, the project config was read and written through a scatter of
-//! ad-hoc parsers: `apps/rt/src/util/mustard_config.rs` (accessors, camelCase,
-//! root), `apps/cli/.../git_flow.rs::MustardConfig` (the *writer*, snake_case,
-//! partial), `spec_draft::read_mustard_tone`, `close_gate::read_mustard_commands`,
-//! `i18n::project_locale` (reading `.claude/` hard-coded), plus a dozen inline
-//! `serde_json::Value` peeks. Three failures followed: a **divergent schema**
+//! ad-hoc parsers: an accessor module in the runtime (camelCase, root), a
+//! partial writer in the CLI (snake_case), one reader per feature (the tone of
+//! the spec, the gate commands), a locale reader with `.claude/` hard-coded,
+//! plus a dozen inline `serde_json::Value` peeks. Three failures followed: a **divergent schema**
 //! (writer snake_case vs readers camelCase), a **split location** (`.claude/`
 //! vs root), and **no single owner** of the file.
 //!
@@ -27,7 +26,7 @@
 //! missing, unreadable, or malformed file yields [`ProjectConfig::default`] —
 //! the gates then stand on their agnostic fallbacks rather than being blocked
 //! by a config typo. Accessors normalise (trim, dotted-extension, lowercase)
-//! exactly as the legacy `mustard_config` helpers did, so gate behaviour is
+//! exactly as the legacy accessors did, so gate behaviour is
 //! preserved.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -104,6 +103,12 @@ pub struct GitConfig {
     /// touched unless the project turns this on in `mustard.json`.
     #[serde(rename = "deleteRemoteBranch", default, skip_serializing_if = "std::ops::Not::not")]
     pub delete_remote_branch: bool,
+    /// Se a história do mapa lê do servidor o texto dos pull requests da
+    /// base: o título, a descrição e os comentários presos a linhas. Ligada
+    /// quando ausente; `false` faz a história não chamar o servidor. Lida só
+    /// por [`GitConfig::pull_request_text`].
+    #[serde(rename = "pullRequestText", default, skip_serializing_if = "Option::is_none")]
+    pub pull_request_text: Option<bool>,
 }
 
 
@@ -153,6 +158,222 @@ impl GitConfig {
         }
         self.declared_bases().into_iter().next()
     }
+
+    /// A história do mapa lê do servidor o texto dos pull requests: só um
+    /// `pullRequestText: false` escrito no arquivo a desliga.
+    #[must_use]
+    pub fn pull_request_text(&self) -> bool {
+        self.pull_request_text != Some(false)
+    }
+}
+
+/// A seção `map` do `mustard.json`: os números da pergunta da história que
+/// trocam custo por qualidade. Cada valor fica como o arquivo o traz, para
+/// que um texto ou um número negativo não torne o arquivo inteiro ilegível:
+/// quem o lê é [`Setting::of`], que diz se ele falta, vale ou é inválido.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MapConfig {
+    /// Quantas vezes seguidas a história de uma função segue para o arquivo
+    /// de onde ela veio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_moves: Option<Value>,
+    /// Quantos commits de uma função a resposta da história mostra.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_commits: Option<Value>,
+    /// Quantas chamadas ao provedor cada atualização do mapa gasta lendo os
+    /// pull requests da base.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pull_request_calls: Option<Value>,
+}
+
+impl MapConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.history_moves.is_none() && self.history_commits.is_none() && self.pull_request_calls.is_none()
+    }
+}
+
+/// A seção `search` do `mustard.json`: a busca por assunto do mapa, com o
+/// filtro que dá nota aos candidatos do banco, as duas linhas do veredito dele
+/// e a chave que liga a resposta do mapa no lugar da busca por palavra do
+/// Claude. As chaves internas vão em snake_case, como as de `git`. Cada
+/// valor fica como o arquivo o traz; quem o lê diz se ele falta, vale ou é
+/// inválido.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// O filtro: `"jev"` ou `"none"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Value>,
+    /// Que parte da maior chance, em pontos percentuais, um candidato precisa
+    /// ter para passar do corte do filtro.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut_share: Option<Value>,
+    /// A chance, em pontos percentuais, de algum candidato ser o que se
+    /// procura a partir da qual o filtro dá resposta; abaixo dela é não achei.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exists_from: Option<Value>,
+    /// Se o gancho responde no lugar do `Grep` e do `grep`/`rg` do terminal
+    /// quando o mapa cravou ou achou parte: `true` ou `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<Value>,
+}
+
+impl SearchConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.filter.is_none() && self.cut_share.is_none() && self.exists_from.is_none() && self.answer.is_none()
+    }
+}
+
+/// A seção `scan` do `mustard.json`: os números com que o scan liga as
+/// chamadas às declarações. As chaves internas vão em snake_case, como as de
+/// `git`. Cada valor fica como o arquivo o traz; quem o lê diz se ele vale ou
+/// é inválido.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ScanConfig {
+    /// Quantas declarações de mesmo nome uma chamada pode alcançar e ainda
+    /// ligar, como suspeita.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_same_name: Option<Value>,
+}
+
+impl ScanConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.max_same_name.is_none()
+    }
+}
+
+/// O nome do campo que guarda a chave do Jev dentro da seção `jev` do
+/// `mustard.json`. A leitura da chave o procura, e as travas escondem o valor
+/// dele em toda leitura do arquivo: um nome só para as duas.
+pub const JEV_KEY_FIELD: &str = "key";
+
+/// O nome do campo do teto de gasto do mês dentro da seção `jev`, em dólares.
+pub const JEV_BUDGET_FIELD: &str = "monthly_budget_usd";
+
+/// A seção `jev` do `mustard.json`: a chave do serviço que dá nota aos
+/// candidatos da busca por assunto, em `jev.key`. É segredo: o `Debug` não a
+/// escreve, e a serialização do tipo não a leva. Só a gravação do próprio
+/// arquivo a devolve ao lugar de onde veio, para que regravar o
+/// `mustard.json` não apague a chave de quem a pôs lá.
+///
+/// A seção fica como o arquivo a traz, de qualquer forma: uma chave que não
+/// é texto vale como ausente e não torna o arquivo inteiro ilegível.
+#[derive(Clone, Default)]
+pub struct JevConfig {
+    raw: Option<Value>,
+}
+
+impl JevConfig {
+    /// A chave escrita em `jev.key`, sem espaço em volta; `None` quando falta,
+    /// está em branco ou não é texto.
+    #[must_use]
+    pub fn key(&self) -> Option<&str> {
+        self.raw.as_ref()?.get(JEV_KEY_FIELD)?.as_str().map(str::trim).filter(|key| !key.is_empty())
+    }
+
+    /// O teto de gasto do mês escrito em `jev.monthly_budget_usd`, em dólares;
+    /// `None` quando falta ou não é um número de zero para cima. Zero vale: é
+    /// o Jev desligado.
+    #[must_use]
+    pub fn monthly_budget_usd(&self) -> Option<f64> {
+        self.raw.as_ref()?.get(JEV_BUDGET_FIELD)?.as_f64().filter(|usd| usd.is_finite() && *usd >= 0.0)
+    }
+}
+
+impl std::fmt::Debug for JevConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.key().is_some() { "JevConfig(key: …)" } else { "JevConfig" })
+    }
+}
+
+impl<'de> Deserialize<'de> for JevConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        Ok(Self { raw: (!raw.is_null()).then_some(raw) })
+    }
+}
+
+/// O teto do nome comum: a chamada que pode alcançar mais declarações de
+/// mesmo nome que ele é palavra comum (`new`, `build`, `run`), não ligação, e
+/// só se conta. Medido no próprio Mustard, com 4.632 lugares de chamada
+/// suspeita: com 8, só 66 lugares ficam sem ligar. O 4 deixa mais 179 sem
+/// ligar. Do 12 para cima, os 66 ligam, cada um com 11 candidatas em média,
+/// e as ligações suspeitas crescem 10% sem nenhuma provada a mais. O tempo da
+/// passada não muda com o teto.
+pub const MAX_SAME_NAME: usize = 8;
+
+/// Se a resposta do mapa vale no lugar da busca por palavra quando o
+/// `mustard.json` não diz. Ligada, porque nas buscas reais dos agentes que o
+/// mapa respondeu (padrão e pasta, 1.680 repetidas sobre uma cópia do
+/// projeto) as 728 que trazem as linhas recebem uma resposta de 16% do
+/// tamanho da busca comum: 0,52 MB contra 3,2 MB. As 159 que só listam
+/// arquivos ou contam rodam como vieram, com uma linha da marca de 187 bytes
+/// em média: 30 KB em 58 KB. Junto, as duas somam 19% da busca comum, 0,60 MB
+/// contra 3,2 MB. A ordem dos arquivos vem da triagem, e a régua dela dá os
+/// mesmos números com ou sem a resposta.
+pub const SEARCH_ANSWER: bool = true;
+
+/// O filtro da busca por assunto como o `mustard.json` o escolhe. Ausente, a
+/// montagem decide pela chave da máquina; o inválido não filtra e pede o
+/// aviso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterSetting {
+    Absent,
+    Jev,
+    Off,
+    Invalid,
+}
+
+impl FilterSetting {
+    /// O filtro escrito em `value`.
+    #[must_use]
+    pub fn of(value: Option<&Value>) -> Self {
+        match value {
+            None | Some(Value::Null) => Self::Absent,
+            Some(Value::String(name)) if name == "jev" => Self::Jev,
+            Some(Value::String(name)) if name == "none" => Self::Off,
+            Some(_) => Self::Invalid,
+        }
+    }
+}
+
+/// Um número da configuração, como o arquivo o traz: ausente, um inteiro
+/// maior que zero, ou inválido (zero, negativo, fração ou texto). O ausente e
+/// o inválido caem no padrão de quem lê; o inválido pede o aviso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Absent,
+    Set(usize),
+    Invalid,
+}
+
+impl Setting {
+    /// O número escrito em `value`.
+    #[must_use]
+    pub fn of(value: Option<&Value>) -> Self {
+        match value {
+            None | Some(Value::Null) => Self::Absent,
+            Some(value) => value
+                .as_u64()
+                .filter(|n| *n > 0)
+                .and_then(|n| usize::try_from(n).ok())
+                .map_or(Self::Invalid, Self::Set),
+        }
+    }
+
+    /// O número que vale: o escrito ou, sem ele, `default`.
+    #[must_use]
+    pub fn or(self, default: usize) -> usize {
+        match self {
+            Self::Set(n) => n,
+            Self::Absent | Self::Invalid => default,
+        }
+    }
 }
 
 /// `subprojects.exclude` / `.include` — repo-root-relative path overrides.
@@ -187,39 +408,6 @@ impl Amend {
     }
 }
 
-/// Gate enforcement modes (`off` | `warn` | `strict`) — the project-level
-/// default for each gate, formerly carried as `MUSTARD_*_MODE` env vars in
-/// `settings.json`. They live here so `mustard.json` is the single source of
-/// project config; each gate resolves in cascade **env var → this field →
-/// built-in default**, so an env var still overrides per-run (CI/debug) and an
-/// absent field falls back to the gate's own default. Each is a free string
-/// parsed by the gate (an unknown value falls through to the gate default).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct GateModes {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_size: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_validate_lines: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checklist: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub boundary: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub main_budget: Option<String>,
-}
-
-impl GateModes {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.skill_size.is_none()
-            && self.skill_validate_lines.is_none()
-            && self.checklist.is_none()
-            && self.boundary.is_none()
-            && self.main_budget.is_none()
-    }
-}
-
 /// The `language` block of `mustard.json`: the two languages a project writes
 /// in, each declared on its own key.
 ///
@@ -234,9 +422,9 @@ pub struct LanguageConfig {
     /// dialect (`pt-BR`, `en-US`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// The language of the names in the code: variables, functions, files and
-    /// commands. Always `en`: code is written in English, so the installer
-    /// never asks for it and never writes it.
+    /// The language of the names in the code: variables, functions, tests, files,
+    /// commands and database tables. Spelled like `text` (`pt-BR`, `en-US`);
+    /// without it, names are written in English.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 }
@@ -254,8 +442,9 @@ pub struct Language {
     /// The declared text language; `None` when absent, blank or not one of the
     /// locales Mustard ships messages for.
     pub text: Option<SupportedLocale>,
-    /// The declared code language, trimmed; `None` when absent or blank.
-    pub code: Option<String>,
+    /// The declared code language, in the same spelling as the text one;
+    /// `None` when absent, blank, in the short form or outside the list.
+    pub code: Option<SupportedLocale>,
 }
 
 impl Language {
@@ -269,6 +458,69 @@ impl Language {
     #[must_use]
     pub fn text_or_default(&self) -> SupportedLocale {
         self.text.unwrap_or_default()
+    }
+
+    /// The language the names in the code are written in: the declared code
+    /// language, or `en-US` when none was declared.
+    #[must_use]
+    pub fn code_or_default(&self) -> SupportedLocale {
+        self.code.unwrap_or(SupportedLocale::EnUs)
+    }
+}
+
+/// O modelo dos agentes do Mustard quando o `mustard.json` não declara
+/// nenhum: o apelido que a plataforma resolve sempre para a versão mais nova
+/// do Sonnet. A instalação o grava em `agents.model` quando o campo falta.
+pub const DEFAULT_AGENT_MODEL: &str = "sonnet";
+
+/// O esforço dos agentes do Mustard quando o `mustard.json` não declara
+/// nenhum. A instalação o grava em `agents.effort` quando o campo falta.
+pub const DEFAULT_AGENT_EFFORT: &str = "xhigh";
+
+/// Os valores que o Claude Code aceita no `effort:` do cabeçalho de um agente
+/// (os mesmos do `--effort` dele), do mais leve ao mais pesado. Um esforço
+/// fora desta lista não chega ao cabeçalho: o agente recebe o padrão.
+pub const AGENT_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// A seção `agents` do `mustard.json`: o que a pessoa escolhe para os agentes
+/// que o Mustard instala em `.claude/agents/mustard/`. As chaves internas vão
+/// em snake_case, como as de `git`. O valor fica como o arquivo o traz, e o
+/// que a seção não conhece volta ao arquivo como estava.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// O modelo dos agentes: um apelido (`sonnet`, `opus`) ou o nome inteiro
+    /// de um modelo. Lido só por [`ProjectConfig::agent_model`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<Value>,
+    /// O esforço dos agentes, um dos [`AGENT_EFFORTS`]. Lido só por
+    /// [`ProjectConfig::agent_effort`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Value>,
+    /// Qualquer outra chave da seção, guardada como veio.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl AgentsConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.effort.is_none() && self.extra.is_empty()
+    }
+}
+
+/// O modelo e o esforço que a instalação escreve no cabeçalho de cada agente,
+/// já conferidos: o que o projeto declara em `agents`, ou o padrão de cada
+/// campo. O `Default` é o padrão dos dois.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentSettings<'a> {
+    pub model: &'a str,
+    pub effort: &'a str,
+}
+
+impl Default for AgentSettings<'_> {
+    fn default() -> Self {
+        Self { model: DEFAULT_AGENT_MODEL, effort: DEFAULT_AGENT_EFFORT }
     }
 }
 
@@ -297,15 +549,6 @@ impl Runtime {
     }
 }
 
-/// One `{ pattern, role }` role-classification override.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RolePattern {
-    /// Substring (or simple `*` glob) tested against the file path.
-    pub pattern: String,
-    /// The role assigned on the first matching pattern.
-    pub role: String,
-}
-
 /// One `inject` declaration: an instruction file the session hooks splice into
 /// the agent's window as `additionalContext` on a given trigger.
 ///
@@ -327,13 +570,23 @@ pub struct Injectable {
     pub once: bool,
 }
 
-/// The build/test/lint/type-check command set resolved from `mustard.json`.
+/// The build/test/lint/type-check command set resolved from `mustard.json`,
+/// with the command that prepares a wave's copy before it compiles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Commands {
     pub build: Option<String>,
     pub test: Option<String>,
     pub lint: Option<String>,
     pub type_check: Option<String>,
+    /// O comando de preparo que o projeto declarou (`prepareCommand`), que
+    /// traz as dependências à cópia de cada onda antes de compilar. `None`
+    /// quando o projeto não tem, quando está em branco ou quando ainda não
+    /// foi perguntado: nada roda.
+    pub prepare: Option<String>,
+    /// As pastas de compilação que o fechamento e o descarte podem apagar
+    /// (`buildOutput`), relativas à raiz, sem as entradas em branco. Vazia
+    /// quando o projeto não declarou nenhuma: nada é apagado.
+    pub build_output: Vec<String>,
 }
 
 /// The full `mustard.json` document — the project config, at the project root.
@@ -345,8 +598,11 @@ pub struct Commands {
 /// snake_case command keys are still accepted on read via `alias`.
 ///
 /// The language keys that came before `language` (`specLang`, `lang`) and the
-/// `tone` key are no longer part of the schema. A file that still carries them
-/// keeps loading: they land in [`ProjectConfig::extra`] like any unknown key,
+/// `tone` key are no longer part of the schema, nor are the three keys that
+/// described the architecture in words (`architecture`, `rolePatterns`,
+/// `waveLayerOrder`): the rules come from the import graph of the code as it
+/// is, never from a declared text. A file that still carries any of them keeps
+/// loading: they land in [`ProjectConfig::extra`] like any unknown key,
 /// preserved on write and read by nobody.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -362,6 +618,24 @@ pub struct ProjectConfig {
     pub lint_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "type_check_command")]
     pub type_check_command: Option<String>,
+    /// O comando que prepara a cópia de cada onda, como `npm ci` ou `dotnet
+    /// restore`: é do projeto, e o Mustard não adivinha nenhum. Ausente, a
+    /// instalação ainda não perguntou; vazio, o projeto não tem preparo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_command: Option<String>,
+    /// As pastas de compilação da pasta principal que só crescem e podem ser
+    /// apagadas no fim do fechamento e do descarte, relativas à raiz. A
+    /// instalação as grava pela detecção dos comandos. Ausente, a instalação
+    /// ainda não detectou; vazia, o projeto não tem nenhuma. Nas duas, nada é
+    /// apagado.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_output: Option<Vec<String>>,
+    /// Os arquivos que o git ignora e a cópia de cada onda precisa, como o
+    /// `.env`, em caminhos relativos à raiz, na lista que a pessoa confirmou.
+    /// Ausente, a instalação ainda não perguntou; vazia, o projeto confirmou
+    /// que não precisa de nenhum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_files: Option<Vec<String>>,
 
     /// Version-control binary. Absent ⇒ `git` default; `""` ⇒ explicit opt-out.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -378,12 +652,15 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub acronyms: Vec<String>,
 
+    /// Os agentes do Mustard no projeto — veja [`AgentsConfig`]. Lida só por
+    /// [`ProjectConfig::agent_model`] e [`ProjectConfig::agent_effort`].
+    #[serde(skip_serializing_if = "AgentsConfig::is_empty")]
+    pub agents: AgentsConfig,
+
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extensions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_ext: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub architecture: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_active_specs: Option<u64>,
     /// Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo
@@ -391,6 +668,26 @@ pub struct ProjectConfig {
     /// um número maior aqui.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_compiling_waves: Option<u64>,
+    /// Os números da pergunta da história do mapa — veja [`MapConfig`]. Lidos
+    /// só por [`ProjectConfig::history_moves`] e
+    /// [`ProjectConfig::history_commits`].
+    #[serde(skip_serializing_if = "MapConfig::is_empty")]
+    pub map: MapConfig,
+    /// A busca por assunto do mapa — veja [`SearchConfig`]. Lida só por
+    /// [`ProjectConfig::search_filter`], [`ProjectConfig::search_cut_share`],
+    /// [`ProjectConfig::search_exists_from`] e
+    /// [`ProjectConfig::search_answer`].
+    #[serde(skip_serializing_if = "SearchConfig::is_empty")]
+    pub search: SearchConfig,
+    /// Os números da ligação do scan — veja [`ScanConfig`]. Lida só por
+    /// [`ProjectConfig::scan_max_same_name`].
+    #[serde(skip_serializing_if = "ScanConfig::is_empty")]
+    pub scan: ScanConfig,
+    /// A chave do filtro da busca — veja [`JevConfig`]. Lida só por
+    /// [`ProjectConfig::jev_key`]. Nenhuma serialização do tipo a leva: só
+    /// [`ProjectConfig::write`] a devolve ao arquivo.
+    #[serde(skip_serializing)]
+    pub jev: JevConfig,
     /// A chave que liga e desliga o Mustard no projeto. Desligado (`false`),
     /// nenhum gancho do Mustard age aqui; ausente, ele está ligado. Lida só
     /// por [`ProjectConfig::enabled`].
@@ -401,27 +698,15 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::rtk`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtk: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub role_patterns: Vec<RolePattern>,
     /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
     /// Consumed through the normalising [`ProjectConfig::injectables`] accessor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inject: Vec<Injectable>,
-    /// Optional architectural layer order for the deterministic wave fallback
-    /// used when the import DAG has no depth (all-net-new features, no edges to
-    /// order by). Roles are scheduled in this order — each wave depends on the
-    /// previous; roles not listed fall to the tail (lexically). Empty/absent → a
-    /// documented default. Project-overridable so a non-standard architecture
-    /// sets its own dependency direction (keeps the wave engine agnostic).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wave_layer_order: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Subprojects::is_empty")]
     pub subprojects: Subprojects,
     #[serde(skip_serializing_if = "Amend::is_empty")]
     pub amend: Amend,
-    #[serde(skip_serializing_if = "GateModes::is_empty")]
-    pub gates: GateModes,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
@@ -482,13 +767,20 @@ impl ProjectConfig {
 
     /// Serialize and atomically write to `<root>/mustard.json`.
     ///
+    /// A seção `jev` volta ao arquivo como foi lida, no fim: é a chave do
+    /// projeto, que a serialização do tipo não leva.
+    ///
     /// # Errors
     /// [`crate::platform::error::Error::Parse`] on serialization failure (never
     /// happens for this type in practice) or [`crate::platform::error::Error::Io`]
     /// on a write failure.
     pub fn write(&self, root: &Path) -> Result<()> {
         let path = Self::json_path(root);
-        let mut json = serde_json::to_string_pretty(self)?;
+        let mut document = serde_json::to_value(self)?;
+        if let (Some(jev), Value::Object(keys)) = (&self.jev.raw, &mut document) {
+            keys.insert("jev".to_string(), jev.clone());
+        }
+        let mut json = serde_json::to_string_pretty(&document)?;
         json.push('\n');
         fs::write_atomic(&path, json.as_bytes())
     }
@@ -499,16 +791,10 @@ impl ProjectConfig {
         non_blank(self.build_command.as_deref())
     }
 
-    /// `buildCommand` or [`BUILD_COMMAND_FALLBACK`].
-    #[must_use]
-    pub fn build_command_or_fallback(&self) -> String {
-        self.build_command().unwrap_or_else(|| BUILD_COMMAND_FALLBACK.to_string())
-    }
-
-    /// The four close-gate commands, each trimmed / `None` when blank. The
-    /// build placeholder that `mustard init` seeds for an unrecognised stack
-    /// ([`BUILD_COMMAND_FALLBACK`]) counts as absent here too: it is a hint to
-    /// fill, not a command to run. `build_command()` and the raw JSON keep
+    /// The four close-gate commands and the prepare command, each trimmed /
+    /// `None` when blank. The build placeholder that `mustard init` seeds for
+    /// an unrecognised stack ([`BUILD_COMMAND_FALLBACK`]) counts as absent
+    /// here too: it is a hint to fill, not a command to run. `build_command()` and the raw JSON keep
     /// showing it, so the hint stays visible where someone edits the file.
     #[must_use]
     pub fn commands(&self) -> Commands {
@@ -517,6 +803,13 @@ impl ProjectConfig {
             test: non_blank(self.test_command.as_deref()),
             lint: non_blank(self.lint_command.as_deref()),
             type_check: non_blank(self.type_check_command.as_deref()),
+            prepare: non_blank(self.prepare_command.as_deref()),
+            build_output: self
+                .build_output
+                .iter()
+                .flatten()
+                .filter_map(|folder| non_blank(Some(folder.as_str())))
+                .collect(),
         }
     }
 
@@ -537,17 +830,6 @@ impl ProjectConfig {
         }
     }
 
-    /// Architecture-style override, trimmed + lowercased; `None` when blank.
-    #[must_use]
-    pub fn architecture(&self) -> Option<String> {
-        let raw = self.architecture.as_deref()?.trim();
-        if raw.is_empty() {
-            None
-        } else {
-            Some(raw.to_ascii_lowercase())
-        }
-    }
-
     /// Hard cap on concurrent active specs; `None` falls back to the built-in
     /// default. `0` is honoured literally (freeze new starts).
     #[must_use]
@@ -562,6 +844,81 @@ impl ProjectConfig {
         self.max_compiling_waves.and_then(|n| usize::try_from(n).ok())
     }
 
+    /// `map.historyMoves`: quantas vezes seguidas a história de uma função
+    /// segue para o arquivo de onde ela veio.
+    #[must_use]
+    pub fn history_moves(&self) -> Setting {
+        Setting::of(self.map.history_moves.as_ref())
+    }
+
+    /// `map.historyCommits`: quantos commits de uma função a resposta da
+    /// história mostra.
+    #[must_use]
+    pub fn history_commits(&self) -> Setting {
+        Setting::of(self.map.history_commits.as_ref())
+    }
+
+    /// `map.pullRequestCalls`: quantas chamadas ao provedor cada atualização
+    /// do mapa gasta lendo os pull requests da base.
+    #[must_use]
+    pub fn pull_request_calls(&self) -> Setting {
+        Setting::of(self.map.pull_request_calls.as_ref())
+    }
+
+    /// `search.filter`: o filtro da busca por assunto.
+    #[must_use]
+    pub fn search_filter(&self) -> FilterSetting {
+        FilterSetting::of(self.search.filter.as_ref())
+    }
+
+    /// `search.cut_share`: que parte da maior chance, em pontos percentuais
+    /// (10 é 0,10), um candidato precisa ter para passar do corte do filtro.
+    #[must_use]
+    pub fn search_cut_share(&self) -> Setting {
+        Setting::of(self.search.cut_share.as_ref())
+    }
+
+    /// `search.exists_from`: a chance de algum candidato ser o que se procura,
+    /// em pontos percentuais (50 é 0,50), a partir da qual o filtro dá
+    /// resposta; abaixo dela é não achei.
+    #[must_use]
+    pub fn search_exists_from(&self) -> Setting {
+        Setting::of(self.search.exists_from.as_ref())
+    }
+
+    /// `search.answer`: se o gancho responde no lugar da busca por palavra.
+    /// Sem a chave, ou com um valor que não é `true` nem `false`, vale
+    /// [`SEARCH_ANSWER`].
+    #[must_use]
+    pub fn search_answer(&self) -> bool {
+        self.search.answer.as_ref().and_then(Value::as_bool).unwrap_or(SEARCH_ANSWER)
+    }
+
+    /// `jev.key`: a chave do filtro da busca escrita no arquivo, sem espaço em
+    /// volta; `None` quando falta, está em branco ou não é texto. Quem a lê
+    /// não a escreve em saída nenhuma.
+    #[must_use]
+    pub fn jev_key(&self) -> Option<&str> {
+        self.jev.key()
+    }
+
+    /// `jev.monthly_budget_usd`: quanto o Jev pode gastar por mês, em dólares;
+    /// `None` quando falta ou não é um número de zero para cima, e quem lê usa
+    /// o padrão dele.
+    #[must_use]
+    pub fn jev_monthly_budget_usd(&self) -> Option<f64> {
+        self.jev.monthly_budget_usd()
+    }
+
+    /// `scan.max_same_name`: o teto do nome comum que vale, e se o valor
+    /// escrito era inválido (zero, negativo ou texto), caso em que vale o
+    /// padrão, [`MAX_SAME_NAME`], e quem lê avisa.
+    #[must_use]
+    pub fn scan_max_same_name(&self) -> (usize, bool) {
+        let setting = Setting::of(self.scan.max_same_name.as_ref());
+        (setting.or(MAX_SAME_NAME), setting == Setting::Invalid)
+    }
+
     /// O Mustard está ligado neste projeto: só um `enabled: false` escrito no
     /// arquivo o desliga. Um arquivo que não se lê não desliga nada.
     #[must_use]
@@ -574,23 +931,6 @@ impl ProjectConfig {
     #[must_use]
     pub fn rtk(&self) -> bool {
         self.rtk != Some(false)
-    }
-
-    /// Ordered role-classification overrides; `pattern` lowercased, entries with
-    /// a blank `pattern` or `role` skipped (fail-open).
-    #[must_use]
-    pub fn role_patterns(&self) -> Vec<RolePattern> {
-        self.role_patterns
-            .iter()
-            .filter_map(|rp| {
-                let pattern = rp.pattern.trim();
-                let role = rp.role.trim();
-                if pattern.is_empty() || role.is_empty() {
-                    return None;
-                }
-                Some(RolePattern { pattern: pattern.to_lowercase(), role: role.to_string() })
-            })
-            .collect()
     }
 
     /// `amend.drift_threshold` as a `u32`; `None` when absent or out of range.
@@ -626,20 +966,17 @@ impl ProjectConfig {
     /// `language` block, and so the one place any part of Mustard learns a
     /// project's language.
     ///
-    /// Nothing is inferred: an absent, blank or unsupported `language.text`
-    /// is `None`, and the keys that came before it (`specLang`, `lang`) are not
-    /// consulted. Mustard's own messages fall back through
-    /// [`Language::text_or_default`]; a check that judges text reads
+    /// Nothing is inferred: an absent, blank or unsupported `language.text` or
+    /// `language.code` is `None`, and the keys that came before them
+    /// (`specLang`, `lang`) are not consulted. Mustard's own messages fall back
+    /// through [`Language::text_or_default`], and the names in the code through
+    /// [`Language::code_or_default`]; a check that judges text reads
     /// [`Language::text`] and has no verdict without it.
     #[must_use]
     pub fn language(&self) -> Language {
         Language {
-            text: self
-                .language
-                .text
-                .as_deref()
-                .and_then(|raw| raw.parse::<SupportedLocale>().ok()),
-            code: non_blank(self.language.code.as_deref()),
+            text: declared_locale(self.language.text.as_deref()),
+            code: declared_locale(self.language.code.as_deref()),
         }
     }
 
@@ -657,6 +994,70 @@ impl ProjectConfig {
         }
         out
     }
+
+    /// O modelo que a instalação escreve no cabeçalho de cada agente: o de
+    /// `agents.model`, sem espaço em volta, ou [`DEFAULT_AGENT_MODEL`] quando
+    /// o campo falta, está em branco, não é texto ou traz algo que um
+    /// cabeçalho de agente não aceita. Um modelo é apelido ou nome: letras,
+    /// dígitos e `. _ : / - [ ]`, numa linha só.
+    #[must_use]
+    pub fn agent_model(&self) -> &str {
+        let declared = self.agents.model.as_ref().and_then(Value::as_str).map(str::trim);
+        declared.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_AGENT_MODEL)
+    }
+
+    /// Escreve [`DEFAULT_AGENT_MODEL`] em `agents.model` quando o campo falta,
+    /// para a pessoa vê-lo no arquivo e trocá-lo; diz se escreveu. O que já
+    /// está lá, valendo ou não, fica como está.
+    pub fn ensure_agent_model(&mut self) -> bool {
+        if self.agents.model.is_some() {
+            return false;
+        }
+        self.agents.model = Some(Value::String(DEFAULT_AGENT_MODEL.to_string()));
+        true
+    }
+
+    /// O esforço que a instalação escreve no cabeçalho de cada agente: o de
+    /// `agents.effort`, sem espaço em volta e sem distinguir maiúscula, se for
+    /// um dos [`AGENT_EFFORTS`]; do contrário — campo faltando, em branco, sem
+    /// ser texto ou fora da lista —, [`DEFAULT_AGENT_EFFORT`].
+    #[must_use]
+    pub fn agent_effort(&self) -> &'static str {
+        let declared = self.agents.effort.as_ref().and_then(Value::as_str).map(str::trim);
+        declared
+            .and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort)))
+            .unwrap_or(DEFAULT_AGENT_EFFORT)
+    }
+
+    /// Escreve [`DEFAULT_AGENT_EFFORT`] em `agents.effort` quando o campo
+    /// falta, para a pessoa vê-lo no arquivo e trocá-lo; diz se escreveu. O
+    /// que já está lá, valendo ou não, fica como está.
+    pub fn ensure_agent_effort(&mut self) -> bool {
+        if self.agents.effort.is_some() {
+            return false;
+        }
+        self.agents.effort = Some(Value::String(DEFAULT_AGENT_EFFORT.to_string()));
+        true
+    }
+
+    /// O modelo e o esforço dos agentes, os dois já conferidos.
+    #[must_use]
+    pub fn agent_settings(&self) -> AgentSettings<'_> {
+        AgentSettings { model: self.agent_model(), effort: self.agent_effort() }
+    }
+}
+
+/// A declared language key read as one of the supported locales: `None` when
+/// absent, blank, in the short form (`en`, `pt`) or outside the list.
+fn declared_locale(raw: Option<&str>) -> Option<SupportedLocale> {
+    raw?.trim().parse::<SupportedLocale>().ok()
+}
+
+/// Se `raw` tem cara de apelido ou nome de modelo: não vazio e só com letras,
+/// dígitos e `. _ : / - [ ]`. Impede que um valor com quebra de linha escreva
+/// outra chave no cabeçalho do agente.
+fn is_model_name(raw: &str) -> bool {
+    !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-' | '[' | ']'))
 }
 
 /// Trim a string-ish option, returning `None` when absent or blank.
@@ -671,7 +1072,7 @@ fn non_blank(raw: Option<&str>) -> Option<String> {
 
 /// Test whether `pattern` (lowercased) matches `haystack` (lowercased). `*` is a
 /// wildcard for "any run of characters"; a pattern with no `*` is a plain
-/// substring test. Moved here from `mustard_config` — it is pure domain logic.
+/// substring test. Moved here from the legacy accessors — it is pure domain logic.
 #[must_use]
 pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
     if !pattern.contains('*') {
@@ -719,6 +1120,26 @@ mod tests {
         assert!(!cfg.unreadable, "no file is an answer: this project declares nothing");
     }
 
+    /// O `mustard.json` de antes, com o bloco `gates` que nenhuma conferência lê
+    /// mais, segue lido: as outras chaves valem, o bloco não recusa o arquivo e
+    /// volta ao disco como estava.
+    #[test]
+    fn an_old_file_with_the_retired_gates_block_still_loads() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"buildCommand":"cargo build","gates":{"skillSize":"strict","boundary":"warn"},"language":{"text":"pt-BR"}}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.unreadable, "the retired block does not refuse the file");
+        assert_eq!(cfg.build_command.as_deref(), Some("cargo build"));
+        assert_eq!(cfg.language.text.as_deref(), Some("pt-BR"));
+        cfg.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"skillSize\": \"strict\""), "the block goes back as it was read: {raw}");
+    }
+
     /// A file that is there and does not load gives the same defaults as no
     /// file at all, and says so: the defaults are a fallback, not the
     /// project's own answer. The flag never reaches the disk.
@@ -747,7 +1168,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig {
             build_command: Some("cargo build".into()),
-            language: LanguageConfig { text: Some("pt-BR".into()), code: Some("en".into()) },
+            language: LanguageConfig { text: Some("pt-BR".into()), code: Some("en-US".into()) },
             ..Default::default()
         };
         cfg.write(dir.path()).unwrap();
@@ -756,12 +1177,12 @@ mod tests {
         assert!(raw.contains("\"buildCommand\""), "top-level key is camelCase");
         assert!(!raw.contains("build_command"), "no snake_case on write");
         let value: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(value["language"], serde_json::json!({"text": "pt-BR", "code": "en"}));
+        assert_eq!(value["language"], serde_json::json!({"text": "pt-BR", "code": "en-US"}));
 
         let back = ProjectConfig::load(dir.path());
         assert_eq!(back.build_command(), Some("cargo build".to_string()));
         assert_eq!(back.language().text, Some(SupportedLocale::PtBr));
-        assert_eq!(back.language().code.as_deref(), Some("en"));
+        assert_eq!(back.language().code, Some(SupportedLocale::EnUs));
     }
 
     /// Um projeto que não declarou idioma não ganha a chave: nada é gravado
@@ -802,7 +1223,26 @@ mod tests {
         let cfg = ProjectConfig::load(dir.path());
         assert!(cfg.commands().build.is_none(), "{:?}", cfg.commands().build);
         assert_eq!(cfg.build_command(), Some(BUILD_COMMAND_FALLBACK.to_string()), "a dica continua no lugar de quem edita o mustard.json");
-        assert_eq!(cfg.build_command_or_fallback(), BUILD_COMMAND_FALLBACK);
+    }
+
+    /// A pasta de compilação declarada vai e volta pelo disco com o nome
+    /// `buildOutput`, e o conjunto de comandos a lê sem os espaços das pontas
+    /// e sem as entradas em branco. Ausente, o conjunto não traz pasta
+    /// nenhuma, e a chave não é gravada.
+    #[test]
+    fn the_declared_build_output_round_trips_and_absent_declares_nothing() {
+        let dir = tempdir().unwrap();
+        let cfg = ProjectConfig { build_output: Some(vec![" target ".into(), "  ".into()]), ..Default::default() };
+        cfg.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"buildOutput\""), "{raw}");
+        assert_eq!(ProjectConfig::load(dir.path()).commands().build_output, vec!["target".to_string()]);
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("buildOutput"), "{raw}");
+        assert!(ProjectConfig::load(bare.path()).commands().build_output.is_empty());
     }
 
     #[test]
@@ -840,34 +1280,233 @@ mod tests {
         assert_eq!(cfg.max_active_specs(), Some(5));
     }
 
+    /// Os números da história vêm da seção `map`: sem a chave, ausentes;
+    /// com um inteiro maior que zero, ele; com zero, negativo, fração ou
+    /// texto, inválidos, e o resto do arquivo segue lido.
+    #[test]
+    fn the_history_numbers_are_absent_set_or_invalid() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        let cfg = load(r#"{"git": {"flow": {"*": "main"}}}"#);
+        assert_eq!((cfg.history_moves(), cfg.history_commits()), (Setting::Absent, Setting::Absent));
+        assert_eq!(cfg.history_commits().or(10), 10);
+
+        assert_eq!(cfg.pull_request_calls(), Setting::Absent);
+
+        let cfg = load(r#"{"map": {"historyMoves": 2, "historyCommits": 20, "pullRequestCalls": 8}}"#);
+        assert_eq!((cfg.history_moves(), cfg.history_commits()), (Setting::Set(2), Setting::Set(20)));
+        assert_eq!((cfg.history_moves().or(5), cfg.history_commits().or(10)), (2, 20));
+        assert_eq!(cfg.pull_request_calls().or(4), 8);
+
+        for bad in ["0", "-3", "2.5", "\"dez\"", "true"] {
+            let cfg = load(&format!(r#"{{"git": {{"flow": {{"*": "main"}}}}, "map": {{"historyCommits": {bad}}}}}"#));
+            assert_eq!(cfg.history_commits(), Setting::Invalid, "{bad}");
+            let calls = load(&format!(r#"{{"map": {{"pullRequestCalls": {bad}}}}}"#));
+            assert_eq!(calls.pull_request_calls().or(4), 4, "{bad}");
+            assert_eq!(cfg.history_commits().or(10), 10, "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+            assert_eq!(cfg.git.primary_base().as_deref(), Some("main"), "{bad}");
+        }
+    }
+
+    /// As duas linhas do veredito da busca por assunto vêm da seção `search`,
+    /// com as chaves em snake_case: sem a chave, ausentes e valendo o padrão;
+    /// com um inteiro maior que zero, ele; com zero, negativo ou texto,
+    /// inválidas, e a busca usa o padrão. O filtro vale `jev` ou `none`; outro
+    /// nome é inválido. Chave que a seção já teve, como o número de
+    /// candidatos e os tetos da volta, não vale nada: o arquivo que a traz
+    /// segue legível e a busca manda tudo. Sem nada escrito, a seção não vai
+    /// para o arquivo.
+    #[test]
+    fn the_search_lines_and_the_filter_are_absent_set_or_invalid() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        let cfg = load(r#"{"git": {"flow": {"*": "main"}}}"#);
+        assert_eq!((cfg.search_cut_share(), cfg.search_exists_from()), (Setting::Absent, Setting::Absent));
+        assert_eq!(cfg.search_filter(), FilterSetting::Absent);
+
+        let cfg = load(r#"{"search": {"filter": "none", "cut_share": 25, "exists_from": 70}}"#);
+        assert_eq!((cfg.search_cut_share().or(10), cfg.search_exists_from().or(50)), (25, 70));
+        assert_eq!(cfg.search_filter(), FilterSetting::Off);
+
+        let old = load(r#"{"search": {"candidates": 40, "max_returned": 12, "max_kept": 3, "cut_share": 25}}"#);
+        assert!(!old.unreadable, "the keys the section no longer has do not make the file unreadable");
+        assert_eq!(old.search_cut_share().or(10), 25, "the other keys of the same section still count");
+        assert_eq!(load(r#"{"search": {"filter": "jev"}}"#).search_filter(), FilterSetting::Jev);
+
+        for bad in ["0", "-3", "\"cem\""] {
+            let cfg = load(&format!(r#"{{"search": {{"cut_share": {bad}, "exists_from": {bad}}}}}"#));
+            assert_eq!((cfg.search_cut_share(), cfg.search_exists_from()), (Setting::Invalid, Setting::Invalid), "{bad}");
+            assert_eq!((cfg.search_cut_share().or(10), cfg.search_exists_from().or(50)), (10, 50), "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+        }
+        for bad in ["\"outro\"", "3", "true"] {
+            assert_eq!(load(&format!(r#"{{"search": {{"filter": {bad}}}}}"#)).search_filter(), FilterSetting::Invalid, "{bad}");
+        }
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("search"), "{raw}");
+    }
+
+    /// A resposta do mapa no lugar da busca por palavra liga por
+    /// `search.answer`: `true` liga, `false` desliga, e sem a chave ou com um
+    /// valor que não é um dos dois vale o padrão do Mustard. Sem nada
+    /// escrito, a chave não vai para o arquivo.
+    #[test]
+    fn the_answer_key_is_on_off_or_the_default() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(load("{}").search_answer(), SEARCH_ANSWER);
+        assert!(load(r#"{"search": {"answer": true}}"#).search_answer());
+        assert!(!load(r#"{"search": {"answer": false}}"#).search_answer());
+        for bad in ["\"sim\"", "1", "0", "null"] {
+            let cfg = load(&format!(r#"{{"search": {{"answer": {bad}}}}}"#));
+            assert_eq!(cfg.search_answer(), SEARCH_ANSWER, "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+        }
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("answer"), "{raw}");
+    }
+
+    /// O teto do nome comum vem de `scan.max_same_name`: sem a chave vale 8;
+    /// com um inteiro maior que zero, ele; com zero, negativo ou texto, vale 8
+    /// e o valor vem marcado como inválido, sem tornar o arquivo ilegível.
+    /// Sem nada escrito, a seção não vai para o arquivo.
+    #[test]
+    fn the_common_name_ceiling_is_the_default_the_value_or_the_default_marked_invalid() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(load(r#"{"git": {"flow": {"*": "main"}}}"#).scan_max_same_name(), (8, false));
+        assert_eq!(load(r#"{"scan": {"max_same_name": 12}}"#).scan_max_same_name(), (12, false));
+        for bad in ["0", "-3", "\"oito\""] {
+            let cfg = load(&format!(r#"{{"scan": {{"max_same_name": {bad}}}}}"#));
+            assert_eq!(cfg.scan_max_same_name(), (8, true), "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+        }
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("scan"), "{raw}");
+    }
+
+    /// A chave do filtro vem de `jev.key`, sem espaço em volta; em branco ou
+    /// fora de texto, vale como ausente, sem tornar o arquivo ilegível. Nem o
+    /// `Debug` nem a serialização do tipo a escrevem, e regravar o arquivo a
+    /// mantém lá, com o resto da seção.
+    #[test]
+    fn the_filter_key_is_read_kept_on_write_and_never_printed() {
+        const KEY: &str = "tsk-falsa-0123456789abcdef";
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(load("{}").jev_key(), None);
+        for (text, key) in [
+            (format!(r#"{{"jev": {{"key": " {KEY} "}}}}"#), Some(KEY)),
+            (r#"{"jev": {"key": "  "}}"#.to_string(), None),
+            (r#"{"jev": {"key": 42}}"#.to_string(), None),
+            (r#"{"jev": "solta"}"#.to_string(), None),
+            (r#"{"jev": null}"#.to_string(), None),
+        ] {
+            let cfg = load(&text);
+            assert_eq!(cfg.jev_key(), key, "{text}");
+            assert!(!cfg.unreadable, "{text}: a chave fora de forma não torna o arquivo ilegível");
+        }
+
+        let cfg = load(&format!(r#"{{"language": {{"text": "pt-BR"}}, "jev": {{"key": "{KEY}", "nota": 1}}}}"#));
+        assert!(!format!("{cfg:?}").contains(KEY), "{cfg:?}");
+        assert!(!format!("{:?}", cfg.jev).contains(KEY));
+        let serialized = serde_json::to_string(&cfg).unwrap();
+        assert!(!serialized.contains(KEY) && !serialized.contains("jev"), "{serialized}");
+
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(written["jev"], serde_json::json!({"key": KEY, "nota": 1}));
+        assert_eq!(written["language"]["text"], "pt-BR");
+        assert_eq!(ProjectConfig::load(dir.path()).jev_key(), Some(KEY));
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("jev"), "{raw}");
+    }
+
+    /// A leitura do texto dos pull requests fica ligada sem a chave e só
+    /// desliga com `pullRequestText: false`; sem ela, a gravação não escreve
+    /// a chave.
+    #[test]
+    fn the_pull_request_text_is_on_unless_written_off() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert!(load("{}").git.pull_request_text());
+        assert!(load(r#"{"git": {"pullRequestText": true}}"#).git.pull_request_text());
+        assert!(!load(r#"{"git": {"pullRequestText": false}}"#).git.pull_request_text());
+        let written = serde_json::to_string(&ProjectConfig::default()).unwrap();
+        assert!(!written.contains("pullRequestText") && !written.contains("\"map\""), "{written}");
+    }
+
     /// O idioma vem só do bloco `language`: o texto e o código, cada um na
-    /// sua chave. Sem declaração não há idioma, e as mensagens do Mustard
-    /// caem no pt-BR.
+    /// sua chave e na mesma grafia. Sem declaração não há idioma: as mensagens
+    /// do Mustard caem no pt-BR, e os nomes no código, no inglês.
     #[test]
     fn language_reads_the_text_and_code_keys() {
         let cfg = ProjectConfig::default();
         assert_eq!(cfg.language(), Language::default());
         assert_eq!(cfg.language().text_or_default(), SupportedLocale::PtBr);
+        assert_eq!(cfg.language().code_or_default(), SupportedLocale::EnUs, "no code language: English");
 
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("mustard.json"),
-            r#"{"language":{"text":"en-US","code":" en "}}"#,
+            r#"{"language":{"text":"en-US","code":" en-US "}}"#,
         )
         .unwrap();
         let language = ProjectConfig::load(dir.path()).language();
         assert_eq!(language.text, Some(SupportedLocale::EnUs));
         assert_eq!(language.text_or_default(), SupportedLocale::EnUs);
-        assert_eq!(language.code.as_deref(), Some("en"), "the code language is trimmed");
+        assert_eq!(language.code, Some(SupportedLocale::EnUs), "the code language is trimmed");
 
-        // A short form or an unknown locale is not a declared text language.
-        for text in ["pt", "fr-FR", "  "] {
-            std::fs::write(
-                dir.path().join("mustard.json"),
-                format!(r#"{{"language":{{"text":"{text}"}}}}"#),
-            )
-            .unwrap();
-            assert_eq!(ProjectConfig::load(dir.path()).language().text, None, "{text:?}");
+        // A project that names its code in Portuguese is read as such.
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
+        let language = ProjectConfig::load(dir.path()).language();
+        assert_eq!(language.code, Some(SupportedLocale::PtBr));
+        assert_eq!(language.code_or_default(), SupportedLocale::PtBr);
+        assert_eq!(language.text, None, "the code language says nothing about the text");
+
+        // A short form, an unknown locale or a blank is not a declared
+        // language, on either key; the names then fall back to English.
+        for value in ["en", "pt", "fr-FR", "  "] {
+            for key in ["text", "code"] {
+                std::fs::write(
+                    dir.path().join("mustard.json"),
+                    format!(r#"{{"language":{{"{key}":"{value}"}}}}"#),
+                )
+                .unwrap();
+                let language = ProjectConfig::load(dir.path()).language();
+                assert_eq!(language, Language::default(), "{key}: {value:?}");
+                assert_eq!(language.code_or_default(), SupportedLocale::EnUs, "{key}: {value:?}");
+            }
         }
     }
 
@@ -1007,18 +1646,32 @@ mod tests {
         );
     }
 
+    /// Os três campos que descreviam a arquitetura em texto saíram do esquema:
+    /// a regra vem do grafo de importações do código. Um `mustard.json` antigo
+    /// que ainda os traga continua sendo lido sem erro, o resto da
+    /// configuração vem igual e os três ficam guardados como chave
+    /// desconhecida, lidos por ninguém e mantidos na gravação.
     #[test]
-    fn role_patterns_lowercased_and_filtered() {
-        let cfg = ProjectConfig {
-            role_patterns: vec![
-                RolePattern { pattern: "Controllers".into(), role: "api".into() },
-                RolePattern { pattern: " ".into(), role: "x".into() },
-            ],
-            ..Default::default()
-        };
-        let got = cfg.role_patterns();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].pattern, "controllers");
+    fn the_old_architecture_keys_are_kept_but_never_read() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"buildCommand":"make","maxActiveSpecs":3,"architecture":"Clean",
+                "rolePatterns":[{"pattern":"Controllers","role":"api"}],
+                "waveLayerOrder":["domain","api"]}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.unreadable, "the old keys never make the file unreadable");
+        assert_eq!(cfg.build_command.as_deref(), Some("make"), "the rest of the config still loads");
+        assert_eq!(cfg.max_active_specs(), Some(3), "the rest of the config still loads");
+        for key in ["architecture", "rolePatterns", "waveLayerOrder"] {
+            assert!(cfg.extra.contains_key(key), "{key} survives as an unknown key");
+        }
+        cfg.write(dir.path()).unwrap();
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(raw["architecture"], "Clean", "the file keeps what was written");
+        assert_eq!(raw["waveLayerOrder"], serde_json::json!(["domain", "api"]));
     }
 
     #[test]
@@ -1032,7 +1685,7 @@ mod tests {
     /// As bases saem das chaves e dos valores do fluxo, e a chave `*` não é
     /// base nenhuma.
     #[test]
-    fn as_bases_declaradas_saem_do_fluxo() {
+    fn the_declared_bases_come_from_the_flow() {
         // Fluxo de dois degraus → {dev, main}.
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
@@ -1059,14 +1712,14 @@ mod tests {
     /// Um projeto que não declara fluxo não declara base nenhuma: a lista sai
     /// vazia, e não com dois nomes que este repositório pode nem ter.
     #[test]
-    fn sem_fluxo_o_projeto_nao_declara_base_nenhuma() {
+    fn without_a_flow_the_project_declares_no_base() {
         assert!(ProjectConfig::default().git.declared_bases().is_empty());
         assert_eq!(ProjectConfig::default().git.primary_base(), None);
     }
 
     /// A base do cursor é a do `*`; sem ela, a menor das declaradas.
     #[test]
-    fn a_base_do_cursor_vem_do_fluxo_e_nunca_de_um_nome_fixo() {
+    fn the_cursor_base_comes_from_the_flow_and_never_from_a_fixed_name() {
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "develop".into());
         cfg.git.flow.insert("develop".into(), "master".into());
@@ -1080,7 +1733,7 @@ mod tests {
     /// As duas chaves do projeto valem ligadas quando faltam; só o `false`
     /// escrito as desliga, e voltam ao arquivo como foram escritas.
     #[test]
-    fn as_chaves_do_mustard_e_do_rtk_so_desligam_com_false_escrito() {
+    fn the_mustard_and_rtk_keys_only_turn_off_with_an_explicit_false() {
         let dir = tempdir().unwrap();
         let absent = ProjectConfig::load(dir.path());
         assert!(absent.enabled() && absent.rtk());
@@ -1094,5 +1747,126 @@ mod tests {
 
         std::fs::write(dir.path().join("mustard.json"), "{ not json").unwrap();
         assert!(ProjectConfig::load(dir.path()).enabled(), "an unreadable file turns nothing off");
+    }
+
+    /// O modelo dos agentes é o de `agents.model`, sem espaço em volta; sem o
+    /// campo, em branco, sem ser texto ou com algo que um cabeçalho de agente
+    /// não aceita, vale o padrão.
+    #[test]
+    fn the_agent_model_is_the_declared_one_or_the_default() {
+        let dir = tempdir().unwrap();
+        assert_eq!(ProjectConfig::load(dir.path()).agent_model(), DEFAULT_AGENT_MODEL);
+        assert_eq!(DEFAULT_AGENT_MODEL, "sonnet");
+
+        let path = dir.path().join("mustard.json");
+        for (agents, model) in [
+            (r#"{"model":"opus"}"#, "opus"),
+            (r#"{"model":"  claude-opus-5-5 "}"#, "claude-opus-5-5"),
+            (r#"{"model":"opus[1m]"}"#, "opus[1m]"),
+            (r#"{"model":""}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":"   "}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":7}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":"opus\neffort: low"}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":"opus sonnet"}"#, DEFAULT_AGENT_MODEL),
+            ("{}", DEFAULT_AGENT_MODEL),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert!(!cfg.unreadable, "{agents} must not make the file unreadable");
+            assert_eq!(cfg.agent_model(), model, "{agents}");
+        }
+    }
+
+    /// A seção `agents` volta ao arquivo como veio, chaves desconhecidas
+    /// incluídas, e não aparece quando não há nada nela. Escrever o padrão só
+    /// acontece com o campo faltando: um modelo que já está lá não muda.
+    #[test]
+    fn the_agents_section_round_trips_and_the_default_is_written_only_when_missing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+
+        ProjectConfig::default().write(dir.path()).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("agents"), "an empty section is not written");
+
+        std::fs::write(&path, r#"{"agents":{"note":"keep"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.ensure_agent_model(), "the model was missing");
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["agents"], serde_json::json!({"model": "sonnet", "note": "keep"}));
+
+        std::fs::write(&path, r#"{"agents":{"model":"opus"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.ensure_agent_model(), "a declared model is left alone");
+        assert_eq!(cfg.agent_model(), "opus");
+        std::fs::write(&path, r#"{"agents":{"model":"a b"}}"#).unwrap();
+        let mut invalid = ProjectConfig::load(dir.path());
+        assert!(!invalid.ensure_agent_model(), "what is written is never overwritten, valid or not");
+    }
+
+    /// O esforço dos agentes é o de `agents.effort`, sem espaço em volta e sem
+    /// distinguir maiúscula, quando é um dos que o Claude Code aceita no
+    /// cabeçalho de um agente; sem o campo, em branco, sem ser texto ou fora
+    /// da lista, vale o padrão.
+    #[test]
+    fn the_agent_effort_is_the_declared_one_or_the_default() {
+        let dir = tempdir().unwrap();
+        assert_eq!(ProjectConfig::load(dir.path()).agent_effort(), DEFAULT_AGENT_EFFORT);
+        assert_eq!(DEFAULT_AGENT_EFFORT, "xhigh");
+        assert_eq!(AGENT_EFFORTS, ["low", "medium", "high", "xhigh", "max"]);
+
+        let path = dir.path().join("mustard.json");
+        for (agents, effort) in [
+            (r#"{"effort":"low"}"#, "low"),
+            (r#"{"effort":"medium"}"#, "medium"),
+            (r#"{"effort":"high"}"#, "high"),
+            (r#"{"effort":"xhigh"}"#, "xhigh"),
+            (r#"{"effort":"max"}"#, "max"),
+            (r#"{"effort":"  high "}"#, "high"),
+            (r#"{"effort":"HIGH"}"#, "high"),
+            (r#"{"effort":"ultra"}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":""}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":"   "}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":7}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":"high\nmodel: opus"}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":"high max"}"#, DEFAULT_AGENT_EFFORT),
+            ("{}", DEFAULT_AGENT_EFFORT),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert!(!cfg.unreadable, "{agents} must not make the file unreadable");
+            assert_eq!(cfg.agent_effort(), effort, "{agents}");
+        }
+
+        std::fs::write(&path, r#"{"agents":{"model":"opus","effort":"max"}}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.agent_settings(), AgentSettings { model: "opus", effort: "max" });
+        assert_eq!(AgentSettings::default(), AgentSettings { model: "sonnet", effort: "xhigh" });
+    }
+
+    /// O padrão do esforço só é escrito com o campo faltando: o que a pessoa
+    /// já escreveu, valendo ou não, não muda, e o resto da seção `agents`
+    /// (o modelo e as chaves que o Mustard não conhece) fica como estava.
+    #[test]
+    fn the_default_effort_is_written_only_when_missing_and_keeps_the_rest_of_the_section() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+
+        std::fs::write(&path, r#"{"agents":{"model":"opus","note":"keep"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.ensure_agent_effort(), "the effort was missing");
+        assert!(!cfg.ensure_agent_effort(), "the second time it is there");
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["agents"], serde_json::json!({"model": "opus", "effort": "xhigh", "note": "keep"}));
+
+        std::fs::write(&path, r#"{"agents":{"effort":"medium"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.ensure_agent_effort(), "a declared effort is left alone");
+        assert_eq!(cfg.agent_effort(), "medium");
+        std::fs::write(&path, r#"{"agents":{"effort":"ultra"}}"#).unwrap();
+        let mut invalid = ProjectConfig::load(dir.path());
+        assert!(!invalid.ensure_agent_effort(), "what is written is never overwritten, valid or not");
+        assert_eq!(invalid.agent_effort(), DEFAULT_AGENT_EFFORT, "the agent falls back to the default");
     }
 }

@@ -36,20 +36,23 @@ tempfile = "3.27.0"
 # Interactive terminal prompts for the CLI port (`mustard init` git-flow wizard).
 # Replaces the JS `inquirer` dependency. Pure-Rust, no async runtime.
 dialoguer = "0.12"
-# HTTP client for the CLI port — `add` (npm tarball download), `review` (Claude
-# API), `auto-update` (npm registry). Blocking, no async runtime, matching the
-# synchronous shape of the rest of the crate. Versions verified against
-# crates.io, May 2026.
+# HTTP client for the pull-request calls against Azure DevOps (`mustard-rt`).
+# Blocking, no async runtime, matching the synchronous shape of the rest of the
+# crate. Versions verified against crates.io, May 2026.
 ureq = { version = "3.3", features = ["json"] }
-# Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
-tar = "0.4.46"
-flate2 = "1.1.9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-# Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::spec_events` reduces
-# each word of an event to its root with the Portuguese stemmer, so "apagar",
+# Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::normalize` reduces
+# each word to its root in every language the project declares, so "apagar",
 # "apagando" and "apagou" land on the same search term. Pure Rust, no build
 # script; the 1.2 line was already in the lock file through another crate.
 rust-stemmers = "1.2"
+# The project map as one SQLite file, one table per block
+# (`mustard-core::io::map_db`). `bundled` compiles SQLite from C inside the
+# build, with FTS5 on, so no system library is needed on Linux or Windows;
+# the build already compiles C for tree-sitter. No vector extension: a vector
+# is a plain BLOB column. The 0.40 line (libsqlite3-sys 0.38) is the one the
+# proof of concept measured.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 #
@@ -157,11 +160,17 @@ strip = true
 lto = "thin"
 codegen-units = 1
 
-# Faster incremental link + smaller debug artifact for the dev loop. Line-table
-# debuginfo keeps backtraces useful; optimizing deps (not our crates) cuts the
-# cold-build tail without slowing our own recompiles.
+# Compilação de desenvolvimento sem nenhuma informação de depuração. Cada
+# programa de teste carregava mais de cem megabytes dela: no Linux a pasta
+# target/debug ocupava 8,6 GB em 96 executáveis e passa a ocupar 1,8 GB, a
+# compilação a frio caiu de 3min09 para 2min29 e os testes da biblioteca do
+# mustard-rt, de 157 s para 130 s. No Windows ela vira um arquivo .pdb à parte
+# por programa, e o ganho esperado ali é maior (não medido). O preço: o
+# backtrace perde a linha de cada quadro; o panic continua dizendo arquivo e
+# linha, e o nome da função vem do símbolo. `line-tables-only` foi medido e não
+# compensa (5,0 GB de executáveis, 3min56).
 [profile.dev]
-debug = 1
+debug = 0
 # Incremental compilation is KEPT, and stated here rather than inherited, because
 # the default carries no opinion about a directory that reached 52 GB on a real
 # checkout. Measured before deciding (2026-08-14, Windows): a one-line rebuild of
@@ -180,5 +189,9 @@ debug = 1
 # ever pays the write.
 incremental = true
 
+# As dependências (não os nossos crates) compilam otimizadas, o que encurta a
+# cauda da compilação a frio sem atrasar as recompilações dos nossos crates.
+# `opt-level = 0` nelas compila mais rápido (133 s para 76 s), mas os testes da
+# biblioteca do mustard-rt sobem de 130 s para 212 s: pior no total.
 [profile.dev.package."*"]
 opt-level = 1

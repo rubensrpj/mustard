@@ -16,14 +16,14 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 
 ```mermaid
 flowchart LR
-    repo[("Repositório")] -->|"varredura no porteiro de base (Rust, sem IA)"| model[("grain.model.json")]
-    model -->|digest| anchors["~12 anchors<br/>(arquivos-âncora)"]
+    repo[("Repositório")] -->|"varredura ao abrir a spec e depois de cada commit de rodada (Rust, sem IA)"| model[("grain.db")]
+    model -->|mapa| anchors["arquivos apontados"]
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
-1. A **varredura** minera o repositório para um modelo durável (`grain.model.json`) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
-2. Os comandos do fluxo consomem esse modelo via **digest** e leem apenas as ~12 *anchors* que o digest aponta.
-3. Resultado: **economia de contexto** — o digest acha *onde olhar*, não substitui ler.
+1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Não é comando: ela roda sozinha ao abrir a spec e depois de cada commit de rodada.
+2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e leem apenas os arquivos que ele aponta.
+3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 
 > O peso real do harness não são os comandos, e sim a **reinjeção da cerimônia no contexto a cada turno**. Por isso o roteamento escolhe sempre o **caminho mais barato que serve** — o pipeline completo é a exceção que precisa se justificar (≥2 camadas/subprojetos **ou** entidade nova), não o default.
 
@@ -74,12 +74,13 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e **descreva o trabalho em palavras suas** — não há comando para "começar", nem passo de mapeamento para rodar. O roteador é injetado em todo prompt e classifica o pedido sozinho; o porteiro de base minera o repositório no caminho de entrada.
+Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e **descreva o trabalho em palavras suas** — não há comando para "começar", nem passo de mapeamento para rodar. O roteador é injetado em todo prompt e classifica o pedido sozinho; a varredura minera o repositório ao abrir a spec e depois de cada commit de rodada.
 
 ### Para desenvolvedores deste repositório
 
 ```powershell
-# Compila os binários em release, instala e roda `mustard init` no alvo:
+# Compila os três binários em release numa chamada só (`cargo build --release --locked`),
+# copia para ~/.cargo/bin e roda `mustard init` no alvo:
 .\install.ps1                  # alvo = diretório atual (com prompt)
 .\install.ps1 -Target ..\app   # outro projeto (sem prompt)
 ```
@@ -133,8 +134,8 @@ Mudanças no meio do caminho são auto-registradas (`change-requests.ndjson` + `
 
 | Caminho | Crate/App | Stack | Papel |
 |---|---|---|---|
-| `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan-digest, eventos, gates, hooks, comandos do pipeline. É o motor. |
-| `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.model.json`. |
+| `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan, mapa, eventos, gates, hooks, comandos do pipeline. É o motor. |
+| `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.db` (SQLite). |
 | `apps/cli` | `mustard` | Rust | Instalação e *scaffold* — `init`, gramáticas, git-flow, fontes. |
 | `packages/core` | `core` | Rust | Tipos e lógica compartilhados (ex.: `ProjectConfig`). |
 | `plugin/` | — | — | O plugin do Claude Code: comandos, hooks, agentes e o bootstrap `mustard-boot` (baixa os binários do Release na primeira sessão). |
@@ -172,12 +173,12 @@ O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
   "typeCheckCommand": "cargo check",
   "language": {             // os dois idiomas, cada um na sua chave
     "text": "pt-BR",        // conversa, specs, páginas, comentários e commits
-    "code": "en"            // nomes no código: sempre em inglês
+    "code": "en-US"         // nomes no código: variáveis, funções, testes, arquivos, comandos e tabelas; sem a chave, inglês
   }
 }
 ```
 
-O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, arquivos, comandos) ficam sempre em inglês, por isso a instalação não pergunta o idioma do código. A instalação pergunta só o idioma do texto e grava só o que você escolher. Os comandos de build/test/lint são lidos daqui. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
+O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, testes, arquivos, comandos e tabelas do banco) seguem `language.code`. A instalação pergunta os dois idiomas e grava só o que você escolher; sem escolha, os nomes no código ficam em inglês. Os comandos de build/test/lint são lidos daqui. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
 
 ---
 
@@ -193,7 +194,7 @@ packages/
 plugin/       plugin do Claude Code (comandos, hooks, agentes, bootstrap)
 packaging/    instaladores Win/macOS/Linux + tutoriais
 docs/         análises e redesenhos arquiteturais
-.claude/      config do harness (hooks, skills, refs, specs, grain.model.json)
+.claude/      config do harness (hooks, skills, refs, specs, grain.db)
 install.ps1   instalador de desenvolvimento (build + scaffold)
 mustard.json  configuração do projeto
 ```
@@ -204,7 +205,7 @@ mustard.json  configuração do projeto
 
 - **[MUSTARD-COMMANDS.md](MUSTARD-COMMANDS.md)** — referência visual de cada comando e seu fluxo (diagramas Mermaid).
 - **Tutoriais de instalação** — `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` (também anexados a cada release).
-- **[docs/](docs/)** — redesenhos arquiteturais (índice/digest agnóstico, detecção de stack multissinal, validação do plugin).
+- **[docs/](docs/)** — redesenhos arquiteturais (índice agnóstico, detecção de stack multissinal, validação do plugin).
 
 ---
 

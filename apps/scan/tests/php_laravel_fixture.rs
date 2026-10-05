@@ -1,46 +1,43 @@
 //! End-to-end contract over the committed `tests/fixtures/php_laravel` project:
 //! a minimal Laravel app (composer.json + an Eloquent model + a routes file).
-//! Two guards:
-//!   * `composer_manifest` — the composer build manifest surfaces with its
+//! One scan of the fixture, two guards:
+//!   * the composer manifest — the composer build manifest surfaces with its
 //!     require/require-dev deps and scripts, in manifest document order
 //!     (serde_json `preserve_order`).
-//!   * `php_laravel_fixture` — scanning the whole fixture yields a model whose
+//!   * the model — scanning the whole fixture yields a model whose
 //!     languages/modules carry php, whose project is `kind = composer`, and whose
 //!     framework ranking names the Laravel dependency.
 //!     Everything PHP/Laravel/composer-specific lives in the fixture and in the
 //!     data files (languages.toml / manifests.toml / queries); `src/` stays agnostic.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 /// The committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("php_laravel")
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join("php_laravel")
 }
 
-/// Scan the fixture into a temp `grain.model.json` and return the parsed value.
-/// Mirrors `facts_cli.rs`: a temp dir owned by the test, removed at the end. The
-/// `label` keeps each test's temp dir distinct — both tests in this file run in
-/// the same binary in parallel, so a process-id-only path would collide and one
-/// test's cleanup would yank the dir out from under the other.
-fn scan_fixture(label: &str) -> (tempfile::TempDir, serde_json::Value) {
-    let temp = tempfile::Builder::new().prefix(&format!("scan-php-laravel-{}-", label)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture().to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
+/// Scan the fixture into a temp map and return the parsed value. The temp dir
+/// is owned by the test and removed at the end, as in `facts_cli.rs`.
+fn scan_fixture() -> (tempfile::TempDir, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix("scan-php-laravel-").tempdir().unwrap();
+    let (v, _) = model::scan(&fixture(), temp.path(), &[]);
     (temp, v)
 }
 
+/// One scan of the fixture, checked in two parts: the composer manifest, then
+/// the model the scan builds around it.
 #[test]
-fn composer_manifest_carries_deps_scripts_in_document_order() {
-    let (_dir, v) = scan_fixture("composer");
+fn php_laravel_fixture_yields_composer_manifest_php_and_laravel_signal() {
+    let (_dir, v) = scan_fixture();
+
+    // Part 1: the composer manifest.
 
     // The composer manifest is discovered (data-driven via manifests.toml).
     let manifest = v["manifests"]
@@ -69,13 +66,7 @@ fn composer_manifest_carries_deps_scripts_in_document_order() {
         "the composer `scripts` block must surface: {scripts:?}"
     );
 
-}
-
-#[test]
-fn php_laravel_fixture_yields_php_composer_and_laravel_signal() {
-    let (_dir, v) = scan_fixture("model");
-
-    // (a) php present in languages and on the modules.
+    // Part 2: the model. (a) php present in languages and on the modules.
     assert!(
         v["languages"].as_array().unwrap().iter().any(|l| l["language"] == "php"),
         "php language stat present: {}",
@@ -97,5 +88,4 @@ fn php_laravel_fixture_yields_php_composer_and_laravel_signal() {
     // frameworks projection (verbatim from composer.json — no curated catalog).
     let frameworks: Vec<&str> = v["frameworks"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert!(frameworks.contains(&"laravel/framework"), "Laravel dep ranked in frameworks: {frameworks:?}");
-
 }

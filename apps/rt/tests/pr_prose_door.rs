@@ -3,7 +3,7 @@
 //! The `/mustard:pr` and `/git` doors used to instruct the model to run
 //! `rtk gh pr create/edit/ready` directly — `github` fixed in text no test
 //! covered. Those writes now go through the provider port (`mustard-rt run
-//! pr-open` / `pr-edit` / `pr-ready`), and this test is what keeps them there:
+//! pr-open`, which edits an open pull request too), and this test is what keeps them there:
 //! it reads the two door files and fails on ANY line that names a direct
 //! `gh pr create` / `gh pr edit` / `gh pr ready` invocation.
 //!
@@ -12,6 +12,9 @@
 //! prose still names them as fallbacks until then.
 //!
 //! Deterministic: reads two committed files, no network, no env vars.
+
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,7 +30,7 @@ const DOOR_FILES: &[&str] = &["plugin/commands/pr.md"];
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 #[test]
@@ -89,7 +92,7 @@ fn files_under(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
 /// obedecidas juntas, e quem obedecer a segunda escreve um corpo que a
 /// primeira reescreve por cima.
 #[test]
-fn a_prosa_nao_ensina_o_gancho_que_saiu_nem_manda_montar_o_corpo() {
+fn prose_neither_teaches_the_removed_hook_nor_says_to_build_the_body() {
     let root = repo_root();
 
     // --- 1. O gancho saiu do código, e nenhum texto o ensina ----------------

@@ -1,19 +1,18 @@
 //! File-class discovery — which files are MACHINE-WRITTEN. One module, one
-//! responsibility (mirrors graph.rs / extract.rs / mine.rs).
+//! responsibility (mirrors graph.rs / extract.rs).
 //!
 //! Everything that names a tool, ecosystem or convention lives in the catalog
-//! (`generated-markers.toml`, embedded at compile time like stopwords.toml);
+//! (`generated-markers.toml`, embedded at compile time);
 //! this engine is three generic probes — a head-of-file string/regex search,
 //! a path-glob match, and a line-length statistic — plus the repo's own
 //! OVERRIDES (.gitattributes `linguist-generated`, .editorconfig
 //! `generated_code`), which always beat the catalog in both directions.
 //!
 //! The verdict feeds the model additively (`Module::file_class` +
-//! `Module::marker`); the digest demotes by class through the
-//! module-qualified policy functions below ([`index_eligible`],
-//! [`anchor_eligible`], [`index_weight`]). The model itself stays complete —
-//! like the test-dirs discount, classification never hides a module from the
-//! miner, it only shapes the digest projection.
+//! `Module::marker`). The model itself stays complete — like the test-file
+//! discount, classification never hides a module: the map keeps its file, its
+//! place in the graph and its declarations, and reads the class only to leave
+//! machine-written files out of its search and of its examples.
 //!
 //! Tolerant like the rest of the crate: a catalog row that fails to compile
 //! is discarded individually (same contract as the .scm queries), unreadable
@@ -25,15 +24,11 @@ use regex::{Regex, RegexBuilder};
 use std::path::Path;
 use std::sync::OnceLock;
 
-/// The four file classes — engine vocabulary, not tool names. WHICH files
-/// fall in a class is catalog + override data, never logic here.
+/// The file classes the engine itself names — engine vocabulary, not tool
+/// names. `vendored` is produced only through catalog DATA (a `paths` glob in
+/// generated-markers.toml sets `class = "vendored"`). WHICH files fall in a
+/// class is catalog + override data, never logic here.
 pub(crate) const GENERATED: &str = "generated";
-// `vendored` is produced via catalog DATA (a `paths` glob in
-// generated-markers.toml sets `class = "vendored"`), never via this symbol —
-// production reads the class string from the catalog, so the const is a symbol
-// only the test matrix references — hence it exists only in test builds.
-#[cfg(test)]
-pub(crate) const VENDORED: &str = "vendored";
 pub(crate) const LOCKFILE: &str = "lockfile";
 pub(crate) const MINIFIED: &str = "minified";
 
@@ -92,36 +87,6 @@ pub fn classify(rel_path: &str, content: &str, overrides: &Overrides) -> Option<
         });
     }
     None
-}
-
-// --- digest-facing class policy ----------------------------------------------
-// The digest consumes these module-qualified (crate::classify::…), never
-// through a digest-local wrapper.
-
-/// Classes whose terms STAY in the digest index (demoted by [`index_weight`]).
-/// Lockfiles and minified output are pure machine noise and leave the index
-/// entirely.
-pub fn index_eligible(class: &str) -> bool {
-    class != LOCKFILE && class != MINIFIED
-}
-
-/// Only hand-written modules (empty class) may surface as term samples,
-/// anchor files, hubs or touchpoints — a machine-written file is never the
-/// file a caller should read or edit.
-pub fn anchor_eligible(class: &str) -> bool {
-    class.is_empty()
-}
-
-/// Digest index weight of `count` occurrences inside a module of `class`:
-/// hand-written counts pass through; machine-written ones are scaled by the
-/// catalog multiplier, flooring at 1 so the term remains findable (a query
-/// landing only there is answered with reason `generated_only`, not a miss).
-pub fn index_weight(count: usize, class: &str) -> usize {
-    if anchor_eligible(class) {
-        count
-    } else {
-        (((count as f64) * catalog().index_multiplier).floor() as usize).max(1)
-    }
 }
 
 // --- repo overrides ------------------------------------------------------------
@@ -247,7 +212,6 @@ struct PathDef {
 
 struct Catalog {
     head_lines: usize,
-    index_multiplier: f64,
     minified_avg_line_len: usize,
     minified_min_bytes: usize,
     /// Lowercased basenames.
@@ -257,8 +221,7 @@ struct Catalog {
 }
 
 /// Parsed once per process. A malformed embedded file is a programmer error
-/// caught by any test run — same contract as `digest::stopwords` over
-/// stopwords.toml; individual rows that fail to compile are discarded.
+/// caught by any test run; individual rows that fail to compile are discarded.
 fn catalog() -> &'static Catalog {
     static C: OnceLock<Catalog> = OnceLock::new();
     C.get_or_init(|| parse_catalog(include_str!("../generated-markers.toml")))
@@ -268,11 +231,6 @@ fn parse_catalog(src: &str) -> Catalog {
     let v: toml::Value = toml::from_str(src).expect("generated-markers.toml is not valid TOML");
     let int = |val: Option<&toml::Value>, default: i64| val.and_then(|x| x.as_integer()).unwrap_or(default) as usize;
     let head_lines = int(v.get("head_lines"), 30);
-    let index_multiplier = v
-        .get("index")
-        .and_then(|i| i.get("generated_multiplier"))
-        .and_then(|x| x.as_float())
-        .unwrap_or(0.25);
     let minified_avg_line_len = int(v.get("minified").and_then(|m| m.get("avg_line_len")), 400);
     let minified_min_bytes = int(v.get("minified").and_then(|m| m.get("min_bytes")), 1024);
     let lockfiles: Vec<String> = v
@@ -321,7 +279,7 @@ fn parse_catalog(src: &str) -> Catalog {
         }
     }
 
-    Catalog { head_lines, index_multiplier, minified_avg_line_len, minified_min_bytes, lockfiles, markers, paths }
+    Catalog { head_lines, minified_avg_line_len, minified_min_bytes, lockfiles, markers, paths }
 }
 
 /// Compile a glob ASCII-case-insensitively (paths arrive /-normalized, but
@@ -357,6 +315,17 @@ mod tests {
             parse_gitattributes(txt, &mut rules);
         }
         Overrides { rules }
+    }
+
+    #[test]
+    fn a_marker_whose_regex_does_not_compile_drops_alone_and_the_others_stay() {
+        let catalog = parse_catalog(
+            "[[marker]]\nclass = \"one\"\nregex = \"(never closed\"\n\n\
+             [[marker]]\nclass = \"two\"\nliteral = \"Plain\"\n\n\
+             [[marker]]\nclass = \"three\"\nregex = \"b+\"\n",
+        );
+        let kept: Vec<&str> = catalog.markers.iter().map(|m| m.class.as_str()).collect();
+        assert_eq!(kept, ["two", "three"], "only the row with the broken regex is dropped");
     }
 
     #[test]
@@ -408,24 +377,5 @@ mod tests {
         // Plenty of bytes but ordinary lines: hand-written.
         let normal = "let value = 1;\n".repeat(300);
         assert!(classify("src/normal.xyz", &normal, &ov).is_none());
-    }
-
-    #[test]
-    fn digest_policy_truth_table() {
-        // Index: generated/vendored stay (demoted), lockfile/minified leave.
-        assert!(index_eligible(""));
-        assert!(index_eligible(GENERATED));
-        assert!(index_eligible(VENDORED));
-        assert!(!index_eligible(LOCKFILE));
-        assert!(!index_eligible(MINIFIED));
-        // Anchors: hand-written only.
-        assert!(anchor_eligible(""));
-        for class in [GENERATED, VENDORED, LOCKFILE, MINIFIED] {
-            assert!(!anchor_eligible(class), "{class} must never anchor");
-        }
-        // Weight: pass-through for hand-written, demoted-but-present otherwise.
-        assert_eq!(index_weight(7, ""), 7);
-        assert_eq!(index_weight(1, GENERATED), 1, "floor keeps the term findable");
-        assert!(index_weight(100, GENERATED) < 100, "machine occurrences never dominate");
     }
 }

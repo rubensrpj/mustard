@@ -11,7 +11,9 @@ use ignore::WalkBuilder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
+
+use mustard_core::io::project_map::Listing;
 
 pub(crate) struct Ingested {
     pub root: PathBuf,
@@ -25,8 +27,6 @@ pub(crate) struct Ingested {
     /// path evidence class, kept so later stages can slice it per unit and run
     /// the same inference on a unit's own evidence.
     pub walk_paths: Vec<String>,
-    /// A unit's own module path, if a manifest declares one (import resolution).
-    pub go_module: Option<String>,
     pub coverage: Coverage,
     /// The files whose content this pass read (sources and manifests), sorted.
     pub read: Vec<String>,
@@ -45,6 +45,37 @@ pub struct SourceFile {
 pub(crate) enum Walked {
     Fresh(SourceFile),
     Kept(Box<Module>),
+    /// A ler ainda: só dentro da caminhada, que lê todos no fim dela.
+    Pending(Pending),
+}
+
+/// Um arquivo de código que a caminhada vai ler.
+pub(crate) struct Pending {
+    rel: String,
+    language: String,
+    path: PathBuf,
+    topdir: String,
+}
+
+/// `work` sobre cada item de `items`, dividido entre os núcleos da máquina,
+/// com as respostas na ordem dos itens.
+pub(crate) fn in_parallel<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if threads < 2 || items.len() < 2 {
+        return items.into_iter().map(work).collect();
+    }
+    let per_thread = items.len().div_ceil(threads);
+    let mut chunks: Vec<Vec<T>> = Vec::new();
+    let mut items = items.into_iter().peekable();
+    while items.peek().is_some() {
+        chunks.push(items.by_ref().take(per_thread).collect());
+    }
+    let work = &work;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> =
+            chunks.into_iter().map(|chunk| scope.spawn(move || chunk.into_iter().map(work).collect::<Vec<R>>())).collect();
+        handles.into_iter().flat_map(|handle| handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
+    })
 }
 
 /// What an incremental pass may take from the previous map instead of reading
@@ -83,14 +114,125 @@ impl<'a> Reuse<'a> {
     }
 }
 
-pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
+/// As pastas, relativas à raiz, que guardam algum arquivo de código que o
+/// índice do git tem, em qualquer profundidade.
+fn dirs_with_indexed_code(listing: &Listing) -> HashSet<String> {
+    let mut dirs = HashSet::new();
+    for path in listing.indexed.iter().filter(|path| crate::extract::detect_language(Path::new(path)).is_some()) {
+        for (slash, _) in path.match_indices('/') {
+            dirs.insert(path[..slash].to_string());
+        }
+    }
+    dirs
+}
+
+/// A caminhada pela pasta `root`: respeita o `.gitignore`, entra nas pastas
+/// escondidas e pula as que o registro dos manifestos declara, nunca uma
+/// lista escrita aqui. A pasta que nunca guarda código do projeto fica
+/// sempre fora. A de saída ou de dependências fica fora quando o índice do
+/// git, pela listagem `listing`, não guarda nela nenhum arquivo de código, e
+/// sempre fora do git, sem listagem. Cada pasta pulada entra em `skipped`,
+/// pelo caminho relativo; a que o `.gitignore` já pula não é da lista.
+fn walker(root: &Path, listing: Option<&Listing>, skipped: Arc<Mutex<Vec<String>>>) -> ignore::Walk {
+    let never = crate::manifests::skip_dirs();
+    let output = crate::manifests::output_dirs();
+    let holding_code = listing.map(dirs_with_indexed_code).unwrap_or_default();
+    let base = root.to_path_buf();
+    WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(false)
+        .filter_entry(move |e| {
+            if !e.file_type().is_some_and(|kind| kind.is_dir()) {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy();
+            let named = |list: &[String]| list.iter().any(|s| s.as_str() == name.as_ref());
+            if !named(never) && !named(output) {
+                return true;
+            }
+            let rel = relative(&base, e.path());
+            if !named(never) && holding_code.contains(&rel) {
+                return true;
+            }
+            skipped.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(rel);
+            false
+        })
+        .build()
+}
+
+/// As pastas que a caminhada pulou, em ordem.
+fn taken(skipped: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let mut dirs = std::mem::take(&mut *skipped.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    dirs.sort();
+    dirs
+}
+
+/// O caminho de `path` relativo a `root`, com `/` entre as partes.
+fn relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+/// O que a caminhada vê sem abrir arquivo nenhum.
+pub(crate) struct Walk {
+    /// Cada arquivo que a caminhada visita, relativo à raiz e ordenado: os
+    /// mesmos caminhos que a leitura inteira guarda para as pilhas.
+    pub paths: Vec<String>,
+    /// As pastas que a caminhada pulou pela lista do registro, pelo caminho
+    /// relativo, em qualquer profundidade, ordenadas.
+    pub skipped_build_dirs: Vec<String>,
+}
+
+/// A caminhada pela pasta `root` que a leitura faz, sem abrir arquivo nenhum,
+/// com a regra das pastas puladas da leitura inteira.
+pub(crate) fn walk(root: &Path, listing: Option<&Listing>) -> Walk {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let skipped = Arc::new(Mutex::new(Vec::new()));
+    let mut paths: Vec<String> = walker(&root, listing, Arc::clone(&skipped))
+        .flatten()
+        .filter(|dent| dent.path().is_file())
+        .map(|dent| relative(&root, dent.path()))
+        .collect();
+    paths.sort();
+    Walk { paths, skipped_build_dirs: taken(&skipped) }
+}
+
+/// A caminhada `paths` não traz arquivo que a leitura abriria sem que o mapa
+/// anterior `prev` o guarde, e o mapa não guarda arquivo que ela não traga:
+/// todo arquivo de código ou manifesto que ela visita é um módulo, um
+/// manifesto ou um arquivo que não se decodificou no mapa, e todo arquivo
+/// dele continua nela. Com o conteúdo de cada um igual ao que ele leu, a
+/// leitura inteira daria os mesmos módulos e manifestos; só o que depende
+/// dos outros caminhos muda.
+pub(crate) fn same_sources(paths: &[String], prev: &ProjectModel) -> bool {
+    let stored: HashSet<&str> = prev
+        .modules
+        .iter()
+        .map(|m| m.path.as_str())
+        .chain(prev.manifests.iter().map(|m| m.path.as_str()))
+        .chain(prev.state.non_utf8.iter().map(String::as_str))
+        .collect();
+    let mut seen = 0usize;
+    for rel in paths {
+        if stored.contains(rel.as_str()) {
+            seen += 1;
+            continue;
+        }
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        if crate::manifests::is_manifest(name) || crate::extract::detect_language(Path::new(rel)).is_some() {
+            return false;
+        }
+    }
+    seen == stored.len()
+}
+
+pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>, listing: Option<&Listing>) -> Result<Ingested> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut files: Vec<Walked> = Vec::new();
     let mut read: Vec<String> = Vec::new();
     let mut non_utf8_paths: Vec<String> = Vec::new();
     let mut manifests = Vec::new();
     let mut lang_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let mut go_module = None;
     // Every file path the walk visits (relative, /-normalized) — the path
     // evidence class for stack inference. Includes non-source files, since
     // layout markers are often not source code.
@@ -101,41 +243,14 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let mut top_other: BTreeMap<String, usize> = BTreeMap::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     let mut non_utf8 = 0usize;
-    // Build/dependency directories to skip come from data (manifests.toml), not
-    // a hardcoded list — see crate::manifests.
-    let skip: Vec<String> = crate::manifests::skip_dirs().to_vec();
-    // Which skip-dirs actually exist at the root (so we report only real skips).
-    let mut skipped_build_dirs: Vec<String> = std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| skip.iter().any(|s| s == n))
-        .collect();
-    skipped_build_dirs.sort();
+    let skipped = Arc::new(Mutex::new(Vec::new()));
 
-    let walk_skip = skip.clone();
-    let walker = WalkBuilder::new(&root)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(false)
-        .filter_entry(move |e| {
-            let name = e.file_name().to_string_lossy();
-            !walk_skip.iter().any(|s| s.as_str() == name.as_ref())
-        })
-        .build();
-
-    for dent in walker.flatten() {
+    for dent in walker(&root, listing, Arc::clone(&skipped)).flatten() {
         let path = dent.path();
         if !path.is_file() {
             continue;
         }
-        let rel = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = relative(&root, path);
         let fname = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let topdir = match rel.split_once('/') {
             Some((d, _)) => d.to_string(),
@@ -145,39 +260,43 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
 
         // Manifest? Detection + dep/script parsing is data-driven (manifests.toml).
         // An unchanged manifest the previous map parsed is taken as it was.
+        // O manifesto escrito na própria língua do projeto (um roteiro de
+        // instalação) marca o projeto e segue lido como código.
+        let language = crate::extract::detect_language(path);
+        let source = language.is_some();
         if crate::manifests::is_manifest(&fname) {
             if let Some(kept) = reuse.and_then(|r| r.kept_manifest(&rel)) {
-                if kept.module.is_some() {
-                    go_module.clone_from(&kept.module);
-                }
                 manifests.push(kept.clone());
-                *top_other.entry(topdir).or_default() += 1;
-                continue;
-            }
-            if let Ok(content) = fs::read_to_string(path)
+                if !source {
+                    *top_other.entry(topdir).or_default() += 1;
+                    continue;
+                }
+            } else if let Ok(content) = fs::read_to_string(path)
                 && let Some(p) = crate::manifests::parse(&rel, &fname, &content)
             {
-                if p.module.is_some() {
-                    go_module.clone_from(&p.module);
+                if !source {
+                    read.push(rel.clone());
                 }
-                read.push(rel.clone());
                 manifests.push(Manifest {
-                    path: rel,
+                    path: rel.clone(),
                     kind: p.kind,
                     dependencies: p.deps,
                     scripts: p.scripts,
                     name: p.name,
                     module: p.module,
                     package: p.package,
+                    namespace: p.namespace,
                 });
-                *top_other.entry(topdir).or_default() += 1;
-                continue;
+                if !source {
+                    *top_other.entry(topdir).or_default() += 1;
+                    continue;
+                }
             }
         }
 
         // Source file? Language is detected from data (the tree-sitter language
         // registry), never a hardcoded extension map — see extract::detect_language.
-        if let Some(lang) = crate::extract::detect_language(path) {
+        if let Some(lang) = language {
             // An unchanged file the previous map knows is taken as it was,
             // without opening it.
             if let Some(kept) = reuse.and_then(|r| r.kept_module(&rel)) {
@@ -193,26 +312,8 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
                 non_utf8_paths.push(rel);
                 continue;
             }
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => {
-                    non_utf8 += 1; // a code-extension file we couldn't decode
-                    non_utf8_paths.push(rel);
-                    continue;
-                }
-            };
-            read.push(rel.clone());
-            let loc = content.lines().filter(|l| !l.trim().is_empty()).count();
-            let entry = lang_counts.entry(lang.clone()).or_insert((0, 0));
-            entry.0 += 1;
-            entry.1 += loc;
-            *top_code.entry(topdir).or_default() += 1;
-            files.push(Walked::Fresh(SourceFile {
-                rel_path: rel,
-                language: lang,
-                loc,
-                content,
-            }));
+            // Lido depois da caminhada, junto com os outros, em paralelo.
+            files.push(Walked::Pending(Pending { rel, language: lang, path: path.to_path_buf(), topdir }));
         } else {
             // Seen but not mined: record its extension so the user can verify
             // nothing relevant was silently dropped.
@@ -224,6 +325,35 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
             *unsupported.entry(ext).or_default() += 1;
             *top_other.entry(topdir).or_default() += 1;
         }
+    }
+
+    // Os arquivos a ler, lidos todos de uma vez, e contados na ordem da
+    // caminhada, como se tivessem sido lidos nela.
+    let pending: Vec<Walked> = std::mem::take(&mut files);
+    let contents = in_parallel(pending, |walked| match walked {
+        Walked::Pending(file) => {
+            let content = fs::read_to_string(&file.path).ok();
+            (Walked::Pending(file), content)
+        }
+        other => (other, None),
+    });
+    for (walked, content) in contents {
+        let Walked::Pending(file) = walked else {
+            files.push(walked);
+            continue;
+        };
+        let Some(content) = content else {
+            non_utf8 += 1; // a code-extension file we couldn't decode
+            non_utf8_paths.push(file.rel);
+            continue;
+        };
+        read.push(file.rel.clone());
+        let loc = content.lines().filter(|l| !l.trim().is_empty()).count();
+        let entry = lang_counts.entry(file.language.clone()).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += loc;
+        *top_code.entry(file.topdir).or_default() += 1;
+        files.push(Walked::Fresh(SourceFile { rel_path: file.rel, language: file.language, loc, content }));
     }
 
     let mut languages: Vec<LanguageStat> = lang_counts
@@ -257,7 +387,7 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let code_files_read = files.len();
     let coverage = Coverage {
         top_dirs,
-        skipped_build_dirs,
+        skipped_build_dirs: taken(&skipped),
         unsupported_exts,
         code_files_read,
         non_utf8_skipped: non_utf8,
@@ -272,44 +402,10 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
         languages,
         frameworks,
         walk_paths,
-        go_module,
         coverage,
         read,
         non_utf8: non_utf8_paths,
     })
-}
-
-/// Conventional test/fixture directory segments. DATA, not logic: the list
-/// lives in `test-dirs.toml` next to `stopwords.toml` (embedded at compile
-/// time, justified in its header) — tuning which trees count as test trees is
-/// a data change, never a code change. Parsed once per process; a malformed
-/// embedded file is a programmer error caught by any test run, same contract
-/// as `digest::stopwords`.
-fn test_dir_segments() -> &'static BTreeSet<String> {
-    static SET: OnceLock<BTreeSet<String>> = OnceLock::new();
-    SET.get_or_init(|| {
-        let raw: toml::Value = toml::from_str(include_str!("../test-dirs.toml")).expect("test-dirs.toml is not valid TOML");
-        raw.get("segments")
-            .and_then(|v| v.as_array())
-            .expect("test-dirs.toml must contain a `segments` array")
-            .iter()
-            .map(|w| w.as_str().expect("each segment must be a string").to_lowercase())
-            .collect()
-    })
-}
-
-/// True when `rel` — a `/`-normalized path RELATIVE TO THE SCANNED ROOT — has
-/// a directory component equal (ASCII case-insensitively) to a conventional
-/// test/fixture segment. Component-boundary match only: `src/contest/x` never
-/// matches `test`, and the trailing filename is not a directory segment.
-/// Because the path is relative to the scanned root, scanning a fixture
-/// directly as the root yields paths with no test segment — a root inside a
-/// test tree is never self-suppressed.
-pub(crate) fn under_test_dir(rel: &str) -> bool {
-    let segments = test_dir_segments();
-    let mut components = rel.split('/');
-    components.next_back(); // drop the filename — only directories qualify
-    components.any(|c| segments.contains(&c.to_ascii_lowercase()))
 }
 
 /// Map dependency names to framework labels. A framework strongly implies the

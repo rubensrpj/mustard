@@ -1,8 +1,8 @@
 // Fixture for the kinds-manifest parity test (tests/kinds_parity.rs).
 // Exercises every @definition.<kind> the Dart tags.scm emits:
-//   class, mixin, enum, extension, method (function_signature), const.
-// It must NOT produce any undeclared kind, so it deliberately avoids
-// constructs the tags.scm does not capture (fields, enum members, getters).
+//   class, mixin, enum, extension, method (function_signature), const,
+//   field, property (the getter), enum_member.
+// It must NOT produce any undeclared kind.
 import 'dart:async';
 
 enum Role { admin, member }
@@ -11,7 +11,10 @@ const defaultRole = Role.member;
 
 class Account {
   final String id;
+  int visits = 0;
   Account(this.id);
+
+  String get label => 'conta $id';
 
   String describe() => 'account $id';
 }

@@ -158,86 +158,45 @@ mod tests {
         }
     }
 
+    /// Every shape of redirect to a Windows drive path (forward slashes,
+    /// append, stderr, combined, quoted, `tee`, after a separator) comes back
+    /// as the POSIX path of the same file.
     #[test]
-    fn windows_redirect_rewrites_forward_slash_drive() {
-        let v = bash_windows_redirect("cmd > C:/temp/scan-validate-out.json");
-        assert_eq!(rewritten_command(v), "cmd > /c/temp/scan-validate-out.json");
+    fn a_redirect_to_a_windows_path_is_rewritten_to_the_posix_one() {
+        let cases = [
+            ("cmd > C:/temp/scan-validate-out.json", "cmd > /c/temp/scan-validate-out.json"),
+            ("echo line >> D:\\logs\\app.log", "echo line >> /d/logs/app.log"),
+            ("rtk cargo test 2> C:\\Atiz\\mustard\\test-err.txt", "rtk cargo test 2> /c/Atiz/mustard/test-err.txt"),
+            ("cmd &> C:\\Atiz\\out.txt", "cmd &> /c/Atiz/out.txt"),
+            ("cmd > \"C:\\Program Files\\out.txt\"", "cmd > \"/c/Program Files/out.txt\""),
+            ("cmd | tee C:\\Atiz\\scan-out.json", "cmd | tee /c/Atiz/scan-out.json"),
+            ("cmd | tee -a C:/Atiz/scan-out.json", "cmd | tee -a /c/Atiz/scan-out.json"),
+            ("cd x && cmd > C:\\a.txt", "cd x && cmd > /c/a.txt"),
+        ];
+        for (cmd, expected) in cases {
+            assert_eq!(rewritten_command(bash_windows_redirect(cmd)), expected, "{cmd}");
+        }
     }
 
+    /// What is not a redirect to a Windows drive path passes untouched: the
+    /// POSIX form of the same path, relative targets, fd duplication, a
+    /// Windows path that is only an argument, a `>` inside quotes and a
+    /// redirect-looking line inside a heredoc.
     #[test]
-    fn windows_redirect_rewrites_append() {
-        let v = bash_windows_redirect("echo line >> D:\\logs\\app.log");
-        assert_eq!(rewritten_command(v), "echo line >> /d/logs/app.log");
-    }
-
-    #[test]
-    fn windows_redirect_rewrites_stderr_to_windows_path() {
-        let v = bash_windows_redirect("rtk cargo test 2> C:\\Atiz\\mustard\\test-err.txt");
-        assert_eq!(rewritten_command(v), "rtk cargo test 2> /c/Atiz/mustard/test-err.txt");
-    }
-
-    #[test]
-    fn windows_redirect_rewrites_combined_redirect() {
-        let v = bash_windows_redirect("cmd &> C:\\Atiz\\out.txt");
-        assert_eq!(rewritten_command(v), "cmd &> /c/Atiz/out.txt");
-    }
-
-    #[test]
-    fn windows_redirect_rewrites_quoted_target() {
-        let v = bash_windows_redirect("cmd > \"C:\\Program Files\\out.txt\"");
-        assert_eq!(rewritten_command(v), "cmd > \"/c/Program Files/out.txt\"");
-    }
-
-    #[test]
-    fn windows_redirect_rewrites_tee_to_windows_path() {
-        let v = bash_windows_redirect("cmd | tee C:\\Atiz\\scan-out.json");
-        assert_eq!(rewritten_command(v), "cmd | tee /c/Atiz/scan-out.json");
-        let v = bash_windows_redirect("cmd | tee -a C:/Atiz/scan-out.json");
-        assert_eq!(rewritten_command(v), "cmd | tee -a /c/Atiz/scan-out.json");
-    }
-
-    #[test]
-    fn windows_redirect_allows_posix_absolute() {
-        // `/c/Atiz/...` is the git-bash equivalent and works correctly.
-        assert!(bash_windows_redirect("cmd > /c/Atiz/scan-out.json").is_none());
-    }
-
-    #[test]
-    fn windows_redirect_allows_relative_target() {
-        assert!(bash_windows_redirect("cmd > output.txt").is_none());
-        assert!(bash_windows_redirect("cmd > ./out/scan.json").is_none());
-        assert!(bash_windows_redirect("cmd >> logs/app.log").is_none());
-    }
-
-    #[test]
-    fn windows_redirect_allows_fd_dup() {
-        // `2>&1` is fd duplication, not a path. Must not trigger.
-        assert!(bash_windows_redirect("cmd 2>&1").is_none());
-        assert!(bash_windows_redirect("cmd >&2").is_none());
-    }
-
-    #[test]
-    fn windows_redirect_allows_windows_path_in_argument() {
-        // Path is a program argument (no redirect), not a redirect target.
-        // The gate only catches `>`-style mangling.
-        assert!(bash_windows_redirect("node script.js --out C:\\Atiz\\x.json").is_none());
-    }
-
-    #[test]
-    fn windows_redirect_allows_windows_path_inside_quoted_string() {
-        // The `>` is inside a quoted string, so the shell does not treat it
-        // as a redirect operator. Must not trigger.
-        assert!(bash_windows_redirect("echo 'wrote > C:\\Atiz\\x.json'").is_none());
-    }
-
-    #[test]
-    fn a_redirect_after_a_separator_is_still_rewritten() {
-        let v = bash_windows_redirect("cd x && cmd > C:\\a.txt");
-        assert_eq!(rewritten_command(v), "cd x && cmd > /c/a.txt");
-    }
-
-    #[test]
-    fn a_windows_path_inside_a_heredoc_is_not_a_redirect() {
-        assert!(bash_windows_redirect("cat <<'EOF'\nwrote > C:\\a.txt\nEOF").is_none());
+    fn what_is_not_a_redirect_to_a_windows_path_passes_untouched() {
+        let cases = [
+            "cmd > /c/Atiz/scan-out.json",
+            "cmd > output.txt",
+            "cmd > ./out/scan.json",
+            "cmd >> logs/app.log",
+            "cmd 2>&1",
+            "cmd >&2",
+            "node script.js --out C:\\Atiz\\x.json",
+            "echo 'wrote > C:\\Atiz\\x.json'",
+            "cat <<'EOF'\nwrote > C:\\a.txt\nEOF",
+        ];
+        for cmd in cases {
+            assert!(bash_windows_redirect(cmd).is_none(), "{cmd}");
+        }
     }
 }

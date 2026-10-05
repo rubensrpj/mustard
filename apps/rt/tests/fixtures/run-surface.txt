@@ -6,6 +6,7 @@ grill
 help
 index
 map
+measure
 open
 page
 pending
@@ -18,6 +19,7 @@ reopen
 resume
 round
 scan
+spend
 statusline
 upsert
 write

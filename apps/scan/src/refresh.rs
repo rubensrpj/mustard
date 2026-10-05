@@ -1,34 +1,55 @@
 //! Incremental reading and the git history the map keeps.
 //!
-//! A pass reads again only what can have changed since the previous one: the
-//! files git says changed between the commit the previous pass read and the
-//! one checked out now, the files not committed now, and the files that were
-//! not committed then (they may have been put back since). Everything else is
-//! taken from the previous map as it was. Outside git, without a previous
-//! map, or when the previous map was written by another scanner build, every
-//! file is read.
+//! A pass reads again only the files whose content changed since the
+//! previous one: each file carries the git blob id of the content the pass
+//! read, and a file whose blob now is the same is taken from the previous map
+//! as it was, on any branch, committed or not. Outside git, without a
+//! previous map, when a part of the previous map the pass takes from was
+//! written by another scanner build — or came back empty because its format
+//! changed —, or when a file that changes how every other one is read
+//! changed, every file is read.
 //!
-//! The history comes from the local repository (`git log`), never from the
-//! network: the first pass reads it whole, and the next ones read only the
-//! commits after the one the previous pass stopped at.
+//! A história vem da branch de partida que o projeto declara no
+//! `mustard.json`, nunca da branch em que se está: a ponta do servidor que o
+//! clone já tem (`origin/<base>`), senão a local, sem ir à rede. A primeira
+//! passada lê a janela inteira, e as seguintes só os commits depois da ponta
+//! em que a anterior parou.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use mustard_core::platform::git as git_exec;
 
-use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
+use mustard_core::domain::project_map::{History, NoHistory, RawCommit, MAX_COMMITS};
+use mustard_core::io::project_map::{Base, Listing, MapBlock, BLOCKS, CENSUS, DECLS, FILES, GRAPH};
 
 use crate::model::{Module, ProjectModel};
 
-/// The scanner build tag written into the map. A map written by another
-/// build is read again in full, because what a file yields may have changed.
-/// The part after `+map-` is a digest of the scan's own sources, worked out by
-/// the build script, so any change to the scan changes it.
+/// The scanner build tag written into the map, as the mark of every block the
+/// pass writes. A map written by another build is read again in full, because
+/// what a file yields may have changed. The part after `+map-` is a digest of
+/// the scan's own sources, worked out by the build script, so any change to
+/// the scan changes it.
 pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-", env!("SCAN_MAP_DIGEST"));
 
+/// The blocks of the map a pass that reads only what changed takes from the
+/// previous one: the state and the manifests, the files, their declarations
+/// and their links. The history is read on its own, from the commits after
+/// the one the previous pass stopped at.
+const REUSED: [&MapBlock; 4] = [&CENSUS, &FILES, &DECLS, &GRAPH];
+
+/// The block `block` of the previous map was filled by this scanner build.
+/// A block rebuilt because its format changed comes back empty and without a
+/// mark, so it is never taken as fresh.
+fn fresh(prev: &ProjectModel, block: &MapBlock) -> bool {
+    prev.marks.get(block.name()).is_some_and(|mark| mark == FORMAT)
+}
+
 /// Files whose change alters how every other file is classified: when one of
-/// them changed, everything is read again.
+/// them changed, everything is read again. Os arquivos de configuração de
+/// apelidos de pasta que o registro declara entram pela mesma porta (ver
+/// [`rereads_everything`]): um apelido novo liga citações que a passada
+/// anterior deixou fora do mapa.
 const GLOBAL_INPUTS: &[&str] = &[".gitattributes", ".editorconfig"];
 
 /// What a pass has to read.
@@ -43,7 +64,7 @@ pub(crate) enum Plan {
 
 /// Run git in `root`, with paths printed as they are (no octal quoting of
 /// accented names). `None` when git is missing or the command fails.
-fn git(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Option<String> {
     let mut full: Vec<&str> = vec!["-c", "core.quotePath=false"];
     full.extend(args);
     let out = git_exec::run(root, &full);
@@ -56,103 +77,137 @@ pub(crate) fn head(root: &Path) -> Option<String> {
     git(root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Where `root` sits inside its repository (`apps/scan/`), empty at the top.
-fn prefix(root: &Path) -> Option<String> {
-    git(root, &["rev-parse", "--show-prefix"]).map(|s| s.trim().to_string())
-}
-
-/// The files under `root` that are not committed — changed, staged or new —
-/// relative to `root`, in name order.
-pub(crate) fn dirty(root: &Path) -> Option<Vec<String>> {
-    let prefix = prefix(root)?;
-    let out = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])?;
-    let mut paths = BTreeSet::new();
-    let mut fields = out.split('\0');
-    while let Some(entry) = fields.next() {
-        if entry.len() < 4 {
-            continue;
-        }
-        let (code, path) = entry.split_at(3);
-        // A rename or a copy carries the old path in the next field.
-        if code[..2].contains(['R', 'C']) {
-            let _ = fields.next();
-        }
-        // The status paths are relative to the top of the repository.
-        if let Some(rel) = path.strip_prefix(prefix.as_str()) {
-            paths.insert(rel.to_string());
-        }
-    }
-    Some(paths.into_iter().collect())
-}
-
-/// The files under `root` that differ between two commits, relative to
-/// `root`. `None` when git cannot compare them (a commit that no longer
-/// exists, for one).
-fn changed_between(root: &Path, from: &str, to: &str) -> Option<Vec<String>> {
-    let out = git(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", from, to])?;
-    Some(out.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
-}
-
 /// The scanned root as the map records it.
 pub(crate) fn canonical(root: &Path) -> String {
     root.canonicalize().unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().to_string()
 }
 
-/// The `state.head` a pass writes when the repository has no commit at all —
-/// distinct from the empty string, which still means "nothing to compare
-/// against, read everything" (a map from before this constant existed, or a
-/// scanner build that never recorded a head). Without the distinction, a
-/// repository with zero commits paid a full read on every single pass: `head`
-/// is always absent there, so `plan` below saw `state.head.is_empty()`
-/// forever and never let a later pass read only what changed since.
-pub(crate) const NO_COMMIT_HEAD: &str = "no-commit";
-
-/// Decide what this pass reads, given the previous map.
-pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
-    let Some(prev) = prev else {
+/// Decide what this pass reads, given the previous map and what git says
+/// each file holds now (`None` outside git).
+pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>, listing: Option<&Listing>) -> Plan {
+    let (Some(prev), Some(listing)) = (prev, listing) else {
         return Plan::Full;
     };
-    let no_commit_before = prev.state.head == NO_COMMIT_HEAD;
-    if prev.state.format != FORMAT || (prev.state.head.is_empty() && !no_commit_before) || prev.root != canonical(root)
+    if !REUSED.iter().all(|block| fresh(prev, block))
+        || prev.root != canonical(root)
+        || rereads_everything(&prev.state.inputs) != rereads_everything(&listing.blobs)
     {
         return Plan::Full;
     }
-    let now = head(root);
-    // Sem commit então: não há um "de" válido para comparar (`changed_between`
-    // exige duas revisões reais). Tudo que pode ter mudado já está coberto
-    // pelo que está aberto agora, unido ao que já estava aberto na passada
-    // anterior — o mesmo raciocínio do ramo comum, sem a metade comitada.
-    if no_commit_before {
-        let Some(open) = dirty(root) else {
-            return Plan::Full;
-        };
-        return only_or_full(open.into_iter().chain(prev.state.dirty.iter().cloned()).collect());
-    }
-    let Some(now) = now else {
-        return Plan::Full;
-    };
-    let Some(committed) = changed_between(root, &prev.state.head, &now) else {
-        return Plan::Full;
-    };
-    let Some(open) = dirty(root) else {
-        return Plan::Full;
-    };
-    let changed: BTreeSet<String> = committed.into_iter().chain(open).chain(prev.state.dirty.iter().cloned()).collect();
-    only_or_full(changed)
+    // Cada arquivo que a passada anterior guardou, com o blob do que ela leu:
+    // os de código, os manifestos e os que não se decodificaram. O blob vazio
+    // é o de um arquivo lido fora do git, que se relê sempre.
+    let stored_input = |path: &str| prev.state.inputs.get(path).map_or("", String::as_str);
+    let stored = prev
+        .modules
+        .iter()
+        .map(|m| (m.path.as_str(), m.blob.as_str()))
+        .chain(prev.manifests.iter().map(|m| (m.path.as_str(), stored_input(&m.path))))
+        .chain(prev.state.non_utf8.iter().map(|path| (path.as_str(), stored_input(path))));
+    let mut changed: BTreeSet<String> = stored
+        .filter(|(path, blob)| blob.is_empty() || listing.blobs.get(*path).map(String::as_str) != Some(*blob))
+        .map(|(path, _)| path.to_string())
+        .collect();
+    let under = under_changed_manifests(root, prev, listing, &changed);
+    changed.extend(under);
+    Plan::Only(changed)
 }
 
-/// `Plan::Only(changed)`, unless a file whose change alters how every other
-/// file is classified is in it — then the whole project is read again.
-fn only_or_full(changed: BTreeSet<String>) -> Plan {
-    let global = changed.iter().any(|p| {
-        let name = p.rsplit('/').next().unwrap_or(p);
-        GLOBAL_INPUTS.contains(&name)
-    });
-    if global {
-        Plan::Full
-    } else {
-        Plan::Only(changed)
+/// Os arquivos de código que um manifesto mudado faz reler. A dependência do
+/// manifesto mais próximo acima liga regras de rota nos arquivos sob a pasta
+/// dele (ver [`crate::graph::nearest_manifest_deps`]): o manifesto cujas
+/// dependências mudaram, que apareceu ou que sumiu relê os arquivos de
+/// código dessa pasta. O que apareceu ou sumiu muda também o alcance do
+/// import global escrito sob a pasta dele (ver [`crate::graph::global_reach`]):
+/// aí os arquivos da família da língua desse import se releem todos.
+fn under_changed_manifests(
+    root: &Path,
+    prev: &ProjectModel,
+    listing: &Listing,
+    changed: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let name_of = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+    let folder_of = |path: &str| path.rfind('/').map_or(String::new(), |at| path[..at].to_string());
+    let is_under = |path: &str, dir: &str| dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'));
+    // Cada pasta de manifesto mudado, e se ele apareceu ou sumiu.
+    let mut folders: Vec<(String, bool)> = Vec::new();
+    for manifest in prev.manifests.iter().filter(|m| changed.contains(&m.path)) {
+        let now = std::fs::read_to_string(root.join(&manifest.path))
+            .ok()
+            .and_then(|content| crate::manifests::parse(&manifest.path, &name_of(&manifest.path), &content));
+        let before: BTreeSet<&String> = manifest.dependencies.iter().collect();
+        match now {
+            None => folders.push((folder_of(&manifest.path), true)),
+            Some(parsed) if parsed.deps.iter().collect::<BTreeSet<_>>() != before => {
+                folders.push((folder_of(&manifest.path), false));
+            }
+            Some(_) => {}
+        }
     }
+    let known: BTreeSet<&str> = prev.manifests.iter().map(|m| m.path.as_str()).collect();
+    for path in listing.blobs.keys().filter(|path| !known.contains(path.as_str())) {
+        if crate::manifests::is_manifest(&name_of(path)) {
+            folders.push((folder_of(path), true));
+        }
+    }
+
+    let mut again: BTreeSet<String> = BTreeSet::new();
+    let mut global_languages: BTreeSet<&str> = BTreeSet::new();
+    for (folder, came_or_went) in &folders {
+        for m in prev.modules.iter().filter(|m| is_under(&m.path, folder)) {
+            again.insert(m.path.clone());
+            if *came_or_went && !m.global_imports.is_empty() {
+                global_languages.insert(crate::extract::family(&m.language));
+            }
+        }
+    }
+    again.extend(prev.modules.iter().filter(|m| global_languages.contains(crate::extract::family(&m.language))).map(|m| m.path.clone()));
+    again
+}
+
+/// A passada não tem arquivo a reler: todo bloco do mapa anterior `prev` é
+/// desta versão do scan, o commit, a branch de partida e a ponta dela são
+/// os mesmos que ele leu — um commit novo na base muda a história e os
+/// testes que mudam juntos — e o plano não pede arquivo nenhum. Falta só conferir
+/// que não entrou nem saiu arquivo de código ou manifesto (ver
+/// [`crate::ingest::same_sources`]).
+pub(crate) fn nothing_to_read(root: &Path, prev: &ProjectModel, listing: &Listing) -> bool {
+    BLOCKS.iter().all(|block| fresh(prev, block))
+        && prev.state.head == listing.head
+        && (prev.state.base.as_str(), prev.state.base_tip.as_str()) == (listing.base.name.as_str(), listing.base.tip.as_str())
+        && plan(root, Some(prev), Some(listing)) == Plan::Only(BTreeSet::new())
+}
+
+/// Os arquivos de `blobs` que, mudando, aparecendo ou sumindo, fazem a
+/// passada ler tudo: os de [`GLOBAL_INPUTS`] e as configurações de apelidos
+/// de pasta, com o nome vindo do registro. A citação que só o apelido novo
+/// liga saiu do módulo na passada anterior, e só a leitura do arquivo a traz
+/// de volta.
+fn rereads_everything(blobs: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    let alias_configs = crate::extract::alias_config_names();
+    blobs
+        .iter()
+        .filter(|(path, _)| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            GLOBAL_INPUTS.contains(&name) || alias_configs.contains(name)
+        })
+        .map(|(path, blob)| (path.as_str(), blob.as_str()))
+        .collect()
+}
+
+/// O blob, pelo caminho, de cada arquivo que decide a releitura sem ser
+/// código: os de [`rereads_everything`], os manifestos `manifests` e os que
+/// não se decodificaram, `undecodable`. É o que a passada guarda para a
+/// seguinte comparar.
+pub(crate) fn inputs(listing: &Listing, manifests: &[&str], undecodable: &[String]) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> =
+        rereads_everything(&listing.blobs).into_iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect();
+    for path in manifests.iter().copied().chain(undecodable.iter().map(String::as_str)) {
+        if let Some(blob) = listing.blobs.get(path) {
+            out.insert(path.to_string(), blob.clone());
+        }
+    }
+    out
 }
 
 /// The files a pass that read only what changed has to read again, so that
@@ -171,8 +226,11 @@ fn only_or_full(changed: BTreeSet<String>) -> Plan {
 ///   files), a file gone. Losing a declaration counts too: a name declared
 ///   too many times links nowhere, and one fewer may make it link;
 /// - it imports a file of the project it did not import before;
-/// - a global import of its language was written, changed or removed, since
-///   it may put in sight files that did not change.
+/// - a global import of its language family was written, changed or
+///   removed, since it may put in sight files that did not change;
+/// - o arquivo de imports de uma pasta acima dele, da mesma língua, foi lido
+///   agora ou sumiu: as linhas desse arquivo que valem na pasta entram no
+///   tipo dele.
 ///
 /// `fresh` holds the files this pass read; `modules`, what this pass has, with
 /// the imports already resolved.
@@ -194,6 +252,16 @@ pub(crate) fn stale_citers(
 
     let mut names: BTreeSet<String> = BTreeSet::new();
     let mut global_languages: BTreeSet<&str> = BTreeSet::new();
+    // O arquivo de imports da pasta lido agora ou que sumiu: as linhas dele
+    // que valem na pasta podem ter mudado no tipo de cada arquivo da mesma
+    // língua dela e das de baixo.
+    let imports_folders: Vec<(&str, &str)> = modules
+        .iter()
+        .filter(|m| fresh.contains(&m.path))
+        .chain(prev.modules.iter().filter(|m| !now.contains(m.path.as_str())))
+        .filter(|m| crate::extract::imports_whole_folder(&m.language, &m.path))
+        .map(|m| (m.language.as_str(), crate::graph::folder_of(&m.path)))
+        .collect();
     for m in modules.iter().filter(|m| fresh.contains(&m.path)) {
         match before.get(m.path.as_str()) {
             Some(old) if old.namespaces == m.namespaces && old.language == m.language => {
@@ -203,13 +271,13 @@ pub(crate) fn stale_citers(
         }
         let old_globals = before.get(m.path.as_str()).map_or(&[][..], |old| old.global_imports.as_slice());
         if old_globals != m.global_imports.as_slice() {
-            global_languages.insert(m.language.as_str());
+            global_languages.insert(crate::extract::family(&m.language));
         }
     }
     for gone in prev.modules.iter().filter(|m| !now.contains(m.path.as_str())) {
         names.extend(cited(gone));
         if !gone.global_imports.is_empty() {
-            global_languages.insert(gone.language.as_str());
+            global_languages.insert(crate::extract::family(&gone.language));
         }
     }
 
@@ -217,7 +285,8 @@ pub(crate) fn stale_citers(
         .iter()
         .filter(|m| !fresh.contains(&m.path))
         .filter(|m| {
-            global_languages.contains(m.language.as_str())
+            global_languages.contains(crate::extract::family(&m.language))
+                || imports_folders.iter().any(|(language, folder)| m.language == *language && crate::graph::is_under(&m.path, folder))
                 || before.get(m.path.as_str()).is_none_or(|old| m.deps.iter().any(|d| !old.deps.contains(d)))
                 || (!names.is_empty()
                     && std::fs::read_to_string(root.join(&m.path)).is_ok_and(|text| names.iter().any(|n| has_word(&text, n))))
@@ -240,52 +309,108 @@ fn is_ancestor(root: &Path, ancestor: &str, head: &str) -> bool {
     git_exec::run(root, &["merge-base", "--is-ancestor", ancestor, head]).ok
 }
 
-/// The history at `head`: the previous one when nothing was committed since,
-/// the previous one plus the new commits when `head` descends from where the
-/// previous pass stopped, and the whole log otherwise (another branch, a
-/// rewritten history, a first pass).
-pub(crate) fn history(root: &Path, prev: Option<&History>, prev_head: &str, head: &str) -> History {
-    let prev = prev.filter(|h| !h.is_empty() && !prev_head.is_empty());
-    if let Some(prev) = prev {
-        if prev_head == head {
-            return prev.clone();
-        }
-        if is_ancestor(root, prev_head, head) {
-            return match log(root, &format!("{prev_head}..{head}")) {
+/// A história da branch de partida `base`: vazia, com o motivo, quando o
+/// projeto não declara a base ou o clone não a tem; a anterior quando a
+/// ponta não mudou; a anterior mais os commits novos quando a ponta andou
+/// para a frente de onde a passada anterior parou, `prev_tip`; e a janela
+/// inteira nos outros casos (outra base, base reescrita, primeira passada).
+pub(crate) fn history(root: &Path, base: &Base, prev: Option<&History>, prev_tip: &str) -> History {
+    if base.name.is_empty() {
+        return History { missing: Some(NoHistory::NoBase), ..History::default() };
+    }
+    if base.tip.is_empty() {
+        return History { base: base.name.clone(), missing: Some(NoHistory::BaseNotFound), ..History::default() };
+    }
+    let prev = prev.filter(|h| h.base == base.name && h.missing.is_none() && !prev_tip.is_empty());
+    let read = match prev {
+        Some(prev) if prev_tip == base.tip => prev.clone(),
+        Some(prev) if is_ancestor(root, prev_tip, &base.tip) => {
+            match log(root, &format!("{prev_tip}..{}", base.tip)) {
                 Some(newer) => prev.extended(newer),
                 None => prev.clone(),
-            };
+            }
         }
-    }
-    log(root, head).map(History::from_raw).unwrap_or_default()
+        _ => log(root, &base.tip).map(History::from_raw).unwrap_or_default(),
+    };
+    History { base: base.name.clone(), ..read }
 }
 
-/// The commits of `range` that touch `root`, oldest first.
+/// Os commits de `range` que mexem em `root`, do mais antigo para o mais
+/// novo, com os que entraram por merge. O merge conta na janela de
+/// [`MAX_COMMITS`] e não se guarda: só diz o número do pull request.
 fn log(root: &Path, range: &str) -> Option<Vec<RawCommit>> {
     let max = format!("--max-count={MAX_COMMITS}");
-    let out = git(
-        root,
-        &["log", "--no-merges", "--no-renames", "--relative", "--name-status", "--format=%x00%H %ct", &max, range],
-    )?;
+    let out = git(root, &["log", "--no-renames", "--relative", "--name-status", "--format=%x00%H %ct %P%x1f%s", &max, range])?;
     Some(parse_log(&out))
 }
 
-/// Parse `git log --name-status --format=%x00%H %ct` into commits, oldest
-/// first. A commit that touches nothing under the scanned root is left out.
+/// Um commit como o `log` o escreve: o hash inteiro, os pais e o commit.
+struct Logged<'t> {
+    sha: &'t str,
+    parents: Vec<&'t str>,
+    commit: RawCommit,
+}
+
+/// Lê a saída de `git log --name-status --format=%x00%H %ct %P%x1f%s`, que
+/// começa pela ponta, em commits do mais antigo para o mais novo, cada um
+/// com o título e o número do pull request que o trouxe. O merge só dá esse
+/// número e fica de fora, como o commit que não mexe em nada sob a pasta
+/// lida.
 pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
-    let mut commits = Vec::new();
+    let logged = read_logged(text);
+    let brought = merged_numbers(&logged);
+    let order = oldest_first(&logged);
+    let mut logged: Vec<Option<(Logged<'_>, Option<u32>)>> = logged.into_iter().zip(brought).map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|i| logged[i].take())
+        .filter(|(one, _)| one.parents.len() < 2 && (!one.commit.added.is_empty() || !one.commit.changed.is_empty()))
+        .map(|(one, number)| {
+            let pr = number.or_else(|| squashed_number(&one.commit.title));
+            RawCommit { pr, ..one.commit }
+        })
+        .collect()
+}
+
+/// Lê a saída de `git log --format=%x00%H %ct %P%x1f%s` sem a lista de
+/// arquivos, na ordem do git: de cada commit, merges inclusos, o hash
+/// inteiro e o commit com a data, o título e o número do pull request que o
+/// trouxe, pela mesma regra de [`parse_log`].
+pub(crate) fn parse_headers(text: &str) -> Vec<(String, RawCommit)> {
+    let logged = read_logged(text);
+    let brought = merged_numbers(&logged);
+    logged
+        .into_iter()
+        .zip(brought)
+        .map(|(one, number)| {
+            let pr = number.or_else(|| squashed_number(&one.commit.title));
+            (one.sha.to_string(), RawCommit { pr, ..one.commit })
+        })
+        .collect()
+}
+
+/// Os commits da saída do `git log`, na ordem dela, cada um com os arquivos
+/// que cria e muda — o merge fica sem arquivos.
+fn read_logged(text: &str) -> Vec<Logged<'_>> {
+    let mut logged = Vec::new();
     for block in text.split('\0').filter(|b| !b.trim().is_empty()) {
         let mut lines = block.lines();
         let Some(header) = lines.next() else {
             continue;
         };
-        let mut parts = header.split_whitespace();
-        let (Some(sha), Some(at)) = (parts.next(), parts.next()) else {
+        let (ids, title) = header.split_once('\x1f').unwrap_or((header, ""));
+        let mut ids = ids.split_whitespace();
+        let (Some(sha), Some(at)) = (ids.next(), ids.next()) else {
             continue;
         };
-        let mut commit =
-            RawCommit { id: sha.chars().take(10).collect(), at: at.parse().unwrap_or(0), ..RawCommit::default() };
-        for line in lines {
+        let parents: Vec<&str> = ids.collect();
+        let mut commit = RawCommit {
+            id: sha.chars().take(10).collect(),
+            at: at.trim().parse().unwrap_or(0),
+            title: title.trim().to_string(),
+            ..RawCommit::default()
+        };
+        for line in lines.filter(|_| parents.len() < 2) {
             let Some((status, path)) = line.split_once('\t') else {
                 continue;
             };
@@ -296,16 +421,92 @@ pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
                 Some(_) => commit.changed.push(path),
             }
         }
-        if !commit.added.is_empty() || !commit.changed.is_empty() {
-            commits.push(commit);
+        logged.push(Logged { sha, parents, commit });
+    }
+    logged
+}
+
+/// A ordem em que a história se guarda, do mais antigo para o mais novo:
+/// cada commit depois dos pais, o primeiro pai antes dos outros, a partir da
+/// ponta, `logged[0]`. A data não decide, porque dois commits do mesmo
+/// segundo sairiam em qualquer ordem: assim a leitura inteira e a soma do
+/// que é novo dão a mesma lista. O commit que a ponta não alcança pelos
+/// listados, que o git não lista, entraria antes, na ordem do git.
+fn oldest_first(logged: &[Logged<'_>]) -> Vec<usize> {
+    let at: HashMap<&str, usize> = logged.iter().enumerate().map(|(i, one)| (one.sha, i)).collect();
+    let mut placed = vec![false; logged.len()];
+    let mut order = Vec::with_capacity(logged.len());
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    if !logged.is_empty() {
+        placed[0] = true;
+        stack.push((0, 0));
+    }
+    while let Some((node, next)) = stack.last_mut() {
+        let (node, parent) = (*node, logged[*node].parents.get(*next));
+        *next += 1;
+        match parent {
+            Some(parent) => {
+                if let Some(&i) = at.get(parent).filter(|&&i| !placed[i]) {
+                    placed[i] = true;
+                    stack.push((i, 0));
+                }
+            }
+            None => {
+                order.push(node);
+                stack.pop();
+            }
         }
     }
-    commits.reverse();
-    commits
+    let unreached = (0..logged.len()).rev().filter(|&i| !placed[i]);
+    unreached.chain(order).collect()
+}
+
+/// O número do merge de pull request que trouxe cada commit de `logged` para
+/// a branch. A linha principal sai da ponta, `logged[0]`, pelos primeiros
+/// pais; cada merge dela, do mais antigo para o mais novo, dá o número dele
+/// aos commits que só ele alcança pelos outros pais. O commit da própria
+/// linha e o trazido por merge sem número ficam sem.
+fn merged_numbers(logged: &[Logged<'_>]) -> Vec<Option<u32>> {
+    let at: HashMap<&str, usize> = logged.iter().enumerate().map(|(i, one)| (one.sha, i)).collect();
+    let mut line = Vec::new();
+    let mut next = (!logged.is_empty()).then_some(0);
+    while let Some(i) = next.filter(|_| line.len() < logged.len()) {
+        line.push(i);
+        next = logged[i].parents.first().and_then(|parent| at.get(parent).copied());
+    }
+    let mut seen = vec![false; logged.len()];
+    let mut brought = vec![None; logged.len()];
+    for &merge in line.iter().rev() {
+        let number = merge_number(&logged[merge].commit.title);
+        let mut stack: Vec<usize> = logged[merge].parents.iter().skip(1).filter_map(|p| at.get(p).copied()).collect();
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                continue;
+            }
+            brought[i] = number;
+            stack.extend(logged[i].parents.iter().filter_map(|p| at.get(p).copied()).filter(|&p| !seen[p]));
+        }
+        seen[merge] = true;
+    }
+    brought
+}
+
+/// O número no título de um merge de pull request: `Merge pull request #N`.
+fn merge_number(title: &str) -> Option<u32> {
+    let rest = title.strip_prefix("Merge pull request #")?;
+    let digits: &str = &rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())];
+    digits.parse().ok()
+}
+
+/// O número no fim do título de um pull request juntado num commit só:
+/// `(#N)`.
+fn squashed_number(title: &str) -> Option<u32> {
+    let (_, number) = title.trim_end().strip_suffix(')')?.rsplit_once("(#")?;
+    number.chars().all(|c| c.is_ascii_digit()).then(|| number.parse().ok()).flatten()
 }
 
 /// Undo git's C-style quoting of a path with unusual characters.
-fn unquote(path: &str) -> String {
+pub(crate) fn unquote(path: &str) -> String {
     let Some(inner) = path.strip_prefix('"').and_then(|p| p.strip_suffix('"')) else {
         return path.to_string();
     };
@@ -332,56 +533,177 @@ mod tests {
 
     #[test]
     fn the_log_is_read_oldest_first_without_deletions_or_empty_commits() {
-        let text = "\0bbbbbbbbbbbbbbbb 20\n\nM\tsrc/a.rs\nD\tsrc/old.rs\nA\t\"src/with\\\"quote.rs\"\n\
-                    \0cccccccccccc 15\n\n\
-                    \0aaaaaaaaaaaaaaaa 10\n\nA\tsrc/a.rs\n";
+        let text = "\0bbbbbbbbbbbbbbbb 20 cccccccccccc\x1fTroca o  leitor\n\nM\tsrc/a.rs\nD\tsrc/old.rs\nA\t\"src/with\\\"quote.rs\"\n\
+                    \0cccccccccccc 15 aaaaaaaaaaaaaaaa\x1fVazio\n\n\
+                    \0aaaaaaaaaaaaaaaa 10 \x1f\n\nA\tsrc/a.rs\n";
         let commits = parse_log(text);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id, "aaaaaaaaaa");
         assert_eq!(commits[0].added, vec!["src/a.rs".to_string()]);
         assert_eq!(commits[1].at, 20);
+        assert_eq!(commits[1].title, "Troca o  leitor");
+        assert_eq!(commits[0].title, "", "a commit written with no title keeps none");
         assert_eq!(commits[1].changed, vec!["src/a.rs".to_string()]);
         assert_eq!(commits[1].added, vec!["src/with\"quote.rs".to_string()]);
     }
 
-    #[test]
-    fn without_a_previous_map_everything_is_read() {
-        assert_eq!(plan(Path::new("."), None), Plan::Full);
-        let other_build = ProjectModel {
-            state: crate::model::ScanState { format: "0.0.0+old".to_string(), head: "x".to_string(), ..Default::default() },
-            ..Default::default()
-        };
-        assert_eq!(plan(Path::new("."), Some(&other_build)), Plan::Full);
+    /// Todo bloco que a passada reaproveita, marcado por esta versão do scan.
+    fn marked_by_this_build() -> std::collections::BTreeMap<String, String> {
+        REUSED.iter().map(|block| (block.name().to_string(), FORMAT.to_string())).collect()
     }
 
-    /// Um repositório sem nenhum commit não relê o projeto inteiro para
-    /// sempre: a passada seguinte, ainda sem commit, lê só o que a anterior já
-    /// tinha marcado como não comitado, pelo selo distinto do vazio que a
-    /// passada sem commit grava.
-    #[test]
-    fn a_repository_with_no_commit_yet_is_not_read_in_full_forever() {
-        // A pasta some quando o teste termina, também quando ele quebra.
-        let dir = tempfile::Builder::new().prefix("scan-refresh-no-commit-").tempdir().expect("pasta temporária");
-        let root = dir.path();
-        let _ = git_exec::run(root, &["init", "-q"]);
-        std::fs::write(root.join("a.rs"), "fn a() {}\n").expect("a.rs");
-        std::fs::write(root.join("b.rs"), "fn b() {}\n").expect("b.rs");
+    /// A listagem do git com estes arquivos e blobs.
+    fn listing_of(files: &[(&str, &str)]) -> Listing {
+        Listing {
+            head: String::new(),
+            blobs: files.iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect(),
+            ..Listing::default()
+        }
+    }
 
-        let prev = ProjectModel {
+    /// O mapa anterior desta versão do scan, com estes arquivos de código e
+    /// os blobs que ela leu.
+    fn previous(root: &Path, files: &[(&str, &str)]) -> ProjectModel {
+        ProjectModel {
             root: canonical(root),
-            state: crate::model::ScanState {
-                format: FORMAT.to_string(),
-                head: NO_COMMIT_HEAD.to_string(),
-                dirty: vec!["a.rs".to_string(), "b.rs".to_string()],
-                ..Default::default()
-            },
+            modules: files
+                .iter()
+                .map(|(path, blob)| Module { path: path.to_string(), blob: blob.to_string(), ..Module::default() })
+                .collect(),
+            marks: marked_by_this_build(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn without_a_previous_map_or_outside_git_everything_is_read() {
+        let here = Path::new(".");
+        let now = listing_of(&[("a.rs", "1")]);
+        assert_eq!(plan(here, None, Some(&now)), Plan::Full);
+        let prev = previous(here, &[("a.rs", "1")]);
+        assert_eq!(plan(here, Some(&prev), Some(&now)), Plan::Only(BTreeSet::new()));
+        assert_eq!(plan(here, Some(&prev), None), Plan::Full, "fora do git não há blob para comparar");
+        let other_build = ProjectModel {
+            marks: REUSED.iter().map(|block| (block.name().to_string(), "0.0.0+old".to_string())).collect(),
+            ..prev
+        };
+        assert_eq!(plan(here, Some(&other_build), Some(&now)), Plan::Full);
+    }
+
+    /// Só se relê o arquivo cujo blob de agora não é o que a passada anterior
+    /// leu: o de código, o manifesto e o que não se decodificou. O lido fora
+    /// do git, sem blob, se relê sempre; o arquivo novo entra pela caminhada.
+    /// O manifesto que mudou sem mudar as dependências relê só ele.
+    #[test]
+    fn only_the_files_whose_blob_changed_are_read() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"outro\"\n").unwrap();
+        let here = temp.path();
+        let mut prev = previous(here, &[("a.rs", "1"), ("b.rs", "2"), ("c.rs", "")]);
+        prev.manifests.push(crate::model::Manifest { path: "Cargo.toml".to_string(), ..Default::default() });
+        prev.state.non_utf8 = vec!["latin.rs".to_string()];
+        prev.state.inputs = [("Cargo.toml", "9"), ("latin.rs", "7")].map(|(p, b)| (p.to_string(), b.to_string())).into();
+        let only = |files: &[&str]| Plan::Only(files.iter().map(|f| f.to_string()).collect());
+
+        let now = [("a.rs", "1"), ("b.rs", "3"), ("c.rs", "4"), ("d.rs", "5"), ("Cargo.toml", "9"), ("latin.rs", "7")];
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&now))), only(&["b.rs", "c.rs"]));
+
+        let mut touched = now;
+        touched[4] = ("Cargo.toml", "8");
+        touched[5] = ("latin.rs", "6");
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&touched))), only(&["Cargo.toml", "b.rs", "c.rs", "latin.rs"]));
+    }
+
+    /// O manifesto cujas dependências mudaram, que apareceu ou que sumiu relê
+    /// os arquivos de código sob a pasta dele, e só eles; o que apareceu ou
+    /// sumiu acima de um import global relê também os arquivos da língua dele.
+    #[test]
+    fn a_manifest_whose_dependencies_changed_reads_the_code_under_it_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let here = temp.path();
+        let csproj = |sdk: &str| format!("<Project Sdk=\"{sdk}\">\n</Project>\n");
+        for (dir, sdk) in [("api", "Microsoft.NET.Sdk"), ("web", "Microsoft.NET.Sdk.Web"), ("novo", "Microsoft.NET.Sdk")] {
+            std::fs::create_dir_all(here.join(dir)).unwrap();
+            let name = format!("{}.csproj", dir);
+            std::fs::write(here.join(dir).join(name), csproj(sdk)).unwrap();
+        }
+        let code = [("api/a.cs", "1"), ("web/b.cs", "2"), ("web/sub/c.cs", "3"), ("novo/d.cs", "4"), ("foi/e.cs", "5"), ("x.rs", "6")];
+        let mut prev = previous(here, &code);
+        for m in &mut prev.modules {
+            m.language = if m.path.ends_with(".cs") { "csharp" } else { "rust" }.to_string();
+        }
+        let manifest = |path: &str, dep: &str| crate::model::Manifest {
+            path: path.to_string(),
+            dependencies: vec![dep.to_string()],
             ..Default::default()
         };
-        match plan(root, Some(&prev)) {
-            Plan::Only(changed) => {
-                assert_eq!(changed, BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()]));
-            }
-            Plan::Full => panic!("sem commit também é um estado válido: devia ler só o não comitado, não tudo de novo"),
+        prev.manifests = vec![
+            manifest("api/api.csproj", "Microsoft.NET.Sdk"),
+            manifest("web/web.csproj", "Microsoft.NET.Sdk"),
+            manifest("foi/foi.csproj", "Microsoft.NET.Sdk"),
+        ];
+        prev.state.inputs = [("api/api.csproj", "a"), ("web/web.csproj", "w"), ("foi/foi.csproj", "f")]
+            .map(|(p, b)| (p.to_string(), b.to_string()))
+            .into();
+        let only = |files: &[&str]| Plan::Only(files.iter().map(|f| f.to_string()).collect());
+        let mut now: Vec<(&str, &str)> = code.to_vec();
+        now.extend([("api/api.csproj", "a2"), ("web/web.csproj", "w2"), ("foi/foi.csproj", "f")]);
+        assert_eq!(
+            plan(here, Some(&prev), Some(&listing_of(&now))),
+            only(&["api/api.csproj", "web/b.cs", "web/sub/c.cs", "web/web.csproj"]),
+            "o SDK do web mudou; o do api é o mesmo"
+        );
+
+        let mut came_and_went: Vec<(&str, &str)> = code.to_vec();
+        came_and_went.extend([("api/api.csproj", "a"), ("web/web.csproj", "w"), ("novo/novo.csproj", "n")]);
+        assert_eq!(
+            plan(here, Some(&prev), Some(&listing_of(&came_and_went))),
+            only(&["foi/e.cs", "foi/foi.csproj", "novo/d.cs"]),
+            "o manifesto novo e o que sumiu, sem import global embaixo"
+        );
+
+        prev.modules.iter_mut().find(|m| m.path == "novo/d.cs").unwrap().global_imports = vec!["Algo".to_string()];
+        assert_eq!(
+            plan(here, Some(&prev), Some(&listing_of(&came_and_went))),
+            only(&["api/a.cs", "foi/e.cs", "foi/foi.csproj", "novo/d.cs", "web/b.cs", "web/sub/c.cs"]),
+            "o manifesto novo acima de um import global relê a língua dele"
+        );
+    }
+
+    /// Basta um dos blocos reaproveitados sem a marca desta versão — o que
+    /// volta vazio quando o formato dele muda — para a passada ler tudo de
+    /// novo.
+    #[test]
+    fn a_block_not_filled_by_this_build_makes_the_pass_read_everything() {
+        let here = Path::new(".");
+        let prev = previous(here, &[("a.rs", "1")]);
+        let now = listing_of(&[("a.rs", "2")]);
+        assert_eq!(plan(here, Some(&prev), Some(&now)), Plan::Only(BTreeSet::from(["a.rs".to_string()])));
+        for block in REUSED {
+            let mut stale = prev.clone();
+            stale.marks.insert(block.name().to_string(), String::new());
+            assert_eq!(plan(here, Some(&stale), Some(&now)), Plan::Full, "{}", block.name());
+            stale.marks.remove(block.name());
+            assert_eq!(plan(here, Some(&stale), Some(&now)), Plan::Full, "{}", block.name());
         }
+    }
+
+    /// O arquivo que muda a leitura de todos os outros — o de atributos do
+    /// git, o do editor e a configuração dos apelidos de pasta — faz a
+    /// passada ler tudo quando muda, aparece ou some, em qualquer pasta.
+    #[test]
+    fn a_file_that_changes_every_reading_makes_the_pass_read_everything() {
+        let here = Path::new(".");
+        let mut prev = previous(here, &[("src/a.ts", "1")]);
+        let now = [("src/a.ts", "1"), ("web/.editorconfig", "5")];
+        prev.state.inputs = inputs(&listing_of(&now), &[], &[]);
+        assert_eq!(prev.state.inputs.len(), 1, "{:?}", prev.state.inputs);
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&now))), Plan::Only(BTreeSet::new()));
+
+        let changed = [("src/a.ts", "1"), ("web/.editorconfig", "6")];
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&changed))), Plan::Full, "mudou");
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&now[..1]))), Plan::Full, "sumiu");
+        let alias = [("src/a.ts", "1"), ("web/.editorconfig", "5"), ("tsconfig.json", "8")];
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&alias))), Plan::Full, "a configuração de apelidos apareceu");
     }
 }

@@ -16,6 +16,14 @@
 ;     closest the grammar has to a method declaration node.
 (import_specification (configurable_uri (uri) @import))
 (import_specification (uri) @import)
+; O prefixo de `import 'x.dart' as c;` é o nome que o import traz: a própria
+; biblioteca, escrita antes de outro nome (`c.jsonEncode()`).
+(import_specification (identifier) @imported)
+
+; O repasse: `export 'src/x.dart';`, com `show` ou `hide` ou sem, oferece a
+; quem importa o arquivo o que `src/x.dart` oferece; com `show`, só os nomes
+; escritos nele. O caminho escrito ali não é texto fixo do arquivo.
+(library_export (configurable_uri (uri) @reexport))
 
 (class_definition name: (identifier) @name) @definition.class
 ; `mixin_declaration` has NO `name:` field (node-types.json: fields = {}); the
@@ -46,8 +54,8 @@
 ; wrapped — in `method_signature` (class and extension bodies) or in
 ; `declaration` (a mixin's abstract member). A node has one parent, so the three
 ; patterns are mutually exclusive and the recorded kind never depends on match
-; order. Before this, every library function was recorded as a member and the
-; miner never saw it.
+; order. Before this, every library function was recorded as a member, and the
+; map never listed it as a function.
 (program (function_signature name: (identifier) @name) @definition.function)
 (method_signature (function_signature name: (identifier) @name) @definition.method)
 (declaration (function_signature name: (identifier) @name) @definition.method)
@@ -75,8 +83,38 @@
 ((method_signature (function_signature name: (identifier) @name) @definition.method) . (function_body) @body)
 ((method_signature (constructor_signature (identifier) @name . (formal_parameter_list)) @definition.method) . (function_body) @body)
 ((method_signature (factory_constructor_signature (identifier) @name . (formal_parameter_list)) @definition.method) . (function_body) @body)
-((method_signature (getter_signature name: (identifier) @name) @definition.method) . (function_body) @body)
-((method_signature (setter_signature name: (identifier) @name) @definition.method) . (function_body) @body)
+((method_signature (getter_signature name: (identifier) @name) @definition.property) . (function_body) @body)
+((method_signature (setter_signature name: (identifier) @name) @definition.property) . (function_body) @body)
+
+; Campos, propriedades e itens de enumeração — membros do tipo que os
+; contém, como os métodos. Cada nome declarado no corpo de uma classe, de um
+; mixin, de uma extensão ou de uma enumeração é um campo (`final int limite =
+; 10;`, `late String nome;`, os dois de `int a, b;`, o `static final`); o
+; `static const` segue constante, no padrão de cima. O `get` e o `set` sem
+; corpo (o abstrato) são propriedade, como os com corpo, logo acima. Cada item
+; de uma enumeração é um membro dela. O tipo que os contém vai escrito como
+; dono (`@owner`), porque o tipo escrito numa linha só (`enum Estado { aberto,
+; fechado }`) tem a mesma faixa que eles.
+(class_definition name: (identifier) @owner body: (class_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(class_definition name: (identifier) @owner body: (class_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(mixin_declaration (identifier) @owner (class_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(mixin_declaration (identifier) @owner (class_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(extension_declaration name: (identifier) @owner body: (extension_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(extension_declaration name: (identifier) @owner body: (extension_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(enum_declaration name: (identifier) @owner body: (enum_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(enum_declaration name: (identifier) @owner body: (enum_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(enum_declaration name: (identifier) @owner body: (enum_body
+  (enum_constant name: (identifier) @name) @definition.enum_member))
+(declaration (getter_signature name: (identifier) @name) @definition.property)
+(declaration (setter_signature name: (identifier) @name) @definition.property)
 
 ; Library — a `part` file shares one library with its owner and imports
 ; nothing, so each side is an import of the other: `part 'x.dart';` in the
@@ -91,3 +129,30 @@
 ; declaration it adorns: the engine passes over it to find the doc comment
 ; above, starts the header after it, and reads no call out of it.
 (annotation) @decoration
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(initialized_variable_definition name: (identifier) @local)
+(formal_parameter name: (identifier) @local)
+
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`xs.map(dobro)`, `onPressed: salvar`), como valor de uma
+; variável (`final f = dobro;`) ou à direita de uma atribuição. O motor liga o
+; nome só a uma função ou a um método à vista.
+(argument (identifier) @call.value)
+(named_argument (identifier) @call.value)
+(initialized_variable_definition value: (identifier) @call.value)
+(assignment_expression right: (identifier) @call.value)
+
+; O membro escrito depois do objeto, sem chamada ali: o campo ou a
+; propriedade lida ou escrita (`pedido.total`, `this.total`), também pelo
+; acesso opcional (`pedido?.total`). O motor liga o nome só a um campo ou a
+; uma propriedade, como liga a chamada de método escrita depois do mesmo
+; objeto.
+(unconditional_assignable_selector (assignable_operator) . (identifier) @member)
+(conditional_assignable_selector (assignable_operator) . (identifier) @member)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string_literal) @text

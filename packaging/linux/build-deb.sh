@@ -10,7 +10,6 @@
 #
 # Layout instalado pelo .deb:
 #   /usr/lib/mustard/bin/        os binários do CLI
-#   /usr/lib/mustard/templates/  a carga do `mustard init`
 # E o postinst cria os symlinks em /usr/bin para tudo entrar no PATH.
 #
 # The .deb used to be built by EXTRACTING the one the desktop-app bundler
@@ -18,12 +17,6 @@
 # webkit2gtk/gtk `Depends` came from. That bundler is gone: the tree below is
 # written from scratch, and the dependency list shrank to the C runtime every
 # Rust binary already needs.
-#
-# Por que /usr/lib/mustard/bin + symlinks (e não /usr/bin direto): o mustard
-# resolve a pasta templates como `<dir-do-exe>/../templates`. Com os binários
-# reais juntos em /usr/lib/mustard/bin, `../templates` aponta para
-# /usr/lib/mustard/templates. current_exe() resolve o symlink para o caminho
-# real, então a resolução funciona via /usr/bin também.
 #
 # Montagens esperadas (feitas pelo build-packages.ps1):
 #   /work   -> repo (somente leitura efetiva; copiamos para /build)
@@ -38,19 +31,79 @@ CARGO_TARGET=/tmp/cli-target
 
 CLI_BINS="scan mustard-rt mustard"
 
-# O commit, a marca de mudança (dirty) e a data do commit — lidos no
-# repositório ORIGINAL, ANTES da cópia abaixo deixar a pasta .git para trás.
-# Sem .git na área de build, o `git_describe` de cada build.rs (apps/rt,
-# apps/cli) não acha o commit ali; estas três variáveis, lidas aqui e
-# entregues ao `cargo build` mais abaixo, são o que ele lê antes de tentar o
+# O estado do código que vai ser compilado, lido no repositório ORIGINAL,
+# ANTES da cópia abaixo deixar a pasta .git para trás. Sem .git na área de
+# build, o `git_describe` de cada build.rs (apps/rt, apps/cli) não acha o
+# commit ali; as quatro variáveis MUSTARD_GIT_* que `read_git_stamp` põe, e que
+# `build_cli` entrega ao `cargo build`, são o que ele lê antes de tentar o
 # git — sem elas, cada build.rs segue como hoje (versão só com o número).
-MUSTARD_GIT_HASH=$(git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo "")
-MUSTARD_GIT_DIRTY=""
-MUSTARD_GIT_DATE=""
-if [ -n "$MUSTARD_GIT_HASH" ]; then
-  git -C "$REPO" diff --quiet HEAD 2>/dev/null || MUSTARD_GIT_DIRTY="1"
-  MUSTARD_GIT_DATE=$(git -C "$REPO" log -1 --format=%cs 2>/dev/null || echo "")
+#
+# O sujo e o resumo são os que o `tree_state` do núcleo (packages/core/src/io/
+# tree_state.rs) calcula, e o resumo é a mesma conta: sujo é arquivo rastreado
+# diferente do commit OU arquivo novo que o git não ignora (o `git diff
+# --quiet HEAD` de antes não via o arquivo novo); o resumo são os 12 primeiros
+# hexadecimais do SHA-256 de `tracked\0`, do `git diff --binary HEAD` sem
+# as bordas em branco e, para cada arquivo novo em ordem de bytes, de
+# `\0untracked\0<caminho>\0<conteúdo>`. Pasta limpa tem resumo vazio.
+#
+# `read_git_stamp <repositório>` deixa MUSTARD_GIT_HASH, MUSTARD_GIT_DIRTY ("1"
+# ou vazio), MUSTARD_GIT_DATE e MUSTARD_GIT_DIFF preenchidos; sem git ou sem
+# commit, os quatro ficam vazios, e quem não consegue ler a pasta não a afirma
+# suja.
+read_git_stamp() {
+  local repo="$1" top tracked fresh_file name digest
+  MUSTARD_GIT_HASH=$(git -C "$repo" rev-parse --short=12 HEAD 2>/dev/null || echo "")
+  MUSTARD_GIT_DIRTY=""
+  MUSTARD_GIT_DATE=""
+  MUSTARD_GIT_DIFF=""
+  [ -n "$MUSTARD_GIT_HASH" ] || return 0
+  MUSTARD_GIT_DATE=$(git -C "$repo" log -1 --format=%cs 2>/dev/null || echo "")
+  top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || return 0
+  tracked=$(git -C "$repo" -c color.ui=never diff --binary --no-ext-diff --no-textconv HEAD 2>/dev/null) || return 0
+  # Sem as bordas em branco, como o `trim` do núcleo: a substituição de comando
+  # já tirou as quebras de linha do fim, faltam os espaços e as tabelas.
+  while [ -n "$tracked" ] && [[ "${tracked: -1}" == [[:space:]] ]]; do tracked=${tracked%?}; done
+  fresh_file=$(mktemp)
+  if ! git -C "$repo" ls-files --others --exclude-standard --full-name -z -- ":/" 2>/dev/null \
+      | LC_ALL=C sort -z > "$fresh_file"; then
+    rm -f "$fresh_file"
+    return 0
+  fi
+  if [ -z "$tracked" ] && [ ! -s "$fresh_file" ]; then
+    rm -f "$fresh_file"
+    return 0
+  fi
+  digest=$(
+    {
+      printf 'tracked\0'
+      printf '%s' "$tracked"
+      while IFS= read -r -d '' name; do
+        printf '\0untracked\0%s\0' "$name"
+        cat -- "$top/$name" 2>/dev/null || true
+      done < "$fresh_file"
+    } | sha256sum | cut -c1-12
+  )
+  rm -f "$fresh_file"
+  MUSTARD_GIT_DIRTY="1"
+  MUSTARD_GIT_DIFF="$digest"
+}
+
+# Compila os binários do CLI na área de build, com a versão e as quatro
+# variáveis do commit que `read_git_stamp` deixou.
+build_cli() {
+  ( cd "$BUILD" && CARGO_TARGET_DIR="$CARGO_TARGET" MUSTARD_RELEASE_VERSION="$VERSION" \
+      MUSTARD_GIT_HASH="$MUSTARD_GIT_HASH" MUSTARD_GIT_DIRTY="$MUSTARD_GIT_DIRTY" \
+      MUSTARD_GIT_DATE="$MUSTARD_GIT_DATE" MUSTARD_GIT_DIFF="$MUSTARD_GIT_DIFF" \
+      cargo build --release --locked \
+        --bin scan --bin mustard-rt --bin mustard )
+}
+
+# Carregado por `source` (o teste das funções acima), só elas ficam definidas.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
 fi
+
+read_git_stamp "$REPO"
 
 echo "==> [1/5] copiando o repo para área de build isolada ($BUILD)"
 mkdir -p "$BUILD"
@@ -76,10 +129,7 @@ echo "    versão: $VERSION"
 
 # --- 2. binários (workspace) ------------------------------------------------
 echo "==> [2/5] cargo build --release (CLI)"
-( cd "$BUILD" && CARGO_TARGET_DIR="$CARGO_TARGET" MUSTARD_RELEASE_VERSION="$VERSION" \
-    MUSTARD_GIT_HASH="$MUSTARD_GIT_HASH" MUSTARD_GIT_DIRTY="$MUSTARD_GIT_DIRTY" MUSTARD_GIT_DATE="$MUSTARD_GIT_DATE" \
-    cargo build --release --locked \
-      --bin scan --bin mustard-rt --bin mustard )
+build_cli
 
 # --- 3. rtk (a release fixa do checksums.txt, conferida) -------------------
 # A versão e a soma de cada pacote moram no checksums.txt da raiz. O pacote
@@ -106,16 +156,14 @@ echo "==> [4/5] montando o .deb"
 MERGE=/tmp/merge
 rm -rf "$MERGE"
 mkdir -p "$MERGE/DEBIAN" \
-         "$MERGE/usr/lib/mustard/bin" \
-         "$MERGE/usr/lib/mustard/templates"
+         "$MERGE/usr/lib/mustard/bin"
 
-# 4a. binários + rtk + templates.
+# 4a. binários + rtk.
 for b in $CLI_BINS; do
   cp "$CARGO_TARGET/release/$b" "$MERGE/usr/lib/mustard/bin/$b"
 done
 cp "$RTK" "$MERGE/usr/lib/mustard/bin/rtk"
 chmod 0755 "$MERGE"/usr/lib/mustard/bin/*
-cp -R "$BUILD/apps/cli/templates/." "$MERGE/usr/lib/mustard/templates/"
 
 # 4a-bis. o passo do plugin. Ele NÃO fica em bin/ de propósito: bin/ inteiro
 # entra no PATH via symlinks em /usr/bin (passo 5c), e este script não é um

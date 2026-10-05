@@ -7,7 +7,8 @@
 use std::fmt::Write as _;
 
 use super::segment::{
-    context_segment, duration_segment, model_segment, mustard_segment, savings_segment, Segment, SegmentKind,
+    context_segment, duration_segment, model_segment, mustard_segment, savings_segment, spend_indicator, Segment,
+    SegmentKind,
 };
 use super::theme::{render_line, ThemeId};
 use crate::shared::rtk_gain::RtkGain;
@@ -15,9 +16,10 @@ use mustard_core::SupportedLocale;
 
 /// O exemplo fixo: a barra aprovada, de uma sessão no levantamento, com os
 /// rótulos em `lang`. O tempo, o uso da conversa, a versão do Mustard, a
-/// economia do rtk e o modelo saem dos próprios construtores; o projeto, a
-/// branch e a spec são forjados, porque os construtores deles leem o estado
-/// vivo.
+/// economia do rtk, o indicador do consumo (menos 25% contra a média, sem
+/// link, porque a prévia não tem painel) e o modelo saem dos próprios
+/// construtores; o projeto, a branch e a spec são forjados, porque os
+/// construtores deles leem o estado vivo.
 fn synthetic_segments(lang: SupportedLocale) -> Vec<Segment> {
     let payload = serde_json::json!({
         "model": { "display_name": "Opus 5 (1M context)" },
@@ -34,6 +36,7 @@ fn synthetic_segments(lang: SupportedLocale) -> Vec<Segment> {
     segs.extend(duration_segment(&payload));
     segs.push(mustard_segment());
     segs.extend(savings_segment(Some(&RtkGain { saved: 356_500_000, pct: 64.0 }), lang));
+    segs.push(spend_indicator(-25, None, lang));
     segs.push(model_segment(&payload));
     segs
 }
@@ -68,8 +71,8 @@ mod tests {
     use crate::commands::statusline::theme::ThemeId;
 
     /// A prévia acompanha a barra: o exemplo aprovado, com a fase, o uso da
-    /// conversa, o tempo em horas, a versão do Mustard e a economia do rtk no
-    /// idioma pedido, e sem o custo.
+    /// conversa, o tempo em horas, a versão do Mustard, a economia do rtk e o
+    /// indicador do consumo no idioma pedido, e sem o custo.
     #[test]
     fn synthetic_segments_follow_the_approved_example() {
         let text = |lang| synthetic_segments(lang).iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("  ");
@@ -79,11 +82,12 @@ mod tests {
             format!(
                 "portal-florestal-backend  \u{2387} feature/pi-kpis-plantio ?1  \u{25b8} levantamento  \
                  \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 24%  5h49m  \
-                 Mustard {version}  \u{26A1} rtk poupou 64%  Opus 5 (1M context)"
+                 Mustard {version}  \u{26A1} rtk poupou 64%  consumo \u{2212}25% vs média de 7 dias  Opus 5 (1M context)"
             )
         );
         let english = text(SupportedLocale::EnUs);
         assert!(english.contains("\u{25b8} survey  ") && english.contains("\u{26A1} rtk saved 64%"), "{english}");
+        assert!(english.contains("usage \u{2212}25% vs 7-day average  Opus 5"), "{english}");
     }
 
     /// A barra tem mais de um tema, alguns pedem a fonte especial e outros
@@ -106,6 +110,17 @@ mod tests {
             ThemeId::ALL.iter().map(|id| (id.name(), id.theme().requires_nerdfont)).collect();
         assert_eq!(labels, expected, "{shown}");
         assert_eq!(shown.lines().filter(|line| line.starts_with("  ")).count(), ThemeId::ALL.len(), "{shown}");
+    }
+
+    /// A prévia mostra o indicador do consumo em cada tema, no idioma do
+    /// projeto, com o exemplo de menos 25% contra a média.
+    #[test]
+    fn the_preview_shows_the_consumption_indicator_on_every_theme() {
+        let shown = preview_text(SupportedLocale::PtBr);
+        let with_it = shown.lines().filter(|line| line.starts_with("  ") && line.contains("consumo \u{2212}25% vs média de 7 dias")).count();
+        assert_eq!(with_it, ThemeId::ALL.len(), "{shown}");
+        let english = preview_text(SupportedLocale::EnUs);
+        assert!(english.lines().filter(|line| line.contains("usage \u{2212}25% vs 7-day average")).count() == ThemeId::ALL.len(), "{english}");
     }
 
     #[test]

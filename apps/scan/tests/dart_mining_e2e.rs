@@ -16,31 +16,27 @@
 //!   (c) `lib/counter.g.dart` is classed `generated` by the `**/*.g.dart`
 //!       path marker, so it is excluded from the source/stack mining surface.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 use mustard_core::domain::vocabulary::stacks::CONFIDENCE_TWO_CLASSES;
 
-/// A committed fixture root, resolved from the crate manifest dir so the test
+/// The committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+fn fixture() -> PathBuf {
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join("flutter_app")
 }
 
-/// Scan a fixture into a temp `grain.model.json` and return (temp dir, parsed
+/// Scan the fixture into a temp map and return (temp dir, parsed
 /// model). Mirrors `stack_detection_e2e.rs`: a temp dir owned by the test,
 /// removed at the end.
-fn scan_fixture(name: &str, label: &str) -> (tempfile::TempDir, serde_json::Value) {
-    let temp = tempfile::Builder::new().prefix(&format!("scan-dart-{}-", label)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
+fn scan_fixture() -> (tempfile::TempDir, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix("scan-dart-").tempdir().unwrap();
+    let (v, _) = model::scan(&fixture(), temp.path(), &[]);
     (temp, v)
 }
 
@@ -57,9 +53,11 @@ fn strings(v: &serde_json::Value) -> Vec<&str> {
     v.as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect()
 }
 
+/// One scan of the fixture, checked in three parts: (a) the module is mined,
+/// (b) the stack is named, (c) the generated file is classed apart.
 #[test]
-fn dart_module_is_mined_with_nonempty_declarations_and_imports() {
-    let (_dir, v) = scan_fixture("flutter_app", "mine");
+fn flutter_app_is_mined_its_stack_detected_and_its_generated_file_classed() {
+    let (_dir, v) = scan_fixture();
 
     // The hand-written entrypoint, mined by the generic Dart query (NOT the
     // empty agnostic fallback).
@@ -89,12 +87,6 @@ fn dart_module_is_mined_with_nonempty_declarations_and_imports() {
         "the material import is mined: {imports:?}"
     );
 
-}
-
-#[test]
-fn flutter_stack_detected_with_high_confidence() {
-    let (_dir, v) = scan_fixture("flutter_app", "stack");
-
     // (b) The registry-driven engine names exactly `flutter`, with confidence
     // at least the two-class tier (here all three classes converge → the high
     // tier; assert the floor so the test survives a tier-constant tweak).
@@ -116,12 +108,6 @@ fn flutter_stack_detected_with_high_confidence() {
     assert!(signals.iter().any(|s| s.starts_with("path:")), "a path marker fired: {signals:?}");
     assert!(signals.iter().any(|s| s.starts_with("code:")), "a code signature fired: {signals:?}");
 
-}
-
-#[test]
-fn generated_dart_file_is_classed_generated() {
-    let (_dir, v) = scan_fixture("flutter_app", "generated");
-
     // (c) The `**/*.g.dart` path marker classes the build_runner output as
     // generated, with the matching marker recorded as provenance — so it is
     // demoted out of the source/stack mining surface.
@@ -138,5 +124,4 @@ fn generated_dart_file_is_classed_generated() {
     let stacks = v["detected_stacks"].as_array().expect("model carries detected_stacks");
     assert_eq!(stacks.len(), 1, "exactly one stack, from hand-written code: {stacks:?}");
     assert_eq!(stacks[0]["name"], "flutter");
-
 }

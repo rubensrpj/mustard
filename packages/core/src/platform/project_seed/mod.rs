@@ -4,7 +4,7 @@
 //!
 //! One capability, shared by every installer face: lay the Mustard footprint
 //! down in a project — the harness settings, Mustard's own texts (the session
-//! map under `.claude/mustard/` and the three agents under
+//! map under `.claude/mustard/` and the two agents under
 //! `.claude/agents/mustard/`), `.claude/.gitignore`, and the single
 //! project-root `mustard.json` — idempotently, and **merge-first for what the
 //! OPERATOR owns**: an existing settings file, `.claude/.gitignore` or
@@ -69,8 +69,8 @@ pub mod settings;
 pub use cleanup::{CleanupDone, CleanupPlan, PendingList};
 pub use files::{
     default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations,
-    project_page_template_path, same_declared_path, seed_gitignore, seed_harness_texts,
-    session_map_declared_path,
+    project_page_template_path, refresh_agent_texts, same_declared_path, seed_gitignore,
+    seed_harness_texts, session_map_declared_path,
 };
 pub use footprint::{
     carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
@@ -193,6 +193,17 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl UpsertReport {
+    /// `mustard.json` changed after this report was made, by a later step of
+    /// the same install, like the answers `run upsert` records: it moves from
+    /// `preserved` to `updated`. A file this run created stays created.
+    pub fn record_mustard_json_change(&mut self) {
+        if self.created.iter().chain(&self.updated).any(|name| name == MUSTARD_JSON) {
+            return;
+        }
+        self.preserved.retain(|name| name != MUSTARD_JSON);
+        self.updated.push(MUSTARD_JSON.to_string());
+    }
+
     /// Fold one file's [`SeedOutcome`] into the matching list.
     fn record(&mut self, name: &str, outcome: SeedOutcome) {
         let list = match outcome {
@@ -228,7 +239,8 @@ impl UpsertReport {
 /// 2. the settings file — seed when absent, backfill missing top-level keys
 ///    when present, with the point migrations of [`seed_settings`], rtk's hook
 ///    following `mustard.json#rtk`, Claude Code's signature kept off and the
-///    response style of `language.text` chosen;
+///    response style of `language.text` chosen — and, in either mode, the
+///    folder of the project's separate copies allowed in the local settings;
 /// 3. Mustard's own texts — the compiled-in body of each is written every
 ///    time;
 /// 4. `.claude/.gitignore` — created when absent, and when present the pattern
@@ -325,11 +337,10 @@ pub fn upsert_project_with(
     //       which take no mode: they are always rewritten.
     let config = ProjectConfig::load(root);
     let text = config.language().text_or_default();
-    report.record(
-        settings::settings_footprint(mode),
-        seed_settings(&claude_dir, false, mode, config.rtk(), text)?,
-    );
-    for (rel, outcome) in seed_harness_texts(&claude_dir, text)? {
+    for (name, outcome) in seed_settings(&claude_dir, false, mode, config.rtk(), text)? {
+        report.record(name, outcome);
+    }
+    for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_settings())? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
@@ -353,6 +364,11 @@ pub fn upsert_project_with(
 
     Ok(report)
 }
+
+/// A medida do texto que o modelo lê, a mesma do teste do limite.
+#[cfg(test)]
+#[path = "../../../tests/support/prose_budget.rs"]
+mod prose_budget;
 
 #[cfg(test)]
 mod tests {
@@ -378,13 +394,12 @@ mod tests {
             report.created,
             vec![
                 ".claude/settings.json",
+                ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
                 ".claude/mustard/pages/spec.html",
                 ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
-                ".claude/agents/mustard/skill.md",
-                ".claude/agents/mustard/wave-solo.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -429,6 +444,173 @@ mod tests {
         assert_eq!(config.version, None, "no stamp when the caller withheld a version");
     }
 
+    /// O valor da linha `key:` do cabeçalho de cada agente instalado em
+    /// `root`, na ordem onda, revisão.
+    fn installed_agent_header(root: &Path, key: &str) -> Vec<String> {
+        ["wave", "review"]
+            .iter()
+            .map(|name| {
+                let text = std_fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+                let header = text.split("\n---\n").next().unwrap();
+                let prefix = format!("{key}: ");
+                header.lines().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_default().to_string()
+            })
+            .collect()
+    }
+
+    fn installed_agent_models(root: &Path) -> Vec<String> {
+        installed_agent_header(root, "model")
+    }
+
+    fn installed_agent_efforts(root: &Path) -> Vec<String> {
+        installed_agent_header(root, "effort")
+    }
+
+    fn written_config(root: &Path) -> Value {
+        serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap()
+    }
+
+    /// A instalação nova escreve o modelo padrão em `agents.model` e no
+    /// cabeçalho dos dois agentes; com um modelo já declarado, ela o mantém
+    /// no arquivo e o escreve nos agentes; e a linha do arquivo, trocada, muda
+    /// os dois agentes na instalação seguinte. Um modelo que um cabeçalho não
+    /// aceita fica onde está, e os agentes recebem o padrão.
+    #[test]
+    fn the_agents_are_installed_with_the_model_the_project_declares() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(written_config(root)["agents"]["model"], json!("sonnet"));
+        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#)
+            .unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        let config = written_config(root);
+        assert_eq!(config["agents"]["model"], json!("opus"), "the declared model is kept");
+        assert_eq!(config["acronyms"], json!(["PI"]));
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5"}}"#).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "claude-sonnet-5-5"]);
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"opus\neffort: low"}}"#).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        let text = std_fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(!text.contains("effort: low"), "a model with a line break wrote another key: {text}");
+        assert_eq!(written_config(root)["agents"]["model"], json!("opus\neffort: low"), "what the person wrote stays");
+    }
+
+    /// A instalação nova escreve o esforço padrão em `agents.effort` e no
+    /// cabeçalho dos dois agentes; com um esforço já declarado, ela o mantém
+    /// no arquivo e o escreve nos agentes; e a linha do arquivo, trocada, muda
+    /// os dois agentes na instalação seguinte. Um esforço fora da lista que o
+    /// Claude Code aceita, ou com quebra de linha, fica onde está no arquivo, e
+    /// os agentes recebem o padrão, sem outra chave escrita no cabeçalho.
+    #[test]
+    fn the_agents_are_installed_with_the_effort_the_project_declares() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(written_config(root)["agents"], json!({"model": "sonnet", "effort": "xhigh"}));
+        assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
+
+        for effort in ["low", "medium", "high", "max"] {
+            std_fs::write(
+                root.join("mustard.json"),
+                format!(r#"{{"version":"9.9.9","acronyms":["PI"],"agents":{{"effort":"{effort}"}}}}"#),
+            )
+            .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(installed_agent_efforts(root), [effort, effort], "the agents did not take `{effort}`");
+            let config = written_config(root);
+            assert_eq!(config["agents"], json!({"model": "sonnet", "effort": effort}), "the declared effort is kept");
+            assert_eq!(config["acronyms"], json!(["PI"]));
+            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "the model line was touched");
+        }
+
+        for invalid in ["ultra", "", "high\nmodel: opus", "high max"] {
+            std_fs::write(
+                root.join("mustard.json"),
+                serde_json::to_string(&json!({"version": "9.9.9", "agents": {"effort": invalid}})).unwrap(),
+            )
+            .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"], "`{invalid}` reached the agents");
+            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "`{invalid}` wrote the model line");
+            assert_eq!(written_config(root)["agents"]["effort"], json!(invalid), "what the person wrote stays");
+            let text = std_fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
+            let header = text.split("\n---\n").next().unwrap();
+            assert_eq!(header.matches("effort:").count(), 1, "{header}");
+        }
+    }
+
+    /// Os agentes de onda e de revisão são instalados sem os arquivos de
+    /// instrução da conversa principal, nos dois idiomas: o Claude Code põe na conversa de todo
+    /// agente o `MEMORY.md` do projeto junto dos `CLAUDE.md`, cerca de 7 mil
+    /// tokens relidos a cada passo, e só a chave `omitClaudeMd` do cabeçalho
+    /// tira os dois. O agente de onda lê tudo o que precisa do pedido; o de
+    /// revisão também leva a chave e recebe as regras do projeto dentro do
+    /// pedido, sem a memória escrita para quem conduz a obra. Trocar o modelo
+    /// e o esforço declarados não mexe na chave.
+    #[test]
+    fn the_wave_agent_is_installed_without_the_instruction_files_of_the_main_conversation() {
+        for text in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str()))
+                .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} install");
+
+            std_fs::write(
+                root.join("mustard.json"),
+                format!(
+                    r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low"}}}}"#,
+                    text.as_str()
+                ),
+            )
+            .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(installed_agent_models(root), ["opus", "opus"], "the {text} model change");
+            assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} reinstall");
+        }
+    }
+
+    /// Um `mustard.json` de antes dos campos ganha `agents.model` e
+    /// `agents.effort` com os padrões na atualização, e nada do que ele já
+    /// tinha se perde; o que a pessoa já declarou em `agents` fica como está.
+    #[test]
+    fn an_older_config_gains_the_agent_model_and_effort_and_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","acronyms":["PI"],"language":{"text":"en-US"},"agents":{"note":"mine"}}"#,
+        )
+        .unwrap();
+
+        let report = upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
+
+        assert!(report.updated.iter().any(|name| name == "mustard.json"), "{report:?}");
+        let config = written_config(root);
+        assert_eq!(config["agents"], json!({"model": "sonnet", "effort": "xhigh", "note": "mine"}));
+        assert_eq!(config["acronyms"], json!(["PI"]));
+        assert_eq!(config["language"], json!({"text": "en-US"}));
+        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
+
+        // A configuração da onda anterior, com o modelo e sem o esforço,
+        // ganha só o esforço.
+        std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","agents":{"model":"opus"}}"#).unwrap();
+        upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
+        assert_eq!(written_config(root)["agents"], json!({"model": "opus", "effort": "xhigh"}));
+        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
+    }
+
     #[test]
     fn upsert_is_idempotent_second_run_preserves_all() {
         let dir = tempdir().unwrap();
@@ -444,17 +626,91 @@ mod tests {
             second.preserved,
             vec![
                 ".claude/settings.json",
+                ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
                 ".claude/mustard/pages/spec.html",
                 ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
-                ".claude/agents/mustard/skill.md",
-                ".claude/agents/mustard/wave-solo.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
         );
+    }
+
+    /// Instalar e atualizar deixa na pasta dos agentes do Mustard só os dois
+    /// de hoje — onda e revisão —, no idioma do projeto, nos dois idiomas. O
+    /// projeto de uma versão antiga, que ainda tem o agente de onda de tarefa
+    /// única e o que escrevia skills, perde os dois arquivos na atualização,
+    /// que diz o que tirou; o agente do projeto com o mesmo nome, fora da
+    /// pasta do Mustard, fica como está; e a atualização seguinte não tem mais
+    /// nada a tirar. O produto não traz mais o molde deles em idioma nenhum, e
+    /// o texto que o modelo lê fica abaixo de 25.600 bytes em cada idioma,
+    /// pela mesma medida do teste do limite.
+    #[test]
+    fn an_update_removes_the_retired_single_task_wave_agent() {
+        let today = ["review.md", "wave.md"];
+        let files_in = |dir: &Path| -> Vec<String> {
+            let mut names: Vec<String> = std_fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        for text in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str()))
+                .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            let agents = root.join(".claude/agents/mustard");
+            assert_eq!(files_in(&agents), today, "the {text} install seeds another set of agents");
+
+            // A instalação antiga: o agente de tarefa única e o que escrevia
+            // skills ainda na pasta do Mustard, e um agente do próprio
+            // projeto com o mesmo nome de cada um.
+            let mut own = Vec::new();
+            for retired in ["wave-solo", "skill"] {
+                std_fs::write(agents.join(format!("{retired}.md")), format!("---\nname: mustard-{retired}\n---\n\nO molde antigo.\n"))
+                    .unwrap();
+                let body = format!("---\nname: {retired}\n---\n\nO agente do projeto.\n");
+                std_fs::write(root.join(format!(".claude/agents/{retired}.md")), &body).unwrap();
+                own.push((retired, body));
+            }
+
+            let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(files_in(&agents), today, "the {text} update left the retired agent behind");
+            for (name, body) in crate::platform::seeds::agent_texts(text) {
+                assert_eq!(std_fs::read_to_string(agents.join(format!("{name}.md"))).unwrap(), body, "{text} `{name}`");
+            }
+            assert_eq!(
+                report.migrated,
+                vec![
+                    ".claude/agents/mustard/wave-solo.md (retired agent)".to_string(),
+                    ".claude/agents/mustard/skill.md (retired agent)".to_string(),
+                ],
+                "the {text} update does not say what it took out",
+            );
+            for (retired, body) in &own {
+                assert_eq!(
+                    std_fs::read_to_string(root.join(format!(".claude/agents/{retired}.md"))).unwrap(),
+                    *body,
+                    "the project's own `{retired}` agent changed",
+                );
+            }
+
+            let again = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert!(again.migrated.is_empty(), "nothing is left to retire: {:?}", again.migrated);
+        }
+
+        for lang in ["pt-BR", "en-US"] {
+            let shipped = crate::manifest_dir::manifest_dir().join("templates/agents").join(lang);
+            assert_eq!(files_in(&shipped), today, "the product still ships another {lang} agent template");
+        }
+        prose_budget::assert_each_language_under_budget();
     }
 
     // --- upsert_project: merge over user files -------------------------------

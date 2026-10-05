@@ -88,7 +88,6 @@ spec/*/change-log.md
 spec/*/change-requests.ndjson
 
 spec/*/.memory-approved
-spec/*/.cut-base
 spec/*/qa-report.json
 spec/*/qa-report.html
 # A cópia de uma spec para o banco de dados da página publicada dela, refeita

@@ -7,6 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::io::fs;
+use mustard_core::platform::code_tools::{
+    code_tool_for_language, read_pinned_version, CodeTool, MachineRunner, PinState, ToolRunner,
+};
 
 use super::{CheckResult, Status};
 
@@ -47,45 +50,31 @@ pub(super) fn check_claude_cli() -> CheckResult {
     )
 }
 
-/// Look up `binary` in the directories listed in the `PATH` environment
-/// variable. On Windows, also probes with the `.exe` suffix. Fail-open:
-/// any lookup error returns `false`.
-fn which(binary: &str) -> bool {
+/// Check that each detected language's code-tool program is present on
+/// `PATH` and answers — the table `packages/core/src/platform/code_tools.rs`
+/// shares with `mustard init`, so a language a plugin can drive here is the
+/// same one the install tried to set up, checked the same way, through the
+/// machine's runner.
+pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
     let path_var = std::env::var("PATH").unwrap_or_default();
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
-    for dir in path_var.split(sep) {
-        let candidate = std::path::Path::new(dir).join(binary);
-        if candidate.exists() {
-            return true;
-        }
-        // Windows: also try with .exe suffix.
-        #[cfg(target_os = "windows")]
-        {
-            let exe = std::path::Path::new(dir).join(format!("{binary}.exe"));
-            if exe.exists() {
-                return true;
-            }
-        }
-    }
-    false
+    lsp_verdict(project_dir, &MachineRunner::new(&path_var))
 }
 
-/// Check that each detected language's code-tool program is present on
-/// `PATH` — the table `packages/core/src/platform/code_tools.rs` shares with
-/// `mustard init`, so a language a plugin can drive here is the same one the
-/// install tried to set up.
-pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
+/// O veredito de [`lsp_check`] com quem roda os comandos (`runner`): o
+/// programa que falta e o que está no `PATH` sem responder à conferência da
+/// tabela ([`CodeTool::answers`]) viram aviso, com o comando que instala; o
+/// que está instalado em outra versão que não a fixada na tabela também, com o
+/// comando que a atualiza. A versão é lida pela mesma função da instalação
+/// ([`read_pinned_version`]), só lendo: o diagnóstico nunca atualiza nada.
+fn lsp_verdict(project_dir: &Path, runner: &impl ToolRunner) -> CheckResult {
     let model_path = mustard_core::io::project_map::model_path(project_dir);
     let languages = mustard_core::platform::code_tools::detect_code_languages(project_dir, &model_path);
 
     // Only languages the catalog maps to a program, deduplicated by binary
     // (typescript + javascript both map to the same server).
-    let mapped: Vec<(&str, &str)> = languages
+    let mapped: Vec<(&str, &CodeTool)> = languages
         .iter()
-        .filter_map(|lang| {
-            mustard_core::platform::code_tools::code_tool_for_language(lang)
-                .map(|tool| (lang.as_str(), tool.program))
-        })
+        .filter_map(|lang| code_tool_for_language(lang).map(|tool| (lang.as_str(), tool)))
         .collect();
 
     if mapped.is_empty() {
@@ -95,16 +84,22 @@ pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
     let mut seen_bins: Vec<&str> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
 
-    for (lang, bin) in &mapped {
-        if seen_bins.contains(bin) {
+    for (_, tool) in &mapped {
+        let (bin, hint) = (tool.program, tool.install_cmd);
+        if seen_bins.contains(&bin) {
             continue;
         }
         seen_bins.push(bin);
-        if !which(bin) {
-            let hint = mustard_core::platform::code_tools::code_tool_for_language(lang)
-                .map(|tool| tool.install_cmd)
-                .unwrap_or_default();
+        if !runner.on_path(bin) {
             missing.push(format!("missing: {bin} (install: {hint})"));
+        } else if !tool.answers(runner) {
+            missing.push(format!("not answering: {bin} (install: {hint})"));
+        }
+        if let (PinState::Wrong { installed }, Some(pin)) = (read_pinned_version(tool, runner), &tool.pin) {
+            missing.push(format!(
+                "wrong version: {bin} {installed}, {} is the one that works (update: {})",
+                pin.version, pin.update_cmd
+            ));
         }
     }
 
@@ -215,7 +210,8 @@ pub(super) fn check_rtk() -> CheckResult {
 /// Fail-open: read errors degrade to "not detected" (WARN) rather than
 /// blocking the doctor run.
 pub(super) fn check_nerd_font() -> CheckResult {
-    let dirs = nerd_font_search_dirs();
+    // A mesma lista de pastas que o instalador de fonte confere.
+    let dirs = mustard_core::platform::fonts::font_dirs();
     if dirs.iter().any(|d| scan_for_any_nerd_font(d)) {
         return CheckResult::ok("nerd-font");
     }
@@ -241,37 +237,6 @@ pub(super) fn check_nerd_font() -> CheckResult {
                 .to_string(),
         ],
     )
-}
-
-fn nerd_font_search_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            dirs.push(
-                PathBuf::from(local)
-                    .join("Microsoft")
-                    .join("Windows")
-                    .join("Fonts"),
-            );
-        }
-        dirs.push(PathBuf::from("C:/Windows/Fonts"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
-        }
-        dirs.push(PathBuf::from("/Library/Fonts"));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
-        }
-        dirs.push(PathBuf::from("/usr/share/fonts"));
-    }
-    dirs
 }
 
 /// One level + immediate subdirectories. Match any file whose lowercased
@@ -300,6 +265,7 @@ fn scan_for_any_nerd_font(dir: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use mustard_core::platform::code_tools::RunOutcome;
     use tempfile::tempdir;
 
     use super::*;
@@ -322,6 +288,119 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         let result = lsp_check(dir.path());
         assert_ne!(result.status, Status::Skip, "{:?}", result.details);
+    }
+
+    /// Executor falso do diagnóstico: responde que cada programa de
+    /// `on_path` está no `PATH`, anota cada comando pedido e faz falhar o que
+    /// começa por `failing`.
+    struct Answering {
+        on_path: Vec<&'static str>,
+        failing: &'static str,
+        ran: std::cell::RefCell<Vec<String>>,
+        /// O que a listagem do gerenciador escreve, e as linhas de comando que
+        /// pediram a listagem.
+        listing: &'static str,
+        listed: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl ToolRunner for Answering {
+        fn on_path(&self, program: &str) -> bool {
+            self.on_path.contains(&program)
+        }
+
+        fn run(&self, program: &str, _: &[&str]) -> bool {
+            self.ran.borrow_mut().push(program.to_string());
+            self.on_path(program) && program != self.failing
+        }
+
+        fn output(&self, program: &str, args: &[&str], _: std::time::Duration) -> (RunOutcome, String) {
+            self.listed.borrow_mut().push(std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" "));
+            (RunOutcome::Succeeded, self.listing.to_string())
+        }
+
+        fn found_off_path(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    /// O servidor de TypeScript no `PATH` cuja conferência falha — o
+    /// TypeScript que ele acha não traz o `tsserver.js` — vira aviso no
+    /// diagnóstico, com o comando que instala; com a conferência passando, o
+    /// diagnóstico fica verde.
+    #[test]
+    fn lsp_check_warns_when_the_program_is_present_but_does_not_answer() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).unwrap();
+        let tool = code_tool_for_language("typescript").unwrap();
+
+        let silent = Answering {
+            on_path: vec!["typescript-language-server", "node"],
+            failing: "node",
+            ran: Default::default(),
+            listing: "",
+            listed: Default::default(),
+        };
+        let result = lsp_verdict(dir.path(), &silent);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let expected = format!("not answering: typescript-language-server (install: {})", tool.install_cmd);
+        assert_eq!(result.details, vec![expected]);
+        assert_eq!(*silent.ran.borrow(), vec!["node"], "the check ran once");
+
+        let answering = Answering {
+            on_path: vec!["typescript-language-server", "node"],
+            failing: "",
+            ran: Default::default(),
+            listing: "",
+            listed: Default::default(),
+        };
+        let result = lsp_verdict(dir.path(), &answering);
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+    }
+
+    /// O `csharp-ls` instalado em outra versão que não a 0.18.0 vira aviso no
+    /// diagnóstico, com a linha que o atualiza, mesmo respondendo; na versão
+    /// certa, o diagnóstico fica verde, e sem o dotnet nem chega a listar. O
+    /// diagnóstico só lê: o único comando que ele pede é a listagem.
+    #[test]
+    fn lsp_check_warns_when_the_installed_version_is_not_the_pinned_one() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("App.csproj"), "<Project/>\n").unwrap();
+        let update = "dotnet tool update --global csharp-ls --version 0.18.0";
+
+        let wrong = Answering {
+            on_path: vec!["csharp-ls", "dotnet"],
+            failing: "",
+            ran: Default::default(),
+            listing: "Package Id  Version  Commands\n---\ncsharp-ls  0.19.2  csharp-ls\n",
+            listed: Default::default(),
+        };
+        let result = lsp_verdict(dir.path(), &wrong);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        assert_eq!(
+            result.details,
+            vec![format!("wrong version: csharp-ls 0.19.2, 0.18.0 is the one that works (update: {update})")]
+        );
+        assert_eq!(*wrong.listed.borrow(), vec!["dotnet tool list --global"], "só a listagem foi pedida");
+        assert!(wrong.ran.borrow().is_empty(), "nada mais rodou: {:?}", wrong.ran.borrow());
+
+        let right = Answering {
+            on_path: vec!["csharp-ls", "dotnet"],
+            failing: "",
+            ran: Default::default(),
+            listing: "Package Id  Version  Commands\n---\ncsharp-ls  0.18.0  csharp-ls\n",
+            listed: Default::default(),
+        };
+        assert_eq!(lsp_verdict(dir.path(), &right).status, Status::Ok);
+
+        let without_dotnet = Answering {
+            on_path: vec!["csharp-ls"],
+            failing: "",
+            ran: Default::default(),
+            listing: "csharp-ls  0.19.2  csharp-ls\n",
+            listed: Default::default(),
+        };
+        assert_eq!(lsp_verdict(dir.path(), &without_dotnet).status, Status::Ok);
+        assert!(without_dotnet.listed.borrow().is_empty(), "sem dotnet, nada é listado");
     }
 
     #[test]

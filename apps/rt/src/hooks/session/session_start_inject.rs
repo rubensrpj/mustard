@@ -5,15 +5,21 @@
 //! texto: acrescentar um aviso é somar um item. Na ordem em que a janela os
 //! lê:
 //!
-//! 1. **O terreno** — o resumo do mapa do projeto, lido do censo do `/scan`.
-//! 2. **Os textos declarados** — as entradas `on: sessionStart` de
+//! 1. **Os textos declarados** — as entradas `on: sessionStart` de
 //!    `mustard.json#inject`, que voltam depois de `/clear` e da compactação.
-//! 3. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
+//! 2. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve; depois da compactação, o bloco de
 //!    retomada inteiro, o mesmo que o aviso antes dela mostrou.
-//! 4. **A página do projeto** — num projeto em que ela ainda não foi
+//! 3. **A página do projeto** — num projeto em que ela ainda não foi
 //!    publicada, a ordem de publicar o template dela e gravar o endereço, que
 //!    vira o link da barra de status. Com a página publicada, nada.
+//! 4. **O gasto** — em todo início de sessão, em qualquer projeto com
+//!    `mustard.json`, com ou sem spec aberta, a ordem de rodar
+//!    `mustard-rt run spend` e seguir a resposta dele: o comando conta os dias
+//!    fechados que faltam, conta hoje de novo (o dia aberto, que vai à página
+//!    como parcial) e prepara a cópia para a página do gasto. A compactação
+//!    não é um início de sessão: a sessão é a mesma, e a ordem não volta. O
+//!    gancho não conta nem lê nada do gasto: quem conta é o comando.
 //! 5. **As pendências** — uma linha só, com a contagem.
 //! 6. **O pull request da spec atual** — com a spec atual em "pull request
 //!    aberto", o provedor é perguntado só pelo pull request dela; se ele
@@ -29,28 +35,46 @@
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
 //! 8. **O disco** — as cópias descartáveis antigas acima de 5 GB.
-//! 9. **A versão velha do Mustard** — a gravada no projeto, a do plugin
-//!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
-//! 10. **Os processos presos** — o que um agente deixou rodando (um laço de
+//! 9. **O programa compilado** — só no código-fonte do Mustard: o programa
+//!    compilado da branch falta ou está atrás do commit atual. A compilação é
+//!    solta em segundo plano, sem esperar, e o aviso diz qual programa a
+//!    sessão roda até ela acabar.
+//! 10. **A versão velha do Mustard** — a gravada no projeto, a do plugin
+//!     carregado ou a do plugin instalado, quando uma delas ficou para trás.
+//! 11. **Os processos presos** — o que um agente deixou rodando (um laço de
 //!     espera, ou um comando na cópia de uma onda já apagada) é encerrado
 //!     aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
+//!
+//! Antes dos avisos, num projeto com `mustard.json`, a linha de versão do
+//! programa que roda vira a marca da versão no projeto, quando difere da
+//! última: o ponto de partida da medição do uso. Falha ao gravar não muda a
+//! sessão.
 //!
 //! ## Até 3 kB
 //!
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
 //! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
-//! qual saiu: o terreno primeiro, depois a versão, o disco, as branches
-//! mergeadas, a contagem das pendências e a página do projeto, e só então os
-//! textos declarados.
+//! qual saiu: os processos presos primeiro, depois a versão, o programa compilado,
+//! o disco, o gasto, as branches mergeadas, a contagem das pendências e a
+//! página do projeto, e só então os textos declarados.
 //! Entre os textos declarados está o mapa do início da sessão, que substitui
 //! as regras antigas: ele é o último a sair. A retomada e o relato do pull
 //! request da spec atual nunca cedem: um diz onde a spec está, o outro conta
 //! uma branch apagada e uma spec entregue.
 //!
+//! O bloco de retomada da compactação é a parte que encolhe para o mapa
+//! ficar: as listas dele cedem na ordem de
+//! [`current_block_within`](crate::commands::flow::resume::current_block_within)
+//! até ele caber ao lado do texto declarado. O mapa só sai quando nem o bloco
+//! mínimo cabe ao lado dele.
+//!
 //! ## As leituras da máquina são argumento
 //!
-//! O registro de plugins do Claude Code e o diretório temporário moram fora
-//! do projeto. O [`Check`] os lê uma vez e os entrega a [`session_start_core`],
+//! O registro de plugins do Claude Code, o diretório temporário, o arquivo
+//! do gasto e o programa compilado da branch moram fora do projeto, e o
+//! carimbo de versão é o do programa que roda, não o do projeto. O [`Check`]
+//! os lê uma vez — e solta a compilação que falta, que é o único gesto dele
+//! — e os entrega a [`session_start_core`],
 //! que decide: um teste que monta um projeto temporário entrega "nada", e a
 //! máquina de quem roda a suíte nunca entra num veredito.
 //!
@@ -66,10 +90,14 @@ use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
 use crate::commands::review::pr_door::{merged_elsewhere, MergedElsewhere};
 use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
+use crate::shared::development_build::{gap, start_in_background, Gap, Launch};
 
 /// O teto do texto que o início da sessão coloca: 3 kB. O bloco de retomada
 /// cabe nele sozinho.
 pub(crate) const MAX_BYTES: usize = 3_000;
+
+/// Os bytes que separam dois avisos: a linha em branco entre eles.
+const SEPARATOR_BYTES: usize = 2;
 
 /// Quantas branches o aviso do merge nomeia antes de só contar o resto.
 const MERGED_NAMES: usize = 4;
@@ -82,8 +110,6 @@ struct Probe<'a> {
     root: &'a Path,
     session: Option<&'a str>,
     lang: Locale,
-    /// A janela foi renovada: `/clear` ou compactação.
-    refreshed: bool,
     /// A janela foi renovada pela compactação: a retomada vem em bloco.
     compacted: bool,
     /// A versão que o registro de plugins dá como instalada, quando ele
@@ -94,6 +120,26 @@ struct Probe<'a> {
     /// O que o provedor respondeu sobre o pull request da spec atual, e o que
     /// foi feito com a resposta: a spec e o resultado.
     landing: Option<&'a (String, MergedElsewhere)>,
+    /// Os textos declarados, lidos uma vez antes dos avisos: o bloco de
+    /// retomada precisa saber quanto lugar eles tomam.
+    declared: Option<&'a str>,
+    /// O programa compilado da branch do Mustard, quando falta ou está atrás
+    /// do commit atual, e o que foi feito a respeito.
+    build: Option<&'a DevelopmentBuild>,
+    /// A máquina tem onde guardar o gasto: o comando do gasto não recusa por
+    /// falta de pasta pessoal.
+    spend: bool,
+}
+
+/// O programa compilado da branch do Mustard que falta ou está atrás do
+/// commit atual, o que foi feito a respeito e o programa que a sessão roda
+/// enquanto isso.
+struct DevelopmentBuild {
+    gap: Gap,
+    /// O que aconteceu com a compilação pedida em segundo plano.
+    launch: Launch,
+    /// O carimbo de versão do programa que roda esta sessão agora.
+    running: String,
 }
 
 /// Um aviso do início da sessão: o nome, o texto — que só existe quando a
@@ -109,46 +155,71 @@ struct Notice {
 /// item. Os textos declarados, onde mora o mapa do início da sessão, são os
 /// últimos a ceder.
 const NOTICES: &[Notice] = &[
-    Notice { name: "terrain", text: terrain_notice, cedes: Some(0) },
-    Notice { name: "declared", text: declared_notice, cedes: Some(6) },
+    Notice { name: "declared", text: declared_notice, cedes: Some(8) },
     Notice { name: "resume", text: resume_notice, cedes: None },
-    Notice { name: "project_page", text: project_page_notice, cedes: Some(5) },
-    Notice { name: "pending", text: pending_notice_of, cedes: Some(4) },
+    Notice { name: "project_page", text: project_page_notice, cedes: Some(7) },
+    Notice { name: "spend", text: spend_notice, cedes: Some(4) },
+    Notice { name: "pending", text: pending_notice_of, cedes: Some(6) },
     Notice { name: "landed", text: landed_notice, cedes: None },
-    Notice { name: "merged", text: merged_notice, cedes: Some(3) },
-    Notice { name: "disk", text: disk_notice, cedes: Some(2) },
+    Notice { name: "merged", text: merged_notice, cedes: Some(5) },
+    Notice { name: "disk", text: disk_notice, cedes: Some(3) },
+    Notice { name: "development_build", text: development_build_notice, cedes: Some(2) },
     Notice { name: "version", text: version_notice, cedes: Some(1) },
     Notice { name: "stuck", text: stuck_notice, cedes: Some(0) },
 ];
 
 impl Check for SessionStartInject {
-    /// Lê a máquina — o registro de plugins e o diretório temporário — e
-    /// entrega a leitura a [`session_start_core`], que decide.
+    /// Lê a máquina — o registro de plugins, o diretório temporário, o
+    /// programa compilado da branch e a pasta do gasto — e entrega a leitura
+    /// a [`session_start_core`], que decide.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         let scratch = ScratchProbe::from_env(input);
-        session_start_core(input, ctx, mustard_core::installed_harness_version().as_deref(), Some(&scratch))
+        let build = (ctx.trigger == Some(Trigger::SessionStart))
+            .then(|| development_build(Path::new(&ctx.project_dir_or_cwd(input))))
+            .flatten();
+        session_start_core(
+            input,
+            ctx,
+            mustard_core::installed_harness_version().as_deref(),
+            Some(&scratch),
+            build.as_ref(),
+            mustard_core::io::spend::machine_dir().is_some(),
+            Some(env!("MUSTARD_VERSION_FULL")),
+        )
     }
 }
 
 /// A metade que decide, com as leituras da máquina recebidas: `installed` é
-/// a versão que o registro de plugins dá como instalada, e `scratch` a
-/// varredura das cópias descartáveis. `None` nas duas — o que todo teste que
-/// não fala delas entrega — cala os avisos que dependem delas.
+/// a versão que o registro de plugins dá como instalada, `scratch` a
+/// varredura das cópias descartáveis, `build` o programa compilado da branch
+/// que falta ou está atrás, `spend` se a máquina tem onde guardar o gasto e
+/// `version` a linha de versão do programa que roda. `None` nas três
+/// primeiras, `false` em `spend` e `None` em `version` — o que todo teste que
+/// não fala delas entrega — calam os avisos que dependem delas, e a marca da
+/// versão não se grava.
 fn session_start_core(
     input: &HookInput,
     ctx: &Ctx,
     installed: Option<&str>,
     scratch: Option<&ScratchProbe>,
+    build: Option<&DevelopmentBuild>,
+    spend: bool,
+    version: Option<&str>,
 ) -> Result<Verdict, Error> {
     if ctx.trigger != Some(Trigger::SessionStart) {
         return Ok(Verdict::Allow);
     }
     let cwd = ctx.project_dir_or_cwd(input);
     let root = Path::new(&cwd);
+    // A marca da versão: a primeira sessão de cada compilação no projeto é o
+    // ponto de partida da medição do uso. Falha ao gravar não muda a sessão.
+    if let Some(version) = version.filter(|_| mustard_core::ProjectConfig::exists(root)) {
+        let _ = mustard_core::io::measure::record(root, version);
+    }
     // O mapa volta ao commit atual antes de qualquer aviso: um commit à mão
     // ou um pull podem ter mudado o código fora da rodada, entre uma sessão e
     // a outra.
-    crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan(root, out));
+    crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan_then_read_history(root, out));
     let session = session_of(input);
     let source = input.raw.get("source").and_then(|v| v.as_str()).unwrap_or_default();
     let compacted = source.eq_ignore_ascii_case("compact");
@@ -156,26 +227,30 @@ fn session_start_core(
     // O merge feito por outra pessoa age antes de qualquer aviso: com a spec
     // entregue e a branch arrumada, a retomada já lê o estado novo.
     let landing = spec_merged_elsewhere(root, session.as_deref());
+    let declared = injectables::collect(&root.to_string_lossy(), session.as_deref(), refreshed);
     let probe = Probe {
         root,
         session: session.as_deref(),
         lang: crate::shared::context::config::project_config_cached(root).language().text_or_default(),
-        refreshed,
         compacted,
         installed,
         scratch,
         landing: landing.as_ref(),
+        declared: declared.as_deref(),
+        build,
+        spend,
     };
-    let texts = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
+    let shown = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
+    let texts: Vec<String> = shown.into_iter().map(|(_, text)| text).collect();
     Ok(if texts.is_empty() { Verdict::Allow } else { Verdict::Inject { context: texts.join("\n\n") } })
 }
 
-/// Os textos que cabem no teto, na ordem da lista: enquanto o todo passa de
-/// [`MAX_BYTES`], sai o aviso cuja vez de ceder vem primeiro, com uma linha no
-/// stderr.
-fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<String> {
+/// Os avisos que cabem no teto, com os textos, na ordem da lista: enquanto o
+/// todo passa de [`MAX_BYTES`], sai o aviso cuja vez de ceder vem primeiro,
+/// com uma linha no stderr.
+fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<(&Notice, String)> {
     let size = |shown: &[(&Notice, String)]| {
-        shown.iter().map(|(_, text)| text.len()).sum::<usize>() + 2 * shown.len().saturating_sub(1)
+        shown.iter().map(|(_, text)| text.len()).sum::<usize>() + SEPARATOR_BYTES * shown.len().saturating_sub(1)
     };
     while size(&shown) > MAX_BYTES {
         let next = shown
@@ -193,7 +268,7 @@ fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<String> {
             text.len()
         );
     }
-    shown.into_iter().map(|(_, text)| text).collect()
+    shown
 }
 
 /// O id da sessão, quando o harness o mandou.
@@ -209,24 +284,39 @@ fn session_of(input: &HookInput) -> Option<String> {
 // Os avisos
 // ---------------------------------------------------------------------------
 
-/// O terreno: o resumo do mapa do projeto, do censo do `/scan`.
-fn terrain_notice(probe: &Probe<'_>) -> Option<String> {
-    crate::commands::orient::render_terrain(&crate::commands::orient::compute_orientation(probe.root), probe.lang)
-}
-
 /// Os textos declarados para o início da sessão; com a janela renovada, eles
 /// voltam mesmo com a marca de entregue.
 fn declared_notice(probe: &Probe<'_>) -> Option<String> {
-    injectables::collect(&probe.root.to_string_lossy(), probe.session, probe.refreshed)
+    probe.declared.map(str::to_string)
 }
 
 /// A retomada da spec atual: depois da compactação, o bloco de retomada; nas
 /// outras aberturas, a linha.
+///
+/// O bloco nunca cede o lugar, e o texto declarado, onde mora o mapa do início
+/// da sessão, sairia no lugar dele quando os dois passam do teto. As listas do
+/// bloco encolhem, e cada uma diz quantos itens ficaram de fora: o bloco fica
+/// com o que cabe ao lado do texto declarado. Quando nem o bloco mínimo cabe
+/// ao lado dele, o texto declarado sai pelo teto de qualquer jeito, e o bloco
+/// fica com as listas.
 fn resume_notice(probe: &Probe<'_>) -> Option<String> {
-    if probe.compacted {
-        return crate::commands::flow::resume::current_block(probe.root, probe.session);
+    use crate::commands::flow::resume::{current_block, current_block_within, current_line};
+    if !probe.compacted {
+        return current_line(probe.root, probe.session);
     }
-    crate::commands::flow::resume::current_line(probe.root, probe.session)
+    let room = block_room(probe.declared);
+    let block = current_block_within(probe.root, probe.session, room)?;
+    if block.len() <= room {
+        return Some(block);
+    }
+    current_block(probe.root, probe.session)
+}
+
+/// Quantos bytes do teto sobram ao bloco de retomada ao lado do texto
+/// declarado e da linha em branco que os separa; o teto inteiro sem texto
+/// declarado.
+fn block_room(declared: Option<&str>) -> usize {
+    MAX_BYTES.saturating_sub(declared.map_or(0, |text| text.len() + SEPARATOR_BYTES))
 }
 
 /// A página do projeto que ainda não nasceu. Num projeto com o Mustard, com
@@ -252,6 +342,21 @@ fn project_page_notice(probe: &Probe<'_>) -> Option<String> {
             .replace("{template}", &template)
             .replace("{capabilities}", mustard_core::platform::page_templates::PROJECT_CAPABILITIES),
     )
+}
+
+/// O gasto. Num projeto com o Mustard, em todo início de sessão, a ordem de
+/// rodar `mustard-rt run spend` e seguir a resposta dele: é o comando que
+/// conta os dias fechados que faltam, conta hoje de novo, prepara os lotes e
+/// diz como copiá-los. Vale com ou sem spec aberta. O gancho não lê nem conta
+/// nada do gasto.
+///
+/// `None` num projeto sem `mustard.json`, sem pasta pessoal para guardar o
+/// gasto e depois da compactação, que não é início de sessão.
+fn spend_notice(probe: &Probe<'_>) -> Option<String> {
+    if !probe.spend || probe.compacted || !mustard_core::ProjectConfig::exists(probe.root) {
+        return None;
+    }
+    Some(translate("session.spend", probe.lang).to_string())
 }
 
 /// A contagem das pendências abertas.
@@ -289,7 +394,7 @@ fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Option<(String, 
 /// merge, ou o silêncio do provedor sobre ele. `None` quando não há nada a
 /// dizer.
 fn landed_notice(probe: &Probe<'_>) -> Option<String> {
-    probe.landing.map(|(spec, found)| landing_text(spec, found, probe.lang))
+    probe.landing.and_then(|(spec, found)| landing_text(spec, found, probe.lang))
 }
 
 /// As branches cujo trabalho já entrou na base e que seguem vivas, pela
@@ -328,9 +433,11 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
 
 /// O texto do pull request da spec `spec`: o que o caminho do merge fez — a
 /// spec entregue, a arrumação da branch e a pergunta das pendências nascidas
-/// nela — ou o silêncio do provedor.
-fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> String {
-    match found {
+/// nela — ou o silêncio do provedor. O pull request fechado sem merge não
+/// muda nada, e o início da sessão não diz nada dele.
+fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> Option<String> {
+    Some(match found {
+        MergedElsewhere::Closed { .. } => return None,
         MergedElsewhere::Unanswered { reason } => translate("session.provider_silent", lang)
             .replace("{spec}", spec)
             .replace("{reason}", reason),
@@ -348,7 +455,7 @@ fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> String {
             }
             text
         }
-    }
+    })
 }
 
 /// A arrumação da branch `branch`, pelo relatório dela: a base atualizada e a
@@ -392,6 +499,40 @@ fn disk_notice(probe: &Probe<'_>) -> Option<String> {
     )
 }
 
+/// O programa compilado da branch do Mustard, só no código-fonte dele: o que
+/// a sessão roda é o compilado da branch, e ele falta ou está atrás do commit
+/// atual. O aviso diz qual programa a sessão roda até a compilação acabar — o
+/// instalado, se o compilado falta; o compilado anterior, se ele está atrás —
+/// e o que aconteceu com a compilação pedida em segundo plano. `None` fora do
+/// código-fonte do Mustard e com o compilado em dia.
+fn development_build_notice(probe: &Probe<'_>) -> Option<String> {
+    let build = probe.build?;
+    let progress = translate(
+        match build.launch {
+            Launch::Started => "session.build.started",
+            Launch::Running => "session.build.in_progress",
+            Launch::Failed => "session.build.not_started",
+        },
+        probe.lang,
+    );
+    let text = match &build.gap.compiled {
+        None => translate("session.build.missing", probe.lang).replace("{running}", &build.running),
+        Some(compiled) => translate("session.build.behind", probe.lang).replace("{compiled}", compiled),
+    };
+    Some(text.replace("{head}", &build.gap.head).replace("{progress}", progress))
+}
+
+/// Lê o programa compilado do repositório do Mustard em que `root` está e, se
+/// ele falta ou está atrás do commit atual, solta a compilação em segundo
+/// plano — sem esperar, e só uma de cada vez. `None` fora do código-fonte do
+/// Mustard e com o compilado em dia.
+fn development_build(root: &Path) -> Option<DevelopmentBuild> {
+    let main = mustard_core::mustard_checkout(root)?;
+    let gap = gap(&main)?;
+    let launch = start_in_background(&main);
+    Some(DevelopmentBuild { gap, launch, running: env!("MUSTARD_VERSION_FULL").to_string() })
+}
+
 /// A versão velha do Mustard: a gravada no projeto difere da que roda, o
 /// plugin carregado ficou atrás do instalado, ou o plugin instalado ficou
 /// atrás do binário. O primeiro que se prova fala.
@@ -405,8 +546,21 @@ fn version_notice(probe: &Probe<'_>) -> Option<String> {
 /// Nada fica preso: os processos que um agente deixou rodando — um laço de
 /// espera, ou um comando na cópia de uma onda já apagada — são encerrados
 /// também aqui, não só a cada rodada e no fechamento.
+///
+/// A busca roda com a trava do passo do git presa, como na rodada, e só num
+/// projeto com o Mustard, onde a pasta da trava é dele. O início da sessão
+/// não espera a trava: presa por outra rodada, que pode estar no meio de um
+/// commit de minutos, a busca fica para essa rodada ou para a seguinte, e o
+/// gancho, que tem teto de segundos, não para atrás dela.
 fn stuck_notice(probe: &Probe<'_>) -> Option<String> {
-    crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(probe.root), probe.lang)
+    if !mustard_core::ProjectConfig::exists(probe.root) {
+        return None;
+    }
+    let held = crate::commands::git_settle::git_step_lock_if_free(probe.root)?;
+    crate::commands::flow::stuck::report_line(
+        &crate::commands::flow::stuck::end_stuck_processes(probe.root, &held),
+        probe.lang,
+    )
 }
 
 /// A versão gravada no `mustard.json` não é a que roda. Sem `mustard.json`,
@@ -482,7 +636,7 @@ pub(crate) fn started_after_clear(root: &Path, session: &str) -> String {
         ..HookInput::default()
     };
     let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::SessionStart));
-    match session_start_core(&input, &ctx, None, None) {
+    match session_start_core(&input, &ctx, None, None, None, false, None) {
         Ok(Verdict::Inject { context }) => context,
         _ => String::new(),
     }
@@ -501,6 +655,17 @@ mod tests {
     /// A varredura do temporário que um teste entrega: nenhuma.
     const NO_SCRATCH: Option<&ScratchProbe> = None;
 
+    /// O programa compilado que um teste entrega: em dia, sem nada a dizer.
+    const NO_BUILD: Option<&DevelopmentBuild> = None;
+
+    /// A máquina sem onde guardar o gasto, o que todo teste que não fala dele
+    /// entrega: o aviso do gasto cala por construção, em qualquer máquina.
+    const NO_SPEND: bool = false;
+
+    /// A linha de versão que um teste entrega: nenhuma, e a marca da versão
+    /// não se grava.
+    const NO_VERSION: Option<&str> = None;
+
     fn ctx(dir: &Path) -> Ctx {
         Ctx::for_test(dir.to_string_lossy().into_owned(), Some(Trigger::SessionStart))
     }
@@ -515,7 +680,7 @@ mod tests {
     }
 
     fn context_of(root: &Path, input: &HookInput, installed: Option<&str>, scratch: Option<&ScratchProbe>) -> String {
-        match session_start_core(input, &ctx(root), installed, scratch).unwrap() {
+        match session_start_core(input, &ctx(root), installed, scratch, NO_BUILD, NO_SPEND, NO_VERSION).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
         }
@@ -533,21 +698,66 @@ mod tests {
     }
 
     /// Os avisos são uma lista, na ordem em que a janela os lê, cada um com a
-    /// vez de ceder o lugar: o terreno primeiro, os textos declarados por
-    /// último, e a retomada e o relato do pull request nunca.
+    /// vez de ceder o lugar: os processos presos primeiro, os textos
+    /// declarados por último, e a retomada e o relato do pull request nunca.
     #[test]
     fn the_notices_are_a_typed_list_in_reading_order() {
         let names: Vec<&str> = NOTICES.iter().map(|n| n.name).collect();
         assert_eq!(
             names,
-            ["terrain", "declared", "resume", "project_page", "pending", "landed", "merged", "disk", "version", "stuck"]
+            [
+                "declared", "resume", "project_page", "spend", "pending", "landed", "merged", "disk",
+                "development_build", "version", "stuck"
+            ]
         );
         let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
         ceding.sort_unstable();
         let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
-        assert_eq!(order, ["stuck", "terrain", "version", "disk", "merged", "pending", "project_page", "declared"]);
+        assert_eq!(
+            order,
+            ["stuck", "version", "development_build", "disk", "spend", "merged", "pending", "project_page", "declared"]
+        );
         let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
         assert_eq!(kept, ["resume", "landed"]);
+    }
+
+    /// O início da sessão de um projeto com o mapa gravado não leva o resumo
+    /// do mapa: nenhuma linha de subprojeto e nenhuma das palavras que
+    /// abriam o aviso, nos dois idiomas. O texto declarado do projeto segue
+    /// chegando, para a conferência não passar só porque a saída ficou vazia.
+    #[test]
+    fn the_session_start_of_a_project_with_a_map_carries_no_terrain() {
+        const MAP: &str = r#"{
+          "projects": [
+            {"name": "rt", "dir": "apps/rt", "kind": "cargo", "code_files": 232},
+            {"name": "web", "dir": "apps/web", "kind": "npm", "code_files": 40}
+          ],
+          "skeleton": [
+            {"dir": "apps/rt", "role": "L1"},
+            {"dir": "apps/web", "role": "L0"}
+          ]
+        }"#;
+        for lang in ["pt-BR", "en-US"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(
+                root.join("mustard.json"),
+                format!(
+                    r#"{{"version":"{}","language":{{"text":"{lang}"}},"inject":[{{"on":"sessionStart","file":".claude/mustard/regras.md","once":true}}]}}"#,
+                    mustard_core::harness_version()
+                ),
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
+            std::fs::write(root.join(".claude/mustard/regras.md"), "TEXTO-DECLARADO\n").unwrap();
+            mustard_core::io::project_map::write_text(root, MAP).unwrap();
+
+            let context = context_of(root, &session_input("s1", "startup"), NO_REGISTRY, NO_SCRATCH);
+            assert!(context.contains("TEXTO-DECLARADO"), "{lang}: the declared text still comes: {context}");
+            for gone in ["Terreno", "Terrain", "subprojeto", "subproject", "apps/rt", "cargo ·", "npm ·"] {
+                assert!(!context.contains(gone), "{lang}: `{gone}` is back in the session start: {context}");
+            }
+        }
     }
 
     /// Fora do início da sessão, nada; sem aviso nenhum, `Allow`.
@@ -556,8 +766,106 @@ mod tests {
         let dir = tempdir().unwrap();
         let other = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         assert_eq!(SessionStartInject.evaluate(&session_input("s", "startup"), &other).unwrap(), Verdict::Allow);
-        let verdict = session_start_core(&session_input("s", "startup"), &ctx(dir.path()), NO_REGISTRY, NO_SCRATCH);
+        let verdict = session_start_core(
+            &session_input("s", "startup"),
+            &ctx(dir.path()),
+            NO_REGISTRY,
+            NO_SCRATCH,
+            NO_BUILD,
+            NO_SPEND,
+            NO_VERSION,
+        );
         assert_eq!(verdict.unwrap(), Verdict::Allow);
+    }
+
+    /// O início da sessão de `root` numa máquina com onde guardar o gasto,
+    /// vindo de `source` (`startup`, `resume`, `clear`, `compact`).
+    fn context_with_spend(root: &Path, source: &str) -> String {
+        let verdict = session_start_core(&session_input("s-gasto", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, true, NO_VERSION);
+        match verdict.unwrap() {
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        }
+    }
+
+    /// A ordem do gasto sai em todo início de sessão, quantas vezes ela
+    /// começar no mesmo dia, com ou sem spec aberta e no idioma do projeto;
+    /// não sai depois da compactação, que não é início de sessão, nem num
+    /// projeto sem `mustard.json`, nem numa máquina sem onde guardar o gasto.
+    #[test]
+    fn the_spend_order_comes_at_every_session_start_in_the_project_language() {
+        for (lang, locale) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+            let project = tempdir().unwrap();
+            let root = project.path();
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{lang}"}}}}"#)).unwrap();
+            let order = translate("session.spend", locale);
+
+            for source in ["startup", "startup", "resume", "clear"] {
+                assert!(context_with_spend(root, source).contains(order), "{lang}: {source} asks for the spend, every time");
+            }
+            std::fs::create_dir_all(root.join(".claude/spec/uma-spec")).unwrap();
+            std::fs::write(root.join(".claude/spec/uma-spec/spec.ndjson"), "").unwrap();
+            assert!(context_with_spend(root, "startup").contains(order), "{lang}: an open spec changes nothing");
+            assert!(!context_with_spend(root, "compact").contains(order), "{lang}: a compaction is the same session");
+
+            let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, false, NO_VERSION);
+            assert!(!matches!(silent.unwrap(), Verdict::Inject { context } if context.contains(order)), "{lang}: no machine folder, no order");
+
+            let loose = tempdir().unwrap();
+            assert!(!context_with_spend(loose.path(), "startup").contains(order), "{lang}: no config, no order");
+        }
+    }
+
+    /// A marca da versão nasce na primeira sessão de um projeto com
+    /// `mustard.json`, não se repete na mesma linha de versão, venha a sessão
+    /// de onde vier, e ganha uma linha nova a cada troca de versão, também na
+    /// volta a uma anterior. Sem `mustard.json` nada se grava, e a falha ao
+    /// gravar deixa a sessão igual.
+    #[test]
+    fn the_first_session_of_each_build_marks_the_version_in_the_project() {
+        use mustard_core::io::measure::{marks, marks_path};
+        let start = |root: &Path, source: &str, version: Option<&str>| {
+            session_start_core(&session_input("s-marca", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND, version)
+                .unwrap()
+        };
+        let project = tempdir().unwrap();
+        let root = project.path();
+        installed_project(root);
+        let (old, new) = ("1.0.0 (abc1234 2026-10-01)", "1.0.0 (def5678 2026-10-02)");
+        let cases: [(&str, &str, &[&str]); 5] = [
+            ("startup", old, &[old]),
+            ("startup", old, &[old]),
+            ("clear", old, &[old]),
+            ("resume", new, &[old, new]),
+            ("startup", old, &[old, new, old]),
+        ];
+        for (source, version, expected) in cases {
+            start(root, source, Some(version));
+            let found = marks(root);
+            let versions: Vec<&str> = found.iter().map(|mark| mark.version.as_str()).collect();
+            assert_eq!(versions, expected, "{source} with {version}");
+            assert!(found.iter().all(|mark| mustard_core::domain::spend::day_of_stamp(&mark.at).is_some()), "{found:?}");
+        }
+
+        let loose = tempdir().unwrap();
+        start(loose.path(), "startup", Some(new));
+        assert!(!marks_path(loose.path()).exists(), "no config, no mark");
+
+        let blocked = tempdir().unwrap();
+        installed_project(blocked.path());
+        std::fs::create_dir_all(blocked.path().join(".claude")).unwrap();
+        std::fs::write(blocked.path().join(".claude/mustard"), "").unwrap();
+        assert_eq!(start(blocked.path(), "startup", Some(new)), start(blocked.path(), "startup", NO_VERSION));
+    }
+
+    /// Só os textos que o corte do teto deixa, na ordem da lista.
+    fn texts_within_cap(shown: Vec<(&Notice, String)>) -> Vec<String> {
+        within_cap(shown).into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// O aviso da lista `NOTICES` pelo nome: o teste não depende da posição.
+    fn notice(name: &str) -> &'static Notice {
+        NOTICES.iter().find(|notice| notice.name == name).expect("a notice of that name")
     }
 
     /// O relato do pull request feito por outra pessoa, com três pendências,
@@ -566,12 +874,12 @@ mod tests {
     /// os avisos que cedem, e a retomada e o relato ficam.
     #[test]
     fn the_landing_report_fits_and_an_oversized_declared_text_goes_last() {
-        let resume = (&NOTICES[2], "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".to_string());
-        let pending = (&NOTICES[4], translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
-        let merged = (&NOTICES[6], translate("session.merged", Locale::PtBr).replace("{count}", "6")
+        let resume = (notice("resume"), "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".to_string());
+        let pending = (notice("pending"), translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
+        let merged = (notice("merged"), translate("session.merged", Locale::PtBr).replace("{count}", "6")
             .replace("{branches}", "feature/uma, feature/duas, feature/tres, feature/quatro (+2)"));
-        let disk = (&NOTICES[7], translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
-        let version = (&NOTICES[8], translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
+        let disk = (notice("disk"), translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
+        let version = (notice("version"), translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
 
         let items: Vec<crate::commands::event::pending::OpenPending> = ["Humanize", "HTML padrão da spec", "Revisor de fora"]
             .iter()
@@ -585,28 +893,27 @@ mod tests {
             settle: Some(settled),
             pending_open: items,
         };
-        let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr);
+        let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr).expect("the landing is told");
         assert!(landed.contains("Revisor de fora") && landed.contains("saiu desta máquina"), "{landed}");
         let map = mustard_core::session_map(Locale::PtBr).trim().to_string();
         let with_landing = vec![
-            (&NOTICES[1], map.clone()),
+            (notice("declared"), map.clone()),
             resume.clone(),
             pending.clone(),
-            (&NOTICES[5], landed.clone()),
+            (notice("landed"), landed.clone()),
         ];
-        let kept = within_cap(with_landing);
+        let kept = texts_within_cap(with_landing);
         assert!(kept.contains(&map) && kept.contains(&landed), "the landing report fits beside the real map: {kept:?}");
 
         let too_big = vec![
-            (&NOTICES[0], "t".repeat(400)),
-            (&NOTICES[1], "d".repeat(2_950)),
+            (notice("declared"), "d".repeat(2_950)),
             resume.clone(),
             pending,
             merged,
             disk,
             version,
         ];
-        let kept = within_cap(too_big);
+        let kept = texts_within_cap(too_big);
         assert_eq!(kept, vec![resume.1], "every ceding notice went, the declared text last, and the resume stays");
     }
 
@@ -635,7 +942,7 @@ mod tests {
                 "inject": mustard_core::platform::project_seed::default_inject_entries(),
             });
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
-            mustard_core::platform::project_seed::seed_harness_texts(&root.join(".claude"), lang).unwrap();
+            mustard_core::platform::project_seed::seed_harness_texts(&root.join(".claude"), lang, Default::default()).unwrap();
             std::fs::write(root.join("README.md"), "loja\n").unwrap();
             git(root, &["add", "README.md"]);
             git(root, &["commit", "-q", "-m", "seed"]);
@@ -702,15 +1009,18 @@ mod tests {
 
             // Sem o teto, o todo passaria dos 3 kB: o teste mede a situação em
             // que alguém tem de sair.
+            let declared = injectables::collect(&root.to_string_lossy(), Some("s-mapa"), true);
             let probe = Probe {
                 root,
                 session: Some("s-mapa"),
                 lang,
-                refreshed: true,
                 compacted: false,
                 installed: NO_REGISTRY,
                 scratch: Some(&scratch),
+                spend: NO_SPEND,
                 landing: None,
+                declared: declared.as_deref(),
+                build: NO_BUILD,
             };
             let all: Vec<String> = NOTICES.iter().filter_map(|notice| (notice.text)(&probe)).collect();
             assert!(all.iter().any(|text| text.contains("0.0.1-velha")), "{lang:?}: the old version speaks: {all:?}");
@@ -829,16 +1139,18 @@ mod tests {
         git(root, &["add", "-A"]);
         git(root, &["commit", "-q", "-m", "seed"]);
 
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(
-            mustard_core::io::project_map::model_path(root),
-            json!({"modules": [], "state": {"head": "0000000000000000000000000000000000000000"}}).to_string(),
+        mustard_core::io::project_map::write_text(
+            root,
+            &json!({"modules": [], "state": {"head": "0000000000000000000000000000000000000000"}}).to_string(),
         )
         .unwrap();
 
         let ctx = ctx(root);
         let input = session_input("s-stale-map", "startup");
-        assert!(session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH).is_ok(), "a sessão não trava com o mapa velho");
+        assert!(
+            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND, NO_VERSION).is_ok(),
+            "a sessão não trava com o mapa velho"
+        );
     }
 
     /// Com as sobras acima do limite, o aviso de disco traz o total e o
@@ -919,5 +1231,265 @@ mod tests {
         let drift = stamp_drift(root.path(), &running, lang).unwrap();
         assert!(context.contains(&drift), "{context}");
         assert!(!context.contains("999.0.0"), "one version notice only: {context}");
+    }
+
+    /// O início da sessão procura processo preso só com a trava do passo do
+    /// git livre, e nunca espera por ela: presa por uma rodada, o aviso não
+    /// sai e o comando esquecido numa vaga sem onda fica; solta a trava, o
+    /// mesmo aviso o encerra e diz qual. Num projeto sem o Mustard, nada é
+    /// procurado e a pasta da trava não nasce.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_session_start_sweeps_only_with_the_git_step_lock_free_and_never_waits_for_it() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        let slot = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /nowhere\n").unwrap();
+        let mut idle = Command::new("sleep")
+            .arg("30")
+            .current_dir(slot.join("src"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a command left in a slot with no wave");
+        crate::commands::flow::stuck::wait_until_spawned(idle.id(), "sleep");
+        let probe = Probe {
+            root,
+            session: None,
+            lang: Locale::PtBr,
+            compacted: false,
+            installed: NO_REGISTRY,
+            scratch: NO_SCRATCH,
+            spend: NO_SPEND,
+            landing: None,
+            declared: None,
+            build: NO_BUILD,
+        };
+
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let (waited, while_held) = std::thread::scope(|scope| {
+            let asked = scope.spawn(|| stuck_notice(&probe));
+            while !asked.is_finished() && !waiting_for_lock(inode) {
+                std::thread::yield_now();
+            }
+            let waited = waiting_for_lock(inode);
+            drop(held);
+            (waited, asked.join().unwrap())
+        });
+        let kept = idle.try_wait().ok().flatten().is_none();
+        let freed = stuck_notice(&probe);
+        let _ = idle.kill();
+        let _ = idle.wait();
+        assert!(!waited, "the session start never waits for the git step lock");
+        assert_eq!(while_held, None, "with the lock held by a round, nothing is swept");
+        assert!(kept, "the command in the slot waits for the round to sweep");
+        let line = freed.expect("with the lock free, the command left in the slot is ended");
+        assert!(line.contains(&idle.id().to_string()), "{line}");
+
+        let outside = tempdir().unwrap();
+        let foreign = Probe { root: outside.path(), ..probe };
+        assert_eq!(stuck_notice(&foreign), None);
+        assert!(!outside.path().join(".claude").exists(), "no lock folder in a project without the Mustard");
+    }
+
+    /// O programa compilado que falta ou está atrás, a versão velha e os
+    /// processos presos: o aviso do programa compilado cede depois da versão e
+    /// dos processos e antes do disco. Quando o todo passa do teto, saem os
+    /// processos, a versão e então o programa compilado; quando só os dois
+    /// primeiros bastam, ele fica.
+    #[test]
+    fn the_development_build_notice_gives_way_after_the_version_and_before_the_disk() {
+        let lang = Locale::PtBr;
+        let resume = (notice("resume"), "Retomada: spec uma-spec, fase running; último passo: round; próximo: onda 12.".to_string());
+        let disk = (notice("disk"), translate("scratch.residue.notice", lang).replace("{total}", "12.3 GiB").replace("{count}", "14"));
+        let build = (
+            notice("development_build"),
+            development_build_text(&DevelopmentBuild { gap: Gap { compiled: Some("1a2b3c4d5e6f".into()), head: "6f5e4d3c2b1a".into() }, launch: Launch::Started, running: "0.2.4".into() }, lang),
+        );
+        let version = (notice("version"), translate("session.version.behind", lang).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
+        let stuck = (notice("stuck"), "Encerrei o processo 4242, que ficou preso.".to_string());
+        let size = |texts: &[&str]| texts.iter().map(|text| text.len()).sum::<usize>() + SEPARATOR_BYTES * (texts.len() - 1);
+        assert!(build.1.contains("6f5e4d3c2b1a") && build.1.contains("1a2b3c4d5e6f"), "the notice names both commits: {}", build.1);
+        assert!(size(&[&build.1]) < 500, "the notice fits the cap with room to spare");
+
+        let tight = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1]) - SEPARATOR_BYTES);
+        let kept = texts_within_cap(vec![
+            (notice("declared"), tight.clone()),
+            resume.clone(),
+            disk.clone(),
+            build.clone(),
+            version.clone(),
+            stuck.clone(),
+        ]);
+        assert_eq!(kept, vec![tight, resume.1.clone(), disk.1.clone()], "the processes, the version and the build went, the disk stayed");
+
+        let roomy = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1, &build.1]) - SEPARATOR_BYTES);
+        let kept = texts_within_cap(vec![
+            (notice("declared"), roomy.clone()),
+            resume.clone(),
+            disk.clone(),
+            build.clone(),
+            version,
+            stuck,
+        ]);
+        assert_eq!(kept, vec![roomy, resume.1, disk.1, build.1], "the processes and the version were enough, the build stayed");
+    }
+
+    /// O texto do aviso do programa compilado que `build` gera, pelo caminho
+    /// do início da sessão, nos textos de `lang`.
+    fn development_build_text(build: &DevelopmentBuild, lang: Locale) -> String {
+        let dir = tempdir().unwrap();
+        let config = json!({"version": mustard_core::harness_version(), "language": {"text": lang.as_str()}});
+        std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
+        let input = session_input("s-build", "startup");
+        match session_start_core(&input, &ctx(dir.path()), NO_REGISTRY, NO_SCRATCH, Some(build), NO_SPEND, NO_VERSION).unwrap() {
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        }
+    }
+
+    /// Com o programa compilado faltando, o aviso nomeia o commit atual e o
+    /// programa instalado que a sessão roda até a compilação acabar; com ele
+    /// atrás, nomeia os dois commits e diz que a sessão roda o compilado
+    /// anterior. Cada desfecho da compilação em segundo plano tem a própria
+    /// frase, nos dois idiomas, e o aviso cabe no teto.
+    #[test]
+    fn the_development_build_notice_names_the_program_the_session_runs_meanwhile() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let gap_of = |compiled: Option<&str>| Gap { compiled: compiled.map(str::to_string), head: "6f5e4d3c2b1a".into() };
+            let build = |compiled: Option<&str>, launch| DevelopmentBuild {
+                gap: gap_of(compiled),
+                launch,
+                running: "0.2.4 (build dev, g1111111111aa 2026-10-01)".into(),
+            };
+            let progress = |key: &str| translate(key, lang).to_string();
+
+            let missing = development_build_text(&build(None, Launch::Started), lang);
+            assert!(missing.contains("6f5e4d3c2b1a"), "{lang:?}: the head commit: {missing}");
+            assert!(missing.contains("0.2.4 (build dev, g1111111111aa 2026-10-01)"), "{lang:?}: the installed program: {missing}");
+            assert!(missing.contains(&progress("session.build.started")), "{lang:?}: {missing}");
+
+            let behind = development_build_text(&build(Some("1a2b3c4d5e6f"), Launch::Running), lang);
+            assert!(behind.contains("1a2b3c4d5e6f") && behind.contains("6f5e4d3c2b1a"), "{lang:?}: both commits: {behind}");
+            assert!(behind.contains(&progress("session.build.in_progress")), "{lang:?}: {behind}");
+            assert!(!behind.contains("0.2.4"), "{lang:?}: the session runs the previous compiled program, not the installed one: {behind}");
+
+            let failed = development_build_text(&build(None, Launch::Failed), lang);
+            assert!(failed.contains(&progress("session.build.not_started")), "{lang:?}: {failed}");
+            assert!(failed.contains("cargo build --release --locked"), "{lang:?}: the command to run by hand: {failed}");
+            for text in [&missing, &behind, &failed] {
+                assert!(!text.contains('{'), "{lang:?}: a slot stayed empty: {text}");
+                assert!(text.len() <= MAX_BYTES, "{lang:?}: {} bytes", text.len());
+            }
+            assert_ne!(missing, development_build_text(&build(None, Launch::Started), if lang == Locale::PtBr { Locale::EnUs } else { Locale::PtBr }), "the two languages differ");
+        }
+        let quiet = session_start_core(&session_input("s-build", "startup"), &ctx(tempdir().unwrap().path()), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND, NO_VERSION).unwrap();
+        assert_eq!(quiet, Verdict::Allow, "with the compiled program up to date, nothing is said");
+    }
+
+    /// Um projeto na sessão `s-room`, com o texto declarado `declared` no
+    /// início da sessão e a spec `x` aprovada, com `count` decisões gravadas
+    /// depois da última rodada: o bloco de retomada cresce com elas.
+    fn compacted_project(root: &Path, lang: Locale, declared: &str, count: usize) {
+        std::fs::write(
+            root.join("mustard.json"),
+            json!({
+                "version": mustard_core::harness_version(),
+                "language": {"text": lang.as_str()},
+                "inject": [{"on": "sessionStart", "file": ".claude/mustard/mapa.md", "once": false}],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
+        std::fs::write(root.join(".claude/mustard/mapa.md"), declared).unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
+        crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev").expect("open");
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        let said = crate::shared::spec_state::seed_event(root, "x", "message", json!({"author": "user", "text": "muitas decisões"}));
+        crate::shared::spec_state::seed_event(root, "x", "call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+        for at in 0..count {
+            crate::shared::spec_state::seed_event(
+                root,
+                "x",
+                "decision",
+                json!({"text": format!("Decisão {at}."), "keys": ["retomada"], "why": "o usuário pediu", "origin": said}),
+            );
+        }
+    }
+
+    /// O início da sessão depois da compactação, na sessão `s-room`.
+    fn after_compaction(root: &Path) -> String {
+        context_of(root, &session_input("s-room", "compact"), NO_REGISTRY, NO_SCRATCH)
+    }
+
+    /// Depois da compactação, o mapa do início da sessão não cai a cada
+    /// recomeço: com tantos códigos gravados que o bloco de retomada inteiro
+    /// não cabe ao lado dele, o bloco encolhe as listas e diz quantos itens
+    /// ficaram de fora, o mapa chega inteiro e o todo cabe no teto. Nos dois
+    /// idiomas.
+    #[test]
+    fn the_session_map_survives_a_long_resume_block_after_compaction() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let map = mustard_core::session_map(lang).trim().to_string();
+            compacted_project(root, lang, &map, 60);
+            let full = crate::commands::flow::resume::current_block(root, Some("s-room")).expect("the block");
+            let room = block_room(Some(&map));
+            assert!(full.len() > room, "{lang:?}: the whole block ({} bytes) must not fit beside the map ({room} bytes)", full.len());
+
+            let context = after_compaction(root);
+            assert!(context.contains(&map), "{lang:?}: the map arrives whole: {context}");
+            assert!(context.len() <= MAX_BYTES, "{lang:?}: {} bytes", context.len());
+            let shrunk = crate::commands::flow::resume::current_block_within(root, Some("s-room"), room).expect("the block");
+            assert!(shrunk.len() <= room && shrunk.len() < full.len(), "{lang:?}: the lists gave way: {shrunk}");
+            assert!(context.contains(&shrunk), "{lang:?}: the block stays, with its lists cut: {context}");
+            assert!(shrunk.contains("mustard-rt run round --spec x"), "{lang:?}: the next command stays: {shrunk}");
+            let shown = shrunk.matches("MSTD-DEC-").count();
+            let left_out = translate("conversation_size.more", lang).replace("{count}", &(60 - shown).to_string());
+            assert!(shown > 0 && shrunk.contains(&left_out), "{lang:?}: the cut list says how many were left out: {shrunk}");
+        }
+    }
+
+    /// Quando o bloco de retomada inteiro cabe ao lado do mapa, nada encolhe:
+    /// os dois chegam inteiros.
+    #[test]
+    fn the_resume_block_keeps_every_list_when_it_fits_beside_the_map() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let map = mustard_core::session_map(Locale::PtBr).trim().to_string();
+        compacted_project(root, Locale::PtBr, &map, 12);
+        let full = crate::commands::flow::resume::current_block(root, Some("s-room")).expect("the block");
+        assert!(full.len() <= block_room(Some(&map)), "the whole block fits beside the map: {} bytes", full.len());
+
+        let context = after_compaction(root);
+        assert!(context.contains(&map) && context.contains(&full), "both arrive whole: {context}");
+    }
+
+    /// Quando nem o bloco de retomada mínimo cabe ao lado do texto declarado,
+    /// o bloco não encolhe à toa: o texto declarado sai pelo teto, como
+    /// sempre, e o bloco chega com as listas que cabem no teto sozinho.
+    #[test]
+    fn a_declared_text_that_cannot_stay_beside_the_smallest_block_goes_and_the_block_keeps_its_lists() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let huge = "d".repeat(2_900);
+        compacted_project(root, Locale::PtBr, &huge, 30);
+        let full = crate::commands::flow::resume::current_block(root, Some("s-room")).expect("the block");
+        let smallest = crate::commands::flow::resume::current_block_within(root, Some("s-room"), 0).expect("the block");
+        assert!(smallest.len() > block_room(Some(&huge)), "not even the smallest block fits beside the text");
+
+        let context = after_compaction(root);
+        assert_eq!(context, full, "the block stays whole and the declared text went: {context}");
     }
 }

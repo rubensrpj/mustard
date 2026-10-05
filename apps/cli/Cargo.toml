@@ -3,10 +3,11 @@ name = "mustard-cli"
 version.workspace = true
 edition = "2024"
 rust-version = "1.89"
-description = "Mustard CLI — thin bootstrap that seeds the .claude/ harness and enables the mustard plugin for Claude Code projects. Rust port."
+description = "Mustard command line — thin bootstrap that seeds the .claude/ harness and enables the mustard plugin for Claude Code projects. Rust port."
 license = "MIT"
 publish = false
 build = "build.rs"
+autotests = false
 
 # The binary the user runs (`mustard init`, `mustard update`, …).
 [[bin]]
@@ -20,20 +21,21 @@ path = "src/main.rs"
 name = "mustard_cli"
 path = "src/lib.rs"
 
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
 # Versions come from the workspace `[workspace.dependencies]` table — single
 # source of truth (root Cargo.toml).
 [dependencies]
 mustard-core = { path = "../../packages/core" }
-serde = { workspace = true }
-serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
-ureq = { workspace = true }
-tar = { workspace = true }
-flate2 = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,

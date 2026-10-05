@@ -61,7 +61,7 @@ fn clean_compact_state(claude: &Path) {
         }
     }
     if remaining == 0 {
-        // O `remove_dir` não tem equivalente na fachada; um uso só.
+        // Só a pasta que ficou vazia sai; o resultado é ignorado.
         let _ = std::fs::remove_dir(&dir);
     }
 }
