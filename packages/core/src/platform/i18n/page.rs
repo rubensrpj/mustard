@@ -333,37 +333,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.spend.refusal.io", Locale::PtBr) => "Não consegui ler ou gravar o gasto: {detail}.",
         ("page.spend.refusal.io", Locale::EnUs) => "Could not read or write the spend: {detail}.",
 
-        // O veredito do comando `measure`, numa frase, com as lacunas que ele
-        // troca.
-        ("page.measure.no_mark", Locale::PtBr) => {
-            "A medição começa na próxima sessão, quando esta versão do Mustard deixa a marca dela neste projeto."
-        }
-        ("page.measure.no_mark", Locale::EnUs) => {
-            "The measurement starts at the next session, when this Mustard version leaves its mark on this project."
-        }
-        ("page.measure.not_used_yet", Locale::PtBr) => {
-            "Esta versão ainda não foi usada neste projeto, e a coluna de antes já está pronta."
-        }
-        ("page.measure.not_used_yet", Locale::EnUs) => {
-            "This version has not been used in this project yet, and the before column is already ready."
-        }
-        ("page.measure.too_early", Locale::PtBr) => {
-            "Ainda não dá para dizer: faltam {missing_before} dias contados antes e {missing_after} depois para \
-             o mínimo de {min} de cada lado."
-        }
-        ("page.measure.too_early", Locale::EnUs) => {
-            "Too early to tell: {missing_before} counted days are missing before and {missing_after} after for \
-             the minimum of {min} on each side."
-        }
-        ("page.measure.ready", Locale::PtBr) => {
-            "A comparação vale: cada ação custou {before} tokens nos {before_days} dias contados antes e {after} \
-             nos {after_days} depois."
-        }
-        ("page.measure.ready", Locale::EnUs) => {
-            "The comparison holds: each action cost {before} tokens over the {before_days} counted days before \
-             and {after} over the {after_days} after."
-        }
-
         // A moldura de toda página: o menu lateral, a busca e os botões de
         // abrir e fechar. `{n}` e `{total}` são preenchidos pelo script da
         // página.
@@ -1190,8 +1159,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            424,
-            0xfe97_cd38_7830_39a6,
+            420,
+            0x1268_2f20_6b1c_758f,
         );
     }
 

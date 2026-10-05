@@ -6,13 +6,14 @@
 //! meia-noite do dia no fuso do gasto). A conta mora em
 //! `mustard_core::domain::measure`, sobre as linhas de dia que
 //! `mustard_core::io::spend` dá ao projeto, pela mesma soma da página do
-//! gasto. O comando só lê: não grava nada e não chama o Jev. O veredito sai
-//! numa frase, no idioma do projeto, em `text`.
+//! gasto, só das conversas abertas na pasta do projeto e nas cópias de onda
+//! dele. O comando só lê: não grava nada e não chama o Jev. Em `text`, no
+//! idioma do projeto, saem a tabela do gasto e a frase do veredito.
 
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use mustard_core::domain::measure::{measure, Mark, Measurement, Verdict, MIN_DAYS};
+use mustard_core::domain::measure::{measure, Mark, Measurement, Side, Verdict, MIN_DAYS};
 use mustard_core::domain::spend::{day_start, Range};
 use mustard_core::io::{measure as marks, spend as store};
 use mustard_core::platform::harness::claude_config_dir;
@@ -41,13 +42,14 @@ fn since(text: &str) -> Result<DateTime<Utc>, String> {
         .ok_or_else(|| format!("`{text}` is neither an RFC 3339 instant nor an AAAA-MM-DD day"))
 }
 
-/// O núcleo testável de [`run`]: a resposta do comando, com as conversas do
-/// Claude Code em `config` e hoje em `today`. Sem marca e sem `--since`, só a
-/// frase de que a medição começa na próxima sessão. O `--since` que não é
-/// instante nem dia é recusado, sem ler nada.
-pub(crate) fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> Value {
+/// A resposta do comando, com as conversas do Claude Code em `config` e hoje
+/// em `today`. Sem marca e sem `--since`, só a frase de que a medição começa
+/// na próxima sessão. O `--since` que não é instante nem dia é recusado, sem
+/// ler nada.
+fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> Value {
     let lang = project(&opts.root).lang;
-    let name = store::project_name(&opts.root);
+    let place = store::project_place(&opts.root);
+    let name = place.as_deref().and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned());
     let mark = match opts.since.as_deref().map(since) {
         Some(Err(hint)) => return json!({ "ok": false, "reason": "not-an-instant", "hint": hint }),
         Some(Ok(at)) => Some((json!({ "version": null, "at": at.to_rfc3339() }), at)),
@@ -57,7 +59,7 @@ pub(crate) fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str)
         }),
     };
     let Some((shown, at)) = mark else {
-        return json!({ "ok": true, "project": name, "mark": null, "text": translate("page.measure.no_mark", lang) });
+        return json!({ "ok": true, "project": name, "mark": null, "text": translate("measure.no_mark", lang) });
     };
     let range = Range { first: None, last: today.to_string() };
     let rows = config.map(|config| store::project_days(config, &opts.root, &range)).unwrap_or_default();
@@ -69,34 +71,118 @@ pub(crate) fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str)
         "before": measured.before,
         "after": measured.after,
         "verdict": measured.verdict,
-        "text": sentence(&measured, lang),
+        "text": format!("{}\n\n{}", table(&measured, lang), sentence(&measured, lang)),
     })
 }
 
-/// O veredito de `measured` numa frase, em `lang`.
-fn sentence(measured: &Measurement, lang: Locale) -> String {
-    let fill = |key: &str, slots: &[(&str, String)]| {
-        slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
+/// O texto de `key` em `lang`, com cada lacuna de `slots` trocada.
+fn fill(key: &str, lang: Locale, slots: &[(&str, String)]) -> String {
+    slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
+}
+
+/// `number` com os milhares separados no costume de `lang`.
+fn grouped(number: u64, lang: Locale) -> String {
+    let mark = match lang {
+        Locale::PtBr => '.',
+        Locale::EnUs => ',',
     };
+    let digits = number.to_string();
+    let mut shown = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            shown.push(mark);
+        }
+        shown.push(digit);
+    }
+    shown
+}
+
+/// `number` em mil (`key` de mil) ou em milhões, arredondado e com os
+/// milhares separados.
+fn scaled(number: u64, unit: u64, key: &str, lang: Locale) -> String {
+    fill(key, lang, &[("{n}", grouped(number.saturating_add(unit / 2) / unit, lang))])
+}
+
+/// Os dias `days` (`AAAA-MM-DD`) numa lista curta, com o mês só no último
+/// dia de cada mês: `23, 24 e 30/09`.
+fn day_list(days: &[String], lang: Locale) -> String {
+    let month = |day: &str| day.get(5..7).unwrap_or_default().to_string();
+    let shown: Vec<String> = days
+        .iter()
+        .enumerate()
+        .map(|(at, day)| {
+            let date = day.get(8..10).unwrap_or_default();
+            let closes = days.get(at + 1).is_none_or(|next| month(next) != month(day));
+            if closes { format!("{date}/{}", month(day)) } else { date.to_string() }
+        })
+        .collect();
+    match shown.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} {} {last}", rest.join(", "), translate("measure.and", lang)),
+        None => String::new(),
+    }
+}
+
+/// A tabela do gasto de `measured`, em `lang`: dias contados, ações, tokens
+/// em milhões e tokens por ação em mil, antes e depois. O lado sem dia
+/// contado fica sem uso.
+fn table(measured: &Measurement, lang: Locale) -> String {
+    let head = |key: &str, side: &Side| match side.days.as_slice() {
+        [] => translate(key, lang).to_string(),
+        days => format!("{} ({})", translate(key, lang), day_list(days, lang)),
+    };
+    let cells = |side: &Side| -> [String; 4] {
+        if side.days.is_empty() {
+            let unused = translate("measure.unused", lang).to_string();
+            return ["0".to_string(), unused.clone(), unused.clone(), unused];
+        }
+        [
+            side.days.len().to_string(),
+            grouped(side.actions, lang),
+            scaled(side.tokens, 1_000_000, "measure.millions", lang),
+            format!("**{}**", scaled(side.tokens_per_action, 1_000, "measure.thousands", lang)),
+        ]
+    };
+    let (before, after) = (cells(&measured.before), cells(&measured.after));
+    let rows = ["measure.days", "measure.actions", "measure.tokens", "measure.per_action"];
+    let (left, right) = (head("measure.before", &measured.before), head("measure.after", &measured.after));
+    let lines = rows.iter().enumerate().map(|(at, key)| {
+        let label = if at == 3 { format!("**{}**", translate(key, lang)) } else { translate(key, lang).to_string() };
+        format!("\n| {label} | {} | {} |", before[at], after[at])
+    });
+    format!("| | {left} | {right} |\n|---|---:|---:|{}", lines.collect::<String>())
+}
+
+/// O veredito de `measured` numa frase, em `lang`, com quanto cada ação
+/// custou a mais ou a menos depois da marca quando os dois lados têm dia.
+fn sentence(measured: &Measurement, lang: Locale) -> String {
+    let (before, after) = (&measured.before, &measured.after);
+    let change = || {
+        let (was, is) = (before.tokens_per_action, after.tokens_per_action);
+        let percent = (was.abs_diff(is).saturating_mul(100).saturating_add(was / 2)).checked_div(was).unwrap_or(0);
+        let key = match is.cmp(&was) {
+            _ if percent == 0 => "measure.same",
+            std::cmp::Ordering::Greater => "measure.more",
+            _ => "measure.less",
+        };
+        fill(key, lang, &[("{percent}", percent.to_string())])
+    };
+    let days = [("{before_days}", before.days.len().to_string()), ("{after_days}", after.days.len().to_string())];
     match measured.verdict {
-        Verdict::NotUsedYet => fill("page.measure.not_used_yet", &[]),
-        Verdict::TooEarly { missing_before, missing_after } => fill(
-            "page.measure.too_early",
-            &[
+        Verdict::NotUsedYet => fill("measure.not_used_yet", lang, &[]),
+        Verdict::TooEarly { missing_before, missing_after } => {
+            let missing = [
                 ("{missing_before}", missing_before.to_string()),
                 ("{missing_after}", missing_after.to_string()),
                 ("{min}", MIN_DAYS.to_string()),
-            ],
-        ),
-        Verdict::Ready => fill(
-            "page.measure.ready",
-            &[
-                ("{before}", measured.before.tokens_per_action.to_string()),
-                ("{before_days}", measured.before.days.len().to_string()),
-                ("{after}", measured.after.tokens_per_action.to_string()),
-                ("{after_days}", measured.after.days.len().to_string()),
-            ],
-        ),
+            ];
+            let said = fill("measure.too_early", lang, &[days.as_slice(), &missing].concat());
+            if before.days.is_empty() {
+                return said;
+            }
+            format!("{said} {}", fill("measure.so_far", lang, &[("{change}", change())]))
+        }
+        Verdict::Ready => fill("measure.ready", lang, &[days.as_slice(), &[("{change}", change())]].concat()),
     }
 }
 
@@ -107,67 +193,5 @@ pub fn run(opts: &MeasureOpts) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     if report["ok"] != json!(true) {
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    /// Sem marca, a resposta diz, no idioma do projeto, que a medição começa
-    /// na próxima sessão; com a marca da sessão, a conta parte dela, e a
-    /// versão ainda sem dia depois dela não foi usada; o `--since` que não é
-    /// instante nem dia é recusado; com um dia, ele fica fora dos dois lados,
-    /// o antes tem o tamanho do depois e a frase diz quantos dias faltam a
-    /// cada lado.
-    #[test]
-    fn the_command_measures_from_the_last_mark_or_the_given_instant_in_the_project_language() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config");
-        // Um projeto com `mustard.json` na pasta `name`, no idioma `text`.
-        let project = |name: &str, text: &str| {
-            let root = dir.path().join(name);
-            fs::create_dir_all(&root).unwrap();
-            fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{text}"}}}}"#)).unwrap();
-            root
-        };
-        for (text, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
-            let root = project(text, text);
-            let answer = measure_at(&MeasureOpts { root, since: None }, Some(&config), "2026-10-04");
-            assert_eq!(answer["mark"], Value::Null, "{text}: {answer}");
-            assert_eq!(answer["text"], json!(translate("page.measure.no_mark", lang)), "{text}");
-        }
-
-        let root = project("loja", "pt-BR");
-        // Uma conversa do projeto com uma resposta de 100 ações e mil tokens
-        // em cada dia.
-        let days = ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"];
-        let lines: Vec<String> = days
-            .iter()
-            .map(|day| {
-                let tools: Vec<Value> =
-                    (0..100).map(|n| json!({"type": "tool_use", "id": format!("{day}-{n}"), "name": "Read", "input": {}})).collect();
-                json!({"timestamp": format!("{day}T15:00:00Z"), "cwd": root.to_string_lossy(), "message": {
-                    "id": day, "model": "m", "usage": {"input_tokens": 1000, "output_tokens": 0}, "content": tools}})
-                .to_string()
-            })
-            .collect();
-        fs::create_dir_all(config.join("projects/p")).unwrap();
-        fs::write(config.join("projects/p/s1.jsonl"), lines.join("\n")).unwrap();
-        marks::record(&root, "1.0 (abc)").unwrap();
-        let marked = measure_at(&MeasureOpts { root: root.clone(), since: None }, Some(&config), "2026-10-04");
-        assert_eq!((marked["project"].clone(), marked["mark"]["version"].clone()), (json!("loja"), json!("1.0 (abc)")));
-        assert_eq!(marked["verdict"], json!({"kind": "not-used-yet"}), "{marked}");
-        assert_eq!(marked["text"], json!(translate("page.measure.not_used_yet", Locale::PtBr)));
-
-        let refused = measure_at(&MeasureOpts { root: root.clone(), since: Some("01/10".into()) }, Some(&config), "2026-10-04");
-        assert_eq!((refused["ok"].clone(), refused["reason"].clone()), (json!(false), json!("not-an-instant")), "{refused}");
-        let given = measure_at(&MeasureOpts { root, since: Some("2026-10-01".into()) }, Some(&config), "2026-10-04");
-        assert_eq!(given["before"]["days"], json!(["2026-09-29", "2026-09-30"]), "{given}");
-        assert_eq!(given["after"]["days"], json!(["2026-10-02", "2026-10-03"]), "{given}");
-        assert_eq!((given["after"]["actions"].clone(), given["after"]["tokens_per_action"].clone()), (json!(200), json!(10)));
-        let expected = "Ainda não dá para dizer: faltam 3 dias contados antes e 3 depois para o mínimo de 5 de cada lado.";
-        assert_eq!(given["text"], json!(expected));
     }
 }

@@ -160,6 +160,7 @@ mod session;
 mod map;
 mod events;
 mod page;
+mod measure;
 mod install;
 mod spec_text;
 
@@ -178,9 +179,10 @@ type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
 /// - `map` — o mapa do projeto;
 /// - `events` — o arquivo de eventos da spec;
 /// - `page` — as páginas;
+/// - `measure` — a medição do uso real;
 /// - `install` — o diagnóstico da instalação;
 /// - `spec_text` — o rótulo da onda.
-const PARTS: [Part; 11] = [
+const PARTS: [Part; 12] = [
     (flow::PREFIXES, flow::text),
     (survey::PREFIXES, survey::text),
     (prompt::PREFIXES, prompt::text),
@@ -190,6 +192,7 @@ const PARTS: [Part; 11] = [
     (map::PREFIXES, map::text),
     (events::PREFIXES, events::text),
     (page::PREFIXES, page::text),
+    (measure::PREFIXES, measure::text),
     (install::PREFIXES, install::text),
     (spec_text::PREFIXES, spec_text::text),
 ];
@@ -321,6 +324,7 @@ mod tests {
         include_str!("i18n/map.rs"),
         include_str!("i18n/events.rs"),
         include_str!("i18n/page.rs"),
+        include_str!("i18n/measure.rs"),
         include_str!("i18n/install.rs"),
         include_str!("i18n/spec_text.rs"),
     ];

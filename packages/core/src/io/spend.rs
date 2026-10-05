@@ -125,6 +125,9 @@ pub fn update<R>(dir: &Path, change: impl FnOnce(&mut Ledger) -> R) -> Result<R,
 struct Projects {
     by_dir: HashMap<String, Option<String>>,
     roots: BTreeMap<String, BTreeSet<PathBuf>>,
+    /// O projeto se chama pela pasta inteira ([`project_place`]), e não pelo
+    /// nome dela: dois projetos de mesmo nome não se somam.
+    by_place: bool,
 }
 
 impl Projects {
@@ -134,8 +137,10 @@ impl Projects {
         if let Some(known) = self.by_dir.get(cwd) {
             return known.clone();
         }
+        let by_place = self.by_place;
         let found = project_root(Path::new(cwd)).and_then(|root| {
-            let name = root.file_name()?.to_string_lossy().into_owned();
+            let name = if by_place { place_of(&root).into_os_string() } else { root.file_name()?.to_os_string() };
+            let name = name.to_string_lossy().into_owned();
             Some((name, root))
         });
         let name = found.map(|(name, root)| {
@@ -155,6 +160,20 @@ fn project_root(dir: &Path) -> Option<PathBuf> {
         .find(|folder| may_hold_project(folder) && ProjectConfig::exists(folder))
         .map(Path::to_path_buf)
         .or_else(|| linked_worktree_main(dir).filter(|main| may_hold_project(main) && ProjectConfig::exists(main)))
+}
+
+/// A pasta inteira de `folder`, sem atalho nem trecho relativo, que é a mesma
+/// venha de onde vier; a pasta que já não existe fica como veio.
+fn place_of(folder: &Path) -> PathBuf {
+    std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf())
+}
+
+/// A pasta inteira do projeto de `root` — qualquer pasta dentro dele ou a
+/// cópia de onda dele —, a mesma que a conta das conversas dá a ele, ou
+/// `None` quando `root` não é de um projeto com `mustard.json`.
+#[must_use]
+pub fn project_place(root: &Path) -> Option<PathBuf> {
+    project_root(&place_of(root)).map(|found| place_of(&found))
 }
 
 /// Se `folder` pode ser a pasta de um projeto. A pasta `.claude` de um
@@ -401,7 +420,7 @@ pub fn count_open(config_dir: &Path, ledger_dir: Option<&Path>, today: &str) -> 
 /// chega a ser aberto.
 #[must_use]
 pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec<DayRow> {
-    let (mut rows, mut projects) = conversations(config_dir, range);
+    let (mut rows, mut projects) = conversations(config_dir, range, Projects::default());
     let in_specs = std::mem::take(&mut projects.roots).into_iter().flat_map(|(name, roots)| {
         roots.iter().flat_map(|root| jev_calls(root, range)).map(|call| (name.clone(), call)).collect::<Vec<_>>()
     });
@@ -417,12 +436,15 @@ pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec
 }
 
 /// A soma das conversas de `config_dir` nos dias de `range`, sem o Jev: uma
-/// linha por dia e projeto, e os projetos que elas citam. É a única soma das
-/// conversas: o gasto da máquina ([`count`]) e o de um projeto só
-/// ([`project_days`]) saem dela.
-fn conversations(config_dir: &Path, range: &Range) -> (BTreeMap<(String, String), DayRow>, Projects) {
+/// linha por dia e projeto, com o projeto chamado como `projects` o chama, e
+/// os projetos que elas citam. É a única soma das conversas: o gasto da
+/// máquina ([`count`]) e o de um projeto só ([`project_days`]) saem dela.
+fn conversations(
+    config_dir: &Path,
+    range: &Range,
+    mut projects: Projects,
+) -> (BTreeMap<(String, String), DayRow>, Projects) {
     let floor = range.first.as_deref().and_then(day_start).map(SystemTime::from);
-    let mut projects = Projects::default();
     let mut tally = SpendTally::default();
     for (path, owner) in transcript_files(config_dir) {
         let changed = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
@@ -436,13 +458,17 @@ fn conversations(config_dir: &Path, range: &Range) -> (BTreeMap<(String, String)
 }
 
 /// A linha de cada dia de `range` do projeto de `root`, só das conversas, sem
-/// o Jev, em ordem de dia: os mesmos tokens, ações e procuras que [`count`]
-/// dá a ele, pela mesma soma. O projeto é o do nome da pasta do checkout
-/// principal, como na página do gasto.
+/// o Jev, em ordem de dia: os tokens, ações e procuras das conversas abertas
+/// nele e nas cópias de onda dele, pela mesma soma de [`count`]. O projeto é a
+/// pasta inteira ([`project_place`]): outro projeto de mesmo nome, como uma
+/// cópia de laboratório, fica fora, ao contrário da página do gasto.
 #[must_use]
 pub fn project_days(config_dir: &Path, root: &Path, range: &Range) -> Vec<DayRow> {
-    let Some(name) = project_name(root) else { return Vec::new() };
-    conversations(config_dir, range).0.into_values().filter(|row| row.project == name).collect()
+    let Some(place) = project_place(root) else { return Vec::new() };
+    let (key, name) = (place.to_string_lossy(), place.file_name().map(|name| name.to_string_lossy().into_owned()));
+    let projects = Projects { by_place: true, ..Projects::default() };
+    let rows = conversations(config_dir, range, projects).0.into_values().filter(|row| row.project == key);
+    rows.map(|row| DayRow { project: name.clone().unwrap_or_default(), ..row }).collect()
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ mod installer_switches;
 mod installs_nothing;
 mod map_created_when_missing;
 mod map_of_another_scan;
+mod measure_cli;
 mod one_page_engine;
 mod open_cli;
 mod pending_ledger_cli;
