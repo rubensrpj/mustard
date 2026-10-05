@@ -272,7 +272,7 @@ pub(super) mod tests {
         let piece = |name: &str| format!("{name}/subagents/agent-onda.jsonl");
         let first = answer(300, "r1", [2, 100, 1_000, 40], &["t1"]);
         platform_file(config, "-tmp-obra", &piece("antiga"), &[request_line(&at(200), &prompt), first]);
-        platform_file(config, "-tmp-obra", &piece("meio"), &[second.clone()]);
+        platform_file(config, "-tmp-obra", &piece("meio"), std::slice::from_ref(&second));
         platform_file(config, "-tmp-obra", &piece("nova"), &[second, answer(120_000, "r3", [4, 0, 3_000, 60], &["t4"])]);
 
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
