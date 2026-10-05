@@ -28,9 +28,11 @@
 //!   A ordem de entregar fecha a trava: dali em diante, o gancho de antes da
 //!   ferramenta recusa tudo, menos `run read` e `run write` na spec e o
 //!   comando de compilar do projeto, cada um sem outro comando na mesma
-//!   linha. Antes dela nada é recusado por tamanho, nem a conversa acima do
-//!   limite no meio de uma tarefa. O resumo é o salto do tamanho entre a resposta que
-//!   chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
+//!   linha. Enquanto a rodada espera o conserto da volta que recusou — o
+//!   trecho de conserto dela está em disco —, a trava fica aberta, e a
+//!   entrega nova a fecha de novo. Antes da ordem nada é recusado por
+//!   tamanho, nem a conversa acima do limite no meio de uma tarefa. O resumo
+//!   é o salto do tamanho entre a resposta que chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
 //!   o comando que o pedido da onda manda — e a resposta seguinte, somado
 //!   quando o agente lê mais de um; sem resumo lido, conta a conversa inteira.
 //!   O agente de onda nunca recebe o aviso de quem conduz, e quem conduz nunca
@@ -53,7 +55,8 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::mustard_id;
 use mustard_core::domain::spec_events::type_spec;
-use mustard_core::domain::wave_prompt::is_wave_title;
+use mustard_core::domain::wave_prompt::wave_of_title;
+use mustard_core::io::spec_events as store;
 use mustard_core::io::transcript::{agent_pieces, heading_of};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
@@ -291,17 +294,18 @@ fn user_text(line: &Value) -> Option<String> {
     }
 }
 
-/// Se a conversa em `path` abre com o título de um pedido de onda no idioma
-/// `lang`: a primeira mensagem do usuário nela é a que vale.
-fn opens_a_wave(path: &Path, lang: Locale) -> bool {
+/// A spec e a onda do pedido com que a conversa em `path` abre, no idioma
+/// `lang`: a primeira mensagem do usuário nela é a que vale. `None` quando
+/// ela não abre com o título de um pedido de onda.
+fn wave_opened(path: &Path, lang: Locale) -> Option<(String, u64)> {
     use std::io::BufRead;
 
-    let Ok(file) = std::fs::File::open(path) else { return false };
+    let file = std::fs::File::open(path).ok()?;
     std::io::BufReader::new(file)
         .lines()
         .map_while(Result::ok)
         .find_map(|line| user_text(&serde_json::from_str::<Value>(&line).ok()?))
-        .is_some_and(|first| is_wave_title(heading_of(&first), lang))
+        .and_then(|first| wave_of_title(heading_of(&first), lang))
 }
 
 /// A leitura da conversa do agente, nos pedaços `pieces`, do mais antigo ao
@@ -316,9 +320,7 @@ fn opens_a_wave(path: &Path, lang: Locale) -> bool {
 fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
     use std::io::BufRead;
 
-    if !opens_a_wave(pieces.first()?, lang) {
-        return None;
-    }
+    wave_opened(pieces.first()?, lang)?;
     let (mut first, mut now, mut summary, mut before) = (None, None, 0_u64, None::<(Option<String>, u64)>);
     for piece in pieces {
         let Ok(file) = std::fs::File::open(piece) else { continue };
@@ -501,11 +503,27 @@ fn passes_after_the_order(input: &HookInput, build: Option<&str>) -> bool {
     build.is_some_and(|build| runs_build(&main, &build)) && run.all(|segment| trims_the_output(&segment))
 }
 
+/// Se a rodada recusou a volta da onda do agente de `input` e espera o
+/// conserto dele: o pedaço mais antigo da conversa abre com o título do
+/// pedido da onda no idioma `lang`, e o trecho de conserto da volta pendente
+/// dela ([`fix_file`](crate::commands::flow::round::fix_file)) está em disco,
+/// na spec de `root`. A entrega nova muda o nome do trecho, e a resposta
+/// volta a ser `false` sozinha, sem marca a apagar.
+fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
+    let pieces = agent_transcript(input).map(|transcript| agent_pieces(&transcript)).unwrap_or_default();
+    let Some((spec, wave)) = pieces.first().and_then(|first| wave_opened(first, lang)) else { return false };
+    let root = store::spec_root(root);
+    let log = store::spec_file(&root, &spec).ok().and_then(|path| store::read(&path).ok().flatten());
+    log.and_then(|log| crate::commands::flow::round::fix_file(&root, &spec, &log, wave)).is_some_and(|file| file.is_file())
+}
+
 /// A recusa ao agente de onda depois da ordem de entregar: a trava fechada
 /// por [`task_end_text`], e a chamada `input` não é ler ou gravar na spec nem
 /// o comando de compilar do projeto ([`passes_after_the_order`]). `None`
 /// fora de um agente de onda, antes da ordem — por maior que a conversa
-/// esteja — e para o que passa.
+/// esteja —, para o que passa e enquanto a rodada espera o conserto da volta
+/// que recusou ([`awaits_its_fix`]): quem conserta é o agente que fez a onda,
+/// mesmo acima do limite, e a entrega nova fecha a trava de novo.
 fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
     if !input.is_subagent() {
         return None;
@@ -519,6 +537,9 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
         return None;
     }
     let lang = ctx.config.language().text_or_default();
+    if awaits_its_fix(input, root, lang) {
+        return None;
+    }
     let build = build.map_or_else(String::new, |build| translate("conversation_size.wave_locked_build", lang).replace("{command}", &build));
     Some(translate("conversation_size.wave_locked", lang).replace("{build}", &build))
 }
@@ -1134,6 +1155,43 @@ mod tests {
         );
         write_agent(root, &wave_request(Locale::PtBr), &replies);
         assert!(injected(&finishing(agent_after_tool(root))).is_some(), "the same conversation, opened by a wave request, reads");
+    }
+
+    /// O conserto que a rodada devolve abre a trava do agente que recebeu a
+    /// ordem de entregar. Com a volta gravada e ainda sem recusa, ler, editar
+    /// e rodar a suíte seguem recusados; com o trecho de conserto da volta em
+    /// disco, os três passam; depois da entrega nova, os três voltam a ser
+    /// recusados, com o trecho velho ainda em disco.
+    #[test]
+    fn the_fix_the_round_sends_back_opens_the_lock_until_the_next_delivery() {
+        use serde_json::json;
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        seed_running_wave(root, "x");
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
+        assert!(order.contains("Entregue agora"), "the order to deliver: {order}");
+        let file = root.join("a.rs").to_string_lossy().into_owned();
+        let calls = || {
+            [
+                refused(root, "Read", json!({"file_path": file})),
+                refused(root, "Edit", json!({"file_path": file, "old_string": "a", "new_string": "b"})),
+                refused(root, "Bash", json!({"command": "cargo test --locked -p mustard-rt"})),
+            ]
+        };
+        let delivery = json!({"wave": 1, "text": "Feito.", "files": ["a.rs"], "returned": true, "author": "wave"});
+
+        seed(root, "delivered", delivery.clone());
+        assert!(calls().iter().all(Option::is_some), "a return the round has not refused keeps the lock");
+
+        let fix = crate::commands::flow::round::fix_file(root, "x", &read_log(root), 1).expect("the pending return");
+        std::fs::create_dir_all(fix.parent().unwrap()).unwrap();
+        std::fs::write(&fix, "Onda 1, rodada de conserto 1 de 2:\n- falta o teste da regra.\n").unwrap();
+        assert_eq!(calls(), [None, None, None], "the refused return opens the lock for the fix");
+
+        seed(root, "delivered", delivery);
+        assert!(fix.is_file(), "the old section is still on disk");
+        assert!(calls().iter().all(Option::is_some), "the new delivery closes the lock again");
     }
 
     /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
