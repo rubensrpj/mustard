@@ -16,7 +16,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::platform::i18n::Locale;
+use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::page_templates::PROJECT_CAPABILITIES;
+use mustard_core::platform::project_seed::project_page_template_path;
 use serde_json::{json, Value};
 
 /// Roda o binário no projeto, com uma pasta pessoal falsa e sem `claude` à mão.
@@ -92,6 +94,74 @@ fn a_fresh_install_delivers_the_whole_map_at_every_session_start() {
             );
         }
     }
+}
+
+/// O início da sessão manda resolver na spec aberta o erro, o ponto crítico,
+/// a melhoria e o ajuste do mesmo assunto, pelo `write request`, sem virar
+/// pendência. Na mesma linha, em ordem: quem identifica é o assistente; com
+/// certeza, ele grava e avisa; na dúvida, sugere e pergunta uma vez; e só o
+/// assunto diferente passa pela porta da pendência, a única do mapa. A linha
+/// seguinte deixa o "sim" do usuário para as outras mudanças.
+#[test]
+fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
+    for (lang, same_spec, yes) in [
+        (
+            "pt-BR",
+            [
+                "Erro, ponto crítico, melhoria e ajuste do mesmo assunto entram na mesma spec, pelo `write request`: nunca viram pendência.",
+                "Quem identifica é você:",
+                "com certeza, grave e avise;",
+                "na dúvida, sugira e pergunte uma vez.",
+                "Só assunto diferente vira pendência,",
+            ],
+            "- Outra mudança sua ou de um agente só segue com o \"sim\" do usuário.",
+        ),
+        (
+            "en-US",
+            [
+                "An error, a critical point, an improvement or an adjustment on the same subject joins the same spec through `write request`: it never becomes a pending item.",
+                "You are the one who tells:",
+                "when sure, record it and say so;",
+                "when in doubt, suggest it and ask once.",
+                "Only a different subject becomes a pending item,",
+            ],
+            "- Any other change from you or an agent only goes ahead with the user's \"yes\".",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let context = session_start(&root, &home, "startup");
+
+        let door = "`mustard-rt run pending --add`";
+        assert_eq!(context.matches(door).count(), 1, "the {lang} session start should name the pending door once: {context}");
+        let mut lines = context.lines().skip_while(|line| !line.contains(door));
+        let line = lines.next().unwrap_or_default();
+        let mut rest = line;
+        for piece in same_spec.iter().chain(std::iter::once(&door)) {
+            let at = rest
+                .find(piece)
+                .unwrap_or_else(|| panic!("the {lang} session start misses `{piece}`, or has it out of order, before the pending door: {line}"));
+            rest = &rest[at + piece.len()..];
+        }
+        assert_eq!(lines.next(), Some(yes), "the {lang} session start does not leave the user's yes to the other changes: {context}");
+    }
+}
+
+/// Numa instalação nova em inglês, o início da sessão traz, ao lado do mapa,
+/// a ordem de publicar a página do projeto: os dois cabem juntos no teto do
+/// início da sessão, e o aviso não sai para o mapa ficar. O par em português
+/// é conferido junto da instalação das páginas.
+#[test]
+fn an_english_fresh_install_asks_for_the_project_page_beside_the_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
+    let context = session_start(&root, &home, "startup");
+
+    assert!(context.contains(mustard_core::session_map(Locale::EnUs).trim()), "the en-US map did not reach the session: {context}");
+    let notice = translate("session.project_page", Locale::EnUs)
+        .replace("{template}", &project_page_template_path())
+        .replace("{capabilities}", PROJECT_CAPABILITIES);
+    assert!(context.contains(&notice), "the en-US session start dropped the order to publish the project page: {context}");
 }
 
 /// Uma instalação antiga, que declarava as três partes do roteador na

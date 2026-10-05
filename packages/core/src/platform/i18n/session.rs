@@ -68,8 +68,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // `{capabilities}` a declaração do banco de dados da página.
         ("session.project_page", Locale::PtBr) => {
             "[Mustard] A página do projeto ainda não foi publicada. Ela é a página do claude.ai que \
-             lista as specs deste projeto, com a fase e o link de cada uma. O link dela fica na \
-             barra de status. Publique agora o template dela, o arquivo `{template}`, lido uma vez só \
+             lista as specs deste projeto, com a fase e o link de cada uma. Publique agora o \
+             template dela, o arquivo `{template}`, lido uma vez só \
              e publicado como está, declarando o banco de dados da página: `{capabilities}`. Depois \
              grave o endereço com `mustard-rt run write publish --json \
              '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Não escreva o endereço na \
@@ -77,8 +77,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("session.project_page", Locale::EnUs) => {
             "[Mustard] The project page has not been published yet. It is the claude.ai page that \
-             lists this project's specs, with the phase and the link of each one. Its link lives \
-             in the status line. Publish its template now, the file `{template}`, read only once and \
+             lists this project's specs, with the phase and the link of each one. Publish its \
+             template now, the file `{template}`, read only once and \
              published as it is, declaring the page's database: `{capabilities}`. Then record the \
              address with `mustard-rt run write publish --json \
              '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Never write the address in the \
@@ -241,7 +241,7 @@ mod tests {
             include_str!("session.rs"),
             super::PREFIXES,
             27,
-            0x36b3_38a2_6b26_490c,
+            0x1a82_217f_3204_229f,
         );
     }
 

@@ -11,15 +11,15 @@ All work that changes a file follows one flow: survey, plan, approval, waves, re
 ## During the survey
 
 - Present one point at a time, in the order of explaining from the response style.
-- Check the code and the git history before stating or proposing: what looks dead may still have a user, and what left may have left on purpose.
+- Check the code and the git history before stating or proposing: what looks dead may have a user, and what left may have left on purpose.
 - Record each answer at once with `mustard-rt run write <type>`.
 
 ## While the spec is open
 
-- A new request joins the same spec through `write request`; on a closed spec or one with its pull request open, `mustard-rt run reopen --reason "<why>"` comes first. A pull request the server failed goes to `mustard-rt run reopen --fix --reason "<why>"`. A different subject becomes a pending item, with `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
-- A change from you or an agent only goes ahead with the user's "yes".
+- On a closed spec or with its pull request open, `mustard-rt run reopen --reason "<why>"` comes first, then `write request`. A pull request the server failed: `mustard-rt run reopen --fix --reason "<why>"`. An error, a critical point, an improvement or an adjustment on the same subject joins the same spec through `write request`: it never becomes a pending item. You are the one who tells: when sure, record it and say so; when in doubt, suggest it and ask once. Only a different subject becomes a pending item, with `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
+- Any other change from you or an agent only goes ahead with the user's "yes".
 - Every correction to how Mustard works becomes an adjustment to Mustard itself, never only your memory.
-- Never edit `spec.*` by hand: record through `write` and read one block with `mustard-rt run read <block>`.
+- Never edit `spec.*` by hand: use `write` and `mustard-rt run read <block>`.
 - Hand to an agent any investigation that opens many files; a single check is yours. Ask every agent to record in the spec through `mustard-rt run write` and come back in two lines.
 
 ## Pages
