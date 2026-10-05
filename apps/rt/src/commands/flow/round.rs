@@ -171,7 +171,7 @@ pub(crate) use slots::{
 pub(crate) use read_check::request_name;
 #[cfg(test)]
 pub(crate) use tests::{read_request, read_review, seed_read, shipped_agent};
-pub(crate) use report::{check_return, check_verdict_return, take_report};
+pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
 /// As opções de `mustard-rt run round`.

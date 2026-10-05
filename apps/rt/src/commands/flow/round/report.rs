@@ -839,7 +839,7 @@ fn looks_like_commit_sha(summary: &str) -> bool {
 /// A versão nova da tarefa `task`, devolvida ao backlog: os mesmos campos dela,
 /// tirando a onda que a levou — sem `wave`, ela volta a nascer solta, pronta
 /// para o lote que o backlog formar na rodada seguinte.
-pub(super) fn backlog_return(task: &SpecEvent) -> Map<String, Value> {
+pub(crate) fn backlog_return(task: &SpecEvent) -> Map<String, Value> {
     let mut draft: Map<String, Value> = task
         .fields
         .iter()

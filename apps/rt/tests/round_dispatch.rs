@@ -17,7 +17,7 @@
 
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -498,6 +498,62 @@ fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches
     let outside_wave = wave_of(&project, outside).expect("docs vira onda");
     assert_eq!(wave_of(&project, inside), None, "src/b.rs, presa a src/** em andamento, espera no backlog");
     assert_eq!(out, vec![outside_wave], "docs, que src/** não casa, sai");
+}
+
+/// Uma spec com duas tarefas de `a.rs` cuja onda 1 saiu e foi removida pelo
+/// `run write`, sem entrega. Devolve o projeto, as tarefas e a saída da
+/// remoção.
+fn removed_first_wave() -> (Project, Vec<u64>, Value) {
+    let (project, _, _, tasks) = backlog_project(&[&["a.rs"], &["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![1], "as duas tarefas de a.rs saem na onda 1");
+    let wave = project.log().visible().into_iter().find(|e| e.event_type == "wave").expect("a onda 1").id;
+    let removal = project.write("remove", &json!({"targets": [wave], "reason": "A onda saiu do plano."}));
+    (project, tasks, removal)
+}
+
+/// A onda que saiu e foi removida sem entrega devolve as tarefas dela ao
+/// backlog na mesma gravação: cada uma ganha a versão sem onda, e a leitura
+/// do backlog a mostra sem onda.
+#[test]
+fn removing_a_sent_wave_without_a_delivery_gives_its_tasks_back_to_the_backlog() {
+    let (project, tasks, removal) = removed_first_wave();
+
+    let log = project.log();
+    let current: BTreeSet<u64> = tasks.iter().map(|task| log.current(*task).expect("a tarefa segue").id).collect();
+    let returned: BTreeSet<u64> = removal["returned"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+    assert_eq!(returned, current, "a remoção grava junto a versão sem onda de cada tarefa: {removal}");
+    for task in &tasks {
+        assert_eq!(wave_of(&project, *task), None, "a tarefa da onda removida volta sem onda");
+    }
+    let backlog = project.run(&["read", "backlog", "--spec", SPEC]);
+    let shown: BTreeMap<u64, Value> = backlog["events"]
+        .as_array()
+        .expect("the backlog lines")
+        .iter()
+        .map(|line| (line["id"].as_u64().expect("the task number"), line["wave"].clone()))
+        .collect();
+    assert_eq!(shown, current.iter().map(|id| (*id, Value::Null)).collect(), "o backlog mostra as duas sem onda: {backlog}");
+}
+
+/// Depois da remoção, a rodada numera a onda nova adiante da removida, e não
+/// com o número dela: a onda nova sai, e o pedido dela lista só as tarefas
+/// da ordem dela.
+#[test]
+fn after_a_wave_is_removed_the_next_one_takes_a_new_number_and_its_request_lists_only_its_tasks() {
+    let (project, tasks, _) = removed_first_wave();
+
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![2], "a onda nova nasce adiante da removida");
+    let log = project.log();
+    let codes = log.codes();
+    let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(2)).expect("a onda 2");
+    let order: BTreeSet<&String> = wave.ints("order").iter().filter_map(|id| codes.get(id)).collect();
+    assert_eq!(order.len(), tasks.len(), "a onda nova leva as duas tarefas devolvidas: {:?}", wave.fields);
+    let out = project.command(&["run", "read", "request-2", "--spec", SPEC], "");
+    let request = String::from_utf8_lossy(&out.stdout);
+    let listed: BTreeSet<&String> = tasks.iter().filter_map(|id| codes.get(id)).filter(|code| request.contains(code.as_str())).collect();
+    assert_eq!(listed, order, "o pedido lista só as tarefas da ordem: {request}");
 }
 
 // ---------------------------------------------------------------------------

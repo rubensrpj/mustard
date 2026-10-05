@@ -97,7 +97,7 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// resto da leitura, que só conhece onda pelo `n`/`wave` gravado em cada
 /// evento. A onda já entregue ou aprovada fica como história, e a tarefa dela
 /// nunca volta para cá. O número da onda segue o maior já gravado, com a onda
-/// desfeita incluída: o número dela não volta a nascer.
+/// desfeita e a removida incluídas: o número delas não volta a nascer.
 ///
 /// Grava tudo junto ou nada: cada onda nova, a versão de cada tarefa e o retorno de cada tarefa desfeita são montados
 /// primeiro e conferidos em sequência pela mesma conferência da gravação
@@ -263,8 +263,8 @@ pub(crate) fn dispatch_backlog(
     }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();
-    // O número segue o maior já gravado, com a onda que ficou vazia incluída:
-    // ela saiu do plano, mas o número dela não volta a nascer.
+    // O número segue o maior já gravado, com a onda que ficou vazia e a
+    // removida incluídas: saíram do plano, mas o número delas não volta.
     let mut next_n = log.last_wave_number();
     let mut formed = Vec::new();
     let mut numbered: BTreeSet<u64> = BTreeSet::new();

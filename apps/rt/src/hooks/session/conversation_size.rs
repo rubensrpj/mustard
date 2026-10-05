@@ -49,6 +49,7 @@
 //! legível, sem uso gravado ou sem spec para retomar, nada acontece:
 //! [`Verdict::Allow`], porque sem tamanho conhecido não há como decidir.
 
+use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -429,7 +430,11 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
     if let Some(parent) = steps.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&steps, sizes.iter().map(|size| format!("{size}\n")).collect::<String>());
+    let lines = sizes.iter().fold(String::new(), |mut lines, size| {
+        let _ = writeln!(lines, "{size}");
+        lines
+    });
+    let _ = std::fs::write(&steps, lines);
     let largest = std::iter::once(context.first)
         .chain(sizes.iter().copied())
         .collect::<Vec<_>>()

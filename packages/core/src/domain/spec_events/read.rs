@@ -669,18 +669,36 @@ impl SpecLog {
             .collect()
     }
 
-    /// O maior número de onda que a leitura mostra, com a onda que saiu do
-    /// plano por ficar vazia ([`Self::planned_waves`]) incluída; zero sem
-    /// onda nenhuma. A onda nova nasce depois dele, para nunca repetir o
-    /// número de uma onda que já foi gravada.
+    /// O maior número de onda gravado no arquivo, com a onda que saiu do
+    /// plano por ficar vazia ([`Self::planned_waves`]) e a removida
+    /// incluídas; zero sem onda nenhuma. A onda nova nasce depois dele, para
+    /// nunca repetir o número de uma onda que já foi gravada: o envio e as
+    /// tarefas que ainda trazem o número velho passariam a ser dela.
     #[must_use]
     pub fn last_wave_number(&self) -> u64 {
-        self.block(BlockQuery::Block(Block::Waves))
-            .into_iter()
+        self.events.iter().filter(|e| e.event_type == "wave").filter_map(SpecEvent::wave).max().unwrap_or(0)
+    }
+
+    /// As tarefas vigentes presas a uma onda que a remoção `removed` tirou da
+    /// leitura, lidas no arquivo já com ela: a onda sem entrega e sem outra
+    /// versão à mostra, e as tarefas que ainda levam o número dela. A onda
+    /// entregue fica de fora: as tarefas dela seguem como estão.
+    #[must_use]
+    pub fn tasks_of_removed_waves(&self, removed: &[u64]) -> Vec<&SpecEvent> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let delivered = self.delivered_waves();
+        let gone: BTreeSet<u64> = removed
+            .iter()
+            .filter_map(|id| self.get(*id))
             .filter(|e| e.event_type == "wave")
             .filter_map(SpecEvent::wave)
-            .max()
-            .unwrap_or(0)
+            .filter(|n| !delivered.contains(n))
+            .filter(|n| !waves.iter().any(|e| e.event_type == "wave" && e.wave() == Some(*n)))
+            .collect();
+        self.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| gone.contains(&n)))
+            .collect()
     }
 
     /// Os vereditos de cada onda do plano, do mais velho ao mais novo.
@@ -950,6 +968,21 @@ mod tests {
         assert_eq!(log.planned_waves(), BTreeSet::from([1, 2]));
         assert_eq!(log.last_wave_number(), 4);
         assert_eq!(parse_log("").last_wave_number(), 0);
+    }
+
+    /// Só a onda removida sem entrega deixa as tarefas presas ao número de uma
+    /// onda que não existe mais; as da onda entregue seguem como estão.
+    #[test]
+    fn only_a_removed_wave_without_a_delivery_leaves_its_tasks_behind() {
+        let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Uma.\"}\n\
+                       {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"wave\",\"n\":2,\"text\":\"Duas.\"}\n\
+                       {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Mexer.\"}\n\
+                       {\"v\":1,\"id\":4,\"at\":\"t\",\"type\":\"task\",\"wave\":2,\"text\":\"Mexer mais.\"}\n\
+                       {\"v\":1,\"id\":5,\"at\":\"t\",\"type\":\"delivered\",\"wave\":2,\"text\":\"Saiu.\"}\n\
+                       {\"v\":1,\"id\":6,\"at\":\"t\",\"type\":\"remove\",\"targets\":[1,2],\"reason\":\"Saíram.\"}\n";
+        let log = parse_log(content);
+        let left: Vec<u64> = log.tasks_of_removed_waves(&[1, 2]).into_iter().map(|e| e.id).collect();
+        assert_eq!(left, [3]);
     }
 
     /// Conta a onda entregue e a que a última versão de uma tarefa não
