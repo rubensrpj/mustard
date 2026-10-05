@@ -64,9 +64,9 @@ pub enum MaintCmd {
     /// an existing file is preserved, only what is missing is created or
     /// backfilled. Mustard's own texts are always rewritten, in the language
     /// of `language.text`: the session map `.claude/mustard/session-map.md`,
-    /// the two page templates under `.claude/mustard/pages/` and the three
-    /// agents under `.claude/agents/mustard/`. They are the harness's own
-    /// text, not project configuration. So a copy you edited is replaced and
+    /// the two page templates under `.claude/mustard/pages/` and the two
+    /// agents, wave and review, under `.claude/agents/mustard/`. They are the
+    /// harness's own text, not project configuration. So a copy you edited is replaced and
     /// listed under `updated`. One that already matched the shipped text comes
     /// back under `preserved`, because there was nothing left to write. Emits the
     /// `UpsertReport` as deterministic pretty JSON.

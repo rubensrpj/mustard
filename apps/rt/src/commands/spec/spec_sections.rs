@@ -37,16 +37,11 @@ fn variants(key: &str) -> Option<&'static [&'static str]> {
         "non-goals" | "nongoals" => &["Non-Goals", "Não-Objetivos"],
         "concerns" => &["Concerns", "Preocupações"],
         "decisions" => &["Decisions", "Decisões não-óbvias"],
-        // The conversation channel (the drafting step's material option). The drafter emits
-        // the EN display heading — language-agnostic, exactly like
-        // `## Checklist` — so every reader keys off one literal; the PT variant
-        // is registered so a hand-authored PT spec still resolves through THIS
-        // resolver instead of growing a second parser.
+        // Seções do canal da conversa: definições, evidências e riscos. As duas
+        // grafias resolvem aqui, então a spec escrita à mão em qualquer idioma
+        // é lida por esta tabela, sem um segundo leitor de títulos.
         "definitions" => &["Definitions", "Definições"],
         "evidence" => &["Evidence", "Evidências"],
-        // Os riscos do canal de material. O rascunho escreve o título no idioma
-        // da spec, então as duas grafias precisam resolver aqui — é por esta
-        // tabela que o `--material-only` acha a seção para trocá-la.
         "risks" => &["Risks", "Riscos"],
         // The reality obligations a plan declares per wave — duties to check the
         // world OUTSIDE the repository (an official document, a live endpoint, a

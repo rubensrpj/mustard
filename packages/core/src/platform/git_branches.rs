@@ -19,10 +19,11 @@
 //! | does this branch still exist? | [`remote_branch_names`] — git, local refs | OPEN |
 //! | where is a direct commit forbidden? | [`protected_branches`] — `git.flow` | CLOSED |
 //!
-//! The middle row is the same source as the first, narrowed and made free: a
-//! base a unit was really cut from is checked for EXISTENCE, and the check is
-//! asked often enough (once per cut, once per hook invocation) that it must not
-//! touch the network.
+//! A linha do meio é a mesma fonte da primeira, estreitada e sem custo. Quem a
+//! pergunta é só a leitura do nome de branch no formato antigo (`<base>_<slug>`,
+//! em `BaseFlow` do `mustard-rt`), que procura de qual branch do `origin` o nome
+//! começa. Essa leitura roda na varredura de todas as branches e na leitura da
+//! spec do checkout, inclusive dentro de gancho, então não pode tocar a rede.
 //!
 //! Opening the first is only safe because the second stays closed. They are one
 //! module so that can never drift into two.
@@ -193,12 +194,12 @@ fn origin_refs(root: &Path) -> Option<Vec<(String, i64)>> {
 /// The NAMES of every branch on `origin` — the reading for the one question
 /// *"does this branch still exist?"*.
 ///
-/// Free by construction: local refs only, no `fetch` and no `ls-remote`. That
-/// is a requirement of the callers, not an optimisation — the recorded-base
-/// check runs on the cut path AND inside a `PreToolUse` hook, so a round trip
-/// here would be paid on every file write of every session. The refs are as
-/// fresh as the last fetch, which is what the question needs: a branch deleted
-/// on the remote weeks ago is already gone from them once anything has pruned.
+/// Sem custo por construção: só refs locais, sem `fetch` nem `ls-remote`. É
+/// exigência de quem chama, não otimização: a leitura do prefixo antigo em
+/// `BaseFlow` roda na varredura de todas as branches e na leitura da spec do
+/// checkout, inclusive dentro de gancho, e uma ida ao servidor aqui seria paga
+/// em cada uma. As refs valem o último fetch, que é o que a pergunta precisa:
+/// uma branch apagada no servidor há semanas já some delas depois de um prune.
 ///
 /// `None` is *"could not measure"*, never *"there are none"* — see
 /// [`origin_refs`]. A caller that folds the two together turns an offline

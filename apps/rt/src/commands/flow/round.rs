@@ -74,7 +74,8 @@
 //! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
 //! critério, o comando inteiro e a saída de erro; a conferência depois da
 //! onda, também antes de comitar, que recusa a importação nova contra uma
-//! regra forte do padrão do projeto e o resto do que a onda tirou — a lista
+//! regra forte do padrão do projeto, o resto do que a onda tirou e a onda que
+//! cresce além do limite de linhas ou de testes novos — a lista
 //! vai inteira numa mensagem só, a onda conserta na mesma cópia e grava a
 //! entrega de novo, e depois da segunda rodada de conserto a pergunta vai ao
 //! usuário; o relatório em que um agente
@@ -111,6 +112,9 @@
 //! que sai verde sem rodar teste nenhum sai pelo código do critério; a cópia
 //! que não pôde ser criada, cuja onda fica para a rodada seguinte; e a cópia
 //! com mudança fora da entrega, que fica no disco em vez de ser apagada.
+//! Cada onda que mudou arquivo volta com a linha de tamanho — as linhas
+//! postas e tiradas, os testes novos e os arquivos mudados —, que sai na
+//! resposta como aviso `wave-size` e no corpo do commit.
 //!
 //! A página da spec e a do projeto são refeitas no fim da rodada, e a resposta
 //! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço

@@ -13,7 +13,7 @@
 //! preserved, and only what is missing is created or backfilled. Mustard's
 //! own texts — `.claude/mustard/session-map.md`,
 //! `.claude/mustard/pages/{spec,project}.html` and
-//! `.claude/agents/mustard/{wave,review,skill}.md` — are ALWAYS rewritten, in
+//! `.claude/agents/mustard/{wave,review}.md` — are ALWAYS rewritten, in
 //! the language of `language.text`: they are the harness's own text, not
 //! project configuration, so a copy that diverged is replaced and reported as
 //! `Updated`, while a copy already byte-identical to the shipped text is
