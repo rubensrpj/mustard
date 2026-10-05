@@ -1,8 +1,9 @@
-//! A página avulsa, o gasto de cada dia e as peças de spec que o fluxo e a
-//! barra de status leem.
+//! A página avulsa, o gasto de cada dia, a medição antes e depois da marca de
+//! uma versão e as peças de spec que o fluxo e a barra de status leem.
 
 pub mod cli;
 
+pub mod measure;
 pub mod page;
 pub mod spend;
 pub mod spec_doc;

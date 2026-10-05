@@ -174,7 +174,7 @@ pub const SUMMARY_COLLECTION: &str = "summary";
 pub const SUMMARY_DOC: &str = "current";
 
 /// Os projetos somados, um total por dia, do mais velho ao mais novo.
-fn totals<'a>(rows: impl IntoIterator<Item = &'a DayRow>) -> Vec<DayTotal> {
+pub(crate) fn totals<'a>(rows: impl IntoIterator<Item = &'a DayRow>) -> Vec<DayTotal> {
     let mut days: BTreeMap<&str, DayTotal> = BTreeMap::new();
     for row in rows {
         let total = days.entry(row.day.as_str()).or_insert_with(|| DayTotal { day: row.day.clone(), ..DayTotal::default() });

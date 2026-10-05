@@ -77,6 +77,24 @@ pub enum SpecCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Mede o gasto do Claude no projeto antes e depois da marca de uma
+    /// versão do Mustard.
+    ///
+    /// A marca é a primeira sessão de cada compilação do Mustard no projeto,
+    /// gravada pelo início da sessão. Compara os dias contados (fechados, com
+    /// 100 ações ou mais) dos dois lados, pela mesma conta da página do gasto,
+    /// e diz o veredito numa frase. Só lê: não grava nada e não chama o Jev.
+    #[command(name = "measure")]
+    #[command(display_order = 24)]
+    Measure {
+        /// O instante da marca, em `RFC 3339` ou `AAAA-MM-DD`; sem ele, a última
+        /// marca do projeto.
+        #[arg(long)]
+        since: Option<String>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -88,6 +106,7 @@ pub fn dispatch(cmd: SpecCmd) {
         SpecCmd::Spend { republish, url, root } => {
             spec::spend::run(&spec::spend::SpendOpts { root, republish, url });
         }
+        SpecCmd::Measure { since, root } => spec::measure::run(&spec::measure::MeasureOpts { root, since }),
     }
 }
 

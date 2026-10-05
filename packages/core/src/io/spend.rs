@@ -283,7 +283,8 @@ fn loose_calls(dir: &Path) -> Vec<(String, JevCall)> {
 
 /// O nome do projeto de `root`, o mesmo que o painel dá: o da pasta do
 /// checkout principal, também quando `root` é a cópia de onda dele.
-fn project_name(root: &Path) -> Option<String> {
+#[must_use]
+pub fn project_name(root: &Path) -> Option<String> {
     project_home(root).file_name().map(|name| name.to_string_lossy().into_owned())
 }
 
@@ -400,18 +401,7 @@ pub fn count_open(config_dir: &Path, ledger_dir: Option<&Path>, today: &str) -> 
 /// chega a ser aberto.
 #[must_use]
 pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec<DayRow> {
-    let floor = range.first.as_deref().and_then(day_start).map(SystemTime::from);
-    let mut projects = Projects::default();
-    let mut tally = SpendTally::default();
-    for (path, owner) in transcript_files(config_dir) {
-        let changed = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
-        if floor.is_some_and(|floor| changed.is_some_and(|at| at < floor)) {
-            continue;
-        }
-        let fallback = owner.as_deref().and_then(|owner| owner_project(owner, &mut projects));
-        tally_file(&path, range, &mut tally, &mut projects, fallback.as_deref());
-    }
-    let mut rows = tally.finish();
+    let (mut rows, mut projects) = conversations(config_dir, range);
     let in_specs = std::mem::take(&mut projects.roots).into_iter().flat_map(|(name, roots)| {
         roots.iter().flat_map(|root| jev_calls(root, range)).map(|call| (name.clone(), call)).collect::<Vec<_>>()
     });
@@ -424,6 +414,35 @@ pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec
         row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(call.cost_micro_usd);
     }
     rows.into_values().collect()
+}
+
+/// A soma das conversas de `config_dir` nos dias de `range`, sem o Jev: uma
+/// linha por dia e projeto, e os projetos que elas citam. É a única soma das
+/// conversas: o gasto da máquina ([`count`]) e o de um projeto só
+/// ([`project_days`]) saem dela.
+fn conversations(config_dir: &Path, range: &Range) -> (BTreeMap<(String, String), DayRow>, Projects) {
+    let floor = range.first.as_deref().and_then(day_start).map(SystemTime::from);
+    let mut projects = Projects::default();
+    let mut tally = SpendTally::default();
+    for (path, owner) in transcript_files(config_dir) {
+        let changed = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+        if floor.is_some_and(|floor| changed.is_some_and(|at| at < floor)) {
+            continue;
+        }
+        let fallback = owner.as_deref().and_then(|owner| owner_project(owner, &mut projects));
+        tally_file(&path, range, &mut tally, &mut projects, fallback.as_deref());
+    }
+    (tally.finish(), projects)
+}
+
+/// A linha de cada dia de `range` do projeto de `root`, só das conversas, sem
+/// o Jev, em ordem de dia: os mesmos tokens, ações e procuras que [`count`]
+/// dá a ele, pela mesma soma. O projeto é o do nome da pasta do checkout
+/// principal, como na página do gasto.
+#[must_use]
+pub fn project_days(config_dir: &Path, root: &Path, range: &Range) -> Vec<DayRow> {
+    let Some(name) = project_name(root) else { return Vec::new() };
+    conversations(config_dir, range).0.into_values().filter(|row| row.project == name).collect()
 }
 
 #[cfg(test)]
@@ -694,5 +713,58 @@ mod tests {
 
         fs::write(ledger_path(&machine), "{ não é json").unwrap();
         assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 2_000, "an unreadable file counts as absent");
+    }
+
+    /// O gasto de um projeto só é a linha que a conta da máquina dá a ele,
+    /// sem o Jev, em qualquer faixa de dias: o dia que só tem chamada do Jev
+    /// não tem conversa, a linha de outro projeto numa conversa dele fica com
+    /// o outro, e o agente da cópia apagada fica com o projeto da conversa
+    /// que o chamou.
+    #[test]
+    fn the_spend_of_one_project_is_the_machine_count_of_that_project_without_the_jev() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config");
+        let root = project(dir.path(), "meu-projeto");
+        let other = project(dir.path(), "outro");
+        let gone = dir.path().join("copias/meu-projeto-1/spec/a");
+        let tools = [("Grep", json!({"pattern": "x"})), ("Read", json!({"file_path": "a.rs"}))];
+        conversation(
+            &config,
+            "p",
+            "s1",
+            &[
+                reply("m1", "2026-09-30T15:00:00Z", &root, 100, &tools),
+                reply("m2", "2026-10-01T15:00:00Z", &root, 40, &[]),
+                reply("m3", "2026-10-02T15:00:00Z", &other, 7, &tools),
+            ],
+        );
+        conversation(&config, "o", "s2", &[reply("m4", "2026-10-01T15:00:00Z", &other, 70, &tools)]);
+        let agent = config.join("projects/p/s1/subagents/agent-1.jsonl");
+        fs::create_dir_all(agent.parent().unwrap()).unwrap();
+        fs::write(&agent, reply("m5", "2026-10-01T15:05:00Z", &gone, 90, &tools)).unwrap();
+        let spec = root.join(".claude/spec/uma-spec");
+        fs::create_dir_all(&spec).unwrap();
+        let call = |id: u64, at: &str| {
+            json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call", "author": "binary",
+                "command": "word search", "filter": "jev", "tokens": 1000, "cost_micro_usd": 900})
+            .to_string()
+        };
+        let calls = [call(1, "2026-10-01T10:00:00-03:00"), call(2, "2026-10-02T10:00:00-03:00")];
+        fs::write(spec.join("spec.ndjson"), calls.join("\n") + "\n").unwrap();
+
+        let ranges = [(None, "2026-10-02"), (Some("2026-10-01"), "2026-10-01"), (Some("2026-10-02"), "2026-10-02")];
+        for (first, last) in ranges {
+            let range = range(first, last);
+            let machine: Vec<DayRow> = count(&config, None, &range)
+                .into_iter()
+                .filter(|row| row.project == "meu-projeto")
+                .map(|row| DayRow { jev_tokens: 0, jev_cost_micro_usd: 0, ..row })
+                .filter(|row| row.tokens > 0 || row.actions > 0)
+                .collect();
+            assert_eq!(project_days(&config, &root, &range), machine, "{first:?} to {last}");
+        }
+        let days = project_days(&config, &root, &range(None, "2026-10-02"));
+        let seen: Vec<_> = days.iter().map(|row| (row.day.as_str(), row.tokens, row.actions, row.code_searches, row.jev_tokens)).collect();
+        assert_eq!(seen, [("2026-09-30", 100, 2, 1, 0), ("2026-10-01", 130, 2, 1, 0)], "the agent joins its session's day");
     }
 }

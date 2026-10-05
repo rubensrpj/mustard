@@ -6,6 +6,9 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
+use globset::GlobBuilder;
+
+use crate::domain::skill::extract_frontmatter;
 use crate::domain::spec_events::SpecLog;
 use crate::domain::wave_prompt::{touched_by, RulesFile, ROOT_RULES_FILE};
 
@@ -14,7 +17,7 @@ use crate::domain::wave_prompt::{touched_by, RulesFile, ROOT_RULES_FILE};
 const FOLDER_RULES: [&str; 2] = [ROOT_RULES_FILE, ".claude/CLAUDE.md"];
 
 /// A pasta das regras avulsas, só na raiz: cada `.md` dela, em qualquer
-/// nível, entra.
+/// nível, entra, se vale para a obra ([`in_scope`]).
 const ROOT_RULES_DIR: &str = ".claude/rules";
 
 /// Quantos níveis de inclusão a leitura segue a partir de um arquivo de
@@ -24,7 +27,8 @@ const INCLUDE_DEPTH: usize = 5;
 /// Os arquivos de regras que valem para os arquivos `touched`, com caminhos
 /// relativos a `root`: os da raiz primeiro, depois os de cada pasta entre a
 /// raiz e a pasta de cada arquivo mexido, em ordem de caminho e sem repetir.
-/// A pasta com regras e sem arquivo mexido fica de fora. Cada texto vem sem
+/// A pasta com regras e sem arquivo mexido fica de fora, e também a regra
+/// avulsa cujos caminhos nenhum arquivo mexido casa. Cada texto vem sem
 /// os brancos das pontas, com as inclusões no lugar ([`expanded`]); o arquivo
 /// ilegível, vazio ou já incluído por outro não entra.
 #[must_use]
@@ -39,7 +43,7 @@ pub fn project_rules(root: &Path, touched: &[String]) -> Vec<RulesFile> {
     for folder in &folders {
         let mut paths: Vec<String> = FOLDER_RULES.iter().map(|name| joined(folder, name)).collect();
         if folder.is_empty() {
-            paths.extend(markdown_under(root, ROOT_RULES_DIR));
+            paths.extend(markdown_under(root, ROOT_RULES_DIR).into_iter().filter(|path| in_scope(root, path, touched)));
         }
         for path in paths {
             let Ok(file) = root.join(&path).canonicalize() else { continue };
@@ -114,6 +118,103 @@ fn markdown_under(root: &Path, folder: &str) -> Vec<String> {
             out.push(path);
         }
     }
+    out
+}
+
+/// `true` quando a regra avulsa `path`, relativa a `root`, vale para os
+/// arquivos `touched`: sem caminhos no cabeçalho ([`scoped_paths`]), sempre;
+/// com eles, quando algum arquivo mexido casa um dos padrões. O arquivo que não
+/// se lê passa, e a leitura das regras o deixa de fora como os outros.
+fn in_scope(root: &Path, path: &str, touched: &[String]) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(path)) else { return true };
+    let Some(patterns) = scoped_paths(&text) else { return true };
+    let matchers: Vec<_> = patterns
+        .iter()
+        .filter_map(|pattern| GlobBuilder::new(pattern).literal_separator(true).backslash_escape(true).build().ok())
+        .map(|glob| glob.compile_matcher())
+        .collect();
+    touched.iter().map(|file| file.trim().replace('\\', "/")).any(|file| {
+        let file = file.strip_prefix("./").unwrap_or(&file);
+        matchers.iter().any(|matcher| matcher.is_match(file))
+    })
+}
+
+/// Os padrões do campo `paths:` do cabeçalho YAML de uma regra, lidos como o
+/// Claude Code os lê: lista em linhas ou entre colchetes, ou um valor de uma
+/// linha só, com os padrões separados por vírgula fora das chaves. `None`
+/// quando a regra vale sempre: sem cabeçalho, sem `paths:` ou com ele vazio,
+/// e também com o cabeçalho que não se lê.
+fn scoped_paths(text: &str) -> Option<Vec<String>> {
+    let header = extract_frontmatter(text)?;
+    let mut lines = header.lines().peekable();
+    let mut patterns = Vec::new();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || line.starts_with([' ', '\t']) {
+            continue;
+        }
+        let (key, value) = line.split_once(':')?;
+        if key.trim() != "paths" {
+            continue;
+        }
+        let value = value.trim();
+        if let Some(flow) = value.strip_prefix('[') {
+            let (inner, rest) = flow.rsplit_once(']')?;
+            if !(rest.trim().is_empty() || rest.trim().starts_with('#')) {
+                return None;
+            }
+            for item in split_outside(inner) {
+                patterns.push(scalar(item)?);
+            }
+        } else if value.is_empty() || value.starts_with('#') {
+            while let Some(item) = lines.peek().map(|next| next.trim()) {
+                if let Some(item) = item.strip_prefix('-') {
+                    patterns.push(scalar(item)?);
+                } else if !(item.is_empty() || item.starts_with('#')) {
+                    break;
+                }
+                lines.next();
+            }
+        } else {
+            patterns.extend(split_outside(&scalar(value)?).into_iter().map(str::to_string));
+        }
+    }
+    let patterns: Vec<String> =
+        patterns.iter().map(|pattern| pattern.trim().to_string()).filter(|pattern| !pattern.is_empty()).collect();
+    (!patterns.is_empty()).then_some(patterns)
+}
+
+/// O escalar YAML `raw`, sem as aspas e sem o comentário do fim. `None` quando
+/// a aspa não fecha ou deixa texto depois dela, e quando o valor sem aspas
+/// começa por `*`, que no YAML abre uma referência e não um texto.
+fn scalar(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let Some(quote) = raw.chars().next().filter(|first| matches!(first, '"' | '\'')) else {
+        return (!raw.starts_with('*')).then(|| raw.split(" #").next().unwrap_or_default().trim_end().to_string());
+    };
+    let (body, rest) = raw[1..].split_once(quote)?;
+    let rest = rest.trim();
+    (rest.is_empty() || rest.starts_with('#')).then(|| body.to_string())
+}
+
+/// `text` partido nas vírgulas que ficam fora de aspas, chaves e colchetes.
+fn split_outside(text: &str) -> Vec<&str> {
+    let (mut depth, mut quote, mut start, mut out) = (0i32, None, 0, Vec::new());
+    for (at, c) in text.char_indices() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '{' | '[') => depth += 1,
+            (None, '}' | ']') => depth -= 1,
+            (None, ',') if depth <= 0 => {
+                out.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
     out
 }
 
@@ -236,6 +337,54 @@ mod tests {
             let expected: Vec<(String, String)> =
                 expected.iter().map(|(path, text)| ((*path).to_string(), (*text).to_string())).collect();
             assert_eq!(found, expected, "{case}");
+        }
+    }
+
+    /// Cada caso: os arquivos mexidos e as regras avulsas que entram. A regra
+    /// sem cabeçalho, ou com cabeçalho sem `paths:`, entra sempre, e também a
+    /// de cabeçalho que não se lê. A de `paths:` entra só quando um arquivo
+    /// mexido casa um padrão: `*` não passa de uma pasta, `**` passa de
+    /// várias, `{a,b}` vale por cada opção, a lista vale por cada padrão e o
+    /// valor de uma linha só se parte nas vírgulas fora das chaves. O padrão
+    /// que não se lê não casa nada, e o outro da mesma regra segue valendo.
+    #[test]
+    fn a_rule_with_paths_enters_only_when_a_touched_file_matches_one_of_them() {
+        let dir = tempdir().unwrap();
+        let rules = [
+            ("always", "- Sempre."),
+            ("other-key", "---\ndescription: sem caminhos\n---\n- Outra chave."),
+            ("api", "---\npaths:\n  - \"src/api/**/*.ts\"\n---\n- Api."),
+            ("front", "---\r\npaths:\r\n- \"web/**/*.{ts,tsx}\" # telas\r\n- 'lib/**/*.ts'\r\n---\r\n- Front."),
+            ("one-line", "---\npaths: docs/*.md, tools/**/*.{sh,ps1}\n---\n- Uma linha."),
+            ("flow", "---\npaths: [\"Makefile\", 'ci/*.yml']\n---\n- Colchetes."),
+            ("bad-glob", "---\npaths:\n  - \"photos [2024/**\"\n  - \"assets/**\"\n---\n- Fotos."),
+            ("bad-quote", "---\npaths:\n  - \"src/**\n---\n- Aspa aberta."),
+            ("alias", "---\npaths: **/*.go\n---\n- Referência."),
+        ];
+        for (name, text) in rules {
+            put(dir.path(), &format!(".claude/rules/{name}.md"), text);
+        }
+        let always = ["alias", "always", "bad-quote", "other-key"];
+        let cases: [(&[&str], &[&str]); 11] = [
+            (&[], &[]),
+            (&["src/api/v1/user.ts"], &["api"]),
+            (&["src\\api\\user.ts", "./web/page.tsx"], &["api", "front"]),
+            (&["src/api/user.js", "src/web/x.ts"], &[]),
+            (&["lib/a/b.ts"], &["front"]),
+            (&["docs/guide.md"], &["one-line"]),
+            (&["docs/deep/guide.md"], &[]),
+            (&["tools/x/run.ps1"], &["one-line"]),
+            (&["Makefile", "ci/build.yml"], &["flow"]),
+            (&["assets/logo.png"], &["bad-glob"]),
+            (&["photos [2024/a.png"], &[]),
+        ];
+        for (touched, scoped) in cases {
+            let touched: Vec<String> = touched.iter().map(|path| (*path).to_string()).collect();
+            let found: Vec<String> = project_rules(dir.path(), &touched).into_iter().map(|file| file.path).collect();
+            let mut expected: Vec<&str> = always.iter().chain(scoped).copied().collect();
+            expected.sort_unstable();
+            let expected: Vec<String> = expected.iter().map(|name| format!(".claude/rules/{name}.md")).collect();
+            assert_eq!(found, expected, "{touched:?}");
         }
     }
 

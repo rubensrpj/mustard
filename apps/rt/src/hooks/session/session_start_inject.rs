@@ -45,6 +45,11 @@
 //!     espera, ou um comando na cópia de uma onda já apagada) é encerrado
 //!     aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
 //!
+//! Antes dos avisos, num projeto com `mustard.json`, a linha de versão do
+//! programa que roda vira a marca da versão no projeto, quando difere da
+//! última: o ponto de partida da medição do uso. Falha ao gravar não muda a
+//! sessão.
+//!
 //! ## Até 3 kB
 //!
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
@@ -179,6 +184,7 @@ impl Check for SessionStartInject {
             Some(&scratch),
             build.as_ref(),
             mustard_core::io::spend::machine_dir().is_some(),
+            Some(env!("MUSTARD_VERSION_FULL")),
         )
     }
 }
@@ -186,9 +192,11 @@ impl Check for SessionStartInject {
 /// A metade que decide, com as leituras da máquina recebidas: `installed` é
 /// a versão que o registro de plugins dá como instalada, `scratch` a
 /// varredura das cópias descartáveis, `build` o programa compilado da branch
-/// que falta ou está atrás e `spend` se a máquina tem onde guardar o gasto. `None` nas
-/// três primeiras e `false` na última — o que todo teste que não fala delas
-/// entrega — calam os avisos que dependem delas.
+/// que falta ou está atrás, `spend` se a máquina tem onde guardar o gasto e
+/// `version` a linha de versão do programa que roda. `None` nas três
+/// primeiras, `false` em `spend` e `None` em `version` — o que todo teste que
+/// não fala delas entrega — calam os avisos que dependem delas, e a marca da
+/// versão não se grava.
 fn session_start_core(
     input: &HookInput,
     ctx: &Ctx,
@@ -196,12 +204,18 @@ fn session_start_core(
     scratch: Option<&ScratchProbe>,
     build: Option<&DevelopmentBuild>,
     spend: bool,
+    version: Option<&str>,
 ) -> Result<Verdict, Error> {
     if ctx.trigger != Some(Trigger::SessionStart) {
         return Ok(Verdict::Allow);
     }
     let cwd = ctx.project_dir_or_cwd(input);
     let root = Path::new(&cwd);
+    // A marca da versão: a primeira sessão de cada compilação no projeto é o
+    // ponto de partida da medição do uso. Falha ao gravar não muda a sessão.
+    if let Some(version) = version.filter(|_| mustard_core::ProjectConfig::exists(root)) {
+        let _ = mustard_core::io::measure::record(root, version);
+    }
     // O mapa volta ao commit atual antes de qualquer aviso: um commit à mão
     // ou um pull podem ter mudado o código fora da rodada, entre uma sessão e
     // a outra.
@@ -622,7 +636,7 @@ pub(crate) fn started_after_clear(root: &Path, session: &str) -> String {
         ..HookInput::default()
     };
     let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::SessionStart));
-    match session_start_core(&input, &ctx, None, None, None, false) {
+    match session_start_core(&input, &ctx, None, None, None, false, None) {
         Ok(Verdict::Inject { context }) => context,
         _ => String::new(),
     }
@@ -648,6 +662,10 @@ mod tests {
     /// entrega: o aviso do gasto cala por construção, em qualquer máquina.
     const NO_SPEND: bool = false;
 
+    /// A linha de versão que um teste entrega: nenhuma, e a marca da versão
+    /// não se grava.
+    const NO_VERSION: Option<&str> = None;
+
     fn ctx(dir: &Path) -> Ctx {
         Ctx::for_test(dir.to_string_lossy().into_owned(), Some(Trigger::SessionStart))
     }
@@ -662,7 +680,7 @@ mod tests {
     }
 
     fn context_of(root: &Path, input: &HookInput, installed: Option<&str>, scratch: Option<&ScratchProbe>) -> String {
-        match session_start_core(input, &ctx(root), installed, scratch, NO_BUILD, NO_SPEND).unwrap() {
+        match session_start_core(input, &ctx(root), installed, scratch, NO_BUILD, NO_SPEND, NO_VERSION).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
         }
@@ -755,6 +773,7 @@ mod tests {
             NO_SCRATCH,
             NO_BUILD,
             NO_SPEND,
+            NO_VERSION,
         );
         assert_eq!(verdict.unwrap(), Verdict::Allow);
     }
@@ -762,7 +781,7 @@ mod tests {
     /// O início da sessão de `root` numa máquina com onde guardar o gasto,
     /// vindo de `source` (`startup`, `resume`, `clear`, `compact`).
     fn context_with_spend(root: &Path, source: &str) -> String {
-        let verdict = session_start_core(&session_input("s-gasto", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, true);
+        let verdict = session_start_core(&session_input("s-gasto", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, true, NO_VERSION);
         match verdict.unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
@@ -789,12 +808,54 @@ mod tests {
             assert!(context_with_spend(root, "startup").contains(order), "{lang}: an open spec changes nothing");
             assert!(!context_with_spend(root, "compact").contains(order), "{lang}: a compaction is the same session");
 
-            let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, false);
+            let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, false, NO_VERSION);
             assert!(!matches!(silent.unwrap(), Verdict::Inject { context } if context.contains(order)), "{lang}: no machine folder, no order");
 
             let loose = tempdir().unwrap();
             assert!(!context_with_spend(loose.path(), "startup").contains(order), "{lang}: no config, no order");
         }
+    }
+
+    /// A marca da versão nasce na primeira sessão de um projeto com
+    /// `mustard.json`, não se repete na mesma linha de versão, venha a sessão
+    /// de onde vier, e ganha uma linha nova a cada troca de versão, também na
+    /// volta a uma anterior. Sem `mustard.json` nada se grava, e a falha ao
+    /// gravar deixa a sessão igual.
+    #[test]
+    fn the_first_session_of_each_build_marks_the_version_in_the_project() {
+        use mustard_core::io::measure::{marks, marks_path};
+        let start = |root: &Path, source: &str, version: Option<&str>| {
+            session_start_core(&session_input("s-marca", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND, version)
+                .unwrap()
+        };
+        let project = tempdir().unwrap();
+        let root = project.path();
+        installed_project(root);
+        let (old, new) = ("1.0.0 (abc1234 2026-10-01)", "1.0.0 (def5678 2026-10-02)");
+        let cases: [(&str, &str, &[&str]); 5] = [
+            ("startup", old, &[old]),
+            ("startup", old, &[old]),
+            ("clear", old, &[old]),
+            ("resume", new, &[old, new]),
+            ("startup", old, &[old, new, old]),
+        ];
+        for (source, version, expected) in cases {
+            start(root, source, Some(version));
+            let found = marks(root);
+            let versions: Vec<&str> = found.iter().map(|mark| mark.version.as_str()).collect();
+            assert_eq!(versions, expected, "{source} with {version}");
+            assert!(found.iter().all(|mark| mustard_core::domain::spend::day_of_stamp(&mark.at).is_some()), "{found:?}");
+        }
+
+        let loose = tempdir().unwrap();
+        start(loose.path(), "startup", Some(new));
+        assert!(!marks_path(loose.path()).exists(), "no config, no mark");
+
+        let blocked = tempdir().unwrap();
+        installed_project(blocked.path());
+        std::fs::create_dir_all(blocked.path().join(".claude")).unwrap();
+        std::fs::write(blocked.path().join(".claude/mustard"), "").unwrap();
+        assert_eq!(start(blocked.path(), "startup", Some(new)), start(blocked.path(), "startup", NO_VERSION));
     }
 
     /// Só os textos que o corte do teto deixa, na ordem da lista.
@@ -1087,7 +1148,7 @@ mod tests {
         let ctx = ctx(root);
         let input = session_input("s-stale-map", "startup");
         assert!(
-            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND).is_ok(),
+            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND, NO_VERSION).is_ok(),
             "a sessão não trava com o mapa velho"
         );
     }
@@ -1290,7 +1351,7 @@ mod tests {
         let config = json!({"version": mustard_core::harness_version(), "language": {"text": lang.as_str()}});
         std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
         let input = session_input("s-build", "startup");
-        match session_start_core(&input, &ctx(dir.path()), NO_REGISTRY, NO_SCRATCH, Some(build), NO_SPEND).unwrap() {
+        match session_start_core(&input, &ctx(dir.path()), NO_REGISTRY, NO_SCRATCH, Some(build), NO_SPEND, NO_VERSION).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
         }
@@ -1331,7 +1392,7 @@ mod tests {
             }
             assert_ne!(missing, development_build_text(&build(None, Launch::Started), if lang == Locale::PtBr { Locale::EnUs } else { Locale::PtBr }), "the two languages differ");
         }
-        let quiet = session_start_core(&session_input("s-build", "startup"), &ctx(tempdir().unwrap().path()), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND).unwrap();
+        let quiet = session_start_core(&session_input("s-build", "startup"), &ctx(tempdir().unwrap().path()), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND, NO_VERSION).unwrap();
         assert_eq!(quiet, Verdict::Allow, "with the compiled program up to date, nothing is said");
     }
 

@@ -46,6 +46,10 @@ rusqlite = { workspace = true }
 # keeps the Hugging Face download out and `fancy-regex` is the pure Rust
 # regex engine of the tokenizer, so no C library is linked.
 model2vec-rs = { version = "0.3", default-features = false, features = ["local-only", "fancy-regex"] }
+# Os padrões de caminho das regras avulsas do projeto (`io::wave_prompt::rules`),
+# lidos como o Claude Code os lê: `**`, `{a,b}` e `[abc]`. A mesma linha 0.4 que o
+# `scan` já usa, então nenhum código novo entra na árvore.
+globset = "0.4"
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.

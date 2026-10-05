@@ -6,6 +6,7 @@ grill
 help
 index
 map
+measure
 open
 page
 pending
