@@ -2666,10 +2666,11 @@ mod tests {
     /// A rodada forma o lote com a tarefa pronta nas duas leituras — a da
     /// entrada e a feita com a trava presa — e numera a onda nova pela
     /// segunda. A tarefa um estava pronta na entrada desta rodada, mas outra
-    /// rodada já a levou na onda 1 antes de esta pegar a trava; a tarefa dois,
-    /// pronta nas duas, sai sozinha na onda 2. A tarefa três, gravada depois
-    /// da entrada, só está pronta na leitura com a trava e espera a rodada
-    /// seguinte.
+    /// rodada já a levou na onda 1, que segue em andamento, antes de esta
+    /// pegar a trava; a tarefa dois, pronta nas duas e com os seis arquivos
+    /// com que um lote sai ao lado de outra onda, sai sozinha na onda 2. A
+    /// tarefa três, gravada depois da entrada, só está pronta na leitura com a
+    /// trava e espera a rodada seguinte.
     #[test]
     fn the_batch_takes_only_the_task_ready_in_both_readings_and_numbers_after_the_lock() {
         let dir = tempdir().unwrap();
@@ -2678,13 +2679,14 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let one = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let first_entry = store::read(&path).unwrap().unwrap();
-        let two = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
+        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.",
+            &["src/b.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"]);
         let second_entry = store::read(&path).unwrap().unwrap();
 
         // A outra rodada, que entrou antes da tarefa dois, forma a onda 1 com a
         // tarefa um e solta a trava.
         assert_eq!(dispatch_backlog(root, "x", &first_entry, &first_entry, max_parallel(root), None), Ok(vec![1]));
-        seed_send(root, 1);
+        seed_running(root, 1);
         let three = backlog_task(root, said, crit, "Mexer de novo no código de dois.", "src/b.rs");
 
         let locked = store::read(&path).unwrap().unwrap();

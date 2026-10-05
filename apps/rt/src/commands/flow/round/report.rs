@@ -5004,10 +5004,8 @@ fn main() { sum_by_the_new_name(); }
         assert_ne!(copy_of(3), copy_of(2), "a onda nova não recebe a cópia da entrega em conflito");
         assert!(copy_of(3).is_some_and(|copy| same_place(&copy, &slot_of(root, 1).to_string_lossy())), "sai na vaga livre: {out}");
         let held = super::super::held_slots(root, "x", &log);
-        assert!(
-            held.contains(&mustard_core::io::wave_prompt::shown(&slot_of(root, 2))),
-            "a vaga da entrega em conflito segue presa: {held:?}"
-        );
+        let conflicted = mustard_core::io::wave_prompt::shown(&slot_of(root, 2));
+        assert!(held.iter().any(|copy| same_place(copy, &conflicted)), "a vaga da entrega em conflito segue presa: {held:?}");
     }
 
     /// A cópia gravada no envio e o caminho que a onda entrega valem pelo lugar

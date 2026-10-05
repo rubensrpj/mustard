@@ -172,7 +172,8 @@ fn resolved(root: &str, given: &str) -> String {
 }
 
 /// `true` when a path with forward slashes is absolute: `/...` or `C:/...`.
-fn is_absolute(p: &str) -> bool {
+/// Pure text, so a Windows path reads as absolute on every system.
+pub(crate) fn is_absolute(p: &str) -> bool {
     p.starts_with('/')
         || (p.len() >= 3
             && p.as_bytes()[0].is_ascii_alphabetic()

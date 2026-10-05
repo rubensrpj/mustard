@@ -78,7 +78,7 @@ use crate::commands::git_settle::main_checkout_root;
 use crate::commands::spec_events::conversation::record_measured_call;
 use crate::shared::code_route::{self, ProjectPath};
 use crate::shared::config_key;
-use crate::shared::paths::{Access, PathClass, WriteTarget};
+use crate::shared::paths::{self, Access, PathClass, WriteTarget};
 use crate::shared::word_search;
 use crate::shared::spec_state::{lock_state, DiskSpecState};
 
@@ -365,15 +365,9 @@ fn glob_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
     if words.is_empty() {
         return Verdict::Allow;
     }
-    // A pasta do padrão: a `path` da ferramenta e as partes do padrão antes da
-    // primeira que traz curinga (`packages/core/src/**/*.rs`).
-    let parts: Vec<&str> = pattern.split('/').collect();
-    let named = parts[..parts.len() - 1].iter().take_while(|part| !part.contains(['*', '?', '[', '{']));
     let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
-    let mut folder = std::path::PathBuf::from(if pattern.starts_with('/') { "/" } else { text("path").unwrap_or(".") });
-    folder.extend(named.filter(|part| !part.is_empty()));
-    let Some(folder) = code_route::project_path(root, base, &folder.to_string_lossy()).filter(|folder| folder.abs.is_dir())
-    else {
+    let folder = glob_folder(pattern, text("path"));
+    let Some(folder) = code_route::project_path(root, base, &folder).filter(|folder| folder.abs.is_dir()) else {
         return Verdict::Allow;
     };
     let filters = word_search::extension_filters(pattern);
@@ -382,6 +376,35 @@ fn glob_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
         word_search::Reply::Note(context) => Verdict::Inject { context },
         _ => Verdict::Allow,
     }
+}
+
+/// A pasta do padrão de nome, em texto com barra normal: a `path` da
+/// ferramenta (ou `.`) e as partes do padrão antes da primeira que traz
+/// curinga (`packages/core/src/**/*.rs`). O padrão que abre com `/` ou com a
+/// letra de uma unidade (`C:/` ou `C:\`) já traz a pasta inteira, e a `path`
+/// fica de lado.
+fn glob_folder(pattern: &str, path: Option<&str>) -> String {
+    let pattern = pattern.replace('\\', "/");
+    let root_len = if pattern.starts_with('/') {
+        1
+    } else if paths::is_absolute(&pattern) {
+        3
+    } else {
+        0
+    };
+    let (mut folder, rest) = match root_len {
+        0 => (path.unwrap_or(".").replace('\\', "/"), pattern.as_str()),
+        len => (pattern[..len].to_string(), &pattern[len..]),
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let named = parts[..parts.len() - 1].iter().take_while(|part| !part.contains(['*', '?', '[', '{']));
+    for part in named.filter(|part| !part.is_empty()) {
+        if !folder.ends_with('/') {
+            folder.push('/');
+        }
+        folder.push_str(part);
+    }
+    folder
 }
 
 /// A resposta do gancho à busca `search`, com a chamada medida da busca
@@ -1539,6 +1562,25 @@ mod tests {
         assert_eq!(hook_on(&root, "Glob", json!({ "pattern": "**/*frete*.rs" })), Verdict::Allow, "no session");
         let (_off, off) = word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
         assert_eq!(hook_in(&off, "Glob", json!({ "pattern": "**/*frete*.rs" }), Some("glob-off")), Verdict::Allow);
+    }
+
+    /// A pasta de um padrão de nome sai inteira do padrão que abre com a letra
+    /// de uma unidade, com barra normal ou invertida, como do que abre com
+    /// `/`, e a `path` da ferramenta fica de lado; o padrão relativo parte da
+    /// `path`, ou da pasta de trabalho sem ela.
+    #[test]
+    fn the_folder_of_a_glob_with_a_drive_letter_is_the_whole_folder_of_the_pattern() {
+        for (pattern, path, folder) in [
+            (r"C:/a/b\src/**/*frete*.rs", Some("fora"), "C:/a/b/src"),
+            (r"d:\a\*frete*", None, "d:/a"),
+            ("C:/*frete*", None, "C:/"),
+            ("/a/b/src/**/*frete*.rs", Some("fora"), "/a/b/src"),
+            ("src/**/*frete*.rs", Some("lib"), "lib/src"),
+            ("src/**/*frete*.rs", None, "./src"),
+            ("**/*frete*.rs", Some(r"C:\a\src"), "C:/a/src"),
+        ] {
+            assert_eq!(glob_folder(pattern, path), folder, "{pattern} {path:?}");
+        }
     }
 
     /// A busca que mostra as linhas de um nome do mapa numa pasta de código —

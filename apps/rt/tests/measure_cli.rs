@@ -338,7 +338,10 @@ fn each_answered_search_ends_by_the_first_next_call_that_opens_or_searches() {
     let at = "2026-10-02T10:00:00Z";
     let bash = |command: &str| json!({ "command": command });
     let read = |path: &str| json!({ "file_path": path });
-    let (in_root, in_copy) = (root.join("src/pedido.rs"), format!("cd {} && grep -rn frete .", copy.display()));
+    // O `cd` leva o caminho com barras normais: fora de aspas, o terminal
+    // come a barra invertida do caminho do Windows.
+    let forward = copy.display().to_string().replace('\\', "/");
+    let (in_root, in_copy) = (root.join("src/pedido.rs"), format!("cd {forward} && grep -rn frete ."));
     let copied = copy.join("src/frete.rs");
     let found = "src/frete.rs:3:fn calcular";
     // Cada caso: a busca, a resposta do gancho, a saída e as chamadas seguintes.

@@ -163,7 +163,8 @@ mod tests {
 
     /// O resumo preso por uma onda em andamento reserva os arquivos dele: a
     /// tarefa que divide arquivo com a onda dele, mesmo só por corrente, não
-    /// toma a vaga que ele deixa livre, e a que não divide sai.
+    /// toma a vaga que ele deixa livre, e a que não divide, com o tamanho com
+    /// que um lote sai ao lado da onda em andamento, sai.
     #[test]
     fn a_summary_held_by_a_running_wave_keeps_its_files_from_a_later_task() {
         let dir = tempdir().unwrap();
@@ -172,12 +173,12 @@ mod tests {
         backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
-        seed_send(root, 1);
+        seed_running(root, 1);
 
         let left = backlog_task_on(root, said, crit, "Mexer nos dois.", &["src/b.rs", "src/a.rs"]);
         backlog_task_on(root, said, crit, "Mexer no um.", &["src/a.rs", "src/d.rs"]);
         let chained = backlog_task_on(root, said, crit, "Mexer no quatro.", &["src/d.rs"]);
-        let apart = backlog_task_on(root, said, crit, "Mexer no cinco.", &["src/e.rs"]);
+        let apart = backlog_task_on(root, said, crit, "Mexer no cinco.", &SIX_FILES);
         stopped_with(root, &[left]);
 
         let log = spec_now(root);

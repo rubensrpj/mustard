@@ -153,8 +153,8 @@ fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
 /// Os arquivos do projeto de cada framework, com os que não ligam nenhum.
 fn project_files() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("Loja/Controllers/PedidosController.cs", CONTROLLER),
-        ("Loja/Program.cs", MINIMAL_API),
+        ("Vendas/Controllers/PedidosController.cs", CONTROLLER),
+        ("Vendas/Program.cs", MINIMAL_API),
         ("api/pedidos.controller.ts", NEST),
         ("src/routes.rs", AXUM),
         ("web/rotas.ts", EXPRESS),
@@ -201,10 +201,10 @@ fn keys(map: &Value, path: &str) -> Vec<String> {
 fn an_action_joins_the_class_route_with_the_controller_name_and_its_own_template() {
     let temp = project();
     let (map, _) = scan(temp.path());
-    let kept = keys(&map, "Loja/Controllers/PedidosController.cs");
+    let kept = keys(&map, "Vendas/Controllers/PedidosController.cs");
     assert!(kept.contains(&"GET api/pedidos/{} -> Ler:9".to_string()), "{kept:?}");
     assert!(kept.contains(&"POST api/pedidos -> Criar:12".to_string()), "{kept:?}");
-    let read_route = routes(&map, "Loja/Controllers/PedidosController.cs")
+    let read_route = routes(&map, "Vendas/Controllers/PedidosController.cs")
         .as_array()
         .unwrap()
         .iter()
@@ -219,7 +219,7 @@ fn an_action_joins_the_class_route_with_the_controller_name_and_its_own_template
 fn a_route_attribute_without_a_method_takes_the_method_of_the_same_action() {
     let temp = project();
     let (map, _) = scan(temp.path());
-    let kept = keys(&map, "Loja/Controllers/PedidosController.cs");
+    let kept = keys(&map, "Vendas/Controllers/PedidosController.cs");
     assert!(kept.contains(&"DELETE api/pedidos/{}/itens -> Remover:15".to_string()), "{kept:?}");
     assert!(!kept.iter().any(|key| key.starts_with("* ")), "{kept:?}");
 }
@@ -228,16 +228,16 @@ fn a_route_attribute_without_a_method_takes_the_method_of_the_same_action() {
 fn a_template_that_starts_at_the_root_does_not_join_the_class_route() {
     let temp = project();
     let (map, _) = scan(temp.path());
-    let kept = keys(&map, "Loja/Controllers/PedidosController.cs");
+    let kept = keys(&map, "Vendas/Controllers/PedidosController.cs");
     assert!(kept.contains(&"GET saude -> Saude:22".to_string()), "{kept:?}");
-    assert_eq!(keys(&map, "Loja/Program.cs")[0], "GET pedidos/{} -> Ler:5", "the group of a minimal API still joins");
+    assert_eq!(keys(&map, "Vendas/Program.cs")[0], "GET pedidos/{} -> Ler:5", "the group of a minimal API still joins");
 }
 
 #[test]
 fn a_route_template_that_is_not_written_text_makes_no_route() {
     let temp = project();
     let (map, _) = scan(temp.path());
-    let kept = keys(&map, "Loja/Controllers/PedidosController.cs");
+    let kept = keys(&map, "Vendas/Controllers/PedidosController.cs");
     assert!(!kept.iter().any(|key| key.contains("Buscar")), "{kept:?}");
     let express = keys(&map, "web/rotas.ts");
     assert!(!express.iter().any(|key| key.contains("segredo")), "{express:?}");
@@ -256,7 +256,7 @@ fn a_call_with_the_shape_of_a_route_but_a_path_that_does_not_start_like_one_make
 fn a_minimal_api_route_joins_the_group_kept_in_a_variable() {
     let temp = project();
     let (map, _) = scan(temp.path());
-    assert_eq!(keys(&map, "Loja/Program.cs"), ["GET pedidos/{} -> Ler:5", "POST pedidos -> :6"]);
+    assert_eq!(keys(&map, "Vendas/Program.cs"), ["GET pedidos/{} -> Ler:5", "POST pedidos -> :6"]);
 }
 
 #[test]
@@ -350,8 +350,8 @@ fn a_pass_that_does_not_read_the_file_again_keeps_the_same_routes() {
     assert_eq!(report["full"], json!(false), "{report}");
     assert_eq!(report["read"], json!(["src/outro.rs"]), "{report}");
     for path in [
-        "Loja/Controllers/PedidosController.cs",
-        "Loja/Program.cs",
+        "Vendas/Controllers/PedidosController.cs",
+        "Vendas/Program.cs",
         "api/pedidos.controller.ts",
         "src/routes.rs",
         "web/rotas.ts",
@@ -375,12 +375,12 @@ fn a_route_rule_is_compiled_only_when_a_file_turns_it_on() {
         ("web/cache.ts", NO_FRAMEWORK),
         ("web/leitor.ts", OTHER_PACKAGE),
         ("src/lib.rs", "pub fn sum() -> u32 { 1 }\n"),
-        ("Loja/Caixa.cs", PLAIN_CSHARP),
+        ("Vendas/Caixa.cs", PLAIN_CSHARP),
     ]);
     let (_, report) = scan(temp.path());
     assert_eq!(report["route_rules"], json!([]), "{report}");
 
-    let temp = project_with(&[("web/rotas.ts", EXPRESS), ("web/cache.ts", NO_FRAMEWORK), ("Loja/Caixa.cs", PLAIN_CSHARP)]);
+    let temp = project_with(&[("web/rotas.ts", EXPRESS), ("web/cache.ts", NO_FRAMEWORK), ("Vendas/Caixa.cs", PLAIN_CSHARP)]);
     let (map, report) = scan(temp.path());
     assert_eq!(report["route_rules"], json!(["express/typescript"]), "{report}");
     assert_eq!(keys(&map, "web/rotas.ts").len(), 2, "the rule compiled once still finds the routes");
@@ -1285,16 +1285,16 @@ fn a_declared_http_client_with_its_base_set_later_links_and_another_object_does_
                    _http = http;\n        _http.BaseAddress = new Uri(\"https://loja.com/api/\");\n        _cache = cache;\n    }\n\n    \
                    public Task<HttpResponseMessage> Ler(int id) => _http.GetAsync($\"pedidos/{id}\");\n\n    \
                    public Task<byte[]> Guardado() => _cache.GetAsync(\"pedidos/1\");\n}\n";
-    let temp = with_orders_api(&[("Loja/PedidosService.cs", service)]);
+    let temp = with_orders_api(&[("Vendas/PedidosService.cs", service)]);
     let (map, _) = scan(temp.path());
     assert_eq!(
-        route_calls(&map, "Loja/PedidosService.cs"),
+        route_calls(&map, "Vendas/PedidosService.cs"),
         json!([{"method": "GET", "path": "pedidos/{}", "written": "pedidos/{id}", "line": 15, "owner": "Ler",
                 "framework": "httpclient", "base": {"written": "https://loja.com/api/", "path": "api"}}])
     );
     assert_eq!(
         called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"),
-        json!(["Loja/PedidosService.cs:15:Ler"])
+        json!(["Vendas/PedidosService.cs:15:Ler"])
     );
 }
 

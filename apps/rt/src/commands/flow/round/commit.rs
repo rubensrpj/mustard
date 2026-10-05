@@ -2018,10 +2018,7 @@ mod tests {
         assert_eq!(commands.len(), 2, "uma compilação por rodada que tocou o programa: {commands:?}");
         let (command, cwd) = &commands[0];
         let target = mustard_core::io::wave_prompt::development_build_dir(root);
-        assert_eq!(
-            command,
-            &format!("cargo build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir '{}'", target.display())
-        );
+        assert_eq!(command, &crate::shared::development_build::build_command(&target));
         assert_eq!(std::fs::canonicalize(cwd).unwrap(), std::fs::canonicalize(root).unwrap(), "no checkout principal");
 
         let other = tempdir().unwrap();
