@@ -668,6 +668,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.after_wave.wave", Locale::EnUs) => "Wave {wave}, fix round {round} of {max}:",
         ("round.after_wave.wave_warnings", Locale::PtBr) => "Onda {wave}, só avisos:",
         ("round.after_wave.wave_warnings", Locale::EnUs) => "Wave {wave}, warnings only:",
+        // A onda recusada cujo agente se foi com o Claude Code que a mandou:
+        // o conserto vai a um agente novo, e não ao que fez a onda.
+        ("round.after_wave.new_agent", Locale::PtBr) => {
+            "O Claude Code que mandou a onda {wave} fechou, e o agente dela não existe mais. Despache um \
+             agente novo com o título `{title}`: o Mustard junta o pedido e o trecho dela."
+        }
+        ("round.after_wave.new_agent", Locale::EnUs) => {
+            "The Claude Code that sent wave {wave} closed, and its agent no longer exists. Dispatch a new \
+             agent with the title `{title}`: Mustard adds its request and its section."
+        }
         ("round.after_wave.import", Locale::PtBr) => {
             "`{file}` linha {line} importa `{target}`: {from} importando {to} vai contra a regra \
              {rule_from} importa {rule_to}, seguida em {along} de {total} importações. Leve essa chamada \
@@ -1838,8 +1848,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            222,
-            0xc50a_23bd_9504_17c0,
+            223,
+            0x8672_050c_77c1_5c77,
         );
     }
 
@@ -2028,6 +2038,7 @@ mod tests {
             ("round.after_wave.question", &["{waves}", "{max}"][..]),
             ("round.after_wave.wave", &["{wave}", "{round}", "{max}"][..]),
             ("round.after_wave.wave_warnings", &["{wave}"][..]),
+            ("round.after_wave.new_agent", &["{wave}", "{title}"][..]),
             (
                 "round.after_wave.import",
                 &["{file}", "{line}", "{target}", "{from}", "{to}", "{rule_from}", "{rule_to}", "{along}", "{total}"][..],

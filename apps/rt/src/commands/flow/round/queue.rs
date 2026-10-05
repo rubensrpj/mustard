@@ -5,7 +5,7 @@
 //! agente de teste dedicado que o fechamento pede.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
 use mustard_core::domain::wave_prompt::{dispatch_items, Choice};
@@ -291,6 +291,23 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
 pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
     let returned = waves_returned(log);
     open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && !claude_still_here(log, *sent)).collect()
+}
+
+/// As ondas que esperam um agente novo, cada uma com o arquivo do trecho de
+/// conserto dela: a rodada recusou a volta e gravou o trecho em disco
+/// ([`super::answer::fix_file`]), e o Claude Code que mandou a onda já fechou,
+/// levando o agente dela. Só nesse caso a onda aceita outro agente, que
+/// recebe o pedido e o trecho e trabalha na mesma cópia; com o Claude Code do
+/// envio aberto, o conserto vai ao agente que fez a onda. A entrega nova muda
+/// o nome do trecho, e a onda sai daqui sozinha. O gancho do despacho e a
+/// recusa da rodada leem daqui, e só daqui.
+pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, PathBuf> {
+    let sends = log.last_by_wave("send");
+    waves_returned(log)
+        .into_iter()
+        .filter(|n| sends.get(n).is_some_and(|sent| !claude_still_here(log, *sent)))
+        .filter_map(|n| super::answer::fix_file(root, spec, log, n).filter(|file| file.is_file()).map(|file| (n, file)))
+        .collect()
 }
 
 /// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou

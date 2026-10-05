@@ -157,7 +157,9 @@ use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{agents_refreshed, fix_file, read_command, sweep_fixes, wave_dispatch, RoundRefusal};
-pub(crate) use queue::{backlog_left, open_review, open_sends, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{
+    backlog_left, open_review, open_sends, tasks_left, wave_states, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix,
+};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use keep::Kept;

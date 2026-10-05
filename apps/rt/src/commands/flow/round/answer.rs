@@ -21,7 +21,7 @@ use super::commit::git_lock;
 use super::item_choice::choose_items;
 use super::queue::{
     backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
-    sent_items, silent_minutes, waves_in_progress, waves_returned,
+    sent_items, silent_minutes, waves_awaiting_new_agent, waves_in_progress, waves_returned,
 };
 use super::report::Taken;
 use super::slots::{open_copies, sharing_copy, without_live_copy};
@@ -614,7 +614,8 @@ pub(super) fn run_entered_round(
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held } =
-        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
+        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)
+            .map_err(|refused| new_agents_named(refused, root, &spec, &log, lang))?;
 
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
@@ -1068,6 +1069,22 @@ pub(crate) fn wave_dispatch(root: &Path, spec: &str, wave: u64, lang: Locale) ->
 pub(crate) fn fix_file(root: &Path, spec: &str, log: &SpecLog, wave: u64) -> Option<PathBuf> {
     let back = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered" && e.wave() == Some(wave)).map(|e| e.id).max()?;
     Some(fixes_dir(root, spec)?.join(format!("fix-{wave}-{back}.md")))
+}
+
+/// A recusa da conferência depois da onda com, para cada onda recusada que
+/// espera um agente novo ([`waves_awaiting_new_agent`]), a frase que manda o
+/// condutor despachar um pelo título dela; a onda que não está ali segue com
+/// o conserto mandado ao agente que a fez. Outra recusa sai como veio.
+fn new_agents_named(refused: RoundRefusal, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> RoundRefusal {
+    let RoundRefusal::AfterWave { mut text, question, fixes } = refused else { return refused };
+    let awaiting = waves_awaiting_new_agent(root, spec, log);
+    for wave in fixes.iter().map(|(wave, _)| *wave).filter(|wave| awaiting.contains_key(wave)) {
+        let line = translate("round.after_wave.new_agent", lang)
+            .replace("{wave}", &wave.to_string())
+            .replace("{title}", &wave_title(spec, wave, lang));
+        text = format!("{text}\n\n{line}");
+    }
+    RoundRefusal::AfterWave { text, question, fixes }
 }
 
 /// A pasta de despacho da spec, onde moram os trechos de conserto.

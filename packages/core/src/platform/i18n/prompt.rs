@@ -69,6 +69,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The message to the agent of wave {wave} went out with only what the round sent \
              back for it. The extra text was taken out. What the wave needs to know is recorded in the spec."
         }
+        // A onda recusada cujo agente se foi com o Claude Code que a mandou:
+        // a frase que abre o trecho de conserto ao agente novo e o recado ao
+        // condutor.
+        ("subagent.new_agent_fix", Locale::PtBr) => {
+            "[Mustard] Um agente anterior já fez a onda {wave}, e o código dele está na cópia. A rodada \
+             recusou a entrega: conserte só o que vem abaixo, teste e entregue de novo."
+        }
+        ("subagent.new_agent_fix", Locale::EnUs) => {
+            "[Mustard] An earlier agent already did wave {wave}, and its code is in the copy. The round \
+             refused the delivery: fix only what follows, test, and deliver again."
+        }
+        ("subagent.new_agent", Locale::PtBr) => {
+            "[Mustard] O agente da onda {wave} não existe mais. O despacho saiu para um agente novo, com o \
+             título, o comando de leitura e o trecho de conserto."
+        }
+        ("subagent.new_agent", Locale::EnUs) => {
+            "[Mustard] The agent of wave {wave} no longer exists. The dispatch went to a new agent, with \
+             the title, the read command and the fix section."
+        }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
@@ -579,8 +598,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            98,
-            0x25a0_6099_5194_9cbc,
+            100,
+            0x53f7_a4e6_8d29_4e8d,
         );
     }
 

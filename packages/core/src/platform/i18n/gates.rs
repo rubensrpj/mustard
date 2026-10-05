@@ -618,6 +618,8 @@ mod tests {
             ("subagent.wave_not_running", &["{spec}", "{wave}"][..]),
             ("subagent.dispatch_replaced", &["{wave}"][..]),
             ("subagent.fix_replaced", &["{wave}"][..]),
+            ("subagent.new_agent_fix", &["{wave}"][..]),
+            ("subagent.new_agent", &["{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
             ("session.project_page", &["{template}", "{capabilities}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),

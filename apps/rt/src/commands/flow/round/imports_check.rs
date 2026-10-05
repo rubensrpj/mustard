@@ -371,6 +371,42 @@ pub(super) mod tests {
         assert_eq!(hook_message(root, &transcript, "onda1", asked), Verdict::Allow, "the old section never goes back");
     }
 
+    /// Com o Claude Code que mandou a onda aberto, a recusa da conferência
+    /// depois da onda manda o conserto ao agente dela. Fechado ele, a rodada
+    /// seguinte recusa a mesma volta e manda despachar um agente novo pelo
+    /// título da onda.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_refusal_asks_for_a_new_agent_once_the_sender_of_the_wave_closed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let after = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let new_agent = translate("round.after_wave.new_agent", Locale::PtBr).replace("{wave}", "1").replace("{title}", &title);
+        let open = back(root, after.clone());
+        assert_eq!(open["reason"], json!("round-after-wave"), "{open}");
+        assert!(!open["hint"].as_str().unwrap_or_default().contains(&new_agent), "{open}");
+
+        let mut gone = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = gone.id();
+        gone.wait().unwrap();
+        let path = mustard_core::io::spec_events::spec_file(root, "x").unwrap();
+        let log = mustard_core::io::spec_events::read(&path).unwrap().unwrap();
+        let extra = json!({"claude_pid": pid, "claude_started": 1}).as_object().cloned().unwrap();
+        let draft = super::super::queue::send_revision(&log, 1, extra).expect("the send of wave 1");
+        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        mustard_core::io::spec_events::write_at(&path, "send", draft, &[], &at).unwrap();
+
+        let closed = round_with_mine(root, "x", None, &mine_giving(after));
+        assert_eq!(closed["reason"], json!("round-after-wave"), "{closed}");
+        assert!(closed["hint"].as_str().unwrap_or_default().ends_with(&format!("\n\n{new_agent}")), "{closed}");
+    }
+
     /// Os trechos de conserto na pasta de despacho da spec, pelo nome, e o
     /// nome do trecho da volta pendente da onda 1.
     fn fixes_kept(root: &Path) -> (Vec<String>, Option<String>) {
