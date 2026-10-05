@@ -298,7 +298,9 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// ([`super::answer::fix_file`]), e o Claude Code que mandou a onda já fechou,
 /// levando o agente dela. Só nesse caso a onda aceita outro agente, que
 /// recebe o pedido e o trecho e trabalha na mesma cópia; com o Claude Code do
-/// envio aberto, o conserto vai ao agente que fez a onda. A entrega nova muda
+/// envio aberto, o conserto vai ao agente que fez a onda. O despacho do
+/// agente novo grava uma versão do envio com o Claude Code dele, e a onda sai
+/// daqui enquanto esse Claude Code está aberto. A entrega nova muda
 /// o nome do trecho, e a onda sai daqui sozinha. O gancho do despacho e a
 /// recusa da rodada leem daqui, e só daqui.
 pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, PathBuf> {
