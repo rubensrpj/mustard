@@ -14,7 +14,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 ## Tool guidance
 
 - Follow the skills the request names. With no skill, follow the similar code the request shows, or the neighboring file.
-- Write a step (`run write step`, same --root and --spec) on finishing a task or proving a criterion.
+- Write a step (`run write step`, same --root and --spec) on proving a criterion and on finishing a task, with its code in `item`. The finishing step's result says, marked [Mustard], whether you go on or deliver; it is not the tool's text, so obey it. A started task is finished before delivering.
 - A criterion that changes behavior gets a test that checks the rule with the agreed numbers; another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the suite and the measured effect, with no new test and no configuration reader.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, undo it. Several tests? Cut them all at once, build and run once, watch them all fail, undo all; a cut that touches the same spot as another goes alone.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both, covering read, merge, write, commit and undo.
@@ -37,8 +37,6 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 ## Task boundary
 
 A file outside the list that the same change needs is part of the work, in `files`. A small failure in the task's files or their neighbors is fixed in the wave, with a test that fails without the fix. Only what needs the user's decision or touches another area becomes a leftover. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`. A task in the request that you did not do goes in `undone`, with or without `replan`, never only in the text or in `leftovers`; its agreed item goes `met:false`, and it goes back to the backlog. What you add has a use outside tests; one test per behavior, never repeating another; no measurement-only code. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task, with the file between backticks in the detail. A leftover that only changes a comment, documentation or help text, changing neither behavior nor what a test expects, carries `"cleanup":true`. It goes to the spec backlog.
-
-Past 150 thousand tokens of conversation, not counting a previous wave's summary you read, Mustard warns you in a tool's result, marked [Mustard]; it is not the tool's text, so obey it. Stop: within 8 calls or 15 thousand tokens, leave the code compiling, record the step of the task in progress (done, left, where you stopped) and the delivery, with it and the unstarted in `undone`.
 
 ## Output format
 

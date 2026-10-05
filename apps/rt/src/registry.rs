@@ -10,7 +10,7 @@
 //! a entrada da mensagem, o início da sessão, o conserto da barra de status,
 //! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
 //! de compactar, o aviso de tamanho da conversa, que também recusa o agente
-//! de onda que gastou a folga depois do limite, a faxina do fim da sessão e
+//! de onda depois da ordem de entregar, a faxina do fim da sessão e
 //! a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
@@ -195,9 +195,9 @@ impl Registry {
             },
             // O tamanho da conversa nos dois lados de cada ferramenta. Depois
             // dela: a quem conduz, o aviso de limpar ou compactar; ao agente
-            // de onda, o de parar no limite. Antes dela: só o agente de onda
-            // que gastou a folga depois desse aviso é recusado, menos para
-            // gravar na spec e compilar.
+            // de onda que terminou uma tarefa, a ordem de seguir ou de
+            // entregar. Antes dela: só o agente de onda que recebeu a ordem
+            // de entregar é recusado, menos para gravar na spec e compilar.
             Module {
                 id: "size_notice",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Any), (Trigger::PreToolUse, ToolMatch::Any)],
@@ -383,7 +383,7 @@ mod tests {
 
     /// O aviso de tamanho roda nos dois lados de qualquer ferramenta — depois
     /// dela, junto do sinal de vida, para avisar, e antes dela, para recusar o
-    /// agente de onda que gastou a folga — e em nenhum outro evento, e é uma
+    /// agente de onda depois da ordem de entregar — e em nenhum outro evento, e é uma
     /// trava que devolve veredito, não um observador.
     #[test]
     fn size_notice_runs_after_every_tool() {

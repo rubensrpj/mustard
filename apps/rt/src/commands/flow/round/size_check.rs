@@ -9,11 +9,14 @@
 //!   nos arquivos da onda, repositório por repositório; o arquivo novo, que o
 //!   git ainda não rastreia, conta todas as linhas como postas. O arquivo que
 //!   duas ondas da rodada mudaram conta nas duas.
-//! - Testes novos: a função ou o método que está no mapa de depois, dentro de
-//!   um trecho de teste do arquivo da onda ou num arquivo de teste inteiro, e
-//!   não está no mapa da base. Vale em toda língua que o scan reconhece, sem
-//!   ler o texto de marca nenhuma de teste.
-//! - O arquivo apagado não põe nada e não tem teste: só tira.
+//! - Testes novos: os que entraram menos os que saíram, somados na onda
+//!   inteira e sem passar de zero, para que o teste posto no lugar de outro
+//!   nunca conte. Entra a função ou o método que está no mapa de depois,
+//!   dentro de um trecho de teste do arquivo da onda ou num arquivo de teste
+//!   inteiro, e não está no mapa da base; sai o que o mapa da base traz assim
+//!   e o de depois não. Vale em toda língua que o scan reconhece, sem ler o
+//!   texto de marca nenhuma de teste.
+//! - O arquivo apagado não põe nada: só tira, as linhas e os testes que tinha.
 //! - Crescimento: postas menos tiradas, para que a troca de nomes, que põe e
 //!   tira o mesmo, nunca conte. Recusa a onda que cresce mais que o piso e
 //!   mais que o múltiplo da mediana de linhas postas pelos commits da rodada
@@ -25,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::ast::is_test_path;
+use mustard_core::domain::project_map::MapModule;
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::io::wave_size;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -82,7 +86,8 @@ pub(super) fn measure(root: &Path, maps: &AfterWave) -> Vec<Size> {
         .iter()
         .map(|(wave, files)| {
             let (added, removed) = moved_lines(root, &subs, files);
-            Size { wave: *wave, added, removed, tests: new_tests(maps, files), files: files.len() }
+            let (entered, left) = moved_tests(maps, files);
+            Size { wave: *wave, added, removed, tests: entered.saturating_sub(left), files: files.len() }
         })
         .collect()
 }
@@ -202,23 +207,30 @@ fn text_lines(path: &Path) -> u64 {
     u64::try_from(bytes.split_inclusive(|byte| *byte == b'\n').count()).unwrap_or(0)
 }
 
-/// Os testes novos dos arquivos `files`: o que o mapa de depois traz num
-/// trecho de teste (ou num arquivo de teste inteiro) e o da base não traz, na
-/// mesma peça de mesmo nome, tipo e dono.
-fn new_tests(maps: &AfterWave, files: &[String]) -> usize {
-    files
+/// Os testes que entraram e os que saíram nos arquivos `files`, somados: os
+/// do mapa de depois que o da base não traz, e os da base que o de depois não
+/// traz. O arquivo que o mapa de depois não tem foi apagado e tira todos.
+fn moved_tests(maps: &AfterWave, files: &[String]) -> (usize, usize) {
+    files.iter().fold((0, 0), |(entered, left), file| {
+        let (before, now) = (maps.base.module(file), maps.after.module(file));
+        (
+            entered + now.map_or(0, |now| tests_missing_from(now, before)),
+            left + before.map_or(0, |before| tests_missing_from(before, now)),
+        )
+    })
+}
+
+/// Os testes de `module` que `other`, o mesmo arquivo no outro mapa, não
+/// traz: a função ou o método num trecho de teste (ou num arquivo de teste
+/// inteiro) sem a mesma peça, de mesmo nome, tipo e dono, do outro lado.
+fn tests_missing_from(module: &MapModule, other: Option<&MapModule>) -> usize {
+    module
+        .declarations
         .iter()
-        .filter_map(|file| maps.after.module(file))
-        .map(|now| {
-            let before = maps.base.module(&now.path);
-            now.declarations
-                .iter()
-                .filter(|decl| TEST_KINDS.contains(&decl.kind.as_str()))
-                .filter(|decl| is_test_path(&now.path) || in_test_lines(now, decl.line))
-                .filter(|decl| !before.is_some_and(|old| old.declarations.iter().any(|was| same_piece(was, decl))))
-                .count()
-        })
-        .sum()
+        .filter(|decl| TEST_KINDS.contains(&decl.kind.as_str()))
+        .filter(|decl| is_test_path(&module.path) || in_test_lines(module, decl.line))
+        .filter(|decl| !other.is_some_and(|other| other.declarations.iter().any(|was| same_piece(was, decl))))
+        .count()
 }
 
 #[cfg(test)]
@@ -262,7 +274,7 @@ mod tests {
         after["declarations"].as_array_mut().unwrap().push(types);
         let base = module("tests/soma.rs", &[("old", 1)], &[]);
         let found = maps(&[base], &[after], &["tests/soma.rs"]);
-        assert_eq!(new_tests(&found, &["tests/soma.rs".to_string()]), 3);
+        assert_eq!(moved_tests(&found, &["tests/soma.rs".to_string()]), (3, 0));
     }
 
     #[test]
@@ -270,7 +282,31 @@ mod tests {
         let after = module("src/soma.rs", &[("sum", 3), ("adds", 21), ("subtracts", 25), ("old", 29)], &[[18, 40]]);
         let base = module("src/soma.rs", &[("sum", 3), ("old", 12)], &[[10, 20]]);
         let found = maps(&[base], &[after], &["src/soma.rs"]);
-        assert_eq!(new_tests(&found, &["src/soma.rs".to_string()]), 2);
+        assert_eq!(moved_tests(&found, &["src/soma.rs".to_string()]), (2, 0));
+    }
+
+    #[test]
+    fn the_wave_counts_the_tests_that_entered_minus_the_ones_that_left() {
+        // Doze testes entram em `src/a.rs` no lugar dos três que ele tinha, e
+        // `tests/gone.rs`, apagado, tira os que sobram: doze por doze dá zero,
+        // seis saindo dá seis, e cinco dá sete.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        git_at(root, &["init", "-q"]);
+        let named = |prefix: &str, count: u64| -> Vec<(String, u64)> {
+            (0..count).map(|n| (format!("{prefix}_{n}"), 10 + 2 * n)).collect()
+        };
+        let module_of = |path: &str, functions: &[(String, u64)]| {
+            let functions: Vec<(&str, u64)> = functions.iter().map(|(name, line)| (name.as_str(), *line)).collect();
+            module(path, &functions, &[[1, 100]])
+        };
+        let files = ["src/a.rs", "tests/gone.rs"];
+        for (left, tests) in [(12, 0), (6, 6), (5, 7)] {
+            let base = [module_of("src/a.rs", &named("old", 3)), module_of("tests/gone.rs", &named("gone", left - 3))];
+            let after = [module_of("src/a.rs", &named("new", 12))];
+            let sizes = measure(root, &maps(&base, &after, &files));
+            assert_eq!(sizes.iter().map(|size| size.tests).collect::<Vec<_>>(), vec![tests], "{left} left");
+        }
     }
 
     /// Um projeto com `src/a.rs` e `src/b.rs` comitados, a onda 1 mudando os
@@ -549,6 +585,27 @@ mod tests {
                     rules + 1
                 );
                 assert!(hint.contains(&said), "{hint}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wave_that_swaps_its_tests_for_as_many_is_not_refused() {
+        // A base tem sete testes em `src/big.rs`, e a onda põe sete outros no
+        // lugar deles: o projeto não ganha teste, e a linha mostra zero. Sem
+        // nenhum na base, os mesmos sete passam do limite de 6.
+        for (left, over) in [(7, false), (0, true)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            grown(root, 12, 100, 0, 0);
+            let old: Vec<(String, u64)> = (0..left).map(|n| (format!("old_{n}"), 3 + 2 * n)).collect();
+            let functions: Vec<(&str, u64)> = old.iter().map(|(name, line)| (name.as_str(), *line)).collect();
+            let base = json!({"modules": [module("src/big.rs", &functions, &[[1, 20]])]});
+            mustard_core::io::project_map::write_text(root, &base.to_string()).unwrap();
+            let out = back_with(root, 540, 7);
+            assert_eq!(refused(&out), over, "{left} tests left: {out}");
+            if !over {
+                assert_eq!(warning_of(&out, "wave-size")["hint"], json!("onda 1: +540 -0, 0 testes, 1 arquivos"), "{out}");
             }
         }
     }

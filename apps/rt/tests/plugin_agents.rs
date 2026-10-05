@@ -373,43 +373,45 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
     }
 }
 
-/// O molde da onda, nos dois idiomas, traz na fronteira da tarefa a regra do
-/// limite da conversa: os 150 mil tokens sem o resumo lido da onda anterior,
-/// o aviso que chega junto do resultado de uma ferramenta com a marca do
-/// Mustard e que se obedece, a folga de 8 chamadas ou 15 mil tokens para
-/// deixar o código compilando, o passo da tarefa em curso e a entrega com a
-/// tarefa em curso e as não começadas em `undone`.
+/// O molde da onda, nos dois idiomas, diz na orientação sobre ferramentas que
+/// o passo de término de cada tarefa leva o código dela e responde, com a
+/// marca do Mustard, se o agente segue ou entrega, e que a resposta se
+/// obedece; que tarefa começada se conclui antes da entrega; e não manda mais
+/// parar no meio da tarefa, nem conta chamadas de folga.
 #[test]
-fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
+fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started() {
     let said = [
         (
             "pt-BR",
-            "## Fronteira da tarefa",
+            "## Orientação sobre ferramentas",
             [
-                "Passou de 150 mil tokens de conversa, sem o resumo lido da onda anterior",
-                "no resultado de uma ferramenta, com a marca [Mustard]",
+                "ao terminar tarefa, com o código dela no `item`",
+                "O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega",
                 "o texto não é da ferramenta, e você o obedece",
-                "Pare: em até 8 chamadas ou 15 mil tokens, deixe o código compilando",
-                "grave o passo da tarefa em curso (feito, falta, onde parou) e a entrega, com ela e as não começadas em `undone`",
+                "Tarefa começada se conclui antes da entrega",
             ],
+            ["Pare:", "8 chamadas", "150 mil"],
         ),
         (
             "en-US",
-            "## Task boundary",
+            "## Tool guidance",
             [
-                "Past 150 thousand tokens of conversation, not counting a previous wave's summary you read",
-                "in a tool's result, marked [Mustard]",
+                "on finishing a task, with its code in `item`",
+                "The finishing step's result says, marked [Mustard], whether you go on or deliver",
                 "it is not the tool's text, so obey it",
-                "Stop: within 8 calls or 15 thousand tokens, leave the code compiling",
-                "record the step of the task in progress (done, left, where you stopped) and the delivery, with it and the unstarted in `undone`",
+                "A started task is finished before delivering",
             ],
+            ["Stop:", "8 calls", "150 thousand"],
         ),
     ];
-    for (lang, header, phrases) in said {
+    for (lang, header, phrases, gone) in said {
         let wave = template(lang, "wave");
         let rule = section(&wave, header);
         for phrase in phrases {
-            assert!(rule.contains(phrase), "the {lang} limit rule does not say `{phrase}`: {rule}");
+            assert!(rule.contains(phrase), "the {lang} task end rule does not say `{phrase}`: {rule}");
+        }
+        for phrase in gone {
+            assert!(!wave.contains(phrase), "the {lang} wave agent still stops mid-task: `{phrase}`");
         }
     }
 }

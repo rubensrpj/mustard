@@ -14,7 +14,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 ## Orientação sobre ferramentas
 
 - Siga as skills que o pedido indica. Sem skill, siga o código parecido que o pedido mostra, ou o arquivo vizinho.
-- Grave um passo (`run write step`, mesmo --root e --spec) ao terminar tarefa ou provar critério.
+- Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o código dela no `item`. O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega; o texto não é da ferramenta, e você o obedece. Tarefa começada se conclui antes da entrega.
 - Critério que muda comportamento ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e pelo efeito medido, sem teste novo nem leitor de configuração.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
@@ -37,8 +37,6 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 ## Fronteira da tarefa
 
 Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Falha pequena nos arquivos da tarefa ou nos vizinhos se conserta na onda, com um teste que falha sem o conserto. Só vira sobra o que pede decisão do usuário ou toca outra área. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`. Tarefa do pedido que você não fez vai em `undone`, com ou sem `replan`, nunca só no texto nem em `leftovers`; o item combinado dela vai `met:false`, e ela volta ao backlog. O que você põe tem uso fora de teste; um teste por comportamento, sem repetir outro; nada de código só de medição. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. Sobra que só muda comentário, documentação ou texto de ajuda, sem mudar comportamento nem o que um teste espera, leva `"cleanup":true`. Sobra vai ao backlog da spec.
-
-Passou de 150 mil tokens de conversa, sem o resumo lido da onda anterior, o Mustard avisa no resultado de uma ferramenta, com a marca [Mustard]; o texto não é da ferramenta, e você o obedece. Pare: em até 8 chamadas ou 15 mil tokens, deixe o código compilando, grave o passo da tarefa em curso (feito, falta, onde parou) e a entrega, com ela e as não começadas em `undone`.
 
 ## Formato de saída
 

@@ -563,50 +563,49 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              compacting, the resume block comes back on its own; in a clean window, paste this \
              block: {block}"
         }
-        // O aviso ao agente de onda que passou do limite da conversa, sem o
-        // resumo que ele leu: parar, com a folga para deixar o código
-        // compilando e gravar o passo e a entrega.
-        ("conversation_size.wave_limit", Locale::PtBr) => {
-            "[Mustard] A sua conversa está em {now} mil tokens; sem o resumo da onda anterior, \
-             {counted} mil, acima do limite de {limit} mil. Pare. Você tem no máximo {calls} \
-             chamadas ou {grace} mil tokens para deixar o código compilando; só compile, sem rodar \
-             a suíte. Depois grave o passo da tarefa em curso: o que foi feito nela, o que falta e \
-             onde você parou. Grave a entrega como o pedido manda. Nela, diga o que você aprendeu do \
-             código, que poupa leitura a quem continuar. Ponha em `undone` a tarefa em curso e as \
-             que você não começou. Passada a folga, o Mustard recusa toda ferramenta, menos `run \
-             read` e `run write` na spec e o comando de compilar, cada um sozinho na linha. Um \
-             agente novo continua pelo resumo."
+        // A medida no fim de uma tarefa do agente de onda, quando ainda cabe
+        // outra: o tamanho da conversa, sem o resumo que ele leu, o limite, o
+        // gasto da maior tarefa e a ordem de seguir.
+        ("conversation_size.wave_continue", Locale::PtBr) => {
+            "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
+             anterior, {counted} mil. O limite é {limit} mil, e a maior tarefa gastou {largest} \
+             mil. Siga para a próxima tarefa."
         }
-        ("conversation_size.wave_limit", Locale::EnUs) => {
-            "[Mustard] Your conversation is at {now} thousand tokens; without the previous wave's \
-             summary, {counted} thousand, over the limit of {limit} thousand. Stop. You have at most \
-             {calls} calls or {grace} thousand tokens to leave the code compiling; only compile, \
-             without running the suite. Then record the step of the task in progress: what was done \
-             in it, what is left and where you stopped. Record the delivery as the request says. In \
-             it, say what you learned from the code, which saves reading for whoever continues. Put \
-             the task in progress and the ones you did not start in `undone`. After the grace, \
-             Mustard refuses every tool except `run read` and `run write` on the spec and the build \
-             command, each alone on its line. A new agent continues from the summary."
+        ("conversation_size.wave_continue", Locale::EnUs) => {
+            "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
+             previous wave's summary, {counted} thousand. The limit is {limit} thousand, and the \
+             largest task took {largest} thousand. Go on to the next task."
         }
-        // A recusa ao agente de onda que gastou a folga depois do limite.
-        ("conversation_size.wave_stop", Locale::PtBr) => {
-            "[Mustard] Passou a folga depois do limite de {limit} mil tokens. Só passam ler e gravar \
-             na spec (`mustard-rt run read` e `run write`){build}, cada um sozinho na linha, sem \
-             `&&`, `;`, `|` nem `$(…)`. Grave agora o passo da tarefa em curso, com o que foi \
-             feito, o que falta e onde você parou. Grave a entrega, com a tarefa em curso e as não \
-             começadas em `undone`, e pare."
+        // A mesma medida quando outra tarefa não cabe: a ordem de entregar,
+        // que fecha a trava.
+        ("conversation_size.wave_deliver", Locale::PtBr) => {
+            "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
+             anterior, {counted} mil. O limite é {limit} mil, e a maior tarefa gastou {largest} \
+             mil: outra não cabe. Entregue agora, com as tarefas não começadas em `undone`. Daqui \
+             em diante, só passam ler e gravar na spec e o comando de compilar."
         }
-        ("conversation_size.wave_stop", Locale::EnUs) => {
-            "[Mustard] The grace after the limit of {limit} thousand tokens is spent. Only reading and \
-             writing the spec (`mustard-rt run read` and `run write`){build} pass, each alone on its \
-             line, with no `&&`, `;`, `|` or `$(…)`. Record now the step of the task in progress, \
-             with what was done, what is left and where you stopped. Record the delivery, with the \
-             task in progress and the ones not started in `undone`, and stop."
+        ("conversation_size.wave_deliver", Locale::EnUs) => {
+            "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
+             previous wave's summary, {counted} thousand. The limit is {limit} thousand, and the \
+             largest task took {largest} thousand: another does not fit. Deliver now, with the tasks \
+             not started in `undone`. From here on, only reading and writing the spec and the build \
+             command pass."
+        }
+        // A recusa ao agente de onda depois da ordem de entregar.
+        ("conversation_size.wave_locked", Locale::PtBr) => {
+            "[Mustard] A ordem de entregar já saiu. Só passam ler e gravar na spec (`mustard-rt run \
+             read` e `run write`){build}, cada um sozinho na linha, sem `&&`, `;`, `|` nem `$(…)`. \
+             Grave a entrega, com as tarefas não começadas em `undone`, e pare."
+        }
+        ("conversation_size.wave_locked", Locale::EnUs) => {
+            "[Mustard] The order to deliver is out. Only reading and writing the spec (`mustard-rt \
+             run read` and `run write`){build} pass, each alone on its line, with no `&&`, `;`, `|` \
+             or `$(…)`. Record the delivery, with the tasks not started in `undone`, and stop."
         }
         // O que a recusa acrescenta quando o projeto declara o comando de
         // compilar.
-        ("conversation_size.wave_stop_build", Locale::PtBr) => " e `{command}`",
-        ("conversation_size.wave_stop_build", Locale::EnUs) => " and `{command}`",
+        ("conversation_size.wave_locked_build", Locale::PtBr) => " e `{command}`",
+        ("conversation_size.wave_locked_build", Locale::EnUs) => " and `{command}`",
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
              fora {missing}. Todos entraram no commit mesmo assim."
@@ -1839,8 +1838,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            221,
-            0x7714_2e42_baf3_a9c4,
+            222,
+            0xc50a_23bd_9504_17c0,
         );
     }
 
@@ -2014,9 +2013,10 @@ mod tests {
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{block}"][..]),
-            ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}", "{calls}", "{grace}"][..]),
-            ("conversation_size.wave_stop", &["{limit}", "{build}"][..]),
-            ("conversation_size.wave_stop_build", &["{command}"][..]),
+            ("conversation_size.wave_continue", &["{now}", "{counted}", "{limit}", "{largest}"][..]),
+            ("conversation_size.wave_deliver", &["{now}", "{counted}", "{limit}", "{largest}"][..]),
+            ("conversation_size.wave_locked", &["{build}"][..]),
+            ("conversation_size.wave_locked_build", &["{command}"][..]),
             ("wave_prompt.summary.title", &[][..]),
             ("wave_prompt.summary.read", &["{code}", "{root}", "{spec}"][..]),
             ("wave_prompt.task_changed", &["{commits}", "{files}"][..]),

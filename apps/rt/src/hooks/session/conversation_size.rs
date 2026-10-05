@@ -17,14 +17,19 @@
 //!   conversa que encolheu, então um `/compact` de verdade não cala o aviso do
 //!   próximo degrau. Quem conduz nunca é recusado por tamanho. **No agente de
 //!   onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
-//!   a conversa que passa de [`WAVE_LIMIT`] tokens, sem o resumo da onda
-//!   anterior que ele leu, recebe depois da ferramenta, uma vez, o aviso de
-//!   parar, e com ele começa a folga: [`WAVE_GRACE_CALLS`] chamadas ou
-//!   [`WAVE_GRACE_TOKENS`] tokens a mais, o que vier primeiro, para deixar o
-//!   código compilando e gravar o passo e a entrega. Passada a folga, o gancho
-//!   de antes da ferramenta recusa tudo, menos `run read` e `run write` na
-//!   spec e o comando de compilar do projeto, cada um sem outro comando na
-//!   mesma linha. O resumo é o salto do tamanho entre a resposta que
+//!   a medida chega só no fim de cada tarefa: no resultado do passo de término
+//!   (`run write step` com o código de uma tarefa no `item`), o gancho de
+//!   depois da ferramenta diz o tamanho da conversa, sem o resumo da onda
+//!   anterior que ele leu, o limite de [`WAVE_LIMIT`] tokens e a ordem de
+//!   seguir para a próxima tarefa ou de entregar. Manda entregar quando o
+//!   tamanho passou do limite, ou quando o que resta até ele é menos que o
+//!   gasto da maior tarefa já terminada na conversa: a diferença de tamanho
+//!   entre dois passos de término seguidos, e a da primeira desde o começo.
+//!   A ordem de entregar fecha a trava: dali em diante, o gancho de antes da
+//!   ferramenta recusa tudo, menos `run read` e `run write` na spec e o
+//!   comando de compilar do projeto, cada um sem outro comando na mesma
+//!   linha. Antes dela nada é recusado por tamanho, nem a conversa acima do
+//!   limite no meio de uma tarefa. O resumo é o salto do tamanho entre a resposta que
 //!   chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
 //!   o comando que o pedido da onda manda — e a resposta seguinte, somado
 //!   quando o agente lê mais de um; sem resumo lido, conta a conversa inteira.
@@ -37,8 +42,8 @@
 //! `<transcript_path sem .jsonl>/subagents/agent-<id>.jsonl` e, quando quem
 //! conduz limpou a conversa no meio da onda, em pedaços de mesmo nome nas
 //! pastas das sessões anteriores: o agente de onda é reconhecido pelo começo
-//! do pedaço mais antigo, e o aviso e a folga ficam guardados pelo agente,
-//! não pela sessão. Sem arquivo
+//! do pedaço mais antigo, e os tamanhos dos passos de término e a ordem de
+//! entregar ficam guardados pelo agente, não pela sessão. Sem arquivo
 //! legível, sem uso gravado ou sem spec para retomar, nada acontece:
 //! [`Verdict::Allow`], porque sem tamanho conhecido não há como decidir.
 
@@ -62,17 +67,9 @@ use crate::hooks::bash::lex::{segments, Segment};
 pub(crate) const CONDUCTOR_STEP: u64 = 200_000;
 
 /// O tamanho que a conversa do agente de onda pode ter, em tokens, sem contar
-/// o resumo da onda anterior que ele leu: passou, o aviso de parar chega e a
-/// folga começa.
+/// o resumo da onda anterior que ele leu: o fim de tarefa que passou dele, ou
+/// que deixa até ele menos que a maior tarefa feita, manda entregar.
 pub(crate) const WAVE_LIMIT: u64 = 150_000;
-
-/// Quantas chamadas o agente de onda faz depois do aviso do limite, no máximo,
-/// para deixar o código compilando e gravar o passo e a entrega.
-pub(crate) const WAVE_GRACE_CALLS: u64 = 8;
-
-/// Quantos tokens a conversa do agente de onda cresce depois do aviso do
-/// limite, no máximo, antes de a folga acabar.
-pub(crate) const WAVE_GRACE_TOKENS: u64 = 15_000;
 
 /// A janela do fim do arquivo que a leitura do tamanho olha primeiro, em
 /// bytes: a conversa de quem conduz chega a dezenas de megabytes, e o último
@@ -107,9 +104,9 @@ fn precompact_text(root: &Path, session: Option<&str>) -> Option<String> {
 }
 
 /// O tamanho da conversa nos dois lados de cada ferramenta: depois dela, a
-/// quem conduz, o aviso de limpar ou compactar, e ao agente de onda, o de
-/// parar no limite; antes dela, só o agente de onda que gastou a folga é
-/// recusado.
+/// quem conduz, o aviso de limpar ou compactar, e ao agente de onda que
+/// terminou uma tarefa, a ordem de seguir ou de entregar; antes dela, só o
+/// agente de onda que recebeu a ordem de entregar é recusado.
 pub struct SizeNotice;
 
 impl Check for SizeNotice {
@@ -118,14 +115,14 @@ impl Check for SizeNotice {
         match ctx.trigger {
             Some(Trigger::PostToolUse) => {
                 let context = if input.is_subagent() {
-                    wave_limit_text(input, &root, ctx.config.language().text_or_default())
+                    task_end_text(input, &root, ctx.config.language().text_or_default())
                 } else {
                     conductor_text(input, &root)
                 };
                 Ok(context.map_or(Verdict::Allow, |context| Verdict::Inject { context }))
             }
             Some(Trigger::PreToolUse) => {
-                Ok(wave_stop_reason(input, &root, ctx).map_or(Verdict::Allow, |reason| Verdict::Deny { reason }))
+                Ok(wave_lock_reason(input, &root, ctx).map_or(Verdict::Allow, |reason| Verdict::Deny { reason }))
             }
             _ => Ok(Verdict::Allow),
         }
@@ -243,6 +240,8 @@ fn conductor_text(input: &HookInput, root: &Path) -> Option<String> {
 
 /// O que a leitura da conversa de um agente de onda traz.
 struct WaveContext {
+    /// O tamanho da conversa na primeira resposta: o começo dela.
+    first: u64,
     /// O tamanho da conversa na última resposta.
     now: u64,
     /// Quanto do tamanho é o resumo da onda anterior que o agente leu.
@@ -308,8 +307,9 @@ fn opens_a_wave(path: &Path, lang: Locale) -> bool {
 /// A leitura da conversa do agente, nos pedaços `pieces`, do mais antigo ao
 /// mais novo ([`agent_pieces`]): `None` quando o mais antigo não abre com o
 /// título de um pedido de onda no idioma `lang` (um agente qualquer), ou
-/// quando ainda não há nenhum uso gravado. O tamanho de agora é o último uso,
-/// o do pedaço da sessão atual, que é o mais novo. O resumo pesa o salto do
+/// quando ainda não há nenhum uso gravado. O começo é o primeiro uso, e o
+/// tamanho de agora, o último, o do pedaço da sessão atual, que é o mais
+/// novo. O resumo pesa o salto do
 /// tamanho entre a resposta que o lê (veja [`reads_summary`]) e a resposta
 /// seguinte — a linha seguinte com o mesmo `message.id` é da mesma resposta
 /// —, também quando o resumo foi lido num pedaço anterior.
@@ -319,12 +319,13 @@ fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
     if !opens_a_wave(pieces.first()?, lang) {
         return None;
     }
-    let (mut now, mut summary, mut before) = (None, 0_u64, None::<(Option<String>, u64)>);
+    let (mut first, mut now, mut summary, mut before) = (None, None, 0_u64, None::<(Option<String>, u64)>);
     for piece in pieces {
         let Ok(file) = std::fs::File::open(piece) else { continue };
         for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
             let Some((value, usage)) = usage_of_line(&line) else { continue };
             let context = context_of(&usage);
+            first.get_or_insert(context);
             now = Some(context);
             let message = value.get("message");
             let id = message.and_then(|message| message.get("id")).and_then(Value::as_str).map(str::to_owned);
@@ -340,7 +341,7 @@ fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
             }
         }
     }
-    Some(WaveContext { now: now?, summary })
+    Some(WaveContext { first: first?, now: now?, summary })
 }
 
 /// O pedaço da conversa do subagente de `input` na sessão atual, no arquivo
@@ -355,11 +356,11 @@ fn agent_transcript(input: &HookInput) -> Option<PathBuf> {
 }
 
 /// Os dois arquivos de estado do agente de onda de `input`: o tamanho da
-/// conversa quando o aviso do limite chegou, que só existe depois dele, e
-/// quantas chamadas o agente fez desde então. Ficam pelo nome do agente,
+/// conversa, sem o resumo lido, em cada passo de término, um por linha, e a
+/// ordem de entregar, que só existe depois dela. Ficam pelo nome do agente,
 /// direto em `.claude/.session/`, fora da pasta de qualquer sessão: o
-/// `/clear` de quem conduz troca a sessão no meio da onda, e o aviso dado
-/// antes dele não se repete nem a folga recomeça. `None` fora de um
+/// `/clear` de quem conduz troca a sessão no meio da onda, e nem as tarefas
+/// já medidas nem a ordem dada antes dele se perdem. `None` fora de um
 /// subagente.
 fn wave_marks(root: &Path, input: &HookInput) -> Option<(PathBuf, PathBuf)> {
     let name = input.subagent_transcript_name()?;
@@ -368,37 +369,84 @@ fn wave_marks(root: &Path, input: &HookInput) -> Option<(PathBuf, PathBuf)> {
         let name = format!("size-{kind}-{agent}");
         Some(state_dir(root)?.join(is_plain(&name).then_some(name)?))
     };
-    Some((mark("limit")?, mark("calls")?))
+    Some((mark("steps")?, mark("deliver")?))
 }
 
-/// O aviso ao agente de onda que passou do limite: a conversa do subagente de
-/// `input`, sem o resumo que ele leu, passou de [`WAVE_LIMIT`] tokens. Avisa
-/// uma vez, guarda o tamanho de agora e começa a contar as chamadas da folga;
-/// as chamadas seguintes só gastam a folga, sem repetir o aviso. `None` fora
-/// de uma onda, até o limite e depois do aviso.
-fn wave_limit_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
-    let context = wave_context(&agent_pieces(&agent_transcript(input)?), lang)?;
-    let counted = context.now.saturating_sub(context.summary);
-    if counted <= WAVE_LIMIT {
+/// Se a chamada `input` gravou o fim de uma tarefa: o terminal, com um
+/// comando só além dos `cd`, `mustard-rt run write step`, cujo `--json` traz
+/// no `item` o código de uma tarefa, e cuja saída não é a recusa da gravação.
+fn finishes_a_task(input: &HookInput) -> bool {
+    if input.tool_name.as_deref() != Some("Bash") {
+        return false;
+    }
+    let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else { return false };
+    let mut run = segments(command).into_iter().filter(|segment| program_name(segment) != "cd");
+    let Some(main) = run.next() else { return false };
+    let args: Vec<&str> = main.args.iter().map(|word| word.text.as_str()).collect();
+    if program_name(&main) != "mustard-rt" || !args.starts_with(&["run", "write", "step"]) || run.next().is_some() {
+        return false;
+    }
+    let json = args
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--json").then_some(pair[1]))
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--json=")));
+    let task = type_spec("task").map(|spec| spec.code);
+    let names_a_task = json
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|step| step.get("item")?.as_str().and_then(mustard_id::parse).map(|(kind, _)| Some(kind) == task))
+        .unwrap_or(false);
+    let stdout = input.raw.get("tool_response").and_then(|response| response.get("stdout")).and_then(Value::as_str);
+    let refused = stdout
+        .and_then(|stdout| serde_json::from_str::<Value>(stdout).ok())
+        .is_some_and(|report| report.get("ok") == Some(&Value::Bool(false)));
+    names_a_task && !refused
+}
+
+/// A medida do fim de tarefa ao agente de onda: no resultado do passo de
+/// término ([`finishes_a_task`]) do subagente de `input`, o tamanho da
+/// conversa, sem o resumo que ele leu, o limite, o gasto da maior tarefa já
+/// terminada e a ordem. Manda entregar quando o tamanho passou de
+/// [`WAVE_LIMIT`], quando o que resta até ele é menos que aquele gasto, ou
+/// quando a ordem já saiu; senão, manda seguir. Guarda o tamanho do passo e,
+/// com a ordem de entregar, fecha a trava ([`wave_lock_reason`]). `None` fora
+/// de uma onda e em toda chamada que não termina uma tarefa: no meio dela,
+/// nada a manda parar.
+fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
+    if !finishes_a_task(input) {
         return None;
     }
-    let marks = wave_marks(root, input);
-    if let Some((limit, calls)) = &marks {
-        if read_mark(limit).is_some() {
-            write_mark(calls, read_mark(calls).unwrap_or(0) + 1);
-            return None;
-        }
-        write_mark(limit, context.now);
-        write_mark(calls, 0);
+    let context = wave_context(&agent_pieces(&agent_transcript(input)?), lang)?;
+    let counted = context.now.saturating_sub(context.summary);
+    let (steps, order) = wave_marks(root, input)?;
+    let mut sizes: Vec<u64> = std::fs::read_to_string(&steps)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    sizes.push(counted);
+    if let Some(parent) = steps.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&steps, sizes.iter().map(|size| format!("{size}\n")).collect::<String>());
+    let largest = std::iter::once(context.first)
+        .chain(sizes.iter().copied())
+        .collect::<Vec<_>>()
+        .windows(2)
+        .map(|pair| pair[1].saturating_sub(pair[0]))
+        .max()
+        .unwrap_or(0);
+    let deliver = order.exists() || counted > WAVE_LIMIT || WAVE_LIMIT.saturating_sub(counted) < largest;
+    if deliver {
+        write_mark(&order, counted);
     }
     let thousands = |tokens: u64| (tokens / 1000).to_string();
+    let key = if deliver { "conversation_size.wave_deliver" } else { "conversation_size.wave_continue" };
     Some(
-        translate("conversation_size.wave_limit", lang)
+        translate(key, lang)
             .replace("{now}", &thousands(context.now))
             .replace("{counted}", &thousands(counted))
             .replace("{limit}", &thousands(WAVE_LIMIT))
-            .replace("{calls}", &WAVE_GRACE_CALLS.to_string())
-            .replace("{grace}", &thousands(WAVE_GRACE_TOKENS)),
+            .replace("{largest}", &thousands(largest)),
     )
 }
 
@@ -433,12 +481,13 @@ fn trims_the_output(segment: &Segment) -> bool {
         && segment.args.iter().all(|arg| arg.text.starts_with('-') || arg.text.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Se o agente de onda ainda pode fazer a chamada `input` depois da folga:
-/// só o terminal, com um comando só além dos `cd` — ler ou gravar na spec, ou
-/// compilar com `build`, cuja saída pode ir a um `tail` ou `head`. O comando
-/// é lido como o shell o lê: outro comando na mesma linha, encadeado (`&&`,
-/// `;`, `|`, nova linha) ou escondido numa palavra (`$(…)`, crase), recusa.
-fn passes_after_the_grace(input: &HookInput, build: Option<&str>) -> bool {
+/// Se o agente de onda ainda pode fazer a chamada `input` depois da ordem de
+/// entregar: só o terminal, com um comando só além dos `cd` — ler ou gravar
+/// na spec, ou compilar com `build`, cuja saída pode ir a um `tail` ou
+/// `head`. O comando é lido como o shell o lê: outro comando na mesma linha,
+/// encadeado (`&&`, `;`, `|`, nova linha) ou escondido numa palavra (`$(…)`,
+/// crase), recusa.
+fn passes_after_the_order(input: &HookInput, build: Option<&str>) -> bool {
     if input.tool_name.as_deref() != Some("Bash") {
         return false;
     }
@@ -452,32 +501,26 @@ fn passes_after_the_grace(input: &HookInput, build: Option<&str>) -> bool {
     build.is_some_and(|build| runs_build(&main, &build)) && run.all(|segment| trims_the_output(&segment))
 }
 
-/// A recusa ao agente de onda que gastou a folga: avisado do limite, ele já
-/// fez [`WAVE_GRACE_CALLS`] chamadas ou a conversa cresceu [`WAVE_GRACE_TOKENS`]
-/// tokens desde o aviso, e a chamada `input` não é ler ou gravar na spec nem
-/// o comando de compilar do projeto ([`passes_after_the_grace`]). `None` fora de
-/// um agente de onda avisado, durante a folga e para o que passa.
-fn wave_stop_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
+/// A recusa ao agente de onda depois da ordem de entregar: a trava fechada
+/// por [`task_end_text`], e a chamada `input` não é ler ou gravar na spec nem
+/// o comando de compilar do projeto ([`passes_after_the_order`]). `None`
+/// fora de um agente de onda, antes da ordem — por maior que a conversa
+/// esteja — e para o que passa.
+fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
     if !input.is_subagent() {
         return None;
     }
-    let (limit, calls) = wave_marks(root, input)?;
-    let warned_at = read_mark(&limit)?;
-    let now = agent_pieces(&agent_transcript(input)?).iter().rev().find_map(|piece| last_context(piece))?;
-    if read_mark(&calls).unwrap_or(0) < WAVE_GRACE_CALLS && now < warned_at + WAVE_GRACE_TOKENS {
+    let (_, order) = wave_marks(root, input)?;
+    if !order.exists() {
         return None;
     }
     let build = ctx.config.commands().build;
-    if passes_after_the_grace(input, build.as_deref()) {
+    if passes_after_the_order(input, build.as_deref()) {
         return None;
     }
     let lang = ctx.config.language().text_or_default();
-    let build = build.map_or_else(String::new, |build| translate("conversation_size.wave_stop_build", lang).replace("{command}", &build));
-    Some(
-        translate("conversation_size.wave_stop", lang)
-            .replace("{limit}", &(WAVE_LIMIT / 1000).to_string())
-            .replace("{build}", &build),
-    )
+    let build = build.map_or_else(String::new, |build| translate("conversation_size.wave_locked_build", lang).replace("{command}", &build));
+    Some(translate("conversation_size.wave_locked", lang).replace("{build}", &build))
 }
 
 #[cfg(test)]
@@ -714,144 +757,173 @@ mod tests {
         format!("{}\n\nO pedido.", mustard_core::domain::wave_prompt::wave_title("x", 1, lang))
     }
 
-    /// O agente de onda é avisado uma vez ao passar de 150 mil tokens de
-    /// conversa: 150.000 exatos não avisam e 150.001 avisam; a chamada
-    /// seguinte com o mesmo tamanho (outra ferramenta da mesma resposta) e as
-    /// que crescem depois não repetem o aviso. O texto traz a marca do
-    /// Mustard, o tamanho, o valor sem o resumo, o limite, a folga de 8
-    /// chamadas ou 15 mil tokens e as tarefas em `undone`. Sem resumo lido,
-    /// conta a conversa inteira — a leitura do pedido inclusive. Nos dois
-    /// idiomas.
+    /// A chamada `call` trocada por um passo gravado pelo terminal, de dentro
+    /// da cópia: `run write step` com `item` no `--json`, e a gravação aceita
+    /// ou recusada, como `ok` diz.
+    fn step_of(call: HookInput, item: &str, ok: bool) -> HookInput {
+        let step = serde_json::json!({"wave": 1, "item": item, "text": "feita"});
+        let command = format!("cd /copy && /x/mustard-rt run write step --root /r --spec x --json '{step}'");
+        let report = serde_json::to_string_pretty(&serde_json::json!({"ok": ok})).unwrap();
+        let mut raw = call.raw.clone();
+        raw["tool_response"] = serde_json::json!({"stdout": report, "stderr": ""});
+        HookInput { tool_name: Some("Bash".to_string()), tool_input: serde_json::json!({"command": command}), raw, ..call }
+    }
+
+    /// A chamada `call` trocada pelo passo de término aceito de uma tarefa.
+    fn finishing(call: HookInput) -> HookInput {
+        step_of(call, "MSTD-TASK-0001", true)
+    }
+
+    /// A conversa do agente de onda `a1`, em `root`, depois de mais uma
+    /// resposta com o contexto somando `tokens`, e o que o gancho de depois
+    /// da ferramenta injeta quando essa resposta grava o fim de uma tarefa.
+    fn agent_finishes(root: &Path, replies: &mut Vec<String>, tokens: u64, lang: Locale) -> Option<String> {
+        replies.push(agent_reply(tokens, Some("edit")));
+        write_agent(root, &wave_request(lang), replies);
+        injected(&finishing(agent_after_tool(root)))
+    }
+
+    /// No fim de cada tarefa, o passo de término responde ao agente de onda,
+    /// com a marca do Mustard, o tamanho da conversa, o limite e o gasto da
+    /// maior tarefa. Começando em 30 mil, a tarefa que termina em 60 mil
+    /// gastou 30 mil, e com 90 mil até o limite a ordem é seguir, sem
+    /// recusa nenhuma. A que termina em 200 mil passou do limite: a ordem é
+    /// entregar, com as não começadas em `undone`, e a chamada seguinte que
+    /// não lê nem grava na spec, a suíte inclusive, é recusada, com o motivo
+    /// na língua do projeto e o que ainda passa. Nos dois idiomas.
     #[test]
-    fn a_wave_agent_is_warned_once_over_the_limit_with_the_order_to_stop() {
+    fn a_finished_task_is_told_to_go_on_under_the_limit_and_to_deliver_over_it() {
+        use serde_json::json;
         for lang in [Locale::PtBr, Locale::EnUs] {
             let dir = open_project_in("x", lang);
             let root = dir.path();
-            let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
-
-            let (limit, grace) = if lang == Locale::EnUs {
-                ("limit of 150 thousand", "at most 8 calls or 15 thousand tokens")
+            let read = || refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()}));
+            let suite = || refused(root, "Bash", json!({"command": "cargo test --locked -p mustard-rt"}));
+            let (go_on, deliver, numbers, only) = if lang == Locale::EnUs {
+                (
+                    "Go on to the next task.",
+                    "Deliver now, with the tasks not started in `undone`.",
+                    "60 thousand. The limit is 150 thousand, and the largest task took 30 thousand.",
+                    "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass",
+                )
             } else {
-                ("limite de 150 mil", "no máximo 8 chamadas ou 15 mil tokens")
+                (
+                    "Siga para a próxima tarefa.",
+                    "Entregue agora, com as tarefas não começadas em `undone`.",
+                    "60 mil. O limite é 150 mil, e a maior tarefa gastou 30 mil.",
+                    "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`",
+                )
             };
-            assert_eq!(agent_grows(root, &mut replies, 150_000, lang), None, "{lang:?}: exactly the limit does not warn");
-            let first = agent_grows(root, &mut replies, 150_001, lang)
-                .unwrap_or_else(|| panic!("{lang:?}: over the limit warns"));
-            assert!(first.starts_with("[Mustard]"), "{lang:?}: the mark comes first: {first}");
-            assert!(first.contains("`undone`") && first.contains(limit) && first.contains(grace), "{lang:?}: {first}");
-            assert_eq!(agent_grows(root, &mut replies, 150_001, lang), None, "{lang:?}: the same size does not repeat");
-            assert_eq!(agent_grows(root, &mut replies, 200_000, lang), None, "{lang:?}: growing does not repeat it");
-            assert_eq!(agent_grows(root, &mut replies, 260_000, lang), None, "{lang:?}: nor does growing a lot");
+            let mut replies = vec![agent_reply(30_000, Some("read"))];
+
+            let first = agent_finishes(root, &mut replies, 60_000, lang).unwrap_or_else(|| panic!("{lang:?}: the task end reads"));
+            assert!(first.starts_with("[Mustard]") && first.contains(numbers), "{lang:?}: {first}");
+            assert!(first.contains(go_on) && !first.contains(deliver), "{lang:?}: {first}");
+            assert_eq!((read(), suite()), (None, None), "{lang:?}: going on, nothing is refused");
+
+            let last = agent_finishes(root, &mut replies, 200_000, lang).unwrap_or_else(|| panic!("{lang:?}: the task end reads"));
+            assert!(last.starts_with("[Mustard]") && last.contains(deliver) && !last.contains(go_on), "{lang:?}: {last}");
+            for reason in [read(), suite()] {
+                let reason = reason.unwrap_or_else(|| panic!("{lang:?}: after the order to deliver, the call is refused"));
+                assert!(reason.starts_with("[Mustard]") && reason.contains(only), "{lang:?}: {reason}");
+                assert!(reason.contains("`undone`"), "{lang:?}: the delivery is told: {reason}");
+            }
         }
     }
 
-    /// O resumo da onda anterior que o agente leu sai da conta: o salto do
-    /// tamanho entre a resposta que chama `run read delivered-<n>` e a
-    /// seguinte. Com um resumo de 100 mil, 250.000 de conversa contam 150.000
-    /// e não avisam, e 250.001 avisam; num agente que chega a 320.000, o
-    /// aviso diz o tamanho, o valor sem o resumo e o limite, cada um no seu
-    /// número. Dois resumos somam os dois saltos. Ler o pedido
-    /// (`run read request-<n>`) não tira nada, e o crescimento depois do
-    /// salto conta inteiro.
+    /// A ordem de entregar chega também abaixo do limite, quando o que resta
+    /// até ele é menos que a maior tarefa já terminada. Começando em 30 mil,
+    /// a primeira tarefa termina em 80 mil e gasta 50 mil: restam 70 mil, e a
+    /// ordem é seguir. A segunda termina em 100 mil: restam 50 mil, o mesmo
+    /// que a maior, e a ordem ainda é seguir. A terceira termina em 101 mil:
+    /// restam 49 mil, menos que os 50 mil da maior, e a ordem é entregar, com
+    /// a trava fechada.
     #[test]
-    fn the_jump_after_reading_a_summary_comes_off_the_count() {
+    fn a_finished_task_is_told_to_deliver_when_what_is_left_is_less_than_the_largest_task() {
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
-        let mut replies = vec![agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))];
-        assert_eq!(agent_grows(root, &mut replies, 250_000, Locale::PtBr), None, "250,000 less a 100,000 summary is exactly the limit");
-        let warned = agent_grows(root, &mut replies, 250_001, Locale::PtBr)
-            .expect("one token over the limit without the summary warns");
-        assert!(warned.contains("250 mil"), "the size is told: {warned}");
-
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
-        let mut replies = vec![agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))];
-        let warned = agent_grows(root, &mut replies, 320_000, Locale::PtBr).expect("220,000 without the summary warns");
-        assert!(
-            warned.contains("320 mil") && warned.contains("220 mil") && warned.contains("limite de 150 mil"),
-            "the size, the value without the summary and the limit are told apart: {warned}"
-        );
-
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
-        let mut replies = vec![
-            agent_reply(40_000, Some("summary")),
-            agent_reply(100_000, Some("summary")),
-            agent_reply(150_000, Some("edit")),
-        ];
-        assert_eq!(
-            agent_grows(root, &mut replies, 260_000, Locale::PtBr),
-            None,
-            "two summaries, 60,000 and 50,000, come off: 150,000 left"
-        );
-        assert!(agent_grows(root, &mut replies, 260_001, Locale::PtBr).is_some(), "and one more token warns");
-
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
-        let call = agent_after_tool(root);
-        let replies = vec![agent_reply(30_000, Some("read")), agent_reply(230_000, Some("edit"))];
-        write_agent(root, &wave_request(Locale::PtBr), &replies);
-        assert!(injected(&call).is_some(), "reading the request is not reading a summary: the whole size counts");
+        let read = || refused(root, "Read", serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}));
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        for (tokens, order, locked) in [(80_000, "Siga", false), (100_000, "Siga", false), (101_000, "Entregue agora", true)] {
+            let reading = agent_finishes(root, &mut replies, tokens, Locale::PtBr).expect("the task end reads");
+            assert!(reading.contains("a maior tarefa gastou 50 mil") && reading.contains(order), "{tokens}: {reading}");
+            assert_eq!(read().is_some(), locked, "{tokens}: the lock");
+        }
     }
 
-    /// O resumo que o pedido manda ler pelo código da entrega
-    /// (`run read item-<código>`) sai da conta do mesmo jeito que o lido pelo
-    /// número da onda: com um resumo de 100 mil, 250.000 de conversa contam
-    /// 150.000 e não avisam, e 250.001 avisam. Os dois jeitos de ler somam os
-    /// saltos (60 mil e 50 mil: 260.000 não avisam, 260.001 avisam). Ler o
-    /// item de uma tarefa não tira nada: 230.000 de conversa avisam inteiros.
+    /// No meio de uma tarefa nada manda parar, nem com a conversa acima do
+    /// limite: o agente que seguiu em 60 mil chega a 158 mil sem terminar a
+    /// tarefa em curso, e nenhuma chamada recebe a medida — nem o passo que
+    /// prova um critério, nem o passo de término que a gravação recusou — e
+    /// nenhuma é recusada, a suíte inclusive. O passo de término aceito,
+    /// depois, manda entregar.
     #[test]
-    fn the_summary_read_by_its_item_code_comes_off_the_count() {
+    fn a_wave_agent_over_the_limit_in_the_middle_of_a_task_is_neither_told_nor_refused() {
+        use serde_json::json;
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
-        let mut replies = vec![agent_reply(40_000, Some("summary_item")), agent_reply(140_000, Some("edit"))];
-        assert_eq!(agent_grows(root, &mut replies, 250_000, Locale::PtBr), None, "250,000 less a 100,000 summary is exactly the limit");
-        let warned = agent_grows(root, &mut replies, 250_001, Locale::PtBr)
-            .expect("one token over the limit without the summary warns");
-        assert!(
-            warned.contains("250 mil") && warned.contains("limite de 150 mil"),
-            "the size and the limit are told: {warned}"
-        );
-
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
-        let mut replies = vec![
-            agent_reply(40_000, Some("summary")),
-            agent_reply(100_000, Some("summary_item")),
-            agent_reply(150_000, Some("edit")),
-        ];
-        assert_eq!(
-            agent_grows(root, &mut replies, 260_000, Locale::PtBr),
-            None,
-            "a summary by number and one by code, 60,000 and 50,000, come off"
-        );
-        assert!(agent_grows(root, &mut replies, 260_001, Locale::PtBr).is_some(), "and one more token warns");
-
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
-        let call = agent_after_tool(root);
-        let replies = vec![agent_reply(30_000, Some("task_item")), agent_reply(230_000, Some("edit"))];
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        let first = agent_finishes(root, &mut replies, 60_000, Locale::PtBr).expect("the task end reads");
+        assert!(first.contains("Siga"), "{first}");
+        replies.push(agent_reply(158_000, Some("edit")));
         write_agent(root, &wave_request(Locale::PtBr), &replies);
-        assert!(injected(&call).is_some(), "reading a task item is not reading a summary: the whole size counts");
+
+        for call in [
+            agent_after_tool(root),
+            step_of(agent_after_tool(root), "MSTD-CRIT-0001", true),
+            step_of(agent_after_tool(root), "MSTD-TASK-0001", false),
+        ] {
+            assert_eq!(injected(&call), None, "mid-task: {}", call.tool_input);
+        }
+        let file = root.join("a.rs").to_string_lossy().into_owned();
+        for (tool, input) in [
+            ("Bash", json!({"command": "cargo test --locked -p mustard-core -p mustard-rt -- --test-threads=8"})),
+            ("Read", json!({"file_path": file})),
+            ("Edit", json!({"file_path": file, "old_string": "a", "new_string": "b"})),
+        ] {
+            assert_eq!(refused(root, tool, input), None, "mid-task over the limit, {tool} passes");
+        }
+        let last = injected(&finishing(agent_after_tool(root))).expect("the task end reads");
+        assert!(last.contains("158 mil") && last.contains("Entregue agora"), "{last}");
     }
 
-    /// O resumo pedido junto com outra ferramenta, na mesma resposta, sai da
-    /// conta: as duas chamadas ficam em duas linhas com o mesmo
-    /// `message.id`, e o salto é o da resposta seguinte, não o da linha
-    /// seguinte. Com um resumo de 100 mil, 250.000 de conversa não avisam e
-    /// 250.001 avisam.
+    /// O resumo da onda anterior que o agente leu sai da conta do fim de
+    /// tarefa: o salto do tamanho entre a resposta que o lê e a seguinte,
+    /// pelo número da onda (`run read delivered-<n>`) ou pelo código da
+    /// entrega (`run read item-<código>`), somado quando o agente lê dois, e
+    /// também quando a leitura sai junto de outra ferramenta, na mesma
+    /// resposta (duas linhas com o mesmo `message.id`). Com um resumo de 100
+    /// mil, 250 mil de conversa contam 150 mil; com dois, de 60 e 50 mil, 260
+    /// mil contam 150 mil. Ler o pedido ou o item de uma tarefa não tira
+    /// nada: 230 mil contam inteiros.
     #[test]
-    fn the_summary_read_alongside_another_tool_comes_off_the_count() {
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
+    fn the_summary_read_comes_off_the_count_at_the_task_end() {
         let with_id = |tokens, action, id: &str| {
             let mut reply: Value = serde_json::from_str(&agent_reply(tokens, Some(action))).unwrap();
             reply["message"]["id"] = id.into();
             reply.to_string()
         };
-        let mut replies = vec![with_id(40_000, "summary", "r1"), with_id(40_000, "edit", "r1"), with_id(140_000, "edit", "r2")];
-        assert_eq!(agent_grows(root, &mut replies, 250_000, Locale::PtBr), None, "the 100,000 summary comes off");
-        assert!(agent_grows(root, &mut replies, 250_001, Locale::PtBr).is_some(), "and one more token warns");
+        for (mut replies, now, counted) in [
+            (vec![agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))], 250_000, 150),
+            (vec![agent_reply(40_000, Some("summary_item")), agent_reply(140_000, Some("edit"))], 250_000, 150),
+            (
+                vec![
+                    agent_reply(40_000, Some("summary")),
+                    agent_reply(100_000, Some("summary_item")),
+                    agent_reply(150_000, Some("edit")),
+                ],
+                260_000,
+                150,
+            ),
+            (vec![with_id(40_000, "summary", "r1"), with_id(40_000, "edit", "r1"), with_id(140_000, "edit", "r2")], 250_000, 150),
+            (vec![agent_reply(30_000, Some("read")), agent_reply(230_000, Some("edit"))], 230_000, 230),
+            (vec![agent_reply(30_000, Some("task_item")), agent_reply(230_000, Some("edit"))], 230_000, 230),
+        ] {
+            let dir = open_project_in("x", Locale::PtBr);
+            let reading = agent_finishes(dir.path(), &mut replies, now, Locale::PtBr).expect("the task end reads");
+            let told = format!("conversa em {} mil tokens; sem o resumo da onda anterior, {counted} mil.", now / 1000);
+            assert!(reading.contains(&told), "{told}: {reading}");
+        }
     }
 
     /// O pedaço da conversa do agente `a1` na sessão `u`, que um `/clear` de
@@ -877,58 +949,27 @@ mod tests {
     /// A conversa do agente de onda atravessou um `/clear` de quem conduz: o
     /// pedaço da sessão antiga abre com o título do pedido e traz o resumo de
     /// 100 mil que o agente leu; o da sessão atual abre com um resultado de
-    /// ferramenta. Com o resumo fora da conta, 240.000 no pedaço atual não
-    /// avisam e 260.000 avisam, uma vez; 275.000, os 15 mil da folga, recusam.
+    /// ferramenta. A ordem de entregar dada na sessão antiga, em 260 mil (160
+    /// mil sem o resumo), segue trancando a sessão nova, e o fim de tarefa
+    /// nela tira da conta o resumo lido no pedaço antigo.
     #[test]
-    fn a_wave_agent_split_by_a_clear_is_warned_once_and_refused_after_the_grace() {
+    fn the_order_to_deliver_before_a_clear_keeps_the_lock_after_it() {
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
-        write_agent(root, &wave_request(Locale::PtBr), &[agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))]);
-        let refused_after = |sizes: &[u64]| {
-            let call = HookInput {
-                hook_event_name: Some("PreToolUse".to_string()),
-                tool_name: Some("Read".to_string()),
-                tool_input: serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}),
-                ..agent_after_clear(root, sizes)
-            };
-            matches!(crate::dispatch::run_event(Some(Trigger::PreToolUse), &call).verdict, Verdict::Deny { .. })
-        };
-        assert_eq!(injected(&agent_after_clear(root, &[240_000])), None, "240,000 less the 100,000 summary is under the limit");
-        let warned = injected(&agent_after_clear(root, &[240_000, 260_000]));
-        assert!(warned.is_some_and(|text| text.starts_with("[Mustard]") && text.contains("160 mil")), "over the limit warns");
-        assert_eq!(injected(&agent_after_clear(root, &[240_000, 260_000])), None, "the warning comes once");
-        assert!(!refused_after(&[240_000, 260_000]), "inside the grace");
-        assert_eq!(injected(&agent_after_clear(root, &[240_000, 260_000, 275_000])), None);
-        assert!(refused_after(&[240_000, 260_000, 275_000]), "15,000 tokens after the warning end the grace");
-    }
+        let mut replies = vec![agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))];
+        let order = agent_finishes(root, &mut replies, 260_000, Locale::PtBr).expect("the task end reads");
+        assert!(order.contains("160 mil") && order.contains("Entregue agora"), "{order}");
 
-    /// O aviso dado antes do `/clear` de quem conduz não se repete depois
-    /// dele, e a folga segue contando: avisado na sessão antiga, o agente faz
-    /// três chamadas ali e cinco na sessão nova, e a oitava acaba a folga.
-    #[test]
-    fn the_warning_before_a_clear_is_not_repeated_after_it_and_the_grace_keeps_counting() {
-        let dir = open_project_in("x", Locale::PtBr);
-        let root = dir.path();
-        write_agent(root, &wave_request(Locale::PtBr), &[agent_reply(30_000, Some("read")), agent_reply(160_000, Some("edit"))]);
-        assert!(injected(&agent_after_tool(root)).is_some(), "the warning, before the clear");
-        for _ in 1..=3 {
-            assert_eq!(injected(&agent_after_tool(root)), None);
-        }
-        let refused_after = || {
-            let call = HookInput {
-                hook_event_name: Some("PreToolUse".to_string()),
-                tool_name: Some("Read".to_string()),
-                tool_input: serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}),
-                ..agent_after_clear(root, &[161_000])
-            };
-            matches!(crate::dispatch::run_event(Some(Trigger::PreToolUse), &call).verdict, Verdict::Deny { .. })
+        let read = HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("Read".to_string()),
+            tool_input: serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}),
+            ..agent_after_clear(root, &[261_000])
         };
-        for call in 4..=7 {
-            assert_eq!(injected(&agent_after_clear(root, &[161_000])), None, "call {call}: the warning is not repeated");
-            assert!(!refused_after(), "call {call} is inside the grace");
-        }
-        assert_eq!(injected(&agent_after_clear(root, &[161_000])), None);
-        assert!(refused_after(), "the eighth call, counted across the clear, ends the grace");
+        let verdict = crate::dispatch::run_event(Some(Trigger::PreToolUse), &read).verdict;
+        assert!(matches!(verdict, Verdict::Deny { .. }), "the lock survives the clear: {verdict:?}");
+        let again = injected(&finishing(agent_after_clear(root, &[261_000]))).expect("the task end reads after the clear");
+        assert!(again.contains("261 mil tokens; sem o resumo da onda anterior, 161 mil"), "{again}");
     }
 
     /// O motivo com que o gancho de antes da ferramenta recusa a chamada de
@@ -949,74 +990,24 @@ mod tests {
         }
     }
 
-    /// A conversa do agente de onda `a1`, em `root`, depois de mais uma
-    /// resposta com o contexto somando `tokens`, e o que o gancho de depois
-    /// da ferramenta injeta para ela.
-    fn agent_grows(root: &Path, replies: &mut Vec<String>, tokens: u64, lang: Locale) -> Option<String> {
-        replies.push(agent_reply(tokens, Some("edit")));
-        write_agent(root, &wave_request(lang), replies);
-        injected(&agent_after_tool(root))
-    }
-
-    /// Depois do aviso do limite, a folga do agente de onda acaba pelo que
-    /// vier primeiro. Por chamadas: a oitava passa e a nona é recusada, com o
-    /// motivo na língua do projeto, o limite e o que ainda passa; o aviso em
-    /// si não gasta a folga. Por tokens: 14.999 a mais que o tamanho do aviso
-    /// passam, e 15.000 a mais recusam, com poucas chamadas gastas. Antes do
-    /// aviso nada é recusado. Nos dois idiomas.
+    /// Depois da ordem de entregar, só o terminal passa, e só para ler ou
+    /// gravar na spec (`mustard-rt run read` e `run write`, pelo caminho ou
+    /// pelo nome, de dentro da cópia ou não) — ler o item do pedido que
+    /// faltou deixa a entrega passar na conferência de leitura — e para o
+    /// comando de compilar do projeto (com `rtk` na frente, com o programa
+    /// pelo caminho completo, com variáveis na frente ou com a saída ligada a
+    /// um `tail`). Todo o resto é recusado: as outras ferramentas, a suíte, o
+    /// terminal comum. E só vale para o agente de onda que recebeu a ordem:
+    /// quem conduz (mesmo com 450 mil tokens) e o subagente que não é de onda
+    /// nunca recebem a medida nem são recusados.
     #[test]
-    fn a_wave_agent_is_refused_once_the_grace_of_eight_calls_or_fifteen_thousand_tokens_is_spent() {
-        use serde_json::json;
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let dir = open_project_in("x", lang);
-            let root = dir.path();
-            let read = || refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()}));
-            let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
-            assert_eq!(read(), None, "{lang:?}: before the limit nothing is refused");
-            assert!(agent_grows(root, &mut replies, 200_000, lang).is_some(), "{lang:?}: the warning");
-            for call in 1..=8_u64 {
-                assert_eq!(read(), None, "{lang:?}: call {call} is inside the grace");
-                assert_eq!(agent_grows(root, &mut replies, 200_000 + call * 500, lang), None, "{lang:?}: call {call}");
-            }
-            let reason = read().unwrap_or_else(|| panic!("{lang:?}: the ninth call is refused"));
-            let (limit, only) = if lang == Locale::EnUs {
-                ("150 thousand", "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass")
-            } else {
-                ("150 mil", "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`")
-            };
-            assert!(reason.starts_with("[Mustard]") && reason.contains(limit) && reason.contains(only), "{lang:?}: {reason}");
-            assert!(reason.contains("`undone`"), "{lang:?}: the delivery is told: {reason}");
-
-            let dir = open_project_in("x", lang);
-            let root = dir.path();
-            let read = || refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()}));
-            let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
-            assert!(agent_grows(root, &mut replies, 200_000, lang).is_some(), "{lang:?}: the warning");
-            assert_eq!(agent_grows(root, &mut replies, 214_999, lang), None);
-            assert_eq!(read(), None, "{lang:?}: 14,999 tokens after the warning is still inside the grace");
-            assert_eq!(agent_grows(root, &mut replies, 215_000, lang), None);
-            assert!(read().is_some(), "{lang:?}: 15,000 tokens after the warning ends the grace");
-        }
-    }
-
-    /// Passada a folga, só o terminal passa, e só para ler ou gravar na spec
-    /// (`mustard-rt run read` e `run write`, pelo caminho ou pelo nome, de
-    /// dentro da cópia ou não) — ler o item do pedido que faltou deixa a
-    /// entrega passar na conferência de leitura — e para o comando de
-    /// compilar do projeto (com `rtk` na frente, com o programa pelo caminho
-    /// completo, com variáveis na frente ou com a saída ligada a um `tail`).
-    /// Todo o resto é recusado: as outras ferramentas, a suíte, o terminal
-    /// comum. E só vale para o agente de onda que gastou a folga: o que ainda
-    /// não foi avisado, quem conduz (mesmo com 450 mil tokens) e o subagente
-    /// que não é de onda nunca são recusados.
-    #[test]
-    fn after_the_grace_only_the_spec_commands_and_the_build_pass_and_only_for_that_wave_agent() {
+    fn after_the_order_to_deliver_only_the_spec_commands_and_the_build_pass_and_only_for_that_wave_agent() {
         use serde_json::json;
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
-        let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
-        assert!(agent_grows(root, &mut replies, 400_000, Locale::PtBr).is_some(), "the warning");
-        assert_eq!(agent_grows(root, &mut replies, 700_000, Locale::PtBr), None, "the grace is far gone");
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
+        assert!(order.contains("Entregue agora"), "the order to deliver: {order}");
 
         let bash = |command: &str| refused(root, "Bash", json!({"command": command}));
         for command in [
@@ -1034,7 +1025,7 @@ mod tests {
             "PATH=\"$HOME/.cargo/bin:$PATH\" cargo build",
             "cd /copy && CARGO_TARGET_DIR=/t rtk cargo build",
         ] {
-            assert_eq!(bash(command), None, "{command} passes after the grace");
+            assert_eq!(bash(command), None, "{command} passes after the order");
         }
         for command in [
             "cargo test --locked -p mustard-rt",
@@ -1046,7 +1037,7 @@ mod tests {
             "echo mustard-rt run write",
             "cd /copy",
         ] {
-            let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the grace"));
+            let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the order"));
             assert!(reason.starts_with("[Mustard]"), "{command}: {reason}");
         }
         let file = root.join("a.rs").to_string_lossy().into_owned();
@@ -1057,18 +1048,11 @@ mod tests {
             ("Glob", json!({"pattern": "*.rs"})),
             ("Agent", json!({"description": "d", "prompt": "p"})),
         ] {
-            assert!(refused(root, tool, input).is_some(), "{tool} is refused after the grace");
+            assert!(refused(root, tool, input).is_some(), "{tool} is refused after the order");
         }
 
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
-        let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
-        for call in 1..=12_u64 {
-            assert_eq!(agent_grows(root, &mut replies, 90_000 + call * 4_000, Locale::PtBr), None);
-            let read = refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()}));
-            assert_eq!(read, None, "a wave agent under the limit is not refused ({call})");
-        }
-
         let transcript = root.join("t.jsonl");
         conductor_transcript_of(&transcript, 450_000);
         let conductor = HookInput { hook_event_name: Some("PreToolUse".to_string()), ..conductor_call(root, &transcript) };
@@ -1077,26 +1061,24 @@ mod tests {
 
         let replies: Vec<String> = (1..=12).map(|n| agent_reply(100_000 + n * 20_000, Some("edit"))).collect();
         write_agent(root, "Explore o repositório e conte os arquivos.", &replies);
-        for _ in 0..12 {
-            assert_eq!(injected(&agent_after_tool(root)), None, "another kind of agent is not warned");
-        }
+        assert_eq!(injected(&finishing(agent_after_tool(root))), None, "another kind of agent gets no reading");
         assert_eq!(refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()})), None);
     }
 
-    /// Passada a folga, o comando que passa sozinho é recusado quando outro
-    /// vem na mesma linha: encadeado depois dele (`&&`, `||`, `;`, nova
-    /// linha), recebendo a saída dele por `|` (fora o `tail` ou `head` sem
-    /// arquivo depois de compilar) ou escondido numa palavra (`$(…)`, crase),
-    /// inclusive na pasta de um `cd`. O mesmo texto dentro de aspas simples,
-    /// como no `--json` de uma gravação, é só texto.
+    /// Depois da ordem de entregar, o comando que passa sozinho é recusado
+    /// quando outro vem na mesma linha: encadeado depois dele (`&&`, `||`,
+    /// `;`, nova linha), recebendo a saída dele por `|` (fora o `tail` ou
+    /// `head` sem arquivo depois de compilar) ou escondido numa palavra
+    /// (`$(…)`, crase), inclusive na pasta de um `cd`. O mesmo texto dentro de
+    /// aspas simples, como no `--json` de uma gravação, é só texto.
     #[test]
-    fn after_the_grace_another_command_on_the_same_line_is_refused() {
+    fn after_the_order_to_deliver_another_command_on_the_same_line_is_refused() {
         use serde_json::json;
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
-        let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
-        assert!(agent_grows(root, &mut replies, 400_000, Locale::PtBr).is_some(), "the warning");
-        assert_eq!(agent_grows(root, &mut replies, 700_000, Locale::PtBr), None, "the grace is far gone");
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
+        assert!(order.contains("Entregue agora"), "the order to deliver: {order}");
 
         let bash = |command: &str| refused(root, "Bash", json!({"command": command}));
         assert_eq!(bash("mustard-rt run write step --json '{\"text\":\"a && b; c | d $(e) `f`\"}'"), None);
@@ -1118,36 +1100,40 @@ mod tests {
             "cargo build | xargs cargo test",
             "cargo build 2>&1 | tail -20 src/a.rs",
         ] {
-            let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the grace"));
+            let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the order"));
             assert!(reason.starts_with("[Mustard]"), "{command}: {reason}");
         }
     }
 
-    /// O aviso do limite fica calado onde não é de uma onda: na sessão
-    /// principal, que só tem o aviso de quem conduz (e abaixo do degrau dele,
-    /// nada), num subagente cujo primeiro texto não é o título de um pedido de
-    /// onda — por maior que a conversa dele esteja, também quando um `/clear`
-    /// de quem conduz a repartiu em dois pedaços —, e num pedido de onda no
-    /// idioma que o projeto não usa.
+    /// A medida do fim de tarefa fica calada onde não é de uma onda: na
+    /// sessão principal, que só tem o aviso de quem conduz (e abaixo do degrau
+    /// dele, nada), num subagente cujo primeiro texto não é o título de um
+    /// pedido de onda — por maior que a conversa dele esteja, também quando
+    /// um `/clear` de quem conduz a repartiu em dois pedaços —, e num pedido
+    /// de onda no idioma que o projeto não usa.
     #[test]
-    fn the_limit_notice_is_quiet_outside_a_wave() {
+    fn the_task_end_reading_is_quiet_outside_a_wave() {
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
         let replies = vec![agent_reply(40_000, Some("edit")), agent_reply(300_000, Some("edit"))];
 
         write_agent(root, &wave_request(Locale::PtBr), &replies);
-        let main = conductor_after_tool(root, &root.join("t.jsonl"));
+        let main = finishing(conductor_after_tool(root, &root.join("t.jsonl")));
         conductor_transcript_of(&root.join("t.jsonl"), 150_000);
         assert_eq!(injected(&main), None, "the main session is not a wave agent");
 
         for opening in ["Explore o repositório e conte os arquivos.", "# x — wave 1\n\nThe request.", "olá\n# x — onda 1"] {
             write_agent(root, opening, &replies);
-            assert_eq!(injected(&agent_after_tool(root)), None, "{opening:?} is not a wave request");
+            assert_eq!(injected(&finishing(agent_after_tool(root))), None, "{opening:?} is not a wave request");
         }
         write_agent(root, "Explore o repositório e conte os arquivos.", &replies);
-        assert_eq!(injected(&agent_after_clear(root, &[200_000, 300_000])), None, "a plain agent split by a clear is not warned");
+        assert_eq!(
+            injected(&finishing(agent_after_clear(root, &[200_000, 300_000]))),
+            None,
+            "a plain agent split by a clear gets no reading"
+        );
         write_agent(root, &wave_request(Locale::PtBr), &replies);
-        assert!(injected(&agent_after_tool(root)).is_some(), "the same conversation, opened by a wave request, warns");
+        assert!(injected(&finishing(agent_after_tool(root))).is_some(), "the same conversation, opened by a wave request, reads");
     }
 
     /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
