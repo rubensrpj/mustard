@@ -1188,6 +1188,58 @@ mod tests {
         }
     }
 
+    /// O despacho de `prompt` ao agente `agent`, como o Claude Code o manda,
+    /// pelo gancho do despacho.
+    fn hook_dispatch(root: &Path, agent: &str, prompt: &str) -> mustard_core::domain::model::contract::Verdict {
+        use crate::hooks::task::subagent_inject::SubagentInject;
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("Agent".to_string()),
+            tool_input: json!({ "prompt": prompt, "subagent_type": agent, "description": "onda" }),
+            ..HookInput::default()
+        };
+        let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
+        ctx.config = mustard_core::ProjectConfig::load(root);
+        SubagentInject.evaluate(&input, &ctx).expect("never errors")
+    }
+
+    /// O despacho da onda em andamento que traz, além do título e do comando
+    /// de leitura que a rodada devolveu, um aviso do condutor sai só com o
+    /// título e o comando, com o recado ao condutor de que o texto a mais
+    /// saiu; o título segue na primeira linha. O despacho que já é esse texto
+    /// passa como veio. O título da onda que ainda espera a outra é barrado.
+    #[test]
+    fn a_wave_dispatch_goes_out_with_only_the_title_and_the_read_command() {
+        use mustard_core::domain::model::contract::Verdict;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let read = out["dispatch"][0]["read"].as_str().unwrap_or_default().to_string();
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let exact = format!("{title}\n\n{read}");
+
+        let extra = format!("{exact}\n\nAviso do condutor: rode a suíte inteira antes de entregar.");
+        match hook_dispatch(root, "mustard-wave", &extra) {
+            Verdict::Rewrite { tool_input, note } => {
+                assert_eq!(tool_input["prompt"], json!(exact), "só o título e o comando");
+                assert_eq!(tool_input["subagent_type"], json!("mustard-wave"));
+                assert_eq!(tool_input["description"], json!("onda"));
+                let said = translate("subagent.dispatch_replaced", Locale::PtBr).replace("{wave}", "1");
+                assert_eq!(note, Some(said));
+            }
+            other => panic!("the dispatch is rewritten, got {other:?}"),
+        }
+        assert_eq!(hook_dispatch(root, "mustard-wave", &exact), Verdict::Allow);
+        assert_eq!(hook_dispatch(root, "mustard-wave", &format!("{exact}\n")), Verdict::Allow);
+
+        let waiting = mustard_core::domain::wave_prompt::wave_title("x", 2, Locale::PtBr);
+        let refused = translate("subagent.wave_not_running", Locale::PtBr).replace("{spec}", "x").replace("{wave}", "2");
+        assert_eq!(hook_dispatch(root, "mustard-wave", &format!("{waiting}\n\n{read}")), Verdict::Deny { reason: refused });
+    }
+
     /// A onda que pede novo plano e espera o clique já voltou: nem a página
     /// nem o pedido das outras ondas a mostram em andamento. Na página, ela
     /// não está em andamento, e a onda que saiu junto está; o pedido da onda

@@ -81,8 +81,9 @@ const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdi
 /// glossário do mapa.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
 
-/// As ferramentas que despacham um subagente.
-const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
+/// As ferramentas que despacham um subagente, e a que manda mais uma
+/// mensagem a um subagente já aberto.
+const AGENT_TOOLS: &[&str] = &["Task", "Agent", "SendMessage"];
 
 /// Os ganchos registrados.
 pub struct Registry {
@@ -115,7 +116,9 @@ impl Registry {
                 observer: None,
             },
             // O pedido do subagente, no despacho de um agente: troca o bilhete
-            // da onda pelo pedido montado, ou barra com o motivo.
+            // da onda pelo pedido montado, o despacho da onda e a mensagem de
+            // conserto ao agente dela pelo texto da rodada, ou barra com o
+            // motivo.
             Module {
                 id: "subagent_inject",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(AGENT_TOOLS))],
@@ -338,9 +341,9 @@ mod tests {
         assert!(module.check.is_some() && module.observer.is_none());
     }
 
-    /// O pedido do subagente roda no despacho de um agente, com o aviso de
-    /// tamanho depois dele, e o início e o fim de subagente não têm gancho
-    /// nenhum.
+    /// O pedido do subagente roda no despacho de um agente e na mensagem a
+    /// um agente já aberto, com o aviso de tamanho depois dele, e o início e
+    /// o fim de subagente não têm gancho nenhum.
     #[test]
     fn the_agent_dispatch_runs_only_the_subagent_inject() {
         let registry = Registry::new();
@@ -348,6 +351,7 @@ mod tests {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject", "size_notice"], "{tool}");
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "size_notice"], "{tool}");
         }
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("SendMessage")), ["subagent_inject", "size_notice"]);
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
         assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")), ["size_notice"]);

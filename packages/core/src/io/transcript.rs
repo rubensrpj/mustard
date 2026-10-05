@@ -376,6 +376,21 @@ pub fn agent_pieces(file: &Path) -> Vec<PathBuf> {
     pieces.into_iter().map(|(_, path)| path).collect()
 }
 
+/// O título da primeira mensagem do agente `agent`, despachado na sessão cuja
+/// conversa é `transcript`: a conversa dele é
+/// `<transcript sem .jsonl>/subagents/agent-<agent>.jsonl`, e a primeira
+/// mensagem mora no pedaço mais antigo ([`agent_pieces`]). Nada quando o nome
+/// do agente sairia da pasta ou a conversa dele não existe.
+#[must_use]
+pub fn agent_heading(transcript: &Path, agent: &str) -> Option<String> {
+    let name = format!("agent-{agent}.jsonl");
+    if agent.is_empty() || Path::new(&name).file_name() != Some(std::ffi::OsStr::new(&name)) {
+        return None;
+    }
+    let file = transcript.with_extension("").join("subagents").join(name);
+    agent_pieces(&file).first().and_then(|piece| opening(piece)).map(|(heading, _)| heading)
+}
+
 /// O primeiro carimbo do arquivo em `path`. Lê só até achá-lo: ele vem na
 /// primeira linha da plataforma.
 fn first_stamp(path: &Path) -> Option<DateTime<Utc>> {

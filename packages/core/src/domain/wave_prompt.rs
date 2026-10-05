@@ -81,22 +81,24 @@ pub fn wave_title(spec: &str, wave: u64, lang: Locale) -> String {
 }
 
 /// Se `heading` é o título do pedido de uma onda — de qualquer spec e de
-/// qualquer onda —, no idioma do texto: o que [`wave_title`] monta, lido pelo
-/// mesmo molde da tradução, com a spec sem espaço e o número maior que zero.
+/// qualquer onda —, no idioma do texto ([`wave_of_title`]).
 #[must_use]
 pub fn is_wave_title(heading: &str, lang: Locale) -> bool {
+    wave_of_title(heading, lang).is_some()
+}
+
+/// A spec e o número da onda cujo pedido abre com `heading`, no idioma do
+/// texto: o que [`wave_title`] monta, lido pelo mesmo molde da tradução, com
+/// a spec sem espaço e o número maior que zero. Nada para outro título.
+#[must_use]
+pub fn wave_of_title(heading: &str, lang: Locale) -> Option<(String, u64)> {
     let template = translate("prompt.title", lang);
-    let Some((before, rest)) = template.split_once("{spec}") else { return false };
-    let Some((between, after)) = rest.split_once("{n}") else { return false };
-    let Some(inner) = heading.strip_prefix("# ").and_then(|text| text.strip_prefix(before)).and_then(|text| text.strip_suffix(after)) else {
-        return false;
-    };
-    inner.rsplit_once(between).is_some_and(|(spec, wave)| {
-        !spec.is_empty()
-            && !spec.contains(char::is_whitespace)
-            && wave.bytes().all(|byte| byte.is_ascii_digit())
-            && wave.parse::<u64>().is_ok_and(|wave| wave > 0)
-    })
+    let (before, rest) = template.split_once("{spec}")?;
+    let (between, after) = rest.split_once("{n}")?;
+    let inner = heading.strip_prefix("# ")?.strip_prefix(before)?.strip_suffix(after)?;
+    let (spec, wave) = inner.rsplit_once(between)?;
+    let wave = wave.bytes().all(|byte| byte.is_ascii_digit()).then(|| wave.parse::<u64>().ok()).flatten()?;
+    (!spec.is_empty() && !spec.contains(char::is_whitespace) && wave > 0).then(|| (spec.to_string(), wave))
 }
 
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
@@ -3198,8 +3200,8 @@ mod tests {
 
     /// O título que o pedido da onda leva na primeira linha é o que
     /// `wave_title` monta, e `is_wave_title` o reconhece nos dois idiomas, de
-    /// qualquer spec e de qualquer onda; o que não tem o molde do título não é
-    /// o título de uma onda.
+    /// qualquer spec e de qualquer onda, devolvendo a spec e o número dela; o
+    /// que não tem o molde do título não é o título de uma onda.
     #[test]
     fn the_title_of_a_wave_request_is_recognized_by_the_same_template_that_builds_it() {
         let log = log(&[("wave", json!({"n": 3, "text": "Onda", "criteria": [], "done_when": "a suíte passa"}))]);
@@ -3208,7 +3210,7 @@ mod tests {
             let first = request.lines().next().unwrap_or_default();
             assert_eq!(first, wave_title("teste", 3, lang), "the request opens with the title");
             assert!(is_wave_title(first, lang), "{first}");
-            assert!(is_wave_title(&wave_title("minha-obra", 128, lang), lang));
+            assert_eq!(wave_of_title(&wave_title("minha-obra", 128, lang), lang), Some(("minha-obra".to_string(), 128)));
         }
         assert_eq!(wave_title("x", 7, Locale::PtBr), "# x — onda 7");
         assert_eq!(wave_title("x", 7, Locale::EnUs), "# x — wave 7");

@@ -306,6 +306,69 @@ pub(super) mod tests {
         let hint = last["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("regra controller importa service, seguida em 24 de 25 importações"), "{hint}");
         assert!(hint.contains(&format!("`{SERVICE}` linha 1 importa `{CONTROLLER}`")), "{hint}");
+        // A onda no limite vai ao usuário: nenhum trecho fica para o agente.
+        let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let fix = crate::commands::flow::round::fix_file(root, "x", &log, 1).expect("the last return");
+        assert!(!fix.exists(), "{}", fix.display());
+    }
+
+    /// A mensagem com que o condutor manda `message` ao agente `to`, na
+    /// sessão cuja conversa é `transcript`, pelo gancho do despacho.
+    fn hook_message(root: &Path, transcript: &Path, to: &str, message: &str) -> mustard_core::domain::model::contract::Verdict {
+        use crate::hooks::task::subagent_inject::SubagentInject;
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("SendMessage".to_string()),
+            tool_input: json!({ "to": to, "summary": "conserto", "message": message }),
+            raw: json!({ "transcript_path": transcript.to_string_lossy() }),
+            ..HookInput::default()
+        };
+        let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
+        ctx.config = mustard_core::ProjectConfig::load(root);
+        SubagentInject.evaluate(&input, &ctx).expect("never errors")
+    }
+
+    /// Depois de a conferência depois da onda recusar a volta, a mensagem do
+    /// condutor ao agente da onda — achado pelo título da primeira mensagem
+    /// da conversa dele — sai só com o trecho que a rodada devolveu para a
+    /// onda, com o recado ao condutor; a mensagem que já é o trecho passa como
+    /// veio, e a mensagem a outro agente também. Quando a onda grava a entrega
+    /// de novo, o trecho da volta velha não volta ao agente.
+    #[test]
+    fn a_fix_message_to_a_wave_agent_carries_only_what_the_round_returned() {
+        use mustard_core::domain::model::contract::Verdict;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let out = back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        let section = &hint[hint.find("Onda 1, rodada de conserto 1 de 2:").unwrap_or_else(|| panic!("{hint}"))..];
+
+        let sessions = tempdir().unwrap();
+        let transcript = sessions.path().join("-obra").join("sessao.jsonl");
+        let agents = sessions.path().join("-obra").join("sessao").join("subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        for (agent, first) in [("onda1", format!("{}\n\nmustard-rt run read request-1", mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr))), ("outro", "Investigue o gancho.".to_string())] {
+            let line = json!({"type": "user", "timestamp": "2026-01-10T21:54:28.200Z", "message": {"role": "user", "content": first}});
+            std::fs::write(agents.join(format!("agent-{agent}.jsonl")), line.to_string()).unwrap();
+        }
+
+        let asked = "Conserte a importação e rode a suíte inteira antes, por favor.";
+        match hook_message(root, &transcript, "onda1", asked) {
+            Verdict::Rewrite { tool_input, note } => {
+                assert_eq!(tool_input["message"], json!(section), "só o trecho da onda");
+                assert_eq!((tool_input["to"].clone(), tool_input["summary"].clone()), (json!("onda1"), json!("conserto")));
+                assert_eq!(note, Some(translate("subagent.fix_replaced", Locale::PtBr).replace("{wave}", "1")));
+            }
+            other => panic!("the message is rewritten, got {other:?}"),
+        }
+        assert_eq!(hook_message(root, &transcript, "onda1", section), Verdict::Allow);
+        assert_eq!(hook_message(root, &transcript, "outro", asked), Verdict::Allow);
+
+        let _ = delivered(root, 1, "Consertei.", &[SERVICE]);
+        assert_eq!(hook_message(root, &transcript, "onda1", asked), Verdict::Allow, "the old section never goes back");
     }
 
     #[test]

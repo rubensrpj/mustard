@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_message, wave_files, WaveCopy};
+use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_message, wave_files, wave_title, WaveCopy};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -120,8 +120,9 @@ pub(crate) enum RoundRefusal {
     TokenCap { wave: u64, tokens: u64 },
     /// A conferência depois da onda achou o que consertar: nada foi comitado.
     /// Com `question`, uma onda já passou por todas as rodadas de conserto, e
-    /// a pergunta vai ao usuário.
-    AfterWave { text: String, question: Option<String> },
+    /// a pergunta vai ao usuário. `fixes` leva, de cada onda recusada, o
+    /// trecho de `text` que é dela: é o que volta ao agente da onda.
+    AfterWave { text: String, question: Option<String>, fixes: Vec<(u64, String)> },
 }
 
 impl RoundRefusal {
@@ -1047,6 +1048,37 @@ pub(super) fn run_entered_round(
 /// caminho do repositório principal, onde a spec mora.
 fn request_command(root: &Path, spec: &str, wave: u64) -> String {
     read_command(root, spec, &format!("request-{wave}"))
+}
+
+/// O texto com que o condutor despacha a onda `wave`: o título do pedido
+/// dela, na primeira linha, e o comando que o lê, o mesmo de
+/// `dispatch[].read`. O gancho do despacho troca por ele o texto que o
+/// condutor escreveu.
+pub(crate) fn wave_dispatch(root: &Path, spec: &str, wave: u64, lang: Locale) -> String {
+    format!("{}\n\n{}", wave_title(spec, wave, lang), request_command(root, spec, wave))
+}
+
+/// O arquivo com o trecho que a conferência depois da onda devolveu para a
+/// onda `wave`, gravado pela volta que ela recusou: a última entrega da onda
+/// que nenhuma rodada assumiu. A entrega nova muda o arquivo, e o trecho de
+/// uma volta velha nunca chega ao agente. Nada sem volta pendente da onda.
+pub(crate) fn fix_file(root: &Path, spec: &str, log: &SpecLog, wave: u64) -> Option<PathBuf> {
+    let back = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered" && e.wave() == Some(wave)).map(|e| e.id).max()?;
+    let dir = store::spec_file(root, spec).ok()?.parent()?.join(".dispatch");
+    Some(dir.join(format!("fix-{wave}-{back}.md")))
+}
+
+/// Grava, para cada onda que a conferência depois da onda recusou, o trecho
+/// dela no arquivo da volta recusada ([`fix_file`]), onde o gancho da
+/// mensagem ao agente da onda o lê. Outra recusa não grava nada; a falha de
+/// gravação deixa a mensagem do condutor passar como veio.
+pub(super) fn keep_fixes(root: &Path, spec: &str, log: &SpecLog, refused: &RoundRefusal) {
+    let RoundRefusal::AfterWave { fixes, .. } = refused else { return };
+    for (wave, section) in fixes {
+        let Some(file) = fix_file(root, spec, log, *wave) else { continue };
+        let _ = file.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(&file, section);
+    }
 }
 
 /// O comando `read` de uma leitura da spec (`block`), com o caminho do

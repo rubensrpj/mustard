@@ -919,19 +919,27 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
         (false, false) => "round.after_wave.limit",
     };
     let mut text = fill(head, 0);
+    // O trecho de cada onda recusada que volta ao agente também vai à parte:
+    // é ele, e só ele, que o agente recebe na rodada de conserto. A onda que
+    // já passou por todas vai ao usuário, e não ao agente.
+    let mut fixes: Vec<(u64, String)> = Vec::new();
     let listed: BTreeSet<u64> = found.iter().map(|f| f.wave).collect();
     for wave in listed {
         let key = if refusing.contains(&wave) { "round.after_wave.wave" } else { "round.after_wave.wave_warnings" };
-        text.push_str("\n\n");
-        text.push_str(&fill(key, wave));
+        let mut section = fill(key, wave);
         let lines = found.iter().filter(|f| f.wave == wave);
-        text.extend(lines.clone().filter(|f| f.refuses).chain(lines.filter(|f| !f.refuses)).map(|f| format!("\n- {}", f.text)));
+        section.extend(lines.clone().filter(|f| f.refuses).chain(lines.filter(|f| !f.refuses)).map(|f| format!("\n- {}", f.text)));
+        text.push_str("\n\n");
+        text.push_str(&section);
+        if refusing.contains(&wave) && done(wave) < max {
+            fixes.push((wave, section));
+        }
     }
     if refusing.is_empty() {
         return Ok(vec![json!({ "reason": "round-after-wave-warnings", "hint": text })]);
     }
     let question = (!stuck.is_empty()).then(|| fill("round.after_wave.question", 0));
-    Err(RoundRefusal::AfterWave { text, question })
+    Err(RoundRefusal::AfterWave { text, question, fixes })
 }
 
 /// A prova de cada critério que as ondas de `waves` cobrem roda, uma de cada

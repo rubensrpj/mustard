@@ -12,6 +12,20 @@
 //! lê, o despacho é barrado, e o motivo diz o que falta. O gancho
 //! nunca manda o agente ler um arquivo no lugar do pedido.
 //!
+//! Quem instrui a onda é o Mustard, e não o condutor. O despacho a um agente
+//! do Mustard que abre com o título do pedido de uma onda sai só com o que a
+//! rodada monta para ela: o título e o comando que lê o pedido. O texto a
+//! mais que o condutor escreveu sai, e o recado ao condutor diz isso; o
+//! despacho que já é esse texto passa como veio, e o título de uma onda que a
+//! spec não tem em andamento é barrado com o motivo. O título segue na
+//! primeira linha: é por ele que a rodada acha a conversa do agente e soma o
+//! gasto da onda. A mensagem do condutor a um agente de onda já aberto
+//! (`SendMessage`), depois de a conferência depois da onda recusar a volta
+//! dele, sai só com o trecho que a rodada devolveu para aquela onda; o agente
+//! de destino é reconhecido pelo título da primeira mensagem da conversa
+//! dele. A mensagem a outro agente, ou sem trecho gravado para a volta da
+//! onda, passa como veio.
+//!
 //! Um despacho sem bilhete a um agente do Mustard (`mustard-wave` ou
 //! `mustard-review`), num projeto com `mustard.json`, ganha no topo a linha
 //! dos dois idiomas do projeto, lida da configuração: é assim que os
@@ -21,12 +35,8 @@
 //! escreve — a revisão do levantamento e a do pull request — ganha no fim as
 //! regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
 //! mexe, porque o revisor é instalado sem eles; o que manda ler o pedido da
-//! revisão final não ganha, porque esse pedido já as traz. O despacho de uma
-//! onda também: ele abre com o título do pedido dela, e é por esse título,
-//! na primeira linha da conversa do agente,
-//! que a rodada acha o agente e soma o gasto da onda; a linha na frente o
-//! empurraria para baixo, e o pedido que o agente lê pelo comando do despacho
-//! já traz a linha dos idiomas. Qualquer outro despacho sem bilhete é uma tarefa
+//! revisão final não ganha, porque esse pedido já as traz. Qualquer outro
+//! despacho sem bilhete é uma tarefa
 //! qualquer e também passa como veio: o gancho não escolhe skill, não injeta
 //! memória e não avalia a volta do agente. O pedido ao agente de exploração
 //! do Claude Code sobe com a resposta curta do mapa no topo só quando a busca
@@ -35,11 +45,11 @@
 use std::path::Path;
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::spec_events::Refusal;
+use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::spec_state::{SpecState as _, State};
-use mustard_core::domain::wave_prompt::{carries_project_rules, is_wave_title, language_line, project_rules_section};
+use mustard_core::domain::wave_prompt::{carries_project_rules, language_line, project_rules_section, wave_of_title};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::transcript::heading_of;
+use mustard_core::io::transcript::{agent_heading, heading_of};
 use mustard_core::io::wave_prompt::{project_rules, prompts, touched_files, Flight};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
@@ -52,6 +62,10 @@ use crate::shared::word_search;
 
 /// O começo da linha do bilhete: depois dele vêm a spec e o número da onda.
 pub const TICKET: &str = "MUSTARD-WAVE:";
+
+/// A ferramenta com que o condutor manda mais uma mensagem a um agente já
+/// aberto: `to` é o agente, `message` o texto.
+const SEND_MESSAGE: &str = "SendMessage";
 
 /// O pedido do subagente, no despacho de um agente.
 pub struct SubagentInject;
@@ -86,11 +100,7 @@ fn ticket_of(prompt: &str) -> Ticket {
 fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
     let project = crate::commands::spec_events::project(start);
     let lang = project.lang;
-    let refused = |refusal: Refusal| refusal.message(lang);
-    let path = store::spec_file(&project.root, spec).map_err(refused)?;
-    let log = store::read(&path)
-        .map_err(refused)?
-        .ok_or_else(|| refused(Refusal::NoSpecFile { spec: spec.to_string() }))?;
+    let log = spec_log(&project.root, spec, lang)?;
     let phase = State::from_log(&log).phase.unwrap_or("survey");
     if !crate::commands::flow::round::can_run(phase) {
         return Err(say("subagent.not_approved", lang, &[("{spec}", spec), ("{phase}", phase)]));
@@ -105,6 +115,67 @@ fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
         .find(|built| built.wave == wave)
         .ok_or_else(|| say("subagent.no_wave", lang, &[("{spec}", spec), ("{wave}", &wanted)]))?;
     Ok(prompt.text)
+}
+
+/// Os eventos da spec `spec` do projeto em `root`, ou o motivo de não os ter:
+/// o nome que não é de spec e a spec sem arquivo de eventos.
+fn spec_log(root: &Path, spec: &str, lang: Locale) -> Result<SpecLog, String> {
+    let refused = |refusal: Refusal| refusal.message(lang);
+    let path = store::spec_file(root, spec).map_err(refused)?;
+    store::read(&path).map_err(refused)?.ok_or_else(|| refused(Refusal::NoSpecFile { spec: spec.to_string() }))
+}
+
+/// O despacho da onda `wave` da spec `spec` com o texto que a rodada monta
+/// para ela ([`crate::commands::flow::round::wave_dispatch`]) no lugar do que
+/// o condutor escreveu, ou barrado quando a spec não tem essa onda em
+/// andamento.
+fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64) -> Verdict {
+    let project = crate::commands::spec_events::project(start);
+    let lang = project.lang;
+    let log = match spec_log(&project.root, spec, lang) {
+        Ok(log) => log,
+        Err(reason) => return Verdict::Deny { reason },
+    };
+    if !crate::commands::flow::round::waves_in_progress(&log).contains_key(&wave) {
+        let reason = say("subagent.wave_not_running", lang, &[("{spec}", spec), ("{wave}", &wave.to_string())]);
+        return Verdict::Deny { reason };
+    }
+    let text = crate::commands::flow::round::wave_dispatch(&project.root, spec, wave, lang);
+    replaced(input, "prompt", text, "subagent.dispatch_replaced", wave, lang)
+}
+
+/// A mensagem do condutor a um agente já aberto. Quando o destino é o agente
+/// de uma onda — a primeira mensagem da conversa dele abre com o título do
+/// pedido da onda — e a rodada gravou o trecho da conferência depois da onda
+/// para a volta dele ([`crate::commands::flow::round::fix_file`]), a mensagem
+/// sai só com esse trecho. O resto passa como veio.
+fn fix_message(input: &HookInput, ctx: &Ctx) -> Verdict {
+    let root = ctx.project_dir_or_cwd(input);
+    let project = crate::commands::spec_events::project(Path::new(&root));
+    let lang = project.lang;
+    let agent = input.tool_input.get("to").and_then(Value::as_str).unwrap_or_default();
+    let destination = input.transcript_path().and_then(|transcript| agent_heading(Path::new(transcript), agent));
+    let Some((spec, wave)) = destination.and_then(|heading| wave_of_title(&heading, lang)) else {
+        return Verdict::Allow;
+    };
+    let fix = spec_log(&project.root, &spec, lang)
+        .ok()
+        .and_then(|log| crate::commands::flow::round::fix_file(&project.root, &spec, &log, wave))
+        .and_then(|file| std::fs::read_to_string(file).ok());
+    match fix {
+        Some(text) => replaced(input, "message", text, "subagent.fix_replaced", wave, lang),
+        None => Verdict::Allow,
+    }
+}
+
+/// O campo `field` da ferramenta trocado por `text`, com o recado `note` da
+/// onda `wave` ao condutor; o que já é `text` passa como veio.
+fn replaced(input: &HookInput, field: &str, text: String, note: &str, wave: u64, lang: Locale) -> Verdict {
+    let sent = input.tool_input.get(field).and_then(Value::as_str).unwrap_or_default();
+    if sent.trim_end() == text.trim_end() {
+        return Verdict::Allow;
+    }
+    with_field(input, field, text, Some(say(note, lang, &[("{wave}", &wave.to_string())])))
 }
 
 /// O texto da tarefa, no `tool_input.prompt`.
@@ -126,11 +197,17 @@ fn to_mustard_agent(input: &HookInput) -> bool {
 /// O despacho com `text` no lugar do texto da tarefa e os outros campos como
 /// vieram.
 fn with_prompt(input: &HookInput, text: String) -> Verdict {
+    with_field(input, "prompt", text, None)
+}
+
+/// A ferramenta com `text` no campo `field`, os outros campos como vieram e
+/// o recado `note` a quem a chamou.
+fn with_field(input: &HookInput, field: &str, text: String, note: Option<String>) -> Verdict {
     let mut tool_input = input.tool_input.clone();
     match tool_input.as_object_mut() {
         Some(fields) => {
-            fields.insert("prompt".to_string(), Value::String(text));
-            Verdict::Rewrite { tool_input, note: None }
+            fields.insert(field.to_string(), Value::String(text));
+            Verdict::Rewrite { tool_input, note }
         }
         None => Verdict::Allow,
     }
@@ -157,10 +234,11 @@ fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
 }
 
 /// O despacho sem bilhete: a um agente do Mustard, num projeto com
-/// `mustard.json`, o texto ganha no topo a linha dos idiomas, salvo quando já
-/// a traz ou quando é o despacho de uma onda, que abre com o título do pedido
-/// dela e nada pode vir antes. O despacho ao revisor ganha também, no fim, as
-/// regras do projeto ([`review_rules`]). O resto passa como veio.
+/// `mustard.json`, o despacho de uma onda, que abre com o título do pedido
+/// dela, sai com o texto que a rodada monta ([`wave_dispatch`]); qualquer
+/// outro ganha no topo a linha dos idiomas, salvo quando já a traz. O
+/// despacho ao revisor ganha também, no fim, as regras do projeto
+/// ([`review_rules`]). O resto passa como veio.
 fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
     if !to_mustard_agent(input) || !ProjectConfig::exists(Path::new(&root)) {
@@ -168,8 +246,8 @@ fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
     }
     let language = ctx.config.language();
     let prompt = dispatch_prompt(input);
-    if is_wave_title(heading_of(prompt), language.text_or_default()) {
-        return Verdict::Allow;
+    if let Some((spec, wave)) = wave_of_title(heading_of(prompt), language.text_or_default()) {
+        return wave_dispatch(input, Path::new(&root), &spec, wave);
     }
     let line = language_line(&language);
     let mut text = if prompt.contains(&line) { prompt.to_string() } else { format!("{line}\n\n{prompt}") };
@@ -204,6 +282,9 @@ impl Check for SubagentInject {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
+        }
+        if input.tool_name.as_deref() == Some(SEND_MESSAGE) {
+            return Ok(fix_message(input, ctx));
         }
         let (spec, wave) = match ticket_of(dispatch_prompt(input)) {
             Ticket::Absent if to_explore_agent(input) => return Ok(explore(input, ctx)),
@@ -426,9 +507,9 @@ mod tests {
     /// Num projeto que declara o código em português, o despacho sem bilhete
     /// a um agente do Mustard abre com a linha dos dois idiomas lida da
     /// configuração, e o resto do texto segue como veio. O texto que já traz
-    /// a linha, como o pedido da rodada, passa sem repeti-la; o despacho sem
-    /// bilhete a outro agente passa como veio; e o bilhete da onda vira o
-    /// pedido, que traz a linha uma vez.
+    /// a linha passa sem repeti-la; o despacho sem bilhete a outro agente
+    /// passa como veio; e o bilhete da onda vira o pedido, que traz a linha
+    /// uma vez.
     #[test]
     fn a_mustard_agent_dispatch_opens_with_the_project_languages() {
         let dir = tempdir().unwrap();
@@ -441,9 +522,9 @@ mod tests {
         let fix = rewritten(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."));
         assert_eq!(fix, format!("{line}\n\nConserte o teste da soma."));
 
+        assert_eq!(dispatch_to(root, "mustard-wave", &fix), Verdict::Allow);
         let round = assembled(root);
         assert_eq!(round.matches(&line).count(), 1, "{round}");
-        assert_eq!(dispatch_to(root, "mustard-wave", &round), Verdict::Allow);
 
         assert_eq!(dispatch_to(root, "general-purpose", "Investigue o gancho."), Verdict::Allow);
 
@@ -497,14 +578,13 @@ mod tests {
         assert!(!wave.contains("configuração do git") && !wave.contains("lê o disco") && wave == assembled(root), "{wave}");
     }
 
-    /// O despacho de uma onda — o texto que abre com o título do pedido dela e
-    /// traz o comando que o lê — passa como veio, de qualquer spec e de
-    /// qualquer onda: o pedido gravado já traz a linha dos idiomas, e nada pode
-    /// vir antes do título. O que não abre com o título de uma onda segue
-    /// ganhando a linha: o conserto, o título de outro assunto, o de uma onda
-    /// que não existe e o título que não está na primeira linha.
+    /// O despacho que abre com o título de uma onda que a spec não tem em
+    /// andamento é barrado com o motivo: a onda ainda não saiu, a spec não
+    /// existe. O que não abre com o título de uma onda segue ganhando a linha
+    /// dos idiomas: o conserto, o título de outro assunto, o de uma onda que
+    /// não existe e o título que não está na primeira linha.
     #[test]
-    fn a_wave_dispatch_with_the_title_on_the_first_line_passes_untouched() {
+    fn a_wave_title_that_is_not_in_progress_is_refused_and_other_texts_gain_the_language_line() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         planned(root, 1);
@@ -516,9 +596,16 @@ mod tests {
         let command = "Leia o seu pedido inteiro com o comando abaixo:\n\nmustard-rt run read request-1 --root /r --spec x";
 
         for agent in ["mustard-wave", "mustard-review"] {
-            assert_eq!(dispatch_to(root, agent, &format!("{title}\n\n{command}")), Verdict::Allow, "{agent}");
+            assert_eq!(
+                denied(dispatch_to(root, agent, &format!("{title}\n\n{command}"))),
+                say("subagent.wave_not_running", Locale::PtBr, &[("{spec}", "x"), ("{wave}", "1")]),
+                "{agent}"
+            );
         }
-        assert_eq!(dispatch_to(root, "mustard-wave", &format!("# outra-obra — onda 12  \n\n{command}")), Verdict::Allow);
+        assert_eq!(
+            denied(dispatch_to(root, "mustard-wave", &format!("# outra-obra — onda 12  \n\n{command}"))),
+            Refusal::NoSpecFile { spec: "outra-obra".into() }.message(Locale::PtBr)
+        );
 
         for not_a_wave in [
             format!("Conserte o teste da soma.\n\n{command}"),
@@ -528,42 +615,6 @@ mod tests {
         ] {
             assert_eq!(rewritten(dispatch_to(root, "mustard-wave", &not_a_wave)), format!("{line}\n\n{not_a_wave}"));
         }
-    }
-
-    /// O agente que recebe o despacho de uma onda depois de ele passar pelo
-    /// gancho é achado pelo título do pedido da onda, como a rodada o procura
-    /// para somar o gasto: a conversa dele abre com o título, e a linha dos
-    /// idiomas não vem na frente.
-    #[test]
-    fn the_agent_of_a_wave_dispatch_that_went_through_the_hook_is_found_by_the_title_of_the_request() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        planned(root, 1);
-        approve(root);
-        std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
-        let title = assembled(root).lines().next().unwrap_or_default().to_string();
-        let dispatched = format!("{title}\n\nLeia o seu pedido inteiro com o comando abaixo:\n\nmustard-rt run read request-1 --root /r --spec x");
-
-        // O texto que o agente recebe: o reescrito pelo gancho, ou o que veio.
-        let received = match dispatch_to(root, "mustard-wave", &dispatched) {
-            Verdict::Rewrite { tool_input, .. } => tool_input["prompt"].as_str().unwrap_or_default().to_string(),
-            _ => dispatched.clone(),
-        };
-        let session = dir.path().join("config").join("projects").join("-obra").join("sessao");
-        let agents = session.join("subagents");
-        std::fs::create_dir_all(&agents).unwrap();
-        let first_message = json!({
-            "isSidechain": true, "type": "user", "timestamp": "2026-01-10T21:54:28.200Z",
-            "message": { "role": "user", "content": received }
-        });
-        std::fs::write(agents.join("agent-onda1.jsonl"), first_message.to_string()).unwrap();
-
-        let sent = "2026-01-10T18:54:28-03:00";
-        assert_eq!(
-            mustard_core::io::transcript::wave_agent_file(&session, &title, sent),
-            Some(agents.join("agent-onda1.jsonl")),
-            "the agent opens with the title the round saved: {received}"
-        );
     }
 
     /// O pedido ao agente de exploração ganha no topo a resposta curta do

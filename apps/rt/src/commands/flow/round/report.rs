@@ -20,7 +20,7 @@ use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::answer::RoundRefusal;
+use super::answer::{keep_fixes, RoundRefusal};
 use super::commit::{
     build_development_version, commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
     head, join_copies, make_commit, record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file,
@@ -311,7 +311,13 @@ fn take_returns(
     // de outra volta o disco ao que era e nada é comitado; o que só avisa
     // segue nos avisos.
     let after = message.is_some().then(|| ensure_builds(root).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
-    let (found, sizes) = after.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default();
+    let (found, sizes) = after
+        .transpose()
+        .inspect_err(|refused| {
+            drop(write_joined(root, &joined, false));
+            keep_fixes(root, spec, log, refused);
+        })?
+        .unwrap_or_default();
     warnings.extend(found);
     let message = in_body(message, &sizes);
     // A prova de cada critério que as ondas deste relatório cobrem roda antes

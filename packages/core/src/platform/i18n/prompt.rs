@@ -42,6 +42,33 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("subagent.no_wave", Locale::EnUs) => {
             "[Mustard] The dispatch was blocked: the plan of the spec {spec} has no wave {wave}."
         }
+        ("subagent.wave_not_running", Locale::PtBr) => {
+            "[Mustard] O despacho foi barrado: a onda {wave} da spec {spec} não está em andamento. Só \
+             sai a onda que a rodada soltou."
+        }
+        ("subagent.wave_not_running", Locale::EnUs) => {
+            "[Mustard] The dispatch was blocked: wave {wave} of the spec {spec} is not in progress. \
+             Only a wave the round sent out goes."
+        }
+        // O texto do condutor trocado pelo que o Mustard monta: o recado diz
+        // o que saiu.
+        ("subagent.dispatch_replaced", Locale::PtBr) => {
+            "[Mustard] O despacho da onda {wave} saiu só com o título e o comando de leitura. O texto a \
+             mais foi tirado. O que a onda precisa saber se grava na spec, e o pedido dela já traz."
+        }
+        ("subagent.dispatch_replaced", Locale::EnUs) => {
+            "[Mustard] The dispatch of wave {wave} went out with only the title and the read command. \
+             The extra text was taken out. What the wave needs to know is recorded in the spec, and its \
+             request already carries it."
+        }
+        ("subagent.fix_replaced", Locale::PtBr) => {
+            "[Mustard] A mensagem ao agente da onda {wave} saiu só com o que a rodada devolveu para ela. \
+             O texto a mais foi tirado. O que a onda precisa saber se grava na spec."
+        }
+        ("subagent.fix_replaced", Locale::EnUs) => {
+            "[Mustard] The message to the agent of wave {wave} went out with only what the round sent \
+             back for it. The extra text was taken out. What the wave needs to know is recorded in the spec."
+        }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
@@ -552,8 +579,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            95,
-            0x6839_b7ea_f21d_8588,
+            98,
+            0x25a0_6099_5194_9cbc,
         );
     }
 
