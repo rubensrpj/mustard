@@ -37,8 +37,10 @@ use serde_json::{Map, Value};
 
 use crate::domain::citation::cited_names;
 use crate::domain::lessons;
-use crate::domain::project_map::{importers, ProjectMap};
-use crate::domain::search::{query_terms, SearchIndex, TOP};
+use crate::domain::project_map::importers;
+use crate::io::project_map::{MapReader, Need};
+use crate::domain::normalize::{Languages, Normalizer};
+use crate::domain::search::{shared_words, SearchIndex, TOP};
 use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
 use crate::domain::spec_index::{title_of, IndexLine};
 use crate::domain::spec_state::{original_of, State};
@@ -69,8 +71,8 @@ pub const BLOCKS: &[&str] = &[
 /// Quantos lembretes o levantamento traz no total.
 pub const MAX_REMINDERS: usize = 3;
 
-/// O casamento forte: quantas raízes do objetivo, no mínimo, uma mensagem
-/// antiga ou uma spec anterior precisa ter para entrar. Com uma raiz só,
+/// O casamento forte: quantas palavras do objetivo, no mínimo, uma mensagem
+/// antiga ou uma spec anterior precisa ter para entrar. Com uma palavra só,
 /// qualquer palavra comum ("pasta", "spec") traria lembrete e spec anterior.
 pub const STRONG_ROOTS: usize = 2;
 
@@ -450,16 +452,6 @@ pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
     open.into_iter().map(|p| p.shown()).collect()
 }
 
-/// Os pontos já fechados, pela mesma leitura dos pares ([`points`]): cada um
-/// pelo original ou, se ele saiu, pelo fechamento. Com [`open_points`], são
-/// todos os pontos do levantamento. Em ordem de número.
-#[must_use]
-pub fn closed_points(log: &SpecLog) -> Vec<&SpecEvent> {
-    let mut out: Vec<&SpecEvent> = points(log).into_iter().filter(|p| !p.is_open()).map(|p| p.shown()).collect();
-    out.sort_by_key(|p| p.id);
-    out
-}
-
 /// Os pontos como uma recusa os lista: o código, o número e a lacuna de cada
 /// um, separados por ponto e vírgula; `-` quando não há nenhum.
 #[must_use]
@@ -639,9 +631,11 @@ pub fn goal(log: &SpecLog) -> Option<&SpecEvent> {
         .find_map(|e| log.current(e.id))
 }
 
-/// As mensagens do usuário, visíveis, que nenhum evento visível aponta em
-/// `origin`: as que não viraram nenhum registro. Responder a uma mensagem não
-/// é destino para ela.
+/// As mensagens do usuário, visíveis, que ficaram soltas: nenhum evento
+/// visível as aponta em `origin`, e elas não chegaram com um ponto do
+/// levantamento aberto. A mensagem que traz `during` foi dita no meio de um
+/// ponto e já tem lugar nele, mesmo que o ponto tenha fechado sem citá-la.
+/// Responder a uma mensagem não é destino para ela.
 #[must_use]
 pub fn unrouted_messages(log: &SpecLog) -> Vec<&SpecEvent> {
     let visible = log.visible();
@@ -649,7 +643,7 @@ pub fn unrouted_messages(log: &SpecLog) -> Vec<&SpecEvent> {
     visible
         .into_iter()
         .filter(|e| e.event_type == "message" && e.str_field("author").map(str::trim) == Some("user"))
-        .filter(|e| !routed.contains(&e.id))
+        .filter(|e| !routed.contains(&e.id) && e.int("during").is_none())
         .collect()
 }
 
@@ -684,24 +678,31 @@ impl Reminder {
 /// não viraram registro ([`unrouted_messages`]) com casamento forte
 /// ([`STRONG_ROOTS`]), as `max` de nota maior pelo BM25, somando as specs. No
 /// empate, o nome da spec e depois o número da mensagem. As respostas do
-/// assistente nunca entram.
+/// assistente nunca entram. As palavras são cortadas nas línguas
+/// `languages`.
 #[must_use]
-pub fn reminders<'a>(prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>, goal: &str, max: usize) -> Vec<Reminder> {
-    let terms = query_terms(goal);
+pub fn reminders<'a>(
+    prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>,
+    goal: &str,
+    max: usize,
+    languages: &Languages,
+) -> Vec<Reminder> {
+    let mut normalizer = Normalizer::new(languages);
+    let terms = normalizer.query(goal);
     if terms.is_empty() || max == 0 {
         return Vec::new();
     }
-    let mut candidates: Vec<(&str, u64, &str, String)> = Vec::new();
+    let mut candidates: Vec<(&str, u64, &str, Vec<Vec<String>>)> = Vec::new();
     for (name, log) in prior {
         for message in unrouted_messages(log) {
             let Some(text) = message.str_field("text").map(str::trim).filter(|t| !t.is_empty()) else {
                 continue;
             };
             let search = message.str_field("search").map_or_else(|| search_field(Some(text), &[]), str::to_string);
-            candidates.push((name, message.id, text, search));
+            candidates.push((name, message.id, text, normalizer.forms(&search)));
         }
     }
-    let index = SearchIndex::build(candidates.iter().enumerate().map(|(i, c)| (doc_id(i), c.3.as_str())));
+    let index = SearchIndex::build(candidates.iter().enumerate().map(|(i, c)| (doc_id(i), c.3.clone())));
     let mut found: Vec<Reminder> = index
         .top(&terms, candidates.len())
         .into_iter()
@@ -811,6 +812,9 @@ pub struct Sources<'a> {
     pub kinds: &'a [&'a str],
     /// O texto do objetivo.
     pub goal: &'a str,
+    /// A parte do agente do objetivo, vazia quando não há: é nela que o
+    /// objetivo gravado pela forma de três partes cita os nomes de código.
+    pub goal_agent: &'a str,
     /// A spec do levantamento, que nunca é a própria spec anterior.
     pub current: &'a str,
     /// O banco de lições, quando existe.
@@ -822,12 +826,15 @@ pub struct Sources<'a> {
     pub index: &'a [IndexLine],
     /// O arquivo de eventos de cada spec do projeto.
     pub prior: &'a [(String, SpecLog)],
-    /// O mapa do projeto, quando existe.
-    pub map: Option<&'a ProjectMap>,
+    /// Como o mapa do projeto se lê, quando há um: cada pergunta lê só as
+    /// tabelas dela, e só a lacuna de quem depende pergunta.
+    pub map: Option<&'a MapReader<'a>>,
     /// O levantamento condensado: todos os pontos num bloco só.
     pub condensed: bool,
     /// O idioma dos rótulos.
     pub lang: Locale,
+    /// As línguas em que as palavras das buscas são cortadas.
+    pub languages: &'a Languages,
 }
 
 /// A lista de pontos do levantamento: as lacunas do tipo, as lições que
@@ -850,7 +857,7 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
     list.extend(lesson_points(sources));
     list.extend(prior_spec_points(sources));
     let prior = sources.prior.iter().filter(|(name, _)| name != sources.current).map(|(name, log)| (name.as_str(), log));
-    place(&mut list, reminders(prior, sources.goal, MAX_REMINDERS));
+    place(&mut list, reminders(prior, sources.goal, MAX_REMINDERS, sources.languages), sources.languages);
     if sources.condensed {
         for item in &mut list {
             item.block = CONDENSED.to_string();
@@ -861,9 +868,10 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
 
 /// Os fatos que o mapa do projeto já dá para a lacuna: para quem depende, na
 /// refatoração, onde cada nome citado no objetivo é declarado e quem importa
-/// esse arquivo.
+/// esse arquivo. Os nomes vêm primeiro da parte do agente e depois do texto,
+/// sem repetir: o objetivo antigo, com o nome no texto, segue achando.
 fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
-    let Some(map) = sources.map.filter(|_| key == GapKey::Dependents) else {
+    let Some(read) = sources.map.filter(|_| key == GapKey::Dependents) else {
         return Vec::new();
     };
     let mut facts: Vec<Fact> = Vec::new();
@@ -872,8 +880,15 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
             facts.push(fact);
         }
     };
-    for name in cited_names(sources.goal).into_iter().take(MAP_NAMES) {
-        for (path, line) in map.declared(&name).into_iter().take(MAP_NAMES) {
+    let mut names: Vec<String> = Vec::new();
+    for name in cited_names(sources.goal_agent).into_iter().chain(cited_names(sources.goal)) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    for name in names.into_iter().take(MAP_NAMES) {
+        let declared = read(Need::Declarations { file: None, name: &name }).map(|map| map.declared(&name));
+        for (path, line) in declared.unwrap_or_default().into_iter().take(MAP_NAMES) {
             push(Fact {
                 text: translate("survey.fact_declared", sources.lang)
                     .replace("{name}", &name)
@@ -881,7 +896,7 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
                     .replace("{line}", &line.to_string()),
                 source: format!("{path}:{line}"),
             });
-            let users = importers(map, &path).unwrap_or_default();
+            let users = read(Need::Importers(&path)).and_then(|map| importers(&map, &path)).unwrap_or_default();
             if users.is_empty() {
                 continue;
             }
@@ -908,13 +923,22 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
 /// lugar dos defeitos, das armadilhas e das preferências entre as mais
 /// fortes. As lições são as que a leitura do banco mostra
 /// ([`lessons::kept`]): a linha que retira lições não é lição.
+///
+/// A lição que diz os arquivos onde vale também sai antes da busca
+/// ([`lessons::reaches_waves_by_files`]): o pedido de cada onda que mexe
+/// neles já a leva, e perguntar por ela ao usuário só repete o que a onda
+/// recebe de qualquer modo. Ficam as lições que só dizem o subprojeto ou a
+/// skill.
 fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let Some(bank) = sources.bank else {
         return Vec::new();
     };
-    let asked: Vec<&SpecEvent> =
-        lessons::kept(bank).into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
-    lessons::matching_among(&asked, sources.goal)
+    let asked: Vec<&SpecEvent> = lessons::kept(bank)
+        .into_iter()
+        .filter(|lesson| lesson.event_type != lessons::PROJECT_RULE)
+        .filter(|lesson| !lessons::reaches_waves_by_files(lesson))
+        .collect();
+    lessons::matching_among(&asked, sources.goal, sources.languages)
         .into_iter()
         .filter_map(|hit| {
             let lesson = bank.get(hit.id)?;
@@ -936,15 +960,25 @@ fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
 /// dela como lacuna, e as regras, as decisões e os erros dela que casam como
 /// fatos.
 fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
-    let terms = query_terms(sources.goal);
-    let lines: Vec<&IndexLine> = sources.index.iter().filter(|line| line.name != sources.current).collect();
-    let index = SearchIndex::build(lines.iter().enumerate().map(|(i, line)| (doc_id(i), line.search.as_str())));
-    index
+    let mut normalizer = Normalizer::new(sources.languages);
+    let terms = normalizer.query(sources.goal);
+    let lines: Vec<(&IndexLine, Vec<Vec<String>>)> = sources
+        .index
+        .iter()
+        .filter(|line| line.name != sources.current)
+        .map(|line| (line, normalizer.forms(&line.search)))
+        .collect();
+    let index = SearchIndex::build(lines.iter().enumerate().map(|(i, (_, words))| (doc_id(i), words.clone())));
+    let strong_lines: Vec<&IndexLine> = index
         .top(&terms, lines.len())
         .into_iter()
-        .filter_map(|hit| lines.get(doc_pos(hit.id)).copied())
-        .filter(|line| strong(&terms, &line.search))
+        .filter_map(|hit| lines.get(doc_pos(hit.id)))
+        .filter(|(_, words)| strong(&terms, words))
+        .map(|(line, _)| *line)
         .take(TOP)
+        .collect();
+    strong_lines
+        .into_iter()
         .map(|line| {
             let goal = line.goal.as_deref().map(str::trim).filter(|g| !g.is_empty());
             let log = sources.prior.iter().find(|(name, _)| *name == line.name).map(|(_, log)| log);
@@ -953,7 +987,7 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
                 gap: goal.map_or_else(|| line.name.clone(), |goal| format!("{}: {goal}", line.name)),
                 from: FROM_PRIOR_SPEC,
                 key: None,
-                facts: prior_facts(&line.name, goal, log, &terms),
+                facts: prior_facts(&line.name, goal, log, &terms, &mut normalizer),
                 reminders: Vec::new(),
             }
         })
@@ -964,13 +998,21 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
 /// casam com o objetivo, até [`PRIOR_FACTS`], cada um pelo título e pelo
 /// comando que lê o item. Sem nenhum, o objetivo dela, pelo comando que lê a
 /// especificação.
-fn prior_facts(name: &str, goal: Option<&str>, log: Option<&SpecLog>, terms: &[String]) -> Vec<Fact> {
+fn prior_facts(
+    name: &str,
+    goal: Option<&str>,
+    log: Option<&SpecLog>,
+    terms: &[Vec<String>],
+    normalizer: &mut Normalizer,
+) -> Vec<Fact> {
     let mut facts = Vec::new();
     if let Some(log) = log {
         let items: Vec<&SpecEvent> =
             log.visible().into_iter().filter(|e| PRIOR_FACT_TYPES.contains(&e.event_type.as_str())).collect();
         let codes = log.codes();
-        let index = SearchIndex::build(items.iter().map(|e| (e.id, e.str_field("search").unwrap_or_default())));
+        let index = SearchIndex::build(
+            items.iter().map(|e| (e.id, normalizer.forms(e.str_field("search").unwrap_or_default()))).collect::<Vec<_>>(),
+        );
         for hit in index.top(terms, PRIOR_FACTS) {
             let Some(item) = log.get(hit.id) else { continue };
             let (Some(text), Some(code)) = (title_of(item), codes.get(&item.id)) else { continue };
@@ -987,19 +1029,21 @@ fn prior_facts(name: &str, goal: Option<&str>, log: Option<&SpecLog>, terms: &[S
 
 /// Põe cada lembrete no ponto da lista cujo texto (a lacuna e os fatos) casa
 /// melhor com ele, sem passar de [`MAX_REMINDERS`] num ponto; sem casamento,
-/// no primeiro ponto com lugar.
-fn place(list: &mut [Proposed], found: Vec<Reminder>) {
-    let docs: Vec<String> = list
+/// no primeiro ponto com lugar. As palavras são cortadas nas línguas
+/// `languages`.
+fn place(list: &mut [Proposed], found: Vec<Reminder>, languages: &Languages) {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<Vec<Vec<String>>> = list
         .iter()
         .map(|item| {
             let facts: Vec<&str> = item.facts.iter().map(|fact| fact.text.as_str()).collect();
-            search_field(Some(&item.gap), &facts)
+            normalizer.forms(&search_field(Some(&item.gap), &facts))
         })
         .collect();
-    let index = SearchIndex::build(docs.iter().enumerate().map(|(i, doc)| (doc_id(i), doc.as_str())));
+    let index = SearchIndex::build(docs.into_iter().enumerate().map(|(i, doc)| (doc_id(i), doc)));
     let has_room = |list: &[Proposed], at: usize| list.get(at).is_some_and(|item| item.reminders.len() < MAX_REMINDERS);
     for reminder in found {
-        let ranked = index.top(&query_terms(&reminder.text), list.len());
+        let ranked = index.top(&normalizer.query(&reminder.text), list.len());
         let target = ranked
             .iter()
             .map(|hit| doc_pos(hit.id))
@@ -1011,16 +1055,10 @@ fn place(list: &mut [Proposed], found: Vec<Reminder>) {
     }
 }
 
-/// Quantas raízes do pedido, sem repetir, o `search` tem.
-fn shared_roots(terms: &[String], search: &str) -> usize {
-    let roots: BTreeSet<&str> = search.split(' ').filter(|w| !w.is_empty()).collect();
-    let terms: BTreeSet<&str> = terms.iter().map(String::as_str).collect();
-    terms.into_iter().filter(|term| roots.contains(term)).count()
-}
-
-/// O casamento forte: pelo menos [`STRONG_ROOTS`] raízes do pedido em comum.
-fn strong(terms: &[String], search: &str) -> bool {
-    shared_roots(terms, search) >= STRONG_ROOTS
+/// O casamento forte: pelo menos [`STRONG_ROOTS`] palavras do pedido com
+/// alguma forma no documento.
+fn strong(terms: &[Vec<String>], doc: &[Vec<String>]) -> bool {
+    shared_words(terms, doc) >= STRONG_ROOTS
 }
 
 /// O texto como se compara: minúsculo, sem acento e com um espaço só entre
@@ -1043,7 +1081,9 @@ fn doc_pos(id: u64) -> usize {
 mod tests {
     use super::*;
     use crate::domain::spec_events::{normalize, parse_log, render_line, stamp};
+    use crate::domain::project_map::ProjectMap;
     use crate::domain::spec_index::goal_of;
+    use crate::io::project_map as store;
     use serde_json::json;
 
     fn obj(value: Value) -> Map<String, Value> {
@@ -1058,13 +1098,19 @@ mod tests {
         format!("{}\n", render_line(&stamp(normalize(obj(draft), event_type), id, None, "2026-09-14T09:00:00-03:00")))
     }
 
-    /// Uma lição como o banco a guarda.
+    /// Uma lição como o banco a guarda, valendo para uma skill: o levantamento
+    /// pergunta por ela.
     fn lesson(id: u64, text: &str, keys: &[&str]) -> String {
+        lesson_for(id, text, keys, json!({"skill": "backend"}))
+    }
+
+    /// Uma lição como o banco a guarda, com o `applies_to` dado.
+    fn lesson_for(id: u64, text: &str, keys: &[&str], applies_to: Value) -> String {
         let draft = json!({
             "class": "defect",
             "text": text,
             "keys": keys,
-            "applies_to": {"files": ["**"]},
+            "applies_to": applies_to,
             "found_in": {"spec": "antiga"},
         });
         format!(
@@ -1088,6 +1134,7 @@ mod tests {
         Sources {
             kinds,
             goal: GOAL,
+            goal_agent: "",
             current: "atual",
             bank,
             lessons_file: ".claude/spec/lessons.ndjson",
@@ -1096,8 +1143,12 @@ mod tests {
             map: None,
             condensed: false,
             lang: Locale::PtBr,
+            languages: &LANGUAGES,
         }
     }
+
+    /// As línguas de um projeto que escreve em português e programa em inglês.
+    static LANGUAGES: std::sync::LazyLock<Languages> = std::sync::LazyLock::new(|| Languages::new(["pt-BR", "en-US"]));
 
     fn reminders_in(list: &[Proposed]) -> Vec<&Reminder> {
         list.iter().flat_map(|item| item.reminders.iter()).collect()
@@ -1223,6 +1274,24 @@ mod tests {
         assert_eq!(ids, [2]);
     }
 
+    /// A mensagem dita no meio de um ponto (`during`) já tem lugar nele e não
+    /// fica solta, tenha o ponto fechado citando-a ou não; a que chegou sem
+    /// ponto aberto e sem destino continua solta, e o ponto sem mensagem
+    /// nenhuma continua como está.
+    #[test]
+    fn a_message_said_during_a_point_is_not_unrouted() {
+        let log = log_of(&[
+            ev(1, "message", json!({"author": "user", "text": GOAL})),
+            ev(2, "point", json!({"block": "proof", "gap": "Como provar?", "from": "gap", "status": "open", "origin": 1,
+                "facts": [{"text": "f", "source": "mensagem 1"}]})),
+            ev(3, "message", json!({"author": "user", "text": "8 é fixo?", "during": 2})),
+            ev(4, "message", json!({"author": "user", "text": "e o painel?"})),
+            ev(5, "message", json!({"author": "user", "text": "não entendi", "during": 2})),
+        ]);
+        let ids: Vec<u64> = unrouted_messages(&log).iter().map(|m| m.id).collect();
+        assert_eq!(ids, [4]);
+    }
+
     /// Duas specs anteriores com cinco mensagens do usuário que casam com o
     /// pedido, duas delas já com decisão apontando, e respostas do
     /// assistente que casam: o levantamento traz três lembretes, nenhum das
@@ -1230,7 +1299,7 @@ mod tests {
     /// ponto novo.
     #[test]
     fn at_most_three_reminders_none_already_decided_each_inside_a_point_and_never_an_assistant_reply() {
-        let alfa = log_of(&[
+        let alpha = log_of(&[
             ev(1, "message", json!({"author": "user", "text": "O merge com pendência aberta passou sem aviso."})),
             ev(2, "message", json!({"author": "user", "text": "Travar o merge quando a pendência estiver aberta."})),
             ev(3, "decision", json!({"text": "Trava no merge.", "keys": ["merge"], "why": "w", "origin": 2})),
@@ -1243,13 +1312,13 @@ mod tests {
             ev(3, "message", json!({"author": "user", "text": "Merge travado por pendência aberta no dev."})),
             ev(4, "message", json!({"author": "user", "text": "Pendência aberta e merge: cobrar antes."})),
         ]);
-        let prior = vec![("alfa".to_string(), alfa), ("beta".to_string(), beta)];
+        let prior = vec![("alpha".to_string(), alpha), ("beta".to_string(), beta)];
         let list = build(&sources(&["feature"], None, &[], &prior));
         assert_eq!(list.len(), gaps(&["feature"]).len(), "no point is born for a reminder");
         let found = reminders_in(&list);
         assert_eq!(found.len(), MAX_REMINDERS, "{found:?}");
         let picked: BTreeSet<(&str, u64)> = found.iter().map(|r| (r.spec.as_str(), r.message)).collect();
-        assert_eq!(picked, BTreeSet::from([("alfa", 1), ("beta", 3), ("beta", 4)]));
+        assert_eq!(picked, BTreeSet::from([("alpha", 1), ("beta", 3), ("beta", 4)]));
         assert!(found.iter().all(|r| r.text != GOAL), "never an assistant reply");
     }
 
@@ -1262,7 +1331,7 @@ mod tests {
             ev(2, "message", json!({"author": "user", "text": "O merge com pendência demorou."})),
         ]);
         let prior = [("antiga".to_string(), old)];
-        let found = reminders(prior.iter().map(|(n, l)| (n.as_str(), l)), GOAL, MAX_REMINDERS);
+        let found = reminders(prior.iter().map(|(n, l)| (n.as_str(), l)), GOAL, MAX_REMINDERS, &LANGUAGES);
         let ids: Vec<u64> = found.iter().map(|r| r.message).collect();
         assert_eq!(ids, [2], "{found:?}");
     }
@@ -1298,6 +1367,25 @@ mod tests {
         assert_eq!(points[0].facts[0].source, ".claude/spec/lessons.ndjson:1");
         let shown = points[0].to_value(Some(7)).to_string();
         assert!(!shown.contains("search") && !shown.contains("merg pendenc"), "{shown}");
+    }
+
+    /// A lição que diz os arquivos onde vale, o projeto todo incluído, chega
+    /// ao pedido de toda onda que mexe neles e não vira ponto; a que só diz o
+    /// subprojeto ou a skill continua virando, com o mesmo casamento com o
+    /// objetivo.
+    #[test]
+    fn a_lesson_that_names_files_never_becomes_a_point() {
+        let text = |name: &str| format!("**{name}.** O merge não passa com pendência aberta.");
+        let bank = log_of(&[
+            lesson_for(1, &text("Por arquivo"), &["merge", "pendência"], json!({"files": ["apps/rt/src/**"]})),
+            lesson_for(2, &text("Projeto todo"), &["merge", "pendência"], json!({"files": ["**"]})),
+            lesson_for(3, &text("Por skill"), &["merge", "pendência"], json!({"skill": "backend"})),
+            lesson_for(4, &text("Por subprojeto"), &["merge", "pendência"], json!({"subproject": "apps/rt"})),
+            lesson_for(5, &text("Arquivo e skill"), &["merge", "pendência"], json!({"files": ["src/main.rs"], "skill": "backend"})),
+        ]);
+        let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
+        let asked: Vec<&str> = list.iter().filter(|p| p.from == "lesson").map(|p| p.gap.as_str()).collect();
+        assert_eq!(asked, ["Por skill.", "Por subprojeto."], "{list:?}");
     }
 
     /// O levantamento lê as lições como a leitura do banco as mostra: a
@@ -1387,7 +1475,8 @@ mod tests {
         .unwrap();
         let mut given = sources(&["refactor"], None, &[], &[]);
         given.goal = "Tirar o `record_birth` do fluxo.";
-        given.map = Some(&map);
+        let whole = |_: Need<'_>| Ok(map.clone());
+        given.map = Some(&whole);
         let list = build(&given);
         let dependents = list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap();
         assert_eq!(
@@ -1401,6 +1490,95 @@ mod tests {
             ]
         );
         assert!(list.iter().filter(|p| p.key != Some(GapKey::Dependents)).all(|p| p.facts.is_empty()));
+    }
+
+    /// O objetivo gravado em três partes não cita código na parte do usuário:
+    /// o nome vem entre crases na parte do agente, e a lacuna de quem depende
+    /// traz dele os mesmos fatos que traria do texto.
+    #[test]
+    fn the_name_cited_in_the_agent_part_of_the_goal_brings_its_declaration_and_who_imports_it() {
+        let map: ProjectMap = serde_json::from_value(json!({
+            "modules": [
+                {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+                {"path": "src/b.rs", "deps": ["src/a.rs"]},
+                {"path": "src/c.rs", "deps": ["src/a.rs"]},
+            ]
+        }))
+        .unwrap();
+        let mut given = sources(&["refactor"], None, &[], &[]);
+        given.goal = "Tirar o registro de nascimento do fluxo.";
+        given.goal_agent = "- Tirar `record_birth` do fluxo.";
+        let whole = |_: Need<'_>| Ok(map.clone());
+        given.map = Some(&whole);
+        let list = build(&given);
+        let dependents = list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap();
+        assert_eq!(
+            dependents.facts,
+            [
+                Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into() },
+                Fact {
+                    text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(),
+                    source: "mustard-rt run map importers --file src/a.rs".into(),
+                },
+            ]
+        );
+    }
+
+    /// Um projeto com o nome do objetivo declarado em dois arquivos, cada um
+    /// importado por outros, e um arquivo que o declara sem ninguém que o
+    /// importe.
+    const DEPENDENTS_MAP: &str = r#"{"modules": [
+        {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}], "tests": ["tests/a.rs"]},
+        {"path": "src/b.rs", "deps": ["src/a.rs", "src/z.rs"]},
+        {"path": "src/c.rs", "deps": ["src/a.rs"]},
+        {"path": "src/z.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 9}]},
+        {"path": "src/d.rs", "declarations": [{"kind": "struct", "name": "Birth", "line": 1}]}
+    ]}"#;
+
+    /// A lacuna de quem depende, com o mapa gravado no disco e lido por
+    /// `read`.
+    fn dependents_facts(read: &MapReader<'_>) -> Vec<Fact> {
+        let mut given = sources(&["refactor"], None, &[], &[]);
+        given.goal = "Tirar o `record_birth` e o `Birth` do fluxo.";
+        given.map = Some(read);
+        let list = build(&given);
+        list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap().facts.clone()
+    }
+
+    /// O levantamento lê só as declarações com o nome e quem importa cada
+    /// arquivo, e dá os mesmos fatos que dava com o mapa inteiro lido.
+    #[test]
+    fn the_survey_reading_only_its_tables_gives_the_facts_the_whole_map_gave() {
+        let dir = tempfile::tempdir().unwrap();
+        store::write_text(dir.path(), DEPENDENTS_MAP).unwrap();
+        let by_question = dependents_facts(&|need| store::read_for(dir.path(), need));
+        let whole = dependents_facts(&|_| store::read(dir.path()));
+        assert_eq!(by_question, whole);
+        assert_eq!(by_question.len(), 5, "{by_question:?}");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(dependents_facts(&|need| store::read_for(empty.path(), need)), Vec::new());
+    }
+
+    /// Um mapa em que uma coluna que o levantamento não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e o levantamento, que lê
+    /// só as declarações e quem importa, ainda dá os fatos.
+    #[test]
+    fn the_survey_answers_even_when_a_column_it_does_not_read_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        store::write_text(dir.path(), &DEPENDENTS_MAP.replace(r#""tests": ["tests/a.rs"]"#, r#""tests": "um texto""#)).unwrap();
+        assert!(store::read(dir.path()).is_err(), "the whole map refuses the broken column");
+        let facts = dependents_facts(&|need| store::read_for(dir.path(), need));
+        let sources: Vec<&str> = facts.iter().map(|fact| fact.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            [
+                "src/a.rs:3",
+                "mustard-rt run map importers --file src/a.rs",
+                "src/z.rs:9",
+                "mustard-rt run map importers --file src/z.rs",
+                "src/d.rs:1",
+            ]
+        );
     }
 
     /// Um ponto gravado registra o item da lista pela lacuna, com o rótulo em

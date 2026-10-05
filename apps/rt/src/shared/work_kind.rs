@@ -23,12 +23,11 @@
 //! second-unit refusal all resolve a unit through its branch name.
 //!
 //! **Where the answer the flow cannot derive is kept.** An emergency in a
-//! project declaring several candidate bases is a CHOICE, and the name no longer
-//! carries it. The cut writes it into the unit's own directory as harness state
-//! ([`CUT_BASE_FILE`]) and the draft folds it into `meta.json#base`; both are
-//! read back here, in that order. It is deliberately NOT written into
-//! `meta.json` by the cut: the cut runs first, and a sidecar in that directory
-//! is exactly what makes the draft refuse it as already drafted.
+//! project declaring several candidate bases is a CHOICE, and the name does not
+//! carry it. The open writes it into the spec's own event record (`base`), where
+//! the pull-request step reads it; this model never does, so for such a unit
+//! [`BaseFlow::base_of`] answers [`UnitBase::Ambiguous`] and the doors that must
+//! settle it measure by containment.
 //!
 //! **Why this lives in `shared`.** Both faces ask these questions — the hook
 //! gate cutting the branch and the commands settling, deleting, reporting and
@@ -74,37 +73,6 @@ fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
     git::run(project, &["cat-file", "-e", &format!("{rev}:{path}")]).ok
 }
 
-/// The cut's OWN record of the base, inside the unit's directory.
-///
-/// **Why a file of its own, and why this name.** The answer's durable home is
-/// `meta.json#base` — the sidecar that already holds every machine-parseable
-/// fact about a unit — but the CUT cannot write it there: the cut runs BEFORE
-/// the draft, and `spec-draft` refuses to draft into a directory that already
-/// holds anything but harness state ([`crate::commands::spec::spec_draft`]'s
-/// `holds_only_harness_state`, whose allowlist names the entries written by the
-/// steps BEFORE the draft — the dot-prefixed spill and the material channel's
-/// `spec-material.json` alike — and whose whole reason for existing is that a
-/// `meta.json` there IS a drafted spec). Writing the base into `meta.json` at cut time therefore made step one
-/// block step two: the unit was cut and got no spec at all.
-///
-/// So the cut writes HERE, and the draft folds it into `meta.json#base` when it
-/// writes the sidecar ([`crate::commands::spec::spec_scaffold::write_meta_json`])
-/// and retires the file. This name is harness state, not authored work, on every
-/// term the rest of the per-spec spill is (`.events`, `.dispatch`, `.blobs`,
-/// `.memory-approved`): nobody authors it, it holds one machine token the
-/// harness wrote to itself, it is derivable again for every unit whose flow can
-/// answer, and it never reaches the merge — the unit's authored work is
-/// `spec.md`, the waves, the proof, the change log and the review verdicts.
-pub(crate) const CUT_BASE_FILE: &str = ".cut-base";
-
-/// The base recorded in `dir`'s cut record, `None` when there is none (or it is
-/// empty/unreadable). Trimmed — the file carries one line and a newline.
-pub(crate) fn cut_base_in(dir: &Path) -> Option<String> {
-    let body = std::fs::read_to_string(dir.join(CUT_BASE_FILE)).ok()?;
-    let base = body.trim();
-    (!base.is_empty()).then(|| base.to_string())
-}
-
 /// Process-wide memo of [`mustard_core::remote_branch_names`], keyed by the
 /// root it was measured in. `None` inside the entry is the probe's own "could
 /// not measure", memoised like any other answer.
@@ -112,7 +80,7 @@ pub(crate) fn cut_base_in(dir: &Path) -> Option<String> {
 /// One `git for-each-ref` is cheap; asking it once per BRANCH is not, and that
 /// is what the repository-wide sweeps do — [`crate::shared::branch_state`]
 /// resolves EVERY ref through [`BaseFlow::base_of`], so an unmemoised probe
-/// turns one spawn into one per unit branch that has a record.
+/// turns one spawn into one per branch with an underscore in its name.
 ///
 /// Same shape and same lifetime as the config memo in
 /// [`crate::shared::context`]: `mustard-rt` is a one-shot process, so
@@ -129,89 +97,14 @@ fn remote_names_memo() -> &'static Mutex<HashMap<PathBuf, Option<BTreeSet<String
 /// and a `git fetch` is precisely the thing that changes that answer mid-run.
 /// Without this the first probe of a dispatch freezes the pre-fetch picture, so
 /// a branch that only MATERIALISES during the fetch reads as absent for the rest
-/// of the same dispatch — and the reader that consults it drops the operator's
-/// recorded base for a branch that does exist. Call it right after any fetch
-/// that can add or prune remote-tracking refs.
+/// of the same dispatch — and the old-shape reader that consults it
+/// ([`BaseFlow::base_of`]) takes a unit already on the remote for one about to
+/// be cut. Call it right after any fetch that can add or prune remote-tracking
+/// refs.
 pub(crate) fn forget_remote_names(root: &Path) {
     if let Ok(mut memo) = remote_names_memo().lock() {
         memo.remove(root);
     }
-}
-
-/// `true` when `base` is a branch the remote STILL has — and `true` as well
-/// when its existence could NOT be measured.
-///
-/// The one spelling of the question both readers of a recorded base ask
-/// ([`BaseFlow::recorded_base_of`] for the unit's durable record,
-/// [`crate::commands::event::work_branch::recorded_or_derived_base`] for the
-/// pending marker), so the cut and every later read agree about which recorded
-/// bases still count.
-///
-/// **What it measures, and what it used to.** The test used to be membership in
-/// `git.flow`'s declared set, which refuses a base the operator really picked
-/// out of the real catalogue for the sole reason that a file written at install
-/// time does not list it. Existence is the fact the protection was always
-/// after: a base that no longer exists cannot be cut from, and one that exists
-/// can — whoever declared it.
-///
-/// **Why unmeasured obeys.** A recorded base is a MEASUREMENT of a person's
-/// answer, taken against the real catalogue at cut time. Dropping it because
-/// the probe stayed silent — no git, no remote, a clone whose refs were never
-/// fetched — refuses a real choice on the strength of a source that said
-/// nothing, which is the very defect the membership test was. An empty answer
-/// counts as silence too: a repository with no remote-tracking refs cannot
-/// testify about the remote, the same reading
-/// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
-/// catalogue and `base-candidates` reports as `measured: false`.
-/// **Local heads count too, and leaving them out re-created the defect.** The
-/// cut that accepts the pick
-/// ([`crate::commands::event::work_branch::checkout_work_branch`]) reads it
-/// as `refs/heads/<b>` OR `refs/remotes/origin/<b>` — a base that was never
-/// pushed is a real branch someone can cut from. This probe read only the
-/// remote-tracking side, so such a pick was accepted, written into the unit's
-/// record, and then DISCARDED here on the next read, with the caller answering
-/// "nothing recorded" about a record sitting on disk. Two halves of one question
-/// measuring different things is the shape this whole unit exists to remove, so
-/// they ask the same thing: does this branch still exist, anywhere this
-/// repository can see?
-pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
-    if with_remote_names(root, |names| names_obey(names, base)) {
-        return true;
-    }
-    // **A local head counts only if it was NEVER pushed.** Two very different
-    // branches look identical in the remote-tracking catalogue — both absent:
-    //
-    //   never pushed          a real branch, living only on this machine
-    //   deleted upstream      merged and retired; cutting from it is the
-    //                         "base that no longer exists" this probe exists
-    //                         to refuse
-    //
-    // `git fetch --prune` prunes remote-tracking refs, never local heads, so a
-    // plain "does refs/heads/<base> exist?" obeys the retired branch and
-    // reopens exactly the retired base this guard forbids. The upstream
-    // configuration separates
-    // them and is measured, not guessed: a branch that was pushed carries
-    // `branch.<name>.remote`, and one that never left this machine does not.
-    // Absent upstream ⇒ never pushed ⇒ a real local base, obey. Upstream set
-    // but gone from the catalogue ⇒ retired upstream ⇒ ignore.
-    local_head_exists(root, base) && !has_upstream(root, base)
-}
-
-/// `true` when `refs/heads/<branch>` resolves in `root`.
-fn local_head_exists(root: &Path, branch: &str) -> bool {
-    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok
-}
-
-/// `true` when `branch` has an upstream configured — the durable mark that it
-/// was pushed at least once, and therefore that its absence from the
-/// remote-tracking catalogue means RETIRED rather than never-published.
-///
-/// `false` on any failure, which is the safe reading for the only caller: an
-/// unanswerable probe must not turn a local base into a retired one and drop a
-/// record the operator really made.
-fn has_upstream(root: &Path, branch: &str) -> bool {
-    let probe = git::run(root, &["config", "--get", &format!("branch.{branch}.remote")]);
-    probe.ok && !probe.stdout.is_empty()
 }
 
 /// Hand `read` the MEMOISED remote branch names of `root`, measuring them on
@@ -234,41 +127,6 @@ fn with_remote_names<T>(root: &Path, read: impl FnOnce(Option<&BTreeSet<String>>
         memo.insert(key, names);
     }
     answer
-}
-
-/// The reading of one probe result: measured and naming `base` → obey;
-/// measured and NOT naming it → drop; unmeasured (`None`, or an empty listing)
-/// → obey. See [`base_still_on_remote`], which is where the reasoning lives.
-fn names_obey(names: Option<&BTreeSet<String>>, base: &str) -> bool {
-    match names {
-        Some(names) if !names.is_empty() => names.contains(base),
-        _ => true,
-    }
-}
-
-/// `Some(true)` when the repository at `root` really offers MORE THAN ONE
-/// branch to cut from, `Some(false)` when it offers exactly one, and `None`
-/// when nothing could be measured.
-///
-/// This is "was there a choice to make?", asked of the catalogue the operator
-/// was actually shown ([`mustard_core::branch_catalog`] reads the same refs) —
-/// not of the declared flow. A project declaring a single base still carries
-/// every branch `origin` has, and the picker offers all of them, so counting
-/// the DECLARATION answered a question nobody asked: it reported "nothing was
-/// chosen" about a repository where the operator had just chosen.
-///
-/// Same probe and same memo as [`base_still_on_remote`], so the two halves of
-/// one pick — whether it is written down, and whether it is still obeyed — read
-/// the identical set of refs.
-// Sem chamador na produção desde a refatoração que enxugou o runtime: quem
-// ainda lê e escreve a base do corte são os testes do portão de base,
-// guardado por decisão do usuário até ele decidir se o portão volta.
-#[cfg(test)]
-fn catalogue_offers_a_choice(root: &Path) -> Option<bool> {
-    with_remote_names(root, |names| match names {
-        Some(names) if !names.is_empty() => Some(names.len() > 1),
-        _ => None,
-    })
 }
 
 /// What a work unit IS — the closed set the branch prefix names.
@@ -320,9 +178,8 @@ impl WorkKind {
 
     /// The branch name for one unit — `{kind}/{slug}`.
     ///
-    /// The ONE spelling of the join, so the builder
-    /// ([`crate::commands::event::work_branch::compute_work_branch`]) and every
-    /// parser here cannot drift into two shapes of the same name. It does NOT
+    /// The ONE spelling of the join, so the builder (the explicit open) and
+    /// every parser here cannot drift into two shapes of the same name. It does NOT
     /// sanitise: making a valid git ref out of a slug is the builder's job, and
     /// doing it twice would let one caller's name differ from another's.
     pub(crate) fn branch_name(&self, slug: &str) -> String {
@@ -355,13 +212,12 @@ impl WorkKind {
 pub(crate) enum UnitBase {
     /// Not a work unit's name at all — a bare base, a stray ref, `HEAD`.
     NotAUnit,
-    /// The base, KNOWN: recorded by the cut, carried by an old-shape prefix, or
-    /// derived where the flow leaves no choice.
+    /// The base, KNOWN: carried by an old-shape prefix, or derived where the
+    /// flow leaves no choice.
     Known(String),
-    /// A work unit whose base nothing established: a `hotfix/…` in a project
-    /// declaring SEVERAL emergency bases, with no record from its cut. Carries
-    /// the candidates, so a caller that must refuse can name what it could not
-    /// choose between.
+    /// A work unit whose base nothing established: any `{kind}/{slug}` unit in a
+    /// project declaring SEVERAL bases. Carries the candidates, so a caller that
+    /// must refuse can name what it could not choose between.
     Ambiguous(Vec<String>),
 }
 
@@ -421,14 +277,14 @@ pub(crate) struct BaseFlow {
     /// that declares no flow: it has no ordinary base, and writing one down
     /// here would be this type inventing the project's own answer.
     work: Option<String>,
-    /// The project root whose UNIT RECORDS this model may consult
-    /// ([`BaseFlow::of_at`]), `None` for the pure derivation ([`BaseFlow::of`]).
+    /// The project root whose UNIT DIRECTORIES and remote branches this model
+    /// may consult ([`BaseFlow::of_at`]), `None` for the pure derivation
+    /// ([`BaseFlow::of`]).
     ///
-    /// It is the only reason this type touches the filesystem, and it touches it
-    /// for exactly one question: which base a unit was ACTUALLY cut from, when
-    /// the flow alone cannot answer. A rootless model still answers everything
-    /// it can derive — it simply reports [`UnitBase::Ambiguous`] where a rooted
-    /// one would have read the operator's own answer.
+    /// It is the only reason this type touches the repository, and it touches it
+    /// for two questions the flow alone cannot answer: whether a name in the
+    /// old `{base}_{slug}` shape is a unit of this project, and whether a
+    /// branch has a unit record at all ([`BaseFlow::has_unit_record`]).
     project: Option<PathBuf>,
 }
 
@@ -439,24 +295,23 @@ impl BaseFlow {
     /// separate `emergency` list could name the outermost base as a hotfix's
     /// default. Nothing asks for that default any more —
     /// [`base_of`](Self::base_of) answers `Known` only when the DECLARED set
-    /// lands on one base or the unit's own record says so, and `Ambiguous`
-    /// otherwise — so the walk and the list it fed are gone. Ordering candidates
+    /// lands on one base or the name carries it, and `Ambiguous` otherwise — so
+    /// the walk and the list it fed are gone. Ordering candidates
     /// only mattered while something picked one off the list unasked, which is
     /// exactly the behaviour that was removed.
     pub(crate) fn of(git: &GitConfig) -> Self {
         Self::build(git, None)
     }
 
-    /// [`of`](Self::of), plus the project whose UNIT RECORDS may be read.
+    /// [`of`](Self::of), plus the project whose UNIT DIRECTORIES and remote
+    /// branches may be read.
     ///
     /// Every consumer that resolves a REAL branch of a REAL repository builds
-    /// the model this way, because the derivation is not always enough: the base
-    /// a hotfix was cut from is the operator's choice whenever the project
-    /// declares more than one candidate, and the unit's own directory
-    /// ([`recorded_base_of`](Self::recorded_base_of)) is where that choice was
-    /// written down. A rootless [`of`](Self::of) stays
-    /// for the pure question — "what does this flow imply" — which is what the
-    /// chooser at cut time asks.
+    /// the model this way, because the name is not always enough: a unit in the
+    /// old `{base}_{slug}` shape is told from an integration line by the
+    /// branches the repository really has and by the unit's own directory. A
+    /// rootless [`of`](Self::of) stays for the pure question — "what does this
+    /// flow imply" — which is what the chooser at cut time asks.
     pub(crate) fn of_at(git: &GitConfig, project: &Path) -> Self {
         Self::build(git, Some(project.to_path_buf()))
     }
@@ -482,7 +337,7 @@ impl BaseFlow {
 
     /// The integration base a work branch belongs to.
     ///
-    /// Three sources, asked in this order, and the ORDER is the whole point:
+    /// Two sources, asked in this order, and the ORDER is the whole point:
     ///
     /// 1. `{base}_{slug}` — a unit still in the pre-kind shape carries its base
     ///    in the name: the LONGEST branch `B` with the name starting `"{B}_"`,
@@ -490,40 +345,31 @@ impl BaseFlow {
     ///    really has ([`legacy_base_of`](Self::legacy_base_of)), so a project
     ///    carrying both `dev` and `dev_release` reads `dev_release_x` as the
     ///    latter's — declared or not.
-    /// 2. the unit's OWN RECORD ([`recorded_base_of`](Self::recorded_base_of)) —
-    ///    what the cut wrote down. It wins over the derivation because it is a
-    ///    MEASUREMENT of where the branch really came from, while the derivation
-    ///    is an inference from the kind; where the two can differ, only the
-    ///    operator ever knew the answer.
-    /// 3. the flow's SINGLE declared base, when it declares exactly one — the
+    /// 2. the flow's SINGLE declared base, when it declares exactly one — the
     ///    only case where nothing is being guessed, because there was never a
     ///    choice to make.
     ///
-    /// There is no fourth source any more. The kind used to imply a base
-    /// (`base_of_kind`), and that inference is gone with the coupling that
-    /// produced it: the base is now the operator's answer to a question they
-    /// were asked against a real list, so it is a MEASUREMENT to be read, never
-    /// a value to be re-derived.
+    /// There is no third source. The kind used to imply a base, and that
+    /// inference is gone with the coupling that produced it: the base is the
+    /// operator's answer to a question they were asked against a real list. That
+    /// answer lives in the unit's spec record, written by the open and read by
+    /// the pull-request step, never re-derived here.
     ///
-    /// And when none of them answers, it says so — [`UnitBase::Ambiguous`].
+    /// And when neither source answers, it says so — [`UnitBase::Ambiguous`].
     /// It used to answer the outermost candidate, which silently replaced the
-    /// operator's pick on every read after the cut: the pull-request target and
-    /// the merged-ancestry check included.
+    /// operator's pick on every read: the pull-request target and the
+    /// merged-ancestry check included.
     pub(crate) fn base_of(&self, branch: &str) -> UnitBase {
         let name = branch_of_name(branch);
         if self.is_declared_base(name) {
             return UnitBase::NotAUnit;
         }
-        let Some(kind) = WorkKind::of_branch(name) else {
+        if WorkKind::of_branch(name).is_none() {
             return match self.legacy_base_of(name) {
                 Some(base) => UnitBase::Known(base),
                 None => UnitBase::NotAUnit,
             };
-        };
-        if let Some(recorded) = self.recorded_base_of(name) {
-            return UnitBase::Known(recorded);
         }
-        let _ = kind; // the kind no longer says anything about the base
         match self.bases() {
             [only] => UnitBase::Known(only.clone()),
             candidates => UnitBase::Ambiguous(candidates.to_vec()),
@@ -549,121 +395,6 @@ impl BaseFlow {
     /// being wrong destroys something.
     pub(crate) fn is_declared_base(&self, name: &str) -> bool {
         self.bases.iter().any(|b| b == name)
-    }
-
-    /// `true` when the operator had a real choice of base, so the cut must write
-    /// their answer down or it is lost.
-    ///
-    /// **TWO sources of a choice, and either one is enough.**
-    ///
-    /// 1. The DECLARED set cannot land on one answer (`bases().len() != 1`) —
-    ///    so [`base_of`](Self::base_of)'s derivation would come back
-    ///    [`Ambiguous`](UnitBase::Ambiguous) and the answer has nowhere else to
-    ///    live. Unchanged, and it must stay: without the answer recorded at
-    ///    the cut, the exit ritual (`crate::commands::git_settle`) can only
-    ///    measure the base by containment, and refuses with `ambiguous-base`
-    ///    when that does not land on exactly one branch.
-    /// 2. The CATALOGUE really offered more than one branch
-    ///    ([`catalogue_offers_a_choice`]) — which the first leg cannot see. The
-    ///    picker offers every branch `origin` has, declared or not, so in a
-    ///    project declaring ONE base and carrying five branches the operator
-    ///    chose from five while the count reported "nothing to choose": the
-    ///    answer was dropped before it was ever written, and every later read
-    ///    re-derived the single declared base instead. That is this spec's
-    ///    defect one step earlier than the filter it removed — same closed list,
-    ///    same discarded pick.
-    ///
-    /// So this only ever records MORE than the count alone did. A rootless model
-    /// has no catalogue to ask and keeps leg 1 by itself; an unmeasurable one
-    /// (no git, no remote, an unfetched clone) reads the same way, because a
-    /// probe that said nothing must not be the thing that decides an answer was
-    /// worth keeping.
-    ///
-    /// The one spelling of that condition, shared by the emitter that records
-    /// the pick in the pending marker and by the record the cut leaves in the
-    /// unit's own directory ([`record_cut_base`](Self::record_cut_base)), which
-    /// is what [`base_of`](Self::base_of) reads back — consumers that must agree
-    /// about when an answer exists to be remembered.
-    #[cfg(test)]
-    pub(crate) fn base_must_be_recorded(&self, branch: &str) -> bool {
-        if WorkKind::of_branch(branch).is_none() {
-            return false;
-        }
-        if self.bases().len() != 1 {
-            return true;
-        }
-        self.project.as_deref().and_then(catalogue_offers_a_choice).unwrap_or(false)
-    }
-
-    /// The base recorded FOR THIS UNIT, `None` when nothing was recorded, when
-    /// this model has no project to consult, or when what was recorded is a
-    /// branch the remote no longer has.
-    ///
-    /// TWO places, one answer, in the order the answer travels: the sidecar
-    /// (`meta.json#base`, its durable home once the draft has folded it) and
-    /// then the cut's own record ([`CUT_BASE_FILE`], where the cut writes it
-    /// because at cut time the draft does not exist yet). A unit that was cut
-    /// and never drafted still answers, and one that was drafted answers from
-    /// the single file every other machine-parseable fact about it lives in.
-    ///
-    /// The check on the way out matters, and WHAT it checks matters more: the
-    /// repository may have moved on since the cut, and answering with a branch
-    /// that is gone is worse than falling back to the derivation. So the record
-    /// is measured against the branches the remote really has
-    /// ([`base_still_on_remote`]) — never against `git.flow`, which would drop
-    /// the answer of every operator who picked a base the install never
-    /// declared. The same posture, through the same helper,
-    /// [`crate::commands::event::work_branch::recorded_or_derived_base`] takes
-    /// with the marker.
-    fn recorded_base_of(&self, name: &str) -> Option<String> {
-        let project = self.project.as_deref()?;
-        let slug = self.slug_of(name)?;
-        let dir = unit_dir(project, &slug)?;
-        let recorded = cut_base_in(&dir)?;
-        let recorded = recorded.trim().to_string();
-        base_still_on_remote(project, &recorded).then_some(recorded)
-    }
-
-    /// Write down the base a unit was ACTUALLY cut from, in the cut's own record
-    /// ([`CUT_BASE_FILE`]) inside the unit's directory.
-    ///
-    /// NOT `meta.json`, and that is the whole point: the cut runs before the
-    /// draft, and a `meta.json` sitting in the directory is precisely what makes
-    /// `spec-draft` refuse the directory as already drafted — so recording the
-    /// base there cut the unit and then denied it a spec. The file this writes is
-    /// harness state the draft's guard tolerates by category, and the draft folds
-    /// it into `meta.json#base` on its way past (see [`CUT_BASE_FILE`]).
-    ///
-    /// A no-op unless [`base_must_be_recorded`](Self::base_must_be_recorded):
-    /// freezing a derivable answer would make the record the thing that goes
-    /// stale when `git.flow` changes, and it would leave a file in the directory
-    /// of every unit for a question the flow already answers. A no-op too once
-    /// the answer is already on disk — the folded sidecar is not resurrected
-    /// into a second copy by a later checkout of the same branch.
-    ///
-    /// Fail-open at every step (no project, no slug, an unwritable directory):
-    /// this runs inside a HOOK that has already cut the branch, and a record
-    /// that could not be written must never turn a successful cut into a blocked
-    /// session.
-    #[cfg(test)]
-    pub(crate) fn record_cut_base(&self, branch: &str, base: &str) {
-        if !self.base_must_be_recorded(branch) {
-            return;
-        }
-        let Some(project) = self.project.as_deref() else { return };
-        let Some(slug) = self.slug_of(branch) else { return };
-        let Some(dir) = unit_dir(project, &slug) else { return };
-        let already = cut_base_in(&dir);
-        if already.as_deref() == Some(base) {
-            return; // already says exactly this — write nothing
-        }
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        let _ = mustard_core::io::fs::write_atomic(
-            dir.join(CUT_BASE_FILE),
-            format!("{base}\n").as_bytes(),
-        );
     }
 
     /// The `{base}_` half of a name still in the pre-kind shape. Separate from
@@ -937,9 +668,9 @@ mod tests {
         let flow = BaseFlow::of(&two_tier());
 
         // The base no longer comes from the KIND — it is the operator's answer,
-        // recorded at the cut. With two declared bases and nothing recorded,
-        // every kind reads the same way, and that sameness IS the change: the
-        // prefix stopped carrying a base.
+        // kept in the spec's record. With two declared bases the name alone
+        // answers nothing, every kind reads the same way, and that sameness IS
+        // the change: the prefix stopped carrying a base.
         for name in ["feature/my-unit", "fix/my-unit", "hotfix/my-unit"] {
             assert!(
                 flow.base_of(name).known().is_none(),
@@ -995,43 +726,25 @@ mod tests {
         branches.iter().all(|b| git(&["update-ref", &format!("refs/remotes/origin/{b}"), "HEAD"]))
     }
 
-    /// A recorded base that VANISHED from the remote is ignored, and the
-    /// derivation takes over — while one the CONFIGURATION never declared is
-    /// obeyed.
-    ///
-    /// The two halves are one subject: this is the protection the old
-    /// declared-list filter was reaching for, pointed at something the question
-    /// can actually be asked of. `git.flow` cannot say whether a branch still
-    /// exists; the refs can. So the record is dropped in the one case that
-    /// justifies dropping it — the repository answered, and did not name it.
+    /// A base file an earlier version left in the unit's directory answers
+    /// nothing: with several declared bases the flow alone speaks, so the unit is
+    /// `Ambiguous` and names every candidate, whether or not the remote still has
+    /// the branch the file names.
     #[test]
-    fn a_vanished_recorded_base_is_ignored() {
+    fn a_base_file_left_in_the_unit_directory_does_not_answer_the_base() {
         let dir = tempfile::tempdir().expect("tempdir");
         let project = dir.path();
         if !seed_remote_refs(project, &["dev", "qas", "main", "release/2026-Q3"]) {
             return; // no usable git here — nothing here is measurable at all
         }
-        let git = three_tier();
-        let flow = BaseFlow::of_at(&git, project);
+        let unit = project.join(".claude").join("spec").join("na-linha-de-release");
+        std::fs::create_dir_all(&unit).expect("unit dir");
+        std::fs::write(unit.join(".cut-base"), "release/2026-Q3\n").expect("leftover file");
 
-        // A pick no `git.flow` ever declared, which the remote really has.
-        flow.record_cut_base("hotfix/na-linha-de-release", "release/2026-Q3");
-        assert_eq!(
-            BaseFlow::of_at(&git, project).base_of("hotfix/na-linha-de-release").known(),
-            Some("release/2026-Q3"),
-            "an existing branch is the operator's answer, declared or not",
-        );
-
-        // A pick that is GONE — the release line was merged and deleted.
-        flow.record_cut_base("hotfix/na-linha-extinta", "release/2025-Q1");
-        let vanished = BaseFlow::of_at(&git, project).base_of("hotfix/na-linha-extinta");
-        assert!(vanished.is_unit(), "it is still this project's unit");
-        assert_eq!(vanished.known(), None, "a base that no longer exists cannot be cut from");
-        assert_eq!(
-            vanished.candidates(),
-            ["dev", "main", "qas"],
-            "…and the derivation takes over, naming what it could not choose between",
-        );
+        let answer = BaseFlow::of_at(&three_tier(), project).base_of("hotfix/na-linha-de-release");
+        assert!(answer.is_unit(), "it is still this project's unit");
+        assert_eq!(answer.known(), None, "the file is not read, even for a branch the remote has");
+        assert_eq!(answer.candidates(), ["dev", "main", "qas"], "the flow names what it could not choose");
     }
 
     /// An integration line whose NAME carries an underscore is not somebody's
@@ -1044,7 +757,7 @@ mod tests {
     /// integration line and the pull-request list would refuse to run from it,
     /// which is exactly the damage `is_declared_base` prevents, arriving
     /// through the other door. Both kinds of real unit still resolve —
-    /// the one this harness already cut and drafted, and the one that does not
+    /// the one this harness already cut, and the one that does not
     /// exist on the remote yet because it is about to be cut.
     #[test]
     fn an_underscored_base_is_not_mistaken_for_a_legacy_unit() {

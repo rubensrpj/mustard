@@ -17,23 +17,22 @@ use std::path::PathBuf;
 
 use crate::commands::{review};
 
-/// The `run` subcommands owned by the REVIEW and QA gates (`review/`).
+/// The `run` subcommands owned by the review and quality gates (`review/`).
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ReviewCmd {
-    /// The `/mustard:pr` door's REVIEW step: resolve a pull request to its work
-    /// unit and print the review brief — the spec the unit belongs to, the
-    /// subproject the unit's tasks name their files under, and that
-    /// subproject's skill shelf (the same molds the implementer was
-    /// dispatched with). With `--verdict` it
-    /// refuses and records nothing: the verdict of each wave is recorded by
-    /// the round.
+    /// The `review` step of the `/mustard:pr` door: resolve a pull request to
+    /// its work unit and print the review brief. The brief names the spec of
+    /// the unit, the subproject its tasks name files under, and that
+    /// subproject's skill shelf. Those are the same molds the implementer was
+    /// dispatched with. With `--verdict` it refuses and records nothing: the
+    /// verdict of each wave is recorded by the round.
     #[command(name = "pr-review")]
     #[command(display_order = 7)]
     Review {
-        /// PR number. Omitted: the open pull requests are LISTED, so the
-        /// reviewer picks the colleague's one instead of being handed their
-        /// own branch's.
+        /// The pull request number. Without it, the open pull requests are
+        /// listed, so the reviewer picks the colleague's one instead of being
+        /// handed their own branch's.
         #[arg(long)]
         pr: Option<u64>,
         /// O comando recusa e não grava nada com ele: o veredito de cada onda
@@ -45,18 +44,18 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// The `/mustard:pr` door's MERGE step: merge the pull request, then prune
-    /// the unit (back to the base, pull it, remove the worktree, delete the
-    /// local + remote branch). A unit whose review did not
-    /// come back `approved` is WARNED about and ASKED — the command answers
-    /// `action:"confirm"` and touches nothing; it never refuses. `--confirm` is
-    /// the operator's answer coming back.
+    /// The `merge` step of the `/mustard:pr` door: merge the pull request, then
+    /// prune the unit. It goes back to the base, pulls it, removes the
+    /// worktree and deletes the local and the remote branch. A unit whose
+    /// review did not come back `approved` is warned about and asked: the
+    /// command answers `action:"confirm"` and touches nothing, and it never
+    /// refuses. `--confirm` is the operator's answer coming back.
     #[command(name = "pr-merge")]
     #[command(display_order = 6)]
     Merge {
-        /// PR number. Omitted: the open pull requests are LISTED, so the
-        /// reviewer picks the colleague's one instead of being handed their
-        /// own branch's.
+        /// The pull request number. Without it, the open pull requests are
+        /// listed, so the reviewer picks the colleague's one instead of being
+        /// handed their own branch's.
         #[arg(long)]
         pr: Option<u64>,
         /// The operator's answer to the unreviewed-merge question. Without it
@@ -67,22 +66,24 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// The `/mustard:pr` door's OPEN step: open the unit's pull request through
-    /// the provider IN FORCE (`git.provider` declared, else the `origin`
-    /// remote, else the fallback) — the prose names this command, never a
-    /// provider CLI. The title is the body file's first heading. Answers one
-    /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
+    /// The `open` step of the `/mustard:pr` door: open the unit's pull request
+    /// through the provider in use (`git.provider` declared, else the `origin`
+    /// remote, else the fallback). The prose names this command, never the
+    /// command line of a provider. The work branch is pushed to `origin`
+    /// first; a refused push stops the command with `push:` and git's message
+    /// in `error`, and no pull request is opened or rewritten. The title is
+    /// the body file's first heading. Answers one JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
     /// `error` field with exit 0, never a panic.
     #[command(name = "pr-open")]
     #[command(display_order = 5)]
     Open {
-        /// The integration base the PR targets (short branch name).
+        /// The integration base the pull request targets (short branch name).
         #[arg(long)]
         base: String,
-        /// The work branch the PR is opened FROM (short branch name).
+        /// The work branch the pull request is opened from (short branch name).
         #[arg(long)]
         head: String,
-        /// A spec whose event file the title and the body are BUILT from.
+        /// A spec whose event file the title and the body are built from.
         /// Nobody writes them: the goal becomes the title, the recorded
         /// summary and what each wave delivered become the body.
         #[arg(long)]

@@ -232,23 +232,22 @@ impl BranchEnumerator {
         &self.units
     }
 
-    /// Fill in the base of every swept unit whose base nothing RECORDED, by
+    /// Fill in the base of every swept unit whose base nothing established, by
     /// MEASURING which declared base already contains it.
     ///
     /// [`from_refs`](Self::from_refs) is pure, so it can only answer from the
-    /// unit's own directory; with several declared bases a unit nobody recorded
+    /// flow and the name; with several declared bases a `{kind}/{slug}` unit
     /// comes back `Ambiguous` and is filed under the empty base. Every
     /// per-base measurement below then skips it —
     /// [`refs_ahead_of_base`] iterates `flow.bases()` and matches on equality —
     /// so the unit is invisible to every consumer of this sweep. A branch cut
-    /// by hand, with no base recorded at the cut, merged into `dev` and left
-    /// alive would be reported by nothing at all, which is the exact debt the
-    /// prune advisory exists to name.
+    /// by hand, merged into `dev` and left alive would be reported by nothing at
+    /// all, which is the exact debt the prune advisory exists to name.
     ///
     /// Containment IS the answer this sweep needs, and it needs no record: a
     /// unit reachable from exactly ONE declared base was demonstrably merged
     /// there. The exit ritual (`crate::commands::git_settle`) already reaches
-    /// for that measurement when a record is missing; this puts it where every
+    /// for that measurement when the name says nothing; this puts it where every
     /// consumer benefits.
     ///
     /// Reachable from NO base — the ordinary unmerged unit — keeps the empty
@@ -947,14 +946,16 @@ mod tests {
     fn scratch_repo() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        run(&root, &["init", "."]);
-        run(&root, &["config", "user.email", "t@t"]);
-        run(&root, &["config", "user.name", "t"]);
-        run(&root, &["config", "commit.gpgsign", "false"]);
-        run(&root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
-        run(&root, &["add", "-A"]);
-        run(&root, &["commit", "-m", "seed"]);
+        crate::shared::test_fixture::repo_from_template(&root, "branch_state.scratch_repo", |root| {
+            run(root, &["init", "."]);
+            run(root, &["config", "user.email", "t@t"]);
+            run(root, &["config", "user.name", "t"]);
+            run(root, &["config", "commit.gpgsign", "false"]);
+            run(root, &["checkout", "-b", "dev"]);
+            std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+            run(root, &["add", "-A"]);
+            run(root, &["commit", "-m", "seed"]);
+        });
         (dir, root)
     }
 

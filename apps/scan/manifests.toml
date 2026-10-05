@@ -4,15 +4,29 @@
 # literal. To support a new build system: add a [[manifest]] row here. Only a
 # brand-new file FORMAT (beyond json/xml/toml/yaml/lines) needs an engine change.
 #
-# Directories the scanner skips (build/dependency output, plus the harness's
-# own .claude state/tooling — scanning it is self-referential noise) live here too.
+# As pastas que a caminhada pula também moram aqui, em duas listas, e valem
+# pelo nome, em qualquer profundidade. Toda pasta pulada vai à cobertura do mapa
+# pelo caminho relativo.
+#
+# skip_dirs: as que nunca guardam código do projeto — o git e a ferramenta do
+# Claude, que lida seria ruído dela mesma. Sempre puladas.
+skip_dirs = [".git", ".claude"]
 
-skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", "build", ".dart_tool", "vendor"]
+# output_dirs: as de saída de compilação e de dependências. Dentro do git, a
+# pasta é lida quando o índice do git guarda nela algum arquivo de código (de
+# língua que o registro reconhece), e pulada sem nenhum; a que o .gitignore pega
+# fica fora pela própria caminhada. Fora do git, sempre pulada.
+output_dirs = ["node_modules", "target", "bin", "obj", "dist", "build", ".dart_tool", "vendor"]
 
 # Fields per manifest:
 #   kind            label stored on the project (free-form, from the repo's world)
 #   filename / ext  match by exact filename OR by extension(s)
 #   format          generic reader: json | xml-attr | xml-text | toml-sections | yaml-section | gomod
+#                   | lines (uma dependência por linha: o nome antes do primeiro
+#                   `=`, `<`, `>`, `~`, `!`, `[`, `;` ou espaço; linha vazia,
+#                   comentário `#` e opção começada por `-` ficam de fora)
+#                   | none (no dependency reader: the file only marks the project;
+#                   a manifest written in a source language is still read as code)
 #   name            project name rule: "dir" (parent folder) | "stem" (filename without ext)
 #   deps            selector(s) for dependencies (meaning depends on format)
 #   scripts         (json) object path whose entries are build/codegen scripts
@@ -21,7 +35,14 @@ skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", 
 #   package_pattern regex capturing the package's own name, the first line that
 #                   matches; an import whose first segment is that name (with
 #                   `-` read as `_`) resolves inside this package's directory
+#   namespace_pattern regex capturing the namespace the manifest declares as
+#                   its project's default, the first line that matches; a page
+#                   without a namespace of its own lives in it (plus its
+#                   folders). Without a match, the default is the project name
 #   dep_pattern     (gomod) regex capturing each dependency
+#   extra_dep_pattern regex whose first group, wherever it matches in the file,
+#                   is one more dependency: what the manifest depends on
+#                   outside the dependency list (the SDK a .csproj names)
 
 [[manifest]]
 kind = "npm"
@@ -47,12 +68,18 @@ format = "xml-attr"
 name = "stem"
 element = "PackageReference"
 attr = "Include"
+extra_dep_pattern = '<Project\s+[^>]*Sdk="([^"]+)"'
+# A property written between other tags on the line still counts; one after a
+# comment opener does not. A value that names another property (`$(...)`)
+# is not a namespace: it falls back to the project name.
+namespace_pattern = '(?:^|>)\s*<RootNamespace>\s*([^<\s$]+)\s*</RootNamespace>'
 
 [[manifest]]
 kind = "pub"
 filename = "pubspec.yaml"
 format = "yaml-section"
 name = "dir"
+package_pattern = '^name:\s*(\S+)'
 deps = ["dependencies", "dev_dependencies"]
 
 [[manifest]]
@@ -77,3 +104,35 @@ format = "toml-sections"
 name = "dir"
 package_pattern = '^\s*name\s*=\s*"([^"]+)"'
 deps = ["dependencies", "dev-dependencies", "build-dependencies"]
+
+[[manifest]]
+kind = "pyproject"
+filename = "pyproject.toml"
+format = "toml-sections"
+name = "dir"
+deps = ["tool.poetry.dependencies", "tool.poetry.dev-dependencies"]
+
+[[manifest]]
+kind = "setuptools"
+filename = "setup.py"
+format = "none"
+name = "dir"
+
+[[manifest]]
+kind = "pip"
+filename = "requirements.txt"
+format = "lines"
+name = "dir"
+
+[[manifest]]
+kind = "pipenv"
+filename = "Pipfile"
+format = "toml-sections"
+name = "dir"
+deps = ["packages", "dev-packages"]
+
+[[manifest]]
+kind = "setuptools"
+filename = "setup.cfg"
+format = "none"
+name = "dir"

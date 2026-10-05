@@ -1,0 +1,7 @@
+{
+  // A configuração da raiz herda os apelidos da base.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "strict": true,
+  },
+}

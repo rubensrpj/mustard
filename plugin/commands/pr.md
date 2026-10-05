@@ -5,7 +5,7 @@ disable-model-invocation: true
 ---
 # /mustard:pr — the pull request door
 
-Print each JSON answer as it came. The PR body is not yours to write. The binary builds it, and the title, from the spec.
+Relay each answer to the user in plain words, in the response style. The PR body is not yours to write. The binary builds it, and the title, from the spec.
 
 ## open
 

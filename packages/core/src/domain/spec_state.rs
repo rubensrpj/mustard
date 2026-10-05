@@ -22,12 +22,11 @@
 //! pendências) recebe os valores já lidos e se testa sem disco, com uma
 //! [`SpecState`] falsa.
 //!
-//! O resultado dos critérios ([`qa`]), o veredito das ondas ([`review`]) e os
-//! pedidos depois da última execução ([`requests_after`]) também moram aqui:
-//! toda porta que pergunta "o QA passou?" ou "a revisão reprovou?" lê a mesma
-//! resposta do mesmo arquivo.
+//! O resultado dos critérios ([`qa`]) e o veredito das ondas ([`review`])
+//! também moram aqui: toda porta que pergunta "o QA passou?" ou "a revisão
+//! reprovou?" lê a mesma resposta do mesmo arquivo.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde_json::Value;
 
@@ -72,16 +71,8 @@ impl State {
     /// fica.
     #[must_use]
     pub fn from_log(log: &SpecLog) -> Self {
-        let mut states: Vec<(u64, &SpecEvent)> = log
-            .block(BlockQuery::Block(Block::State))
-            .into_iter()
-            .filter(|event| event.event_type == "state")
-            .map(|event| (original_of(log, event), event))
-            .collect();
-        states.sort_by_key(|(at, event)| (*at, event.id));
-
         let mut state = Self::default();
-        for (_, event) in states {
+        for event in folded_states(log) {
             if let Some(phase) = event.str_field("phase").and_then(known_phase) {
                 state.phase = Some(phase);
                 if CLOSING_PHASES.contains(&phase) {
@@ -112,6 +103,39 @@ impl State {
     }
 }
 
+/// Os eventos `state` visíveis na ordem da dobra: pelo número da primeira
+/// versão de cada item, e a revisão no lugar dele. É a ordem única em que a
+/// fase anda, para o [`State`] e para quem procura uma mudança de fase.
+fn folded_states(log: &SpecLog) -> Vec<&SpecEvent> {
+    let mut states: Vec<(u64, &SpecEvent)> = log
+        .block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|event| event.event_type == "state")
+        .map(|event| (original_of(log, event), event))
+        .collect();
+    states.sort_by_key(|(at, event)| (*at, event.id));
+    states.into_iter().map(|(_, event)| event).collect()
+}
+
+/// O número do último `state` que levou a spec de volta à execução depois do
+/// fechamento: de `closed` ou `pr_open` para `running`, na ordem da dobra.
+/// `None` numa spec que nunca foi reaberta assim.
+#[must_use]
+pub fn last_reopening(log: &SpecLog) -> Option<u64> {
+    let mut was: Option<&str> = None;
+    let mut last = None;
+    for event in folded_states(log) {
+        let Some(phase) = event.str_field("phase").and_then(known_phase) else {
+            continue;
+        };
+        if phase == "running" && was.is_some_and(returns_to_running) {
+            last = Some(event.id);
+        }
+        was = Some(phase);
+    }
+    last
+}
+
 /// A fase é a de uma spec aprovada. A lista é uma só: a que o [`State`] dobra
 /// e a que o portão de escrita lê.
 #[must_use]
@@ -125,13 +149,33 @@ fn order(phase: &str) -> usize {
     PHASES.iter().position(|known| *known == phase.trim()).unwrap_or(PHASES.len())
 }
 
+/// A spec ainda não fechou: a fase de agora vem antes do fechamento. Em
+/// levantamento, em plano, aprovada ou em execução, sim; fechada, com o pull
+/// request aberto, entregue ou descartada, não. É a pergunta de quem aponta
+/// uma spec para receber trabalho novo sem reabri-la, separada da regra de
+/// volta ([`reopenable`] e [`returns_to_running`]).
+#[must_use]
+pub fn not_closed_yet(phase: &str) -> bool {
+    order(phase) < order("closed")
+}
+
 /// A spec pode voltar ao levantamento: a fase de agora vem antes do
 /// fechamento. Em levantamento, em plano, aprovada ou em execução, a volta
-/// passa; fechada, com o pull request aberto, entregue ou descartada, não: o
-/// que essas decidiram já saiu, e o caminho é uma spec nova.
+/// passa. A fechada e a com o pull request aberto voltam à execução, e não
+/// ao levantamento ([`returns_to_running`]); a entregue e a descartada não
+/// voltam por caminho nenhum.
 #[must_use]
 pub fn reopenable(phase: &str) -> bool {
     order(phase) < order("closed")
+}
+
+/// A spec reaberta volta à execução, já aprovada, na mesma branch: a fechada
+/// e a com o pull request aberto. O que ela decidiu continua valendo, e o
+/// pedido novo entra como tarefas novas. A entregue na base e a descartada
+/// não voltam: pedido novo sobre elas é obra nova.
+#[must_use]
+pub fn returns_to_running(phase: &str) -> bool {
+    matches!(phase.trim(), "closed" | "pr_open")
 }
 
 /// Quem grava uma mudança de fase no `spec.ndjson`. O modelo não está aqui:
@@ -153,11 +197,14 @@ pub enum PhaseWriter {
 ///
 /// - `approved` só pela testemunha, e só de nenhuma fase ou de `plan`.
 /// - As fases depois da aprovação (`running`, `closed`, `pr_open`,
-///   `delivered`) só pelo binário, e só a partir de uma fase aprovada.
+///   `delivered`) só pelo binário, só a partir de uma fase aprovada e para a
+///   frente na ordem das fases. A única volta entre elas é a reabertura: a
+///   spec fechada ou com o pull request aberto volta à execução
+///   ([`returns_to_running`]). A entregue não volta a fase nenhuma.
 /// - Uma fase que não aprova (`survey`, `plan`, `discarded`) só fecha a
 ///   trava, e só o binário a grava: o nascimento, a passagem para a frente na
-///   ordem das fases e a volta ao levantamento, que é a única marcha à ré e
-///   sai só de uma spec que ainda não fechou ([`reopenable`]).
+///   ordem das fases e a volta ao levantamento, que sai só de uma spec que
+///   ainda não fechou ([`reopenable`]).
 /// - A branch e a base, só o binário: no nascimento, ou completando a que
 ///   falta. O portão deixa de travar numa branch diferente da gravada.
 /// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento.
@@ -189,14 +236,22 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
         let Some(from) = before.phase else {
             return true;
         };
-        // A volta ao levantamento é a única marcha à ré, e sai só de uma spec
-        // que ainda não fechou. O resto anda para a frente, na ordem das
-        // fases.
+        // A volta ao levantamento sai só de uma spec que ainda não fechou. O
+        // resto anda para a frente, na ordem das fases.
         return if to == "survey" { reopenable(from) } else { order(from) < order(to) };
     }
     match by {
         PhaseWriter::Witness => to == "approved" && matches!(before.phase, None | Some("plan")),
-        PhaseWriter::Binary => to != "approved" && before.approved,
+        // Entre as fases aprovadas, só para a frente; a volta é a da
+        // reabertura, da fechada ou da com o pull request aberto para a
+        // execução. A entregue, a última delas, não volta a nenhuma.
+        PhaseWriter::Binary => {
+            to != "approved"
+                && before.approved
+                && before.phase.is_some_and(|from| {
+                    order(from) < order(to) || (to == "running" && returns_to_running(from))
+                })
+        }
     }
 }
 
@@ -480,12 +535,19 @@ impl Review {
     }
 }
 
-/// O número da última mudança da obra: a entrega ou o commit mais novo, ou
-/// zero numa spec que ainda não mudou nada. É daqui que o fechamento e o
-/// portão do merge medem o que a aprovação final já viu.
+/// O número da última mudança da obra: a entrega, o commit ou a reabertura
+/// mais nova, ou zero numa spec que ainda não mudou nada. É daqui que o
+/// fechamento e o portão do merge medem o que a aprovação final já viu.
+///
+/// A reabertura conta como mudança: a spec fechada ou com o pull request
+/// aberto que volta à execução vai receber pedido novo, e a aprovação final
+/// dada antes dela não viu o que vem. O fechamento seguinte chama o revisor
+/// final de novo, mesmo sem entrega nova.
 #[must_use]
 pub fn last_change(log: &SpecLog) -> u64 {
-    log.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "commit")).map(|e| e.id).max().unwrap_or(0)
+    let work =
+        log.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "commit")).map(|e| e.id).max();
+    work.max(last_reopening(log)).unwrap_or(0)
 }
 
 /// A aprovação final da obra: o veredito do agente de teste dedicado
@@ -538,65 +600,6 @@ pub fn review(log: &SpecLog) -> Review {
         any: !last.is_empty() || quittance > 0,
         rejected: last.values().any(|(id, rejected)| *rejected && *id > quittance),
     }
-}
-
-/// Os pedidos (`request`) que a leitura mostra e que vieram depois do evento
-/// de número `after`, em ordem: mudanças que a última execução dos critérios
-/// não conferiu.
-#[must_use]
-pub fn requests_after(log: &SpecLog, after: u64) -> Vec<&SpecEvent> {
-    log.block(BlockQuery::Block(Block::Notes))
-        .into_iter()
-        .filter(|event| event.event_type == "request" && event.id > after)
-        .collect()
-}
-
-/// A aprovação que vale: o `state` visível mais novo, na ordem da dobra, com a
-/// fase `approved`, enquanto a dobra lê a spec aprovada. `None` numa spec que
-/// nunca foi aprovada e numa que voltou a uma fase de antes da aprovação. O
-/// leitor da aprovação do rt lê daqui; a página e o aviso de crescimento das
-/// ondas medem pela fronteira dela ([`approval_boundary`]).
-#[must_use]
-pub fn approval_event(log: &SpecLog) -> Option<&SpecEvent> {
-    if !State::from_log(log).approved {
-        return None;
-    }
-    log.block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some("approved"))
-        .max_by_key(|event| (original_of(log, event), event.id))
-}
-
-/// A fronteira da aprovação que vale: o número da primeira versão dela. Uma
-/// aprovação revista, como a da spec antiga que nasceu aprovada e ganhou a
-/// branch depois, continua valendo desde onde foi dada: o que veio entre ela
-/// e a revisão já é depois da aprovação. A página mede daqui.
-#[must_use]
-pub fn approval_boundary(log: &SpecLog) -> Option<u64> {
-    approval_event(log).map(|event| original_of(log, event))
-}
-
-/// Quantas ondas a leitura mostra agora, cada uma pelo número dela.
-#[must_use]
-pub fn waves_now(log: &SpecLog) -> usize {
-    log.visible()
-        .into_iter()
-        .filter(|event| event.event_type == "wave")
-        .filter_map(SpecEvent::wave)
-        .collect::<BTreeSet<u64>>()
-        .len()
-}
-
-/// Algum `state` que a leitura mostra, com a fase `phase`, foi gravado no
-/// instante `since_secs` (segundos desde a época) ou depois. A hora do evento
-/// traz o fuso e vem em segundos; uma hora que não se lê não conta.
-#[must_use]
-pub fn phase_recorded_since(log: &SpecLog, phase: &str, since_secs: i64) -> bool {
-    log.block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some(phase))
-        .filter_map(|event| chrono::DateTime::parse_from_rfc3339(event.at()).ok())
-        .any(|at| at.timestamp() >= since_secs)
 }
 
 /// A escada de "qual é a spec atual": a variável de ambiente, depois a spec da
@@ -715,6 +718,92 @@ mod tests {
         );
         assert!(!phase_write_allowed(&on(Some("feature/x"), "dev"), &on(Some("outra"), "dev"), Some("plan"), Witness));
         assert!(!phase_write_allowed(&on(Some("feature/x"), "dev"), &on(Some("feature/x"), "main"), Some("plan"), Witness));
+    }
+
+    /// A reabertura é a única volta entre as fases aprovadas: a spec fechada
+    /// e a com o pull request aberto voltam à execução pelo binário, e a
+    /// entregue não sai do lugar para fase aprovada nenhuma. A volta ao
+    /// levantamento continua só para a spec que ainda não fechou.
+    #[test]
+    fn closed_and_pr_open_go_back_to_running_and_delivered_never_does() {
+        use PhaseWriter::{Binary, Witness};
+        let allowed = |from, to, by| phase_write_allowed(&at(from), &at(to), to, by);
+
+        for from in ["closed", "pr_open"] {
+            assert!(allowed(Some(from), Some("running"), Binary), "{from} goes back to running");
+            assert!(!allowed(Some(from), Some("running"), Witness), "only the binary reopens {from}");
+            assert!(!allowed(Some(from), Some("survey"), Binary), "{from} never goes back to the survey");
+            assert!(!allowed(Some(from), Some("approved"), Binary), "{from} never goes back to the approval");
+        }
+        for to in ["running", "closed", "pr_open"] {
+            assert!(!allowed(Some("delivered"), Some(to), Binary), "delivered never goes back to {to}");
+        }
+        assert!(!allowed(Some("delivered"), Some("survey"), Binary), "delivered never goes back to the survey");
+        // Não há outra marcha à ré entre as fases aprovadas.
+        assert!(!allowed(Some("pr_open"), Some("closed"), Binary), "the pull request does not go back to closed");
+        // A ida para a frente segue como era.
+        assert!(allowed(Some("running"), Some("closed"), Binary));
+        assert!(allowed(Some("closed"), Some("pr_open"), Binary));
+        assert!(allowed(Some("pr_open"), Some("delivered"), Binary));
+        // A spec sem fase nunca chega à execução.
+        assert!(!allowed(None, Some("running"), Binary), "a phaseless spec never runs");
+
+        // A volta ao levantamento é a da spec que ainda não fechou, e a volta
+        // à execução é a da fechada ou com o pull request aberto.
+        for phase in ["survey", "plan", "approved", "running"] {
+            assert!(reopenable(phase) && not_closed_yet(phase) && !returns_to_running(phase), "{phase}");
+        }
+        for phase in ["closed", "pr_open"] {
+            assert!(!reopenable(phase) && !not_closed_yet(phase) && returns_to_running(phase), "{phase}");
+        }
+        for phase in ["delivered", "discarded", "-"] {
+            assert!(!reopenable(phase) && !not_closed_yet(phase) && !returns_to_running(phase), "{phase}");
+        }
+    }
+
+    /// A aprovação final dada antes da última reabertura não vale: a spec
+    /// fechada que volta à execução vai receber pedido novo, e o fechamento
+    /// seguinte chama o revisor final de novo, mesmo sem entrega nova. A que
+    /// vem depois da reabertura vale.
+    #[test]
+    fn a_final_approval_before_the_last_reopen_does_not_count() {
+        let final_verdict = |id: u64| {
+            json!({"v":1,"id":id,"type":"verdict","author":"review","final":true,"result":"approved",
+                   "text":"Sem achados.","agreed":[{"item":1,"met":true}]})
+        };
+        let mut lines = vec![
+            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
+            json!({"v":1,"id":2,"type":"state","phase":"approved","witness":{"question":"q","answer":"a"}}),
+            json!({"v":1,"id":3,"type":"state","phase":"running"}),
+            json!({"v":1,"id":4,"type":"delivered","wave":1,"text":"A onda 1 entregou.","files":["src/a.rs"]}),
+            final_verdict(5),
+            json!({"v":1,"id":6,"type":"state","phase":"closed"}),
+        ];
+        // Fechada, a aprovação final vale.
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(5));
+        assert_eq!(last_change(&log(&lines)), 4);
+
+        // Reaberta, sem entrega nova: a aprovação de antes já não vale.
+        lines.push(json!({"v":1,"id":7,"type":"state","phase":"running","reason":"Pedido novo."}));
+        let reopened = log(&lines);
+        assert_eq!(last_change(&reopened), 7, "the reopening is the last change");
+        assert_eq!(final_approval(&reopened), None, "the approval before the reopening does not count");
+
+        // A aprovação final dada depois da reabertura vale.
+        lines.push(final_verdict(8));
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(8));
+
+        // Pelo pull request aberto, a mesma coisa.
+        let mut from_pr = lines[..6].to_vec();
+        from_pr.push(json!({"v":1,"id":7,"type":"state","phase":"pr_open"}));
+        assert_eq!(final_approval(&log(&from_pr)).map(|e| e.id), Some(5));
+        from_pr.push(json!({"v":1,"id":8,"type":"state","phase":"running","reason":"Pedido novo."}));
+        assert_eq!(final_approval(&log(&from_pr)), None, "reopened from the pull request");
+
+        // A entrada na execução pela primeira vez não é reabertura.
+        let first_run = log(&lines[..5]);
+        assert_eq!(last_change(&first_run), 4, "the first run is not a reopening");
+        assert_eq!(final_approval(&first_run).map(|e| e.id), Some(5));
     }
 
     #[test]
@@ -919,97 +1008,6 @@ mod tests {
         assert_eq!(fixed.word(), Some("approved"));
     }
 
-    /// Um `state` conta a partir do instante em que foi gravado, lido com o
-    /// fuso dele; outra fase, uma hora ilegível e um `state` removido, não.
-    #[test]
-    fn a_phase_counts_from_the_instant_it_was_recorded() {
-        let closed = log(&[
-            json!({"v":1,"id":1,"at":"2026-09-13T09:00:00-03:00","type":"state","phase":"approved"}),
-            json!({"v":1,"id":2,"at":"2026-09-13T10:00:00-03:00","type":"state","phase":"closed"}),
-            json!({"v":1,"id":3,"at":"ontem","type":"state","phase":"closed"}),
-        ]);
-        // 10:00 em -03:00 é 13:00 UTC.
-        let at_13 = chrono::DateTime::parse_from_rfc3339("2026-09-13T13:00:00Z").unwrap().timestamp();
-        assert!(phase_recorded_since(&closed, "closed", at_13));
-        assert!(!phase_recorded_since(&closed, "closed", at_13 + 1), "the close came before");
-        assert!(!phase_recorded_since(&closed, "delivered", 0), "another phase does not count");
-
-        let removed = log(&[
-            json!({"v":1,"id":1,"at":"2026-09-13T10:00:00-03:00","type":"state","phase":"closed"}),
-            json!({"v":1,"id":2,"type":"remove","targets":[1],"reason":"engano"}),
-        ]);
-        assert!(!phase_recorded_since(&removed, "closed", 0), "a removed state does not count");
-    }
-
-    /// Só os pedidos gravados depois do evento dado voltam.
-    #[test]
-    fn only_the_requests_after_the_given_event_come_back() {
-        let request = |id: u64, text: &str| {
-            json!({"v":1,"id":id,"type":"request","text":text,"keys":[],"effect":"adjust_waves","origin":1})
-        };
-        let log = log(&[request(2, "antes"), criterion(3), run(4, 3, "pass"), request(5, "depois")]);
-        let after: Vec<&str> = requests_after(&log, 4).iter().filter_map(|e| e.str_field("text")).collect();
-        assert_eq!(after, ["depois"]);
-        assert_eq!(requests_after(&log, 0).len(), 2);
-    }
-
-    fn wave(id: u64, n: u64) -> Value {
-        json!({"v":1,"id":id,"type":"wave","n":n,"text":"t","criteria":[1],"done_when":"d","origin":1})
-    }
-
-    fn approve(id: u64) -> Value {
-        json!({"v":1,"id":id,"type":"state","phase":"approved",
-               "witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}})
-    }
-
-    /// Uma spec que nasceu aprovada e ganhou a branch depois, pela revisão do
-    /// nascimento: a fronteira fica na primeira versão da aprovação.
-    #[test]
-    fn a_revised_approval_keeps_the_boundary_of_its_first_version() {
-        let mut revision = approve(3);
-        revision["replaces"] = json!(1);
-        revision["branch"] = json!("feature/x");
-        let lines = [approve(1), wave(2, 1), revision, wave(4, 2)];
-        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(3), "the revision is the approval shown");
-        assert_eq!(approval_boundary(&log(&lines)), Some(1));
-    }
-
-    /// Uma spec com o nascimento em plano, as ondas `1..=approved` e a
-    /// aprovação logo depois delas.
-    fn approved_with(approved: u64) -> Vec<Value> {
-        let mut lines = vec![json!({"v":1,"id":1,"type":"state","phase":"plan"})];
-        lines.extend((1..=approved).map(|n| wave(n + 1, n)));
-        lines.push(approve(approved + 2));
-        lines
-    }
-
-    /// A aprovação que vale é a mais nova enquanto a spec continua aprovada; a
-    /// spec que voltou ao plano não tem aprovação.
-    #[test]
-    fn the_approval_event_is_the_newest_approval_while_the_spec_stays_approved() {
-        let mut lines = approved_with(1);
-        lines.push(json!({"v":1,"id":4,"type":"state","phase":"running"}));
-        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(3), "running keeps the approval");
-        lines.push(json!({"v":1,"id":5,"type":"state","phase":"plan"}));
-        assert_eq!(approval_event(&log(&lines)), None, "back in plan, no approval stands");
-        lines.push(approve(6));
-        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(6));
-        assert_eq!(approval_event(&log(&[wave(1, 1)])), None, "a spec never approved");
-    }
-
-    /// A versão nova de uma onda não soma onda nenhuma, e a onda tirada sai
-    /// da conta.
-    #[test]
-    fn a_wave_counts_once_by_its_number() {
-        let mut lines = approved_with(4);
-        let mut revised = wave(7, 3);
-        revised["replaces"] = json!(4);
-        lines.push(revised);
-        assert_eq!(waves_now(&log(&lines)), 4);
-        lines.push(json!({"v":1,"id":8,"type":"remove","targets":[5],"reason":"sai"}));
-        assert_eq!(waves_now(&log(&lines)), 3);
-    }
-
     /// Uma spec em levantamento com a conversa `talk`, cada evento com o
     /// número da posição dele mais um, depois do `state` de número 1.
     fn surveyed_with(talk: &[Value]) -> Vec<Value> {
@@ -1083,40 +1081,40 @@ mod tests {
     /// e o objetivo comprido cuja PRIMEIRA frase cabe passa — é a frase que
     /// vira título, não o texto inteiro.
     #[test]
-    fn o_objetivo_com_primeira_frase_longa_e_recusado_na_gravacao() {
+    fn a_goal_with_a_long_first_sentence_is_refused_on_write() {
         use crate::domain::spec_events::{MessageRefusal, MESSAGE_TITLE_MAX};
         use crate::platform::i18n::Locale;
 
         let lines = surveyed_with(&[user("Trave o merge enquanto houver pendência aberta.")]);
         let said = 2;
 
-        let longa = "Travar o merge com pendência aberta em qualquer spec do projeto.";
-        assert_eq!(longa.chars().count(), 64, "a frase da recusa tem 64 caracteres");
+        let too_long = "Travar o merge com pendência aberta em qualquer spec do projeto.";
+        assert_eq!(too_long.chars().count(), 64, "a frase da recusa tem 64 caracteres");
         assert_eq!(MESSAGE_TITLE_MAX, 60, "o teto do título do pull request");
         assert_eq!(
-            goal_with(&lines, longa, said),
+            goal_with(&lines, too_long, said),
             Err(Refusal::GoalTitleTooLong { chars: 64, max: 60 }),
             "a gravação recusa a primeira frase acima do teto",
         );
 
         // A mesma frase que a abertura do pull request mostraria, palavra por
         // palavra: é o mesmo limite, dito uma vez só.
-        let recusa = Refusal::GoalTitleTooLong { chars: 64, max: 60 };
-        let abertura = MessageRefusal::TooLong { part: "title", chars: 64, max: 60 };
+        let goal_refusal = Refusal::GoalTitleTooLong { chars: 64, max: 60 };
+        let message_refusal = MessageRefusal::TooLong { part: "title", chars: 64, max: 60 };
         for lang in [Locale::PtBr, Locale::EnUs] {
-            assert_eq!(recusa.message(lang), abertura.message(lang), "{lang:?}");
+            assert_eq!(goal_refusal.message(lang), message_refusal.message(lang), "{lang:?}");
         }
 
-        let no_teto = "Travar o merge com pendência aberta em toda spec do projeto.";
-        assert_eq!(no_teto.chars().count(), 60, "a frase que cabe tem 60 caracteres, o teto");
-        assert_eq!(goal_with(&lines, no_teto, said), Ok(()), "o teto ainda passa");
+        let at_the_cap = "Travar o merge com pendência aberta em toda spec do projeto.";
+        assert_eq!(at_the_cap.chars().count(), 60, "a frase que cabe tem 60 caracteres, o teto");
+        assert_eq!(goal_with(&lines, at_the_cap, said), Ok(()), "o teto ainda passa");
 
-        let com_cauda = format!(
-            "{no_teto} Depois dele vem toda a prosa que o objetivo quiser ter, porque o título              sai só da primeira frase e o resto nunca chega ao pull request."
+        let with_tail = format!(
+            "{at_the_cap} Depois dele vem toda a prosa que o objetivo quiser ter, porque o título              sai só da primeira frase e o resto nunca chega ao pull request."
         );
-        assert!(com_cauda.chars().count() > 60, "o texto inteiro passa do teto");
+        assert!(with_tail.chars().count() > 60, "o texto inteiro passa do teto");
         assert_eq!(
-            goal_with(&lines, &com_cauda, said),
+            goal_with(&lines, &with_tail, said),
             Ok(()),
             "o que se mede é a primeira frase, a que vira título",
         );

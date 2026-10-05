@@ -68,6 +68,15 @@ impl Block {
 /// entrega que responde a ele.
 pub const METRIC_TYPES: &[&str] = &["injection", "hook", "call", "state", "verdict", "point", "send", "delivered"];
 
+/// O tipo do registro que toma o lugar da linha cortada pelo disco cheio
+/// ([`repair_cut_lines`](super::repair_cut_lines)). Fica fora de [`TYPES`] de
+/// propósito: sem bloco, sem sigla e sem entrada na página, a leitura o aceita
+/// sem aviso, o pedido da onda e a página o deixam de fora como item de
+/// trabalho, e o gravador não o aceita de quem grava — só o binário o cria.
+/// `run read` o mostra quando lido pelo número. O código que a linha cortada
+/// trazia continua dela: nenhum outro item o recebe.
+pub const CUT_LINE_TYPE: &str = "cut_line";
+
 /// O que o `read` pede: um bloco inteiro ou uma onda só (`wave-2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockQuery {
@@ -86,14 +95,99 @@ impl BlockQuery {
         Block::parse(name).map(Self::Block)
     }
 
-    /// Os nomes aceitos, na ordem da página, para a mensagem de recusa.
+    /// Os nomes aceitos, na ordem da página, para a mensagem de recusa. Com
+    /// eles, as leituras que a leitura monta fora dos blocos
+    /// ([`ReadQuery`]): a lista das ondas, o que o pedido da onda lista, o
+    /// pedido gravado, o pedido que o fechamento montaria agora, a entrega
+    /// vigente, as tarefas por entregar, a soma das chamadas de cada comando
+    /// e um item só.
     #[must_use]
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
-            names.insert(i + 1, "wave-<n>");
+            let beside = [
+                "wave-list",
+                "wave-<n>",
+                "dispatch-<n>",
+                "request-<n>",
+                "request-review",
+                "request-review-preview",
+                "delivered-<n>",
+                "backlog",
+                "calls",
+                "item-<code|n>",
+            ];
+            for (step, name) in beside.into_iter().enumerate() {
+                names.insert(i + 1 + step, name);
+            }
         }
         names.join(", ")
+    }
+}
+
+/// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
+/// fora dos blocos. `wave-list` é uma linha curta por onda — o número, a
+/// primeira linha do texto e as ondas de que ela depende —; `dispatch-2` é
+/// tudo o que o pedido da onda `2` lista;
+/// `request-2`, o pedido exato gravado no envio dela; `request-review`, o
+/// pedido exato gravado no último envio do revisor final, que não tem onda;
+/// `request-review-preview`, o pedido que o fechamento daria ao revisor final
+/// agora, montado sem gravar nada; `delivered-2`, a entrega vigente dela; `backlog`, as tarefas ainda por
+/// entregar; `calls`, a soma das chamadas de cada comando; e `item-<código>`
+/// ou `item-<número>`, um item só, pelo código ou pela versão de número dado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadQuery {
+    Block(BlockQuery),
+    WaveList,
+    Dispatch(u64),
+    Request(u64),
+    ReviewRequest,
+    ReviewPreview,
+    Delivered(u64),
+    Backlog,
+    Calls,
+    Item(EventRef),
+}
+
+impl ReadQuery {
+    /// Lê o nome pedido; `None` para um nome que não é bloco nem leitura, ou
+    /// para uma leitura sem o número ou o código que ela exige.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        let name = name.trim();
+        let number = |rest: &str| rest.parse::<u64>().ok();
+        // Antes de `wave-<n>`, que leria `list` como o número de uma onda.
+        if name == "wave-list" {
+            return Some(Self::WaveList);
+        }
+        if let Some(rest) = name.strip_prefix("dispatch-") {
+            return number(rest).map(Self::Dispatch);
+        }
+        if name == "request-review" {
+            return Some(Self::ReviewRequest);
+        }
+        if name == "request-review-preview" {
+            return Some(Self::ReviewPreview);
+        }
+        if let Some(rest) = name.strip_prefix("request-") {
+            return number(rest).map(Self::Request);
+        }
+        if let Some(rest) = name.strip_prefix("delivered-") {
+            return number(rest).map(Self::Delivered);
+        }
+        if let Some(rest) = name.strip_prefix("item-") {
+            return match number(rest) {
+                Some(id) => (id > 0).then_some(Self::Item(EventRef::Id(id))),
+                None => EventRef::from_value(&Value::String(rest.to_string())).map(Self::Item),
+            };
+        }
+        if name == "backlog" {
+            return Some(Self::Backlog);
+        }
+        if name == "calls" {
+            return Some(Self::Calls);
+        }
+        BlockQuery::parse(name).map(Self::Block)
     }
 }
 
@@ -254,11 +348,23 @@ const fn ty(
 
 const TEXT: Field = req("text", Kind::Text);
 const KEYS: Field = req("keys", Kind::Texts);
+/// O nome curto do item, que o usuário lê antes de tudo. Opcional no tipo
+/// porque o item antigo não tem; o gravador o exige do item que o modelo
+/// grava (`spec_events::write::record_in`).
+const TITLE: Field = opt("title", Kind::Text);
+/// A parte do agente: os arquivos, as linhas, os comandos e o que testar, em
+/// markdown curto. O `text` fica com o porquê, para o usuário. Opcional no
+/// tipo pelo mesmo motivo do título.
+const AGENT: Field = opt("agent", Kind::Text);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 /// As ondas donas de um item combinado, além das ondas das tarefas que o
 /// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
 /// (`applies_to` com os arquivos `["**"]`).
 const WAVES: Field = opt("waves", Kind::Ints);
+/// A marca do item combinado que vale para toda onda: ele vai no pedido de
+/// qualquer onda, sem passar pela escolha dos itens, mesmo que diga outros
+/// arquivos ou nenhum. Ausente, o item segue o dono que tem.
+const EVERY_WAVE: Field = opt("every_wave", Kind::Bool);
 /// O item combinado que não vira código: o valor é o motivo. Quem o traz sai
 /// do aviso dos itens sem tarefa, porque não há tarefa que o implemente.
 const NO_CODE: Field = opt("no_code", Kind::Text);
@@ -291,7 +397,7 @@ const RUN_RESULTS: &[&str] = &["pass", "fail"];
 const CRITERION_FORMS: &[&str] =
     &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
 const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
-const ROLES: &[&str] = &["wave", "review", "skill"];
+const ROLES: &[&str] = &["wave", "review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
@@ -303,8 +409,10 @@ pub const TYPES: &[TypeSpec] = &[
     // testemunha: a pergunta e a opção que o usuário clicou. A resposta do
     // assistente aponta a mensagem que respondeu; só a do turno em que a spec
     // nasce, antes de qualquer mensagem do usuário, vai sem ela
-    // (`spec_state::reply_rule`).
-    ty("message", "MSG", Block::Conversation, false, &[TEXT, opt("witness", Kind::Object)]),
+    // (`spec_state::reply_rule`). A fala do usuário que chega com um ponto do
+    // levantamento aberto leva o número dele em `during`: a mensagem já tem
+    // lugar no levantamento e não é dita solta.
+    ty("message", "MSG", Block::Conversation, false, &[TEXT, opt("witness", Kind::Object), opt("during", Kind::Int)]),
     ty("response", "RESP", Block::Conversation, false, &[TEXT, opt("reply_to", Kind::Int)]),
     ty(
         "injection",
@@ -335,6 +443,24 @@ pub const TYPES: &[TypeSpec] = &[
             req("ms", Kind::Int),
             req("result", Kind::OneOf(CALL_RESULTS)),
             opt("refusal", Kind::Text),
+            // A busca que chamou o filtro: qual (`jev`, ou `jev:<motivo>` na
+            // falha), o tempo dele, os tokens de entrada, o custo em
+            // milionésimos de dólar (a soma de todos os pedidos), quantos
+            // pedidos foram, os candidatos, as peças devolvidas e o modelo
+            // que respondeu.
+            opt("filter", Kind::Text),
+            opt("filter_ms", Kind::Int),
+            opt("tokens", Kind::Int),
+            opt("cost_micro_usd", Kind::Int),
+            opt("requests", Kind::Int),
+            opt("candidates", Kind::Int),
+            opt("returned", Kind::Int),
+            opt("model", Kind::Text),
+            // A leitura que o agente faz do pedido dele: de qual pedido é
+            // (`request-<onda>` ou `request-review`) e qual item leu (o
+            // código, ou `lesson-<número>`).
+            opt("request", Kind::Text),
+            opt("item", Kind::Text),
         ],
     ),
     // Estado.
@@ -355,10 +481,15 @@ pub const TYPES: &[TypeSpec] = &[
     // A publicação de uma página. A do template do Mustard, que lê o banco de
     // dados guardado junto da página, traz `template: true`; a que não traz é
     // a página inteira de uma versão antiga, que fica parada como está. O
-    // `stamp` é o carimbo do molde publicado, a versão do Mustard e a
-    // impressão do conteúdo: o molde que o programa rodando monta com outro
-    // carimbo, ou a publicação sem ele, manda publicar de novo no mesmo
-    // endereço.
+    // `stamp` é o carimbo do molde publicado, a versão do layout dele e a
+    // impressão do conteúdo: só a versão do layout conta. O molde que o
+    // programa rodando monta com outra versão de layout, ou a publicação com o
+    // carimbo de antes dela (a versão do Mustard) ou sem carimbo, não manda
+    // publicar de novo: o marco avisa o usuário, uma vez por versão, e grava o
+    // aviso como uma publicação que não aconteceu (`ok` falso e o motivo
+    // `layout-changed`). A página só se publica de novo, no mesmo endereço,
+    // quando o usuário pede. A mesma versão de layout com outra impressão não
+    // muda nada.
     ty(
         "publish",
         "PUB",
@@ -415,16 +546,37 @@ pub const TYPES: &[TypeSpec] = &[
     // Os itens combinados. Cada um tem dono: as ondas (as das tarefas que o
     // cobrem e as que ele diz em `waves`) ou o projeto (`applies_to` no
     // projeto todo).
-    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty(
+        "rule", "RULE", Block::Agreed, true,
+        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "limit", "LIMIT", Block::Agreed, true,
+        &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "contract", "CONTR", Block::Agreed, true,
+        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "error", "ERR", Block::Agreed, true,
+        &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "edge_case", "EDGE", Block::Agreed, true,
+        &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "out_of_scope", "SCOPE", Block::Agreed, true,
+        &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "decision", "DEC", Block::Agreed, true,
+        &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
+    ),
     // Especificação.
-    ty("context", "CTX", Block::Specification, true, &[TEXT]),
-    ty("concern", "CONC", Block::Specification, true, &[TEXT]),
+    ty("context", "CTX", Block::Specification, true, &[TEXT, TITLE, AGENT]),
+    ty("concern", "CONC", Block::Specification, true, &[TEXT, TITLE, AGENT]),
     // Critérios.
     ty(
         "criterion",
@@ -442,6 +594,9 @@ pub const TYPES: &[TypeSpec] = &[
             // desta exigência continua sem o campo, e a leitura não recusa.
             opt("form", Kind::OneOf(CRITERION_FORMS)),
             opt("contracts", Kind::Ints),
+            // Só o título: `when` e `then` já são a parte do usuário, e
+            // `proof` é a do agente.
+            TITLE,
         ],
     ),
     ty(
@@ -473,6 +628,10 @@ pub const TYPES: &[TypeSpec] = &[
             // pedido leva, uma linha por item; sem ela, os itens saem na
             // ordem do arquivo.
             opt("order", Kind::Ints),
+            // O resumo que esta onda continua: o número da entrega de uma onda
+            // que parou, com o que ela deixou por fazer. Só a onda que o
+            // backlog formou a partir dele o traz; o envio dela o repete.
+            opt("summary", Kind::Int),
         ],
     ),
     ty(
@@ -485,10 +644,9 @@ pub const TYPES: &[TypeSpec] = &[
             // ganhá-lo depois, no plano.
             opt("wave", Kind::Int),
             TEXT,
-            // O nome curto da tarefa, que diz o que ela entrega. Opcional no
-            // tipo porque a tarefa antiga não tem; o gravador o exige da
-            // tarefa gravada pelo modelo (`spec_events::write::record_in`).
-            opt("title", Kind::Text),
+            // O nome curto da tarefa, que diz o que ela entrega.
+            TITLE,
+            AGENT,
             // A tarefa sem arquivo que já se sabe qual é declara a lista
             // vazia; a ausência do campo é outra coisa, e o gravador a
             // recusa (`spec_events::write::record_in`), junto da falta de
@@ -501,6 +659,16 @@ pub const TYPES: &[TypeSpec] = &[
             // vazia quando não depende de nenhuma. Alimenta a ordem das
             // ondas (topológica) e, como `files`, é obrigatória na gravação.
             opt("depends_on", Kind::Refs),
+            // A tarefa de limpeza: nasceu de uma sobra que só muda
+            // comentário, documentação ou texto de ajuda, e a rodada a segura
+            // até o fim da obra, para sair junto das outras numa onda só.
+            // Ausente é tarefa comum.
+            opt("cleanup", Kind::Bool),
+            // O par de papéis cuja direção de importação esta tarefa muda,
+            // por pedido formal do usuário: a conferência depois da onda
+            // libera a importação entre os dois só nos arquivos desta
+            // tarefa. Ausente, a regra forte vale como sempre.
+            opt("role_pair", Kind::Texts),
         ],
     ),
     ty(
@@ -527,13 +695,15 @@ pub const TYPES: &[TypeSpec] = &[
             // rodada usa para o pedido de cada onda.
             opt("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
-            // O nome do agente que a onda chamou (`wave` ou `wave-solo`): é
-            // por ele que o reenvio chama o mesmo agente. O molde em si não
-            // é gravado — ele mora no projeto, igual para todo envio.
+            // O nome do agente que a onda chamou: `wave`, o mesmo em toda
+            // onda. O envio antigo pode trazer `wave-solo`, o agente de
+            // tarefa única que foi juntado ao `wave`; o reenvio dele chama o
+            // `wave`. O molde em si não é gravado — ele mora no projeto,
+            // igual para todo envio.
             opt("agent", Kind::Text),
             // O molde do agente, como o instalador o gravou no projeto: só o
-            // envio antigo o traz, e o reenvio dele acha o nome do agente
-            // pelo molde.
+            // envio antigo o traz, e nada mais o lê — o reenvio dele chama o
+            // `wave`, como todo envio.
             opt("template", Kind::Text),
             // O pedido exato, como foi injetado no agente; nada aqui é
             // remontado na leitura.
@@ -544,15 +714,21 @@ pub const TYPES: &[TypeSpec] = &[
             // O pedido da revisão final não recorta itens — cobre o
             // combinado inteiro — e sai sem este campo.
             opt("items", Kind::Ints),
+            // O que o agente precisa ler antes de entregar: o código de cada
+            // item que a linha do pedido lista e `lesson-<número>` de cada
+            // lição. A entrega (ou o veredito) só passa com todos lidos; o
+            // envio sem este campo é de antes da conferência e não a exige.
+            opt("read_items", Kind::Texts),
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
-            // O modelo pedido para o agente, no envio; o que ele usou de
-            // verdade, os passos que deu e os tokens que gastou só se sabem
-            // na volta, e entram na versão nova do mesmo envio
+            // O modelo e o esforço pedidos para o agente, no envio; o que ele
+            // usou de verdade, os passos que deu e os tokens que gastou só se
+            // sabem na volta, e entram na versão nova do mesmo envio
             // (`replaces`). O consumo de quem despacha até ali — a conta do
             // orquestrador, não da onda — vem junto, na mesma volta.
             opt("model", Kind::Text),
+            opt("effort", Kind::Text),
             opt("model_used", Kind::Text),
             opt("steps", Kind::Int),
             opt("tokens", Kind::Int),
@@ -560,7 +736,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("caller_tokens", Kind::Int),
             // A cópia separada que a rodada criou para a onda e a pasta de
             // compilação dela: a volta junta os arquivos da cópia, e a pasta
-            // fica ocupada enquanto a onda está em andamento.
+            // fica ocupada enquanto a onda está em andamento. No envio da
+            // revisão final, a vaga que o fechamento preparou para o
+            // revisor, ocupada até o veredito.
             opt("copy", Kind::Text),
             opt("build_dir", Kind::Text),
             // A escolha do orquestrador antes do envio, à parte dos itens que
@@ -574,6 +752,10 @@ pub const TYPES: &[TypeSpec] = &[
             // O envio anterior, pelo número ou pelo código: só num reenvio,
             // da onda pausada ou da órfã de um Claude Code que fechou.
             opt("resends", Kind::Ref),
+            // O resumo que o pedido manda ler antes de tudo: o número da
+            // entrega de uma onda que parou. Enquanto a onda deste envio não
+            // entrega, o resumo está em uso; entregue a onda, está usado.
+            opt("summary", Kind::Int),
             // O processo do Claude Code que mandou este envio — o número e a
             // hora de início que `/proc` contava então, para um número
             // reaproveitado não enganar. Sem o par, num envio de versão
@@ -595,6 +777,15 @@ pub const TYPES: &[TypeSpec] = &[
             // sem mexer em nenhum, e o texto dela diz o que conferiu.
             opt("files", Kind::Texts),
             opt("replan", Kind::Text),
+            // Com a mudança de plano: a decisão do usuário que a mudança
+            // troca. Ausente quando a mudança não troca nenhuma, e a rodada
+            // segue sem perguntar.
+            opt("changes_decision", Kind::Text),
+            // O código de cada tarefa da onda que o agente não fez. Com a
+            // mudança de plano, é obrigatório, vazio quando fez todas; sem
+            // ela, ausente quer dizer que fez todas. Cada tarefa citada volta
+            // ao backlog quando a rodada assume a volta.
+            opt("undone", Kind::Texts),
             // O resumo do commit, em palavras, de onde a rodada monta o título.
             opt("commit", Kind::Text),
             // As provas dos testes de nome novo, cada uma com o critério e o
@@ -603,9 +794,17 @@ pub const TYPES: &[TypeSpec] = &[
             // As ondas que um conserto fecha.
             opt("fixes", Kind::Ints),
             // O que o agente achou fora da tarefa e não é dele consertar, cada
-            // sobra com título e detalhe (`title`, `detail`): vira pendência
-            // da spec quando a rodada assume a volta.
+            // sobra com título e detalhe (`title`, `detail`): vira tarefa da
+            // spec quando a rodada assume a volta. A sobra que só muda
+            // comentário, documentação ou texto de ajuda leva a marca
+            // `cleanup`, que a tarefa herda.
             opt("leftovers", Kind::Objects),
+            // A resposta por cada item combinado que o pedido da onda levou,
+            // como a do veredito final (`item`, `met`): o item que não vem
+            // cumprido vira tarefa no backlog quando a rodada assume a volta,
+            // se nenhuma tarefa ainda por entregar já o cobre e se a análise
+            // da onda não o tirou do pedido.
+            opt("agreed", Kind::Objects),
             RETURNED,
         ],
     ),
@@ -667,9 +866,15 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty("pr_summary", "PRSUM", Block::Progress, false, &[TEXT]),
     // Anotações.
-    ty("request", "REQ", Block::Notes, true, &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS))]),
+    ty(
+        "request", "REQ", Block::Notes, true,
+        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT],
+    ),
     ty("deferred", "DEFER", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
-    ty("note", "NOTE", Block::Notes, true, &[TEXT, KEYS]),
+    ty(
+        "note", "NOTE", Block::Notes, true,
+        &[TEXT, KEYS, TITLE, AGENT],
+    ),
     // Remoção e expurgo, na conversa.
     ty(
         "remove",
@@ -734,7 +939,48 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-2"), Some(BlockQuery::Wave(2)));
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
-        assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, review"));
+        assert!(BlockQuery::accepted_names().contains(
+            "waves, wave-list, wave-<n>, dispatch-<n>, request-<n>, request-review, request-review-preview, delivered-<n>, backlog, calls, item-<code|n>, review"
+        ));
+    }
+
+    /// Além dos blocos, a leitura aceita a lista das ondas, o pedido de uma
+    /// onda, o pedido gravado, o pedido do revisor final, gravado ou ainda
+    /// por montar, a entrega, o backlog, a soma das chamadas e um item pelo código ou pelo número; sem
+    /// o número ou com um código fora do formato, o nome não é aceito.
+    #[test]
+    fn the_readings_beside_the_blocks_take_their_number_or_code() {
+        assert_eq!(ReadQuery::parse("state"), Some(ReadQuery::Block(BlockQuery::Block(Block::State))));
+        assert_eq!(ReadQuery::parse("wave-3"), Some(ReadQuery::Block(BlockQuery::Wave(3))));
+        assert_eq!(ReadQuery::parse(" wave-list "), Some(ReadQuery::WaveList));
+        assert_eq!(ReadQuery::parse("dispatch-3"), Some(ReadQuery::Dispatch(3)));
+        assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
+        assert_eq!(ReadQuery::parse(" request-review "), Some(ReadQuery::ReviewRequest));
+        assert_eq!(ReadQuery::parse("request-review-preview"), Some(ReadQuery::ReviewPreview));
+        assert_eq!(ReadQuery::parse(" delivered-3 "), Some(ReadQuery::Delivered(3)));
+        assert_eq!(ReadQuery::parse("backlog"), Some(ReadQuery::Backlog));
+        assert_eq!(ReadQuery::parse("calls"), Some(ReadQuery::Calls));
+        assert_eq!(ReadQuery::parse("item-42"), Some(ReadQuery::Item(EventRef::Id(42))));
+        assert_eq!(
+            ReadQuery::parse("item-MSTD-TASK-0003"),
+            Some(ReadQuery::Item(EventRef::Code("MSTD-TASK-0003".into())))
+        );
+        for refused in ["request-", "request-x", "delivered-", "item-", "item-0", "item-tarefa", "backlogs", "call", "wave-lists"] {
+            assert_eq!(ReadQuery::parse(refused), None, "{refused}");
+        }
+    }
+
+    /// A tarefa leva, quando o pedido formal muda o desenho, o par de papéis
+    /// cuja direção muda, como uma lista de nomes; outro formato é recusado.
+    #[test]
+    fn a_task_takes_the_pair_of_roles_its_request_changes() {
+        let task = |pair: serde_json::Value| {
+            checked("task", json!({"text": "Mudar a direção.", "origin": 1, "files": [], "depends_on": [],
+                "role_pair": pair}))
+        };
+        assert_eq!(task(json!(["service", "controller"])), Ok(()));
+        let refusal = task(json!("service")).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "role_pair"), "{refusal:?}");
     }
 
     #[test]
@@ -753,5 +999,35 @@ mod tests {
         assert!(refusal.message(Locale::PtBr).contains("uma destas palavras: warn, block"));
         let author = checked("message", json!({"text": "oi", "author": "robot"})).unwrap_err();
         assert!(matches!(author, Refusal::InvalidValue { ref field, .. } if field == "author"));
+    }
+
+    /// A chamada da busca com filtro leva o filtro, o tempo dele, os tokens,
+    /// o custo, os candidatos, as peças e o modelo, todos opcionais: sem
+    /// eles, a chamada de sempre continua valendo; com um número em texto, a
+    /// recusa diz o campo.
+    #[test]
+    fn a_call_takes_the_filter_fields_and_still_holds_without_them() {
+        let call = |extra: serde_json::Value| {
+            let mut fields = json!({"author": "binary", "command": "map search", "ms": 1800, "result": "ok"});
+            if let (Some(fields), Some(extra)) = (fields.as_object_mut(), extra.as_object()) {
+                fields.extend(extra.clone());
+            }
+            checked("call", fields)
+        };
+        assert_eq!(call(json!({})), Ok(()));
+        assert_eq!(
+            call(json!({"filter": "jev", "filter_ms": 1500, "tokens": 20985, "cost_micro_usd": 881,
+                "requests": 3, "candidates": 150, "returned": 12, "model": "jev-1.13.0"})),
+            Ok(())
+        );
+        assert_eq!(call(json!({"filter": "jev:no_credit", "filter_ms": 40})), Ok(()));
+        assert_eq!(call(json!({"request": "request-273", "item": "MSTD-TASK-0471"})), Ok(()));
+        assert_eq!(call(json!({"request": "request-review", "item": "lesson-12"})), Ok(()));
+        let refusal = call(json!({"tokens": "muitos"})).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "tokens"), "{refusal:?}");
+        let refusal = call(json!({"requests": "vários"})).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "requests"), "{refusal:?}");
+        let refusal = call(json!({"item": 7})).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "item"), "{refusal:?}");
     }
 }

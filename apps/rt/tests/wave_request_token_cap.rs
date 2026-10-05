@@ -3,17 +3,17 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! O backlog e o teto do pedido, ligados à rodada de verdade, pelo binário numa
-//! pasta temporária.
-//!
-//! Uma spec aprovada com tarefas soltas no backlog, sem onda gravada nenhuma,
-//! tem a rodada formando o lote sozinha, com o evento de onda de autor
-//! binário — antes disso, quem decidia as ondas prontas só lia onda já
-//! gravada, e o backlog ficava preso, formado só por teste.
+//! O teto do pedido e o padrão do projeto no pedido, ligados à rodada de
+//! verdade, pelo binário numa pasta temporária.
 //!
 //! Uma spec aprovada com uma tarefa cujo texto passa do teto de tokens do
 //! pedido tem a rodada recusada, com o tamanho medido e o teto, sem gravar
 //! envio nenhum.
+//!
+//! Uma spec aprovada com uma tarefa que cria um controller, num projeto cujo
+//! código, lido pelo scan, mostra que controller importa service, tem o
+//! pedido enviado pela rodada com a regra e os exemplos sob a tarefa, e o
+//! projeto sem padrão para aprender recebe o pedido sem o bloco.
 
 #![cfg(unix)]
 
@@ -26,6 +26,9 @@ use mustard_core::domain::spec_state::State;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
+
+#[path = "support/mod.rs"]
+mod support;
 
 const SPEC: &str = "backlog";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -68,6 +71,7 @@ impl Project {
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
+        support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home }
     }
 
@@ -83,6 +87,8 @@ impl Project {
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("MUSTARD_ACTIVE_SPEC")
+            .env_remove("TYPESAFE_API_KEY")
+            .env_remove("MUSTARD_JEV_URL")
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -150,7 +156,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// respondido e fechado.
 fn survey(project: &Project) -> u64 {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -165,7 +171,7 @@ fn survey(project: &Project) -> u64 {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
@@ -196,38 +202,6 @@ fn approve(project: &Project) {
     assert_eq!(State::from_log(&project.log()).phase, Some("approved"));
 }
 
-/// Uma spec aprovada sem onda gravada, só com tarefas soltas no backlog: a
-/// rodada, antes de escolher as ondas prontas, forma o lote sozinha e grava
-/// o evento de onda com autor binário — sem esse fio, quem decide as ondas
-/// prontas só lê onda já gravada, e o backlog nunca sai do lugar.
-#[test]
-fn a_round_forms_a_lot_from_the_backlog_and_records_it_as_the_binarys_wave() {
-    let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    let said = survey(&project);
-    let criterion = project.write(
-        "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "form": "ubiquitous", "origin": said}),
-    );
-    project.write(
-        "task",
-        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
-            "depends_on": [], "covers": [criterion["id"]], "origin": said}),
-    );
-    project.run(&["plan", "--spec", SPEC]);
-    approve(&project);
-
-    let before = project.log();
-    assert!(before.visible().into_iter().all(|e| e.event_type != "wave"), "no hand-made wave before the round");
-
-    project.run(&["round", "--spec", SPEC]);
-
-    let after = project.log();
-    let wave = after.visible().into_iter().find(|e| e.event_type == "wave").expect("the round forms a lot from the backlog");
-    assert_eq!(wave.str_field("author"), Some("binary"), "the lot the round forms is the binary's, not hand-designed");
-}
-
 /// Uma spec aprovada com uma tarefa cujo pedido passa do teto de tokens: a
 /// rodada forma o lote pelo backlog, mede o pedido antes de gravar o envio e
 /// recusa, dizendo o tamanho medido e o teto de 25 mil, sem gravar nada.
@@ -243,21 +217,18 @@ fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     let huge = "a".repeat(120_000);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece",
             "proof": format!("git --version {huge}"), "form": "ubiquitous", "origin": said}),
     );
     project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    let asked = project.run(&["round", "--spec", SPEC]);
-    assert_eq!(asked["dispatch"], json!([]), "{asked}");
-    let answer = json!({"wave": 1, "removed": [], "added": []});
-    let refused = project.answer(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")]);
+    let refused = project.answer(&["round", "--spec", SPEC]);
 
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("wave-token-cap"), "{refused}");
@@ -267,4 +238,70 @@ fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
 
     let log = project.log();
     assert!(log.visible().into_iter().all(|e| e.event_type != "send"), "the round refuses before recording the send");
+}
+
+/// Um projeto em que os cinco controllers importam os cinco services e nenhum
+/// service importa controller, no primeiro commit dele: o scan, que a rodada
+/// roda de verdade, aprende a regra forte "controller importa service".
+fn write_a_project_with_a_pattern(project: &Project) {
+    let named = |role: &str, n: usize| format!("src/{role}/{role}{n}.{role}.ts");
+    let imports = (0..5)
+        .map(|b| format!("import {{ Service{b} }} from '../service/service{b}.service';"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for n in 0..5 {
+        let controller = format!("{imports}\n\nexport class Controller{n} {{\n  run() {{\n    return [Service0];\n  }}\n}}\n");
+        let service = format!("export class Service{n} {{\n  run() {{\n    return {n};\n  }}\n}}\n");
+        for (path, text) in [(named("controller", n), controller), (named("service", n), service)] {
+            let at = project.root.join(path);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(at, text).unwrap();
+        }
+    }
+    git(&project.root, &["add", "-A"]);
+    git(&project.root, &["commit", "-q", "-m", "controllers e services"]);
+}
+
+/// O pedido que a rodada envia para a tarefa que cria um controller, num
+/// projeto que já tem controllers e services (`with_pattern`) ou só o
+/// `src/main.rs`, sem padrão nenhum para aprender.
+fn request_sent_for_a_new_controller(with_pattern: bool) -> String {
+    let project = Project::new();
+    if with_pattern {
+        write_a_project_with_a_pattern(&project);
+    }
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "o controller novo responde", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Criar o controller novo", "text": "Criar o controller de pedidos.",
+            "files": [{"path": "src/controller/controller5.controller.ts", "new": true}], "depends_on": [], "covers": [criterion["id"]], "origin": said}),
+    );
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    project.run(&["round", "--spec", SPEC]);
+    let log = project.log();
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send").expect("the round recorded the send");
+    sent.str_field("text").expect("the request text").to_string()
+}
+
+/// A rodada envia o pedido com o padrão do projeto sob a tarefa: a regra do
+/// papel que ela toca e os exemplos que a seguem, sem código. O projeto sem
+/// padrão para aprender recebe o pedido sem o bloco.
+#[test]
+fn a_round_sends_the_pattern_of_the_project_under_the_task_and_a_project_without_one_gets_none() {
+    let with = request_sent_for_a_new_controller(true);
+    assert!(with.contains("regra: controller importa service em 25 de 25 importações"), "{with}");
+    assert!(with.contains("exemplo: `Controller0` em `src/controller/controller0.controller.ts`, linhas 7 a 11"), "{with}");
+    assert!(!with.contains("return [Service0]"), "the example is a name and lines, never the code: {with}");
+
+    let without = request_sent_for_a_new_controller(false);
+    assert!(!without.contains("regra:") && !without.contains("exemplo:"), "{without}");
+    assert!(with.chars().count() > without.chars().count(), "the request with the pattern is the longer one");
 }

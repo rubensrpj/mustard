@@ -267,9 +267,7 @@ fn missing_rules(existing: &str, rules: &[String]) -> Vec<String> {
 /// failure — git absent, not a repository, a non-zero exit, non-UTF-8 output,
 /// or nothing printed at all.
 ///
-/// The fail-open seam of this module, and the sibling of
-/// `io::workspace::git_rev_parse` (private there, and `rev-parse`-only; this
-/// one also has to run `ls-files`).
+/// The fail-open seam of this module.
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
     git::run(dir, args).out().filter(|text| !text.is_empty())
 }

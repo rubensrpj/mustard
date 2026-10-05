@@ -97,7 +97,7 @@ mod tests {
     /// instalação saudável. O aviso diz o `git.flow` pelo nome e mostra como
     /// declarar.
     #[test]
-    fn a_falta_do_fluxo_vira_aviso_porque_nada_fica_protegido() {
+    fn missing_flow_becomes_a_warning_because_nothing_is_protected() {
         let dir = tempdir().unwrap();
         write_file(
             &dir.path().join("mustard.json"),
@@ -121,7 +121,7 @@ mod tests {
     /// reportada como PERGUNTA QUE NÃO CHEGOU A SER FEITA — nunca como
     /// desprotegida, que é uma afirmação sobre o servidor.
     #[test]
-    fn provedor_fora_de_alcance_nao_vira_base_desprotegida() {
+    fn unreachable_provider_does_not_become_an_unprotected_base() {
         let dir = tempdir().unwrap();
         write_file(
             &dir.path().join("mustard.json"),
@@ -150,10 +150,10 @@ mod tests {
     /// temporária o produz — por isso o provedor aqui é um dublê que responde
     /// uma mistura conhecida.
     #[test]
-    fn o_diagnostico_acusa_a_base_que_o_provedor_nao_protege() {
+    fn doctor_flags_the_base_the_provider_does_not_protect() {
         /// Responde `true` para as bases que nomeia e `false` para as outras.
-        struct ProvedorFalso(&'static [&'static str]);
-        impl crate::shared::pr_provider::PrProvider for ProvedorFalso {
+        struct FakeProvider(&'static [&'static str]);
+        impl crate::shared::pr_provider::PrProvider for FakeProvider {
             fn provider(&self) -> &'static str {
                 "azure"
             }
@@ -188,16 +188,16 @@ mod tests {
 
         let bases = vec!["develop".to_string(), "master".to_string()];
         let result =
-            protection_report(&bases, &ProvedorFalso(&["develop"]), Locale::PtBr);
+            protection_report(&bases, &FakeProvider(&["develop"]), Locale::PtBr);
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        let acusa = result
+        let flagged = result
             .details
             .iter()
             .find(|d| d.contains("master"))
             .unwrap_or_else(|| panic!("a master não foi acusada: {:?}", result.details));
         assert!(
-            acusa.contains("qualquer pessoa"),
-            "o aviso precisa dizer o que uma base sem regra significa: {acusa}",
+            flagged.contains("qualquer pessoa"),
+            "o aviso precisa dizer o que uma base sem regra significa: {flagged}",
         );
         assert!(
             result.details.iter().any(|d| d.contains("Rulesets") || d.contains("Policies")),
@@ -214,13 +214,13 @@ mod tests {
             "a base que o provedor protege não pode ser acusada: {develop}",
         );
 
-        let tudo_protegido =
-            protection_report(&bases, &ProvedorFalso(&["develop", "master"]), Locale::PtBr);
+        let all_protected =
+            protection_report(&bases, &FakeProvider(&["develop", "master"]), Locale::PtBr);
         assert_eq!(
-            tudo_protegido.status,
+            all_protected.status,
             Status::Ok,
             "com as duas protegidas não há achado: {:?}",
-            tudo_protegido.details
+            all_protected.details
         );
     }
 

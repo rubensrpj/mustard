@@ -25,11 +25,14 @@ pub mod cli;
 pub mod commands;
 pub mod fs_ops;
 
-pub use commands::init::{InitOptions, init};
+// A pasta do pacote lida na hora de rodar, para os testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+pub(crate) mod manifest_dir;
 
-/// The version stamped into `mustard.json` by `init`.
-///
-/// Sourced from this crate's `Cargo.toml` at compile time so the package
-/// version is the single source of truth — no `package.json` lookup, no
-/// runtime file read.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+// O programa falso que os testes de dentro de `src/` gravam e depois rodam.
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+pub(crate) mod executable;
+
+pub use commands::init::{InitOptions, init};

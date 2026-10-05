@@ -3,12 +3,11 @@
 # Mustard — instalador para teste (Windows)
 #
 # Instala os binários pré-compilados do Mustard (scan, mustard-rt, mustard)
-# + o rtk empacotado + a carga templates/. NÃO precisa do toolchain
-# Rust — são binários já compilados.
+# + o rtk empacotado. NÃO precisa do toolchain Rust — são binários já
+# compilados, e tudo o que o `mustard init` grava vem dentro deles.
 #
 # Layout após instalar (auto-contido, fácil de remover):
 #   %USERPROFILE%\.mustard\bin\        -> entra no PATH (mustard, …, rtk)
-#   %USERPROFILE%\.mustard\templates\  -> resolvido como <pasta-do-exe>\..\templates
 #
 # Uso:
 #   .\install.ps1                       # instala binários + ajusta PATH (sem init)
@@ -22,22 +21,21 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$ScriptDir    = $PSScriptRoot
-$PkgBin       = Join-Path $ScriptDir 'bin'
-$PkgTemplates = Join-Path $ScriptDir 'templates'
-if (-not (Test-Path $PkgBin))       { throw "bin\ não encontrado em $PkgBin — rode de dentro do pacote descompactado." }
-if (-not (Test-Path $PkgTemplates)) { throw "templates\ não encontrado — pacote incompleto." }
+$ScriptDir = $PSScriptRoot
+$PkgBin    = Join-Path $ScriptDir 'bin'
+if (-not (Test-Path $PkgBin)) { throw "bin\ não encontrado em $PkgBin — rode de dentro do pacote descompactado." }
 
-$Prefix       = if ($env:MUSTARD_PREFIX) { $env:MUSTARD_PREFIX } else { Join-Path $env:USERPROFILE '.mustard' }
-$BinDir       = Join-Path $Prefix 'bin'
-$TemplatesDir = Join-Path $Prefix 'templates'
+$Prefix = if ($env:MUSTARD_PREFIX) { $env:MUSTARD_PREFIX } else { Join-Path $env:USERPROFILE '.mustard' }
+$BinDir = Join-Path $Prefix 'bin'
 
 Write-Host "==> Instalando o Mustard em $Prefix"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Copy-Item -Path (Join-Path $PkgBin '*') -Destination $BinDir -Recurse -Force
 
-if (Test-Path $TemplatesDir) { Remove-Item -Recurse -Force $TemplatesDir }
-Copy-Item -Path $PkgTemplates -Destination $TemplatesDir -Recurse -Force
+# A pasta de moldes que versões anteriores deste instalador copiavam ao lado de
+# bin\: nenhum programa a lê mais, e ela sai aqui, só nesse lugar.
+$OldTemplates = Join-Path $Prefix 'templates'
+if (Test-Path $OldTemplates) { Remove-Item -Recurse -Force $OldTemplates }
 
 # PATH da sessão atual, para o init abaixo enxergar mustard + rtk.
 $env:PATH = "$BinDir;$env:PATH"
@@ -66,7 +64,6 @@ if ($Target) {
     if (-not $resolved) { throw "projeto-alvo não existe: $Target" }
     $Target = $resolved.Path
     Write-Host "==> Rodando 'mustard init' em $Target"
-    $env:MUSTARD_TEMPLATES_DIR = $TemplatesDir
     $initArgs = @('init', '--yes')
     if ($Force) { $initArgs += '--force' }
     Push-Location $Target

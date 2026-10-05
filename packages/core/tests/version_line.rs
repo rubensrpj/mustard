@@ -62,6 +62,9 @@
 //! anything: the dev leg's decision to skip has to consult every leg its work
 //! block repairs.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -116,7 +119,8 @@ fn the_running_harness_reports_that_same_line() {
 /// Walk up from this crate to the workspace root — the directory holding the
 /// plugin manifest. `None` when there is none.
 fn workspace_root() -> Option<PathBuf> {
-    let mut dir: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = manifest_dir::manifest_dir();
+    let mut dir: &Path = manifest.as_path();
     loop {
         if dir.join(MANIFEST_REL).is_file() {
             return Some(dir.to_path_buf());

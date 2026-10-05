@@ -1,9 +1,9 @@
-//! `mustard-rt run pr-open` / `pr-edit` / `pr-ready` — the pull-request
-//! PUBLISH actions, behind the provider port.
+//! `mustard-rt run pr-open` — the pull-request
+//! PUBLISH action, behind the provider port.
 //!
 //! Until this module, the `/mustard:pr` and `/git` prose told the model to run
 //! `rtk gh pr create/edit/ready` directly — `github` fixed in text no test
-//! covers. Each command here resolves the provider IN FORCE through
+//! covers. The command here resolves the provider IN FORCE through
 //! [`provider_for`] (`git.provider` declared wins, then the `origin` remote,
 //! then the fallback) and speaks only the [`PrProvider`] port, so WHICH
 //! provider answers is an internal detail: the prose names this command, never
@@ -46,6 +46,15 @@
 //! principal, como rascunho enquanto algum deles não entrou. A resposta traz o
 //! endereço de todos. O principal fica pronto pela conferência dos pull
 //! requests dos submódulos, no `pr-merge` e no início da sessão.
+//!
+//! ## A branch do principal vai antes do pedido
+//!
+//! Antes de abrir, ou reescrever, o pull request do principal, o `pr-open`
+//! envia a branch dele ao servidor (`git push -u origin <branch>`): o pedido
+//! aponta uma branch que o servidor tem, e os commits que a rodada fez depois
+//! do primeiro envio chegam ao mesmo pull request. O envio recusado (o
+//! servidor, um gancho, a falta do remoto) para a abertura com a mensagem do
+//! git inteira no `error`, e o provedor nem é chamado.
 
 use std::path::Path;
 
@@ -187,6 +196,12 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
 /// o estado aberto é editado; qualquer outro (juntado, fechado, desconhecido)
 /// segue para `open_report`, que abre um pedido novo em vez de mexer no
 /// antigo.
+///
+/// O pull request aberto recebe o título e o corpo novos, e sai do rascunho
+/// quando o pedido não é de rascunho: é o que a spec reaberta pede ao fechar
+/// de novo, porque a reabertura o pôs em rascunho para ninguém juntar a versão
+/// sem o ajuste. Com `--draft`, ou com submódulo esperando, o pedido já chega
+/// como rascunho, e o rascunho fica.
 #[must_use]
 pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
     match provider.view(PrRef::Head(&pr.head)) {
@@ -194,12 +209,40 @@ pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublis
         // grava junto com o número. Só o estado Open é reescrito — juntado
         // ou fechado seguem para open_report, como se a busca não tivesse
         // achado nada.
-        Ok(view) if view.status == PrStatus::Open => PrPublishReport {
-            url: Some(view.url).filter(|url| !url.trim().is_empty()),
-            ..edit_report(provider, view.number, &pr.body)
-        },
+        Ok(view) if view.status == PrStatus::Open => rewrite_open(provider, &view, pr),
         Ok(_) | Err(_) => open_report(provider, pr),
     }
+}
+
+/// Reescreve o pull request aberto `view` com o que `pr` pede: o corpo, o
+/// título e, fora do rascunho pedido, a saída do rascunho.
+///
+/// Qualquer passo recusado deixa o relatório com `ok: false` e o passo no
+/// erro: a porta não grava o pull request aberto, e rodar de novo refaz tudo,
+/// porque cada passo só escreve o que já devia estar lá.
+fn rewrite_open(provider: &dyn PrProvider, view: &PrView, pr: &PrToOpen) -> PrPublishReport {
+    let report = PrPublishReport {
+        url: Some(view.url.clone()).filter(|url| !url.trim().is_empty()),
+        ..edit_report(provider, view.number, &pr.body)
+    };
+    if !report.ok {
+        return report;
+    }
+    let refused = |step: &str, error: String| PrPublishReport {
+        ok: false,
+        error: Some(format!("{step}: {error}")),
+        ..report.clone()
+    };
+    if let Err(error) = provider.edit_title(view.number, &pr.title) {
+        return refused("edit-title-failed", error);
+    }
+    if view.draft
+        && !pr.draft
+        && let Err(error) = provider.ready(view.number)
+    {
+        return refused("ready-failed", error);
+    }
+    report
 }
 
 /// Refaz o corpo do pull request que a branch `head` carrega. Devolve o número
@@ -352,6 +395,27 @@ fn open_submodule(repo: &Path, sub: &str, head: &str, (title, body): (&str, &str
     (entry(open_or_edit(provider.as_ref(), &pr)), false)
 }
 
+/// Envia ao servidor a branch `head` do repositório `repo`, sem mexer na
+/// configuração do git de quem programa: a branch local não passa a
+/// rastrear a remota. A recusa do git (servidor, gancho de recebimento,
+/// remoto que não existe) sai inteira.
+fn push_head(repo: &Path, head: &str) -> Result<(), String> {
+    mustard_core::platform::git::run(repo, &["push", "-q", "origin", head]).result().map(|_| ())
+}
+
+/// Publica o pull request do principal: primeiro envia a branch `pr.head`
+/// ([`push_head`]), depois abre, ou reescreve, o pedido ([`open_or_edit`]).
+/// O envio recusado devolve `ok: false` com `push:` e a mensagem do git, e o
+/// provedor não é chamado — o pedido não nasce apontando uma branch que o
+/// servidor não tem, nem reescreve o corpo de um pull request cujos commits
+/// novos não chegaram.
+fn publish_principal(provider: &dyn PrProvider, repo: &Path, pr: &PrToOpen) -> PrPublishReport {
+    match push_head(repo, &pr.head) {
+        Ok(()) => open_or_edit(provider, pr),
+        Err(error) => PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, format!("push: {error}")),
+    }
+}
+
 /// Os pull requests dos submódulos de uma spec com o pull request do
 /// principal aberto, e o que a conferência fez com eles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -482,10 +546,12 @@ pub(crate) fn spec_pr(repo: &Path, spec: &str) -> Option<SpecPr> {
 ///
 /// The body comes from the spec's event file, or from the commits with
 /// `--fill` (a repository with no spec of its own). A head branch that
-/// already carries a pull request has its body REWRITTEN — the door never asks
-/// for a second one. Com submódulo mexido pela spec, os pull requests deles
+/// already carries a pull request has its title and body REWRITTEN, and leaves
+/// the draft unless a draft was asked — the door never asks for a second one. Com submódulo mexido pela spec, os pull requests deles
 /// abrem antes, e o do principal abre como rascunho enquanto algum não
-/// entrou; o que um submódulo recusa para a abertura antes do principal.
+/// entrou; o que um submódulo recusa para a abertura antes do principal. A
+/// branch do principal é enviada antes do pedido, e o envio recusado também
+/// para a abertura.
 pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: bool, draft: bool) {
     let started = std::time::Instant::now();
     let repo = project_root(root);
@@ -520,8 +586,8 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     }
     let name = provider.provider().to_string();
     let mut report = match (sourced, refused) {
-        // Já existe pull request para a branch que se ia abrir: o corpo é
-        // reescrito, e nenhum segundo pull request nasce.
+        // Já existe pull request para a branch que se ia abrir: o título e o
+        // corpo são reescritos, e nenhum segundo pull request nasce.
         (Ok((title, body)), None) => {
             let pr = PrToOpen {
                 title,
@@ -530,7 +596,7 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
                 base: base.to_string(),
                 draft: draft || !waiting.is_empty(),
             };
-            open_or_edit(provider.as_ref(), &pr)
+            publish_principal(provider.as_ref(), &repo, &pr)
         }
         (Ok(_), Some(error)) | (Err(error), _) => PrPublishReport::failed(ACTION_OPEN, name, None, error),
     };
@@ -567,6 +633,7 @@ mod tests {
         name: &'static str,
         open: Result<PrOpened, String>,
         edit: Result<(), String>,
+        title: Result<(), String>,
         ready: Result<(), String>,
         /// O pull request que este provedor já tem aberto, com a branch que ele
         /// leva. `None` = nenhum, e a consulta responde erro.
@@ -585,6 +652,7 @@ mod tests {
                 name,
                 open: Ok(PrOpened { number: 7, url: "https://example.test/pr/7".into() }),
                 edit: Ok(()),
+                title: Ok(()),
                 ready: Ok(()),
                 opened_for: None,
                 status: PrStatus::Open,
@@ -612,6 +680,7 @@ mod tests {
                 name,
                 open: Err(token.to_string()),
                 edit: Err(token.to_string()),
+                title: Err(token.to_string()),
                 ready: Err(token.to_string()),
                 opened_for: None,
                 status: PrStatus::Open,
@@ -643,13 +712,17 @@ mod tests {
             self.ready.clone()
         }
 
+        fn edit_title(&self, number: u64, title: &str) -> Result<(), String> {
+            self.seen.borrow_mut().push(format!("title {number} title={title}"));
+            self.title.clone()
+        }
+
         fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
             // O que foi perguntado fica registrado: é o ponto do critério —
             // a pergunta é pela branch em jogo, nunca pela do checkout.
             self.seen.borrow_mut().push(match which {
                 PrRef::Number(n) => format!("view number={n}"),
                 PrRef::Head(head) => format!("view head={head}"),
-                PrRef::Checkout => "view checkout".to_string(),
             });
             let PrRef::Head(asked) = which else {
                 return Err("view-not-under-test".to_string());
@@ -728,7 +801,7 @@ mod tests {
     /// unidade e relatava ter editado aquele número. A reescrita que a rodada
     /// faz passa pela mesma pergunta, pela mesma porta.
     #[test]
-    fn a_abertura_pergunta_pelo_pull_request_da_branch_que_vai_abrir() {
+    fn opening_asks_for_the_pull_request_of_the_branch_it_will_open() {
         let pr = to_open();
 
         // Sem pull request para essa branch, um novo nasce.
@@ -822,6 +895,58 @@ mod tests {
         assert!(fake.seen.borrow().iter().any(|call| call == "edit 278 body=outro corpo"), "{:?}", fake.seen.borrow());
     }
 
+    /// O pr-open numa branch que já tem pull request aberto em rascunho manda
+    /// ao provedor o título novo e o corpo novo do MESMO pull request, que sai
+    /// do rascunho, e nenhum segundo pull request nasce. Com o rascunho pedido
+    /// — o `--draft` ou o submódulo que ainda não entrou, que chegam os dois
+    /// aqui como pedido de rascunho —, o título e o corpo mudam e o rascunho
+    /// fica. O título recusado pelo provedor não passa por feito.
+    #[test]
+    fn pr_open_rewrites_the_title_and_takes_the_draft_off() {
+        let new_pr = PrToOpen {
+            title: "Ajusta o pedido ao otimizador".into(),
+            body: "o corpo novo".into(),
+            head: "feature/pi-kpis".into(),
+            base: "dev".into(),
+            draft: false,
+        };
+
+        let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
+        let report = open_or_edit(&fake, &new_pr);
+        assert!(report.ok, "{report:?}");
+        assert_eq!((report.action, report.number), (ACTION_EDIT, Some(57)), "{report:?}");
+        assert_eq!(
+            fake.seen.borrow().as_slice(),
+            [
+                "view head=feature/pi-kpis",
+                "edit 57 body=o corpo novo",
+                "title 57 title=Ajusta o pedido ao otimizador",
+                "ready 57",
+            ],
+            "the same pull request, retitled, rewritten and out of the draft; nothing opened",
+        );
+
+        let draft_pr = PrToOpen { draft: true, ..new_pr.clone() };
+        let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
+        let report = open_or_edit(&fake, &draft_pr);
+        assert!(report.ok, "{report:?}");
+        assert_eq!(
+            fake.seen.borrow().as_slice(),
+            [
+                "view head=feature/pi-kpis",
+                "edit 57 body=o corpo novo",
+                "title 57 title=Ajusta o pedido ao otimizador",
+            ],
+            "a draft asked for keeps the draft, and nothing is opened",
+        );
+
+        let fake = FakePub { title: Err("gh-failed".into()), ..FakePub::with_open_pr("github", "feature/pi-kpis", 57) };
+        let report = open_or_edit(&fake, &new_pr);
+        assert!(!report.ok, "a refused title is not reported as done: {report:?}");
+        assert_eq!(report.error.as_deref(), Some("edit-title-failed: gh-failed"), "{report:?}");
+        assert!(!fake.seen.borrow().iter().any(|call| call.starts_with("ready")), "{:?}", fake.seen.borrow());
+    }
+
     /// Every failure — table-driven over the two actions — degrades into the
     /// `error` field with the provider still named: `ok:false`, exit stays 0,
     /// and `open` echoes NO number because nothing was created to point at.
@@ -898,13 +1023,13 @@ mod tests {
     /// Uma spec sem arquivo de eventos não abre pull request nenhum — a porta
     /// não tem de onde tirar o texto e diz isso, em vez de inventar um corpo.
     #[test]
-    fn a_mensagem_sai_do_arquivo_de_eventos_da_spec() {
+    fn message_comes_from_the_spec_events_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), "{}").expect("cfg");
 
-        let sem_spec = message_of(root, "naoexiste").expect_err("nada a ler");
-        assert!(sem_spec.contains("spec-events-unreadable"), "{sem_spec}");
+        let without_spec = message_of(root, "naoexiste").expect_err("nada a ler");
+        assert!(without_spec.contains("spec-events-unreadable"), "{without_spec}");
 
         let path = mustard_core::io::spec_events::spec_file(root, "trava").expect("caminho");
         std::fs::create_dir_all(path.parent().expect("pasta")).expect("pasta da spec");
@@ -939,5 +1064,176 @@ mod tests {
         let (title, body) = message_of(root, "trava").expect("a spec tem objetivo");
         assert_eq!(title, "Barrar comando que apaga trabalho.");
         assert!(body.contains("O portão lê o estado."), "{body}");
+    }
+
+    /// O git rodado em `dir` com uma identidade fixa; falha o teste se o
+    /// comando falhar. Devolve a saída sem o fim de linha.
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("spawn git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Um remoto `--bare` sem a branch `fix/x` e um clone dele, com a branch
+    /// `fix/x` e um commit que o remoto não tem. Devolve o raiz da pasta
+    /// temporária (que a cena mantém viva), o remoto e o clone.
+    fn remote_and_clone() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let remote = dir.path().join("remote.git");
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&remote).expect("remote dir");
+        std::fs::create_dir_all(&work).expect("work dir");
+        git_in(&remote, &["init", "-q", "--bare", "-b", "dev", "."]);
+        git_in(&work, &["init", "-q", "-b", "dev", "."]);
+        git_in(&work, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        git_in(&work, &["commit", "-q", "--allow-empty", "-m", "seed"]);
+        git_in(&work, &["checkout", "-q", "-b", "fix/x"]);
+        git_in(&work, &["commit", "-q", "--allow-empty", "-m", "the change"]);
+        (dir, remote, work)
+    }
+
+    /// O `PrToOpen` da branch `fix/x`, que o clone da cena leva.
+    fn open_for_fix_x() -> PrToOpen {
+        PrToOpen { head: "fix/x".into(), ..to_open() }
+    }
+
+    /// O envio cria no remoto a branch que ele não tinha, com o commit local,
+    /// e não grava nada na configuração do git do repositório.
+    #[test]
+    fn push_head_creates_the_branch_on_the_remote() {
+        let (_dir, remote, work) = remote_and_clone();
+        let missing = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "-q", "refs/heads/fix/x"])
+            .current_dir(&remote)
+            .output()
+            .expect("spawn git");
+        assert!(!missing.status.success(), "o remoto começa sem a branch");
+        let config_before = std::fs::read_to_string(work.join(".git/config")).expect("a config do clone");
+
+        push_head(&work, "fix/x").expect("o envio passa");
+
+        assert_eq!(
+            git_in(&remote, &["rev-parse", "refs/heads/fix/x"]),
+            git_in(&work, &["rev-parse", "HEAD"]),
+            "o remoto ganhou a branch, com o commit local"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join(".git/config")).expect("a config do clone"),
+            config_before,
+            "o envio não escreve na configuração do git"
+        );
+    }
+
+    /// O remoto que recusa (gancho `pre-receive` que sai 1) e o remoto que não
+    /// existe dão `Err` com a recusa do git, e a branch não chega ao remoto.
+    #[test]
+    #[cfg(unix)]
+    fn push_head_returns_the_refusal_of_the_remote() {
+        let (dir, remote, work) = remote_and_clone();
+        crate::executable::write_executable(
+            &remote.join("hooks/pre-receive"),
+            "#!/bin/sh\necho 'o servidor recusou' >&2\nexit 1\n",
+        );
+        let refused = push_head(&work, "fix/x").expect_err("o gancho do servidor recusa");
+        assert!(refused.contains("o servidor recusou") || refused.contains("rejected"), "{refused}");
+        let landed = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "-q", "refs/heads/fix/x"])
+            .current_dir(&remote)
+            .output()
+            .expect("spawn git");
+        assert!(!landed.status.success(), "a branch recusada não chegou ao remoto");
+
+        git_in(&work, &["remote", "set-url", "origin", &dir.path().join("nao-existe.git").to_string_lossy()]);
+        let gone = push_head(&work, "fix/x").expect_err("o remoto não existe");
+        assert!(!gone.trim().is_empty(), "a recusa do git vem inteira: {gone:?}");
+    }
+
+    /// Com o envio recusado, a abertura para no envio: o relatório sai
+    /// `ok: false`, com `push:` e a mensagem do git inteira, e o provedor não é
+    /// chamado — nem `open`, nem a consulta, nem a reescrita do pull request
+    /// que a branch já tem.
+    #[test]
+    #[cfg(unix)]
+    fn a_refused_push_stops_the_open_before_the_provider() {
+        let (_dir, remote, work) = remote_and_clone();
+        crate::executable::write_executable(
+            &remote.join("hooks/pre-receive"),
+            "#!/bin/sh\necho 'o servidor recusou' >&2\nexit 1\n",
+        );
+        let pr = open_for_fix_x();
+
+        let fake = FakePub::green("github");
+        let report = publish_principal(&fake, &work, &pr);
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.action, ACTION_OPEN);
+        assert_eq!(report.provider, "github");
+        let error = report.error.clone().unwrap_or_default();
+        assert!(error.starts_with("push: "), "{error}");
+        assert!(error.contains("o servidor recusou"), "a mensagem do git vem inteira: {error}");
+        assert!(fake.seen.borrow().is_empty(), "o provedor foi chamado: {:?}", fake.seen.borrow());
+
+        let fake = FakePub::with_open_pr("github", "fix/x", 42);
+        let report = publish_principal(&fake, &work, &pr);
+        assert!(!report.ok, "{report:?}");
+        assert!(fake.seen.borrow().is_empty(), "o pull request aberto foi reescrito: {:?}", fake.seen.borrow());
+    }
+
+    /// Com o envio aceito, a branch está no remoto antes de o provedor ser
+    /// chamado, e o pedido abre pelo provedor: o caso que o teste do envio
+    /// recusado não cobre.
+    #[test]
+    fn an_accepted_push_lets_the_provider_open_the_pull_request() {
+        let (_dir, remote, work) = remote_and_clone();
+        let pr = open_for_fix_x();
+
+        let fake = FakePub::green("github");
+        let report = publish_principal(&fake, &work, &pr);
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.action, ACTION_OPEN);
+        assert_eq!(report.number, Some(7));
+        assert!(
+            fake.seen.borrow().iter().any(|call| call.starts_with("open title=the unit head=fix/x")),
+            "{:?}",
+            fake.seen.borrow()
+        );
+        assert_eq!(
+            git_in(&remote, &["rev-parse", "refs/heads/fix/x"]),
+            git_in(&work, &["rev-parse", "HEAD"]),
+            "a branch já estava no remoto"
+        );
+
+        // Um commit novo da rodada chega ao remoto no `pr-open` seguinte, e o
+        // pull request aberto tem o corpo reescrito, sem um segundo.
+        git_in(&work, &["commit", "-q", "--allow-empty", "-m", "the next change"]);
+        let fake = FakePub::with_open_pr("github", "fix/x", 42);
+        let report = publish_principal(&fake, &work, &pr);
+        assert!(report.ok && report.action == ACTION_EDIT && report.number == Some(42), "{report:?}");
+        assert_eq!(
+            git_in(&remote, &["rev-parse", "refs/heads/fix/x"]),
+            git_in(&work, &["rev-parse", "HEAD"]),
+            "o commit novo chegou ao mesmo pull request"
+        );
+    }
+
+    /// O repositório sem remoto `origin` não abre pull request: o relatório
+    /// diz `push:` e o provedor não é chamado.
+    #[test]
+    fn a_repository_without_a_remote_does_not_open_the_pull_request() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path();
+        git_in(work, &["init", "-q", "-b", "dev", "."]);
+        git_in(work, &["commit", "-q", "--allow-empty", "-m", "seed"]);
+        git_in(work, &["checkout", "-q", "-b", "fix/x"]);
+
+        let fake = FakePub::green("github");
+        let report = publish_principal(&fake, work, &open_for_fix_x());
+        assert!(!report.ok, "{report:?}");
+        assert!(report.error.clone().unwrap_or_default().starts_with("push: "), "{report:?}");
+        assert!(fake.seen.borrow().is_empty(), "{:?}", fake.seen.borrow());
     }
 }

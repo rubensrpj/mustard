@@ -303,14 +303,20 @@ mod tests {
         assert!(ok, "git {args:?} failed in {}", dir.display());
     }
 
-    /// Um repositório com um commit, parado na branch `branch`.
+    /// Um repositório com um commit, parado na branch `branch`. O commit nasce
+    /// na `dev` uma vez por processo e a pasta vem por cópia; a branch pedida
+    /// sai dela.
     fn repo_on(dir: &Path, branch: &str) {
-        git(dir, &["init", "-q"]);
-        git(dir, &["checkout", "-q", "-b", branch]);
-        git(
-            dir,
-            &["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"],
-        );
+        crate::shared::test_fixture::repo_from_template(dir, "pending_gate.repo_on", |root| {
+            git(root, &["init", "-q", "-b", "dev"]);
+            git(
+                root,
+                &["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"],
+            );
+        });
+        if branch != "dev" {
+            git(dir, &["checkout", "-q", "-b", branch]);
+        }
     }
 
     /// O turno depois do fechamento cuja mensagem final omite uma pendência
@@ -340,6 +346,32 @@ mod tests {
         assert_eq!(verdict(root, &rewrite), Verdict::Allow, "the rewrite that cites passes");
         assert_eq!(armed_charges(root), vec![], "that Stop settled the closure");
         assert_eq!(verdict(root, &stop("s-close", summary)), Verdict::Allow, "once per closure");
+    }
+
+    /// A recusa da pendência omitida oferece a terceira saída, a de deixar para
+    /// depois, com o comando pronto, em português e em inglês. O comando nomeia
+    /// a spec que fechou e nunca escreve o número da pendência.
+    #[test]
+    fn the_block_offers_the_later_answer_in_both_languages() {
+        for (config, command) in [
+            (PT, "mustard-rt run close --spec trava --pending-later \"<id>=<motivo>\""),
+            (r#"{"language":{"text":"en-US"}}"#, "mustard-rt run close --spec trava --pending-later \"<id>=<reason>\""),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), config).expect("cfg");
+            add_items(root, &["Humanize", "HTML padrao da spec"]);
+            closed_spec(root, &[1, 2], "s-later");
+
+            match verdict(root, &stop("s-later", "Fechei a obra.")) {
+                Verdict::Deny { reason } => {
+                    assert!(reason.contains(command), "{config}: a recusa traz o comando pronto: {reason}");
+                    assert_eq!(reason.matches("--pending-later").count(), 1, "{reason}");
+                    assert!(!reason.contains("P-1=") && !reason.contains("P-2="), "sem número no comando: {reason}");
+                }
+                other => panic!("a closing turn that omits open items must block, got {other:?}"),
+            }
+        }
     }
 
     /// Sem fechamento armado, a resposta passa mesmo omitindo todas as
@@ -487,13 +519,15 @@ mod tests {
     fn a_merge_that_switches_back_to_the_base_is_still_charged() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
+        repo_on(root, "feature/trava");
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"}}}"#)
             .expect("cfg");
-        repo_on(root, "feature/trava");
         add_items(root, &["Humanize"]);
         seed_spec(root, SPEC, &[1], "");
         assert!(record_phase(root, SPEC, "delivered", None), "the merge is recorded");
-        git(root, &["checkout", "-q", "-b", "dev"]);
+        let on_the_branch = crate::shared::spec_state::active_spec(&root.to_string_lossy(), Some("s-nova"));
+        assert_eq!(on_the_branch.as_deref(), Some(SPEC), "while on the spec's branch the ladder finds the spec");
+        git(root, &["checkout", "-q", "dev"]);
         assert_eq!(crate::shared::spec_state::active_spec(&root.to_string_lossy(), Some("s-nova")), None);
 
         match verdict(root, &stop("s-nova", "PR mergeado, voltei para a dev.")) {

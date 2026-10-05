@@ -48,12 +48,6 @@ jobs:
       # second build. Same setting, opposite verdicts, for a stated reason —
       # see docs/2026-08-14-build-cycle-measurements.md §5.
       CARGO_INCREMENTAL: 0
-      # Stated because the toolchain action below exports 0 when nothing sets
-      # this, which would quietly override the `debug = 1` that Cargo.toml picks
-      # deliberately — line-table debuginfo is what keeps a panic backtrace from
-      # a failing test readable. The runner keeps the same value the tree asks
-      # for; the action only gets to fill in what we have no opinion about.
-      CARGO_PROFILE_DEV_DEBUG: 1
     strategy:
       # One OS failing should not cancel the others — we want the full
       # cross-platform picture on every run.
@@ -93,19 +87,20 @@ jobs:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
 
-      - name: Expose the scan binary to core's spawn-based tests
+      - name: Expose the scan binary to the tests that spawn it
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #
-      # `-p scan` is here because mustard-core's stack-registry tests exercise
-      # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
-      # the test degrades to an empty project list and fails — green on any dev
-      # machine (installed scan on PATH), red on a bare runner. `cargo test`
-      # builds a package's BIN targets alongside its tests, so `scan.exe` lands
-      # in target/debug before any test runs; the PATH step above only has to
-      # name the directory, not wait for the file.
+      # `-p scan` is here because mustard-rt's map tests run the scan compiled
+      # with them: `Scan::locate()` looks for `scan` next to the test binary, and
+      # the test that reads the projects table after a real scan
+      # (`apps/rt/src/commands/scan.rs`) fails without it, asking for
+      # `cargo build -p scan` — green on any dev machine that built it, red on a
+      # bare runner. `cargo test` builds a package's BIN targets alongside its
+      # tests, so `scan.exe` lands in target/debug before any test runs; the
+      # PATH step above only has to name the directory, not wait for the file.
       #
       # There is no separate `cargo build` step any more. It compiled the same
       # four crates this line compiles, and the per-step attribution of run
@@ -132,8 +127,15 @@ jobs:
       # extra test threads mostly buy contention. Kept because 54s per Windows
       # round is free — but read 6,8% as the number, not 41%.
       # Full figures: docs/2026-08-14-build-cycle-measurements.md.
+      #
+      # `--no-fail-fast` is here because `cargo test` stops at the first test
+      # FILE that fails: every file after it, in every crate, goes unrun. On a
+      # pull request that read as a short list of failures per system while
+      # whole files had never been tried there — each push of a fix showed the
+      # next batch, one round trip per batch. With the flag the run tries every
+      # file and lists every failure at once.
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
+        run: cargo test --locked --no-fail-fast -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
 
       # `-D warnings`: EVERY warning fails the build, not only the deny-level
       # ones. The lint table used to keep pedantic at warn "without drowning in
@@ -158,10 +160,23 @@ jobs:
       # test code: `.unwrap()` calls inside `#[cfg(test)]` modules and `tests/`
       # are never compiled by the default target set, so without this flag the
       # lint would report a pass nobody earned.
+      #
+      # O Clippy não roda no macOS. O lint compila o projeto inteiro mais uma
+      # vez, em modo de verificação (medido no Linux: 50 s de parede e 151 s de
+      # CPU, porque as dependências e os crates são verificados de novo), e o
+      # veredito é o mesmo nos três sistemas, salvo no código atrás de `cfg`:
+      # o Linux verifica o ramo dele e o Windows verifica o do Windows, onde
+      # há mais de vinte pontos com `cfg(windows)` nos crates (o shell, a
+      # morte de processo, o disparo separado). No macOS são três pontos com
+      # `target_os = "macos"`, e ele é o que menos paga o passo. O limite de
+      # tempo do job não sobe para caber a lentidão: a causa é que se corta.
       - name: Clippy
+        if: runner.os != 'macOS'
         run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -- -D warnings
 
       # A válvula de escape do passo acima é desligar o lint. Isto garante que
-      # ela nunca seja usada em silêncio.
+      # ela nunca seja usada em silêncio. É um script Python que lê arquivos:
+      # o resultado é o mesmo nos três sistemas, e por isso roda só no Linux.
       - name: Lint allows carry a reason
+        if: runner.os == 'Linux'
         run: python3 scripts/ac/lint-allows-have-reasons.py

@@ -1,0 +1,29 @@
+# As rotas da biblioteca padrão do Go. O nome deste arquivo é o nome do
+# framework; a consulta que acha as rotas está em `nethttp/routes.scm`, e o
+# que cada captura dela diz, em `src/routes.rs`. A rota é o
+# `http.HandleFunc("/x", h)` ou o `http.Handle("/x", h)`, e os mesmos num
+# roteador feito por `http.NewServeMux()` (`mux.HandleFunc(…)`). Quem atende é
+# o último argumento.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador.
+# - `default_method`: o método da rota em que a consulta não captura método
+#   nenhum; `"*"` é qualquer método. Sem tabela `methods`: nenhuma rota
+#   escreve o método pelo nome chamado.
+# - `method_in_path`: o caminho pode começar pelo método seguido de espaço
+#   (`"GET /aves/{id}"`, a forma do Go 1.22): esse é o método da rota, e o
+#   resto, o caminho. Sem ele, vale o método padrão.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{resto...}`).
+# - `path_starts`: o começo que todo caminho de rota tem, já sem o método. O
+#   texto sem ele é outra coisa, e não faz rota.
+
+language = ["go"]
+imports = ["net/http"]
+default_method = "*"
+method_in_path = true
+param_wrappers = [["{", "}"]]
+path_starts = ["/"]

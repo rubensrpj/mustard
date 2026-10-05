@@ -1,0 +1,39 @@
+# As chamadas da tela feitas com o axios. O nome deste arquivo é o nome do
+# framework; a consulta que acha as chamadas está em `axios/routes.scm`, e o
+# que cada captura dela diz, em `src/routes.rs`. A chamada é a de um método do
+# objeto da biblioteca (`axios.get('/pedidos')`) ou de um cliente feito por
+# ela (`api.post(`/pedidos/${id}`, corpo)`). O cliente feito com
+# `axios.create({ baseURL: '/api' })` põe a base na frente de todo caminho
+# que ele chama, também no arquivo que o traz por import.
+# O caminho escrito como soma que começa por texto
+# (`'/api/pedidos/' + id + '/itens'`, `'/api/' + 'pedidos'`) junta os pedaços,
+# com um parâmetro no lugar de cada valor; a soma que começa pelo valor não
+# faz chamada.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`axios/…`). O nome que o
+#   import traz é o objeto da biblioteca.
+# - `manifest_dependencies`: a regra roda também nos arquivos sob o manifesto
+#   que declara a biblioteca: o arquivo que chama por um cliente trazido de
+#   outro não importa a biblioteca.
+# - `methods`: o nome do método chamado e o método HTTP que ele diz. O nome
+#   fora da tabela não é chamada.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro no caminho
+#   (`${id}`).
+
+language = ["typescript", "tsx", "javascript"]
+imports = ["axios"]
+manifest_dependencies = ["axios"]
+param_wrappers = [["${", "}"]]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+head = "HEAD"
+options = "OPTIONS"

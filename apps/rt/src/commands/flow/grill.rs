@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{
     found_by, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS,
 };
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
@@ -49,8 +50,8 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::{self, read::checkout, shown, write::record};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events::{self, shown, write::record};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run grill`.
 pub struct GrillOpts {
@@ -142,6 +143,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         return refuse(GrillRefusal::GoalMissing { spec });
     };
     let goal_text = goal.str_field("text").unwrap_or_default().trim().to_string();
+    let goal_agent = goal.str_field("agent").unwrap_or_default().trim().to_string();
     let origin = goal.int("origin");
 
     // Os tipos: os mesmos não gravam nada, um a mais grava a versão nova, um
@@ -184,19 +186,21 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
     let index = spec_index::read(&project.root);
     let prior = spec_index::read_specs(&project.root);
-    let map = project_map::read(&project.root).ok();
+    let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
     let list = survey::build(&Sources {
         kinds: &kinds,
         goal: &goal_text,
+        goal_agent: &goal_agent,
         current: &spec,
         bank: bank.as_ref(),
         lessons_file: &lessons_file,
         index: &index,
         prior: &prior,
-        map: map.as_ref(),
+        map: Some(&map),
         condensed,
         lang,
+        languages: &project.languages,
     });
 
     let codes = log.codes();
@@ -237,7 +241,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     // fica, muda ou sai. O que o motivo não toca fica como está, e nada é
     // perguntado de novo.
     if let Some(reason) = return_reason(&log) {
-        let touched = touched_by(&log, reason, &codes);
+        let touched = touched_by(&log, reason, &codes, &project.languages);
         if !touched.is_empty() {
             report["reason"] = json!(reason);
             report["touched"] = json!(touched);
@@ -280,14 +284,14 @@ fn return_reason(log: &SpecLog) -> Option<&str> {
 
 /// Os itens que o motivo da volta toca, do mais forte para o menos forte:
 /// o combinado, a especificação, os critérios e as ondas, pela mesma busca por
-/// nota que a leitura por termo usa. Cada um sai com o código, o tipo e o
-/// começo do texto, que é o que o usuário precisa para dizer se ele fica, muda
-/// ou sai.
-fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>) -> Vec<Value> {
+/// nota que a leitura por termo usa, nas línguas `languages`. Cada um sai
+/// com o código, o tipo e o começo do texto, que é o que o usuário precisa
+/// para dizer se ele fica, muda ou sai.
+fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>, languages: &Languages) -> Vec<Value> {
     let blocks = [Block::Agreed, Block::Specification, Block::Criteria, Block::Waves];
     let items: Vec<&SpecEvent> =
         blocks.iter().flat_map(|block| log.block(BlockQuery::Block(*block))).collect();
-    found_by(items, reason, codes)
+    found_by(items, reason, codes, languages)
         .into_iter()
         .map(|event| {
             json!({
@@ -419,6 +423,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 reason: "O formatador da rodada mudou de lugar.".into(),
+                fix: false,
             },
             None,
         );
@@ -457,6 +462,50 @@ mod tests {
         assert!(warnings.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
         assert!(report.get("publish").is_none() && !report.to_string().contains("write publish"), "{report}");
         assert!(report.get("copy").is_none() && !report.to_string().contains("write copy"), "{report}");
+    }
+
+    /// Um mapa em que uma coluna que o levantamento não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e a lacuna de quem
+    /// depende, na refatoração, ainda vem com onde o nome citado na parte do
+    /// agente do objetivo é declarado e quem importa o arquivo.
+    #[test]
+    fn the_dependents_gap_reads_its_map_parts_even_when_another_column_is_broken() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        mustard_core::io::project_map::write_text(
+            root,
+            r#"{"modules": [
+                {"path": "src/a.rs", "tests": "um texto no lugar da lista",
+                 "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+                {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#,
+        )
+        .unwrap();
+        assert!(project_map::read(root).is_err(), "the whole map refuses the broken column");
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let goal = "Tirar o registro de nascimento do fluxo.";
+        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
+        id_of(&write(
+            root,
+            Some("x"),
+            "context",
+            json!({
+                "title": "Tirar o registro de nascimento",
+                "text": goal,
+                "agent": "- Tirar `record_birth` do fluxo.",
+                "origin": said,
+            }),
+        ));
+
+        let report = grill(root, "x", Some("refactor"), false);
+        let sources: Vec<&str> = report["points"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|point| point["facts"].as_array().into_iter().flatten())
+            .filter_map(|fact| fact["source"].as_str())
+            .collect();
+        assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{report}");
     }
 
     /// O `grill` não escreve página nem prepara cópia: o levantamento não é
@@ -510,7 +559,7 @@ mod tests {
             None,
             "lesson",
             json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
-                   "applies_to": {"files": ["**"]}, "found_in": {"spec": "antiga"}}),
+                   "applies_to": {"skill": "backend"}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(lesson["ok"], json!(true), "{lesson}");
         open_spec(root, "antiga");
@@ -724,6 +773,42 @@ mod tests {
         record_list(root, "x", &report);
     }
 
+    /// A lição da armadilha do ambiente que casa com o objetivo mas diz os
+    /// arquivos onde vale não vira ponto do `grill`: o pedido de cada onda que mexe neles a
+    /// leva. A que só diz a skill, com o mesmo texto, continua virando.
+    #[test]
+    fn a_lesson_that_names_files_is_left_to_the_wave_and_not_asked() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let by_files = write(
+            root,
+            None,
+            "lesson",
+            json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
+                   "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"spec": "antiga"}}),
+        );
+        assert_eq!(by_files["ok"], json!(true), "{by_files}");
+        surveyed(root, "x");
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(
+            !items(&report).iter().any(|item| item["from"] == json!("lesson")),
+            "a lição por arquivo não vira ponto: {report}"
+        );
+        let by_skill = write(
+            root,
+            None,
+            "lesson",
+            json!({"class": "environment_trap", "text": "**Merge sem trava.** O merge passa com pendência aberta.",
+                   "keys": ["merge", "pendência"], "applies_to": {"skill": "backend"}, "found_in": {"spec": "antiga"}}),
+        );
+        assert_eq!(by_skill["ok"], json!(true), "{by_skill}");
+        let again = grill(root, "x", Some("fix"), false);
+        let asked: Vec<&Value> = items(&again).iter().filter(|item| item["from"] == json!("lesson")).collect();
+        assert_eq!(asked.len(), 1, "{again}");
+        assert_eq!(asked[0]["gap"], json!("Merge sem trava."));
+    }
+
     /// Uma pasta com 300 regras do projeto que casam com o objetivo, e um
     /// defeito que também casa: o levantamento não traz regra nenhuma como
     /// ponto, e o defeito continua virando ponto, sem perder o lugar para
@@ -737,7 +822,7 @@ mod tests {
             None,
             "lesson",
             json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
-                   "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"spec": "antiga"}}),
+                   "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(written["ok"], json!(true), "{written}");
         let path = root.join(".claude").join("spec").join("lessons.ndjson");

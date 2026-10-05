@@ -292,15 +292,15 @@ mod tests {
         let text = "a fase `survey`, a `plan`, `src/a.rs`, `mod.rs`, `--spec`, `MSTD-RULE-0025`, \
                     `cargo test -p x`, `{\"a\":1}`, `P-12`, `Não`, `Vec<String>`, `1024`, ``";
         assert_eq!(cited_names(text), Vec::<String>::new());
-        assert_eq!(check(&World::default(), "src/nada.rs", text), Vec::new(), "no names, no map warning");
+        assert_eq!(check(&World::default(), "src/nothing.rs", text), Vec::new(), "no names, no map warning");
         let text = "`State`, `SpecLog`, `check_citations`, `spanOf`, `TOP`, `State`";
         assert_eq!(cited_names(text), vec!["State", "SpecLog", "check_citations", "spanOf", "TOP"]);
     }
 
     #[test]
     fn a_qualified_or_called_name_is_checked_by_its_last_segment() {
-        assert_eq!(cited_names("`io::citation::check_at` e `run()` e `Finding::NoMap()`"), vec![
-            "check_at", "run", "NoMap"
+        assert_eq!(cited_names("`io::citation::citation_roots` e `run()` e `Finding::NoMap()`"), vec![
+            "citation_roots", "run", "NoMap"
         ]);
         assert_eq!(check(&world(), "src/b.rs:7", "chama `commands::run()`"), Vec::new());
         assert_eq!(check(&world(), "src/b.rs:7", "chama `a::SpecLog`"), vec![Finding::NameElsewhere {

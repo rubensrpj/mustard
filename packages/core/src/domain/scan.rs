@@ -5,11 +5,9 @@
 //! it shells out to the grain binary and consumes its JSON/Markdown:
 //!
 //! - `grain scan <root> --out <model.json>` — the durable model (run once/repo).
-//! - `grain digest <model> --query "<terms>"` — the cheap per-interaction lookup
-//!   a `feature` does to research the repo without reading files.
-//! - `grain spec <model> --entity … [--like …] [--ops …] [--invariant …]` — the
-//!   deterministic implementation-spec DRAFT (English; localized to the
-//!   project's `mustard.json` text language only at the lapidation step).
+//!
+//! What the map holds is read back through the map port
+//! (`io/project_map.rs`), never through another run of the tool.
 //!
 //! The boundary is a TOOL (process + JSON/MD), not a library link: no shared
 //! build, no tree-sitter version coupling, grain stays standalone. This module
@@ -17,10 +15,10 @@
 //! framework-specific — grain is itself fully data-driven.
 //!
 //! Fail-open: spawning or parsing failures return [`Error`]; callers degrade
-//! (e.g. treat a digest miss as "no precedent found, confirm by reading").
+//! (e.g. an empty subproject list when the tool is missing).
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
@@ -44,251 +42,7 @@ impl Default for Scan {
     }
 }
 
-/// The FULL capability digest — grain's `digest <model>` output with NO
-/// `--query` (the searchable catalog, not a per-query slice). Mustard owns its
-/// own view and only deserializes the fields it consumes: today the domain-term
-/// index ([`Self::terms`]), the proactive-lexicon `enrich` input. The published
-/// term list is already discriminative-rank ordered + capped by the scan tool.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Digest {
-    /// Domain-term index (token + occurrence count + sample files), ordered by
-    /// the scan tool's discriminative rank. Defaulted so an older scan binary
-    /// (or a model that mined no vocabulary) degrades to an empty list.
-    #[serde(default)]
-    pub terms: Vec<DigestTerm>,
-    /// Recurring structural role affixes the scan tool mined (suffix/prefix/
-    /// folder/nested + the count of distinct entities each pairs with). Consumed
-    /// by the proactive lexicon `enrich` to DEMOTE structural type-glue affixes
-    /// so domain vocabulary survives the candidate cap. Defaulted so a model from
-    /// an older scan binary (no `roles` field) degrades to an empty list.
-    #[serde(default)]
-    pub roles: Vec<DigestRole>,
-}
-
-/// One row of the digest's role index ([`Digest::roles`]): a recurring affix,
-/// the convention it forms (`suffix` | `prefix` | `folder` | `nested`), the
-/// number of distinct entities it pairs with, and the directory it concentrates
-/// in. Same shape grain's `RoleD` serializes; Mustard owns its own (read-only)
-/// view and only deserializes the fields it consumes.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DigestRole {
-    pub affix: String,
-    /// The convention the affix forms: `suffix` | `prefix` | `folder` | `nested`.
-    /// Defaulted so a partial / older payload still deserialises.
-    #[serde(default)]
-    pub kind: String,
-    /// Distinct entities the affix pairs with — its structural recurrence.
-    #[serde(default)]
-    pub count: usize,
-    /// The directory the affix concentrates in (module organisation hint).
-    #[serde(default)]
-    pub common_dir: String,
-}
-
-/// One row of the digest's domain-term index ([`Digest::terms`]): the mined
-/// code token, its (machine-class-demoted) occurrence count, and a few sample
-/// files where the vocabulary lives. Same shape grain's `TermD` serializes.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DigestTerm {
-    pub term: String,
-    #[serde(default)]
-    pub count: usize,
-    /// Domain specificity ×1024 (TF·IDF, `ranking::domain_specificity_x1024`):
-    /// the discriminative-power signal that peaks at mid frequency. Defaulted to
-    /// 0 so a model from an older scan binary (no field) still deserialises — a
-    /// consumer sorting by it then sees a flat 0 and falls back to scan's order.
-    #[serde(default)]
-    pub specificity_x1024: u64,
-    #[serde(default)]
-    pub samples: Vec<String>,
-    /// One-sentence business-action summary for the declaration that anchors
-    /// this term. Written by `enrich-purpose --apply`; absent on older models
-    /// (serde default = None). Additive: consumers that do not use it are
-    /// unaffected.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
-}
-
-/// The focused slice of the digest matching some domain terms — grain's
-/// `digest --query` output. Mirrors grain's schema; Mustard owns its own view.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DigestQuery {
-    #[serde(default)]
-    pub query: Vec<String>,
-    /// Stacks the scanned model carries (inferred at scan time, copied verbatim
-    /// into every `digest --query` payload — hit or miss). Same contract type
-    /// as [`Project::detected_stacks`]; defaulted so payloads from an older
-    /// scan binary (without the field) keep deserialising.
-    #[serde(default)]
-    pub detected_stacks: Vec<StackDetection>,
-    #[serde(default)]
-    pub matched_terms: Vec<TermHit>,
-    #[serde(default)]
-    pub terms_omitted: usize,
-    #[serde(default)]
-    pub slices: Vec<SliceHit>,
-    /// Slices that matched but were trimmed by the per-query cap — scan's
-    /// additive mirror of `terms_omitted` (no silent loss). `0` from an older
-    /// scan binary without the field.
-    #[serde(default)]
-    pub slices_omitted: usize,
-    #[serde(default)]
-    pub contracts: Vec<ContractHit>,
-    #[serde(default)]
-    pub hubs: Vec<Hub>,
-    #[serde(default)]
-    pub touchpoints: Vec<Touchpoint>,
-    /// Real files to read next (anchor candidates), hubs first.
-    #[serde(default)]
-    pub files: Vec<String>,
-    /// Audit trail for [`Self::files`], additive and same order: per anchor,
-    /// the fixed-point selection score and the matched terms that carried it.
-    /// Defaulted so payloads from an older scan binary (without the field)
-    /// keep deserialising.
-    #[serde(default)]
-    pub files_detail: Vec<FileDetail>,
-    /// Legacy flag: `true` when every view came back empty. Kept for payloads
-    /// from older scan binaries; [`Self::report`] is the truth — a non-miss
-    /// answer can still be `weak`.
-    #[serde(default)]
-    pub miss: bool,
-    /// Honest per-term match report (scan's tier ladder): what each request
-    /// term matched, at which tier, in which language, and where — plus the
-    /// aggregate `matched k/n` and a reason. Defaulted so payloads from an
-    /// older scan binary (without the field) keep deserialising; an empty
-    /// `reason` means "old binary, fall back to `miss`".
-    #[serde(default)]
-    pub report: DigestReport,
-    /// Concern split: when the query's concepts form ≥2 disconnected groups
-    /// (no shared module, no import bridge), scan returns one [`ConcernHit`]
-    /// per group, each with its OWN ranked `files`/`files_detail` restricted to
-    /// that concern. Empty for a single-concern query (the flat [`Self::files`]
-    /// already IS that one concern). Defaulted so payloads from an older scan
-    /// binary (without the field) keep deserialising.
-    #[serde(default)]
-    pub concerns: Vec<ConcernHit>,
-}
-
-/// One concern of a multi-concern `digest --query` answer — a connected group
-/// of the query's concepts with its own ranked anchors. Mirrors scan's
-/// `ConcernD`; Mustard owns its own view. A consumer reads `files` per concern
-/// instead of the blended [`DigestQuery::files`] when a request mixes concerns.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ConcernHit {
-    /// The concern's concept tokens joined with '+' (sorted asc).
-    pub label: String,
-    /// The query concepts in this concern (sorted asc).
-    #[serde(default)]
-    pub concepts: Vec<String>,
-    /// Files to read for THIS concern, ranked over its concepts only.
-    #[serde(default)]
-    pub files: Vec<String>,
-    /// Audit trail for [`Self::files`], same order (parallel to
-    /// [`DigestQuery::files_detail`]).
-    #[serde(default)]
-    pub files_detail: Vec<FileDetail>,
-    /// This concern's strength on its own evidence: `strong` (a concept hit
-    /// exact/fold), `weak` (derived tiers only), `none` (no anchor surfaced).
-    #[serde(default)]
-    pub reason: String,
-}
-
-/// The aggregate match report of a `digest --query` answer. Reasons:
-/// `none` (nothing matched — treat as net-new, confirm by reading),
-/// `generated_only` (matches live only in machine-written modules —
-/// regenerate, never edit them), `weak` (under half the terms matched, or
-/// only stem/lexicon-derived matches — re-query in the code's vocabulary or
-/// explore), `strong` (solid precedent). Empty = payload predates the report.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct DigestReport {
-    #[serde(default)]
-    pub matched: usize,
-    #[serde(default)]
-    pub total: usize,
-    #[serde(default)]
-    pub reason: String,
-    /// `true` when a `weak` answer is weak ONLY because no term hit exact/fold,
-    /// yet a CURATED lexicon bridge (seed or the project's own overlay) carried
-    /// a non-thin query (`matched*2 >= total`) — the request vocabulary
-    /// translated onto the code's. The consumer keeps the planning fields (with
-    /// a caveat) instead of forcing a re-query; speculative `stem`-only weakness
-    /// stays `false`. Defaulted `false` for payloads that predate the marker.
-    #[serde(default)]
-    pub bridged: bool,
-    #[serde(default)]
-    pub terms: Vec<TermReport>,
-}
-
-/// One request term's outcome on scan's match ladder: the tier that carried
-/// it (`exact` | `fold` | `stem` | `lexicon` | `none`), the natural-language
-/// evidence (stemmer language / lexicon pair label; empty for exact/fold)
-/// and the top sample files where the matched vocabulary lives.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TermReport {
-    pub term: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub lang: String,
-    #[serde(default)]
-    pub files: Vec<String>,
-}
-
-/// One anchor's audit row (parallel to [`DigestQuery::files`]): the fixed-point
-/// BM25F relevance score (`score_x1024`, scan's integer scale — never a float,
-/// so the value is byte-stable) and the matched index terms that carried the
-/// file (by declaration or path/filename field).
-#[derive(Debug, Clone, Deserialize)]
-pub struct FileDetail {
-    pub file: String,
-    #[serde(default)]
-    pub score_x1024: u64,
-    #[serde(default)]
-    pub terms: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TermHit {
-    pub term: String,
-    pub count: usize,
-    #[serde(default)]
-    pub samples: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SliceHit {
-    pub label: String,
-    pub recurrence: usize,
-    #[serde(default)]
-    pub entities: Vec<String>,
-    /// Real file paths that exemplify this slice (the reference-implementation
-    /// files to mirror), passed through verbatim from the scan digest's
-    /// per-slice `exemplar_files`. `default` so an older scan payload without
-    /// the field still deserializes (empty).
-    #[serde(default)]
-    pub exemplar_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ContractHit {
-    pub name: String,
-    pub implementors: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Hub {
-    pub module: String,
-    pub degree: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Touchpoint {
-    pub module: String,
-    pub fan_out: usize,
-    pub breadth: usize,
-}
-
-/// One compilation unit from grain's model (`grain.model.json` `projects[]`) —
+/// One compilation unit from the map (the `projects` table of `.claude/grain.db`) —
 /// the subproject list. Replaces the deleted sync-detect discovery: grain mines
 /// the same build-manifest set deterministically.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -304,9 +58,6 @@ pub struct Project {
     /// frequency-ranked, top-12). Empty when none mined / older model.
     #[serde(default)]
     pub frameworks: Vec<String>,
-    /// Distinct dependencies declared by this unit's manifests (sorted, deduped).
-    #[serde(default)]
-    pub dependencies: Vec<String>,
     /// Build/codegen scripts declared by this unit's manifests (sorted, deduped).
     #[serde(default)]
     pub scripts: Vec<String>,
@@ -326,40 +77,13 @@ pub struct Project {
     pub own_git_root: bool,
 }
 
-/// The small, stable FACTS the orchestrator consumes from a grain model — the
-/// subproject list and the known declaration names. Produced by `scan facts`;
-/// Mustard deserializes this tiny shape but never the model's own (large)
-/// schema, so the scan tool stays the single owner of the model format.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ModelFacts {
-    #[serde(default)]
-    pub projects: Vec<Project>,
-    #[serde(default)]
-    pub entities: Vec<String>,
-}
-
-/// Read the `projects[]` (subproject list) from a grain model — via the scan
-/// tool's `facts` command ([`Scan::facts`]), so this crate never parses the
-/// model's own schema. Fail-open: a missing model (no scan yet) or any
-/// spawn/parse error yields an empty list.
+/// Os subprojetos do mapa em `model_path`, lidos só da tabela deles pela
+/// porta do mapa ([`crate::io::project_map::projects_at`]), sem abrir outro
+/// processo nem ler o resto do mapa. Falha aberta: sem mapa (o scan ainda não
+/// rodou) ou com um que não se entende, a lista vem vazia.
 #[must_use]
 pub fn read_projects(model_path: &std::path::Path) -> Vec<Project> {
-    if !model_path.is_file() {
-        return Vec::new();
-    }
-    Scan::locate().facts(model_path).map(|f| f.projects).unwrap_or_default()
-}
-
-/// Read the distinct declaration names (entities / types / functions) from a
-/// grain model — the "known entities" set — via the scan tool's `facts` command.
-/// Sorted + deduped by the tool. Fail-open: empty on a missing model or any
-/// spawn/parse error.
-#[must_use]
-pub fn read_entity_names(model_path: &std::path::Path) -> Vec<String> {
-    if !model_path.is_file() {
-        return Vec::new();
-    }
-    Scan::locate().facts(model_path).map(|f| f.entities).unwrap_or_default()
+    crate::io::project_map::projects_at(model_path).unwrap_or_default()
 }
 
 /// Stamp [`Project::own_git_root`] on each census entry by probing whether its
@@ -383,45 +107,33 @@ pub fn mark_own_git_roots(repo_root: &Path, projects: &mut [Project]) {
     }
 }
 
-/// The one-shot `feature-bundle` payload — the digest and the full domain-term
-/// index (the non-strong vocabulary menu), both from ONE `scan` spawn / ONE
-/// model parse. Replaces the digest_query + digest spawn fan-out `feature` used
-/// to do (each of which re-parsed the whole model).
-#[derive(Debug, Clone)]
-pub struct FeatureBundle {
-    /// The per-query digest (the shape [`Scan::digest_query`] returns).
-    pub digest: DigestQuery,
-    /// The FULL domain-term index (same as [`Scan::digest`]'s `terms`) — the
-    /// non-strong `vocabulary` menu.
-    pub terms: Vec<DigestTerm>,
-}
-
-/// Wire shape of the `feature-bundle` stdout (`{digest, terms}`).
-#[derive(Deserialize)]
-struct FeatureBundleWire {
-    digest: DigestQuery,
-    #[serde(default)]
-    terms: Vec<DigestTerm>,
-}
-
 impl Scan {
-    /// A client for the grain binary at `binary` (a name on `PATH` or a path).
-    #[must_use]
-    pub fn new(binary: impl Into<String>) -> Self {
-        Self { binary: binary.into() }
-    }
-
     /// Locate the bundled grain binary — built as a sibling of the running
     /// executable in the same workspace `target/` dir — falling back to
     /// [`DEFAULT_BINARY`] on `PATH`. Fail-open: any probe error → the fallback.
     #[must_use]
     pub fn locate() -> Self {
-        let sibling = std::env::current_exe().ok().and_then(|exe| {
-            let dir = exe.parent()?;
-            let cand = dir.join(if cfg!(windows) { "scan.exe" } else { "scan" });
-            cand.is_file().then(|| cand.to_string_lossy().into_owned())
-        });
-        Self { binary: sibling.unwrap_or_else(|| DEFAULT_BINARY.to_string()) }
+        Self::located_from(std::env::current_exe().ok().as_deref())
+    }
+
+    /// [`Self::locate`] for the executable at `exe`. A test binary runs from
+    /// `deps/`, one folder below the programs of the same build: there the
+    /// folder above is searched too, before `PATH`, so a test never runs the
+    /// installed scan in place of the one compiled with it.
+    #[must_use]
+    pub fn located_from(exe: Option<&Path>) -> Self {
+        let name = if cfg!(windows) { "scan.exe" } else { "scan" };
+        let dir = exe.and_then(Path::parent);
+        let up = dir.filter(|dir| dir.file_name().is_some_and(|n| n == "deps")).and_then(Path::parent);
+        let found = dir.into_iter().chain(up).map(|dir| dir.join(name)).find(|cand| cand.is_file());
+        Self { binary: found.map_or_else(|| DEFAULT_BINARY.to_string(), |cand| cand.to_string_lossy().into_owned()) }
+    }
+
+    /// `true` when this is the scan compiled with the running program, found
+    /// by [`Self::locate`], and not the name looked up on `PATH`.
+    #[must_use]
+    pub fn is_compiled_alongside(&self) -> bool {
+        self.binary != DEFAULT_BINARY
     }
 
     /// Mine `root` into the model file at `out` (`grain scan`). With a model
@@ -435,53 +147,62 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
-    /// Read the model's FULL capability digest (`grain digest <model>`, no
-    /// `--query`) — the whole catalog, including the discriminative-ranked
-    /// domain-term index. Used by the proactive `enrich` flow to learn the
-    /// code's vocabulary; the per-query [`Self::digest_query`] is the cheap
-    /// research lookup instead.
+    /// Read from git the history of each declaration of `file`, in the base
+    /// branch the project declares, and keep it in the map at `out` (`grain
+    /// history`), following a declaration into the file it came from up to
+    /// `moves` times in a row. Only that file's lines of the map change.
     ///
     /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn digest(&self, model: &Path) -> Result<Digest> {
-        let out = self.run(&digest_args(model))?;
-        Ok(serde_json::from_str(&out)?)
+    /// [`Error::Io`] if the tool cannot be spawned, [`Error::CheckFailed`] on a
+    /// non-zero exit or a report that does not parse.
+    pub fn history(&self, root: &Path, out: &Path, file: &str, moves: usize) -> Result<HistoryReport> {
+        let stdout = self.run(&history_args(root, out, file, moves))?;
+        serde_json::from_str(last_line(&stdout)).map_err(|e| Error::check_failed(format!("scan history report: {e}")))
     }
 
-    /// Look up the model's digest by domain term(s) (`grain digest --query`).
+    /// Como [`Self::scan`], e, com o mapa gravado, começa em segundo plano a
+    /// leitura da história de todo arquivo dele ([`Self::read_history_in_background`]).
+    /// A leitura que não começa não muda a resposta da passada.
     ///
     /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn digest_query(&self, model: &Path, terms: &[String]) -> Result<DigestQuery> {
-        let out = self.run(&digest_query_args(model, terms))?;
-        Ok(serde_json::from_str(&out)?)
+    /// Os de [`Self::scan`].
+    pub fn scan_then_read_history(&self, root: &Path, out: &Path) -> Result<ScanReport> {
+        let report = self.scan(root, out)?;
+        let _ = self.read_history_in_background(root, out);
+        Ok(report)
     }
 
-    /// Read the model's FACTS (subproject list + known declaration names) via
-    /// `scan facts <model>` — so Mustard never parses the model's own schema.
+    /// Começa, em outro processo que segue depois deste, a leitura da história
+    /// de todo arquivo do mapa em `out` que ainda não a tem (`grain
+    /// history-all`), sem esperar por ela: quem pergunta ao mapa no meio da
+    /// leitura lê o que já está gravado. O processo não herda a entrada, a
+    /// saída nem o grupo do terminal de quem o chamou. Outra leitura do mesmo
+    /// mapa em andamento faz a nova sair sem ler nada.
     ///
     /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn facts(&self, model: &Path) -> Result<ModelFacts> {
-        let out = self.run(&facts_args(model))?;
-        Ok(serde_json::from_str(&out)?)
+    /// [`Error::Io`] if the tool cannot be spawned.
+    pub fn read_history_in_background(&self, root: &Path, out: &Path) -> Result<()> {
+        let mut command = Command::new(&self.binary);
+        command.args(history_all_args(root, out)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        detach(&mut command);
+        let mut child = command.spawn()?;
+        // Só recolhe o processo quando ele acaba, se este ainda estiver de pé.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
     }
 
-    /// Fetch the one-shot [`FeatureBundle`] (`scan feature-bundle`): the digest
-    /// and the full term index from ONE spawn / ONE model parse — the collapse
-    /// of the digest_query + digest fan-out. `query_terms` are the digest terms.
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn feature_bundle(&self, model: &Path, query_terms: &[String]) -> Result<FeatureBundle> {
-        let out = self.run(&feature_bundle_args(model, query_terms))?;
-        let json = out.find('{').map_or(out.as_str(), |i| &out[i..]);
-        let wire: FeatureBundleWire = serde_json::from_str(json)?;
-        Ok(FeatureBundle { digest: wire.digest, terms: wire.terms })
+    /// A marca de formato que este scan grava em cada bloco do mapa
+    /// (`scan format`): a versão e o resumo das fontes dele. Com ela se sabe,
+    /// sem rodar a passada, se o mapa é de outra compilação do scan e o
+    /// mesmo projeto, parado, rende outro mapa. `None` quando o scan não
+    /// roda ou não diz a marca: quem pergunta não julga o mapa por ela.
+    #[must_use]
+    pub fn format(&self) -> Option<String> {
+        let stdout = self.run(&["format".to_string()]).ok()?;
+        let mark = stdout.trim();
+        (!mark.is_empty()).then(|| mark.to_string())
     }
 
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
@@ -508,6 +229,60 @@ fn scan_args(root: &Path, out: &Path) -> Vec<String> {
     ]
 }
 
+fn history_args(root: &Path, out: &Path, file: &str, moves: usize) -> Vec<String> {
+    vec![
+        "history".to_string(),
+        root.to_string_lossy().into_owned(),
+        "--out".to_string(),
+        out.to_string_lossy().into_owned(),
+        "--file".to_string(),
+        file.to_string(),
+        "--moves".to_string(),
+        moves.to_string(),
+        "--json".to_string(),
+    ]
+}
+
+fn history_all_args(root: &Path, out: &Path) -> Vec<String> {
+    vec![
+        "history-all".to_string(),
+        root.to_string_lossy().into_owned(),
+        "--out".to_string(),
+        out.to_string_lossy().into_owned(),
+        "--json".to_string(),
+    ]
+}
+
+/// Solta o processo de `command` do grupo e do terminal de quem o inicia: o
+/// que ele faz não morre com o fechamento do terminal.
+#[cfg(unix)]
+fn detach(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+/// Solta o processo de `command` do console de quem o inicia
+/// (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`).
+#[cfg(windows)]
+fn detach(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0000_0008 | 0x0000_0200);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn detach(_command: &mut Command) {}
+
+/// What `scan history` reports on its last stdout line: the file, how many
+/// commits of the base changed it, and how many of its declarations the base
+/// has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct HistoryReport {
+    pub file: String,
+    pub commits: usize,
+    pub declarations: usize,
+}
+
 /// What one scan pass reports on its last stdout line: whether it read every
 /// file, the files it read, how many code files the map has, the commit it
 /// read from, and whether it rewrote the dictionary.
@@ -521,36 +296,15 @@ pub struct ScanReport {
     pub dictionary: bool,
 }
 
+/// The last non-empty line of what a `--json` run printed, where the report
+/// is; `{}` when it printed nothing.
+fn last_line(stdout: &str) -> &str {
+    stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}")
+}
+
 /// The report a `scan --json` run printed: its last non-empty line.
 fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
-    let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
-    serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan report: {e}")))
-}
-
-fn digest_args(model: &Path) -> Vec<String> {
-    vec!["digest".to_string(), model.to_string_lossy().into_owned()]
-}
-
-fn digest_query_args(model: &Path, terms: &[String]) -> Vec<String> {
-    vec![
-        "digest".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--query".to_string(),
-        terms.join(","),
-    ]
-}
-
-fn facts_args(model: &Path) -> Vec<String> {
-    vec!["facts".to_string(), model.to_string_lossy().into_owned()]
-}
-
-fn feature_bundle_args(model: &Path, query_terms: &[String]) -> Vec<String> {
-    vec![
-        "feature-bundle".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--query".to_string(),
-        query_terms.join(","),
-    ]
+    serde_json::from_str(last_line(stdout)).map_err(|e| Error::check_failed(format!("scan report: {e}")))
 }
 
 #[cfg(test)]
@@ -565,6 +319,136 @@ mod tests {
     }
 
     #[test]
+    fn history_args_shape() {
+        let a = history_args(&PathBuf::from("repo"), &PathBuf::from("m.db"), "src/a.rs", 3);
+        assert_eq!(a, vec!["history", "repo", "--out", "m.db", "--file", "src/a.rs", "--moves", "3", "--json"]);
+    }
+
+    #[test]
+    fn history_all_args_shape() {
+        let a = history_all_args(&PathBuf::from("repo"), &PathBuf::from("m.db"));
+        assert_eq!(a, vec!["history-all", "repo", "--out", "m.db", "--json"]);
+    }
+
+    /// Um scan de mentira: o programa `name` em `dir` que roda `body`. Ele é
+    /// gravado por um shell à parte: os testes rodam em paralelo no mesmo
+    /// processo, e o arquivo que este processo mantém aberto para escrita o
+    /// Linux recusa rodar ("Text file busy").
+    #[cfg(unix)]
+    fn script_scan(dir: &Path, name: &str, body: &str) -> Scan {
+        let path = dir.join(name);
+        let written = Command::new("/bin/sh")
+            .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&path)
+            .arg(format!("#!/bin/sh\n{body}\n"))
+            .status()
+            .unwrap();
+        assert!(written.success());
+        Scan { binary: path.to_string_lossy().into_owned() }
+    }
+
+    /// Espera até um minuto por `done`, olhando a cada 20 ms; `false` se ele não veio.
+    #[cfg(unix)]
+    fn wait_until(done: impl Fn() -> bool) -> bool {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done() {
+            if std::time::Instant::now() > limit {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// Os pedidos que o scan de mentira anotou em `log`, um por linha.
+    #[cfg(unix)]
+    fn logged(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// A leitura da história não segura quem a pede: o processo dela só acaba
+    /// quando o teste o solta, e a chamada já voltou.
+    #[cfg(unix)]
+    #[test]
+    fn the_reading_of_the_history_starts_in_the_background_and_the_call_does_not_wait_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, release) = (dir.path().join("log"), dir.path().join("release"));
+        let scan = script_scan(
+            dir.path(),
+            "reads",
+            &format!(
+                "echo \"$1\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n\
+                 if [ -e '{release}' ]; then echo finished >> '{log}'; else echo gave-up >> '{log}'; fi",
+                log = log.display(),
+                release = release.display()
+            ),
+        );
+        scan.read_history_in_background(dir.path(), &dir.path().join("m.db")).expect("the reading starts");
+        assert!(wait_until(|| logged(&log) == ["history-all"]), "the reading was started with its command: {:?}", logged(&log));
+        assert!(!release.exists(), "the call came back while the process was still held");
+        std::fs::write(&release, "").unwrap();
+        assert!(wait_until(|| logged(&log).len() == 2), "{:?}", logged(&log));
+        assert_eq!(logged(&log), ["history-all", "finished"]);
+    }
+
+    /// Só o mapa gravado ganha a leitura: o scan que falha devolve o erro dele
+    /// e não a inicia; o que passa devolve o relato e a inicia.
+    #[cfg(unix)]
+    #[test]
+    fn the_reading_of_the_history_starts_only_after_a_scan_that_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let fails = dir.path().join("fails");
+        let scan = script_scan(
+            dir.path(),
+            "both",
+            &format!(
+                "echo \"$1\" >> '{log}'\nif [ \"$1\" = scan ]; then [ -e '{fails}' ] && exit 3; echo '{{\"ok\":true,\"full\":true,\"read\":[],\"files\":2}}'; fi",
+                log = log.display(),
+                fails = fails.display()
+            ),
+        );
+        let out = dir.path().join("m.db");
+
+        std::fs::write(&fails, "").unwrap();
+        assert!(scan.scan_then_read_history(dir.path(), &out).is_err(), "the failed scan is the answer");
+        // Um sinal de que o scan de mentira responde depressa: a leitura pedida
+        // à mão chega ao registro, e nenhuma outra veio antes dela.
+        scan.read_history_in_background(dir.path(), &out).unwrap();
+        assert!(wait_until(|| logged(&log).contains(&"history-all".to_string())), "{:?}", logged(&log));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(logged(&log), ["scan", "history-all"], "the failed scan started no reading");
+
+        std::fs::remove_file(&fails).unwrap();
+        let report = scan.scan_then_read_history(dir.path(), &out).expect("the scan passed");
+        assert_eq!(report.files, 2);
+        assert!(wait_until(|| logged(&log).len() == 4), "{:?}", logged(&log));
+        assert_eq!(logged(&log)[2..], ["scan", "history-all"], "the scan that passed starts the reading after itself");
+    }
+
+    #[test]
+    fn a_scan_that_cannot_be_run_has_no_format() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Scan { binary: dir.path().join("no-such-scan").to_string_lossy().into_owned() }.format(), None);
+    }
+
+    /// A marca é a linha que o comando `format` do scan imprime, sem a
+    /// quebra de linha; um scan que sai com erro ou não diz nada não tem
+    /// marca. O programa falso é gravado por um shell à parte: os testes
+    /// rodam em paralelo no mesmo processo, e o arquivo que este processo
+    /// mantém aberto para escrita o Linux recusa rodar ("Text file busy").
+    #[cfg(unix)]
+    #[test]
+    fn the_format_is_what_the_format_command_of_the_scan_prints() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| script_scan(dir.path(), name, body);
+        let says = script("says", r#"[ "$1" = format ] && echo "0.2.4+map-0011223344556677""#);
+        assert_eq!(says.format().as_deref(), Some("0.2.4+map-0011223344556677"));
+        assert_eq!(script("fails", "exit 3").format(), None);
+        assert_eq!(script("silent", "true").format(), None);
+    }
+
+    #[test]
     fn the_scan_report_is_the_last_line() {
         let report = parse_scan_report("noise\n{\"ok\":true,\"full\":false,\"read\":[\"src/b.rs\"],\"files\":3}\n\n")
             .expect("report");
@@ -574,25 +458,37 @@ mod tests {
         assert!(parse_scan_report("not json").is_err());
     }
 
+    /// O programa de teste roda de `deps/`, uma pasta abaixo dos programas da
+    /// mesma compilação: o scan de cima é achado; sem ele, sobra o nome puro,
+    /// procurado no `PATH`. Ao lado do programa, vale o de lá.
     #[test]
-    fn digest_query_joins_terms() {
-        let a = digest_query_args(&PathBuf::from("m.json"), &["tenant".into(), "charge".into()]);
-        assert_eq!(a, vec!["digest", "m.json", "--query", "tenant,charge"]);
-    }
+    fn a_test_binary_in_deps_finds_the_scan_one_folder_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = if cfg!(windows) { "scan.exe" } else { "scan" };
+        let deps = dir.path().join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let exe = deps.join("x");
+        std::fs::write(&exe, "").unwrap();
 
-    #[test]
-    fn facts_args_shape() {
-        let a = facts_args(&PathBuf::from("m.json"));
-        assert_eq!(a, vec!["facts", "m.json"]);
-    }
+        let without = Scan::located_from(Some(&exe));
+        assert_eq!(without.binary, DEFAULT_BINARY);
+        assert!(!without.is_compiled_alongside());
 
-    #[test]
-    fn model_facts_deserializes_scan_output() {
-        let json = r#"{"projects":[{"name":"api","dir":"apps/api","kind":"node","code_files":3}],"entities":["Invoice","User"]}"#;
-        let f: ModelFacts = serde_json::from_str(json).expect("valid scan facts json");
-        assert_eq!(f.projects.len(), 1);
-        assert_eq!(f.projects[0].name, "api");
-        assert_eq!(f.entities, vec!["Invoice", "User"]);
+        let up = dir.path().join(name);
+        std::fs::write(&up, "").unwrap();
+        let found = Scan::located_from(Some(&exe));
+        assert_eq!(found.binary, up.to_string_lossy());
+        assert!(found.is_compiled_alongside());
+
+        let beside = deps.join(name);
+        std::fs::write(&beside, "").unwrap();
+        assert_eq!(Scan::located_from(Some(&exe)).binary, beside.to_string_lossy());
+
+        // Fora de `deps/`, a pasta de cima não conta.
+        let other = dir.path().join("bin");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(Scan::located_from(Some(&other.join("x"))).binary, DEFAULT_BINARY);
+        assert_eq!(Scan::located_from(None).binary, DEFAULT_BINARY);
     }
 
     #[test]
@@ -611,13 +507,6 @@ mod tests {
         assert_eq!(p.detected_stacks[0].name, "laravel");
         assert_eq!(p.detected_stacks[0].signals, vec!["dep:laravel/framework"]);
         assert_eq!(p.frameworks, vec!["laravel/framework"]);
-    }
-
-    #[test]
-    fn model_facts_defaults_missing_fields() {
-        let f: ModelFacts = serde_json::from_str("{}").expect("empty object ok");
-        assert!(f.projects.is_empty());
-        assert!(f.entities.is_empty());
     }
 
     #[test]
@@ -658,135 +547,35 @@ mod tests {
         assert!(!projects[2].own_git_root, "the superproject root `.` is never flagged");
     }
 
-
+    /// Um mapa em que uma coluna que a lista de projetos não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e a lista, que lê só a
+    /// tabela dos projetos, vem com cada coluna dela.
     #[test]
-    fn digest_query_detected_stacks_serde_compat() {
-        // An old payload without `detected_stacks` still deserialises (default).
-        let old = r#"{"query":["tenant"],"matched_terms":[],"terms_omitted":0,"miss":true}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload without detected_stacks");
-        assert!(q.detected_stacks.is_empty());
-        assert!(q.miss);
-
-        // A new payload carrying the field round-trips into the contract type.
-        let new = r#"{"query":["page"],"detected_stacks":[{"name":"nextjs","confidence":0.65,"signals":["dep:next","path:next.config.js"]}],"files":["pages/index.tsx"],"miss":false}"#;
-        let q: DigestQuery = serde_json::from_str(new).expect("payload with detected_stacks");
-        assert_eq!(q.detected_stacks.len(), 1);
-        assert_eq!(q.detected_stacks[0].name, "nextjs");
-        assert_eq!(q.detected_stacks[0].signals, vec!["dep:next", "path:next.config.js"]);
-        assert_eq!(q.files, vec!["pages/index.tsx"]);
-    }
-
-    #[test]
-    fn digest_query_deserializes_grain_output() {
-        // The REAL shape the scan binary emits since the tier-ladder redesign:
-        // `report` with per-term {term, tier, lang, files} + matched k/n +
-        // reason, alongside the legacy `miss` flag.
-        let json = r#"{"query":["tenant","cancelado"],"matched_terms":[{"term":"tenant","count":242,"samples":["a.cs"]}],"terms_omitted":0,"slices":[],"contracts":[],"hubs":[{"module":"ICurrentTenant.cs","degree":738}],"touchpoints":[],"files":["ICurrentTenant.cs"],"miss":false,"report":{"matched":2,"total":2,"reason":"strong","terms":[{"term":"tenant","tier":"exact","lang":"","files":["a.cs"]},{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["b.cs"]}]}}"#;
-        let q: DigestQuery = serde_json::from_str(json).expect("valid grain digest json");
-        assert_eq!(q.matched_terms.len(), 1);
-        assert_eq!(q.matched_terms[0].count, 242);
-        assert_eq!(q.hubs[0].module, "ICurrentTenant.cs");
-        assert!(!q.miss);
-        assert_eq!(q.report.matched, 2);
-        assert_eq!(q.report.total, 2);
-        assert_eq!(q.report.reason, "strong");
-        assert_eq!(q.report.terms.len(), 2);
-        assert_eq!(q.report.terms[0].tier, "exact");
-        assert_eq!(q.report.terms[1].tier, "lexicon");
-        assert_eq!(q.report.terms[1].lang, "pt-en");
-        assert_eq!(q.report.terms[1].files, vec!["b.cs"]);
-    }
-
-    #[test]
-    fn digest_query_report_serde_compat_with_old_payloads() {
-        // A payload from an OLDER scan binary (no `report`) keeps
-        // deserialising; the defaulted report's empty reason is the caller's
-        // "fall back to `miss`" signal.
-        let old = r#"{"query":["tenant"],"matched_terms":[],"terms_omitted":0,"miss":true}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload without report");
-        assert!(q.miss);
-        assert_eq!(q.report.reason, "");
-        assert_eq!(q.report.total, 0);
-        assert!(q.report.terms.is_empty());
-        assert!(!q.report.bridged, "the bridged marker defaults false for payloads that predate it");
-    }
-
-    #[test]
-    fn digest_query_deserializes_bridged_marker() {
-        // The scan binary flags a `weak` answer a CURATED lexicon bridge carried
-        // (no exact/fold hit, non-thin) with `report.bridged: true`. The consumer
-        // (feature) reads it to keep the planning fields instead of withholding.
-        let json = r#"{"query":["cancelado"],"matched_terms":[{"term":"cancel","count":3,"samples":["b.cs"]}],"files":["b.cs"],"miss":false,"report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["b.cs"]}]}}"#;
-        let q: DigestQuery = serde_json::from_str(json).expect("valid bridged digest json");
-        assert_eq!(q.report.reason, "weak");
-        assert!(q.report.bridged, "the curated-bridge marker round-trips from the scan binary's JSON");
-    }
-
-    #[test]
-    fn digest_query_concerns_serde_compat() {
-        // An OLD payload without `concerns` keeps deserialising — empty.
-        let old = r#"{"query":["tenant"],"files":["a.cs"],"miss":false}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload without concerns");
-        assert!(q.concerns.is_empty(), "single-concern / old binary → no split");
-
-        // A multi-concern payload round-trips: each concern carries its own
-        // label, concepts and ranked files restricted to that concern.
-        let new = r#"{"query":["tenant","export"],"files":["t.cs","e.cs"],"miss":false,"concerns":[{"label":"tenant","concepts":["tenant"],"files":["t.cs"],"files_detail":[{"file":"t.cs","score_x1024":2048,"terms":["tenant"]}],"reason":"strong"},{"label":"export","concepts":["export"],"files":["e.cs"],"files_detail":[{"file":"e.cs","score_x1024":1024,"terms":["export"]}],"reason":"weak"}]}"#;
-        let q: DigestQuery = serde_json::from_str(new).expect("payload with concerns");
-        assert_eq!(q.concerns.len(), 2);
-        assert_eq!(q.concerns[0].label, "tenant");
-        assert_eq!(q.concerns[0].concepts, vec!["tenant"]);
-        assert_eq!(q.concerns[0].files, vec!["t.cs"]);
-        assert_eq!(q.concerns[0].files_detail[0].score_x1024, 2048);
-        assert_eq!(q.concerns[0].reason, "strong");
-        assert_eq!(q.concerns[1].label, "export");
-        assert_eq!(q.concerns[1].reason, "weak");
-    }
-
-    #[test]
-    fn digest_roles_serde_compat() {
-        // An OLD payload (scan binary predating the roles index in the FULL
-        // digest) without `roles` keeps deserialising — empty, never an error.
-        let old = r#"{"terms":[{"term":"payable","count":12}]}"#;
-        let d: Digest = serde_json::from_str(old).expect("old payload without roles");
-        assert!(d.roles.is_empty(), "old binary / no roles → empty list");
-        assert_eq!(d.terms.len(), 1);
-
-        // A NEW payload carrying the roles index round-trips: each role keeps its
-        // affix, kind and structural-recurrence count.
-        let new = r#"{"terms":[{"term":"payable","count":12}],"roles":[
-            {"affix":"Handler","kind":"suffix","count":24,"common_dir":"src/handlers"},
-            {"affix":"Repository","kind":"suffix","count":9,"common_dir":""}]}"#;
-        let d: Digest = serde_json::from_str(new).expect("payload with roles");
-        assert_eq!(d.roles.len(), 2);
-        assert_eq!(d.roles[0].affix, "Handler");
-        assert_eq!(d.roles[0].kind, "suffix");
-        assert_eq!(d.roles[0].count, 24);
-        assert_eq!(d.roles[0].common_dir, "src/handlers");
-        assert_eq!(d.roles[1].affix, "Repository");
-        assert_eq!(d.roles[1].count, 9);
-    }
-
-    #[test]
-    fn digest_query_files_detail_and_slices_omitted_serde_compat() {
-        // An OLD payload (scan binary predating lote 1) without
-        // `files_detail`/`slices_omitted` keeps deserialising — both default.
-        let old = r#"{"query":["payable"],"files":["src/a.rs"],"miss":false}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload");
-        assert!(q.files_detail.is_empty());
-        assert_eq!(q.slices_omitted, 0);
-
-        // The NEW payload shape (per-anchor audit + capped-slices count)
-        // round-trips into the contract type, parallel to `files`.
-        let new = r#"{"query":["payable"],"slices":[{"label":"List","recurrence":3}],"slices_omitted":2,"files":["src/a.rs","src/b.rs"],"files_detail":[{"file":"src/a.rs","score_x1024":2048,"terms":["payable","nature"]},{"file":"src/b.rs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":2,"total":2,"reason":"strong","terms":[]}}"#;
-        let q: DigestQuery = serde_json::from_str(new).expect("payload with files_detail");
-        assert_eq!(q.slices_omitted, 2);
-        assert_eq!(q.files_detail.len(), 2);
-        assert_eq!(q.files_detail[0].file, "src/a.rs");
-        assert_eq!(q.files_detail[0].score_x1024, 2048);
-        assert_eq!(q.files_detail[0].terms, vec!["payable", "nature"]);
-        // Touchpoint-tail anchor: honest score 0, no terms.
-        assert_eq!(q.files_detail[1].score_x1024, 0);
-        assert!(q.files_detail[1].terms.is_empty());
+    fn the_projects_come_from_their_table_even_when_another_column_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = crate::io::project_map::model_path(dir.path());
+        crate::io::project_map::write_text_at(
+            &model,
+            r#"{"modules": [{"path": "web/artisan", "deps": "um texto no lugar da lista"}],
+                "projects": [
+                  {"name": "web", "dir": "web", "kind": "composer", "code_files": 4, "frameworks": ["laravel/framework"],
+                   "dependencies": ["laravel/framework", "php"], "scripts": ["test"],
+                   "detected_stacks": [{"name": "laravel", "confidence": 0.9, "signals": ["path:artisan"]}]},
+                  {"name": "core", "dir": "packages/core", "kind": "cargo"}
+                ]}"#,
+        )
+        .unwrap();
+        assert!(crate::io::project_map::read_at(&model).is_err(), "the whole map refuses the broken column");
+        let projects = read_projects(&model);
+        assert_eq!(projects.len(), 2, "{projects:?}");
+        let web = &projects[0];
+        assert_eq!((web.name.as_str(), web.dir.as_str(), web.kind.as_str(), web.code_files), ("web", "web", "composer", 4));
+        assert_eq!(web.frameworks, ["laravel/framework"]);
+        assert_eq!(web.scripts, ["test"]);
+        assert_eq!(web.detected_stacks.len(), 1);
+        assert_eq!(web.detected_stacks[0].signals, ["path:artisan"]);
+        assert!(!web.own_git_root);
+        assert_eq!((projects[1].name.as_str(), projects[1].code_files), ("core", 0));
+        assert!(projects[1].frameworks.is_empty() && projects[1].detected_stacks.is_empty());
     }
 }

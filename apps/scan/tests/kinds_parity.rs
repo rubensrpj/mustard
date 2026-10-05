@@ -16,31 +16,26 @@
 //!     A second test cross-checks languages.toml against the manifest, so a
 //!     declared `dir` with no manifest entry cannot pass in silence.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// A committed fixture root, resolved from the crate manifest dir.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
-/// Scan a fixture into a temp `grain.model.json` and return the parsed value.
+/// Scan a fixture into a temp map and return the parsed value.
 /// Mirrors `graph_resolution.rs::scan_fixture_labeled`: a per-call temp dir
 /// (label + fixture name + pid) so parallel tests scanning the same fixture
 /// never yank each other's dir.
 fn scan_fixture_labeled(label: &str, name: &str) -> serde_json::Value {
     let temp = tempfile::Builder::new().prefix(&format!("scan-kinds-{}-{}-", label, name)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    v
+    model::scan(&fixture(name), temp.path(), &[]).0
 }
 
 /// Every `declarations[].kind` the scanned model carries, deduplicated.
@@ -56,7 +51,7 @@ fn produced_kinds(v: &serde_json::Value) -> BTreeSet<String> {
 
 #[test]
 fn every_declared_query_dir_has_a_manifest_entry() {
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let crate_dir = manifest_dir::manifest_dir();
     let raw = std::fs::read_to_string(crate_dir.join("languages.toml")).expect("read languages.toml");
     let languages: toml::Value = toml::from_str(&raw).expect("languages.toml is valid TOML");
     let dirs: BTreeSet<String> = languages
@@ -92,7 +87,7 @@ fn every_declared_query_dir_has_a_manifest_entry() {
 #[test]
 fn kinds_manifest_matches_fixture_declarations_both_ways() {
     let manifest_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("queries").join("kinds-manifest.toml");
+        manifest_dir::manifest_dir().join("queries").join("kinds-manifest.toml");
     let raw = std::fs::read_to_string(&manifest_path).expect("read kinds-manifest.toml");
     let manifest: toml::Value = toml::from_str(&raw).expect("kinds-manifest.toml is valid TOML");
     let entries = manifest.as_table().expect("kinds-manifest.toml is a table of query sets");
@@ -128,4 +123,30 @@ fn kinds_manifest_matches_fixture_declarations_both_ways() {
             );
         }
     }
+}
+
+/// Toda língua do registro declara os textos que juntam as partes de um nome
+/// qualificado (`qualified_separators`): o motor não guarda separador nenhum
+/// por conta própria, e a língua sem o campo não teria como ler um import
+/// nem ligar um nome ao qualificador escrito antes dele.
+#[test]
+fn every_language_declares_its_qualified_separators() {
+    let raw = std::fs::read_to_string(manifest_dir::manifest_dir().join("languages.toml")).expect("read languages.toml");
+    let languages: toml::Value = toml::from_str(&raw).expect("languages.toml is valid TOML");
+    let entries = languages
+        .get("language")
+        .and_then(|v| v.as_array())
+        .expect("languages.toml declares [[language]] entries");
+    assert!(!entries.is_empty(), "languages.toml declares at least one language");
+    let without: Vec<&str> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("qualified_separators")
+                .and_then(|v| v.as_array())
+                .is_none_or(|separators| separators.iter().all(|s| s.as_str().is_none_or(str::is_empty)))
+        })
+        .map(|entry| entry.get("name").and_then(|n| n.as_str()).unwrap_or("?"))
+        .collect();
+    assert!(without.is_empty(), "languages without `qualified_separators` in languages.toml: {without:?}");
 }

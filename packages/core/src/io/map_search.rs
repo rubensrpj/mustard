@@ -1,0 +1,2224 @@
+//! `map_search` — a busca do mapa pelo índice de palavras que o scan grava
+//! junto das declarações (`io::project_map::DECLS`), sem ler o mapa inteiro.
+//!
+//! O índice tem dois níveis, a declaração e o arquivo, com uma coluna por
+//! campo:
+//!
+//! - a declaração: o nome, o caminho do arquivo, a assinatura, a
+//!   documentação e os textos fixos escritos nela — as mensagens de log, as
+//!   de erro e os outros textos, um campo para cada marca;
+//! - o arquivo: os nomes que ele declara, o caminho, a documentação das
+//!   declarações dele e os textos fixos do arquivo inteiro, nos mesmos três
+//!   campos.
+//!
+//! Depois desses, cada nível guarda o texto de dentro das peças, em campos
+//! que a lista de base da busca com filtro não lê: da declaração, a
+//! documentação inteira, os comentários, os nomes e as chamadas escritos nas
+//! linhas dela, o dono e os membros, os títulos dos commits que a mudaram e
+//! os comentários de revisão presos às linhas dela — a história por
+//! declaração dos arquivos que o mapa já leu — e os nomes de quem a usa; do
+//! arquivo, os comentários do começo e
+//! os outros, juntados dos que o scan guardou fora das declarações e dos de
+//! cada declaração de fora, que ele guarda uma vez só, nela, e os títulos dos
+//! commits mais novos que mudaram o arquivo. A busca dos arquivos da triagem e
+//! a lista de todos os campos leem todas as colunas, cada uma com o peso do
+//! nível; a lista de base da busca com filtro lê só os campos de base: o
+//! nome, o caminho, a documentação e os textos fixos.
+//!
+//! Cada texto passa pela normalização de toda busca (`domain::normalize`),
+//! nas línguas do projeto, antes de entrar: o nome colado entra quebrado
+//! (`parseGitLog` vira `parse git log`), e cada palavra entra com as suas
+//! formas. O tamanho de cada campo, em palavras, mora numa tabela comum; as
+//! línguas, o número de documentos e o tamanho médio de cada campo, em
+//! `search_meta`. Os nomes das declarações entram inteiros numa tabela
+//! trigram, para o pedaço do nome. O arquivo escrito por máquina fica fora
+//! do índice. A declaração de teste — a de um arquivo de teste e a escrita
+//! num trecho de teste de outro arquivo — entra na tabela trigram, que acha
+//! o arquivo pelo pedaço do nome, mas não no nível das declarações. O mesmo
+//! vale para o parâmetro escrito no cabeçalho do tipo dono, como o do
+//! construtor primário do C#, que o scan grava com o tipo de declaração
+//! próprio dele: a assinatura do dono já o traz.
+//!
+//! O glossário do mapa (`io::map_glossary`) entra nos dois níveis como mais
+//! um campo, o das palavras aprendidas: a palavra da pergunta que uma edição
+//! confirmada ligou a uma declaração conta nela e no arquivo dela. O
+//! documento que só esse campo achou não passa à frente de nenhum que casa
+//! pelo nome.
+//!
+//! Um terceiro nível, à parte, guarda os itens das specs (`io::map_specs`):
+//! o título, o texto e as palavras de busca de cada um, com a
+//! tabela própria de números, `spec_meta`. Ele muda quando uma spec muda,
+//! e não quando o scan monta o mapa.
+//!
+//! A busca devolve arquivos, cada um com o texto fixo dele que mais casa com
+//! a pergunta, quando algum casa. A nota é o BM25F de `domain::search`, calculado
+//! aqui sobre as listas do banco: a lista de cada forma e o tamanho dos
+//! campos saem numa consulta só. Antes dela, cada forma da pergunta passa
+//! pelo tokenizador do índice, que tira os acentos que a normalização não
+//! conhece: a forma procurada é a que ele gravou. A pergunta de uma palavra só, com 4 letras
+//! ou mais, procura também o pedaço no nome das declarações, e o que ela acha
+//! vem na frente. O índice feito em outras línguas que as da busca — a
+//! configuração do projeto mudou depois da gravação — se refaz antes dela.
+//!
+//! A busca com filtro ([`candidates`]) devolve declarações, e não arquivos:
+//! quatro listas do nível das declarações — a de base, a dos nomes, a de
+//! todos os campos e a dos arquivos — juntadas por rodízio
+//! (`domain::search::round_robin`) numa lista inteira, que vai toda ao filtro,
+//! sem teto de quantidade. Na de todos os campos, os três campos dos textos
+//! fixos contam como um só. Só as declarações do nível entram nas quatro: a
+//! de teste nunca é candidata. Cada candidato leva o que o mapa guarda dele: a
+//! documentação inteira e os nomes que ele chama; a história inteira dele, com
+//! todos os commits e todos os comentários de revisão, vem de
+//! [`with_history`]. As ligações ([`links`]) dão ao corte do filtro os
+//! métodos de cada tipo e as implementações de cada método de contrato.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use rusqlite::types::Value as Sql;
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Statement};
+use serde::Deserialize;
+
+use crate::domain::ast::is_test_path;
+use crate::domain::normalize::{Languages, Normalizer};
+use crate::domain::project_map::{
+    clean_title, outer_declarations, spec_sentence, DeclChange, DeclComment, Found, FoundItem, FoundText, MapRefusal, UseSite,
+    SPEC_SENTENCE_CHARS,
+};
+use crate::domain::map_filter::FilterCandidate;
+use crate::domain::map_select::{Linked, Links};
+use crate::domain::project_map::DeclAt;
+use crate::domain::search::folded_name;
+use crate::io::map_db::MapDb;
+use crate::io::map_fill;
+use crate::io::map_index::{Level, DECL_LEVEL, FILE_LEVEL, SPEC_LEVEL};
+use crate::io::map_lists::{by_words, text, TEXT_FIELDS};
+use crate::io::map_notes_fresh;
+use crate::io::map_check;
+use crate::io::map_order;
+use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock};
+use crate::platform::error::Result;
+
+mod refresh;
+
+pub(crate) use refresh::refresh_files;
+
+
+/// Um texto fixo como o scan o grava, na tabela dos textos de cada arquivo.
+#[derive(Deserialize)]
+struct Written {
+    #[serde(default)]
+    line: u64,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    owner: String,
+}
+
+impl Written {
+    /// O campo do texto entre os de [`TEXT_FIELDS`].
+    fn field(&self) -> usize {
+        TEXT_FIELDS.iter().position(|kind| *kind == self.kind).unwrap_or(TEXT_FIELDS.len() - 1)
+    }
+}
+
+/// A chave, em `search_meta`, das línguas em que as palavras foram
+/// preparadas.
+const LANGUAGES_KEY: &str = "languages";
+
+/// As palavras de um campo, cada uma com as suas formas, pela normalização
+/// de toda busca.
+type Words = Vec<Vec<String>>;
+
+/// Um documento do índice: o número dele — o da linha no mapa — e as
+/// palavras de cada campo, na ordem do nível.
+struct Doc {
+    id: i64,
+    fields: Vec<Words>,
+}
+
+/// Uma declaração do índice: o documento dela, o nome inteiro, para o pedaço
+/// do nome, o número do arquivo dela e se ela fica fora do nível das
+/// declarações.
+struct Decl {
+    doc: Doc,
+    name: String,
+    file: i64,
+    unlisted: bool,
+}
+
+/// Refaz o índice inteiro a partir das tabelas dos arquivos e das
+/// declarações, com as palavras preparadas nas línguas `languages`. Roda na
+/// transação de quem grava: o índice e as linhas de que ele sai entram
+/// juntos. A declaração de teste e o parâmetro escrito no cabeçalho do dono
+/// ficam fora do nível das declarações, de onde saem os candidatos da busca
+/// com filtro, e entram na tabela trigram.
+pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
+    let (files, decls) = documents(conn, &mut Normalizer::new(languages), None)?;
+    forget(conn)?;
+    fill(conn, &FILE_LEVEL, &files)?;
+    fill(conn, &DECL_LEVEL, decls.iter().filter(|decl| !decl.unlisted).map(|decl| &decl.doc))?;
+    {
+        let mut insert = conn.prepare("INSERT INTO decl_trigram(rowid, name, folded, file) VALUES (?1, ?2, ?3, ?4)")?;
+        for decl in &decls {
+            insert.execute(params![decl.doc.id, decl.name, folded_name(&decl.name), decl.file])?;
+        }
+    }
+    conn.execute(
+        "INSERT INTO search_meta(key, value) VALUES (?1, ?2)",
+        params![LANGUAGES_KEY, languages.codes().join(",")],
+    )?;
+    for table in [FILE_LEVEL.fts, DECL_LEVEL.fts, "decl_trigram"] {
+        conn.execute(&format!("INSERT INTO {table}({table}) VALUES ('optimize')"), [])?;
+    }
+    Ok(())
+}
+
+/// Esvazia o índice, línguas inclusive: a primeira busca o refaz nas dela.
+pub(crate) fn forget(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "INSERT INTO file_fts(file_fts) VALUES ('delete-all');\
+         INSERT INTO decl_fts(decl_fts) VALUES ('delete-all');\
+         DELETE FROM decl_trigram; DELETE FROM file_lengths; DELETE FROM decl_lengths; DELETE FROM search_meta;",
+    )?;
+    Ok(())
+}
+
+/// A consulta `select` na ordem das linhas, com as do arquivo `scope` só
+/// quando ele vem: a coluna `column` está entre os caminhos dados, ligados
+/// como `?1`, `?2`, e assim por diante. Sem `scope`, todas as linhas.
+fn scoped(select: &str, column: &str, scope: Option<&[&str]>) -> String {
+    let filter = scope.map_or_else(String::new, |paths| {
+        let slots: Vec<String> = (1..=paths.len()).map(|at| format!("?{at}")).collect();
+        format!(" WHERE {column} IN ({})", slots.join(", "))
+    });
+    format!("{select}{filter} ORDER BY rowid")
+}
+
+/// Os documentos dos dois níveis, lidos das tabelas do mapa, com as palavras
+/// já preparadas: cada arquivo que não é escrito por máquina e cada
+/// declaração dele. Cada texto se prepara uma vez: o caminho, uma vez por
+/// arquivo; os nomes, a documentação e os textos fixos do arquivo são as
+/// palavras das declarações dele e dos textos dele, sem repetir a palavra de
+/// mesmas formas — o mesmo que preparar o texto delas junto. Cada texto fixo
+/// e cada chamada são também de toda declaração cujas linhas os contêm: a
+/// mensagem escrita num método conta para ele e para o tipo que o traz; a
+/// declaração sem a última linha gravada cobre só a primeira. A documentação
+/// inteira que o scan não guardou à parte é a mesma de `doc`. A declaração é
+/// de teste quando o arquivo dela é de teste ou quando a primeira linha dela
+/// cai num trecho de teste do arquivo. A de teste e o parâmetro escrito no
+/// cabeçalho do dono ([`HEADER_PARAMETER_KIND`]) ficam fora do nível das
+/// declarações. Com `scope`, só os arquivos dos caminhos dados e as
+/// declarações deles, com as palavras que teriam na leitura inteira.
+fn documents(
+    conn: &Connection,
+    normalizer: &mut Normalizer,
+    scope: Option<&[&str]>,
+) -> Result<(Vec<Doc>, Vec<Decl>)> {
+    let mut files: Vec<Doc> = Vec::new();
+    // As palavras que o arquivo já tem nos nomes, na documentação e em cada
+    // campo dos textos.
+    let mut seen: Vec<[HashSet<Vec<String>>; 5]> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    // De cada arquivo, se ele é de teste e os trechos de teste dele.
+    let mut tests: Vec<(bool, Vec<(u64, u64)>)> = Vec::new();
+    let mut stmt = conn.prepare(&scoped("SELECT rowid, path, file_class, test_lines FROM files", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
+    while let Some(row) = rows.next()? {
+        if !text(row, 2)?.is_empty() {
+            continue;
+        }
+        let path = text(row, 1)?;
+        tests.push((is_test_path(&path), serde_json::from_str(&text(row, 3)?).unwrap_or_default()));
+        let words = normalizer.forms(&path);
+        at.insert(path, files.len());
+        let mut fields = vec![Vec::new(); FILE_LEVEL.columns().count()];
+        fields[1] = words;
+        files.push(Doc { id: row.get(0)?, fields });
+        seen.push(Default::default());
+    }
+    let mut rows_of: Vec<DeclRow> = Vec::new();
+    let mut stmt = conn.prepare(&scoped(
+        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind, \
+         owner, contract, members, used_by FROM decls",
+        "file",
+        scope,
+    ))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
+    while let Some(row) = rows.next()? {
+        let Some(&owner) = at.get(&text(row, 1)?) else { continue };
+        let line = |at: usize| -> Result<u64> { Ok(row.get::<_, Option<i64>>(at)?.unwrap_or(0).max(0) as u64) };
+        let (test_file, test_lines) = &tests[owner];
+        let first = line(5)?;
+        rows_of.push(DeclRow {
+            id: row.get(0)?,
+            owner,
+            unlisted: *test_file
+                || test_lines.iter().any(|&(start, end)| (start..=end).contains(&first))
+                || text(row, 10)? == HEADER_PARAMETER_KIND,
+            name: text(row, 2)?,
+            signature: text(row, 3)?,
+            doc: text(row, 4)?,
+            lines: (first, line(6)?),
+            texts: vec![Vec::new(); TEXT_FIELDS.len()],
+            whole_doc: text(row, 7)?,
+            body_comment: text(row, 8)?,
+            body_names: text(row, 9)?,
+            parents: [11, 12]
+                .into_iter()
+                .map(|at| Ok(serde_json::from_str::<Vec<String>>(&text(row, at)?).unwrap_or_default().join(" ")))
+                .collect::<Result<Vec<_>>>()?
+                .join(" "),
+            members: serde_json::from_str::<Vec<DeclAt>>(&text(row, 13)?)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|member| member.name)
+                .collect::<Vec<_>>()
+                .join(" "),
+            callers: callers_of(&text(row, 14)?, &text(row, 2)?),
+        });
+    }
+    // Os textos de cada arquivo: as palavras vão para o arquivo e para a
+    // declaração dele que contém a linha.
+    let mut decls_of: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    for (at, row) in rows_of.iter().enumerate() {
+        decls_of[row.owner].push(at);
+    }
+    let comments = FILE_LEVEL.fields.len();
+    for FileText { path, written, file_doc, file_comment, file_doc_in_body } in written_texts(conn, scope)? {
+        let Some(&owner) = at.get(&path) else { continue };
+        files[owner].fields[comments] = normalizer.forms(&file_doc);
+        files[owner].fields[comments + 1] =
+            file_comments(normalizer, &file_comment, file_doc_in_body, &rows_of, &decls_of[owner]);
+        for written in written {
+            let words = normalizer.forms(&written.value);
+            let field = written.field();
+            add_new(&mut files[owner].fields[3 + field], &mut seen[owner][2 + field], &words);
+            for &decl in &decls_of[owner] {
+                let (first, last) = rows_of[decl].lines;
+                if (first..=last.max(first)).contains(&written.line) {
+                    rows_of[decl].texts[field].push(words.clone());
+                }
+            }
+        }
+    }
+    let paths: HashSet<&str> = at.keys().map(String::as_str).collect();
+    let commits = FILE_LEVEL.fields.len() + 2;
+    for (path, titles) in newest_titles(conn, &paths)? {
+        if let Some(&owner) = at.get(&path) {
+            files[owner].fields[commits] = normalizer.forms(&titles.join(" "));
+        }
+    }
+    let calls = written_calls(conn, &at, normalizer, scope)?;
+    let history = decl_histories(conn, scope, INDEXED_HISTORY)?;
+    let mut path_of: Vec<&str> = vec![""; files.len()];
+    for (path, &owner) in &at {
+        path_of[owner] = path;
+    }
+    let nth = nth_among_same_name(&rows_of);
+    let mut decls = Vec::new();
+    for (row, nth) in rows_of.into_iter().zip(nth) {
+        let commits = history
+            .get(&(path_of[row.owner].to_string(), row.name.clone(), nth))
+            .map(DeclHistory::joined)
+            .unwrap_or_default();
+        let (name_words, doc_words) = (normalizer.forms(&row.name), normalizer.forms(&row.doc));
+        let whole_doc = if row.whole_doc.is_empty() { doc_words.clone() } else { normalizer.forms(&row.whole_doc) };
+        let file = &mut files[row.owner];
+        add_new(&mut file.fields[0], &mut seen[row.owner][0], &name_words);
+        add_new(&mut file.fields[2], &mut seen[row.owner][1], &doc_words);
+        let mut fields = vec![name_words, file.fields[1].clone(), normalizer.forms(&row.signature), doc_words];
+        for texts in row.texts {
+            let mut words: Words = Vec::new();
+            add_new(&mut words, &mut HashSet::new(), &texts.concat());
+            fields.push(words);
+        }
+        let mut called: Words = Vec::new();
+        let (first, last) = row.lines;
+        let file_calls = calls.get(row.owner).map(Vec::as_slice).unwrap_or_default();
+        let start = file_calls.partition_point(|(line, _)| *line < first);
+        let end = file_calls.partition_point(|(line, _)| *line <= last.max(first));
+        let mut seen_calls = HashSet::new();
+        for (_, words) in &file_calls[start..end.max(start)] {
+            add_new(&mut called, &mut seen_calls, words);
+        }
+        fields.extend([
+            whole_doc,
+            normalizer.forms(&row.body_comment),
+            normalizer.forms(&row.body_names),
+            called,
+            normalizer.forms(&row.parents),
+            normalizer.forms(&row.members),
+            normalizer.forms(&commits),
+            normalizer.forms(&row.callers),
+        ]);
+        decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id, unlisted: row.unlisted });
+    }
+    Ok((files, decls))
+}
+
+/// Os nomes de quem usa a declaração `name`, cada um uma vez, lidos do texto
+/// dos usos que o scan grava: o uso provado e o suspeito valem. A própria
+/// declaração, quando se chama, não conta.
+fn callers_of(used_by: &str, name: &str) -> String {
+    let mut seen: HashSet<String> = HashSet::new();
+    let uses: Vec<UseSite> = serde_json::from_str(used_by).unwrap_or_default();
+    uses.into_iter()
+        .map(|site| site.from)
+        .filter(|from| !from.is_empty() && from != name && seen.insert(from.clone()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Quantos commits, dos mais novos, quantos comentários de revisão e quantas
+/// letras de cada comentário de uma declaração entram na história que se lê
+/// dela.
+#[derive(Clone, Copy)]
+struct HistoryCaps {
+    commits: usize,
+    reviews: usize,
+    review_chars: usize,
+}
+
+/// O que entra no índice: a declaração que mais mudou tem centenas de
+/// títulos, e o índice inteiro levaria vários minutos para ler o que nenhuma
+/// busca pesa.
+const INDEXED_HISTORY: HistoryCaps = HistoryCaps { commits: 10, reviews: 10, review_chars: 300 };
+
+/// Tudo o que o mapa guarda: é a história que vai ao filtro, sem corte.
+const WHOLE_HISTORY: HistoryCaps = HistoryCaps { commits: usize::MAX, reviews: usize::MAX, review_chars: usize::MAX };
+
+/// A história de uma declaração como o mapa a guarda: os títulos dos commits
+/// que a mudaram, do mais novo ao mais velho, e os comentários de revisão
+/// presos às linhas dela.
+#[derive(Default)]
+struct DeclHistory {
+    commits: Vec<String>,
+    reviews: Vec<String>,
+}
+
+impl DeclHistory {
+    /// Os textos juntados por espaço, os títulos antes dos comentários, como
+    /// o índice os lê.
+    fn joined(&self) -> String {
+        self.commits.iter().chain(&self.reviews).map(String::as_str).collect::<Vec<_>>().join(" ")
+    }
+}
+
+/// As primeiras `chars` letras de `text`.
+fn head(text: &str, chars: usize) -> &str {
+    text.char_indices().nth(chars).map_or(text, |(end, _)| &text[..end])
+}
+
+/// A história de cada declaração, pela história por declaração que o mapa
+/// guarda dos arquivos já lidos: a chave é o arquivo, o nome e a ordem entre
+/// as de mesmo nome. Vêm os títulos dos commits que a mudaram — o que só
+/// mudou a forma não conta, e o título perde o tipo e o número do pull request
+/// — e, à parte, os comentários de revisão presos às linhas dela, uns e
+/// outros até o teto de `caps`. O arquivo cuja história o mapa ainda não leu
+/// não tem declaração nenhuma aqui, e o projeto sem comentário de revisão só
+/// tem os títulos.
+fn decl_histories(
+    conn: &Connection,
+    scope: Option<&[&str]>,
+    caps: HistoryCaps,
+) -> Result<HashMap<(String, String, u32), DeclHistory>> {
+    let mut titles: HashMap<(String, String), String> = HashMap::new();
+    let mut stmt = conn.prepare(&scoped("SELECT path, id, title FROM lineage_commits", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
+    while let Some(row) = rows.next()? {
+        titles.insert((text(row, 0)?, text(row, 1)?), clean_title(&text(row, 2)?));
+    }
+    let mut out = HashMap::new();
+    let mut stmt = conn.prepare(&scoped("SELECT path, name, nth, commits, comments FROM lineage_decls", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
+    while let Some(row) = rows.next()? {
+        let path = text(row, 0)?;
+        let changes: Vec<DeclChange> = serde_json::from_str(&text(row, 3)?).unwrap_or_default();
+        let reviews: Vec<DeclComment> = serde_json::from_str(&text(row, 4)?).unwrap_or_default();
+        let commits: Vec<String> = changes
+            .iter()
+            .filter(|change| !change.form)
+            .filter_map(|change| titles.get(&(path.clone(), change.id.clone())))
+            .filter(|title| !title.is_empty())
+            .take(caps.commits)
+            .cloned()
+            .collect();
+        let reviews: Vec<String> = reviews
+            .iter()
+            .take(caps.reviews)
+            .map(|review| head(&review.body, caps.review_chars))
+            .filter(|words| !words.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !commits.is_empty() || !reviews.is_empty() {
+            let nth = u32::try_from(row.get::<_, Option<i64>>(2)?.unwrap_or(0)).unwrap_or(0);
+            out.insert((path, text(row, 1)?, nth), DeclHistory { commits, reviews });
+        }
+    }
+    Ok(out)
+}
+
+/// A ordem de cada declaração de `rows` entre as de mesmo nome do arquivo
+/// dela, pela linha — a primeira é 0 —, como a história por declaração conta.
+fn nth_among_same_name(rows: &[DeclRow]) -> Vec<u32> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by_key(|&at| (rows[at].owner, rows[at].lines.0));
+    let mut seen: HashMap<(usize, &str), u32> = HashMap::new();
+    let mut nth = vec![0; rows.len()];
+    for at in order {
+        let count = seen.entry((rows[at].owner, rows[at].name.as_str())).or_default();
+        nth[at] = *count;
+        *count += 1;
+    }
+    nth
+}
+
+/// As chamadas de cada arquivo do índice, pela posição dele em `at`, cada
+/// uma com a linha e as palavras dela — o qualificador e o nome, separados —,
+/// em ordem de linha. A chamada que não se lê como `nome:linha` fica de fora.
+fn written_calls(
+    conn: &Connection,
+    at: &HashMap<String, usize>,
+    normalizer: &mut Normalizer,
+    scope: Option<&[&str]>,
+) -> Result<Vec<Vec<(u64, Words)>>> {
+    let mut out: Vec<Vec<(u64, Words)>> = vec![Vec::new(); at.len()];
+    let mut stmt = conn.prepare(&scoped("SELECT path, calls FROM links", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
+    while let Some(row) = rows.next()? {
+        let Some(&owner) = at.get(&text(row, 0)?) else { continue };
+        let sites: Vec<String> = serde_json::from_str(&text(row, 1)?).unwrap_or_default();
+        let calls = &mut out[owner];
+        for site in sites {
+            let Some((head, line)) = site.rsplit_once(':') else { continue };
+            let Ok(line) = line.parse::<u64>() else { continue };
+            calls.push((line, normalizer.forms(&head.replace('.', " "))));
+        }
+        calls.sort_by_key(|(line, _)| *line);
+    }
+    Ok(out)
+}
+
+/// O tipo de declaração que o scan dá ao parâmetro escrito no cabeçalho do
+/// tipo dono, como o do construtor primário do C#. A assinatura do dono já o
+/// traz, e ele à parte só repetiria, entre os candidatos, o nome do
+/// parâmetro — também quando o teto da assinatura do dono o cortou.
+const HEADER_PARAMETER_KIND: &str = "parameter";
+
+/// Uma declaração lida do mapa para o índice: o número dela, o arquivo, o
+/// nome, a assinatura, a documentação, a primeira e a última linha, e as
+/// palavras dos textos fixos que caem nela, por campo.
+struct DeclRow {
+    id: i64,
+    owner: usize,
+    /// A declaração fica fora do nível das declarações: é de teste, ou é o
+    /// parâmetro escrito no cabeçalho do dono.
+    unlisted: bool,
+    name: String,
+    signature: String,
+    doc: String,
+    lines: (u64, u64),
+    texts: Vec<Vec<Words>>,
+    /// A documentação inteira, quando o teto de `doc` a cortou.
+    whole_doc: String,
+    body_comment: String,
+    body_names: String,
+    /// Os nomes do dono e do contrato da declaração.
+    parents: String,
+    /// Os nomes dos membros do tipo.
+    members: String,
+    /// Os nomes de quem usa a declaração.
+    callers: String,
+}
+
+/// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
+fn add_new(into: &mut Words, seen: &mut HashSet<Vec<String>>, words: &Words) {
+    for word in words {
+        if seen.insert(word.clone()) {
+            into.push(word.clone());
+        }
+    }
+}
+
+/// As palavras dos comentários de um arquivo fora os do começo, cada uma
+/// uma vez, como as de todo campo: as dos que o scan guardou fora de toda
+/// declaração (`outside`) e as dos comentários de cada declaração de fora
+/// dele (`of`, pela regra de [`outer_declarations`]) — os de uma declaração
+/// de dentro estão também nos da que a contém. Da primeira declaração de
+/// fora, os `doc_in_body` bytes do começo são comentários do começo do
+/// arquivo e ficam de fora.
+fn file_comments(
+    normalizer: &mut Normalizer,
+    outside: &str,
+    doc_in_body: usize,
+    rows: &[DeclRow],
+    of: &[usize],
+) -> Words {
+    let mut words = normalizer.forms(outside);
+    let mut seen: HashSet<Vec<String>> = words.iter().cloned().collect();
+    let lines: Vec<(usize, usize)> = of.iter().map(|&at| (rows[at].lines.0 as usize, rows[at].lines.1 as usize)).collect();
+    for (nth, outer) in outer_declarations(&lines).into_iter().enumerate() {
+        let body = rows[of[outer]].body_comment.as_str();
+        let body = if nth == 0 { body.get(doc_in_body..).unwrap_or_default() } else { body };
+        add_new(&mut words, &mut seen, &normalizer.forms(body));
+    }
+    words
+}
+
+/// O texto de um arquivo como o scan o gravou: os textos fixos, os
+/// comentários do começo, os outros que caem fora das declarações e quantos
+/// bytes do começo dos comentários da primeira declaração de fora são do
+/// começo do arquivo.
+struct FileText {
+    path: String,
+    written: Vec<Written>,
+    file_doc: String,
+    file_comment: String,
+    file_doc_in_body: usize,
+}
+
+/// O texto de cada arquivo. O arquivo cuja coluna dos textos fixos não se lê
+/// fica sem eles. As notas de sentido em dia ([`map_notes_fresh::fresh`]) entram como
+/// mais um texto fixo, do campo do texto solto, do arquivo e da declaração que
+/// cada uma nomeia.
+fn written_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<FileText>> {
+    let mut stmt =
+        conn.prepare(&scoped("SELECT path, texts, file_doc, file_comment, file_doc_in_body FROM texts", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(FileText {
+            path: text(row, 0)?,
+            written: serde_json::from_str(&text(row, 1)?).unwrap_or_default(),
+            file_doc: text(row, 2)?,
+            file_comment: text(row, 3)?,
+            file_doc_in_body: row.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as usize,
+        });
+    }
+    let mut at: HashMap<String, usize> = out.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
+    for note in map_notes_fresh::fresh(conn, scope)? {
+        let written = Written {
+            line: note.line,
+            kind: TEXT_FIELDS[TEXT_FIELDS.len() - 1].to_string(),
+            value: note.text,
+            owner: note.name,
+        };
+        if let Some(&file) = at.get(&note.file) {
+            out[file].written.push(written);
+        } else {
+            at.insert(note.file.clone(), out.len());
+            out.push(FileText {
+                path: note.file,
+                written: vec![written],
+                file_doc: String::new(),
+                file_comment: String::new(),
+                file_doc_in_body: 0,
+            });
+        }
+    }
+    Ok(out)
+}
+
+
+/// Grava os documentos de um nível: as formas de cada campo na tabela FTS5,
+/// o tamanho de cada campo em palavras, e o número de documentos e o tamanho
+/// médio de cada campo na tabela de números do nível.
+fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d Doc>) -> Result<()> {
+    let (count, total) = insert_docs(conn, level, docs)?;
+    write_meta(conn, level, count, &total)
+}
+
+/// Grava os documentos de `docs` no nível, sem mexer nos números dele: devolve
+/// quantos entraram e, de cada campo, quantas palavras somam.
+fn insert_docs<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d Doc>) -> Result<(u64, Vec<u64>)> {
+    let names: Vec<&str> = level.columns().collect();
+    let columns = names.join(", ");
+    let slots: Vec<String> = (2..=names.len() + 1).map(|at| format!("?{at}")).collect();
+    let slots = slots.join(", ");
+    let mut words = conn.prepare(&format!("INSERT INTO {}(rowid, {columns}) VALUES (?1, {slots})", level.fts))?;
+    let mut lengths = conn.prepare(&format!("INSERT INTO {}(id, {columns}) VALUES (?1, {slots})", level.lengths))?;
+    let mut total = vec![0u64; names.len()];
+    let mut count = 0u64;
+    for doc in docs {
+        let mut texts = vec![Sql::Integer(doc.id)];
+        let mut sizes = vec![Sql::Integer(doc.id)];
+        for (field, prepared) in doc.fields.iter().enumerate() {
+            total[field] += prepared.len() as u64;
+            sizes.push(Sql::Integer(prepared.len() as i64));
+            texts.push(Sql::Text(prepared.iter().flatten().map(String::as_str).collect::<Vec<_>>().join(" ")));
+        }
+        words.execute(params_from_iter(texts))?;
+        lengths.execute(params_from_iter(sizes))?;
+        count += 1;
+    }
+    Ok((count, total))
+}
+
+/// Grava, na tabela de números do nível, quantos documentos ele tem e o
+/// tamanho médio de cada campo, dadas as somas `total` em `count` documentos.
+fn write_meta(conn: &Connection, level: &Level, count: u64, total: &[u64]) -> Result<()> {
+    let mut meta = conn.prepare(&format!("INSERT OR REPLACE INTO {}(key, value) VALUES (?1, ?2)", level.meta))?;
+    meta.execute(params![format!("{}.docs", level.fts), count as i64])?;
+    for (field, name) in level.columns().enumerate() {
+        let avg = if count == 0 { 0.0 } else { total[field] as f64 / count as f64 };
+        meta.execute(params![format!("{}.{name}", level.fts), avg])?;
+    }
+    Ok(())
+}
+
+/// O banco em `model`, com o índice feito nas línguas `languages`: o feito
+/// em outras se refaz antes da busca. O bloco de `read`, os que a busca lê,
+/// que o scan ainda não encheu depois de uma troca de formato recusa a
+/// busca, que sem ele responderia vazio: a mesma recusa das outras perguntas
+/// ao mapa ([`map_fill::refuse`]).
+pub(super) fn indexed(model: &Path, languages: &Languages, read: &[&MapBlock]) -> std::result::Result<MapDb, MapRefusal> {
+    let mut db = open_existing(model)?;
+    map_fill::refuse(&db, read)?;
+    if !made_in(db.conn(), languages).map_err(unreadable)? {
+        db.write(|tx| if made_in(tx, languages)? { Ok(()) } else { rebuild(tx, languages) }).map_err(unreadable)?;
+    }
+    Ok(db)
+}
+
+/// `true` quando o índice foi feito nas línguas `languages`.
+fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
+    let stored: Option<String> = conn
+        .query_row("SELECT value FROM search_meta WHERE key = ?1", [LANGUAGES_KEY], |row| row.get(0))
+        .optional()?;
+    Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
+}
+
+/// O texto fixo que mais casa com a pergunta em cada arquivo de `found`.
+pub(super) fn add_texts(conn: &Connection, query: &str, languages: &Languages, found: &mut [Found]) -> Result<()> {
+    let mut normalizer = Normalizer::new(languages);
+    let words = normalizer.query(query);
+    let mut texts = conn.prepare("SELECT texts FROM texts WHERE path = ?1")?;
+    for one in found {
+        one.text = best_text(&mut texts, &one.path, &words, &mut normalizer)?;
+    }
+    Ok(())
+}
+
+/// O texto fixo do arquivo em `path` que mais casa com as palavras `words` da
+/// pergunta: o que tem mais delas, por alguma das formas; empatados, o de
+/// linha mais acima. `None` quando nenhum tem nenhuma.
+fn best_text(
+    texts: &mut Statement<'_>,
+    path: &str,
+    words: &[Vec<String>],
+    normalizer: &mut Normalizer,
+) -> Result<Option<FoundText>> {
+    let mut rows = texts.query([path])?;
+    let Some(row) = rows.next()? else { return Ok(None) };
+    let written: Vec<Written> = serde_json::from_str(&text(row, 0)?).unwrap_or_default();
+    let mut best: Option<(usize, Written)> = None;
+    for candidate in written {
+        let forms: HashSet<String> = normalizer.forms(&candidate.value).into_iter().flatten().collect();
+        let hits = words.iter().filter(|word| word.iter().any(|form| forms.contains(form))).count();
+        if hits > 0 && best.as_ref().is_none_or(|(most, _)| hits > *most) {
+            best = Some((hits, candidate));
+        }
+    }
+    Ok(best.map(|(_, w)| FoundText { line: w.line, kind: w.kind, value: w.value, owner: w.owner }))
+}
+
+/// `true` quando o índice dos itens das specs foi feito nas línguas
+/// `languages`.
+pub(crate) fn specs_indexed_in(conn: &Connection, languages: &Languages) -> Result<bool> {
+    let stored: Option<String> = conn
+        .query_row(&format!("SELECT value FROM {} WHERE key = ?1", SPEC_LEVEL.meta), [LANGUAGES_KEY], |row| row.get(0))
+        .optional()?;
+    Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
+}
+
+/// Tira do índice dos itens das specs os documentos `ids`, os das linhas que
+/// saíram.
+pub(crate) fn unindex_specs(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let mut words = conn.prepare(&format!("DELETE FROM {} WHERE rowid = ?1", SPEC_LEVEL.fts))?;
+    let mut lengths = conn.prepare(&format!("DELETE FROM {} WHERE id = ?1", SPEC_LEVEL.lengths))?;
+    for id in ids {
+        words.execute([id])?;
+        lengths.execute([id])?;
+    }
+    Ok(())
+}
+
+/// Põe no índice dos itens das specs as linhas da spec `spec` — de todas,
+/// sem ela —, com as palavras nas línguas `languages`, e refaz a contagem e
+/// as médias do nível pela tabela dos tamanhos. Roda na transação de quem
+/// grava as linhas.
+pub(crate) fn index_specs(conn: &Connection, languages: &Languages, spec: Option<&str>) -> Result<()> {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<Doc> = {
+        let filter = if spec.is_some() { "WHERE spec = ?1" } else { "" };
+        let mut stmt = conn.prepare(&format!("SELECT rowid, title, text, search FROM spec_items {filter} ORDER BY rowid"))?;
+        let mut rows = match spec {
+            Some(spec) => stmt.query([spec])?,
+            None => stmt.query([])?,
+        };
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next()? {
+            let fields = (1..=3).map(|at| Ok(normalizer.forms(&text(row, at)?))).collect::<Result<Vec<Words>>>()?;
+            docs.push(Doc { id: row.get(0)?, fields });
+        }
+        docs
+    };
+    let names: Vec<&str> = SPEC_LEVEL.columns().collect();
+    let slots: Vec<String> = (2..=names.len() + 1).map(|at| format!("?{at}")).collect();
+    let (columns, slots) = (names.join(", "), slots.join(", "));
+    let mut words = conn.prepare(&format!("INSERT INTO {}(rowid, {columns}) VALUES (?1, {slots})", SPEC_LEVEL.fts))?;
+    let mut lengths = conn.prepare(&format!("INSERT INTO {}(id, {columns}) VALUES (?1, {slots})", SPEC_LEVEL.lengths))?;
+    for doc in &docs {
+        let mut texts = vec![Sql::Integer(doc.id)];
+        let mut sizes = vec![Sql::Integer(doc.id)];
+        for prepared in &doc.fields {
+            sizes.push(Sql::Integer(prepared.len() as i64));
+            texts.push(Sql::Text(prepared.iter().flatten().map(String::as_str).collect::<Vec<_>>().join(" ")));
+        }
+        words.execute(params_from_iter(texts))?;
+        lengths.execute(params_from_iter(sizes))?;
+    }
+    let averages: Vec<String> = names.iter().map(|name| format!("coalesce(avg({name}), 0)")).collect();
+    let (count, means) = conn.query_row(
+        &format!("SELECT count(*), {} FROM {}", averages.join(", "), SPEC_LEVEL.lengths),
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, (1..=names.len()).map(|at| row.get::<_, f64>(at)).collect::<rusqlite::Result<Vec<f64>>>()?)),
+    )?;
+    let mut meta = conn.prepare(&format!("INSERT OR REPLACE INTO {}(key, value) VALUES (?1, ?2)", SPEC_LEVEL.meta))?;
+    meta.execute(params![format!("{}.docs", SPEC_LEVEL.fts), count])?;
+    for (name, mean) in names.iter().zip(means) {
+        meta.execute(params![format!("{}.{name}", SPEC_LEVEL.fts), mean])?;
+    }
+    meta.execute(params![LANGUAGES_KEY, languages.codes().join(",")])?;
+    Ok(())
+}
+
+/// Refaz o índice inteiro dos itens das specs nas línguas `languages`.
+fn reindex_specs(conn: &Connection, languages: &Languages) -> Result<()> {
+    conn.execute_batch(&format!(
+        "INSERT INTO {fts}({fts}) VALUES ('delete-all'); DELETE FROM {lengths}; DELETE FROM {meta};",
+        fts = SPEC_LEVEL.fts,
+        lengths = SPEC_LEVEL.lengths,
+        meta = SPEC_LEVEL.meta
+    ))?;
+    index_specs(conn, languages, None)?;
+    conn.execute(&format!("INSERT INTO {fts}({fts}) VALUES ('optimize')", fts = SPEC_LEVEL.fts), [])?;
+    Ok(())
+}
+
+/// Os itens das specs que mais casam com a pergunta `query` no mapa do
+/// projeto em `root`, até `limit`, da nota mais alta para a mais baixa, cada
+/// um com a spec, o código, o título, a linha da parte do usuário que mais
+/// casa e até `limit` lugares ligados a ele. Lê só o mapa: nenhum arquivo de
+/// spec se abre. As recusas são as de todo leitor do mapa — sem o arquivo,
+/// [`MapRefusal::MapMissing`] — e, com um bloco de que o índice lê ainda vazio
+/// depois de uma troca de formato, [`MapRefusal::MapUnfilled`].
+pub fn search_specs(root: &Path, query: &str, languages: &Languages, limit: usize) -> std::result::Result<Vec<FoundItem>, MapRefusal> {
+    search_specs_at(&model_path(root), query, languages, limit)
+}
+
+/// A busca de [`search_specs`] no mapa gravado em `model`.
+pub fn search_specs_at(
+    model: &Path,
+    query: &str,
+    languages: &Languages,
+    limit: usize,
+) -> std::result::Result<Vec<FoundItem>, MapRefusal> {
+    let mut db = open_existing(model)?;
+    if !specs_indexed_in(db.conn(), languages).map_err(unreadable)? {
+        db.write(|tx| if specs_indexed_in(tx, languages)? { Ok(()) } else { reindex_specs(tx, languages) })
+            .map_err(unreadable)?;
+    }
+    found_items(db.conn(), query, languages, limit).map_err(unreadable)
+}
+
+fn found_items(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<FoundItem>> {
+    let mut normalizer = Normalizer::new(languages);
+    let words = normalizer.query(query);
+    let mut item = conn.prepare("SELECT spec, id, code, title, text, files FROM spec_items WHERE rowid = ?1")?;
+    let mut out = Vec::new();
+    for (rowid, _) in by_words(conn, &SPEC_LEVEL, SPEC_LEVEL.fields, &words)?.into_iter().take(limit) {
+        let Some((spec, id, code, title, body, files)) = item
+            .query_row([rowid], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        let files: Vec<String> = files.and_then(|files| serde_json::from_str(&files).ok()).unwrap_or_default();
+        let title = if title.trim().is_empty() { spec_sentence(&body) } else { title.trim().to_string() };
+        out.push(FoundItem {
+            links: crate::io::map_specs::links_of(conn, &spec, id, &files, limit)?,
+            line: best_line(&body, &words, &mut normalizer),
+            spec,
+            code,
+            title,
+        });
+    }
+    Ok(out)
+}
+
+/// A linha de `body` que tem mais palavras da pergunta, por alguma das
+/// formas, até o teto da frase de um item; empatadas, a mais de cima.
+/// `None` quando nenhuma tem nenhuma.
+fn best_line(body: &str, words: &[Vec<String>], normalizer: &mut Normalizer) -> Option<String> {
+    let mut best: Option<(usize, &str)> = None;
+    for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let forms: HashSet<String> = normalizer.forms(line).into_iter().flatten().collect();
+        let hits = words.iter().filter(|word| word.iter().any(|form| forms.contains(form))).count();
+        if hits > 0 && best.is_none_or(|(most, _)| hits > most) {
+            best = Some((hits, line));
+        }
+    }
+    best.map(|(_, line)| crate::domain::spec_index::cut(line, SPEC_SENTENCE_CHARS))
+}
+
+// ---------------------------------------------------------------------------
+// Os candidatos da busca com filtro
+// ---------------------------------------------------------------------------
+
+/// Quantos títulos de commit de cada arquivo entram no índice da busca, os
+/// mais novos.
+const FILE_COMMITS: usize = 3;
+
+/// Os tipos de declaração que, entre os membros de um tipo, são métodos.
+const METHOD_KINDS: [&str; 2] = ["function", "method"];
+
+/// Os candidatos da busca com filtro: a lista inteira do rodízio, sem teto,
+/// cada um com o que o mapa guarda dele.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilterCandidates {
+    /// A lista inteira: as quatro listas juntadas por rodízio, na ordem dela.
+    pub candidates: Vec<FilterCandidate>,
+}
+
+impl FilterCandidates {
+    /// Os números dos candidatos, na ordem da lista.
+    #[must_use]
+    pub fn ids(&self) -> Vec<i64> {
+        self.candidates.iter().map(|candidate| candidate.id).collect()
+    }
+}
+
+/// A admissão da busca sem pasta nem filtro: todo caminho entra.
+pub fn any_path(_: &str) -> bool {
+    true
+}
+
+/// Os candidatos do filtro no mapa do projeto em `root`: as palavras de
+/// `query` e a frase de `intent`, com as palavras cortadas nas línguas
+/// `languages`, todos os que a busca achou, só de arquivos que `admit` deixa
+/// entrar. `admit` recebe o caminho do arquivo, relativo à raiz, e quem
+/// chama o monta com a pasta e os tipos de arquivo que a busca pediu
+/// ([`any_path`] quando não pediu nenhum). As recusas são as de todo leitor do
+/// mapa — sem o arquivo, [`MapRefusal::MapMissing`] — e, com um bloco de que o
+/// índice lê ainda vazio depois de uma troca de formato,
+/// [`MapRefusal::MapUnfilled`]; como o índice usa os títulos dos commits do
+/// arquivo, também a da história da base ainda vazia
+/// ([`map_fill::READ_BY_CANDIDATES`]).
+pub fn candidates(
+    root: &Path,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+    admit: impl Fn(&str) -> bool,
+) -> std::result::Result<FilterCandidates, MapRefusal> {
+    candidates_at(&model_path(root), query, intent, languages, admit)
+}
+
+/// Os candidatos de [`candidates`] no mapa gravado em `model`: a lista inteira,
+/// só com as declarações que `admit` deixa entrar, sem teto de quantidade.
+pub fn candidates_at(
+    model: &Path,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+    admit: impl Fn(&str) -> bool,
+) -> std::result::Result<FilterCandidates, MapRefusal> {
+    let db = indexed(model, languages, &map_fill::READ_BY_CANDIDATES)?;
+    let root = map_check::root_of(model);
+    let ordered = map_order::ordered(db.conn(), map_order::Check::On(root), query, intent, languages).map_err(unreadable)?.list;
+    let whole = admitted(db.conn(), ordered, admit).map_err(unreadable)?;
+    let candidates = declarations_in(db.conn(), &whole).map_err(unreadable)?;
+    Ok(FilterCandidates { candidates })
+}
+
+/// Quantos caminhos a leitura da história pede ao banco de uma vez.
+const HISTORY_PATHS_PER_QUERY: usize = 500;
+
+/// Os candidatos `candidates`, cada um com toda a história que o mapa guarda
+/// dele: os títulos de todos os commits que o mudaram e todos os comentários
+/// de revisão presos às linhas dele, sem corte. É a história que vai ao
+/// filtro; o índice da busca lê só o começo dela. A declaração cujo arquivo
+/// o mapa ainda não leu a história fica sem ela.
+pub fn with_history(
+    root: &Path,
+    candidates: Vec<FilterCandidate>,
+) -> std::result::Result<Vec<FilterCandidate>, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    with_history_in(db.conn(), candidates).map_err(unreadable)
+}
+
+/// [`with_history`] no banco aberto `conn`.
+fn with_history_in(conn: &Connection, mut candidates: Vec<FilterCandidate>) -> Result<Vec<FilterCandidate>> {
+    let paths: Vec<&str> = candidates.iter().map(|candidate| candidate.path.as_str()).collect::<HashSet<_>>().into_iter().collect();
+    let mut histories = HashMap::new();
+    for chunk in paths.chunks(HISTORY_PATHS_PER_QUERY) {
+        histories.extend(decl_histories(conn, Some(chunk), WHOLE_HISTORY)?);
+    }
+    if histories.is_empty() {
+        return Ok(candidates);
+    }
+    // A ordem da declaração entre as de mesmo nome do arquivo, pela linha, é a
+    // chave da história dela.
+    let mut nth_of = conn.prepare(
+        "SELECT COUNT(*) FROM decls WHERE file = ?1 AND name = ?2 \
+         AND (COALESCE(line, 0) < ?3 OR (COALESCE(line, 0) = ?3 AND rowid < ?4))",
+    )?;
+    for candidate in &mut candidates {
+        let nth: i64 = nth_of.query_row(
+            params![candidate.path, candidate.name, i64::from(candidate.line), candidate.id],
+            |row| row.get(0),
+        )?;
+        let key = (candidate.path.clone(), candidate.name.clone(), u32::try_from(nth).unwrap_or(0));
+        if let Some(history) = histories.remove(&key) {
+            candidate.commits = history.commits;
+            candidate.reviews = history.reviews;
+        }
+    }
+    Ok(candidates)
+}
+
+/// Das declarações `ids`, na mesma ordem, as que `admit` deixa entrar pelo
+/// caminho do arquivo delas. A que o mapa não tem fica de fora: sem o arquivo,
+/// não há como dizer que ela está na pasta pedida.
+fn admitted(conn: &Connection, ids: Vec<i64>, admit: impl Fn(&str) -> bool) -> Result<Vec<i64>> {
+    let mut file_of = conn.prepare("SELECT file FROM decls WHERE rowid = ?1")?;
+    let mut verdicts: HashMap<String, bool> = HashMap::new();
+    let mut kept = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(file) = file_of.query_row([id], |row| row.get::<_, Option<String>>(0)).optional()?.flatten() else {
+            continue;
+        };
+        if *verdicts.entry(file).or_insert_with_key(|file| admit(file)) {
+            kept.push(id);
+        }
+    }
+    Ok(kept)
+}
+
+/// As declarações `ids` do mapa do projeto em `root`, na ordem pedida, com
+/// o que o mapa guarda de cada uma; o id que o mapa não tem fica de fora.
+pub fn declarations(root: &Path, ids: &[i64]) -> std::result::Result<Vec<FilterCandidate>, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    declarations_in(db.conn(), ids).map_err(unreadable)
+}
+
+/// As ligações das declarações `ids` no mapa do projeto em `root`: o tipo,
+/// o caminho, os métodos de cada tipo e as implementações de cada método de
+/// contrato.
+pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    links_in(db.conn(), ids).map_err(unreadable)
+}
+
+/// Uma declaração como a tabela a guarda, com as ligações ainda em texto.
+struct Stored {
+    candidate: FilterCandidate,
+    members: Vec<DeclAt>,
+    implemented_by: Vec<DeclAt>,
+}
+
+/// As declarações `ids`, na ordem pedida, como a tabela as guarda.
+fn stored(conn: &Connection, ids: &[i64]) -> Result<Vec<Stored>> {
+    let mut stmt = conn.prepare(
+        "SELECT file, kind, name, line, end_line, signature, doc, members, implemented_by, whole_doc, calls \
+         FROM decls WHERE rowid = ?1",
+    )?;
+    let places = |row: &Row<'_>, at: usize| -> Result<Vec<DeclAt>> {
+        Ok(serde_json::from_str(&text(row, at)?).unwrap_or_default())
+    };
+    let names = |row: &Row<'_>, at: usize| -> Result<Vec<String>> {
+        Ok(serde_json::from_str(&text(row, at)?).unwrap_or_default())
+    };
+    let mut out = Vec::new();
+    for &id in ids {
+        let mut rows = stmt.query([id])?;
+        let Some(row) = rows.next()? else { continue };
+        let line = |at: usize| -> Result<u32> { Ok(u32::try_from(row.get::<_, Option<i64>>(at)?.unwrap_or(0)).unwrap_or(0)) };
+        // A documentação inteira, que o scan guarda à parte quando o teto do
+        // campo da declaração a cortou.
+        let (doc, whole_doc) = (text(row, 6)?, text(row, 9)?);
+        out.push(Stored {
+            candidate: FilterCandidate {
+                id,
+                kind: text(row, 1)?,
+                name: text(row, 2)?,
+                path: text(row, 0)?,
+                line: line(3)?,
+                end_line: line(4)?,
+                signature: text(row, 5)?,
+                documentation: if whole_doc.is_empty() { doc } else { whole_doc },
+                commits: Vec::new(),
+                reviews: Vec::new(),
+                calls: names(row, 10)?,
+            },
+            members: places(row, 7)?,
+            implemented_by: places(row, 8)?,
+        });
+    }
+    Ok(out)
+}
+
+/// As declarações `ids`, na ordem pedida, com o que o mapa guarda de cada
+/// uma: o tipo, o nome, o caminho, as linhas, a assinatura e a documentação.
+fn declarations_in(conn: &Connection, ids: &[i64]) -> Result<Vec<FilterCandidate>> {
+    Ok(stored(conn, ids)?.into_iter().map(|decl| decl.candidate).collect())
+}
+
+/// As ligações de cada declaração de `ids` que o mapa tem. A implementação
+/// entra só quando pode ser candidata: a de teste, como o dublê escrito num
+/// arquivo de teste ou no trecho de teste de outro arquivo, fica de fora,
+/// pela mesma regra que a tira dos candidatos.
+fn links_in(conn: &Connection, ids: &[i64]) -> Result<Links> {
+    let stored = stored(conn, ids)?;
+    let kinds = kinds_of(conn, stored.iter().flat_map(|decl| decl.members.iter().chain(&decl.implemented_by)))?;
+    let implementations = stored.iter().flat_map(|decl| &decl.implemented_by).filter_map(|place| kinds.get(place));
+    let eligible = in_decl_level(conn, implementations.map(|(id, _)| *id))?;
+    Ok(stored
+        .into_iter()
+        .map(|decl| {
+            let methods = decl
+                .members
+                .iter()
+                .filter_map(|member| kinds.get(member))
+                .filter(|(_, kind)| METHOD_KINDS.contains(&kind.as_str()))
+                .map(|(id, _)| *id)
+                .collect();
+            let implementations = decl
+                .implemented_by
+                .iter()
+                .filter_map(|place| kinds.get(place).map(|(id, _)| (*id, place.file.clone())))
+                .filter(|(id, _)| eligible.contains(id))
+                .collect();
+            let linked =
+                Linked { kind: decl.candidate.kind, path: decl.candidate.path, methods, implementations };
+            (decl.candidate.id, linked)
+        })
+        .collect())
+}
+
+/// Das declarações `ids`, as que estão no nível das declarações do índice,
+/// de onde saem os candidatos da busca com filtro.
+fn in_decl_level(conn: &Connection, ids: impl Iterator<Item = i64>) -> Result<HashSet<i64>> {
+    let ids: Vec<i64> = ids.collect::<HashSet<_>>().into_iter().collect();
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let slots: Vec<String> = (1..=ids.len()).map(|at| format!("?{at}")).collect();
+    let mut stmt = conn.prepare(&format!("SELECT id FROM decl_lengths WHERE id IN ({})", slots.join(", ")))?;
+    let rows = stmt.query_map(params_from_iter(&ids), |row| row.get::<_, i64>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+/// O id e o tipo de cada declaração apontada por `places`, lidos numa
+/// passada só pelos arquivos delas.
+fn kinds_of<'p>(conn: &Connection, places: impl Iterator<Item = &'p DeclAt>) -> Result<HashMap<DeclAt, (i64, String)>> {
+    let wanted: HashSet<&DeclAt> = places.collect();
+    let files: Vec<&str> = wanted.iter().map(|place| place.file.as_str()).collect::<HashSet<_>>().into_iter().collect();
+    let mut out = HashMap::new();
+    if files.is_empty() {
+        return Ok(out);
+    }
+    let slots: Vec<String> = (1..=files.len()).map(|at| format!("?{at}")).collect();
+    let mut stmt =
+        conn.prepare(&format!("SELECT rowid, file, line, name, kind FROM decls WHERE file IN ({})", slots.join(", ")))?;
+    let mut rows = stmt.query(params_from_iter(&files))?;
+    while let Some(row) = rows.next()? {
+        let place = DeclAt {
+            file: text(row, 1)?,
+            line: usize::try_from(row.get::<_, Option<i64>>(2)?.unwrap_or(0)).unwrap_or(0),
+            name: text(row, 3)?,
+        };
+        if wanted.contains(&place) {
+            out.entry(place).or_insert((row.get(0)?, text(row, 4)?));
+        }
+    }
+    Ok(out)
+}
+
+/// Os títulos dos [`FILE_COMMITS`] commits mais novos que mudaram cada
+/// arquivo de `paths`, do mais novo ao mais velho. O mapa sem a história do
+/// git não dá título nenhum.
+fn newest_titles(conn: &Connection, paths: &HashSet<&str>) -> Result<HashMap<String, Vec<String>>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT path FROM history_paths ORDER BY rowid")?;
+    let listed = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let wanted: HashMap<usize, String> = listed
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, path)| path.filter(|path| paths.contains(path.as_str())).map(|path| (at, path)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(out);
+    }
+    let mut stmt = conn.prepare("SELECT title, added, changed FROM commits ORDER BY at DESC, rowid")?;
+    let mut rows = stmt.query([])?;
+    let mut full = 0;
+    while let Some(row) = rows.next()? {
+        let title = text(row, 0)?;
+        if title.trim().is_empty() {
+            continue;
+        }
+        let touched: HashSet<usize> = [1, 2]
+            .into_iter()
+            .map(|at| Ok(serde_json::from_str::<Vec<usize>>(&text(row, at)?).unwrap_or_default()))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        for path in touched.iter().filter_map(|at| wanted.get(at)) {
+            let titles = out.entry(path.clone()).or_default();
+            if titles.len() < FILE_COMMITS {
+                titles.push(title.clone());
+                if titles.len() == FILE_COMMITS {
+                    full += 1;
+                }
+            }
+        }
+        if full == wanted.len() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::domain::project_map::{DeclLineage, FileLineage, LineageCommit};
+    use crate::domain::search::{bm25f, score_x1024, Fields, NameHits, Posting, TOP};
+    use crate::io::map_glossary;
+    use crate::io::map_index::TOKENIZER;
+    use crate::io::map_lists::{base_list, name_hits, ranked_files_near, sources_near};
+    use crate::io::map_sense::Near;
+    use crate::io::project_map::{self as store, SEARCHED};
+    use serde_json::{json, Value};
+    use tempfile::{tempdir, TempDir};
+
+    /// As línguas de um projeto com o texto em português e o código em inglês.
+    fn languages() -> Languages {
+        Languages::new(["pt-BR", "en-US"])
+    }
+
+    /// Um arquivo do mapa de teste: o caminho, a classe (vazia no código
+    /// escrito à mão) e as declarações, cada uma com o nome e a documentação.
+    type File<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+    /// O mapa em JSON, no formato do scan, com estes arquivos.
+    fn map_of(files: &[File<'_>]) -> Value {
+        let modules: Vec<Value> = files
+            .iter()
+            .map(|(path, class, decls)| {
+                let decls: Vec<Value> = decls
+                    .iter()
+                    .map(|(name, doc)| json!({"kind": "function", "name": name, "line": 1, "signature": format!("fn {name}()"), "doc": doc}))
+                    .collect();
+                json!({"path": path, "file_class": class, "declarations": decls})
+            })
+            .collect();
+        json!({ "modules": modules })
+    }
+
+    /// Um projeto com o mapa destes arquivos gravado pela porta, como o scan
+    /// grava: o índice de busca entra junto.
+    fn saved(files: &[File<'_>]) -> TempDir {
+        let dir = tempdir().unwrap();
+        store::save_at(&model_path(dir.path()), &map_of(files), "scan 1", &languages()).unwrap();
+        dir
+    }
+
+    /// Os caminhos que a busca dos arquivos por palavras devolve, na ordem da
+    /// nota, antes de a ordem única juntá-los à lista das declarações.
+    fn paths(dir: &Path, query: &str) -> Vec<String> {
+        let db = indexed(&model_path(dir), &languages(), &SEARCHED).unwrap();
+        ranked_files_near(db.conn(), query, &languages(), TOP, &Near::none())
+            .unwrap()
+            .into_iter()
+            .map(|found| found.path)
+            .collect()
+    }
+
+    /// Os caminhos que só as palavras acham, com a nota, na ordem da nota.
+    fn by_words_only(dir: &Path, query: &str) -> Vec<(String, u64)> {
+        let db = open_existing(&model_path(dir)).unwrap();
+        let words = Normalizer::new(&languages()).query(query);
+        by_words(db.conn(), &FILE_LEVEL, FILE_LEVEL.fields, &words)
+            .unwrap()
+            .into_iter()
+            .map(|(id, score)| {
+                let path = db.conn().query_row("SELECT path FROM files WHERE rowid = ?1", [id], |row| row.get(0)).unwrap();
+                (path, score_x1024(score))
+            })
+            .collect()
+    }
+
+    /// O arquivo que só o comentário dele cita é achado pela busca da triagem,
+    /// que lê todas as colunas.
+    #[test]
+    fn a_file_only_its_comment_names_is_found_by_the_triage_search() {
+        let dir = tempdir().unwrap();
+        let map = json!({ "modules": [
+            { "path": "src/a.rs", "file_comment": "grava o estorno do pagamento", "declarations": [] },
+            { "path": "src/b.rs", "declarations": [
+                { "kind": "function", "name": "estornoPagamento", "line": 1, "signature": "fn estornoPagamento()", "doc": "" }
+            ] },
+        ] });
+        store::save_at(&model_path(dir.path()), &map, "scan 1", &languages()).unwrap();
+        let mut triage = paths(dir.path(), "estorno");
+        triage.sort();
+        assert_eq!(triage, ["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn a_glued_name_is_found_by_its_words_and_by_one_of_them() {
+        let dir =
+            saved(&[("src/consulta.rs", "", &[("buscarPedido", "")]), ("src/cliente.rs", "", &[("salvarCliente", "")])]);
+        assert_eq!(paths(dir.path(), "buscar pedido"), ["src/consulta.rs"]);
+        assert_eq!(paths(dir.path(), "pedido"), ["src/consulta.rs"]);
+        let words: Vec<String> = by_words_only(dir.path(), "pedido").into_iter().map(|(path, _)| path).collect();
+        assert_eq!(words, ["src/consulta.rs"], "the words alone find the glued name");
+    }
+
+    #[test]
+    fn a_portuguese_query_finds_a_portuguese_identifier() {
+        let dir = saved(&[
+            ("src/usuarios/cadastro.rs", "", &[]),
+            ("src/pagamentos/processador_pagamento.rs", "", &[("ProcessadorPagamento", "")]),
+        ]);
+        assert_eq!(
+            paths(dir.path(), "processar os pagamentos").first().map(String::as_str),
+            Some("src/pagamentos/processador_pagamento.rs")
+        );
+    }
+
+    /// Os arquivos de um mapa um pouco maior: nomes colados, caminhos,
+    /// documentação e um arquivo escrito por máquina.
+    const LARGER: &[File<'static>] = &[
+        ("src/pedidos/busca.rs", "", &[("buscarPedido", "Busca o pedido do cliente."), ("listarPedidos", "")]),
+        ("src/clientes/cadastro.rs", "", &[("salvarCliente", "Grava o cliente novo."), ("Cliente", "")]),
+        ("src/relatorios/mensal.rs", "", &[("RelatorioMensal", "O relatório do mês, por cliente.")]),
+        ("src/pedidos/pagamento.rs", "", &[("pagarPedido", ""), ("estornarPagamento", "Devolve o pagamento.")]),
+        ("src/gen/pedido_pb.rs", "generated", &[("PedidoMessage", "")]),
+        ("src/util/texto.rs", "", &[("normalizarTexto", "Tira o acento do texto do pedido.")]),
+    ];
+
+    /// O BM25F calculado documento a documento, sobre o mapa em memória, sem
+    /// o banco: os campos de cada arquivo, as formas de cada palavra, e cada
+    /// ocorrência contada no documento em que ela está.
+    fn document_by_document(files: &[File<'_>], query: &str) -> Vec<(String, u64)> {
+        let mut normalizer = Normalizer::new(&languages());
+        let docs: Vec<(String, Vec<Vec<Vec<String>>>)> = files
+            .iter()
+            .filter(|(_, class, _)| class.is_empty())
+            .map(|(path, _, decls)| {
+                let names: Vec<&str> = decls.iter().map(|(name, _)| *name).collect();
+                let notes: Vec<&str> = decls.iter().map(|(_, doc)| *doc).filter(|doc| !doc.is_empty()).collect();
+                let fields = [names.join(" "), (*path).to_string(), notes.join(" ")];
+                ((*path).to_string(), fields.iter().map(|text| normalizer.forms(text)).collect())
+            })
+            .collect();
+        let count = docs.len();
+        let avg_len: Vec<f64> =
+            (0..3).map(|field| docs.iter().map(|(_, fields)| fields[field].len()).sum::<usize>() as f64 / count as f64).collect();
+        let words: Vec<Vec<Vec<Posting>>> = normalizer
+            .query(query)
+            .iter()
+            .map(|forms| {
+                forms
+                    .iter()
+                    .map(|form| {
+                        let mut postings = Vec::new();
+                        for (doc, (_, fields)) in docs.iter().enumerate() {
+                            for (field, words) in fields.iter().enumerate() {
+                                let found = words.iter().filter(|word| word.contains(form)).count();
+                                postings.extend(
+                                    std::iter::repeat_n(Posting { doc: doc as i64, field, field_len: words.len() as u64 }, found),
+                                );
+                            }
+                        }
+                        postings
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights = vec![FILE_LEVEL.weight("name"), FILE_LEVEL.weight("path"), FILE_LEVEL.weight("doc")];
+        let fields = Fields { docs: count, avg_len, weights };
+        bm25f(&words, &fields).into_iter().map(|(doc, score)| (docs[doc as usize].0.clone(), score_x1024(score))).collect()
+    }
+
+    #[test]
+    fn the_list_from_one_query_per_form_equals_the_one_computed_document_by_document() {
+        let dir = saved(LARGER);
+        for query in ["buscar pedido cliente", "salvar os pedidos do cliente", "relatório mensal", "pagamento do pedido", "texto"] {
+            let from_the_index = by_words_only(dir.path(), query);
+            assert!(!from_the_index.is_empty(), "{query}");
+            assert_eq!(from_the_index, document_by_document(LARGER, query), "{query}");
+        }
+    }
+
+    #[test]
+    fn a_three_letter_question_does_not_look_for_the_piece_of_a_name() {
+        let dir = saved(&[("src/reader.rs", "", &[("readSessionSpecFile", "")])]);
+        assert_eq!(paths(dir.path(), "ssi"), Vec::<String>::new());
+        assert_eq!(paths(dir.path(), "ssio"), ["src/reader.rs"]);
+    }
+
+    #[test]
+    fn a_single_word_found_only_inside_a_name_brings_that_name_first() {
+        let dir = saved(&[
+            ("src/sessionspec/list.rs", "", &[("list", "")]),
+            ("src/reader.rs", "", &[("readSessionSpecFile", "")]),
+        ]);
+        let words: Vec<String> = by_words_only(dir.path(), "sessionspec").into_iter().map(|(path, _)| path).collect();
+        assert_eq!(words, ["src/sessionspec/list.rs"], "the words alone never find the piece");
+        assert_eq!(paths(dir.path(), "sessionspec"), ["src/reader.rs", "src/sessionspec/list.rs"]);
+    }
+
+    #[test]
+    fn a_machine_written_file_is_not_found() {
+        let dir = saved(&[("src/gen/pedido_pb.rs", "generated", &[("PedidoMessage", "")]), ("src/pedido.rs", "", &[("Pedido", "")])]);
+        assert_eq!(paths(dir.path(), "pedido"), ["src/pedido.rs"]);
+        assert_eq!(paths(dir.path(), "pedido message"), ["src/pedido.rs"]);
+        assert_eq!(paths(dir.path(), "PedidoMessage"), ["src/pedido.rs"], "the piece never finds the machine-written name");
+    }
+
+    /// A letra com acento que a normalização não conhece, como o `š`, o
+    /// índice grava sem o acento: a pergunta com ela e a pergunta sem ela
+    /// acham o mesmo arquivo.
+    #[test]
+    fn a_letter_the_normalization_keeps_accented_is_found_as_the_index_wrote_it() {
+        let dir = saved(&[("src/modelo.rs", "", &[("render", "šablona")]), ("src/cliente.rs", "", &[("salvar", "")])]);
+        assert_eq!(paths(dir.path(), "šablona"), ["src/modelo.rs"]);
+        assert_eq!(paths(dir.path(), "sablona"), ["src/modelo.rs"]);
+    }
+
+    /// A pergunta passa pelo mesmo tokenizador das duas tabelas de palavras.
+    #[test]
+    fn the_question_goes_through_the_tokenizer_of_both_word_tables() {
+        let dir = saved(LARGER);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        for table in [FILE_LEVEL.fts, DECL_LEVEL.fts] {
+            let sql: String =
+                db.conn().query_row("SELECT sql FROM sqlite_master WHERE name = ?1", [table], |row| row.get(0)).unwrap();
+            assert!(sql.contains(&format!("tokenize='{TOKENIZER}'")), "{table}: {sql}");
+        }
+    }
+
+    /// O índice nasce com a gravação do scan, nas línguas dela; o mapa escrito
+    /// à mão fica sem ele, e a primeira busca o faz nas línguas dela.
+    #[test]
+    fn the_save_writes_the_index_and_a_hand_written_map_gets_it_at_the_first_search() {
+        let dir = saved(LARGER);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        assert!(made_in(db.conn(), &languages()).unwrap());
+        let names: i64 = db.conn().query_row("SELECT count(*) FROM decl_trigram", [], |row| row.get(0)).unwrap();
+        assert_eq!(names, 8, "every declaration of a hand-written file");
+        drop(db);
+
+        let written = tempdir().unwrap();
+        store::write_text(written.path(), &map_of(LARGER).to_string()).unwrap();
+        let db = open_existing(&model_path(written.path())).unwrap();
+        assert!(!made_in(db.conn(), &languages()).unwrap());
+        drop(db);
+        assert_eq!(paths(written.path(), "buscar pedido cliente"), paths(dir.path(), "buscar pedido cliente"));
+        let db = open_existing(&model_path(written.path())).unwrap();
+        assert!(made_in(db.conn(), &languages()).unwrap());
+    }
+
+    // -- os candidatos da busca com filtro -----------------------------------
+
+    /// Um projeto com o mapa `map`, em JSON, gravado pela porta.
+    fn saved_json(map: &Value) -> TempDir {
+        let dir = tempdir().unwrap();
+        store::save_at(&model_path(dir.path()), map, "scan 1", &languages()).unwrap();
+        dir
+    }
+
+    /// O id da declaração `name` no mapa.
+    fn id_of(dir: &Path, name: &str) -> i64 {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().query_row("SELECT rowid FROM decls WHERE name = ?1", [name], |row| row.get(0)).unwrap()
+    }
+
+    /// Os termos que o índice guarda na coluna `column` da declaração que
+    /// começa na linha `line`, depois de refeito o que estiver desfeito.
+    fn indexed_terms(dir: &Path, line: i64, column: &str) -> Vec<String> {
+        let model = model_path(dir);
+        let db = indexed(&model, &languages(), &SEARCHED).unwrap();
+        let id: i64 = db.conn().query_row("SELECT rowid FROM decls WHERE line = ?1", [line], |row| row.get(0)).unwrap();
+        let mut stmt = db.conn().prepare("SELECT DISTINCT term FROM decl_vocab WHERE doc = ?1 AND col = ?2 ORDER BY term").unwrap();
+        stmt.query_map(rusqlite::params![id, column], |row| row.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap()
+    }
+
+    /// O id da declaração que começa na linha `line`.
+    fn id_of_line(dir: &Path, line: i64) -> i64 {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().query_row("SELECT rowid FROM decls WHERE line = ?1", [line], |row| row.get(0)).unwrap()
+    }
+
+    /// Um arquivo com duas funções de mesmo nome, `total`, uma na linha 1 e
+    /// outra na 10, e uma terceira, `outra`, que só uma delas chama.
+    fn two_of_the_same_name() -> TempDir {
+        saved_json(&json!({"modules": [{"path": "src/a.rs", "declarations": [
+            {"kind": "function", "name": "total", "line": 1, "end_line": 3, "signature": "fn total()"},
+            {"kind": "function", "name": "total", "line": 10, "end_line": 12, "signature": "fn total(x: u32)",
+             "used_by": ["src/a.rs:20:fechar", "src/a.rs:21:fechar", "src/a.rs:22:total", "src/a.rs:23:conferir"]},
+            {"kind": "function", "name": "outra", "line": 20, "end_line": 22, "signature": "fn outra()"}
+        ]}]}))
+    }
+
+    #[test]
+    fn each_declaration_of_the_same_name_gets_only_the_titles_of_its_own_commits() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        assert_eq!(indexed_terms(dir.path(), 1, "commits"), Vec::<String>::new(), "no history read yet");
+        let commit = |id: &str, title: &str| LineageCommit { id: id.into(), title: title.into(), ..LineageCommit::default() };
+        let change = |id: &str, form: bool| DeclChange { id: id.into(), form };
+        let lineage = FileLineage {
+            path: "src/a.rs".into(),
+            commits: vec![
+                commit("c1", "feat(caixa): cobra o desconto (#3)"),
+                commit("c2", "corrige o arredondamento"),
+                commit("c3", "formata o arquivo todo"),
+            ],
+            declarations: vec![
+                DeclLineage { name: "total".into(), nth: 0, commits: vec![change("c1", false)], comments: Vec::new() },
+                DeclLineage { name: "total".into(), nth: 1, commits: vec![change("c3", true), change("c2", false)], comments: Vec::new() },
+            ],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&model, &lineage).unwrap();
+
+        let first = indexed_terms(dir.path(), 1, "commits");
+        assert!(first.iter().any(|term| term.starts_with("desconto")), "{first:?}");
+        assert!(first.iter().all(|term| !term.starts_with("arredond") && !term.starts_with("caixa") && !term.starts_with("feat")), "{first:?}");
+        let second = indexed_terms(dir.path(), 10, "commits");
+        assert!(second.iter().any(|term| term.starts_with("arredond")), "{second:?}");
+        assert!(second.iter().all(|term| !term.starts_with("desconto") && !term.starts_with("format")), "the format-only commit is left out: {second:?}");
+        assert_eq!(indexed_terms(dir.path(), 20, "commits"), Vec::<String>::new(), "a declaration no commit touched");
+    }
+
+    #[test]
+    fn a_declaration_only_a_review_comment_names_is_found_and_a_map_without_comments_keeps_only_the_titles() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        let commit = |id: &str, title: &str| LineageCommit { id: id.into(), title: title.into(), ..LineageCommit::default() };
+        let review = |body: &str| DeclComment { pr: 5, commit: "c1".into(), body: body.into() };
+        let lineage = |comments: Vec<DeclComment>| FileLineage {
+            path: "src/a.rs".into(),
+            commits: vec![commit("c1", "cobra o desconto")],
+            declarations: vec![DeclLineage {
+                name: "total".into(),
+                nth: 1,
+                commits: vec![DeclChange { id: "c1".into(), form: false }],
+                comments,
+            }],
+            ..FileLineage::default()
+        };
+        let found = |word: &str| -> Vec<i64> {
+            let db = indexed(&model, &languages(), &SEARCHED).unwrap();
+            sources_near(db.conn(), word, "", &languages(), &Near::none()).unwrap().whole()
+        };
+        let total = id_of_line(dir.path(), 10);
+
+        store::save_lineage_at(&model, &lineage(Vec::new())).unwrap();
+        assert!(!found("reembolso").contains(&total), "no comment yet");
+        assert!(found("desconto").contains(&total), "the title of the commit finds it");
+        let titles_only = indexed_terms(dir.path(), 10, "commits");
+
+        store::save_lineage_at(&model, &lineage(vec![review("falta tratar o reembolso parcial")])).unwrap();
+        assert!(found("reembolso").contains(&total), "the word only the review comment has finds the declaration");
+        let both = indexed_terms(dir.path(), 10, "commits");
+        assert!(both.iter().any(|term| term.starts_with("reembols")) && titles_only.iter().all(|term| both.contains(term)), "{both:?}");
+        assert!(!titles_only.iter().any(|term| term.starts_with("reembols")), "{titles_only:?}");
+    }
+
+    #[test]
+    fn only_the_newest_commits_and_the_first_letters_of_the_review_comments_reach_the_index() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        let commits: Vec<LineageCommit> =
+            (0..12).map(|n| LineageCommit { id: format!("c{n}"), title: format!("passo{n:02}xyz"), ..LineageCommit::default() }).collect();
+        let changes: Vec<DeclChange> = commits.iter().map(|commit| DeclChange { id: commit.id.clone(), form: false }).collect();
+        let mut comments: Vec<DeclComment> =
+            (1..12).map(|n| DeclComment { pr: 5, commit: "c0".into(), body: format!("revisao{n:02}xyz") }).collect();
+        comments.insert(0, DeclComment { pr: 5, commit: "c0".into(), body: format!("{}tardio", "letra ".repeat(60)) });
+        let lineage = FileLineage {
+            path: "src/a.rs".into(),
+            commits,
+            declarations: vec![DeclLineage { name: "total".into(), nth: 0, commits: changes, comments }],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&model, &lineage).unwrap();
+
+        let terms = indexed_terms(dir.path(), 1, "commits");
+        let has = |prefix: &str| terms.iter().any(|term| term.starts_with(prefix));
+        for kept in ["passo00", "passo09", "letra", "revisao01", "revisao09"] {
+            assert!(has(kept), "{kept} in {terms:?}");
+        }
+        for left_out in ["passo10", "passo11", "tardio", "revisao10", "revisao11"] {
+            assert!(!has(left_out), "{left_out} not in {terms:?}");
+        }
+    }
+
+    /// A história que vai ao filtro não tem teto: os 40 commits que mudaram a
+    /// declaração e os 30 comentários de revisão, um deles de 900 letras,
+    /// vão todos e inteiros, cada um na declaração certa quando duas têm o
+    /// mesmo nome; a que nunca mudou fica sem história. O índice, no mesmo
+    /// mapa, segue lendo só o começo dela.
+    #[test]
+    fn the_history_that_goes_to_the_filter_has_every_commit_and_every_review_whole() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        let commits: Vec<LineageCommit> =
+            (0..40).map(|n| LineageCommit { id: format!("c{n}"), title: format!("passo{n:02}xyz"), ..LineageCommit::default() }).collect();
+        let changes: Vec<DeclChange> = commits.iter().map(|commit| DeclChange { id: commit.id.clone(), form: false }).collect();
+        let mut comments: Vec<DeclComment> =
+            (1..30).map(|n| DeclComment { pr: 5, commit: "c0".into(), body: format!("revisao{n:02}xyz") }).collect();
+        let long = format!("{}fim", "letra ".repeat(150));
+        comments.insert(0, DeclComment { pr: 5, commit: "c0".into(), body: long.clone() });
+        let lineage = FileLineage {
+            path: "src/a.rs".into(),
+            commits,
+            declarations: vec![DeclLineage { name: "total".into(), nth: 0, commits: changes, comments }],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&model, &lineage).unwrap();
+
+        let found = candidates(dir.path(), "total", "", &languages(), any_path).unwrap();
+        assert!(found.candidates.iter().all(|c| c.commits.is_empty() && c.reviews.is_empty()), "the search itself does not read the history");
+        let with = with_history(dir.path(), found.candidates).unwrap();
+
+        let first = with.iter().find(|c| c.name == "total" && c.line == 1).unwrap();
+        let second = with.iter().find(|c| c.name == "total" && c.line == 10).unwrap();
+        assert_eq!(first.commits.len(), 40, "{:?}", first.commits);
+        assert_eq!((first.commits[0].as_str(), first.commits[39].as_str()), ("passo00xyz", "passo39xyz"));
+        assert_eq!(first.reviews.len(), 30);
+        assert_eq!(first.reviews[0], long, "the long review goes whole");
+        assert!(second.commits.is_empty() && second.reviews.is_empty(), "the other total keeps none: {second:?}");
+        let other = with.iter().find(|c| c.name == "outra").unwrap();
+        assert!(other.commits.is_empty() && other.reviews.is_empty(), "{other:?}");
+    }
+
+    /// Cada candidato leva a documentação inteira, a que o scan guarda à parte
+    /// quando o teto do campo a corta, e os nomes das declarações do projeto
+    /// que ele chama.
+    #[test]
+    fn a_candidate_carries_the_whole_documentation_and_the_names_it_calls() {
+        let whole = format!("Cobra o cartão. {}Fim da documentação.", "Detalhe do desconto. ".repeat(60));
+        let dir = saved_json(&json!({"modules": [{"path": "src/pay.rs", "declarations": [
+            {"kind": "function", "name": "charge", "line": 1, "end_line": 9, "signature": "fn charge()",
+             "doc": "Cobra o cartão.", "whole_doc": whole, "calls": ["open_account", "round_total"]},
+            {"kind": "function", "name": "round_total", "line": 11, "end_line": 12, "signature": "fn round_total()", "doc": "Arredonda."}
+        ]}]}));
+
+        let found = candidates(dir.path(), "charge", "", &languages(), any_path).unwrap();
+
+        let charge = found.candidates.iter().find(|c| c.name == "charge").unwrap();
+        assert_eq!(charge.documentation, whole, "the whole documentation, not the cut one");
+        assert_eq!(charge.calls, ["open_account", "round_total"]);
+        let short = declarations(dir.path(), &[id_of(dir.path(), "round_total")]).unwrap();
+        assert_eq!((short[0].documentation.as_str(), short[0].calls.len()), ("Arredonda.", 0), "without a whole one, the field is used");
+    }
+
+    // -- a atualização do índice por arquivo ---------------------------------
+
+    /// Dois arquivos: `src/a.rs`, com duas funções de mesmo nome, e
+    /// `src/b.rs`, com a `pagar`.
+    fn two_files() -> TempDir {
+        saved_json(&json!({"modules": [
+            {"path": "src/a.rs", "declarations": [
+                {"kind": "function", "name": "total", "line": 1, "end_line": 3, "signature": "fn total()"},
+                {"kind": "function", "name": "total", "line": 10, "end_line": 12, "signature": "fn total(x: u32)"}
+            ]},
+            {"path": "src/b.rs", "declarations": [
+                {"kind": "function", "name": "pagar", "line": 1, "end_line": 3, "signature": "fn pagar()"}
+            ]}
+        ]}))
+    }
+
+    /// A história de `path` com o commit `id` de título `title` mudando a
+    /// declaração `name`.
+    fn history_of(path: &str, name: &str, id: &str, title: &str) -> FileLineage {
+        FileLineage {
+            path: path.into(),
+            commits: vec![LineageCommit { id: id.into(), title: title.into(), ..LineageCommit::default() }],
+            declarations: vec![DeclLineage {
+                name: name.into(),
+                nth: 0,
+                commits: vec![DeclChange { id: id.into(), form: false }],
+                comments: Vec::new(),
+            }],
+            ..FileLineage::default()
+        }
+    }
+
+    /// Tudo o que o índice guarda, em texto: as listas de cada forma dos dois
+    /// níveis, o tamanho de cada campo de cada documento e os números do
+    /// nível, fora a marca que um teste pôs nele.
+    fn index_dump(dir: &Path) -> Vec<String> {
+        let db = open_existing(&model_path(dir)).unwrap();
+        let mut out: Vec<String> = Vec::new();
+        for table in ["file_vocab", "decl_vocab"] {
+            let mut stmt = db.conn().prepare(&format!("SELECT term, col, doc, \"offset\" FROM {table} ORDER BY 1, 2, 3, 4")).unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(format!("{table} {} {} {} {}", row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+                })
+                .unwrap();
+            out.extend(rows.collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        }
+        for (table, width) in [("file_lengths", FILE_LEVEL.columns().count()), ("decl_lengths", DECL_LEVEL.columns().count())] {
+            let mut stmt = db.conn().prepare(&format!("SELECT * FROM {table} ORDER BY id")).unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    let cells: Vec<String> = (0..=width).map(|at| format!("{:?}", row.get_ref(at).unwrap())).collect();
+                    Ok(format!("{table} {}", cells.join(" ")))
+                })
+                .unwrap();
+            out.extend(rows.collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        }
+        let mut stmt = db.conn().prepare("SELECT key, value FROM search_meta WHERE key <> 'sentinel' ORDER BY key").unwrap();
+        let rows = stmt.query_map([], |row| Ok(format!("meta {} {:?}", row.get::<_, String>(0)?, row.get_ref(1)?))).unwrap();
+        out.extend(rows.collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        out
+    }
+
+    /// Põe no índice uma marca que só um índice refeito ou esvaziado perderia.
+    fn mark_the_index(dir: &Path) {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().execute("INSERT INTO search_meta(key, value) VALUES ('sentinel', 1)", []).unwrap();
+    }
+
+    /// Se a marca de `mark_the_index` segue no índice.
+    fn index_is_marked(dir: &Path) -> bool {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().query_row("SELECT count(*) FROM search_meta WHERE key = 'sentinel'", [], |row| row.get::<_, i64>(0)).unwrap() == 1
+    }
+
+    /// Refaz o índice inteiro do mapa em `dir`, como a montagem o faz.
+    fn rebuild_the_index(dir: &Path) {
+        let mut db = open_existing(&model_path(dir)).unwrap();
+        db.write(|tx| rebuild(tx, &languages())).unwrap();
+    }
+
+    #[test]
+    fn saving_the_history_of_one_file_does_not_empty_the_index_and_the_next_search_finds_the_commit_word() {
+        let dir = two_files();
+        let model = model_path(dir.path());
+        mark_the_index(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
+
+        assert!(index_is_marked(dir.path()), "the write left the index as it was");
+        let total = id_of_line(dir.path(), 1);
+        let db = open_existing(&model).unwrap();
+        assert!(made_in(db.conn(), &languages()).unwrap(), "the languages of the index are still there");
+        let listed: i64 = db.conn().query_row("SELECT count(*) FROM decl_lengths", [], |row| row.get(0)).unwrap();
+        assert_eq!(listed, 3, "no declaration left the index");
+        drop(db);
+
+        let found = candidates_at(&model, "desconto", "", &languages(), any_path).unwrap();
+        assert!(found.ids().contains(&total), "the word only the commit title has finds the declaration: {:?}", found.ids());
+        assert!(index_is_marked(dir.path()), "the search did not redo the index either");
+    }
+
+    #[test]
+    fn the_index_after_saving_a_history_is_the_one_a_full_rebuild_makes() {
+        let dir = two_files();
+        let model = model_path(dir.path());
+        let before = index_dump(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
+        store::save_lineage_at(&model, &history_of("src/b.rs", "pagar", "c2", "estorna o pagamento")).unwrap();
+        let mut review = history_of("src/a.rs", "total", "c3", "arredonda o total");
+        review.declarations[0].comments = vec![DeclComment { pr: 5, commit: "c3".into(), body: "falta tratar o reembolso".into() }];
+        store::save_lineage_at(&model, &review).unwrap();
+        let incremental = index_dump(dir.path());
+        assert_ne!(incremental, before, "the history changed the index");
+
+        rebuild_the_index(dir.path());
+        assert_eq!(incremental, index_dump(dir.path()));
+    }
+
+    #[test]
+    fn saving_the_history_of_several_files_at_once_refreshes_the_index_as_a_full_rebuild_does() {
+        let dir = two_files();
+        let model = model_path(dir.path());
+        mark_the_index(dir.path());
+        store::save_lineages_at(
+            &model,
+            &[history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa"), history_of("src/b.rs", "pagar", "c2", "estorna o pagamento")],
+        )
+        .unwrap();
+        assert!(index_is_marked(dir.path()));
+        for word in ["desconto", "estorna"] {
+            let found = candidates_at(&model, word, "", &languages(), any_path).unwrap();
+            assert_eq!(found.ids().len(), 1, "{word}: {:?}", found.ids());
+        }
+        let incremental = index_dump(dir.path());
+        rebuild_the_index(dir.path());
+        assert_eq!(incremental, index_dump(dir.path()));
+    }
+
+    #[test]
+    fn an_index_already_emptied_stays_emptied_when_a_history_is_saved() {
+        let dir = tempdir().unwrap();
+        let map = json!({"modules": [{"path": "src/a.rs", "declarations": [
+            {"kind": "function", "name": "total", "line": 1, "end_line": 3, "signature": "fn total()"}
+        ]}]});
+        store::write_text(dir.path(), &map.to_string()).unwrap();
+        let model = model_path(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto")).unwrap();
+        let db = open_existing(&model).unwrap();
+        assert!(!made_in(db.conn(), &languages()).unwrap(), "no languages: the first search makes the index");
+        let indexed_docs: i64 = db.conn().query_row("SELECT count(*) FROM decl_lengths", [], |row| row.get(0)).unwrap();
+        assert_eq!(indexed_docs, 0);
+        drop(db);
+        let found = candidates_at(&model, "desconto", "", &languages(), any_path).unwrap();
+        assert_eq!(found.ids(), [id_of_line(dir.path(), 1)], "the search that redoes the index finds the commit word");
+    }
+
+    #[test]
+    fn a_search_made_while_a_batch_of_histories_is_being_written_answers_with_what_is_stored() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = two_files();
+        let model = model_path(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
+        let total = id_of_line(dir.path(), 1);
+        let found = candidates_at(&model, "desconto", "", &languages(), any_path).unwrap();
+        assert_eq!(found.ids(), [total], "the index is made and holds the stored history");
+
+        let (inside_tx, inside_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let writer = {
+            let model = model.clone();
+            std::thread::spawn(move || {
+                let mut db = open_existing(&model).unwrap();
+                // A gravação de um lote: a trava de gravação fica com ela até o fim.
+                db.write(|_| {
+                    inside_tx.send(()).unwrap();
+                    Ok(release_rx.recv_timeout(Duration::from_secs(60)).is_ok())
+                })
+                .unwrap()
+            })
+        };
+        inside_rx.recv_timeout(Duration::from_secs(60)).expect("the batch is being written");
+
+        let during = candidates_at(&model, "desconto", "", &languages(), any_path);
+        release_tx.send(()).unwrap();
+        assert!(writer.join().unwrap(), "the search ended before the batch was released");
+        assert_eq!(during.expect("the search answers while the batch is being written").ids(), [total]);
+    }
+
+    #[test]
+    fn the_callers_of_a_declaration_are_the_names_of_who_uses_it_and_not_itself() {
+        let dir = two_of_the_same_name();
+        let callers = indexed_terms(dir.path(), 10, "callers");
+        for name in ["fechar", "conferir"] {
+            assert!(callers.contains(&name.to_string()), "{name} in {callers:?}");
+        }
+        assert!(!callers.contains(&"total".to_string()), "a call from itself is not a caller: {callers:?}");
+        assert_eq!(indexed_terms(dir.path(), 1, "callers"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_word_only_in_a_signature_puts_that_declaration_in_the_base_list() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/relogio.rs", "declarations": [
+                {"kind": "function", "name": "agora", "line": 1, "signature": "pub fn agora() -> Timestamp"}]},
+            {"path": "src/pedido.rs", "declarations": [
+                {"kind": "function", "name": "gravar", "line": 1, "signature": "pub fn gravar()"}]}
+        ]}));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let words = Normalizer::new(&languages()).query("timestamp");
+        let base: Vec<i64> = base_list(db.conn(), &words, &[]).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(base, vec![id_of(dir.path(), "agora")]);
+    }
+
+    #[test]
+    fn a_fresh_map_has_no_case_free_name_index() {
+        let dir = saved(LARGER);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let found: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'decls_name_nocase'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(found, 0);
+    }
+
+    /// O mapa de um contrato e da implementação dele, em arquivos separados,
+    /// com a história de quatro commits.
+    fn contract_map() -> Value {
+        json!({
+          "modules": [
+            {"path": "src/pay/port.rs", "declarations": [
+              {"kind": "trait", "name": "PaymentPort", "line": 1, "end_line": 4, "signature": "pub trait PaymentPort",
+               "doc": "Cobra o pedido.", "members": ["src/pay/port.rs:2:charge", "src/pay/port.rs:3:LIMIT"]},
+              {"kind": "method", "name": "charge", "line": 2, "end_line": 2, "signature": "fn charge(&self, total: u32)",
+               "owner": ["PaymentPort"], "implemented_by": ["src/pay/card.rs:3:charge"]},
+              {"kind": "constant", "name": "LIMIT", "line": 3, "end_line": 3, "owner": ["PaymentPort"]}
+            ]},
+            {"path": "src/pay/card.rs", "declarations": [
+              {"kind": "struct", "name": "CardGateway", "line": 1, "end_line": 1},
+              {"kind": "method", "name": "charge", "line": 3, "end_line": 9, "signature": "fn charge(&self, total: u32)",
+               "owner": ["CardGateway"], "contract": ["PaymentPort"], "body_comment": "manda ao banco do cartão",
+               "implements": ["src/pay/port.rs:2:charge"]}
+            ]}
+          ],
+          "history": {
+            "paths": ["src/pay/card.rs", "src/pay/port.rs"],
+            "commits": [
+              {"id": "c1", "at": 100, "title": "Primeiro cartão", "added": [0, 1]},
+              {"id": "c2", "at": 300, "title": "Cartão com parcela", "changed": [0]},
+              {"id": "c3", "at": 200, "title": "Limite do cartão", "changed": [0]},
+              {"id": "c4", "at": 400, "title": "Cartão sem juros", "changed": [0]}
+            ]
+          }
+        })
+    }
+
+    /// Cada candidato leva o que o mapa guarda: o tipo, o nome, o caminho, as
+    /// linhas, a assinatura e a documentação.
+    #[test]
+    fn each_candidate_carries_the_kind_the_name_the_path_the_lines_the_signature_and_the_documentation() {
+        let dir = saved_json(&contract_map());
+        let found = candidates(dir.path(), "charge PaymentPort", "cobrar o pedido no cartão", &languages(), any_path).unwrap();
+        assert_eq!(found.candidates.len(), 5, "every declaration of the whole list is a candidate: {found:?}");
+
+        let port = found.candidates.iter().find(|c| c.name == "PaymentPort").unwrap();
+        assert_eq!((port.kind.as_str(), port.path.as_str()), ("trait", "src/pay/port.rs"));
+        assert_eq!((port.line, port.end_line), (1, 4));
+        assert_eq!(port.signature, "pub trait PaymentPort");
+        assert_eq!(port.documentation, "Cobra o pedido.");
+
+        let card = found.candidates.iter().find(|c| c.name == "charge" && c.path == "src/pay/card.rs").unwrap();
+        assert_eq!((card.kind.as_str(), card.line, card.end_line), ("method", 3, 9));
+        assert_eq!(card.signature, "fn charge(&self, total: u32)");
+
+        let shown = declarations(dir.path(), &[card.id, 999]).unwrap();
+        assert_eq!(shown, vec![card.clone()], "an id the map does not have is left out");
+    }
+
+    /// A declaração de teste nunca é candidata da busca com filtro: nem a de
+    /// um arquivo de teste nem a escrita no trecho de teste de outro arquivo,
+    /// por nenhuma das quatro listas. A busca sem filtro ainda acha o arquivo
+    /// de teste pelo pedaço do nome.
+    #[test]
+    fn a_test_declaration_is_never_a_filter_candidate() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/pedido.rs", "test_lines": [[8, 20]], "declarations": [
+                {"kind": "function", "name": "gravar_pedido", "line": 1, "end_line": 5,
+                 "signature": "pub fn gravar_pedido()", "doc": "Grava o pedido."},
+                {"kind": "function", "name": "grava_o_pedido_no_teste", "line": 10, "end_line": 14,
+                 "signature": "fn grava_o_pedido_no_teste()", "doc": "Grava o pedido."}]},
+            {"path": "tests/pedido_test.rs", "declarations": [
+                {"kind": "function", "name": "gravar_pedido_de_teste", "line": 1, "end_line": 4,
+                 "signature": "fn gravar_pedido_de_teste()", "doc": "Grava o pedido."}]}
+        ]}));
+        let found = candidates(dir.path(), "gravar pedido", "gravar o pedido", &languages(), any_path).unwrap();
+        let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["gravar_pedido"], "{found:?}");
+        assert_eq!(found.ids(), vec![id_of(dir.path(), "gravar_pedido")], "{found:?}");
+        assert!(paths(dir.path(), "gravar_pedido_de_teste").contains(&"tests/pedido_test.rs".to_string()));
+    }
+
+    /// Os candidatos da busca com admissão são só dos arquivos que ela deixa
+    /// entrar: a pasta pedida, mesmo com as declarações mais bem postas de
+    /// fora dela, traz todas as suas e nenhuma de fora; e a que tem menos
+    /// traz só as que tem.
+    #[test]
+    fn the_candidates_are_only_from_the_admitted_files() {
+        let outside = |name: &'static str| (name, "pagar o pedido do cliente");
+        let inside = |name: &'static str| (name, "pedido");
+        let decls_out: Vec<(&str, &str)> = vec![outside("pagar_pedido_a"), outside("pagar_pedido_b"), outside("pagar_pedido_c")];
+        let decls_in: Vec<(&str, &str)> = vec![inside("pedido_um"), inside("pedido_dois"), inside("pedido_tres")];
+        let dir = saved(&[
+            ("src/fora/a.rs", "", &decls_out),
+            ("src/dentro/x.rs", "", &decls_in),
+            ("src/dentro/vazio.rs", "", &[("nada_a_ver", "outro assunto")]),
+        ]);
+        let model = model_path(dir.path());
+        let in_folder = |path: &str| path.starts_with("src/dentro/");
+        let paths_of = |found: &FilterCandidates| found.candidates.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+
+        let open = candidates_at(&model, "pagar pedido", "", &languages(), any_path).unwrap();
+        assert!(paths_of(&open).iter().any(|path| path.starts_with("src/fora/")), "the premise: the best ones are outside: {open:?}");
+
+        let scoped = candidates_at(&model, "pagar pedido", "", &languages(), in_folder).unwrap();
+        assert_eq!(scoped.candidates.len(), 3, "the folder brings all of its own: {scoped:?}");
+        assert!(paths_of(&scoped).iter().all(|path| in_folder(path)), "{scoped:?}");
+        let whole = declarations(dir.path(), &scoped.ids()).unwrap();
+        assert!(whole.iter().all(|c| in_folder(&c.path)), "the whole list keeps only the admitted: {whole:?}");
+
+        let few = candidates_at(&model, "pagar pedido", "", &languages(), |path: &str| path == "src/dentro/x.rs").unwrap();
+        assert_eq!(few.candidates.len(), 3, "{few:?}");
+        assert!(paths_of(&few).iter().all(|path| path == "src/dentro/x.rs"), "{few:?}");
+
+        let none = candidates_at(&model, "pagar pedido", "", &languages(), |_: &str| false).unwrap();
+        assert!(none.candidates.is_empty(), "{none:?}");
+        let all = candidates_at(&model, "pagar pedido", "", &languages(), any_path).unwrap();
+        assert_eq!(all.candidates.len(), 6, "admitting everything is the search of before: {all:?}");
+    }
+
+    /// O parâmetro escrito no cabeçalho do tipo, que o scan grava com o tipo
+    /// de declaração próprio dele, não é candidato: nem o que a assinatura do
+    /// tipo traz, nem o que o teto dela cortou. O campo escrito no corpo do
+    /// tipo continua candidato, e o arquivo continua achado pelo nome do
+    /// parâmetro.
+    #[test]
+    fn a_parameter_written_in_the_header_of_its_owner_is_never_a_filter_candidate() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/Validator.cs", "declarations": [
+                {"kind": "class", "name": "BlockingValidator", "line": 1, "end_line": 9,
+                 "signature": "public sealed class BlockingValidator(string slugOwner, string reason"},
+                {"kind": "parameter", "name": "slugOwner", "line": 1, "end_line": 1, "signature": "string slugOwner",
+                 "owner": ["BlockingValidator"]},
+                {"kind": "parameter", "name": "blockedSlug", "line": 1, "end_line": 1, "signature": "string blockedSlug",
+                 "owner": ["BlockingValidator"]},
+                {"kind": "field", "name": "slugCache", "line": 3, "end_line": 3,
+                 "signature": "private readonly string slugCache", "owner": ["BlockingValidator"]}
+            ]}
+        ]}));
+        let found = candidates(dir.path(), "slug", "", &languages(), any_path).unwrap();
+        let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"slugCache") && names.contains(&"BlockingValidator"), "{names:?}");
+        assert!(!names.contains(&"slugOwner") && !names.contains(&"blockedSlug"), "{names:?}");
+        assert_eq!(paths(dir.path(), "blocked slug"), ["src/Validator.cs"]);
+    }
+
+    /// A palavra aprendida soma peso, mas a declaração que só ela acha fica
+    /// atrás da que casa pelo nome, mesmo quando o nome comprido dá a esta
+    /// uma nota menor.
+    #[test]
+    fn a_learned_word_alone_does_not_pass_a_declaration_whose_name_matches() {
+        let named = "sobra_do_caixa_do_mes_anterior_ja_consolidada_no_fechamento";
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/rounds.rs", "declarations": [
+                {"kind": "function", "name": "collect_leftover", "line": 1, "end_line": 5}]},
+            {"path": "src/cash.rs", "declarations": [
+                {"kind": "function", "name": named, "line": 1, "end_line": 5}]}
+        ]}));
+        let model = model_path(dir.path());
+        let words = Normalizer::new(&languages()).query("sobra");
+        let base = |dir: &Path| -> Vec<i64> {
+            let db = open_existing(&model_path(dir)).unwrap();
+            base_list(db.conn(), &words, &[]).unwrap().into_iter().map(|(id, _)| id).collect()
+        };
+        assert_eq!(base(dir.path()), vec![id_of(dir.path(), named)]);
+
+        map_glossary::record_search(&model, "s1", "sobra", &languages(), &[]).unwrap();
+        let wait = std::time::Duration::from_secs(1);
+        let marks = map_glossary::confirm_edit(&model, "s1", "src/rounds.rs", &[(2, 2)], &languages(), wait).unwrap();
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        assert_eq!(base(dir.path()), vec![id_of(dir.path(), named), id_of(dir.path(), "collect_leftover")]);
+    }
+
+    #[test]
+    fn the_links_give_the_methods_of_a_type_and_the_implementations_of_a_contract_method() {
+        let dir = saved_json(&contract_map());
+        let (port, contract) = (id_of(dir.path(), "PaymentPort"), id_of(dir.path(), "LIMIT") - 1);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let implementation: i64 = db
+            .conn()
+            .query_row("SELECT rowid FROM decls WHERE name = 'charge' AND file = 'src/pay/card.rs'", [], |row| row.get(0))
+            .unwrap();
+        let found = links(dir.path(), &[port, contract]).unwrap();
+        assert_eq!(found[&port].kind, "trait");
+        assert_eq!(found[&port].methods, vec![contract], "the constant is a member, not a method");
+        assert_eq!(found[&contract].path, "src/pay/port.rs");
+        assert_eq!(found[&contract].implementations, vec![(implementation, "src/pay/card.rs".to_string())]);
+    }
+
+    /// O método de contrato cumprido pelo cartão, longe dele, e por dois
+    /// dublês de teste: um no trecho de teste do próprio arquivo, de caminho
+    /// igual ao dele, e outro num arquivo de teste. As ligações só trazem o
+    /// cartão, e é ele que o método puxa quando nenhuma implementação está
+    /// entre os candidatos, mesmo com o caminho do dublê mais parecido.
+    #[test]
+    fn a_test_double_is_never_the_implementation_a_contract_method_pulls() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/pay/port.rs", "test_lines": [[10, 20]], "declarations": [
+                {"kind": "method", "name": "charge", "line": 2, "end_line": 2, "signature": "fn charge(&self)",
+                 "owner": ["PaymentPort"],
+                 "implemented_by": ["src/pay/port.rs:12:charge", "tests/fakes.rs:3:charge", "src/bank/card.rs:3:charge"]},
+                {"kind": "method", "name": "charge", "line": 12, "end_line": 14, "signature": "fn charge(&self)",
+                 "owner": ["FakeGateway"], "implements": ["src/pay/port.rs:2:charge"]}]},
+            {"path": "tests/fakes.rs", "declarations": [
+                {"kind": "method", "name": "charge", "line": 3, "end_line": 5, "signature": "fn charge(&self)",
+                 "owner": ["FakeCard"], "implements": ["src/pay/port.rs:2:charge"]}]},
+            {"path": "src/bank/card.rs", "declarations": [
+                {"kind": "method", "name": "charge", "line": 3, "end_line": 9, "signature": "fn charge(&self)",
+                 "owner": ["CardGateway"], "implements": ["src/pay/port.rs:2:charge"]}]}
+        ]}));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let at = |file: &str, line: i64| -> i64 {
+            db.conn()
+                .query_row("SELECT rowid FROM decls WHERE file = ?1 AND line = ?2", params![file, line], |row| row.get(0))
+                .unwrap()
+        };
+        let (contract, card) = (at("src/pay/port.rs", 2), at("src/bank/card.rs", 3));
+        let found = links(dir.path(), &[contract]).unwrap();
+        assert_eq!(found[&contract].implementations, vec![(card, "src/bank/card.rs".to_string())]);
+        let picks = crate::domain::map_select::select(&[contract], &[], &found);
+        let pulled: Vec<i64> = picks
+            .iter()
+            .filter(|pick| pick.source == crate::domain::map_select::Source::Pulled)
+            .map(|pick| pick.id)
+            .collect();
+        assert_eq!(pulled, [card]);
+    }
+
+    #[test]
+    fn the_name_list_finds_a_word_of_the_query_inside_a_glued_name() {
+        let dir = saved(LARGER);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let hits = name_hits(db.conn(), "pagamento de pedido").unwrap();
+        let named = |hit: &NameHits| -> Vec<String> {
+            let mut names: Vec<String> = hit
+                .names
+                .iter()
+                .map(|(id, _)| {
+                    db.conn().query_row("SELECT name FROM decls WHERE rowid = ?1", [id], |row| row.get(0)).unwrap()
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(hits.len(), 2, "the three-letter word looks for no name");
+        assert_eq!(named(&hits[0]), ["estornarPagamento"]);
+        // O nome do arquivo escrito por máquina fica fora do índice.
+        assert_eq!(named(&hits[1]), ["buscarPedido", "listarPedidos", "pagarPedido"]);
+        assert_eq!(hits[0].word_chars, 9);
+        assert_eq!(hits[0].names[0].1, "estornarpagamento".chars().count());
+    }
+
+    /// Na lista de todos os campos, os textos fixos de uma declaração contam
+    /// como um campo só: a marca do texto não muda o peso da palavra, e o
+    /// texto mais curto pesa mais. Com uma marca por campo, o texto de erro,
+    /// que quase nenhuma declaração tem, ficava com a média perto de zero, e a
+    /// declaração do erro curto vinha atrás da do texto comum mais longo.
+    #[test]
+    fn a_short_error_text_weighs_like_any_text_of_its_size_in_the_list_of_every_field() {
+        let module = |path: &str, name: &str, kind: &str, value: &str| {
+            json!({"path": path,
+                   "declarations": [{"kind": "function", "name": name, "line": 1, "end_line": 5,
+                                     "signature": format!("fn {name}()")}],
+                   "texts": [{"line": 3, "kind": kind, "value": value, "owner": name}]})
+        };
+        let mut modules = vec![
+            module("src/baixa.rs", "baixar", "error", "estoque vazio"),
+            module("src/aviso.rs", "avisar", "text", "estoque em falta agora"),
+        ];
+        // Oito declarações com um texto comum de quatro palavras, sem erro:
+        // a média do texto comum é 3,6 palavras, e a do erro, 0,2.
+        for n in 0..8 {
+            modules.push(module(&format!("src/outro{n}.rs"), &format!("fazer{n}"), "text", "algo bem diferente aqui"));
+        }
+        let dir = saved_json(&json!({ "modules": modules }));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        // Só a lista de tudo e a dos arquivos acham a palavra; a de tudo põe
+        // primeiro a declaração do erro curto.
+        let every = sources_near(db.conn(), "estoque", "", &languages(), &Near::none()).unwrap().everything;
+        assert_eq!(every, vec![id_of(dir.path(), "baixar"), id_of(dir.path(), "avisar")]);
+    }
+
+    /// O texto fixo escrito num método conta também para o tipo que o traz,
+    /// como a chamada: o tipo cujo método escreve o texto mais curto com a
+    /// palavra vem à frente das funções dos outros arquivos, de texto mais
+    /// longo. Só com o método, o tipo ficava para depois delas, trazido
+    /// apenas pela lista dos arquivos, e a pergunta pela mensagem não o
+    /// achava entre os primeiros.
+    #[test]
+    fn a_text_written_in_a_method_also_counts_for_the_type_that_contains_it() {
+        let text = |line: u64, value: &str, owner: &str| json!({"line": line, "kind": "text", "value": value, "owner": owner});
+        let mut modules = vec![json!({"path": "src/pedidos.rs",
+            "declarations": [
+                {"kind": "class", "name": "Pedidos", "line": 1, "end_line": 20, "signature": "pub struct Pedidos"},
+                {"kind": "method", "name": "gravar", "line": 3, "end_line": 10, "signature": "fn gravar(&self)",
+                 "owner": ["Pedidos"]},
+                {"kind": "function", "name": "resumir", "line": 22, "end_line": 30, "signature": "fn resumir()"}],
+            "texts": [text(5, "fornecedor bloqueado", "gravar"),
+                      text(25, "total do dia somado por loja com desconto frete imposto taxa e troco devolvido", "resumir")]})];
+        // Três funções de outros arquivos com a palavra num texto de quatro
+        // palavras: o arquivo delas pesa mais que o dos pedidos, cujo texto
+        // inteiro é longo.
+        for n in 1..=3 {
+            modules.push(json!({"path": format!("src/aviso{n}.rs"),
+                "declarations": [{"kind": "function", "name": format!("avisar{n}"), "line": 1, "end_line": 5,
+                                  "signature": format!("fn avisar{n}()")}],
+                "texts": [text(3, "fornecedor em falta hoje", &format!("avisar{n}"))]}));
+        }
+        let dir = saved_json(&json!({ "modules": modules }));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let whole = sources_near(db.conn(), "fornecedor", "", &languages(), &Near::none()).unwrap().whole();
+        let id = |name: &str| id_of(dir.path(), name);
+        assert_eq!(
+            whole,
+            vec![id("Pedidos"), id("avisar1"), id("gravar"), id("avisar2"), id("avisar3"), id("resumir")],
+            "{whole:?}"
+        );
+    }
+
+    /// A pergunta da busca com filtro leva só a raiz da língua do texto quando
+    /// ela acha algo no índice: o plural `commands` põe a declaração que
+    /// escreve `commands` à frente da que escreve `command`. A consulta
+    /// agrupada lê o começo da palavra (`command*`) e por isso traz a do
+    /// singular também, mas atrás. O singular `command` acha as duas, porque o
+    /// índice guarda as duas raízes de `commands`.
+    #[test]
+    fn a_plural_word_of_the_filter_question_puts_the_declaration_that_writes_the_plural_ahead_of_the_singular() {
+        let dir = saved(&[
+            ("src/plural.rs", "", &[("varios", "Runs the commands of the queue")]),
+            ("src/singular.rs", "", &[("unico", "Runs one command of the queue")]),
+            ("src/outro.rs", "", &[("outro", "Draws the page")]),
+        ]);
+        let (plural, singular) = (id_of(dir.path(), "varios"), id_of(dir.path(), "unico"));
+        let found = candidates(dir.path(), "commands", "", &languages(), any_path).unwrap();
+        let at = |id: i64| found.ids().iter().position(|seen| *seen == id);
+        assert_eq!(at(plural), Some(0), "{found:?}");
+        assert!(at(singular) > at(plural), "the singular comes behind the plural: {found:?}");
+        assert!(!found.ids().contains(&id_of(dir.path(), "outro")), "the unrelated declaration stays out: {found:?}");
+        let mut both = candidates(dir.path(), "command", "", &languages(), any_path).unwrap().ids();
+        both.sort_unstable();
+        assert_eq!(both, vec![plural.min(singular), plural.max(singular)]);
+    }
+
+    /// Duas palavras da pergunta que dividem uma forma contam essa forma uma
+    /// vez só: a declaração que só a tem (`simulação`, com a forma `simul` das
+    /// duas palavras) não passa à frente da que tem a outra palavra da
+    /// pergunta (`pasta`) por causa da contagem em dobro.
+    #[test]
+    fn two_words_of_the_filter_question_with_a_shared_form_weigh_it_once() {
+        let dir = saved(&[
+            ("src/pasta.rs", "", &[("primeira", "pasta")]),
+            ("src/simular.rs", "", &[("segunda", "simulação")]),
+        ]);
+        let found = candidates(dir.path(), "simula simulação pasta", "", &languages(), any_path).unwrap();
+        let (first, second) = (id_of(dir.path(), "primeira"), id_of(dir.path(), "segunda"));
+        assert_eq!(found.ids(), vec![first, second], "{found:?}");
+    }
+}

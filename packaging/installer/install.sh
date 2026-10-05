@@ -7,7 +7,6 @@
 #
 # Layout instalado (gerenciado pelo apt, removível com `sudo apt remove mustard`):
 #   /usr/lib/mustard/bin/        binários reais
-#   /usr/lib/mustard/templates/  a carga do `mustard init`
 #   /usr/bin/mustard, …          symlinks no PATH (criados pelo pacote)
 #
 # Uso:
@@ -436,6 +435,21 @@ echo "==> Instalando o Mustard…"
 # O caminho absoluto faz o apt tratar como arquivo local e puxar as dependências.
 $SUDO $APT_ENV apt-get install -y "$DEB" </dev/null
 
+# --- a pasta de moldes antiga ------------------------------------------------
+# A primeira versão deste instalador copiava os binários e a pasta de moldes
+# para ~/.mustard (bin/ e templates/). Nenhum programa lê mais essa pasta, e
+# nada a apagava: ela sai aqui, só nesse lugar. A pasta que o .deb instalava,
+# em /usr/lib/mustard, o próprio dpkg tira na atualização. Com sudo, a pasta é
+# a de quem chamou, e não a do root.
+OLD_HOME="${HOME:-}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && command -v getent >/dev/null 2>&1; then
+  OLD_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+fi
+if [ -n "$OLD_HOME" ] && [ -d "$OLD_HOME/.mustard/templates" ]; then
+  echo "==> Apagando a pasta de moldes antiga em $OLD_HOME/.mustard/templates"
+  rm -rf "$OLD_HOME/.mustard/templates"
+fi
+
 # --- opcional: prepara um projeto -------------------------------------------
 INIT_RAN=0
 if [ -n "$TARGET" ]; then
@@ -457,8 +471,8 @@ if [ -n "$TARGET" ]; then
   else
     echo "==> Rodando 'mustard init' em $TARGET"
   fi
-  # `set -e` mataria o script inteiro se o init falhasse (templates fora do
-  # lugar, alvo sem permissão de escrita, RTK ausente) — e o usuário sairia com
+  # `set -e` mataria o script inteiro se o init falhasse (alvo sem permissão
+  # de escrita, RTK ausente) — e o usuário sairia com
   # status != 0 logo depois de um apt que DEU CERTO, sem ler uma palavra sobre o
   # plugin, que é justamente o passo que este trabalho existe para não perder.
   # Dentro de um `if`, a falha vira desvio em vez de morte súbita.

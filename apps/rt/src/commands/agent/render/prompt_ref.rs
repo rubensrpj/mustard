@@ -27,7 +27,7 @@ mod tests {
     /// O separador entre as partes é o que impede que uma divisão diferente
     /// das mesmas letras caia na mesma chave.
     #[test]
-    fn a_divisao_das_partes_muda_a_chave() {
+    fn splitting_the_parts_changes_the_key() {
         assert_ne!(fnv1a64(&["ab", "c"]), fnv1a64(&["a", "bc"]));
         assert_eq!(fnv1a64(&["ab", "c"]), fnv1a64(&["ab", "c"]));
     }

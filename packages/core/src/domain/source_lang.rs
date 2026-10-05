@@ -1,48 +1,30 @@
-//! `source_lang` — map source file paths to programming languages, and decide
-//! whether a target (a set of paths) is one the JS/TS-family gates can reason
-//! about.
+//! `source_lang` — map source file paths to programming languages.
 //!
-//! ## Why this module exists
-//!
-//! Two Mustard gates were built around JS/TS conventions and emit GUARANTEED
-//! noise when pointed at a non-JS/TS subproject:
-//!
-//! - **`dependency-precheck`** extracts symbols with a JSX/`import {}` scanner
-//!   and greps for `export …` / `pub …` in `.ts/.tsx/.js/.jsx/.rs/.vue/.svelte`
-//!   files ONLY. A C# spec never matches (there is no `.cs` in the walk and no
-//!   C# `public class` in the needles), so every C# symbol is reported
-//!   "missing" — and `List<Payable>` lexes as a `<Payable>` JSX tag, tagged
-//!   `jsx`. The verdict is a false positive by construction.
-//! - **`wave-size-check`** derives a per-wave `layerCount` from folder roles and
-//!   flags `multi-layer` on any cross-layer wave. That signal is only meaningful
-//!   where the role vocabulary was tuned (JS/TS); elsewhere it fires on every
-//!   intrinsically cross-layer backend feature.
-//!
-//! This module is the SINGLE owner of the "what language is this target, and
-//! can those gates reason about it?" decision, so both gates loosen
-//! consistently instead of each re-deriving it (SRP + DRY).
+//! This module is the SINGLE owner of the "what language is this path, and
+//! what languages does a set of paths involve?" decision, so every caller asks
+//! the same question the same way instead of each re-deriving it.
 //!
 //! ## Signals
 //!
-//! The primary signal is the file EXTENSION — always present, unambiguous, and
-//! exactly the unit the precheck's grep keys on. The repo model's detected
-//! stacks (framework → registry [`StackDef::language`]) corroborate it so an
-//! extension-less path set still resolves under a scanned project. Both are
-//! fail-open: an unknown extension, a missing model, or a parse error
-//! contributes nothing rather than a wrong language.
+//! The primary signal is the file EXTENSION — always present and unambiguous.
+//! The repo model's detected stacks (framework → registry
+//! [`StackDef::language`]) corroborate it so an extension-less path set still
+//! resolves under a scanned project. Both are fail-open: an unknown extension,
+//! a missing model, or a parse error contributes nothing rather than a wrong
+//! language.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::domain::scan::{read_projects, Project};
+use crate::domain::scan::Project;
 use crate::domain::vocabulary::stacks::{StackRegistry, DEFAULT_STACKS_NAME};
 
 /// Canonical `(extension, language)` table — DATA, not logic. Lowercase, no
-/// dot. Unknown extensions resolve to `None` (agnostic floor): the gates must
+/// dot. Unknown extensions resolve to `None` (agnostic floor): callers must
 /// under-claim rather than invent a language. Extended freely without touching
 /// the decision logic below.
 const EXT_LANG: &[(&str, &str)] = &[
-    // JS / TS family — what the precheck extractor + grep understand.
+    // JS / TS family.
     ("ts", "typescript"),
     ("tsx", "typescript"),
     ("mts", "typescript"),
@@ -53,11 +35,8 @@ const EXT_LANG: &[(&str, &str)] = &[
     ("cjs", "javascript"),
     ("vue", "vue"),
     ("svelte", "svelte"),
-    // Rust — greppable by the precheck needles, but the extractor never emits
-    // Rust symbols, so a Rust-only spec has nothing to check (classed foreign).
     ("rs", "rust"),
-    // Backends the gate cannot reason about — presence of any of these (with no
-    // JS/TS alongside) is what makes a target "not understood".
+    // Backends and other languages.
     ("cs", "csharp"),
     ("py", "python"),
     ("go", "go"),
@@ -89,12 +68,6 @@ const EXT_LANG: &[(&str, &str)] = &[
     ("hh", "cpp"),
 ];
 
-/// Languages whose symbol/role conventions the JS/TS-family gates were built
-/// for — the precheck's JSX/import extractor and export grep, and the role
-/// vocabulary the wave-size audit leans on. A target with at least one of these
-/// is "understood"; a target with only foreign languages is not.
-pub(crate) const JS_TS_FAMILY: &[&str] = &["typescript", "javascript", "vue", "svelte"];
-
 /// The lowercase language for `path` by its extension, or `None` when the path
 /// has no extension or an extension outside [`EXT_LANG`]. Tolerates both `/` and
 /// `\` separators (tool targets arrive in both shapes on Windows) and any
@@ -116,17 +89,6 @@ pub(crate) fn language_of_path(path: &str) -> Option<&'static str> {
         .iter()
         .find(|(e, _)| *e == ext)
         .map(|(_, lang)| *lang)
-}
-
-/// The distinct source languages a path set involves, by extension. Non-source
-/// / unknown extensions contribute nothing.
-#[must_use]
-pub(crate) fn languages_of_paths(paths: &[String]) -> BTreeSet<String> {
-    paths
-        .iter()
-        .filter_map(|p| language_of_path(p))
-        .map(str::to_string)
-        .collect()
 }
 
 /// The languages the repo model DETECTED for the projects enclosing `paths` —
@@ -164,30 +126,6 @@ pub(crate) fn detected_languages(paths: &[String], projects: &[Project], project
     langs
 }
 
-/// The distinct languages a target involves — the union of the extension signal
-/// ([`languages_of_paths`]) and the model's detected stacks
-/// ([`detected_languages`]). The one entry point both gates call so their notion
-/// of "the target language" is identical. The model is read (a scan tool
-/// spawn) only when there are paths to attribute.
-#[must_use]
-pub fn resolve_target_languages(paths: &[String], model_path: &Path, project_root: &Path) -> BTreeSet<String> {
-    let mut langs = languages_of_paths(paths);
-    if !paths.is_empty() {
-        langs.extend(detected_languages(paths, &read_projects(model_path), project_root));
-    }
-    langs
-}
-
-/// Whether the JS/TS-family gates can reason about this target: `true` when it
-/// shows NO foreign-language evidence — either no recognised source language at
-/// all (nothing to misread) or at least one [`JS_TS_FAMILY`] language present.
-/// `false` only when the target is affirmatively foreign (one or more source
-/// languages, none of them JS/TS-family) — the case where the gates must loosen.
-#[must_use]
-pub fn target_understood(langs: &BTreeSet<String>) -> bool {
-    langs.is_empty() || langs.iter().any(|l| JS_TS_FAMILY.contains(&l.as_str()))
-}
-
 /// `true` when `dir` is a path-prefix of `file` on SEGMENT boundaries:
 /// `apps/api` is a prefix of `apps/api/x.cs` but not of `apps/apiv2/x.cs`.
 /// Tolerant of `\` separators. An empty `dir` never matches (the repo root is
@@ -205,6 +143,7 @@ fn path_has_prefix(file: &str, dir: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::scan::read_projects;
 
     #[test]
     fn language_of_path_maps_known_extensions() {
@@ -224,57 +163,6 @@ mod tests {
         assert_eq!(language_of_path(".gitignore"), None);
         assert_eq!(language_of_path("LICENSE"), None);
         assert_eq!(language_of_path("data/output.snap"), None);
-    }
-
-    #[test]
-    fn languages_of_paths_collects_distinct() {
-        let files = vec![
-            "backend/App/DTOs/Payable.cs".to_string(),
-            "backend/App/Services/Recur.cs".to_string(),
-            "docs/notes.md".to_string(),
-        ];
-        let langs = languages_of_paths(&files);
-        assert_eq!(langs, BTreeSet::from(["csharp".to_string()]));
-    }
-
-    #[test]
-    fn csharp_only_target_is_not_understood() {
-        let langs = languages_of_paths(&["backend/App/Payable.cs".to_string()]);
-        assert!(!target_understood(&langs), "a C#-only target must not be understood");
-    }
-
-    #[test]
-    fn js_ts_target_is_understood() {
-        let langs = languages_of_paths(&["apps/web/src/Page.tsx".to_string()]);
-        assert!(target_understood(&langs));
-    }
-
-    #[test]
-    fn mixed_target_with_any_js_ts_is_understood() {
-        // A spec touching both a C# file and a TSX file still has real imports
-        // to check — run the gate.
-        let langs = languages_of_paths(&[
-            "backend/App/Payable.cs".to_string(),
-            "apps/web/src/Page.tsx".to_string(),
-        ]);
-        assert!(target_understood(&langs));
-    }
-
-    #[test]
-    fn no_recognised_source_is_understood_no_regression() {
-        // Config/doc-only or extension-less paths carry no foreign evidence — the
-        // gate keeps its historical behaviour rather than suppressing itself.
-        let langs = languages_of_paths(&["docs/plan.md".to_string(), "config.json".to_string()]);
-        assert!(langs.is_empty());
-        assert!(target_understood(&langs));
-    }
-
-    #[test]
-    fn rust_only_target_is_not_understood() {
-        // The precheck extractor never emits Rust symbols, so a Rust-only spec
-        // has nothing to check — classed foreign, the gate declines.
-        let langs = languages_of_paths(&["apps/rt/src/commands/mod.rs".to_string()]);
-        assert!(!target_understood(&langs));
     }
 
     #[test]

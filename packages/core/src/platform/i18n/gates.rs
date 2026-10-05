@@ -11,8 +11,19 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] =
-    &["write_gate", "approval", "change", "workbranch", "base", "command_guard", "install_lock", "clarity", "gate"];
+pub(super) const PREFIXES: &[&str] = &[
+    "write_gate",
+    "code_route",
+    "config_key",
+    "approval",
+    "change",
+    "workbranch",
+    "base",
+    "command_guard",
+    "install_lock",
+    "clarity",
+    "gate",
+];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -68,9 +79,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Consolidation blocked: child {child} returned a red verdict — {message}"
         }
 
-        // Work-branch REFUSAL — the checkout holds another unit's branch with
+        // Work-branch refusal — the checkout holds another unit's branch with
         // uncommitted files, so cutting the second unit here would carry them
-        // off. Said by the `spec-draft` cut, in the project's language.
+        // off. Said by the explicit open, in the project's language.
         // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by
         // `work_branch::BusyCheckout::reason`.
         //
@@ -79,14 +90,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // (`workbranch.busy.census_*`): the remedy differs, so the sentence
         // does.
         ("workbranch.busy.refusal", Locale::PtBr) => {
-            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, com trabalho \
-             NÃO commitado em: {paths}{more}. Criar '{target}' aqui levaria essas edições junto, \
+            "O checkout está na branch '{current}', de outra unidade de trabalho, com trabalho \
+             não commitado em: {paths}{more}. Criar '{target}' aqui levaria essas edições junto, \
              para dentro de outra unidade. Commite ou guarde (`git stash`) esse trabalho antes de \
              abrir a segunda unidade."
         }
         ("workbranch.busy.refusal", Locale::EnUs) => {
-            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, with \
-             UNCOMMITTED work in: {paths}{more}. Cutting '{target}' here would carry those edits \
+            "The checkout is on branch '{current}', which belongs to another work unit, with \
+             uncommitted work in: {paths}{more}. Cutting '{target}' here would carry those edits \
              along into a different unit. Commit or stash (`git stash`) that work before opening \
              the second unit."
         }
@@ -98,15 +109,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // teaches the operator that the refusal is noise. `{current}`/`{target}`
         // are interpolated by `work_branch::BusyCheckout::reason`.
         ("workbranch.busy.unmeasured", Locale::PtBr) => {
-            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, e NÃO consegui \
+            "O checkout está na branch '{current}', de outra unidade de trabalho, e não consegui \
              medir o que há de não commitado ali (o `git status` não respondeu). Criar '{target}' \
              aqui levaria junto qualquer trabalho pendente, para dentro de outra unidade. Commite \
              ou guarde (`git stash`) o que houver — ou conserte o estado do git — antes de abrir a \
              segunda unidade."
         }
         ("workbranch.busy.unmeasured", Locale::EnUs) => {
-            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, and the \
-             uncommitted work there could NOT be measured (`git status` did not answer). Cutting \
+            "The checkout is on branch '{current}', which belongs to another work unit, and the \
+             uncommitted work there could not be measured (`git status` did not answer). Cutting \
              '{target}' here would carry whatever is pending along into a different unit. Commit \
              or stash (`git stash`) whatever is there — or repair the git state — before opening \
              the second unit."
@@ -140,36 +151,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // `work_branch::BusyCheckout::reason`.
         ("workbranch.busy.base_blocked", Locale::PtBr) => {
             "A base '{base}' está atrás de origin/{base}, e avançá-la sobrescreveria trabalho \
-             NÃO commitado seu em: {paths}{more}. Nada foi cortado nem gravado, e nada foi \
+             não commitado seu em: {paths}{more}. Nada foi cortado nem gravado, e nada foi \
              tocado. Guarde esse trabalho (`git stash push -- <caminhos>`), coloque '{base}' em \
              dia (`git pull --ff-only origin {base}`), traga-o de volta (`git stash pop`) e \
              tente de novo."
         }
         ("workbranch.busy.base_blocked", Locale::EnUs) => {
             "The base '{base}' is behind origin/{base}, and advancing it would overwrite \
-             UNCOMMITTED work of yours in: {paths}{more}. Nothing was cut, nothing recorded, \
+             uncommitted work of yours in: {paths}{more}. Nothing was cut, nothing recorded, \
              and nothing touched. Stash that work (`git stash push -- <paths>`), bring '{base}' \
              up to date (`git pull --ff-only origin {base}`), take it back (`git stash pop`) \
              and try again."
-        }
-
-        // Work-branch BASE UNKNOWN — an emergency unit whose base nothing ever
-        // recorded, in a project declaring several it could have been cut from.
-        // Nothing is cut, and the operator is told: the harness used to take the
-        // outermost candidate and mention it on stderr, which a PreToolUse hook
-        // says to nobody (it exits 0). `{target}`/`{candidates}` are
-        // interpolated by the `spec-draft` cut.
-        ("workbranch.base.unknown", Locale::PtBr) => {
-            "Não dá para saber de qual base '{target}' deve sair: este projeto declara várias \
-             candidatas ({candidates}) e nada registrou a escolha, então a branch NÃO foi criada. \
-             Reabra a unidade com a base explícita (--base) — chutar aqui aponta o trabalho para \
-             uma base que ninguém escolheu."
-        }
-        ("workbranch.base.unknown", Locale::EnUs) => {
-            "There is no telling which base '{target}' should be cut from: this project declares \
-             several candidates ({candidates}) and nothing recorded the choice, so the branch was \
-             NOT created. Re-open the unit with an explicit base (--base) — guessing here aims the \
-             work at a base nobody chose."
         }
 
         // The write gate: one message per rule, in the language of
@@ -233,6 +225,62 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The read stopped before the tests: they start on line {line}. To read them, \
              ask for that excerpt with `offset: {line}`."
         }
+        // A leitura inteira de um arquivo grande de código do mapa volta com
+        // as partes dele e o comando que traz só a parte certa. `{parts}` vem
+        // do chamador: `nome começo-fim` de cada parte, separadas por
+        // vírgula, com as duas frases curtas abaixo no fim.
+        ("code_route.whole_read", Locale::PtBr) => {
+            "[Mustard] A leitura inteira de {file} traria {lines} linhas. Leia só a parte que \
+             precisa com `mustard-rt run map slice --file {file} --name <nome>`. Para editar, leia \
+             o trecho com `offset` e `limit`. Partes: {parts}."
+        }
+        ("code_route.whole_read", Locale::EnUs) => {
+            "[Mustard] Reading {file} whole would bring {lines} lines. Read only the part you need \
+             with `mustard-rt run map slice --file {file} --name <name>`. To edit, read the excerpt \
+             with `offset` and `limit`. Parts: {parts}."
+        }
+        // O fim da lista de partes quando ela passa do que a recusa mostra.
+        ("code_route.more_parts", Locale::PtBr) => "e mais {count} em `mustard-rt run map summary --file {file}`",
+        ("code_route.more_parts", Locale::EnUs) => "and {count} more in `mustard-rt run map summary --file {file}`",
+        // Onde começam os testes escritos dentro do arquivo.
+        ("code_route.tests_from", Locale::PtBr) => "testes a partir da linha {line}",
+        ("code_route.tests_from", Locale::EnUs) => "tests from line {line}",
+        // A leitura do arquivo de configuração que guarda a chave do Jev
+        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
+        // o arquivo inteiro, já sem o valor da chave.
+        ("config_key.hidden", Locale::PtBr) => {
+            "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
+             arquivo, com a chave trocada por ***:\n{text}"
+        }
+        ("config_key.hidden", Locale::EnUs) => {
+            "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
+             the file, with the key replaced by ***:\n{text}"
+        }
+        // A busca do terminal em pastas que passaria pelo arquivo com a
+        // chave volta com a opção que o deixa de fora. `{fix}` vem do
+        // chamador, no jeito do programa da busca.
+        ("config_key.swept", Locale::PtBr) => {
+            "[Mustard] Essa busca passa por {file}, que guarda a chave do Jev, e mostraria a chave. \
+             A chave nunca entra na conversa. Rode a mesma busca com {fix} no fim: assim o arquivo \
+             fica de fora."
+        }
+        ("config_key.swept", Locale::EnUs) => {
+            "[Mustard] This search goes through {file}, which holds the Jev key, and would show the \
+             key. The key never enters the conversation. Run the same search with {fix} at the end: \
+             that leaves the file out."
+        }
+        // A ferramenta de busca cujo `glob` alcança o arquivo com a chave,
+        // que ela deixaria de fora sem ele.
+        ("config_key.swept_tool", Locale::PtBr) => {
+            "[Mustard] O `glob` dessa busca alcança {file}, que guarda a chave do Jev, e a busca \
+             mostraria a chave. A chave nunca entra na conversa. Troque o `glob` por `type`, ou \
+             busque sem ele: assim o arquivo fica de fora, como tudo o que o git ignora."
+        }
+        ("config_key.swept_tool", Locale::EnUs) => {
+            "[Mustard] The `glob` of this search reaches {file}, which holds the Jev key, and the \
+             search would show the key. The key never enters the conversation. Use `type` instead \
+             of `glob`, or search without it: that leaves the file out, like everything git ignores."
+        }
 
         // The approval witness: what it tells the assistant after recording
         // the approval, or when nothing was recorded.
@@ -289,19 +337,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The spec {spec} was already approved; nothing to record."
         }
 
-        // O gesto da mudança que parte de um agente: a pergunta, as duas
-        // opções e o que a testemunha diz depois do clique.
-        ("change.question", Locale::PtBr) => {
-            "A onda {wave} diz que o plano dela não funciona e propõe esta mudança: {change} \
-             Aceitar? Aceitando, a rodada grava o que a onda entregou e segue com o plano mudado; \
-             recusando, nada é gravado e a onda fica parada até você dizer o que fazer com ela."
-        }
-        ("change.question", Locale::EnUs) => {
-            "Wave {wave} says its plan does not work and proposes this change: {change} \
-             Accept it? If you accept, the round records what the wave delivered and goes on with \
-             the changed plan; if you decline, nothing is recorded and the wave stays put until \
-             you say what to do with it."
-        }
+        // O gesto da mudança que troca uma decisão do usuário: as duas
+        // opções e o que a testemunha diz depois do clique. O enunciado da
+        // pergunta quem conduz escreve.
         ("change.accept", Locale::PtBr) => "Aceitar",
         ("change.accept", Locale::EnUs) => "Accept",
         ("change.decline", Locale::PtBr) => "Recusar",
@@ -360,6 +398,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.rm_recursive_force", Locale::EnUs) => {
             "deleting a folder by force (`rm` with `-r` and `-f`)"
         }
+        // O caminho permitido, na linha seguinte à do comando: só a pasta no
+        // temporário, que o `clean --path` confere antes de apagar.
+        ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
+            "Para apagar a cópia do projeto ou a pasta de compilação no temporário, rode \
+             `mustard-rt run clean --path <pasta>`: ele confere a pasta antes de apagar."
+        }
+        ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
+            "To delete the project copy or the build folder in the temp directory, run \
+             `mustard-rt run clean --path <folder>`: it checks the folder before deleting it."
+        }
         ("command_guard.force_push", Locale::PtBr) => {
             "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
         }
@@ -382,11 +430,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
         ("command_guard.windows_path_rewritten", Locale::PtBr) => {
             "O destino `{original}` é um caminho do Windows, e o terminal do Bash não entende esse \
-             formato; o comando segue com `{posix}`, a forma que o shell entende."
+             formato. O comando segue com `{posix}`, a forma que o shell entende."
         }
         ("command_guard.windows_path_rewritten", Locale::EnUs) => {
             "The target `{original}` is a Windows path, and the Bash terminal does not understand \
-             that form; the command continues with `{posix}`, the form the shell understands."
+             that form. The command continues with `{posix}`, the form the shell understands."
         }
         ("command_guard.waiting_loop", Locale::PtBr) => {
             "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
@@ -413,16 +461,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `/mustard:upsert` to install it; everything else stays off until then."
         }
         ("base.unmeasured", Locale::PtBr) => {
-            "Não dá para saber de qual branch cortar: este projeto não declara base nenhuma em \
-             `mustard.json#git.flow`, o remoto não respondeu qual é a branch padrão dele e o \
-             checkout não está em branch nenhuma. Diga a base com `--base <branch>` ou declare o \
-             `git.flow`. Nada foi cortado."
+            "Não dá para saber de qual branch cortar. Este projeto não declara base nenhuma em \
+             `mustard.json#git.flow`. O remoto não disse qual é a branch padrão dele, e o checkout \
+             não está em branch nenhuma. Diga a base com `--base <branch>` ou declare o `git.flow`. \
+             Nada foi cortado."
         }
         ("base.unmeasured", Locale::EnUs) => {
-            "There is no branch to cut from: this project declares no base in \
-             `mustard.json#git.flow`, the remote did not answer which its default branch is, and \
-             the checkout is on no branch. Name the base with `--base <branch>` or declare \
-             `git.flow`. Nothing was cut."
+            "There is no branch to cut from. This project declares no base in \
+             `mustard.json#git.flow`. The remote did not say which its default branch is, and the \
+             checkout is on no branch. Name the base with `--base <branch>` or declare `git.flow`. \
+             Nothing was cut."
         }
 
         // Defeitos de clareza de um texto (`domain::clarity`) — cada um é uma
@@ -431,9 +479,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // leva a linha inteira; a mensagem seguinte a uma resposta leva só o
         // erro, o trecho antes da primeira pontuação dessas
         // (`clarity_check::error_of`). Sem parênteses: o tom técnico os
-        // apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`, `{lines}`,
-        // `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm do
-        // chamador.
+        // apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`, `{score}`,
+        // `{min}`, `{found}` e `{expected}` vêm do chamador.
         ("clarity.long_sentence", Locale::PtBr) => {
             "frase com {words} palavras: \"{opening}…\"; diga a mesma ideia em frases curtas"
         }
@@ -450,17 +497,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "{code} é um código interno; diga o assunto pelo nome"
         }
         ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
-        // O texto longo pede um resumo curto, como o da nota de leitura
-        // baixa, e manda o JSON, a tabela ou o documento pedido para a página
-        // avulsa: o chat fica com o resumo.
-        ("clarity.too_long", Locale::PtBr) => {
-            "resposta com {lines} linhas, e o limite é {limit}; faça no chat um resumo curto, e \
-             JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`"
-        }
-        ("clarity.too_long", Locale::EnUs) => {
-            "reply with {lines} lines, and the limit is {limit}; write a short summary in the chat, \
-             and put a requested JSON, table or document on its own page: `mustard-rt run page`"
-        }
         ("clarity.hard_to_read", Locale::PtBr) => {
             "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; faça um \
              resumo curto em palavras simples"
@@ -468,21 +504,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("clarity.hard_to_read", Locale::EnUs) => {
             "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
              write a short summary in plain words"
-        }
-        // A resposta longa e difícil de ler ao mesmo tempo: as duas linhas
-        // acima se juntam nesta, para o pedido de resumo curto não se
-        // repetir.
-        ("clarity.too_long_and_hard_to_read", Locale::PtBr) => {
-            "resposta com {lines} linhas (o limite é {limit}) e difícil de ler: nota {score} no \
-             índice de Flesch (o mínimo é {min}); faça no chat um resumo curto, em palavras \
-             simples, e o JSON, a tabela ou o documento pedido vai para a página avulsa: \
-             `mustard-rt run page`"
-        }
-        ("clarity.too_long_and_hard_to_read", Locale::EnUs) => {
-            "reply with {lines} lines (the limit is {limit}) and hard to read: {score} on the \
-             Flesch reading-ease index (the minimum is {min}); write a short summary in the chat, \
-             in plain words, and put a requested JSON, table or document on its own page: \
-             `mustard-rt run page`"
         }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
@@ -494,12 +515,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "reply in {found}; the language of the project and the user is {expected}; write a \
              summary in {expected}"
         }
+        // O texto que barra o fim de uma resposta fora do idioma do projeto
+        // (`apps/rt/src/hooks/task/clarity_check.rs`): o assistente escreve de
+        // novo no idioma certo, no mesmo turno. Duas frases curtas.
+        // `{found}` e `{expected}` são códigos de idioma, como acima.
+        ("clarity.wrong_language_block", Locale::PtBr) => {
+            "A resposta saiu em {found}, e o idioma do projeto e do usuário é {expected}. \
+             Escreva a resposta de novo em {expected}."
+        }
+        ("clarity.wrong_language_block", Locale::EnUs) => {
+            "The reply came out in {found}, and the language of the project and the user is \
+             {expected}. Write the reply again in {expected}."
+        }
         // A frase curta que a linha escondida da mensagem seguinte leva
         // depois de uma resposta com erro de escrita
         // (`apps/rt/src/hooks/task/clarity_check.rs`), para o assistente
-        // corrigir na resposta seguinte. A resposta não é barrada, e a frase
-        // não aparece na tela. `{errors}` vem do chamador: os erros, separados
-        // por ponto e vírgula.
+        // corrigir na resposta seguinte. Só a resposta fora do idioma é
+        // barrada; a frase não aparece na tela. `{errors}` vem do chamador: os
+        // erros, separados por ponto e vírgula.
         ("clarity.next.head", Locale::PtBr) => "Na última resposta: {errors}.",
         ("clarity.next.head", Locale::EnUs) => "In the last reply: {errors}.",
         // O último item da lista quando há mais erros do que ela mostra.
@@ -522,9 +555,34 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            67,
-            0x23e8_612d_ede2_f27c,
+            71,
+            0x8e59_1182_3aae_d2d6,
         );
+    }
+
+    /// As recusas da leitura inteira e do arquivo com a chave passam na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra. As duas frases curtas que fecham a lista de
+    /// partes existem nos dois idiomas, com as vagas.
+    #[test]
+    fn the_map_route_refusals_read_clearly() {
+        for (key, slots) in [("code_route.more_parts", &["{count}", "{file}"][..]), ("code_route.tests_from", &["{line}"][..])] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert!(pt != "<missing-key>" && en != "<missing-key>" && pt != en, "{key}");
+            assert!(slots.iter().all(|slot| pt.contains(slot) && en.contains(slot)), "{key}");
+        }
+        for (lang, word) in [(Locale::PtBr, "partes"), (Locale::EnUs, "parts")] {
+            for (key, slots) in [
+                ("code_route.whole_read", &[("{file}", "mapa"), ("{lines}", "400"), ("{parts}", word)][..]),
+                ("config_key.hidden", &[("{file}", "mustard"), ("{text}", word)][..]),
+                ("config_key.swept", &[("{file}", "mustard"), ("{fix}", word)][..]),
+                ("config_key.swept_tool", &[("{file}", "mustard")][..]),
+            ] {
+                let text = slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
+        }
     }
 
     /// The messages of the write gate and of the approval witness come from
@@ -539,6 +597,10 @@ mod tests {
             ("write_gate.unreadable_config", &["{file}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
             ("write_gate.read_cut", &["{line}"][..]),
+            ("code_route.whole_read", &["{file}", "{lines}", "{parts}"][..]),
+            ("config_key.hidden", &["{file}", "{text}"][..]),
+            ("config_key.swept", &["{file}", "{fix}"][..]),
+            ("config_key.swept_tool", &["{file}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),
@@ -561,6 +623,8 @@ mod tests {
             ("session.version.drift", &["{stamped}", "{running}"][..]),
             ("session.version.stale", &["{running}", "{installed}"][..]),
             ("session.version.behind", &["{running}", "{plugin}"][..]),
+            ("session.build.missing", &["{head}", "{progress}", "{running}"][..]),
+            ("session.build.behind", &["{compiled}", "{head}", "{progress}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -571,18 +635,26 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
+        // O que aconteceu com a compilação em segundo plano entra no aviso
+        // do programa compilado no lugar de `{progress}`.
+        for key in ["session.build.started", "session.build.in_progress", "session.build.not_started"] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+        }
+        assert_eq!(translate("session.old_hook", Locale::PtBr), "<missing-key>", "o aviso do script de instalação saiu");
         // A pergunta de aprovação da spec, um dos dois gestos em que a
         // testemunha age.
         assert_eq!(translate("approval.question", Locale::PtBr), "Aprovar esta spec?");
         assert_eq!(translate("approval.question", Locale::EnUs), "Approve this spec?");
         assert_eq!(translate("approval.option", Locale::PtBr), "Aprovar");
         assert_eq!(translate("approval.option", Locale::EnUs), "Approve");
-        // O gesto da mudança que parte de um agente: a pergunta leva o código
-        // da mudança, e as duas opções são as do catálogo.
+        // O gesto da mudança que troca uma decisão do usuário: as duas opções
+        // são as do catálogo, e o enunciado da pergunta o catálogo não traz —
+        // quem conduz o escreve com as palavras do usuário.
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let question = translate("change.question", lang);
-            assert!(question.contains("{wave}") && question.contains("{change}"), "{question}");
-            assert!(!question.contains("{code}"), "o código nunca vai no enunciado: {question}");
+            assert_eq!(translate("change.question", lang), "<missing-key>");
         }
         assert_eq!(translate("change.accept", Locale::PtBr), "Aceitar");
         assert_eq!(translate("change.decline", Locale::PtBr), "Recusar");
@@ -602,6 +674,7 @@ mod tests {
         for (key, slots) in [
             ("command_guard.deny", &["{reason}", "{command}"][..]),
             ("command_guard.rm_recursive_force", &[][..]),
+            ("command_guard.rm_recursive_force_instead", &[][..]),
             ("command_guard.force_push", &[][..]),
             ("command_guard.reset_hard", &[][..]),
             ("command_guard.clean_force", &[][..]),
@@ -639,17 +712,20 @@ mod tests {
     /// Os defeitos de clareza e a frase da mensagem seguinte saem do catálogo
     /// nos dois idiomas, cada um com as vagas que o medidor preenche. A frase
     /// abre dizendo que o erro foi na última resposta. O pedido do complemento
-    /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele.
+    /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele. O
+    /// teto de linhas da resposta também saiu, com a linha dele e a que o
+    /// juntava à nota de leitura. O texto que barra a resposta fora do idioma
+    /// do projeto traz o idioma em que ela saiu e o do projeto, e nos dois
+    /// idiomas fica em duas frases curtas.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
             ("clarity.long_sentence", &["{words}", "{opening}"][..]),
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.internal_code", &["{code}"][..]),
-            ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
-("clarity.too_long_and_hard_to_read", &["{lines}", "{limit}", "{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
+            ("clarity.wrong_language_block", &["{found}", "{expected}"][..]),
             ("clarity.next.head", &["{errors}"][..]),
             ("clarity.more", &["{count}"][..]),
         ] {
@@ -666,6 +742,24 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             assert_eq!(translate("clarity.block.head", lang), "<missing-key>", "the complement request left");
             assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
+            for key in ["clarity.too_long", "clarity.too_long_and_hard_to_read"] {
+                assert_eq!(translate(key, lang), "<missing-key>", "the reply line cap left: {key}");
+            }
+        }
+    }
+
+    /// O texto que barra a resposta fora do idioma passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com as vagas trocadas pelos
+    /// códigos de idioma de verdade.
+    #[test]
+    fn the_language_block_reads_clearly() {
+        for (lang, found, expected) in [(Locale::PtBr, "en-US", "pt-BR"), (Locale::EnUs, "pt-BR", "en-US")] {
+            let text = translate("clarity.wrong_language_block", lang)
+                .replace("{found}", found)
+                .replace("{expected}", expected);
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+            assert_eq!(text.matches(". ").count() + 1, 2, "two short sentences: {text}");
         }
     }
 }

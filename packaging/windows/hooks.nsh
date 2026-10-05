@@ -1,12 +1,12 @@
 ; ============================================================================
 ; hooks.nsh — everything the Windows installer does to the machine beyond
-; copying files: the user Path and the templates variable. Included by
+; copying files: the user Path, the plugin step and the removal of the old
+; templates variable. Included by
 ; packaging/windows/mustard.nsi, which decides when each macro runs.
 ;
 ; Installed layout (mustard.nsi writes it; this file depends on it):
 ;
 ;   $INSTDIR\mustard-cli\        scan.exe, mustard*.exe, rtk.exe
-;   $INSTDIR\mustard-templates\  the payload `mustard init` copies
 ;
 ; THE FOLDER NAME `mustard-cli` IS A CONTRACT WITH mustard.nsi. It used to be a
 ; contract with the old desktop-app bundler's Windows config instead, and the two
@@ -18,14 +18,6 @@
 ; into the executable: whatever answers 0.1.47 IS a 0.1.47 binary). Anyone with
 ; no prior install got no command at all. When touching either file, check the
 ; pair: both must name the SAME folder.
-;
-; Templates: `mustard_cli::resolve_templates_dir` tries MUSTARD_TEMPLATES_DIR
-; FIRST, so pointing that variable at the installed folder is enough for the
-; CLI in a terminal, with no reliance on relative layout. That resolution tests
-; `is_dir()` before accepting the variable, so a
-; variable aimed at a missing folder degrades to the layout beside the
-; executable instead of breaking — which is why the wrong path above raised no
-; error at all.
 ;
 ; POR QUE O PATH É EDITADO PELO POWERSHELL, NUNCA PELO NSIS: o NSIS trunca
 ; toda string no seu limite de compilação (1024 na build clássica, 8192 na de
@@ -49,13 +41,13 @@
 ; usuário adiciona a pasta à mão, e nada dele é perdido. O código de saída é
 ; lido e descartado por isso mesmo.
 ;
-; POSTUNINSTALL: remove a variável de templates e, agora com remoção por
-; comparação exata de sufixo no PowerShell (o motivo de antes não remover era
-; a fragilidade de fazê-lo por substring em NSIS), tira do Path só as
-; entradas \mustard-cli.
+; POSTUNINSTALL: agora com remoção por comparação exata de sufixo no
+; PowerShell (o motivo de antes não remover era a fragilidade de fazê-lo por
+; substring em NSIS), tira do Path só as entradas \mustard-cli.
 ;
-; MUSTARD_TEMPLATES_DIR continua escrita pelo NSIS: é um valor curto que o
-; instalador acabou de criar — o perigo do limite não a alcança.
+; MUSTARD_TEMPLATES_DIR: versões anteriores gravavam essa variável de usuário,
+; apontando a pasta de moldes. Nenhum programa a lê mais; a instalação e a
+; desinstalação a apagam, e apagar a que não existe não faz nada.
 ;
 ; Notifica o sistema com WM_SETTINGCHANGE para o ambiente atualizar sem logoff.
 ; ============================================================================
@@ -63,7 +55,8 @@
 !include "WinMessages.nsh"
 
 !macro NSIS_HOOK_POSTINSTALL
-  WriteRegExpandStr HKCU "Environment" "MUSTARD_TEMPLATES_DIR" "$INSTDIR\mustard-templates"
+  ; A variável de moldes que versões anteriores gravaram (ver cabeçalho).
+  DeleteRegValue HKCU "Environment" "MUSTARD_TEMPLATES_DIR"
 
   ; Path de usuário: lido, filtrado e gravado inteiramente DENTRO do
   ; PowerShell — o valor nunca entra numa variável NSIS (ver cabeçalho).
@@ -96,6 +89,7 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; A variável de moldes que versões anteriores gravaram (ver cabeçalho).
   DeleteRegValue HKCU "Environment" "MUSTARD_TEMPLATES_DIR"
 
   ; Remove só as entradas \mustard-cli; todo o resto do Path passa

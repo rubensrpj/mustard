@@ -23,10 +23,10 @@
 //!   number, title, whether the provider calls it mergeable, whether it is a
 //!   draft, and the head branch its unit lives on.
 //! - **`pr-review`** — resolves the PR to its unit and prints the review brief:
-//!   the spec the unit belongs to, the subproject its tasks' files name, and the
-//!   SAME skill shelf the implementer was dispatched with — so "reviewed
-//!   against the project patterns" means the very molds the work was written
-//!   to, never a second list that can drift. `--verdict` no longer records
+//!   the spec the unit belongs to, the subproject its tasks' files name, and
+//!   that subproject's skill shelf. The shelf is the reviewer's alone: a wave
+//!   is never handed the shelf, only the skills its tasks name, each by the
+//!   path of its file. `--verdict` no longer records
 //!   anything: it refuses at the door and says the round records each wave's
 //!   verdict in the spec file. The merge step reads those verdicts from the
 //!   spec's `spec.ndjson`, one per wave.
@@ -57,8 +57,10 @@
 //!   A merge records three things, in this order: the `pr.merged` event, the
 //!   spec's `delivered` phase — written through the spec file's own phase
 //!   door, which is what ARMS the pending charge at the end of the answer —
-//!   and the closing of the pending item whose note says it became this spec.
-//!   The report returns `pendingClosed` and `pendingOpen` — the pending items
+//!   and the closing of every pending item the work carried — the ones whose
+//!   note says they became this spec and the ones the survey's approved
+//!   context cites.
+//!   The report returns `pendingClosed` (a list) and `pendingOpen` — the pending items
 //!   born in the spec that stay open — so the delivery asks only about them,
 //!   never about the whole list.
 //!
@@ -66,6 +68,12 @@
 //!   início da sessão, com a spec atual em "pull request aberto", pergunta ao
 //!   provedor só pelo pull request dela ([`merged_elsewhere`]) e, se ele
 //!   entrou, grava a entrega e faz a arrumação sem ter feito o merge.
+//!
+//!   A spec fora do fechamento não se junta: com a fase gravada fora de
+//!   `closed` e `pr_open`, o merge recusa com `ok:false` antes de perguntar
+//!   qualquer coisa ao provedor, e nada é juntado ([`not_closed`]). A frase
+//!   fala de reabertura só quando a spec voltou do fechamento à execução; nas
+//!   outras fases, diz a fase e o passo que falta.
 //!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
 //!
@@ -98,13 +106,14 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::commands::agent::render::skills::build_skills_list;
-use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
+use crate::commands::event::pending::{carried_by, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
 use crate::commands::review::pr_publish::{spec_pr, submodules_landed, SpecPr, SubmodulePrs};
 use crate::shared::branch_state::PrStatus;
-use crate::shared::pr_provider::{provider_for, provider_in, PrChecks};
+use crate::shared::pr_provider::{provider_for, provider_in, PrChecks, PrProvider};
 use crate::shared::work_kind::BaseFlow;
+use mustard_core::platform::i18n::{translate, Locale};
 
 /// O subprojeto que um conjunto de arquivos aponta, ou nada quando eles se
 /// espalham por mais de um.
@@ -345,6 +354,12 @@ pub(crate) struct PrListReport {
     pub hint: Option<String>,
 }
 
+/// O texto `key` do catálogo, no idioma `lang`, com cada vaga de `slots`
+/// trocada pelo valor dela.
+fn said(key: &str, lang: Locale, slots: &[(&str, &str)]) -> String {
+    slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
+}
+
 /// Read one `gh pr list` row into a [`PrEntry`]. A row without a number is not
 /// a pull request and is dropped rather than reported as number 0.
 fn pr_entry(row: &Value) -> Option<PrEntry> {
@@ -393,13 +408,11 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     // recém-instalado — que não declara fluxo nenhum — respondia aqui o
     // contrário do que responde lá.
     if flow.has_unit_record(&branch) && !on_integration_base(&repo, &branch, &config) {
-        // Name the base rather than the rule. The unit's OWN record answers
-        // first — it is a measurement of where the branch really came from —
-        // and the remote's own default (`origin/HEAD`) is the last resort, so
-        // the refusal ends with something the operator can type without this
-        // module ever spelling a branch name of its own.
-        // Three sources, in the order their authority runs out. The unit's own
-        // record is a measurement of where this branch really came from. Next,
+        // Name the base rather than the rule, so the refusal ends with something
+        // the operator can type without this module ever spelling a branch name
+        // of its own.
+        // Three sources, in the order their authority runs out. What the flow
+        // and the branch name establish for the unit comes first. Next,
         // when — and only when — the project DECLARES a flow, its primary base
         // is the project's own stated answer: naming `origin/HEAD` there sent a
         // unit that integrates into `dev` off to `main`, a regression measured
@@ -411,18 +424,12 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
             .map(str::to_string)
             .or_else(|| config.git.primary_base())
             .or_else(|| mustard_core::default_branch(&repo));
+        let lang = config.language().text_or_default();
         let hint = match &target {
-            Some(base) => format!(
-                "the list of open pull requests is asked from a BASE, not from inside one \
-                 unit — switch to `{base}` (`git checkout {base}`) and run \
-                 `mustard-rt run pr-review` again"
-            ),
-            // Nothing recorded the base and git named no default: say what to
+            Some(base) => said("pr.list_from_unit", lang, &[("{base}", base)]),
+            // Nothing established the base and git named no default: say what to
             // do without inventing a branch nobody measured.
-            None => "the list of open pull requests is asked from a BASE, not from inside one \
-                     unit — switch to the branch this unit integrates into and run \
-                     `mustard-rt run pr-review` again"
-                .to_string(),
+            None => said("pr.list_from_unit_no_base", lang, &[]),
         };
         return PrListReport {
             ok: false,
@@ -477,8 +484,8 @@ pub(crate) struct PrReviewReport {
     pub spec_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subproject: Option<String>,
-    /// The subproject's skill shelf, verbatim — the same block the implementer
-    /// was dispatched with.
+    /// The subproject's skill shelf, verbatim. Only the reviewer gets it: the
+    /// wave gets just the skills its tasks name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patterns: Option<String>,
 }
@@ -671,7 +678,8 @@ pub(crate) struct PrMergeReport {
     /// must continue.
     pub ok: bool,
     /// `confirm` (asked, nothing touched) · `merged` (merged, then settled) ·
-    /// `merge-failed` (the provider refused; nothing was pruned).
+    /// `merge-failed` (the provider refused; nothing was pruned) · `refused`
+    /// (a spec fora do fechamento; nada foi perguntado nem juntado).
     pub action: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
@@ -686,6 +694,7 @@ pub(crate) struct PrMergeReport {
     /// (`passed` · `running` · `failed` · `absent`) or, when the query itself
     /// failed, the reason verbatim. Always present: it is the evidence for
     /// what this command did with it, including on the paths that merged.
+    /// `not-asked` quando a porta recusou antes de perguntar.
     pub checks: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
@@ -696,11 +705,12 @@ pub(crate) struct PrMergeReport {
     pub settle: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
-    /// The pending item THIS merge closed — the one carrying in the list the
-    /// note "became the spec X" of this spec, recorded at the opening
-    /// (`open --pending`). Absent when there was no link.
-    #[serde(rename = "pendingClosed", skip_serializing_if = "Option::is_none")]
-    pub pending_closed: Option<String>,
+    /// The pending items THIS merge closed — every one the work carried: the
+    /// ones carrying in the list the note "became the spec X" of this spec,
+    /// recorded at the opening (`open --pending`), and the ones the survey's
+    /// approved context cites. Absent when there was no link.
+    #[serde(rename = "pendingClosed", skip_serializing_if = "Vec::is_empty")]
+    pub pending_closed: Vec<String>,
     /// The pending items born in the merge's spec that stay open: the delivery
     /// asks only about them. Present on every `merged` (empty when nothing was
     /// born in the spec, and on a promotion, which has no spec) and absent when
@@ -745,6 +755,66 @@ fn merge_core(
     merged_report(root, facts, flow, spec, verdict, checks_word, settle, session)
 }
 
+/// A palavra que a resposta traz em `checks` quando o merge recusou antes de
+/// perguntar ao provedor.
+const CHECKS_NOT_ASKED: &str = "not-asked";
+
+/// A recusa do merge de uma spec fora do fechamento: a spec `slug` gravou uma
+/// fase, e ela não é `closed` nem `pr_open`. A recusa vem antes de qualquer
+/// pergunta ao provedor, e nada é juntado. A branch sem spec, a spec sem fase
+/// gravada e a promoção entre bases seguem como sempre.
+///
+/// A frase diz só o que aconteceu com a spec:
+///
+/// - **Em execução, de volta do fechamento** ([`last_reopening`]): a spec foi
+///   reaberta, e o pull request dela leva a versão sem o ajuste; juntá-lo agora
+///   mandaria essa versão para a base e apagaria a branch na arrumação.
+/// - **Antes do fechamento, sem ter voltado dele** (em levantamento, em plano,
+///   aprovada ou em execução): a fase e o passo que falta, o mesmo comando que
+///   a retomada daria ([`next_command`]).
+/// - **Entregue ou descartada**: a spec saiu do fluxo, e nenhum passo dela
+///   leva o pull request à base.
+///
+/// [`last_reopening`]: mustard_core::domain::spec_state::last_reopening
+/// [`next_command`]: crate::commands::flow::resume::next_command
+fn not_closed(root: &Path, facts: &PrFacts, slug: &str) -> Option<PrMergeReport> {
+    use mustard_core::domain::spec_state::{last_reopening, SpecState as _, State};
+    let log = crate::shared::spec_state::DiskSpecState::new(root).log(slug)?;
+    let state = State::from_log(&log);
+    let phase = state.phase?;
+    if matches!(phase, "closed" | "pr_open") {
+        return None;
+    }
+    let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
+    let step = crate::commands::flow::resume::next_command(phase, slug, &state);
+    let (key, command) = match step.as_str() {
+        _ if phase == "running" && last_reopening(&log).is_some() => ("pr.merge_reopened", ""),
+        Some(command) => ("pr.merge_not_closed", command),
+        None => ("pr.merge_settled", ""),
+    };
+    let hint = mustard_core::platform::i18n::translate(key, lang)
+        .replace("{spec}", slug)
+        .replace("{phase}", phase)
+        .replace("{pr}", &facts.number.to_string())
+        .replace("{command}", command);
+    Some(PrMergeReport {
+        ok: false,
+        action: "refused",
+        reason: Some("spec-not-closed"),
+        pr: facts.number,
+        head: facts.head.clone(),
+        spec: Some(slug.to_string()),
+        verdict: None,
+        checks: CHECKS_NOT_ASKED.to_string(),
+        warning: None,
+        settle: None,
+        hint: Some(hint),
+        pending_closed: Vec::new(),
+        pending_open: None,
+        submodules: None,
+    })
+}
+
 /// O que o merge de um pull request deixou para o resto da porta.
 struct MergedPr {
     spec: Option<String>,
@@ -764,6 +834,9 @@ fn merge_or_ask(
     merge: &dyn Fn(&Path, u64) -> Result<(), String>,
 ) -> Result<MergedPr, Box<PrMergeReport>> {
     let spec = spec_of_branch(&facts.head, flow);
+    if let Some(refused) = spec.as_deref().and_then(|slug| not_closed(root, facts, slug)) {
+        return Err(Box::new(refused));
+    }
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
     let checks = checks(root, facts.number);
     let checks_word = match &checks {
@@ -772,6 +845,7 @@ fn merge_or_ask(
     };
 
     let promotion = is_base_promotion(&facts.head, flow);
+    let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
 
     if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), &checks, confirmed, promotion) {
         let unit = spec.as_deref().unwrap_or(&facts.head);
@@ -781,32 +855,21 @@ fn merge_or_ask(
             reason: Some(reason),
             pr: facts.number,
             head: facts.head.clone(),
+            // NOT "FAILING": a CANCELLED run reduces to `Failed` too, and this
+            // repository produces those routinely (`concurrency:
+            // cancel-in-progress` kills the superseded run on every re-push).
+            // Being conservative about a cancelled run is right; telling the
+            // operator it FAILED sends them hunting a failure that never
+            // happened. Say what is actually known — it did not come back green.
             warning: Some(match reason {
-                "provider-checks-running" => format!(
-                    "the provider's own checks for `{unit}` are still running — nothing was \
-                     merged, so their verdict still has something to stop."
-                ),
-                // NOT "FAILING": a CANCELLED run reduces to `Failed` too, and this
-                // repository produces those routinely (`concurrency:
-                // cancel-in-progress` kills the superseded run on every re-push).
-                // Being conservative about a cancelled run is right; telling the
-                // operator it FAILED sends them hunting a failure that never
-                // happened. Say what is actually known — it did not come back green.
-                "provider-checks-failed" => format!(
-                    "the provider's own checks for `{unit}` did not come back green (failed or \
-                     cancelled) — nothing was merged."
-                ),
-                "provider-checks-unreadable" => format!(
-                    "the provider's own checks for `{unit}` could not be read \
-                     ({checks_word}) — nothing was merged."
-                ),
+                "provider-checks-running" => said("pr.confirm_running", lang, &[("{unit}", unit)]),
+                "provider-checks-failed" => said("pr.confirm_failed", lang, &[("{unit}", unit)]),
+                "provider-checks-unreadable" => {
+                    said("pr.confirm_unreadable", lang, &[("{unit}", unit), ("{checks}", &checks_word)])
+                }
                 _ => match verdict.as_deref() {
-                    None => {
-                        format!("`{unit}` carries no recorded review verdict — nothing was merged.")
-                    }
-                    Some(v) => format!(
-                        "the last review of `{unit}` came back `{v}` — nothing was merged."
-                    ),
+                    None => said("pr.confirm_no_verdict", lang, &[("{unit}", unit)]),
+                    Some(v) => said("pr.confirm_verdict", lang, &[("{unit}", unit), ("{verdict}", v)]),
                 },
             }),
             // One hint per reason, because the three checks cases ask for three
@@ -816,40 +879,24 @@ fn merge_or_ask(
             // not answer. It also named `gh pr checks`, one provider's command line,
             // inside the door that goes through the port precisely so it never has to
             // name one.
+            //
+            // The red the server reported has a door of its own, and it is the one
+            // named for the failed case: the repair door (`--fix`) opens the fix
+            // wave, where the reopen without it takes the whole work back to
+            // running. The last case records no verdict: this door records none,
+            // and the verdict read here is the one the round writes into the spec,
+            // wave by wave.
             hint: Some(match reason {
-                "provider-checks-running" => {
-                    "wait for them to finish and run `pr merge` again, or re-run with `--confirm` \
-                     to merge without waiting"
-                        .to_string()
-                }
-                // The red the server reported now has a door of its own, and
-                // it is the one named here: editing files on the branch by
-                // hand is what this advice used to leave the operator doing,
-                // and the repair then existed nowhere in the spec.
-                "provider-checks-failed" => format!(
-                    "run `mustard-rt run reopen --spec {unit} --reason <what the server \
-                     reported>` — the repair door opens the fix wave inside the closed spec, \
-                     commits on the same branch and pushes, without reopening the work; or \
-                     re-run with `--confirm` to merge anyway"
-                ),
-                "provider-checks-unreadable" => {
-                    "the provider did not answer — check that its tooling is installed and \
-                     authenticated, then run `pr merge` again; `--confirm` merges without it"
-                        .to_string()
-                }
-                // No line that records a verdict: this door records none, and
-                // the verdict read here is the one the round writes into the
-                // spec, wave by wave. Naming a recording command the binary
-                // refuses spent the reader's next call on a refusal.
-                _ => "ask the operator, then re-run with `--confirm` to merge anyway — the verdict \
-                      read here is the one `mustard-rt run round` records for each wave"
-                    .to_string(),
+                "provider-checks-running" => said("pr.merge_wait_checks", lang, &[]),
+                "provider-checks-failed" => said("pr.merge_checks_failed", lang, &[("{unit}", unit)]),
+                "provider-checks-unreadable" => said("pr.merge_checks_unreadable", lang, &[]),
+                _ => said("pr.merge_no_verdict", lang, &[]),
             }),
             spec,
             verdict,
             checks: checks_word,
             settle: None,
-            pending_closed: None,
+            pending_closed: Vec::new(),
             pending_open: None,
             submodules: None,
         }));
@@ -867,12 +914,8 @@ fn merge_or_ask(
             checks: checks_word,
             warning: Some(e),
             settle: None,
-            hint: Some(
-                "nothing was pruned — the unit is untouched; resolve the refusal (conflicts, \
-                 draft state, required checks) and run `pr merge` again"
-                    .to_string(),
-            ),
-            pending_closed: None,
+            hint: Some(said("pr.merge_provider_refused", lang, &[])),
+            pending_closed: Vec::new(),
             pending_open: None,
             submodules: None,
         }));
@@ -916,11 +959,10 @@ fn merged_report(
             checks: checks_word,
             warning: None,
             settle: None,
-            hint: Some(format!(
-                "`{head}` é uma base, não uma unidade: a promoção termina no merge e não há \
-                 poda a fazer. Atualize as bases locais com \
-                 `git fetch origin <base>:<base>` — nenhuma branch foi apagada.",
-                head = facts.head,
+            hint: Some(said(
+                "pr.promotion_merged",
+                mustard_core::ProjectConfig::load(root).language().text_or_default(),
+                &[("{head}", &facts.head)],
             )),
             pending_closed,
             pending_open: Some(pending_open),
@@ -980,7 +1022,7 @@ fn merge_submodule(
         warning: None,
         settle: None,
         hint: found.as_ref().and_then(|found| found.text(lang)),
-        pending_closed: None,
+        pending_closed: Vec::new(),
         pending_open: None,
         submodules: found,
     }
@@ -991,8 +1033,8 @@ fn merge_submodule(
 /// mãos de outra pessoa: o fechamento gravado ([`after_merge`]) e, numa
 /// unidade, a arrumação.
 struct Landed {
-    /// A pendência que virou a spec, fechada por este merge.
-    pending_closed: Option<String>,
+    /// As pendências que a obra levou, fechadas por este merge.
+    pending_closed: Vec<String>,
     /// As pendências nascidas na spec que seguem abertas: a entrega pergunta
     /// só delas.
     pending_open: Vec<OpenPending>,
@@ -1051,6 +1093,13 @@ pub(crate) enum MergedElsewhere {
     },
     /// O provedor não respondeu, com o motivo que ele deu; nada foi mudado.
     Unanswered { reason: String },
+    /// O pull request foi fechado sem merge; nada foi mudado. A reabertura
+    /// segue sem pedir rascunho, que o provedor recusa num pull request
+    /// fechado, e o fechamento seguinte abre outro.
+    Closed {
+        /// O número do pull request fechado.
+        pr: u64,
+    },
     /// O pull request do principal segue aberto, e a spec mexe em
     /// submódulo: o que a conferência dos pull requests deles achou e fez.
     Submodules(SubmodulePrs),
@@ -1066,9 +1115,27 @@ pub(crate) enum MergedElsewhere {
 /// passou do prazo do início da sessão; por isso é um pull request só.
 ///
 /// `None` quando a spec não está em "pull request aberto", quando não se sabe
-/// qual é o pull request dela, e quando o provedor responde que ele segue
-/// aberto ou foi fechado sem merge.
+/// qual é o pull request dela, quando o provedor não acha pull request
+/// nenhum, e quando ele segue aberto sem submódulo a conferir. O fechado sem
+/// merge é caso próprio ([`MergedElsewhere::Closed`]).
 pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -> Option<MergedElsewhere> {
+    merged_elsewhere_with(root, spec, session, &provider_for, &settle_unit_at)
+}
+
+/// [`merged_elsewhere`] com o provedor e a arrumação recebidos. É por aqui que
+/// a reabertura de uma spec com o pull request aberto pergunta o mesmo que o
+/// início da sessão, e grava a entrega pelo mesmo caminho quando o merge já
+/// foi feito; e é como um teste os escolhe, sem rede.
+///
+/// O provedor é pedido só depois de a fase dizer "pull request aberto": no
+/// início da sessão, a spec em qualquer outra fase não custa pergunta nenhuma.
+pub(crate) fn merged_elsewhere_with(
+    root: &Path,
+    spec: &str,
+    session: Option<&str>,
+    provider: &dyn Fn(&Path) -> Box<dyn PrProvider>,
+    settle: &dyn Fn(&Path, &str) -> Value,
+) -> Option<MergedElsewhere> {
     use mustard_core::domain::spec_state::{SpecState as _, State};
 
     let repo = project_root(root);
@@ -1078,7 +1145,7 @@ pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -
         return None;
     }
     let asked = spec_pr(&repo, spec)?;
-    let view = match provider_for(&repo).view(asked.as_ref()) {
+    let view = match provider(&repo).view(asked.as_ref()) {
         Ok(view) => view,
         Err(reason) => return Some(MergedElsewhere::Unanswered { reason }),
     };
@@ -1094,7 +1161,8 @@ pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -
                 .filter(|found| found.text(lang).is_some())
                 .map(MergedElsewhere::Submodules);
         }
-        PrStatus::Closed | PrStatus::Absent => return None,
+        PrStatus::Closed => return Some(MergedElsewhere::Closed { pr: view.number }),
+        PrStatus::Absent => return None,
     }
     let head = if view.head.is_empty() { state.branch.unwrap_or_default() } else { view.head };
     if head.is_empty() {
@@ -1102,8 +1170,7 @@ pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -
     }
     let facts = PrFacts { number: view.number, head };
     let (flow, _) = bases_and_branch(&repo);
-    let settle = |r: &Path, branch: &str| settle_unit_at(r, branch);
-    let landed = land(&repo, &facts, Some(spec), &flow, &settle, session);
+    let landed = land(&repo, &facts, Some(spec), &flow, settle, session);
     Some(MergedElsewhere::Landed {
         pr: facts.number,
         branch: facts.head,
@@ -1113,8 +1180,8 @@ pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -
 }
 
 /// What a merge leaves recorded besides the merge: the `pr.merged` event, the
-/// spec's `delivered` phase and the closing of the pending item that became
-/// the spec. Returns the closed id (if any) and the pending items born in the
+/// spec's `delivered` phase and the closing of every pending item the work
+/// carried. Returns the closed ids and the pending items born in the
 /// spec that stay open: the delivery asks only about them, never about the
 /// whole list.
 ///
@@ -1136,17 +1203,20 @@ fn after_merge(
     facts: &PrFacts,
     spec: Option<&str>,
     session: Option<&str>,
-) -> (Option<String>, Vec<OpenPending>) {
+) -> (Vec<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec, session);
     if let Some(slug) = spec.map(str::trim).filter(|s| !s.is_empty()) {
         crate::commands::spec_events::write::record_phase(root, slug, "delivered", session);
     }
     let reason = format!("PR #{} mergeado", facts.number);
-    // The note "became the spec X" in the list links the pending item to the
-    // spec.
-    let closed = spec
-        .and_then(|slug| became_of(root, slug))
-        .filter(|id| close_pending(root, id, &reason));
+    // The note "became the spec X" in the list and the survey's approved
+    // context link a pending item to the spec.
+    let closed: Vec<String> = spec
+        .map(|slug| carried_by(root, slug))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| close_pending(root, id, &reason))
+        .collect();
     let born = spec.map(|slug| open_pending_born_in(root, slug)).unwrap_or_default();
     (closed, born)
 }
@@ -1273,8 +1343,11 @@ mod tests {
         git(root, &["config", "user.email", "t@t"]);
         git(root, &["config", "user.name", "t"]);
         git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
-            .expect("cfg");
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"language":{"text":"en-US"},"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("cfg");
         git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "seed"]);
         dir
@@ -1329,6 +1402,30 @@ mod tests {
         let loose = list_at(root);
         assert_eq!(loose.reason, None, "an undeclared base is still a base");
         assert!(loose.ok, "nothing about the checkout refuses: {:?}", loose.hint);
+    }
+
+    /// A dica da lista de pull requests abertos, pedida de dentro de uma
+    /// unidade, sai no idioma do texto do projeto: em português para o
+    /// pt-BR, e no inglês de sempre para o en-US.
+    #[test]
+    fn the_list_hint_follows_the_project_language() {
+        for (language, says, other) in [
+            ("pt-BR", "e rode `mustard-rt run pr-review` de novo", "run `mustard-rt run pr-review` again"),
+            ("en-US", "run `mustard-rt run pr-review` again", "de novo"),
+        ] {
+            let dir = repo();
+            let root = dir.path();
+            std::fs::write(
+                root.join("mustard.json"),
+                format!(r#"{{"language":{{"text":"{language}"}},"git":{{"flow":{{"*":"dev","dev":"main"}}}}}}"#),
+            )
+            .expect("cfg");
+            git(root, &["checkout", "-b", "dev_some-unit"]);
+            std::fs::create_dir_all(root.join(".claude").join("spec").join("some-unit")).expect("unit record");
+            let hint = list_at(root).hint.unwrap_or_default();
+            assert!(hint.contains("`git checkout dev`") && hint.contains(says), "{language}: {hint}");
+            assert!(!hint.contains(other), "{language}: the other language leaked: {hint}");
+        }
     }
 
     /// The rows survive the trip from `gh` shape to report shape, sorted, with
@@ -1468,7 +1565,7 @@ mod tests {
     /// segura o merge como sempre segurou. As contagens provam o efeito real,
     /// não o texto do relatório.
     #[test]
-    fn a_promocao_entre_bases_nao_pede_veredito() {
+    fn promotion_between_bases_does_not_ask_for_a_verdict() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let bases = door_flow();
@@ -1608,6 +1705,7 @@ mod tests {
     fn pr_merge_refuses_when_provider_checks_failed() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).expect("cfg");
         let bases = door_flow();
         let facts = PrFacts { number: 238, head: "dev_red-ci".to_string() };
         let criteria = crate::shared::spec_state::seed_runs(root, "red-ci", &[None]);
@@ -1651,6 +1749,153 @@ mod tests {
         assert_eq!(blind.reason, Some("provider-checks-unreadable"));
         assert_eq!(blind.checks, "gh-not-found", "the reason travels verbatim into the report");
         assert_eq!(merges.get(), 0);
+    }
+
+    /// Cada dica do merge sai no idioma do texto do projeto: a de esperar as
+    /// verificações, a do conserto do vermelho, a do provedor que não respondeu,
+    /// a da falta de veredito, a da recusa do provedor e a da promoção entre
+    /// bases. O inglês é o de sempre, e o pt-BR não traz palavra dele.
+    #[test]
+    fn the_merge_hints_follow_the_project_language() {
+        use std::cell::Cell;
+        for (language, wait, fix, unreadable, verdict, refused, promotion, warning) in [
+            (
+                "pt-BR",
+                "Espere as verificações terminarem",
+                "porta de conserto abre a onda de correção",
+                "O provedor não respondeu",
+                "Pergunte ao operador",
+                "Nada foi podado",
+                "é uma base, não uma unidade",
+                "não tem veredito de revisão gravado",
+            ),
+            (
+                "en-US",
+                "Wait for the checks to finish",
+                "repair door opens the fix wave",
+                "The provider did not answer",
+                "Ask the operator",
+                "Nothing was pruned",
+                "is a base, not a unit",
+                "carries no recorded review verdict",
+            ),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                .expect("cfg");
+            let criteria = crate::shared::spec_state::seed_runs(root, "red-ci", &[None]);
+            crate::shared::spec_state::seed_verdict(root, "red-ci", 1, "approved", criteria[0]);
+            let ok = |_: &Path, _: u64| Ok(());
+            let settle = |_: &Path, _: &str| json!({ "ok": true });
+            let ask = |head: &str, checks: Result<PrChecks, String>| {
+                let facts = PrFacts { number: 238, head: head.to_string() };
+                let checks = move |_: &Path, _: u64| checks.clone();
+                merge_core(root, &facts, &door_flow(), false, &checks, &ok, &settle, None)
+            };
+            let hint_of = |report: PrMergeReport| report.hint.unwrap_or_default();
+
+            let running = hint_of(ask("dev_red-ci", Ok(PrChecks::Running)));
+            assert!(running.contains(wait), "{language}: {running}");
+            let failed = hint_of(ask("dev_red-ci", Ok(PrChecks::Failed)));
+            assert!(failed.contains(fix) && failed.contains("reopen --spec red-ci --fix"), "{language}: {failed}");
+            let blind = hint_of(ask("dev_red-ci", Err("gh-not-found".to_string())));
+            assert!(blind.contains(unreadable), "{language}: {blind}");
+            let unjudged = ask("dev_no-review", Ok(PrChecks::Passed));
+            assert_eq!(unjudged.reason, Some("no-review-verdict"), "{language}: {unjudged:?}");
+            assert!(unjudged.warning.as_deref().unwrap_or_default().contains(warning), "{language}: {unjudged:?}");
+            assert!(hint_of(unjudged).contains(verdict), "{language}");
+
+            let calls = Cell::new(0);
+            let refuse = |_: &Path, _: u64| -> Result<(), String> {
+                calls.set(calls.get() + 1);
+                Err("conflicts".to_string())
+            };
+            let passed = |_: &Path, _: u64| Ok(PrChecks::Passed);
+            let facts = PrFacts { number: 239, head: "dev_red-ci".to_string() };
+            let failed_merge = merge_core(root, &facts, &door_flow(), true, &passed, &refuse, &settle, None);
+            assert_eq!(failed_merge.action, "merge-failed", "{language}: {failed_merge:?}");
+            assert!(hint_of(failed_merge).contains(refused), "{language}");
+
+            let promoted = merged(root, 240, "dev");
+            assert!(hint_of(promoted).contains(promotion), "{language}");
+        }
+    }
+
+    /// Quando o servidor reprovou o pull request, a dica da recusa aponta a
+    /// porta de conserto — o reopen com `--fix` —, nunca o reopen sem ela, que
+    /// levaria a obra inteira de volta à execução.
+    #[test]
+    fn the_red_merge_hint_names_the_fix_door() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).expect("cfg");
+        let criteria = crate::shared::spec_state::seed_runs(root, "red-ci", &[None]);
+        crate::shared::spec_state::seed_verdict(root, "red-ci", 1, "approved", criteria[0]);
+        with_pr_open(root, "red-ci");
+        let facts = PrFacts { number: 238, head: "feature/red-ci".to_string() };
+        let merge = |_: &Path, _: u64| -> Result<(), String> { panic!("a red pull request is never merged here") };
+        let settle = |_: &Path, _: &str| -> Value { panic!("nothing is pruned") };
+        let failed = |_: &Path, _: u64| Ok(PrChecks::Failed);
+
+        let asked = merge_core(root, &facts, &door_flow(), false, &failed, &merge, &settle, None);
+        assert_eq!((asked.action, asked.reason), ("confirm", Some("provider-checks-failed")), "{asked:?}");
+        let hint = asked.hint.unwrap_or_default();
+        assert!(
+            hint.contains("mustard-rt run reopen --spec red-ci --fix --reason <what the server reported>"),
+            "the hint does not name the fix door: {hint}",
+        );
+        assert!(!hint.contains("reopen --spec red-ci --reason"), "the hint names the reopen without --fix: {hint}");
+    }
+
+    /// O merge do Mustard numa spec fora do fechamento recusa antes de
+    /// perguntar ao provedor: `ok:false`, e nem a verificação nem o merge são
+    /// chamados, nem com `--confirm`, e nada é gravado. A spec que voltou do
+    /// fechamento à execução — de `closed` ou de `pr_open` — ouve, nos dois
+    /// idiomas, que foi reaberta e que a rodada fecha de novo. Com a spec em
+    /// `closed` ou em `pr_open`, o merge segue como sempre.
+    #[test]
+    fn the_merge_refuses_a_spec_outside_closed_and_pr_open() {
+        let languages = [
+            ("pt-BR", "foi reaberta e ainda não fechou de novo"),
+            ("en-US", "it was reopened and has not closed again"),
+        ];
+        for (language, says) in languages {
+            for from in ["closed", "pr_open"] {
+                for confirmed in [false, true] {
+                    let dir = tempdir().expect("tempdir");
+                    let root = dir.path();
+                    std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                        .expect("cfg");
+                    // Fechada antes, e depois de volta à execução.
+                    seed_phase(root, "reaberta", from);
+                    seed_phase(root, "reaberta", "running");
+                    let at = format!("{language} from {from} confirm={confirmed}");
+                    let hint = refused_merge(root, "reaberta", confirmed, &at);
+                    assert!(hint.contains(says), "{at}: {hint}");
+                    assert!(hint.contains("running") && hint.contains("#57"), "{at}: {hint}");
+                    assert!(hint.contains("mustard-rt run round --spec reaberta"), "{at}: {hint}");
+                }
+            }
+        }
+
+        // Fechada ou com o pull request aberto, o merge segue como sempre.
+        for phase in ["closed", "pr_open"] {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path();
+            seed_phase(root, "reaberta", phase);
+            let merges = Cell::new(0u32);
+            let merge = |_: &Path, _: u64| {
+                merges.set(merges.get() + 1);
+                Ok(())
+            };
+            let settle = |_: &Path, _: &str| json!({ "ok": true });
+            let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+            let facts = PrFacts { number: 57, head: "feature/reaberta".to_string() };
+            let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None);
+            assert_eq!(done.action, "merged", "{phase}: {done:?}");
+            assert_eq!(merges.get(), 1, "{phase}");
+        }
     }
 
     /// O merge lê o veredito do `spec.ndjson` com a mesma regra do
@@ -1757,6 +2002,71 @@ mod tests {
         assert_eq!(merges.get(), 1);
     }
 
+    /// O merge de uma spec que nunca voltou do fechamento não fala em
+    /// reabertura: a aprovada, a em levantamento, a em plano e a em execução
+    /// ouvem a fase e o passo que falta — o mesmo comando que a retomada
+    /// daria —, e a entregue e a descartada ouvem que saíram do fluxo, nos
+    /// dois idiomas. Nada é perguntado ao provedor, nada é juntado e nada é
+    /// gravado.
+    #[test]
+    fn the_merge_of_a_spec_never_reopened_says_its_phase_and_the_missing_step() {
+        let languages = [
+            ("pt-BR", "reabert", "fase {phase}", "O passo que falta", "já saiu do fluxo"),
+            ("en-US", "reopen", "the {phase} phase", "The step missing", "already left the flow"),
+        ];
+        let flows: [(&[&str], Option<&str>); 6] = [
+            (&["survey", "plan", "approved"], Some("mustard-rt run round --spec obra")),
+            (&["survey"], Some("mustard-rt run grill --spec obra")),
+            (&["survey", "plan"], Some("mustard-rt run plan --spec obra")),
+            (&["survey", "plan", "approved", "running"], Some("mustard-rt run round --spec obra")),
+            (&["survey", "plan", "approved", "running", "closed", "pr_open", "delivered"], None),
+            (&["survey", "discarded"], None),
+        ];
+        for (language, reopening, names, missing, settled) in languages {
+            for (phases, step) in flows {
+                let dir = tempdir().expect("tempdir");
+                let root = dir.path();
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                    .expect("cfg");
+                for phase in phases {
+                    seed_phase(root, "obra", phase);
+                }
+                let phase = phases.last().copied().unwrap_or_default();
+                let at = format!("{language} {phase}");
+                let hint = refused_merge(root, "obra", false, &at);
+                assert!(!hint.to_lowercase().contains(reopening), "{at}: nothing was reopened: {hint}");
+                assert!(hint.contains(&names.replace("{phase}", phase)) && hint.contains("#57"), "{at}: {hint}");
+                match step {
+                    Some(command) => {
+                        assert!(hint.contains(missing) && hint.contains(&format!("`{command}`")), "{at}: {hint}");
+                    }
+                    None => assert!(hint.contains(settled) && !hint.contains(missing), "{at}: {hint}"),
+                }
+            }
+        }
+    }
+
+    /// O merge do pull request 57 da spec `spec` em `root`, que a porta deve
+    /// recusar antes de perguntar ao provedor: confere a recusa, que nada foi
+    /// perguntado, juntado, arrumado ou gravado, e devolve a frase dela.
+    fn refused_merge(root: &Path, spec: &str, confirmed: bool, at: &str) -> String {
+        let file = mustard_core::io::spec_events::spec_file(root, spec).expect("spec file");
+        let before = std::fs::read(&file).expect("the event file");
+        let facts = PrFacts { number: 57, head: format!("feature/{spec}") };
+        let checks = |_: &Path, _: u64| -> Result<PrChecks, String> { panic!("the provider is never asked") };
+        let merge = |_: &Path, _: u64| -> Result<(), String> { panic!("nothing is merged") };
+        let settle = |_: &Path, _: &str| -> Value { panic!("nothing is pruned") };
+
+        let refused = merge_core(root, &facts, &door_flow(), confirmed, &checks, &merge, &settle, None);
+        assert!(!refused.ok, "{at}: {refused:?}");
+        assert_eq!(refused.action, "refused", "{at}: {refused:?}");
+        assert_eq!(refused.reason, Some("spec-not-closed"), "{at}: {refused:?}");
+        assert_eq!(refused.checks, "not-asked", "{at}: {refused:?}");
+        assert!(refused.settle.is_none(), "{at}: nothing was pruned");
+        assert_eq!(std::fs::read(&file).expect("the event file"), before, "{at}: nothing was written");
+        refused.hint.unwrap_or_default()
+    }
+
     /// A `dev`/`main` flow project with the open pending items `titles`,
     /// numbered in order.
     fn project_with_items(titles: &[&str]) -> tempfile::TempDir {
@@ -1777,6 +2087,29 @@ mod tests {
         dir
     }
 
+    /// A spec semeada em execução, levada ao pull request aberto: é a fase em
+    /// que o merge a encontra depois do fechamento.
+    fn with_pr_open(root: &Path, spec: &str) {
+        seed_phase(root, spec, "pr_open");
+    }
+
+    /// Um `state` com a fase `phase` na spec `spec`, com o que a gravação
+    /// pede de cada fase: o pull request no aberto, a testemunha na aprovada,
+    /// o motivo na descartada.
+    fn seed_phase(root: &Path, spec: &str, phase: &str) {
+        let mut fields = json!({ "phase": phase });
+        if phase == "discarded" {
+            fields["reason"] = json!("Obra desistida.");
+        }
+        if phase == "pr_open" {
+            fields["pr"] = json!({ "number": 57, "url": "https://exemplo/57" });
+        }
+        if phase == "approved" {
+            fields["witness"] = json!({ "question": "Aprovar?", "answer": "Aprovar" });
+        }
+        crate::shared::spec_state::seed_event(root, spec, "state", fields);
+    }
+
     /// A merge with no checks, no provider and no pruning, through the real door.
     fn merged(root: &Path, number: u64, head: &str) -> PrMergeReport {
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
@@ -1794,6 +2127,7 @@ mod tests {
         let dir = project_with_items(&["Humanize", "HTML padrao", "Painel"]);
         let root = dir.path();
         seed_spec(root, "trava", &[2], "s-entrega");
+        with_pr_open(root, "trava");
 
         let done = merged(root, 310, "feature/trava");
         assert_eq!(done.action, "merged");
@@ -1814,12 +2148,13 @@ mod tests {
     ///
     /// A promoção de base não tem spec: não entrega e não arma.
     #[test]
-    fn o_merge_entrega_a_spec_e_arma_a_cobranca_pela_mesma_porta() {
+    fn merge_delivers_the_spec_and_arms_the_chase_through_the_same_door() {
         use crate::commands::event::pending::armed_charges;
         use crate::hooks::task::pending_gate::seed_spec;
         let dir = project_with_items(&["Humanize", "HTML padrao"]);
         let root = dir.path();
         seed_spec(root, "trava", &[2], "s-entrega");
+        with_pr_open(root, "trava");
         assert!(armed_charges(root).is_empty(), "nada armado antes do merge");
 
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
@@ -1877,12 +2212,49 @@ mod tests {
         assert_eq!(list()["open"][0]["became"], json!("trava"), "the list shows the note");
 
         let done = merged(root, 320, "feature/trava");
-        assert_eq!(done.pending_closed.as_deref(), Some("P-1"), "the item that became the spec is closed");
+        assert_eq!(done.pending_closed, ["P-1"], "the item that became the spec is closed");
         let after = list();
         assert_eq!(after["closed"][0]["id"], json!("P-1"), "{after}");
         assert_eq!(after["closed"][0]["reason"], json!("PR #320 mergeado"), "{after}");
         assert_eq!(after["open"][0]["id"], json!("P-2"), "another spec's note stays: {after}");
         assert_eq!(after["open"][0]["became"], json!("outra"));
+    }
+
+    /// Um `context` do levantamento, com o texto `text`, na spec `spec`.
+    fn seed_context(root: &Path, spec: &str, text: &str) {
+        let path = mustard_core::io::spec_events::spec_file(root, spec).expect("a valid spec name");
+        let draft = json!({ "text": text, "origin": 1 }).as_object().cloned().expect("an object");
+        mustard_core::io::spec_events::write(&path, "context", draft, &[]).expect("context");
+    }
+
+    /// O merge fecha toda pendência que a obra levou: a de nota "virou a
+    /// spec" e a que o contexto do levantamento cita. A nascida na spec (o
+    /// pedido adiado) volta em `pendingOpen` com o que sobrou, e a que nada
+    /// liga à obra, ou que só se parece com um número citado, segue aberta.
+    #[test]
+    fn a_merge_closes_every_item_the_work_carried() {
+        use crate::commands::event::pending::{mark_became, pending_at, PendingOpts};
+        use crate::hooks::task::pending_gate::seed_spec;
+        let dir = project_with_items(&["Humanize", "Painel", "Adiada", "Alheia", "Quase"]);
+        let root = dir.path();
+        seed_spec(root, "trava", &[3], "s-entrega");
+        assert!(mark_became(root, "P-1", "trava"), "the note is recorded");
+        seed_context(root, "trava", "Os ajustes aprovados: P-2 e a P-3, fora a P-40; P-5a não conta.");
+        with_pr_open(root, "trava");
+
+        let done = merged(root, 330, "feature/trava");
+        assert_eq!(done.pending_closed, ["P-1", "P-2"], "the note and the approved context: {done:?}");
+        assert_eq!(
+            done.pending_open,
+            Some(vec![OpenPending { id: "P-3".into(), title: "Adiada".into() }]),
+            "the item born in the spec comes back open",
+        );
+        let after = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let closed: Vec<_> = after["closed"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect();
+        assert_eq!(closed, [json!("P-1"), json!("P-2")], "{after}");
+        assert_eq!(after["closed"][1]["reason"], json!("PR #330 mergeado"), "{after}");
+        let open: Vec<_> = after["open"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect();
+        assert_eq!(open, [json!("P-3"), json!("P-4"), json!("P-5")], "{after}");
     }
 
     /// The whole pending criterion: twelve open, two born in the delivered
@@ -1919,6 +2291,7 @@ mod tests {
         assert_eq!(add("humanize", None)["id"], json!("P-11"));
         assert_eq!(add("html padrao", None)["id"], json!("P-12"));
         seed_spec(root, "entrega", &[11, 12], "s-doze");
+        with_pr_open(root, "entrega");
         let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
 
         // The session start: one line with the count, and the idle ones counted.
@@ -1976,9 +2349,10 @@ mod tests {
         let expired = sweep(false, Some("P-2"));
         assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
         let reason = mustard_core::translate("pending.expired_reason", lang);
-        let gone: Vec<&Value> = expired["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
-        assert_eq!(gone.len(), 2, "{expired}");
-        assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{expired}");
+        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let gone: Vec<&Value> = listed["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+        assert_eq!(gone.len(), 2, "{listed}");
+        assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{listed}");
     }
 
     /// The base model of a project declaring the ordinary two-tier flow.
@@ -2003,9 +2377,9 @@ mod tests {
         assert_eq!(spec_of_branch("feature_x", &bases), None, "a name of neither shape");
     }
 
-    /// The brief points at the spec and hands back the SAME shelf the
-    /// implementer got, and records nothing on the way: the verdicts
-    /// `pr-merge` reads are the ones the round writes into the spec.
+    /// The brief points at the spec and hands back the skill shelf of the
+    /// subproject the tasks touch, and records nothing on the way: the
+    /// verdicts `pr-merge` reads are the ones the round writes into the spec.
     #[test]
     fn pr_review_brief_names_the_spec_and_records_nothing() {
         let dir = tempdir().expect("tempdir");
@@ -2046,7 +2420,7 @@ mod tests {
         );
         assert!(
             brief.patterns.unwrap_or_default().contains("rt-demo-pattern"),
-            "the review reads the implementer's own shelf"
+            "the review reads the shelf of the subproject the tasks touch"
         );
         assert!(
             !root.join(".claude").join("spec").join("my-unit").join("review").exists(),

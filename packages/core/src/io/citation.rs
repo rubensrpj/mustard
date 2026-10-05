@@ -8,8 +8,9 @@
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
-use crate::domain::citation::{self, CitationWorld, Finding};
+use crate::domain::citation::CitationWorld;
 use crate::domain::project_map::ProjectMap;
+use crate::io::project_map::{read_for, Need};
 
 /// As raízes em que uma citação é procurada, a partir de onde o comando roda:
 /// a própria pasta, cada pasta acima dela e, por último, a raiz das specs.
@@ -23,11 +24,12 @@ pub fn citation_roots(start: &Path, spec_root: &Path) -> Vec<PathBuf> {
 }
 
 /// O disco, como a conferência o pergunta: os arquivos nas raízes e os nomes
-/// no mapa, que só é lido quando um nome é conferido.
+/// no mapa, que só é aberto quando um nome é conferido. Cada nome lê só as
+/// declarações com ele, nunca o mapa inteiro.
 pub struct DiskWorld {
     roots: Vec<PathBuf>,
     map_root: Option<PathBuf>,
-    map: OnceCell<Option<ProjectMap>>,
+    has_map: OnceCell<bool>,
 }
 
 impl DiskWorld {
@@ -36,13 +38,13 @@ impl DiskWorld {
     /// não se entende, os nomes ficam sem conferência.
     #[must_use]
     pub fn new(roots: Vec<PathBuf>, map_root: Option<&Path>) -> Self {
-        Self { roots, map_root: map_root.map(Path::to_path_buf), map: OnceCell::new() }
+        Self { roots, map_root: map_root.map(Path::to_path_buf), has_map: OnceCell::new() }
     }
 
-    fn map(&self) -> Option<&ProjectMap> {
-        self.map
-            .get_or_init(|| self.map_root.as_deref().and_then(|root| crate::io::project_map::read(root).ok()))
-            .as_ref()
+    /// O pedaço do mapa que `need` pede; `None` sem mapa ou com um que não se
+    /// entende.
+    fn read(&self, need: Need<'_>) -> Option<ProjectMap> {
+        self.map_root.as_deref().and_then(|root| read_for(root, need).ok())
     }
 }
 
@@ -53,21 +55,12 @@ impl CitationWorld for DiskWorld {
     }
 
     fn declared(&self, name: &str) -> Vec<(String, u64)> {
-        self.map().map(|map| map.declared(name)).unwrap_or_default()
+        self.read(Need::Declarations { file: None, name }).map(|map| map.declared(name)).unwrap_or_default()
     }
 
     fn has_map(&self) -> bool {
-        self.map().is_some()
+        *self.has_map.get_or_init(|| self.read(Need::Nothing).is_some())
     }
-}
-
-/// Confere uma fonte e o texto que ela sustenta pelo disco: o arquivo citado
-/// em `roots` (veja [`citation_roots`]) e os nomes no mapa do projeto em
-/// `map_root`. É a mesma conferência da gravação de um ponto do levantamento
-/// e a que o plano chama para as tarefas.
-#[must_use]
-pub fn check_at(roots: &[PathBuf], map_root: &Path, source: &str, text: &str) -> Vec<Finding> {
-    citation::check(&DiskWorld::new(roots.to_vec(), Some(map_root)), source, text)
 }
 
 /// Quantas linhas o arquivo tem: a última conta mesmo sem `\n` no fim.
@@ -82,8 +75,15 @@ fn count_lines(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::project_map::model_path;
+    use crate::domain::citation::{self, Finding};
+    use crate::io::project_map::{self, model_path};
     use crate::io::spec_events::spec_root;
+
+    /// A conferência de uma fonte e do texto que ela sustenta pelo disco: o
+    /// arquivo citado em `roots` e os nomes no mapa do projeto em `map_root`.
+    fn check_on_disk(roots: &[PathBuf], map_root: &Path, source: &str, text: &str) -> Vec<Finding> {
+        citation::check(&DiskWorld::new(roots.to_vec(), Some(map_root)), source, text)
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
@@ -106,31 +106,54 @@ mod tests {
         git(&main, &["commit", "-q", "-m", "seed"]);
         // O Mustard e o mapa ficam fora do git, então o worktree não tem nenhum dos dois.
         std::fs::write(main.join("mustard.json"), "{}").unwrap();
-        std::fs::create_dir_all(main.join(".claude")).unwrap();
-        std::fs::write(
-            model_path(&main),
+        project_map::write_text(
+            &main,
             r#"{"modules":[{"path":"src/a.rs","declarations":[
                 {"kind":"struct","name":"Tipo","line":1},{"kind":"function","name":"run","line":2}]}]}"#,
         )
         .unwrap();
         let worktree = dir.path().join("wt");
         git(&main, &["worktree", "add", "-q", "-b", "work", &worktree.to_string_lossy()]);
-        assert!(!model_path(&worktree).exists());
+        assert!(!project_map::exists_at(&model_path(&worktree)));
         // Um arquivo novo, ainda sem commit, que só o worktree tem.
         std::fs::write(worktree.join("src/novo.rs"), "fn novo() {}\n").unwrap();
 
         let map_root = spec_root(&worktree);
         let roots = citation_roots(&worktree.join("src"), &map_root);
-        assert_eq!(check_at(&roots, &map_root, "src/a.rs:2", "o `Tipo` e o `run()`"), Vec::new());
-        assert_eq!(check_at(&roots, &map_root, "src/novo.rs:1", "sem nome"), Vec::new());
+        assert_eq!(check_on_disk(&roots, &map_root, "src/a.rs:2", "o `Tipo` e o `run()`"), Vec::new());
+        assert_eq!(check_on_disk(&roots, &map_root, "src/novo.rs:1", "sem nome"), Vec::new());
         assert_eq!(
-            check_at(&roots, &map_root, "src/a.rs:2", "o `Outro`"),
+            check_on_disk(&roots, &map_root, "src/a.rs:2", "o `Outro`"),
             vec![Finding::NameUnknown { name: "Outro".into() }],
             "the names were checked against the main checkout's map"
         );
         assert_eq!(
-            check_at(&roots, &map_root, "src/a.rs:3", ""),
+            check_on_disk(&roots, &map_root, "src/a.rs:3", ""),
             vec![Finding::MissingLine { path: "src/a.rs".into(), line: 3, lines: 2 }]
+        );
+    }
+
+    /// Um mapa em que uma coluna que a conferência não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e a conferência dos nomes,
+    /// que lê só as declarações com o nome, ainda responde.
+    #[test]
+    fn a_name_is_checked_even_when_a_column_it_does_not_read_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "struct Tipo;\n").unwrap();
+        project_map::write_text(
+            &root,
+            r#"{"modules":[{"path":"src/a.rs","deps":"um texto no lugar da lista",
+                "declarations":[{"kind":"struct","name":"Tipo","line":1}]}]}"#,
+        )
+        .unwrap();
+        assert!(project_map::read(&root).is_err(), "the whole map refuses the broken column");
+        let roots = vec![root.clone()];
+        assert_eq!(check_on_disk(&roots, &root, "src/a.rs:1", "o `Tipo`"), Vec::new());
+        assert_eq!(
+            check_on_disk(&roots, &root, "src/a.rs:1", "o `Outro`"),
+            vec![Finding::NameUnknown { name: "Outro".into() }]
         );
     }
 
@@ -139,10 +162,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let roots = vec![root.clone()];
-        assert_eq!(check_at(&roots, &root, "cargo test → ok", "o `SpecLog`"), vec![Finding::NoMap]);
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(model_path(&root), "{quebrado").unwrap();
-        assert_eq!(check_at(&roots, &root, "cargo test → ok", "o `SpecLog`"), vec![Finding::NoMap]);
+        assert_eq!(check_on_disk(&roots, &root, "cargo test → ok", "o `SpecLog`"), vec![Finding::NoMap]);
+        project_map::write_text(&root, "{quebrado").unwrap();
+        assert_eq!(check_on_disk(&roots, &root, "cargo test → ok", "o `SpecLog`"), vec![Finding::NoMap]);
         let world = DiskWorld::new(roots, None);
         assert!(!world.has_map());
     }

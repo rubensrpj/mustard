@@ -2,31 +2,35 @@
 //!
 //! É a porta única da execução, e cada rodada é uma chamada só. Sem relatório,
 //! a rodada despacha: escolhe as ondas que podem sair juntas — duas no mesmo
-//! arquivo inclusive —, cria a cópia separada de cada uma no commit atual e
-//! escolhe a pasta de compilação dela, monta o pedido de cada uma com as duas,
+//! arquivo inclusive —, prepara no commit atual a vaga de cada uma, a cópia
+//! fixa em que ela compila, monta o pedido de cada uma com a cópia dela,
 //! grava o envio com o pedido exato como foi injetado e marca a spec como em
 //! execução na primeira rodada. Com a entrega que uma onda gravou na spec e
 //! que ainda não foi assumida, ela primeiro fecha o que voltou — junta ao
-//! repositório principal os arquivos que cada cópia entregou, comita e apaga a
-//! cópia — e só então despacha a rodada seguinte.
+//! repositório principal os arquivos que cada cópia entregou e comita; a
+//! cópia fica, para a próxima onda — e só então despacha a rodada seguinte.
 //!
-//! **A spec antiga passa para o backlog.** Antes de tudo, a rodada converte a
-//! spec uma vez, no módulo `convert`: a onda desenhada à mão que nunca saiu deixa de
-//! valer, e as tarefas dela voltam para o backlog. A entregue ou aprovada fica
-//! como história; a que já saiu termina como saiu.
+//! **A onda nasce quando sai.** Só existe a onda que está rodando; as outras
+//! tarefas ficam no backlog, sem número de onda. A cada rodada, a montagem
+//! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
+//! tarefas do mesmo tipo de trabalho, que o Jev julga numa chamada só sobre o
+//! backlog inteiro, ou que dividem arquivo quando não há Jev. A onda montada
+//! que não saiu se desfaz, e as tarefas dela voltam ao backlog e entram na
+//! conta.
 //!
-//! **A escolha antes do envio.** Antes de criar a cópia de uma onda pronta,
-//! a rodada olha os candidatos dela: os itens combinados do projeto todo, os
-//! sem dono e as lições do banco que casam com ela. Com algum, a onda só sai
-//! com a escolha do orquestrador, a conversa principal, e nenhum agente é
-//! aberto para isso: a resposta traz em `analysis` os candidatos de cada onda,
-//! cada um com o título, e o orquestrador devolve a linha
-//! `<ANALYSIS>{…}</ANALYSIS>` no `--report` seguinte, sozinha ou junto das
-//! outras. O envio gravado leva os itens que ficaram e, à parte, no campo
-//! `analysis`, o que saiu e o que entrou, cada um com o motivo. Os itens que
-//! as tarefas da onda fazem vão sempre, sem escolha. A mesma onda que sai de
-//! novo sem plano novo usa a escolha do envio anterior, quando ela julgou cada
-//! candidato de agora. Sem escolha, a onda espera; nada é recusado.
+//! **A escolha dos itens do pedido.** Antes de criar a cópia de uma onda
+//! pronta, a rodada olha os itens combinados que o pedido dela não leva nem
+//! tira por conta própria (`item_choice`): os do projeto todo, sem a marca de
+//! toda onda, os ligados aos arquivos que as tarefas dela mexem e os sem
+//! ligação com ela. Com algum, uma chamada ao Jev por onda
+//! diz, por item, se ele governa algo que as tarefas dela mudam ou testam; a
+//! onda sai na mesma rodada, sem parada de quem conduz. Os itens que as tarefas
+//! da onda fazem, os de toda onda (`every_wave`), os de que a onda é dona e as
+//! lições vão sempre, sem chamada. O envio gravado leva os itens que ficaram e,
+//! à parte, no campo `analysis`, o que saiu e o que entrou, cada um com a
+//! chance que o Jev deu. Sem chave, ou com a chamada falhando, o pedido leva o
+//! padrão: o projeto todo e os dos arquivos da onda vão, e o sem ligação fica
+//! fora.
 //!
 //! **A entrega mora na spec, e a rodada a assume.** O agente de onda grava a
 //! própria entrega com `mustard-rt run write delivered`, e só com o envio da
@@ -41,14 +45,18 @@
 //! apontando as voltas desde o último envio — também na onda que o conserto
 //! fecha, o que pede a revisão dela de novo —, grava a versão nova do critério
 //! com a prova nova, formata só os arquivos da rodada, faz o commit com a
-//! mensagem montada do resumo e grava cada sobra como pendência da spec, pela
-//! mesma porta do `pending --add`. O `--report` leva só o que o orquestrador
-//! escreve: a linha `<USAGE>{…}</USAGE>` com o consumo de cada onda, a
-//! `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O veredito também mora na spec:
-//! o revisor o grava com `mustard-rt run write verdict`, só com pedido de
-//! revisão aberto, e a rodada ou o fechamento o assume antes das entregas,
-//! com `replaces` para as voltas dele. A linha de consumo sozinha completa a
-//! onda que voltou; a de uma onda de lote com envio aberto, sem volta e com o
+//! mensagem montada do resumo e grava cada sobra como tarefa da spec, no
+//! backlog. O `--report` leva só o que o orquestrador
+//! escreve: a linha `<USAGE>{"wave":1}</USAGE>`, que marca que o agente da
+//! onda terminou e a `<PAUSED>`. O consumo de
+//! cada onda assumida — o modelo, os passos e os tokens do agente dela — e o
+//! da conversa principal no ramo da spec a rodada mede nos arquivos de
+//! conversa que a plataforma grava, na pasta de configuração dela e na sessão
+//! de quem chama, e avisa a onda cujo arquivo não achou. O veredito também
+//! mora na spec: o revisor o grava com `mustard-rt run write verdict`, só com
+//! pedido de revisão aberto, e a rodada ou o fechamento o assume antes das
+//! entregas, com `replaces` para as voltas dele. A linha de consumo sozinha
+//! completa a onda que voltou; a de uma onda de lote com envio aberto, sem volta e com o
 //! Claude Code dela fechado marca a onda cortada, e as tarefas dela voltam
 //! para o backlog.
 //!
@@ -64,7 +72,13 @@
 //! assinatura de coautoria ou e-mail de alguém); a prova de um critério que
 //! as ondas da rodada cobrem que não executa ou não passa — a rodada roda
 //! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
-//! critério, o comando inteiro e a saída de erro; o relatório em que um agente
+//! critério, o comando inteiro e a saída de erro; a conferência depois da
+//! onda, também antes de comitar, que recusa a importação nova contra uma
+//! regra forte do padrão do projeto, o resto do que a onda tirou e a onda que
+//! cresce além do limite de linhas ou de testes novos — a lista
+//! vai inteira numa mensagem só, a onda conserta na mesma cópia e grava a
+//! entrega de novo, e depois da segunda rodada de conserto a pergunta vai ao
+//! usuário; o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
 //! "sim" do usuário. O "sim" da mudança de plano é o clique em "Aceitar" na
 //! pergunta dela, gravado pela testemunha como na aprovação da spec, e nunca a
@@ -98,25 +112,42 @@
 //! que sai verde sem rodar teste nenhum sai pelo código do critério; a cópia
 //! que não pôde ser criada, cuja onda fica para a rodada seguinte; e a cópia
 //! com mudança fora da entrega, que fica no disco em vez de ser apagada.
+//! Cada onda que mudou arquivo volta com a linha de tamanho — as linhas
+//! postas e tiradas, os testes novos e os arquivos mudados —, que sai na
+//! resposta como aviso `wave-size` e no corpo do commit.
 //!
 //! A página da spec e a do projeto são refeitas no fim da rodada, e a resposta
 //! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço
 //! é impresso na conversa.
 
+mod agreed;
 mod answer;
+mod backlog;
 mod commit;
-mod convert;
+mod copy_check;
+mod imports_check;
+pub(crate) mod item_choice;
+mod keep;
+mod leftovers;
+mod lost_commit;
 mod queue;
+mod read_check;
+mod rehearsal;
+mod removed_check;
 mod report;
+mod size_check;
+mod slots;
 mod stops;
+mod summary_wave;
+mod usage;
 
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
 /// espera o clique e as ondas paradas no limite de consertos, o bloco de
 /// retomada as conta.
-pub(crate) use stops::{change_accepted, change_code_of, replan_code, waves_stuck};
+pub(crate) use stops::{change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
 
-pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
+pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 
@@ -125,10 +156,20 @@ use serde_json::Value;
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::RoundRefusal;
-pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, ensure_copy, open_review, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use answer::{agents_refreshed, read_command, RoundRefusal};
+pub(crate) use queue::{backlog_left, open_review, open_sends, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
+#[cfg(test)]
+pub(crate) use slots::copies_leave_with_the_test;
+pub(crate) use keep::Kept;
+pub(crate) use slots::{
+    code_kept_hint, ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_single_copy,
+    remove_spec_copies, reset_slot, slot_owner, spec_copies, Removal,
+};
+pub(crate) use read_check::request_name;
+#[cfg(test)]
+pub(crate) use tests::{read_request, read_review, seed_read, shipped_agent};
 pub(crate) use report::{check_return, check_verdict_return, take_report};
+pub(crate) use usage::Caller;
 
 /// As opções de `mustard-rt run round`.
 pub struct RoundOpts {
@@ -144,17 +185,27 @@ pub struct RoundOpts {
 /// aprovadas.
 pub const DONE_STEP: &str = "close";
 
-/// O núcleo testável de [`run`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run`]. A sessão e a pasta de configuração da
+/// plataforma vêm do ambiente. Nunca entra em pânico.
 pub(crate) fn round_at(opts: &RoundOpts) -> Value {
-    round_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let config_dir = mustard_core::claude_config_dir();
+    round_in(opts, Caller { session: session.as_deref(), config_dir: config_dir.as_deref() })
 }
 
-/// [`round_at`] com a sessão recebida, que é como um teste a escolhe.
+/// [`round_at`] com a sessão recebida, que é como um teste a escolhe, sem a
+/// pasta de configuração da plataforma: o consumo das ondas não é medido.
+#[cfg(test)]
 pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
+    round_in(opts, Caller { session, config_dir: None })
+}
+
+/// [`round_at`] com a sessão e a pasta de configuração da plataforma
+/// recebidas (`caller`), que é como o teste do consumo as escolhe.
+pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match answer::run_round(opts, &project.root, lang, session) {
+    match answer::run_round(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
     }
@@ -177,6 +228,7 @@ mod tests {
     use mustard_core::io::spec_events as store;
     use serde_json::{json, Value};
 
+    use super::read_check::unread_items;
     use super::*;
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
 
@@ -232,26 +284,10 @@ mod tests {
     /// recebe o número da mensagem de origem: é antes dela que o levantamento
     /// grava os itens combinados, inclusive os sem dono.
     pub(super) fn approved_with(root: &Path, spec: &str, plan: &[(u64, &[&str], &[u64])], before: impl FnOnce(u64)) {
+        let mut files = vec![("mustard.json", "{}")];
+        files.extend(plan.iter().flat_map(|(_, planned, _)| planned.iter().map(|file| (*file, "fn one() {}\n"))));
+        crate::shared::test_fixture::seeded_repo(root, &files);
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        for (_, files, _) in plan {
-            for file in *files {
-                let path = root.join(file);
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, "fn um() {}\n").unwrap();
-            }
-        }
-        git_at(root, &["init", "-q"]);
-        // O fim de linha do repositório de teste é fixo: no Windows o git
-        // converteria os arquivos ao criar a cópia da onda, e a junção
-        // devolveria CRLF onde o teste espera LF.
-        git_at(root, &["config", "core.autocrlf", "false"]);
-        git_at(root, &["config", "core.eol", "lf"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
@@ -280,6 +316,18 @@ mod tests {
         }
         before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        copies_leave_with_the_test(root);
+    }
+
+    /// O texto que a instalação escreveria agora no agente `name` do projeto
+    /// em `root`, no idioma e com o modelo e o esforço do `mustard.json` dele.
+    pub(crate) fn shipped_agent(root: &Path, name: &str) -> String {
+        let config = mustard_core::ProjectConfig::load(root);
+        let rel = format!("agents/mustard/{name}.md");
+        mustard_core::harness_texts(config.language().text_or_default(), config.agent_settings())
+            .into_iter()
+            .find_map(|(path, body)| (path == rel).then_some(body))
+            .unwrap_or_else(|| panic!("a instalação não escreve o agente {name}"))
     }
 
     /// O mapa do projeto em `root`, como o scan o grava, com uma parte só, na
@@ -287,7 +335,7 @@ mod tests {
     /// o mapa fica fora do commit, como no projeto de verdade.
     pub(super) fn mapped(root: &Path, kind: &str) {
         let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": kind, "code_files": 1}]});
-        std::fs::write(mustard_core::io::project_map::model_path(root), model.to_string()).unwrap();
+        mustard_core::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
     /// O projeto em `root` com o submódulo `libs/sub`, clonado de um servidor
@@ -299,7 +347,7 @@ mod tests {
         std::fs::create_dir_all(root).unwrap();
         git_at(servers, &["init", "-q", "--bare", "-b", "main", "sub.git"]);
         git_at(&seed, &["init", "-q", "-b", "main"]);
-        std::fs::write(seed.join("lib.txt"), "fn um() {}\n").unwrap();
+        std::fs::write(seed.join("lib.txt"), "fn one() {}\n").unwrap();
         git_at(&seed, &["add", "-A"]);
         git_at(&seed, &["commit", "-q", "-m", "biblioteca"]);
         git_at(&seed, &["push", "-q", &server.to_string_lossy(), "main"]);
@@ -327,6 +375,46 @@ mod tests {
         )
     }
 
+    /// As opções de uma rodada da spec `x`, com o relatório `report`.
+    fn round_opts(root: &Path, report: Option<&str>) -> RoundOpts {
+        RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: report.map(str::to_string) }
+    }
+
+    /// A leitura de entrada de uma rodada da spec `x`, com o relatório
+    /// `report`, pelo caminho de [`round`]: o que a rodada lê antes de assumir
+    /// qualquer volta e de pegar a trava do passo do git.
+    pub(super) fn round_entry(root: &Path, report: Option<&str>) -> Result<answer::Entry, RoundRefusal> {
+        let project = spec_events::project(root);
+        answer::enter_round(&round_opts(root, report), &project.root, None)
+    }
+
+    /// O resto da rodada da spec `x`, com o relatório `report`, a partir da
+    /// leitura de entrada `entry` ([`round_entry`]), pelo caminho de
+    /// [`round`]: a mesma resposta que ele daria.
+    pub(super) fn round_from(root: &Path, report: Option<&str>, entry: Result<answer::Entry, RoundRefusal>) -> Value {
+        let project = spec_events::project(root);
+        let opts = round_opts(root, report);
+        entry
+            .and_then(|entry| {
+                answer::run_entered_round(&opts, &project.root, project.lang, Caller::default(), &answer::scan_mine, entry)
+            })
+            .unwrap_or_else(|refusal| refusal.to_value(project.lang))
+    }
+
+    /// Duas rodadas da spec `x` ao mesmo tempo, com o relatório `report`,
+    /// cada uma pelo caminho de [`round`]. As duas fazem a leitura de entrada
+    /// antes de qualquer uma seguir: a volta de cada leitura é o sinal de que
+    /// ela já aconteceu, sem esperar relógio nenhum. Só então as duas seguem,
+    /// cada uma na sua linha de execução, disputando a trava do passo do git.
+    /// Devolve a resposta de cada rodada.
+    pub(super) fn two_rounds_at_once(root: &Path, report: Option<&str>) -> Vec<Value> {
+        let entries = [(); 2].map(|()| round_entry(root, report));
+        std::thread::scope(|scope| {
+            let rounds = entries.map(|entry| scope.spawn(move || round_from(root, report, entry)));
+            rounds.into_iter().map(|r| r.join().unwrap()).collect()
+        })
+    }
+
     /// [`round`] com quem relê o mapa depois do commit da rodada (`mine`),
     /// que um teste escolhe sem instalar a ferramenta do scan de verdade.
     pub(super) fn round_with_mine(
@@ -341,9 +429,43 @@ mod tests {
         let opts =
             RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
         let project = spec_events::project(&opts.root);
-        match answer::run_round_with_mine(&opts, &project.root, project.lang, None, mine) {
+        match answer::run_round_with_mine(&opts, &project.root, project.lang, Caller::default(), mine) {
             Ok(report) => report,
             Err(refusal) => refusal.to_value(project.lang),
+        }
+    }
+
+    /// A chamada `read` que o `run read` de dentro da cópia grava para `item` do
+    /// pedido `request`, na spec `spec`.
+    pub(crate) fn seed_read(root: &Path, spec: &str, request: &str, item: &str) {
+        let call =
+            json!({"author": "binary", "command": "read", "ms": 0, "result": "ok", "request": request, "item": item});
+        crate::shared::spec_state::seed_event(root, spec, "call", call);
+    }
+
+    /// As leituras que o agente da onda `wave` da spec `spec` faz do pedido
+    /// dela: uma chamada `read` por item da lista do envio aberto que ainda
+    /// não foi lido. Sem envio aberto, ou de antes de o envio guardar a lista,
+    /// não grava nada.
+    pub(crate) fn read_request(root: &Path, spec: &str, wave: u64) {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let Some(sent) = open_sends(&log).get(&wave).copied() else { return };
+        let request = request_name(Some(wave));
+        for item in unread_items(&log, sent, &request) {
+            seed_read(root, spec, &request, &item);
+        }
+    }
+
+    /// As leituras que o revisor da spec `spec` faz do pedido da revisão: uma
+    /// chamada `read` por item da lista do envio de revisão aberto que ainda
+    /// não foi lido. Sem pedido aberto, ou de antes de o envio guardar a lista,
+    /// não grava nada.
+    pub(crate) fn read_review(root: &Path, spec: &str) {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let Some(sent) = open_review(&log) else { return };
+        let request = request_name(None);
+        for item in unread_items(&log, sent, &request) {
+            seed_read(root, spec, &request, &item);
         }
     }
 
@@ -353,9 +475,22 @@ mod tests {
     }
 
     /// A volta de uma onda da spec `x`, gravada como o agente a grava: pelo
-    /// `run write delivered`, com os campos de `body`. Devolve a resposta da
-    /// gravação, com a recusa quando ela recusa.
+    /// `run write delivered`, com os campos de `body`. A recusa por item do
+    /// pedido não lido leva o agente a ler o pedido e gravar de novo, e a
+    /// resposta é a da segunda gravação; qualquer outra recusa volta como
+    /// veio, sem leitura nenhuma gravada.
     pub(super) fn returned(root: &Path, body: Value) -> Value {
+        let first = returned_unread(root, body.clone());
+        let Some(wave) = body["wave"].as_u64().filter(|_| first["reason"] == json!("delivery-read-missing")) else {
+            return first;
+        };
+        read_request(root, "x", wave);
+        returned_unread(root, body)
+    }
+
+    /// Como [`returned`], sem ler o pedido antes: a gravação do agente que
+    /// entrega sem ter lido o que o pedido lista.
+    pub(super) fn returned_unread(root: &Path, body: Value) -> Value {
         crate::commands::spec_events::write::write_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("x".to_string()),
@@ -366,8 +501,10 @@ mod tests {
 
     /// A volta da onda `wave`, com o resumo do commit, gravada pela porta do
     /// agente. Cada arquivo entregue que existe ganha uma linha, para o commit
-    /// ter o que levar. Devolve o relatório que o agente deixa depois de
-    /// gravar: vazio, porque a entrega mora na spec.
+    /// ter o que levar, e cada item combinado que o pedido da onda levou vem
+    /// cumprido em `agreed`, como o texto do agente ensina. Devolve o
+    /// relatório que o agente deixa depois de gravar: vazio, porque a entrega
+    /// mora na spec.
     pub(super) fn delivered(root: &Path, wave: u64, text: &str, files: &[&str]) -> String {
         for file in files {
             let path = root.join(file);
@@ -375,7 +512,13 @@ mod tests {
                 std::fs::write(&path, format!("{before}// {text}\n")).unwrap();
             }
         }
-        let body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
+        let mut body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let agreed: Vec<Value> =
+            agreed::request_agreed(&log, wave).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+        if !agreed.is_empty() {
+            body["agreed"] = json!(agreed);
+        }
         let wrote = returned(root, body);
         assert_eq!(wrote["ok"], json!(true), "a volta da onda {wave} não foi gravada: {wrote}");
         String::new()
@@ -443,9 +586,52 @@ mod tests {
         (subject.to_string(), body.trim().to_string())
     }
 
+    /// A decisão do usuário que a mudança de plano dos testes troca.
+    pub(super) const DECISION: &str = "A ordem das ondas que o usuário escolheu.";
+
+    /// A pergunta que quem conduz escreve ao usuário para essa mudança, com as
+    /// palavras dele.
+    pub(super) const QUESTION: &str = "A onda 1 pede a 2 antes dela, e isso troca a ordem que você escolheu. Posso seguir assim?";
+
+    /// O aviso da resposta `out` com a onda que troca uma decisão do usuário e
+    /// espera o clique dele; nulo quando nenhuma espera.
+    pub(super) fn change_asked(out: &Value) -> Value {
+        let mut warnings = out["warnings"].as_array().into_iter().flatten();
+        warnings.find(|w| w["reason"] == json!("wave-plan-does-not-work")).cloned().unwrap_or(Value::Null)
+    }
+
+    /// O aviso da resposta `out` com o motivo `reason`, que precisa existir:
+    /// o teste que o pede falha, com a resposta inteira, quando ele não saiu.
+    pub(super) fn warning_of(out: &Value, reason: &str) -> Value {
+        let mut warnings = out["warnings"].as_array().into_iter().flatten();
+        warnings.find(|w| w["reason"] == json!(reason)).cloned().unwrap_or_else(|| panic!("no {reason} warning: {out}"))
+    }
+
     /// As ondas de uma resposta da rodada, num campo dela.
     pub(super) fn waves_in(out: &Value, field: &str) -> Vec<u64> {
         out[field].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect()
+    }
+
+    /// O pedido que a resposta `out` despachou para a onda `wave`, lido como
+    /// o agente o lê: rodando o comando que a resposta traz no lugar do
+    /// pedido. O comando lê o último envio gravado da onda, então a leitura
+    /// vem logo depois da rodada que o gravou. Vazio quando a onda não saiu.
+    pub(super) fn request_of(out: &Value, wave: u64) -> String {
+        let found = out["dispatch"].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
+        found.map(|entry| request_by_command(entry, out)).unwrap_or_default()
+    }
+
+    /// [`request_of`] da onda na posição `at` da lista despachada.
+    pub(super) fn request_at(out: &Value, at: usize) -> String {
+        request_by_command(&out["dispatch"][at], out)
+    }
+
+    /// Roda o comando `read` de um item despachado — `mustard-rt run read
+    /// request-<n> --root <raiz> --spec <spec>` — pela mesma leitura do
+    /// comando, e devolve o que ele imprime.
+    fn request_by_command(entry: &Value, out: &Value) -> String {
+        let command = entry["read"].as_str().unwrap_or_else(|| panic!("the dispatch carries no read command: {out}"));
+        crate::commands::spec_events::read::read_by_command(command)
     }
 
     /// A versão nova da tarefa da onda `n`: o plano da onda muda depois do
@@ -486,7 +672,7 @@ mod tests {
     /// cada parte da pasta dela, pela medida única do núcleo.
     #[test]
     fn no_file_of_the_round_goes_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("flow").join("round.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("commands").join("flow").join("round.rs");
         assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

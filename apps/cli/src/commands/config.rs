@@ -1,4 +1,5 @@
-//! `mustard config` — (re)configure the project-root `mustard.json` git flow.
+//! `mustard config` — (re)configure the project-root `mustard.json` git flow
+//! and languages.
 //!
 //! Ported from `commands/config.ts`, which was a 13-line wrapper that called
 //! `generateMustardJson`. The Rust port is just as thin: it delegates to
@@ -25,6 +26,6 @@ pub struct ConfigOptions {
 /// through. `git_flow` itself falls back to non-interactive derivation when
 /// stdin is not a TTY, so a scripted run never blocks.
 pub fn config(project_path: &Path, options: &ConfigOptions) -> Result<()> {
-    println!("\nMustard - Git Flow Configuration\n");
+    println!("\nMustard - git flow and languages\n");
     git_flow::configure(project_path, !options.yes)
 }

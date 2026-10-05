@@ -23,16 +23,24 @@
 //! The per-language seam the old design called for is preserved: there is one
 //! [`Analyzer`] instance per language, but all are the same generic type, each
 //! parameterized by a compiled query. Precise AST facts go in; the same generic
-//! `Extracted`/`Decl` come out, so the miner (Layer 4) never learns any syntax.
+//! `Extracted`/`Decl` come out, so the graph and the map never learn any syntax.
 //!
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::{CallSite, Decl};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::markup::Markup;
+use crate::model::{CallSite, Decl, Route, RouteCall, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
+use crate::routes::{self, RouteRule};
+use mustard_core::domain::ast::is_test_path;
+use mustard_core::domain::project_map::outer_declarations;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
+
+mod line_end;
+mod typed;
 
 #[derive(Default)]
 pub(crate) struct Extracted {
@@ -40,10 +48,82 @@ pub(crate) struct Extracted {
     /// The imports the language puts in sight of more files than the one that
     /// writes them (`@import.global`).
     pub global_imports: Vec<String>,
+    /// Os imports escritos dentro de um trecho de teste (`@test_block`): ficam
+    /// fora de `imports` e de `global_imports`.
+    pub test_imports: Vec<String>,
+    /// As linhas, da primeira à última, de cada trecho de teste do arquivo.
+    pub test_lines: Vec<(usize, usize)>,
+    /// Os nomes dos módulos sem corpo que o arquivo declara como teste
+    /// (`@test_module`): o arquivo de cada um é todo de teste.
+    pub test_modules: Vec<String>,
+    /// As linhas, da primeira à última, de cada módulo com corpo escrito
+    /// dentro do arquivo (`@inner_module`).
+    pub module_lines: Vec<(usize, usize)>,
+    /// As linhas de cada import que o arquivo escreve ao menos uma vez dentro
+    /// de um desses módulos, todas elas.
+    pub import_lines: BTreeMap<String, Vec<usize>>,
+    /// Cada caminho do projeto escrito antes do nome numa chamada
+    /// (`@call.path` que virou import), com as chamadas escritas por ele, fora
+    /// do trecho de teste.
+    pub call_paths: BTreeMap<String, Vec<CallSite>>,
+    /// Cada caminho de duas partes ou mais escrito antes do nome numa chamada
+    /// que não virou import (`std::fs` em `std::fs::read()`), com as chamadas
+    /// escritas por ele, fora do trecho de teste.
+    pub other_call_paths: BTreeMap<String, Vec<CallSite>>,
+    /// De cada import, os nomes que ele traz ao arquivo (`@imported`), cada
+    /// um com o nome que tem no arquivo de origem (`@imported.original`); o
+    /// mesmo nome quando o import não o troca.
+    pub brought: BTreeMap<String, BTreeMap<String, String>>,
+    /// De cada repasse escrito fora dos módulos de dentro do arquivo, os nomes
+    /// que ele oferece, cada um com o nome que tem no arquivo de origem; `*`
+    /// quando oferece todos.
+    pub reexports: BTreeMap<String, BTreeMap<String, String>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
+    /// De cada declaração, na ordem de `declarations`, a primeira linha dela
+    /// com o comentário escrito logo acima, quando há um.
+    pub tops: Vec<usize>,
     pub calls: Vec<CallSite>,
     pub cites: Vec<CallSite>,
+    /// Os nomes escritos onde vai um valor (`@call.value`), fora da chamada:
+    /// a função entregue a outra ou guardada num nome.
+    pub value_uses: Vec<CallSite>,
+    /// Os nomes de membro escritos depois do objeto (`@member`), fora da
+    /// chamada: a propriedade ou o campo lido ou escrito.
+    pub member_reads: Vec<CallSite>,
+    /// Os nomes que abrem a cadeia escrita antes de uma chamada e que o
+    /// arquivo não liga ([`crate::model::Module::unbound_heads`]).
+    pub unbound_heads: Vec<String>,
+    /// Os textos fixos do arquivo (`@text`), em ordem de linha.
+    pub texts: Vec<Text>,
+    /// As rotas do servidor registradas no arquivo, fora do trecho de teste.
+    pub routes: Vec<Route>,
+    /// Os prefixos que o arquivo escreve para rotas de outros arquivos.
+    pub route_links: RouteLinks,
+    /// As chamadas da tela a rotas do servidor escritas no arquivo, fora do
+    /// trecho de teste.
+    pub route_calls: Vec<RouteCall>,
+    /// Os comentários do começo do arquivo, antes do primeiro código, numa
+    /// linha.
+    pub file_doc: String,
+    /// Os outros comentários do arquivo que caem fora das linhas de toda
+    /// declaração, numa linha: os de dentro já estão no `body_comment` dela.
+    pub file_comment: String,
+    /// Quantos bytes do começo do `body_comment` da primeira declaração de
+    /// fora são comentários do começo do arquivo.
+    pub file_doc_in_body: usize,
+}
+
+/// O que a extração de um arquivo lê além das declarações, dos imports, das
+/// chamadas e das citações: o que o mapa não guarda do arquivo não se lê.
+#[derive(Clone, Copy)]
+pub(crate) struct Keep {
+    /// Os comentários e os nomes escritos no código, do arquivo e de cada
+    /// declaração: o arquivo escrito por máquina não os guarda.
+    pub written_text: bool,
+    /// Os textos fixos e as rotas: só o código do projeto os guarda, e não o
+    /// arquivo de teste nem o escrito por máquina.
+    pub texts_and_routes: bool,
 }
 
 /// One language as produced by `build.rs` from `languages.toml` + its `.scm`
@@ -99,17 +179,256 @@ pub fn extensions(lang: &str) -> &'static [&'static str] {
     LANG_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
 }
 
-/// Build one [`Analyzer`] per language declared in the registry. A language
-/// whose grammar/queries fail to compile is skipped with a warning rather than
-/// aborting the whole run.
-pub fn registry() -> HashMap<String, Analyzer> {
-    let mut m = HashMap::new();
-    for raw in raw_langs() {
-        if let Some(a) = Analyzer::new(&raw) {
-            m.insert(a.name.clone(), a);
+/// As extensões que o import da língua escreve no lugar da do próprio arquivo
+/// — dado do registro (`import_extensions` em languages.toml). Vazio quando a
+/// língua não declara nenhuma.
+pub fn import_extensions(lang: &str) -> &'static [&'static str] {
+    LANG_IMPORT_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
+}
+
+/// O import relativo que a língua escreve com um separador no lugar da barra
+/// (`relative_import` em languages.toml).
+#[derive(Clone, Copy, Debug)]
+pub struct RelativeImport {
+    /// O texto entre as partes do caminho; repetido no começo, torna o import
+    /// relativo à pasta de quem importa.
+    pub separator: &'static str,
+}
+
+impl RelativeImport {
+    /// Quantas vezes o separador abre o import, e o resto dele. Zero quando o
+    /// import não começa pelo separador: não é relativo nesta forma.
+    pub fn leading<'a>(&self, imp: &'a str) -> (usize, &'a str) {
+        let mut rest = imp;
+        let mut count = 0;
+        while let Some(after) = rest.strip_prefix(self.separator) {
+            rest = after;
+            count += 1;
         }
+        (count, rest)
     }
-    m
+}
+
+/// O import relativo por separador da língua — dado do registro. `None`
+/// quando a língua não o declara: o import dela nunca é lido assim.
+pub fn relative_import(lang: &str) -> Option<RelativeImport> {
+    LANG_RELATIVE_IMPORT
+        .iter()
+        .find(|(name, separator)| *name == lang && !separator.is_empty())
+        .map(|(_, separator)| RelativeImport { separator })
+}
+
+/// Os textos que juntam as partes de um nome qualificado na língua
+/// (`qualified_separators` em languages.toml), na ordem em que o registro os
+/// escreve. `None` quando a língua não os declara: para quem lê, ela não tem
+/// separador.
+pub fn qualified_separators(lang: &str) -> Option<&'static [&'static str]> {
+    LANG_QUALIFIED_SEPARATORS
+        .iter()
+        .find(|(name, separators)| *name == lang && !separators.is_empty())
+        .map(|(_, separators)| *separators)
+}
+
+/// O nome que, no começo de um caminho qualificado, sobe um módulo
+/// (`parent_alias` em languages.toml). `None` quando a língua não o declara.
+pub fn parent_alias(lang: &str) -> Option<&'static str> {
+    Some(text_field(LANG_PARENT_ALIAS, lang)).filter(|alias| !alias.is_empty())
+}
+
+/// O nome que, no começo de um caminho qualificado, nomeia o próprio módulo
+/// de quem o escreve (`module_alias` em languages.toml). `None` quando a
+/// língua não o declara.
+pub fn module_alias(lang: &str) -> Option<&'static str> {
+    Some(text_field(LANG_MODULE_ALIAS, lang)).filter(|alias| !alias.is_empty())
+}
+
+/// Os separadores que ligam um nome ao qualificador escrito antes dele: os
+/// que a língua declara (`qualified_separators` em languages.toml). Vazio
+/// quando ela não declara nenhum: sem o campo, nenhum texto liga um nome ao
+/// que vem antes dele.
+fn qualifier_separators(lang: &str) -> &'static [&'static str] {
+    qualified_separators(lang).unwrap_or(&[])
+}
+
+/// Todos os textos que a língua escreve entre duas partes de um caminho de
+/// nomes: os de nome qualificado e os de membro, nessa ordem. Quem lê um
+/// caminho escrito num texto de assinatura anda por eles.
+pub(crate) fn name_separators(lang: &str) -> impl Iterator<Item = &'static str> {
+    qualifier_separators(lang).iter().chain(member_separators(lang)).copied()
+}
+
+/// Os separadores que ligam o método ao valor escrito antes dele sem juntar
+/// caminho (`member_separators` em languages.toml). Vazio sem o campo.
+fn member_separators(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_MEMBER_SEPARATORS, lang)
+}
+
+/// A língua liga o método ao valor por um separador próprio: o de nome
+/// qualificado, nela, só junta caminho, e o nome antes dele é módulo ou tipo.
+pub fn has_member_separators(lang: &str) -> bool {
+    !member_separators(lang).is_empty()
+}
+
+/// Os nomes que, antes do método chamado, são o próprio objeto ou o próprio
+/// tipo (`self_receivers` em languages.toml). Vazio sem o campo.
+pub fn self_receivers(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_SELF_RECEIVERS, lang)
+}
+
+/// A língua chama um membro do próprio objeto pelo nome sozinho
+/// (`implicit_self` em languages.toml). `false` sem o campo.
+pub fn implicit_self(lang: &str) -> bool {
+    LANG_IMPLICIT_SELF.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// O arquivo que não declara namespace fica à vista dos arquivos da mesma
+/// família no mesmo projeto (`global_namespace` em languages.toml). `false`
+/// sem o campo.
+pub fn global_namespace(lang: &str) -> bool {
+    LANG_GLOBAL_NAMESPACE.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// O arquivo `path`, da língua `lang`, é o de imports da pasta
+/// (`imports_file` do `markup` em languages.toml): os imports dele valem nos
+/// arquivos da mesma língua da pasta dele e das de baixo.
+pub fn imports_whole_folder(lang: &str, path: &str) -> bool {
+    LANG_MARKUP.iter().any(|(name, rule)| *name == lang && rule.is_imports_file(path))
+}
+
+/// As linhas que o projeto de cada manifesto de `manifests` escreve na
+/// pasta dele para os arquivos de marcação cuja língua o pede (`folder_root`
+/// do `markup` em languages.toml), cada uma como um arquivo de imports da
+/// pasta: o caminho do manifesto, a língua e o texto.
+pub(crate) fn project_imports(manifests: &[crate::model::Manifest]) -> Vec<(String, String, String)> {
+    LANG_MARKUP
+        .iter()
+        .flat_map(|(lang, rule)| rule.project_lines(manifests).into_iter().map(|(path, text)| (path, (*lang).to_string(), text)))
+        .collect()
+}
+
+/// O import não relativo de uma parte só pode nomear um arquivo do projeto
+/// (`single_part_paths` em languages.toml). `false` sem o campo.
+pub fn single_part_paths(lang: &str) -> bool {
+    LANG_SINGLE_PART_PATHS.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// O nome que, trazido por um import, traz o último nome escrito antes da
+/// lista que o contém (`import_self` em languages.toml). `None` sem o campo.
+pub(crate) fn import_self(lang: &str) -> Option<&'static str> {
+    Some(text_field(LANG_IMPORT_SELF, lang)).filter(|name| !name.is_empty())
+}
+
+/// Os nomes que todo arquivo da língua vê sem import (`prelude` em
+/// languages.toml). Vazio sem o campo.
+pub fn prelude(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_PRELUDE, lang)
+}
+
+/// As chamadas que escrevem no log (`log_calls` em languages.toml). Vazio
+/// sem o campo.
+fn log_calls(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_LOG_CALLS, lang)
+}
+
+/// O que lança ou devolve erro (`error_forms` em languages.toml). Vazio sem
+/// o campo.
+fn error_forms(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_ERROR_FORMS, lang)
+}
+
+/// Os nomes do próprio objeto visto pelo tipo de cima (`parent_receivers` em
+/// languages.toml). Vazio sem o campo.
+pub fn parent_receivers(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_PARENT_RECEIVERS, lang)
+}
+
+/// Os arquivos raiz de um pacote, sem a extensão e a partir da pasta do
+/// manifesto (`package_entry` em languages.toml). Vazio sem o campo.
+pub fn package_entry(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_PACKAGE_ENTRY, lang)
+}
+
+/// A família da língua: as línguas que leem as mesmas consultas (`dir` em
+/// languages.toml) são a mesma, escrita em arquivos de extensões diferentes.
+/// Vazio para uma língua que o registro não tem.
+pub fn family(lang: &str) -> &'static str {
+    text_field(LANG_FAMILY, lang)
+}
+
+/// O valor de um campo de lista do registro para a língua; vazio sem o campo.
+fn list_field(table: &'static [(&'static str, &'static [&'static str])], lang: &str) -> &'static [&'static str] {
+    table.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, values)| *values)
+}
+
+/// O valor de um campo de texto do registro para a língua; vazio sem o campo.
+fn text_field(table: &'static [(&'static str, &'static str)], lang: &str) -> &'static str {
+    table.iter().find(|(name, _)| *name == lang).map_or("", |(_, value)| *value)
+}
+
+/// Os nomes do arquivo de configuração dos apelidos de pasta da língua
+/// (`alias_config` em languages.toml), em ordem de preferência na mesma
+/// pasta; vazio quando a língua não tem.
+pub fn alias_config(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_ALIAS_CONFIG, lang)
+}
+
+/// A chave, em caminho com pontos, da pasta base dos imports não relativos
+/// (`alias_base` em languages.toml).
+pub fn alias_base(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_BASE, lang)
+}
+
+/// A chave, em caminho com pontos, do objeto de apelidos de pasta
+/// (`alias_paths` em languages.toml).
+pub fn alias_paths(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_PATHS, lang)
+}
+
+/// A chave, em caminho com pontos, da herança entre configurações
+/// (`alias_extends` em languages.toml).
+pub fn alias_extends(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_EXTENDS, lang)
+}
+
+/// As línguas que declaram arquivo de configuração de apelidos de pasta.
+pub fn alias_languages() -> impl Iterator<Item = &'static str> {
+    LANG_ALIAS_CONFIG.iter().filter(|(_, files)| !files.is_empty()).map(|(name, _)| *name)
+}
+
+/// Todos os nomes de arquivo de configuração de apelidos que o registro
+/// declara, de todas as línguas, sem repetição.
+pub fn alias_config_names() -> BTreeSet<&'static str> {
+    alias_languages().flat_map(alias_config).copied().collect()
+}
+
+/// O registro das línguas, sem nenhuma preparada: cada uma compila a consulta
+/// dela uma vez, na primeira vez que um arquivo da língua pede, e a língua que
+/// o projeto não tem não compila nada.
+pub(crate) fn registry() -> Registry {
+    Registry { languages: raw_langs().into_iter().map(|raw| (raw, OnceLock::new())).collect() }
+}
+
+/// As línguas do registro, cada uma com o analisador que a primeira leitura
+/// dela prepara. Duas leituras em paralelo que pedem a mesma língua esperam a
+/// mesma preparação, e línguas diferentes se preparam ao mesmo tempo.
+pub(crate) struct Registry {
+    languages: Vec<(RawLang, OnceLock<Option<Analyzer>>)>,
+}
+
+impl Registry {
+    /// O analisador da língua `lang`, preparado na primeira vez que se pede.
+    /// `None` quando a língua não está no registro ou quando nenhum padrão da
+    /// consulta dela compila — ela fica de fora com um aviso, sem parar a
+    /// passada.
+    pub(crate) fn get(&self, lang: &str) -> Option<&Analyzer> {
+        let (raw, analyzer) = self.languages.iter().find(|(raw, _)| raw.name == lang)?;
+        analyzer.get_or_init(|| Analyzer::new(raw)).as_ref()
+    }
+
+    /// Os analisadores das línguas que esta passada já preparou.
+    pub(crate) fn compiled_languages(&self) -> impl Iterator<Item = &Analyzer> {
+        self.languages.iter().filter_map(|(_, analyzer)| analyzer.get()?.as_ref())
+    }
 }
 
 /// What a capture name means to the engine. Computed once per compiled query so
@@ -123,9 +442,30 @@ enum CapKind {
     /// `import { limite } from`): it says what the file brought, and like the
     /// import itself it is never a use.
     Imported,
+    /// O caminho de um repasse (`export * from './x'`, `pub use a::B`): é
+    /// import do arquivo, e os nomes trazidos no mesmo comando são os que o
+    /// arquivo oferece a quem o importa, tirados do arquivo que o caminho
+    /// nomeia; sem nome nenhum, oferece todos.
+    Reexport,
+    /// O nome que o arquivo de origem dá ao nome que o import ou o repasse do
+    /// mesmo pattern traz com outro (`X` em `import { X as Y } from` e em
+    /// `export { X as Y } from`); `*` quando o nome novo é o arquivo inteiro.
+    ImportedOriginal,
     Namespace,
+    /// O caminho escrito antes do nome numa chamada qualificada (`crate::a`
+    /// em `crate::a::f()`): vira import do arquivo só quando começa por um
+    /// dos `root_aliases` da língua, pelo `parent_alias` ou pelo
+    /// `module_alias` dela.
+    CallPath,
     Name,
     Supertype,
+    /// O tipo dono escrito fora da declaração do mesmo pattern (o de um bloco
+    /// `impl`, o receptor de um método): vem depois dos donos que a contêm no
+    /// arquivo.
+    Owner,
+    /// O contrato que a declaração do mesmo pattern cumpre por onde foi
+    /// escrita (o traço de `impl Traço for Tipo`).
+    Contract,
     /// An attribute or decorator adorning a declaration: never code of it.
     Decoration,
     /// The body of a declaration that the grammar keeps beside it rather than
@@ -136,6 +476,47 @@ enum CapKind {
     /// The documentation the language writes inside the declaration rather
     /// than above it; the comment above, when there is one, is worth more.
     Doc,
+    /// Um trecho de teste escrito dentro do arquivo: o que se importa nele é
+    /// do teste, e o que se chama ou se cita nele não é uso do código.
+    TestBlock,
+    /// Uma unidade de teste que a língua marca na própria declaração, solta no
+    /// arquivo: vale como [`CapKind::TestBlock`], a não ser no arquivo que é
+    /// ele mesmo de teste, onde a chamada que ela faz segue sendo uso do que
+    /// chama, porque é ela que mostra quem testa cada declaração.
+    TestUnit,
+    /// O nome de um módulo sem corpo que o arquivo declara como teste: o
+    /// arquivo que ele nomeia é todo de teste.
+    TestModule,
+    /// Um módulo com corpo escrito dentro do arquivo: o caminho escrito nele
+    /// que começa pelo `parent_alias` da língua sai dele antes de subir pasta.
+    InnerModule,
+    /// Um nome que o corpo de uma função liga (a variável, o parâmetro, o nome
+    /// novo de uma desestruturação): escrito sozinho depois, na mesma
+    /// declaração, ele é esse valor, e não a declaração do projeto de mesmo
+    /// nome.
+    Local,
+    /// Um nome escrito onde vai um valor, como o argumento de uma chamada ou
+    /// o lado direito de uma atribuição: sem ser chamado ali, ele é usado
+    /// quando nomeia uma função ou um método à vista do arquivo.
+    CallValue,
+    /// O nome de um membro escrito depois do objeto, sem chamada ali
+    /// (`x.Total`, `self.total`): ele é usado quando nomeia uma propriedade
+    /// ou um campo que o objeto alcança.
+    Member,
+    /// O tipo escrito antes dos membros de uma desestruturação
+    /// (`Piece::Block` em `Piece::Block { open, close }`): os `Member` do
+    /// mesmo pattern são campos desse tipo.
+    MemberOf,
+    /// O tipo que a assinatura escreve para o `Local` do mesmo pattern
+    /// (`Pedido` em `pedido: &Pedido`): o membro lido depois desse nome é do
+    /// tipo.
+    LocalType,
+    /// Um literal de texto escrito no código: vira texto fixo do arquivo
+    /// quando tem cara de texto e não cai num import, num trecho de teste
+    /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
+    /// solto de uma tela): ele se guarda como está escrito, sem o corte das
+    /// aspas.
+    Text { plain: bool },
     Def(String),
     Ignore,
 }
@@ -145,13 +526,29 @@ fn classify(cap: &str) -> CapKind {
         "import" => CapKind::Import,
         "import.global" => CapKind::ImportGlobal,
         "imported" => CapKind::Imported,
+        "reexport" => CapKind::Reexport,
+        "imported.original" => CapKind::ImportedOriginal,
         "namespace" => CapKind::Namespace,
+        "call.path" => CapKind::CallPath,
+        "call.value" => CapKind::CallValue,
+        "member" => CapKind::Member,
+        "member.of" => CapKind::MemberOf,
+        "local.type" => CapKind::LocalType,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
+        "owner" => CapKind::Owner,
+        "owner.contract" => CapKind::Contract,
         "decoration" => CapKind::Decoration,
         "body" => CapKind::Body,
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
+        "test_block" => CapKind::TestBlock,
+        "test_unit" => CapKind::TestUnit,
+        "test_module" => CapKind::TestModule,
+        "inner_module" => CapKind::InnerModule,
+        "local" => CapKind::Local,
+        "text" => CapKind::Text { plain: false },
+        "text.plain" => CapKind::Text { plain: true },
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -166,32 +563,96 @@ pub(crate) struct Analyzer {
     /// `cap_kinds[i]` is the role of capture index `i` in `query`.
     cap_kinds: Vec<CapKind>,
     doc_tags: &'static [&'static str],
+    /// As regras de rota dos frameworks escritos na língua.
+    routes: Vec<RouteRule>,
+    /// Onde mora o código no arquivo da língua escrita dentro de marcação;
+    /// `None` quando o arquivo inteiro é código.
+    markup: Option<&'static Markup>,
+    /// Só as declarações e a faixa de linhas de cada uma: a leitura para aí,
+    /// sem a caminhada pela árvore nem as chamadas, os usos e os imports.
+    declarations_only: bool,
 }
 
 impl Analyzer {
     fn new(raw: &RawLang) -> Option<Analyzer> {
-        let language = raw.language.clone();
-        // Compile patterns individually and keep the ones that hold against this
-        // grammar version. A single drifted node name then costs one pattern, not
-        // the whole language — and never a panic.
-        let good = compile_good_patterns(&language, raw.query, raw.name);
-        if good.is_empty() {
-            eprintln!("grain: no usable query patterns for '{}' — skipping", raw.name);
-            return None;
-        }
-        let combined = good.join("\n");
-        let query = match Query::new(&language, &combined) {
-            Ok(q) => q,
-            Err(e) => {
-                eprintln!("grain: query for '{}' failed to compile: {e}", raw.name);
-                return None;
-            }
-        };
-        let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
-        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags })
+        Self::compiled(raw, raw.query, true)
     }
 
-    pub fn extract(&self, src: &str) -> Extracted {
+    /// O analisador da língua `name` que só acha as declarações, com a faixa
+    /// de linhas de cada uma — a documentação e os enfeites de cima inclusos
+    /// —, pelos mesmos padrões da montagem: só os que declaram e os que
+    /// enfeitam, sem as regras de rota. É o que lê cada versão antiga de um
+    /// arquivo, sem compilar as outras línguas. `None` quando a língua não
+    /// está no registro.
+    pub(crate) fn declarations_only(name: &str) -> Option<Analyzer> {
+        let raw = raw_langs().into_iter().find(|raw| raw.name == name)?;
+        let declaring = split_patterns(raw.query)
+            .into_iter()
+            .filter(|pattern| pattern.contains("@definition.") || pattern.contains("@decoration"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut analyzer = Self::compiled(&raw, &declaring, false)?;
+        analyzer.declarations_only = true;
+        Some(analyzer)
+    }
+
+    /// O analisador da língua `raw` com os padrões de `patterns` e, com
+    /// `with_routes`, as regras de rota da língua.
+    fn compiled(raw: &RawLang, patterns: &str, with_routes: bool) -> Option<Analyzer> {
+        let language = raw.language.clone();
+        // Keep the patterns that hold against this grammar version. A single
+        // drifted node name then costs one pattern, not the whole language —
+        // and never a panic.
+        let query = compile_good_query(&language, patterns, raw.name)?;
+        let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
+        let routes = if with_routes { routes::rules_for(raw.name, &language) } else { Vec::new() };
+        let markup = LANG_MARKUP.iter().find(|(name, _)| *name == raw.name).map(|(_, rule)| rule);
+        Some(Analyzer {
+            name: raw.name.to_string(),
+            language,
+            query,
+            cap_kinds,
+            doc_tags: raw.doc_tags,
+            routes,
+            markup,
+            declarations_only: false,
+        })
+    }
+
+    /// As regras de rota da língua que algum arquivo ligou até aqui, e que
+    /// por isso já compilaram a consulta, pelo nome.
+    pub fn compiled_routes(&self) -> impl Iterator<Item = String> + '_ {
+        self.routes.iter().filter(|rule| rule.was_compiled()).map(RouteRule::name)
+    }
+
+    /// Alguma regra de rota da língua liga pela dependência do manifesto.
+    pub(crate) fn routes_follow_manifests(&self) -> bool {
+        self.routes.iter().any(RouteRule::follows_manifest)
+    }
+
+    /// Alguma regra de rota da língua liga no arquivo que importa `imports`
+    /// com o que o projeto diz em `more`, e não só com o que ele diz em
+    /// `less`.
+    pub(crate) fn routes_turned_on_by(&self, imports: &[String], less: &routes::Project, more: &routes::Project) -> bool {
+        routes::turned_on_by(&self.routes, imports, less, more)
+    }
+
+    /// O que o arquivo `src` diz, lido só no que `keep` pede além das
+    /// declarações, dos imports, das chamadas e das citações. As rotas saem
+    /// das regras que o arquivo liga pelos imports dele ou pelo que o
+    /// `project` diz dele. No arquivo de marcação, o nome do arquivo, pelo
+    /// caminho em `project`, dá o nome do tipo em que o código mora.
+    pub fn extract(&self, src: &str, keep: Keep, project: &routes::Project) -> Extracted {
+        // No arquivo de marcação, só o código se lê, com as linhas no lugar
+        // delas: tudo o que sai daqui fala das linhas do arquivo.
+        let code;
+        let src = match self.markup {
+            Some(rule) => {
+                code = rule.code_of(src, project.path, project.folder);
+                code.as_str()
+            }
+            None => src,
+        };
         let mut out = Extracted::default();
         let mut parser = Parser::new();
         if parser.set_language(&self.language).is_err() {
@@ -220,36 +681,159 @@ impl Analyzer {
         // there are the path of the import, not a use of what they name.
         let mut import_spans: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
+        // Os trechos de teste do arquivo, e cada import com o byte e a linha
+        // em que foi escrito: só depois de todos os matches se sabe qual cai
+        // num trecho de teste ou num módulo do arquivo.
+        let mut test_blocks: Spans = BTreeSet::new();
+        let mut written: Vec<Written> = Vec::new();
+        // Cada nome que um import traz, com o nó em que foi escrito: só depois
+        // de todos os matches se sabe de que import ele é.
+        let mut imported_at: Vec<(Node, String)> = Vec::new();
+        // O nome de origem de cada nome que um import ou um repasse traz com
+        // outro, pelo byte em que o nome trazido foi escrito.
+        let mut original_of: HashMap<usize, String> = HashMap::new();
+        // Cada nome que o corpo de uma função liga, com a linha e o byte em
+        // que foi escrito.
+        let mut locals: Vec<(usize, usize, String)> = Vec::new();
+        // O byte de cada nome escrito onde vai um valor e de cada nome de
+        // membro escrito depois do objeto.
+        let mut value_at: BTreeSet<usize> = BTreeSet::new();
+        let mut member_at: BTreeSet<usize> = BTreeSet::new();
+        // O tipo escrito antes de cada membro de uma desestruturação, pelo
+        // byte do membro, e o tipo que a assinatura escreve para cada nome
+        // local (o número dele em `locals` e o tipo).
+        let mut member_of: HashMap<usize, String> = HashMap::new();
+        let mut local_types: Vec<(usize, String)> = Vec::new();
+        // Os literais de texto do arquivo, cada um dizendo se foi escrito sem
+        // aspas, e o que a documentação escrita dentro das declarações cobre:
+        // o literal que a contém não é texto fixo.
+        let mut literals: Vec<(Node, bool)> = Vec::new();
+        // Cada caminho de chamada que não virou import, com o byte em que foi
+        // escrito e a chamada que vem depois dele.
+        let mut other_paths: Vec<(String, usize, CallSite)> = Vec::new();
+        let mut doc_spans: Spans = BTreeSet::new();
+        let self_name = import_self(&self.name);
 
+        // O import relativo por separador da língua, quando ela o declara.
+        let relative = relative_import(&self.name);
+        // O começo que faz do caminho de uma chamada qualificada um lugar do
+        // próprio projeto, e o que separa as partes dele.
+        let aliases = root_aliases(&self.name);
+        let parent = parent_alias(&self.name);
+        let own_module = module_alias(&self.name);
+        let separators = qualifier_separators(&self.name);
+
+        // Uma caminhada só pela árvore junta os comentários e as folhas do
+        // arquivo, que o texto escrito e os usos leem depois dos matches. O
+        // separador escrito num comentário não liga um nome ao que vem antes.
+        let walked = if self.declarations_only { Walked { comments: Vec::new(), leaves: Vec::new() } } else { Walked::of(root) };
+        let comments: Spans = walked.comments.iter().map(|c| (c.start_byte(), c.end_byte())).collect();
+        let test_file = is_test_path(project.path);
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut def: Option<(Node, &str)> = None;
             let mut name_text: Option<String> = None;
             let mut name_byte = usize::MAX;
             let mut here_supers: Vec<String> = Vec::new();
+            // O dono e o contrato escritos fora da declaração deste match.
+            let mut here_owner: Vec<String> = Vec::new();
+            let mut here_contract: Vec<String> = Vec::new();
             let mut body_end: Option<usize> = None;
             let mut value_start: Option<usize> = None;
             let mut name_kind: &'static str = "";
             let mut doc_inside: Option<(usize, String)> = None;
+            // Os imports deste match, com o byte e a linha em que cada um foi
+            // escrito, e os nomes que o mesmo pattern diz que eles trazem.
+            let mut here_imports: Vec<Written> = Vec::new();
+            let mut brought: Vec<String> = Vec::new();
+            // O nome trazido e o de origem, quando o pattern escreve os dois.
+            let mut offered_at: Option<usize> = None;
+            let mut original: Option<String> = None;
+            // O que este match diz do dono dos membros: o nome local que ele
+            // liga e o tipo que escreve para ele, os membros e o tipo escrito
+            // antes deles.
+            let mut here_local: Option<usize> = None;
+            let mut here_local_type: Option<String> = None;
+            let mut here_members: Vec<usize> = Vec::new();
+            let mut here_member_of: Option<String> = None;
 
             for cap in m.captures {
                 let node = cap.node;
                 match &self.cap_kinds[cap.index as usize] {
-                    CapKind::Import | CapKind::ImportGlobal => {
+                    CapKind::Import | CapKind::ImportGlobal | CapKind::Reexport => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let c = clean_import(t);
                             if !c.is_empty() {
-                                if matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal) {
-                                    out.global_imports.push(c);
-                                } else {
-                                    out.imports.push(c);
-                                }
+                                let kind = &self.cap_kinds[cap.index as usize];
+                                let global = matches!(kind, CapKind::ImportGlobal);
+                                let reexport = matches!(kind, CapKind::Reexport);
+                                here_imports.push(Written { reexport, ..Written::at(c, global, node) });
                             }
                         }
                     }
+                    CapKind::ImportedOriginal => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
+                        original = node.utf8_text(bytes).ok().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+                    }
                     CapKind::Imported => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            let t = t.trim();
+                            // O nome que traz o último nome antes da lista
+                            // (`self` em `use std::fs::{self}`) traz esse nome.
+                            let name = match self_name {
+                                Some(own) if t == own => name_before_list(node, bytes),
+                                _ => Some(t.to_string()).filter(|t| !t.is_empty()),
+                            };
+                            if let Some(name) = name {
+                                imported_at.push((node, name.clone()));
+                                offered_at = Some(node.start_byte());
+                                brought.push(name);
+                            }
+                        }
+                    }
+                    CapKind::Local => {
+                        if let Ok(t) = node.utf8_text(bytes)
+                            && is_identifier(t)
+                        {
+                            here_local = Some(locals.len());
+                            locals.push((node.start_position().row + 1, node.start_byte(), t.to_string()));
+                        }
+                    }
+                    CapKind::LocalType => here_local_type = node.utf8_text(bytes).ok().and_then(simple_type_name),
+                    CapKind::MemberOf => here_member_of = node.utf8_text(bytes).ok().map(str::to_string),
+                    CapKind::CallValue => {
+                        value_at.insert(node.start_byte());
+                    }
+                    CapKind::Member => {
+                        member_at.insert(node.start_byte());
+                        here_members.push(node.start_byte());
+                    }
+                    CapKind::CallPath => {
+                        // Só o caminho que começa no próprio projeto é import;
+                        // qualquer outro (`Vec::new()`, `std::fs::read()`)
+                        // segue como uso, como antes. Os argumentos de tipo
+                        // não são parte do lugar que o caminho nomeia. O nome
+                        // chamado é o nó nomeado logo depois do caminho, lido
+                        // como a chamada dele é lida.
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            let path = without_type_arguments(&t.split_whitespace().collect::<String>(), separators);
+                            let first = first_segment(&path, separators);
+                            let call = || node.next_named_sibling().and_then(|n| called_site(n, bytes, &comments, &self.name));
+                            if aliases.contains(&first) || parent == Some(first) || own_module == Some(first) {
+                                import_spans.insert((node.start_byte(), node.end_byte()));
+                                here_imports.push(Written { call: call(), ..Written::at(path, false, node) });
+                            } else if first.len() < path.len()
+                                && let Some(call) = call()
+                            {
+                                // O de duas partes ou mais fica guardado com a
+                                // chamada: o grafo diz se a raiz dele é de
+                                // fora do projeto. O de uma parte só
+                                // (`Vec::new()`) segue só como qualificador.
+                                other_paths.push((path, node.start_byte(), call));
+                            }
+                        }
                     }
                     CapKind::Namespace => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
@@ -277,6 +861,7 @@ impl Analyzer {
                         value_start = Some(node.start_byte());
                     }
                     CapKind::Doc => {
+                        doc_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             doc_inside = Some((node.start_byte(), t.to_string()));
                         }
@@ -287,10 +872,68 @@ impl Analyzer {
                                 here_supers.push(n);
                             }
                     }
+                    CapKind::Owner | CapKind::Contract => {
+                        if let Ok(t) = node.utf8_text(bytes)
+                            && let Some(n) = simple_type_name(t) {
+                                let into = if matches!(self.cap_kinds[cap.index as usize], CapKind::Owner) {
+                                    &mut here_owner
+                                } else {
+                                    &mut here_contract
+                                };
+                                into.push(n);
+                            }
+                    }
+                    CapKind::TestBlock | CapKind::TestUnit => {
+                        // A unidade de teste solta no arquivo de teste não é
+                        // trecho de teste dele: tudo ali já é teste, e a
+                        // chamada que ela faz fica em quem usa o que chama.
+                        let loose = matches!(self.cap_kinds[cap.index as usize], CapKind::TestUnit);
+                        if !(loose && test_file) {
+                            test_blocks.insert((node.start_byte(), node.end_byte()));
+                            out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
+                        }
+                    }
+                    CapKind::TestModule => {
+                        if let Ok(name) = node.utf8_text(bytes) {
+                            out.test_modules.push(name.trim().to_string());
+                        }
+                    }
+                    CapKind::InnerModule => {
+                        out.module_lines.push((node.start_position().row + 1, node.end_position().row + 1));
+                    }
+                    CapKind::Text { plain } => literals.push((node, *plain)),
                     CapKind::Def(kind) => {
                         def = Some((node, kind.as_str()));
                     }
                     CapKind::Ignore => {}
+                }
+            }
+
+            if let (Some(at), Some(ty)) = (here_local, here_local_type) {
+                local_types.push((at, ty));
+            }
+            if let Some(ty) = here_member_of {
+                member_of.extend(here_members.into_iter().map(|byte| (byte, ty.clone())));
+            }
+
+            // O import relativo feito só do separador nomeia uma pasta, e não
+            // um arquivo: cada nome que o mesmo pattern diz que ele traz é um
+            // arquivo dessa pasta, e o import vira o separador seguido do
+            // nome. Qualquer outro import fica como foi escrito.
+            if let (Some(at), Some(original)) = (offered_at, original)
+                && brought.len() == 1
+            {
+                original_of.insert(at, original);
+            }
+            for import in here_imports {
+                let folder_only =
+                    relative.is_some_and(|rule| matches!(rule.leading(&import.text), (count, "") if count > 0));
+                if folder_only && !brought.is_empty() {
+                    written.extend(
+                        brought.iter().map(|name| Written { text: format!("{}{name}", import.text), ..import.clone() }),
+                    );
+                } else {
+                    written.push(import);
                 }
             }
 
@@ -305,6 +948,8 @@ impl Analyzer {
                     body_end: None,
                     value_start: None,
                     doc_inside: None,
+                    owner: Vec::new(),
+                    contract: Vec::new(),
                 });
                 // Two patterns may give the same declaration two kinds (a
                 // `const` field is a field too): the one written first in the
@@ -314,6 +959,15 @@ impl Analyzer {
                     header.pattern = m.pattern_index;
                 }
                 header.body_end = header.body_end.max(body_end);
+                // Two patterns may write the same declaration's owner and its
+                // contract apart: each name counts once.
+                for (into, names) in [(&mut header.owner, &here_owner), (&mut header.contract, &here_contract)] {
+                    for name in names {
+                        if !into.contains(name) {
+                            into.push(name.clone());
+                        }
+                    }
+                }
                 // Two patterns may give the same declaration: the earliest
                 // value and the earliest inner documentation win.
                 header.value_start = earliest(header.value_start, value_start);
@@ -345,7 +999,7 @@ impl Analyzer {
         for (start, name_byte, _) in decls.keys() {
             names_by_start.entry(*start).or_default().push(*name_byte);
         }
-        out.declarations = decls
+        (out.declarations, out.tops) = decls
             .into_values()
             .map(|h| {
                 let shared = &names_by_start[&h.node.start_byte()];
@@ -360,39 +1014,298 @@ impl Analyzer {
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
                 let above = doc_above(h.node, bytes, &decorations, self.doc_tags);
-                let doc = match h.doc_inside {
-                    Some((_, inside)) if above.text.is_empty() => one_line(&inside, DOC_MAX_CHARS),
-                    _ => above.text,
+                let top = above.doc_row.min(above.first_row) + 1;
+                let whole = match h.doc_inside {
+                    Some((_, inside)) if above.whole.is_empty() => one_line(&inside, usize::MAX),
+                    _ => above.whole,
                 };
-                Decl {
+                let doc = one_line(&whole, DOC_MAX_CHARS);
+                // A documentação inteira fica só quando o teto cortou, e só
+                // quando o arquivo guarda o texto de dentro das peças.
+                let whole_doc = if whole == doc || !keep.written_text { String::new() } else { whole };
+                let decl = Decl {
                     kind: h.kind,
                     name: h.name,
                     line: above.first_row + 1,
                     end_line: (h.node.end_position().row + 1).max(h.body_end.unwrap_or(0)),
                     supertypes,
                     doc,
+                    whole_doc,
+                    body_comment: String::new(),
+                    body_names: String::new(),
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
                     calls: Vec::new(),
                     used_by: Vec::new(),
-                }
+                    common_calls: 0,
+                    owner: h.owner,
+                    contract: h.contract,
+                    members: Vec::new(),
+                    implements: Vec::new(),
+                    implemented_by: Vec::new(),
+                };
+                (decl, top)
             })
-            .collect();
+            .unzip();
+        owners_in_file(&mut out.declarations);
+        if self.declarations_only {
+            return out;
+        }
+        // O texto das linhas de cada declaração e os comentários do arquivo
+        // saem do que a caminhada juntou. O literal de texto e a documentação
+        // escrita como literal não são código: os nomes e os comentários
+        // escritos neles ficam de fora.
+        if keep.written_text {
+            let not_code = Pruned::of(
+                literals.iter().map(|(node, _)| (node.start_byte(), node.end_byte())).chain(doc_spans.iter().copied()),
+            );
+            let written_text = WrittenText::of(root, &walked, bytes, self.doc_tags, &not_code);
+            for decl in &mut out.declarations {
+                (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
+            }
+            (out.file_doc, out.file_comment, out.file_doc_in_body) = written_text.of_file(&out.declarations);
+        }
+        if keep.texts_and_routes {
+            out.texts =
+                fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
+        }
 
         // The call sites and the citations of the file, minus the
         // declaration headers themselves (`foo` in `fn foo(` is where it is
         // defined, not a use of it) and minus what is written inside a
         // decoration, an import or a namespace name.
-        let quiet: Spans = decorations.union(&import_spans).copied().collect();
-        (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds);
+        let quiet = Pruned::of(decorations.union(&import_spans).copied());
+        let heads;
+        let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
+        let owners = typed::Owners::new(
+            member_of,
+            typed::Bindings::of(&out.declarations, &locals, &local_types, &names_at),
+        );
+        let marks = Marks { value_at: &value_at, member_at: &member_at, owners: &owners };
+        let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
+        (out.calls, out.cites, out.value_uses, out.member_reads, heads) = found;
+        drop_local_uses(
+            &out.declarations,
+            &locals,
+            &names_at,
+            [&mut out.calls, &mut out.cites, &mut out.value_uses, &mut out.member_reads],
+        );
 
+        // Cada nome trazido é do import escrito no mesmo comando: o que fica
+        // dentro do nó mais próximo, subindo a partir do nome, que contém
+        // algum import. O caminho de uma chamada não traz nome. Cada um vai
+        // com o nome que tem no arquivo de origem, e o nome trazido por um
+        // repasse é também um nome que o arquivo oferece.
+        let in_module = |line: usize| out.module_lines.iter().any(|&(first, last)| (first..=last).contains(&line));
+        let mut brought_by: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for (node, name) in &imported_at {
+            let original = original_of.get(&node.start_byte()).unwrap_or(name);
+            let mut at = Some(*node);
+            while let Some(n) = at {
+                let (start, end) = (n.start_byte(), n.end_byte());
+                let mut inside = written.iter().filter(|w| w.call.is_none() && start <= w.byte && w.end <= end).peekable();
+                if inside.peek().is_some() {
+                    for w in inside {
+                        brought_by.entry(w.text.clone()).or_default().insert(name.clone(), original.clone());
+                        if w.reexport && !in_module(w.line) {
+                            out.reexports.entry(w.text.clone()).or_default().insert(name.clone(), original.clone());
+                        }
+                    }
+                    break;
+                }
+                at = n.parent();
+            }
+        }
+        out.brought = brought_by;
+        // O repasse que não escreve nome nenhum oferece todos.
+        for w in written.iter().filter(|w| w.reexport && !in_module(w.line)) {
+            out.reexports.entry(w.text.clone()).or_insert_with(|| BTreeMap::from([("*".to_string(), "*".to_string())]));
+        }
+
+        // O import escrito ao menos uma vez dentro de um módulo do arquivo
+        // guarda todas as linhas em que é escrito: é por elas que o grafo sabe
+        // de quantos módulos cada uma sai antes de subir pasta.
+        let nested: BTreeSet<&str> = written.iter().filter(|w| in_module(w.line)).map(|w| w.text.as_str()).collect();
+        let mut import_lines: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for w in written.iter().filter(|w| nested.contains(w.text.as_str())) {
+            import_lines.entry(w.text.clone()).or_default().push(w.line);
+        }
+        for lines in import_lines.values_mut() {
+            lines.sort();
+            lines.dedup();
+        }
+        out.import_lines = import_lines;
+        // O import escrito dentro de um trecho de teste é do teste, e fica à
+        // parte dos do arquivo. O caminho de chamada fora dele guarda as
+        // chamadas escritas por ele. No arquivo de imports da pasta, todo
+        // import do arquivo também vale nos arquivos da mesma língua da
+        // pasta dele e das de baixo.
+        let whole_folder = self.markup.is_some_and(|rule| rule.is_imports_file(project.path));
+        for Written { text, global, byte, call, .. } in written {
+            if test_blocks.iter().any(|&(start, end)| (start..end).contains(&byte)) {
+                out.test_imports.push(text);
+                continue;
+            }
+            if let Some(site) = call {
+                out.call_paths.entry(text.clone()).or_default().push(site);
+            }
+            if global {
+                out.global_imports.push(text);
+            } else {
+                if whole_folder {
+                    out.global_imports.push(text.clone());
+                }
+                out.imports.push(text);
+            }
+        }
         out.imports.sort();
         out.imports.dedup();
         out.global_imports.sort();
         out.global_imports.dedup();
+        out.test_imports.sort();
+        out.test_imports.dedup();
+        for (path, byte, call) in other_paths {
+            if !test_blocks.iter().any(|&(start, end)| (start..end).contains(&byte)) {
+                out.other_call_paths.entry(path).or_default().push(call);
+            }
+        }
+        for sites in out.call_paths.values_mut().chain(out.other_call_paths.values_mut()) {
+            sites.sort();
+            sites.dedup();
+        }
+        // O nome que abre a cadeia de uma chamada — o qualificador sem nada
+        // antes dele, ou a primeira parte do caminho dela — fica quando o
+        // arquivo não o liga: nem nome local nem o próprio objeto. O caminho
+        // aberto por um valor (`(await x).a.f()`) não tem nome no começo.
+        let bound: BTreeSet<&str> = locals
+            .iter()
+            .map(|(_, _, name)| name.as_str())
+            .chain(self_receivers(&self.name).iter().copied())
+            .chain(parent_receivers(&self.name).iter().copied())
+            .collect();
+        let unbound: BTreeSet<&str> = heads
+            .iter()
+            .map(String::as_str)
+            .chain(out.other_call_paths.keys().map(|path| first_segment(path, separators)))
+            .filter(|head| is_identifier(head) && !bound.contains(head))
+            .collect();
+        out.unbound_heads = unbound.into_iter().map(str::to_string).collect();
+        out.test_lines = merged_ranges(out.test_lines);
+        out.test_modules.sort();
+        out.test_modules.dedup();
+        out.module_lines.sort();
+        out.module_lines.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
+        if keep.texts_and_routes {
+            let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
+            let source = routes::Source {
+                imports: &imports,
+                brought: &out.brought,
+                declarations: &out.declarations,
+                skip: &test_blocks,
+            };
+            let found = routes::find(&self.routes, root, bytes, &source, project);
+            (out.routes, out.route_links, out.route_calls) = (found.routes, found.links, found.calls);
+        }
         out
     }
+}
+
+/// Um import como foi escrito no arquivo: o texto já limpo, se ele vale para
+/// mais arquivos que o que o escreve, o byte e a linha em que começa e, quando
+/// é o caminho de uma chamada, a chamada escrita por ele.
+#[derive(Clone)]
+struct Written {
+    text: String,
+    global: bool,
+    byte: usize,
+    /// O byte em que o import escrito termina.
+    end: usize,
+    line: usize,
+    call: Option<CallSite>,
+    /// Escrito como repasse (`@reexport`).
+    reexport: bool,
+}
+
+impl Written {
+    fn at(text: String, global: bool, node: Node) -> Written {
+        Written {
+            text,
+            global,
+            byte: node.start_byte(),
+            end: node.end_byte(),
+            line: node.start_position().row + 1,
+            call: None,
+            reexport: false,
+        }
+    }
+}
+
+/// O último nome escrito antes da lista que contém o nó: `fs` em
+/// `use std::fs::{self}`. `None` quando não há nome antes dela.
+fn name_before_list(node: Node, bytes: &[u8]) -> Option<String> {
+    let list = node.parent()?;
+    let before = &bytes[..list.start_byte()];
+    let word = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80;
+    let end = before.iter().rposition(word)? + 1;
+    let start = before[..end].iter().rposition(|b| !word(b)).map_or(0, |i| i + 1);
+    std::str::from_utf8(&before[start..end]).ok().filter(|name| is_identifier(name)).map(str::to_string)
+}
+
+/// Tira de `sites` o uso de um nome que o corpo da declaração em volta liga.
+/// O nome escrito sozinho, numa linha depois daquela em que ele foi ligado —
+/// a variável, o parâmetro, o nome novo de uma desestruturação — e até o fim
+/// da declaração em volta dela (a de [`crate::graph::enclosing`]), também
+/// dentro de uma declaração escrita ali, é esse valor, e não a declaração do
+/// projeto de mesmo nome. Na própria linha do nome ligado, o uso fica: em
+/// `let hoje = hoje(None);` a chamada é da função, e o nome só vale depois. A
+/// mesma chamada numa declaração vizinha, sem o nome ligado, fica. O nome
+/// ligado que é o nome de uma declaração (`names_at`) não conta: é a própria
+/// declaração.
+fn drop_local_uses(
+    decls: &[Decl],
+    locals: &[(usize, usize, String)],
+    names_at: &BTreeSet<usize>,
+    sites: [&mut Vec<CallSite>; 4],
+) {
+    // Cada nome ligado, com a linha em que foi ligado e a última da
+    // declaração em volta (sem fim conhecido, até o fim do arquivo).
+    let mut bound: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    for (line, byte, name) in locals {
+        if names_at.contains(byte) {
+            continue;
+        }
+        let Some(di) = crate::graph::enclosing(decls, *line) else { continue };
+        let last = match decls[di].end_line {
+            0 => usize::MAX,
+            end => end,
+        };
+        bound.entry(name.as_str()).or_default().push((*line, last));
+    }
+    if bound.is_empty() {
+        return;
+    }
+    for list in sites {
+        list.retain(|site| {
+            let local = site.qualifier.is_empty()
+                && bound
+                    .get(site.name.as_str())
+                    .is_some_and(|spans| spans.iter().any(|&(first, last)| first < site.line && site.line <= last));
+            !local
+        });
+    }
+}
+
+/// A chamada do nome no nó, como [`use_sites`] a lê: o nome, a linha e o
+/// qualificador escrito antes dele, pelos separadores de `lang`. `None` quando
+/// o nó não é um nome.
+fn called_site(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option<CallSite> {
+    let name = node.utf8_text(bytes).ok().filter(|text| is_identifier(text))?;
+    Some(CallSite {
+        name: name.to_string(),
+        line: node.start_position().row + 1,
+        qualifier: qualifier_before(node, bytes, comments, lang),
+    })
 }
 
 /// A declaration as the query gave it, before the supertypes captured
@@ -414,6 +1327,42 @@ struct Header<'t> {
     /// The documentation written inside the declaration (where it starts, and
     /// its text), when a query marks it.
     doc_inside: Option<(usize, String)>,
+    /// O tipo dono escrito fora da declaração (`@owner`).
+    owner: Vec<String>,
+    /// O contrato que ela cumpre por onde foi escrita (`@owner.contract`).
+    contract: Vec<String>,
+}
+
+/// Os donos de cada declaração no próprio arquivo: as que têm a faixa (da
+/// primeira à última linha) contendo a dela, da mais interna para a mais
+/// externa, antes do dono escrito fora dela. A mesma faixa não conta. Em ordem
+/// de começo, e cada faixa aberta sai quando uma declaração começa depois do
+/// fim dela: nenhuma declaração seguinte cabe mais nela.
+fn owners_in_file(decls: &mut [Decl]) {
+    let mut order: Vec<usize> = (0..decls.len()).collect();
+    order.sort_by_key(|&i| (decls[i].line, std::cmp::Reverse(decls[i].end_line)));
+    let mut open: Vec<usize> = Vec::new();
+    let mut found: Vec<Vec<String>> = vec![Vec::new(); decls.len()];
+    for i in order {
+        let (line, end) = (decls[i].line, decls[i].end_line);
+        open.retain(|&o| decls[o].end_line >= line);
+        found[i] = open
+            .iter()
+            .rev()
+            .map(|&o| &decls[o])
+            .filter(|o| o.line <= line && end <= o.end_line && (o.line, o.end_line) != (line, end))
+            .map(|o| o.name.clone())
+            .collect();
+        open.push(i);
+    }
+    for (decl, mut owners) in decls.iter_mut().zip(found) {
+        for name in std::mem::take(&mut decl.owner) {
+            if !owners.contains(&name) {
+                owners.push(name);
+            }
+        }
+        decl.owner = owners;
+    }
 }
 
 /// Where the names of a statement that declares several are written: the
@@ -472,6 +1421,7 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
     let mut anchor = node;
     let mut top = node.start_position().row;
     let mut first_row = top;
+    let mut doc_row = top;
     'climb: loop {
         let mut cur = anchor;
         while let Some(prev) = cur.prev_sibling() {
@@ -479,8 +1429,14 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
                 break 'climb;
             }
             if prev.is_extra() {
+                // O comentário que fecha a linha de um código é dessa linha, e
+                // não do que vem embaixo.
+                if line_end::closes_a_line(prev) {
+                    break 'climb;
+                }
                 let Ok(text) = prev.utf8_text(bytes) else { break 'climb };
                 parts.push(clean_comment(text, tags));
+                doc_row = doc_row.min(prev.start_position().row);
             } else if is_decoration(&prev, decorations) {
                 first_row = first_row.min(prev.start_position().row);
             } else if prev.is_named() || !parts.is_empty() {
@@ -497,14 +1453,144 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
         anchor = parent;
     }
     parts.reverse();
-    Above { text: one_line(&parts.join(" "), DOC_MAX_CHARS), first_row }
+    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row, doc_row }
 }
 
-/// What is read above a declaration: its documentation comment, and the row
-/// (from zero) where the declaration starts.
+/// What is read above a declaration: its whole documentation comment, in one
+/// line and with no ceiling, and the row (from zero) where the declaration
+/// starts.
 struct Above {
-    text: String,
+    whole: String,
     first_row: usize,
+    /// A linha (a partir de zero) em que começa o comentário escrito logo
+    /// acima da declaração; a da própria declaração, sem comentário.
+    doc_row: usize,
+}
+
+/// Um comentário ou um nome escrito no arquivo: a linha (a partir de zero)
+/// em que começa, o byte e o texto — o comentário já limpo das marcas.
+struct Piece {
+    row: usize,
+    byte: usize,
+    text: String,
+}
+
+/// O que se lê numa caminhada pela árvore do arquivo, na ordem em que foi
+/// escrito: cada comentário (os nós extras da gramática) e cada nome escrito
+/// no código (a folha nomeada que se lê como nome), fora dos trechos que não
+/// são código; e onde termina o comentário do começo do arquivo.
+struct WrittenText {
+    comments: Vec<Piece>,
+    names: Vec<Piece>,
+    /// O byte em que começa o primeiro nó do arquivo que não é comentário:
+    /// o comentário antes dele é do começo do arquivo.
+    first_code: usize,
+}
+
+impl WrittenText {
+    /// Lê o que a caminhada `walked` juntou da árvore de `root`, na ordem do
+    /// texto. O comentário é lido inteiro, limpo das marcas e das `tags` de
+    /// documentação; o comentário e o nome dentro de um trecho de `not_code`
+    /// ficam de fora.
+    fn of(root: Node, walked: &Walked, bytes: &[u8], tags: &[&str], not_code: &Pruned) -> WrittenText {
+        let mut cursor = root.walk();
+        let first_code = {
+            let mut children = root.children(&mut cursor);
+            children.find(|child| !child.is_extra()).map_or(usize::MAX, |child| child.start_byte())
+        };
+        let piece = |node: &Node, text: String| Piece { row: node.start_position().row, byte: node.start_byte(), text };
+        let comments = walked
+            .comments
+            .iter()
+            .filter(|node| !not_code.holds(node))
+            .filter_map(|node| {
+                let text = clean_comment(node.utf8_text(bytes).ok()?, tags);
+                (!text.is_empty()).then(|| piece(node, text))
+            })
+            .collect();
+        let names = walked
+            .leaves
+            .iter()
+            .map(|leaf| &leaf.node)
+            .filter(|node| node.is_named() && !not_code.holds(node))
+            .filter_map(|node| {
+                let text = node.utf8_text(bytes).ok()?;
+                is_identifier(text).then(|| piece(node, text.to_string()))
+            })
+            .collect();
+        WrittenText { comments, names, first_code }
+    }
+
+    /// Os comentários e os nomes das linhas `first` a `last` (a partir de
+    /// um), cada um numa linha: os comentários juntados com espaço, e cada
+    /// nome uma vez, na ordem em que aparece. A declaração sem a última linha
+    /// fica só com a primeira.
+    fn lines(&self, first: usize, last: usize) -> (String, String) {
+        let rows = rows_of(first, last);
+        let comment: Vec<&str> = Self::within(&self.comments, &rows).iter().map(|piece| piece.text.as_str()).collect();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let names: Vec<&str> = Self::within(&self.names, &rows)
+            .iter()
+            .map(|piece| piece.text.as_str())
+            .filter(|name| seen.insert(name))
+            .collect();
+        (comment.join(" "), names.join(" "))
+    }
+
+    /// Os pedaços de `pieces`, que estão na ordem do texto, que começam numa
+    /// das linhas `rows`.
+    fn within<'p>(pieces: &'p [Piece], rows: &std::ops::Range<usize>) -> &'p [Piece] {
+        let start = pieces.partition_point(|piece| piece.row < rows.start);
+        let end = pieces.partition_point(|piece| piece.row < rows.end);
+        &pieces[start..end.max(start)]
+    }
+
+    /// Os comentários do arquivo fora os das declarações, cada grupo numa
+    /// linha: os do começo, e os outros que caem fora das linhas de toda
+    /// declaração de `declarations` — os de dentro já estão no
+    /// `body_comment` dela. E quantos bytes do começo do `body_comment` da
+    /// primeira declaração de fora são comentários do começo do arquivo: o
+    /// comentário escrito antes de todo código na primeira linha dela é das
+    /// duas. Os comentários do começo são os primeiros do texto, e por isso
+    /// os dela vêm primeiro no `body_comment`, cada um seguido de um espaço
+    /// quando vem mais.
+    fn of_file(&self, declarations: &[Decl]) -> (String, String, usize) {
+        let spans: Vec<std::ops::Range<usize>> = declarations.iter().map(|d| rows_of(d.line, d.end_line)).collect();
+        let (head, rest): (Vec<&Piece>, Vec<&Piece>) = self.comments.iter().partition(|piece| piece.byte < self.first_code);
+        let outside: Vec<&Piece> = rest.into_iter().filter(|piece| !spans.iter().any(|rows| rows.contains(&piece.row))).collect();
+        let lines: Vec<(usize, usize)> = declarations.iter().map(|d| (d.line, d.end_line)).collect();
+        let in_body = outer_declarations(&lines).first().map_or(0, |&first| {
+            let held = head.iter().filter(|piece| spans[first].contains(&piece.row));
+            let bytes: usize = held.map(|piece| piece.text.len() + 1).sum();
+            bytes.min(declarations[first].body_comment.len())
+        });
+        let joined = |pieces: Vec<&Piece>| pieces.iter().map(|piece| piece.text.as_str()).collect::<Vec<_>>().join(" ");
+        (joined(head), joined(outside), in_body)
+    }
+}
+
+/// As linhas de uma declaração da linha `first` à `last` (a partir de um),
+/// como linhas da árvore (a partir de zero). A declaração sem a última linha
+/// fica só com a primeira.
+fn rows_of(first: usize, last: usize) -> std::ops::Range<usize> {
+    first.saturating_sub(1)..last.max(first)
+}
+
+/// Os trechos de linhas `ranges`, da primeira à última, em ordem e sem
+/// repetição: o que um contém, ou o que começa na linha logo depois do fim de
+/// outro, passa a ser um trecho só. Os atributos colados a um item de teste
+/// ficam no trecho dele, e o item de teste escrito dentro de outro não ganha
+/// trecho próprio.
+fn merged_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for (first, last) in ranges {
+        match out.last_mut() {
+            Some(open) if first <= open.1.saturating_add(1) => open.1 = open.1.max(last),
+            _ => out.push((first, last)),
+        }
+    }
+    out
 }
 
 /// Drop the punctuation a comment is written with, line by line, and leave the
@@ -668,6 +1754,144 @@ fn one_line(text: &str, max: usize) -> String {
     joined[..cut].trim_end().to_string()
 }
 
+/// O valor mais longo que se guarda de um texto fixo, em caracteres.
+const TEXT_MAX_CHARS: usize = 300;
+
+/// Quantos nós acima do literal a marca do texto é procurada: o bastante
+/// para passar dos argumentos, da chamada que monta o texto e da que o
+/// embrulha (`Err(Erro::Falta(format!("…")))`).
+const MARK_LEVELS: usize = 6;
+
+/// Quanto do trecho antes do filho, em bytes, a marca lê: o nome escrito logo
+/// antes dele cabe aqui, e o nó que começa mais longe não abre com a palavra
+/// que marca.
+const MARK_BEFORE_BYTES: usize = 256;
+
+/// Até quantos caracteres antes das aspas vai o prefixo de um literal
+/// (`r#"`, `$@"`, `rb'`).
+const QUOTE_PREFIX_MAX: usize = 3;
+
+/// Os textos fixos do arquivo, em ordem de linha: de cada literal que não
+/// cai em nenhum dos trechos de `skip` e tem cara de texto
+/// ([`reads_as_text`]), o valor, a linha, a declaração que a contém e a
+/// marca ([`mark_of`]) pelas chamadas de log e pelas formas de erro da
+/// língua `lang`. O literal escrito sem aspas vale como está escrito; o
+/// outro perde as aspas ([`literal_value`]).
+fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declarations: &[Decl], lang: &str) -> Vec<Text> {
+    let (logs, errors) = (log_calls(lang), error_forms(lang));
+    let overlaps = |node: &Node| {
+        skip.iter().flat_map(|spans| spans.iter()).any(|&(start, end)| start < node.end_byte() && node.start_byte() < end)
+    };
+    let mut texts: Vec<Text> = literals
+        .iter()
+        .filter(|(node, _)| !overlaps(node))
+        .filter_map(|(node, plain)| {
+            let written = node.utf8_text(bytes).ok()?;
+            let value = one_line(if *plain { written } else { literal_value(written) }, TEXT_MAX_CHARS);
+            if !reads_as_text(&value) {
+                return None;
+            }
+            let line = node.start_position().row + 1;
+            let owner = crate::graph::enclosing(declarations, line).map(|at| declarations[at].name.clone());
+            Some(Text { line, kind: mark_of(*node, bytes, logs, errors).to_string(), value, owner: owner.unwrap_or_default() })
+        })
+        .collect();
+    texts.sort();
+    texts.dedup();
+    texts
+}
+
+/// O valor de um literal de texto sem as aspas e o que vem antes delas
+/// (`r#"…"#`, `f'…'`, `@"…"`, `"""…"""`). O literal sem aspas perto do
+/// começo fica como foi escrito.
+pub(crate) fn literal_value(written: &str) -> &str {
+    let Some(open) = written.find(['"', '\'', '`']).filter(|&at| at <= QUOTE_PREFIX_MAX) else { return written };
+    let Some(quote) = written[open..].chars().next() else { return written };
+    let run = written[open..].chars().take_while(|&c| c == quote).count();
+    // Duas aspas seguidas só abrem o literal vazio; três ou mais abrem o de
+    // várias linhas, que fecha com as mesmas.
+    let count = if run >= 3 { run } else { 1 };
+    let body = &written[open + count * quote.len_utf8()..];
+    let body = if written[..open].contains('#') { body.trim_end_matches('#') } else { body };
+    body.strip_suffix(quote.to_string().repeat(count).as_str()).unwrap_or(body)
+}
+
+/// O valor tem cara de texto: ao menos uma palavra — o trecho entre espaços
+/// com duas letras ou mais. Uma palavra só (`Fornecedor`, `tsc`, `make`)
+/// conta, porque é ela que a pessoa procura quando não sabe o nome do código;
+/// o que não tem palavra nenhuma (`%d`, `{}`, `x`) fica de fora.
+fn reads_as_text(value: &str) -> bool {
+    value.split_whitespace().any(|piece| piece.chars().filter(|c| c.is_alphabetic()).count() >= 2)
+}
+
+/// A marca de um texto fixo. Subindo a partir do literal, até
+/// [`MARK_LEVELS`] nós, o primeiro nó cujo nome ([`names_before`]) casa com
+/// uma das formas de erro `errors` dá [`TEXT_ERROR`], com uma das chamadas de
+/// log `logs` dá [`TEXT_LOG`]; sem nenhum, [`TEXT_PLAIN`].
+fn mark_of(literal: Node, bytes: &[u8], logs: &[&str], errors: &[&str]) -> &'static str {
+    let mut child = literal;
+    for _ in 0..MARK_LEVELS {
+        let Some(parent) = child.parent() else { break };
+        let names = names_before(&bytes[parent.start_byte()..child.start_byte()]);
+        for (entries, mark) in [(errors, TEXT_ERROR), (logs, TEXT_LOG)] {
+            if names.iter().any(|name| entries.iter().any(|entry| names_entry(name, entry))) {
+                return mark;
+            }
+        }
+        child = parent;
+    }
+    TEXT_PLAIN
+}
+
+/// Os nomes de um nó para a marca, lidos do trecho `before` que ele escreve
+/// antes do filho que leva ao literal: o caminho escrito logo antes do filho
+/// (`console.log` em `console.log("…")`, `tracing::info!`, `new Erro`) e,
+/// quando o trecho é curto e fica numa linha só, a palavra que abre o nó
+/// (`throw`, `raise`).
+fn names_before(before: &[u8]) -> Vec<String> {
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    let in_path = |c: char| is_name(c) || ".:$\\!>-?".contains(c);
+    let tail = String::from_utf8_lossy(&before[before.len().saturating_sub(MARK_BEFORE_BYTES)..]);
+    let tail = tail.trim_end();
+    let start = tail.char_indices().rev().take_while(|&(_, c)| in_path(c)).last().map_or(tail.len(), |(at, _)| at);
+    let mut names = vec![tail[start..].trim_start_matches(|c: char| !is_name(c)).to_string()];
+    if before.len() <= MARK_BEFORE_BYTES && !before.contains(&b'\n') {
+        names.push(String::from_utf8_lossy(before).chars().take_while(|&c| is_name(c)).collect());
+    }
+    names.retain(|name| !name.is_empty());
+    names
+}
+
+/// O nome casa com a entrada `entry` de `log_calls` ou de `error_forms`:
+/// inteiro, ou a partir do começo de uma das partes dele (`info!` em
+/// `tracing::info!`, `LogError` em `_logger.LogError`). O `*` da entrada casa
+/// com letras, algarismos, `_` e `.`.
+fn names_entry(name: &str, entry: &str) -> bool {
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    let mut before: Option<char> = None;
+    for (at, c) in name.char_indices() {
+        if is_name(c) && before.is_none_or(|b| !is_name(b)) && glob(entry, &name[at..]) {
+            return true;
+        }
+        before = Some(c);
+    }
+    false
+}
+
+/// O texto casa com a entrada inteira, e o `*` dela com letras, algarismos,
+/// `_` e `.`.
+fn glob(entry: &str, text: &str) -> bool {
+    match entry.split_once('*') {
+        None => entry == text,
+        Some((head, tail)) => {
+            text.len() >= head.len() + tail.len()
+                && text.starts_with(head)
+                && text.ends_with(tail)
+                && text[head.len()..text.len() - tail.len()].chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        }
+    }
+}
+
 /// Every call the file makes and every name it cites without calling.
 ///
 /// A call is a named leaf that reads as an identifier and is followed by an
@@ -693,83 +1917,292 @@ fn one_line(text: &str, max: usize) -> String {
 /// `names_at`, is its header.
 ///
 /// A grammar may wrap a word in a name node (a keyword that is a name only in
-/// some places). That node counts as a leaf when its one child spans exactly
-/// what it spans, and only when it is of a type in `name_kinds`, the types the
-/// declarations of the file write their names with: `x.from(1)` is a call,
-/// and a modifier or a type keyword before a parenthesis is not.
+/// some places, [`Leaf::word`]). That node is read in place of its leaf only
+/// when it is of a type in `name_kinds`, the types the declarations of the
+/// file write their names with: `x.from(1)` is a call, and a modifier or a
+/// type keyword before a parenthesis is not.
+///
+/// Os nós lidos são as folhas que a caminhada pela árvore juntou
+/// ([`Walked`]); a que está dentro de um trecho de `quiet` fica de fora.
+///
+/// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]).
+/// Vêm junto os qualificadores que abrem a cadeia de uma chamada
+/// ([`opens_chain`]).
+///
+/// A citação escrita num dos bytes de `value_at`, onde vai um valor
+/// (`@call.value`), é também um uso por valor: a função entregue a outra
+/// (`xs.map(dobro)`) ou guardada num nome (`let f = dobro;`). A escrita num
+/// dos bytes de `member_at` (`@member`) é também o membro lido pelo objeto
+/// escrito antes dele (`pedido.Total`); o nome que abre a cadeia antes dele
+/// conta como o da chamada. Quando o arquivo escreve o dono do membro — o tipo
+/// da desestruturação ou o tipo que a assinatura dá ao objeto —, o membro sai
+/// qualificado por esse tipo ([`typed::Owners`]).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn use_sites(
-    root: Node,
+    leaves: &[Leaf],
     bytes: &[u8],
-    quiet: &Spans,
+    comments: &Spans,
+    quiet: &Pruned,
     names_at: &BTreeSet<usize>,
     name_kinds: &BTreeSet<&str>,
-) -> (Vec<CallSite>, Vec<CallSite>) {
+    lang: &str,
+    brought: &HashSet<&str>,
+    marks: &Marks,
+) -> (Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
-    let mut cursor = root.walk();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if is_decoration(&node, quiet) || node.is_extra() {
+    let mut values: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut members: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut heads: BTreeSet<String> = BTreeSet::new();
+    for leaf in leaves {
+        let node = match leaf.word {
+            Some(word) if name_kinds.contains(word.kind()) => word,
+            _ => leaf.node,
+        };
+        if !node.is_named() || quiet.holds(&node) || names_at.contains(&node.start_byte()) {
             continue;
         }
-        if node.child_count() > 0 && !is_wrapped_word(node, name_kinds) {
-            for child in node.children(&mut cursor) {
-                stack.push(child);
-            }
-            continue;
-        }
-        if !node.is_named() || names_at.contains(&node.start_byte()) {
-            continue;
-        }
+        // A letra sozinha, que fora disso é valor, é nome quando um import do
+        // arquivo a trouxe (`L` de `import { Leitor as L }`). O traço baixo
+        // não é letra: o import que traz o nome como `_` não traz nome.
         let Ok(text) = node.utf8_text(bytes) else { continue };
-        if !is_identifier(text) {
+        if !(is_identifier(text) || (brought.contains(text) && text.chars().all(char::is_alphabetic))) {
             continue;
         }
-        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes));
+        let site =
+            (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
         if followed_by_open_paren(node, bytes) {
-            calls.insert(site);
+            if opens_chain(node, bytes, comments, lang, &site.2) {
+                heads.insert(site.2.clone());
+            }
+            // O objeto com tipo escrito, ou o próprio objeto seguido de campos,
+            // diz de que tipo é o receptor: o grafo liga pelo tipo, e não pelo
+            // nome do método.
+            match marks.owners.receiver_of(node, bytes, comments, lang) {
+                Some(receiver) => calls.insert((site.0, site.1, receiver)),
+                None => calls.insert(site),
+            };
         } else if !against_a_quote(node, bytes) {
+            if marks.value_at.contains(&node.start_byte()) {
+                values.insert(site.clone());
+            }
+            if marks.member_at.contains(&node.start_byte()) {
+                if opens_chain(node, bytes, comments, lang, &site.2) {
+                    heads.insert(site.2.clone());
+                }
+                match marks.owners.of(node, bytes, comments, lang) {
+                    Some(owners) => members.extend(owners.into_iter().map(|owner| (site.0, site.1.clone(), owner))),
+                    None => {
+                        members.insert(site.clone());
+                    }
+                }
+            }
             cites.insert(site);
         }
     }
     let sites = |found: BTreeSet<(usize, String, String)>| {
         found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
     };
-    (sites(calls), sites(cites))
+    (sites(calls), sites(cites), sites(values), sites(members), heads)
 }
 
-/// A name node standing for one word: of a type in `name_kinds`, with a single
-/// child that spans exactly what the node spans.
-fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
-    node.child_count() == 1
-        && node.is_named()
-        && name_kinds.contains(node.kind())
-        && node
-            .child(0)
-            .is_some_and(|c| c.child_count() == 0 && c.start_byte() == node.start_byte() && c.end_byte() == node.end_byte())
+/// Os bytes em que a consulta marcou um nome: escrito onde vai um valor
+/// (`@call.value`) e escrito como membro depois do objeto (`@member`).
+struct Marks<'a> {
+    value_at: &'a BTreeSet<usize>,
+    member_at: &'a BTreeSet<usize>,
+    /// O dono que o arquivo escreve para os membros ([`typed::Owners`]).
+    owners: &'a typed::Owners,
 }
 
-/// The name written right before the node and joined to it by `::` or `.`:
-/// `preco` in `crate::preco::total`, `model` in `model.User`. Empty when the
-/// node stands alone, or when what comes before the separator is not a name
-/// (`f().total`).
-fn qualifier_before(node: Node, bytes: &[u8]) -> String {
-    let before = bytes[..node.start_byte()].trim_ascii_end();
-    let Some(before) = before.strip_suffix(b"::").or_else(|| before.strip_suffix(b".")) else {
-        return String::new();
-    };
-    if before.ends_with(b".") {
-        return String::new();
+/// O qualificador `qualifier`, escrito antes do nó, é um nome sem nada ligado
+/// a ele por um separador de `lang` antes dele: abre a cadeia (`File` em
+/// `File.ReadAllText(`, e não `repo` em `this.repo.salvar(` nem em
+/// `f().repo.salvar(`).
+fn opens_chain(node: Node, bytes: &[u8], comments: &Spans, lang: &str, qualifier: &str) -> bool {
+    if qualifier.is_empty() || qualifier == RECEIVER {
+        return false;
     }
-    let before = before.trim_ascii_end();
+    let separators = || qualifier_separators(lang).iter().chain(member_separators(lang));
+    let before = code_before(bytes, comments, node.start_byte());
+    let Some(before) = separators().find_map(|sep| before.strip_suffix(sep.as_bytes())) else { return false };
+    let Some(before) = before_separator(bytes, comments, before.len()).strip_suffix(qualifier.as_bytes()) else {
+        return false;
+    };
+    let before = code_before(bytes, comments, before.len());
+    !separators().any(|sep| before.ends_with(sep.as_bytes()))
+}
+
+/// O que uma caminhada pela árvore de um arquivo junta, na ordem do texto.
+struct Walked<'t> {
+    /// Os nós que a gramática marca como extras — os comentários —, sem
+    /// descer dentro deles.
+    comments: Vec<Node<'t>>,
+    /// As folhas fora dos comentários: as nomeadas e as que uma palavra
+    /// embrulha.
+    leaves: Vec<Leaf<'t>>,
+}
+
+/// Uma folha da árvore e a palavra que a embrulha, quando há.
+struct Leaf<'t> {
+    node: Node<'t>,
+    /// O nó nomeado que tem a folha como filho único e o mesmo trecho dela: a
+    /// gramática embrulha a palavra num nó de nome. Se ele é um nome só se
+    /// sabe depois dos matches, pelos tipos com que o arquivo escreve os nomes
+    /// das declarações.
+    word: Option<Node<'t>>,
+}
+
+impl<'t> Walked<'t> {
+    fn of(root: Node<'t>) -> Walked<'t> {
+        let mut comments = Vec::new();
+        let mut leaves = Vec::new();
+        let mut cursor = root.walk();
+        // O nó de um filho só, nomeado, que acabou de ser visto: o próximo nó
+        // da caminhada é o filho dele.
+        let mut single_parent: Option<Node<'t>> = None;
+        loop {
+            let node = cursor.node();
+            let parent = single_parent.take();
+            if node.is_extra() {
+                comments.push(node);
+            } else if node.child_count() == 0 {
+                let word = parent.filter(|w| w.start_byte() == node.start_byte() && w.end_byte() == node.end_byte());
+                if node.is_named() || word.is_some() {
+                    leaves.push(Leaf { node, word });
+                }
+            } else {
+                single_parent = (node.child_count() == 1 && node.is_named()).then_some(node);
+                if cursor.goto_first_child() {
+                    continue;
+                }
+                single_parent = None;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return Walked { comments, leaves };
+                }
+            }
+        }
+    }
+}
+
+/// Os trechos que uma leitura poda, só os de fora — o que está dentro de
+/// outro já fica de fora com ele —, em ordem.
+struct Pruned(Vec<(usize, usize)>);
+
+impl Pruned {
+    fn of(spans: impl IntoIterator<Item = (usize, usize)>) -> Pruned {
+        let mut spans: Vec<(usize, usize)> = spans.into_iter().collect();
+        spans.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        let mut outer: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for span in spans {
+            if outer.last().is_none_or(|last| span.1 > last.1) {
+                outer.push(span);
+            }
+        }
+        Pruned(outer)
+    }
+
+    /// O nó está dentro de um trecho podado.
+    fn holds(&self, node: &Node) -> bool {
+        let at = self.0.partition_point(|&(start, _)| start <= node.start_byte());
+        at > 0 && node.end_byte() <= self.0[at - 1].1
+    }
+}
+
+/// O código escrito antes do byte `at`, sem o espaço e os comentários
+/// (`comments`) que vêm logo antes dele: o ponto que fecha a frase de um
+/// comentário não liga o nome de depois ao que o comentário diz.
+fn code_before<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
+    let mut end = at;
+    loop {
+        let before = bytes[..end].trim_ascii_end();
+        let Some(last) = before.len().checked_sub(1) else { return before };
+        match comments.range(..=(last, usize::MAX)).next_back() {
+            Some(&(start, stop)) if last < stop && start < end => end = start,
+            _ => return before,
+        }
+    }
+}
+
+/// O que vem escrito antes do nó e ligado a ele por um separador de `lang`.
+/// Pelo separador de nome qualificado, o nome antes dele: `preco` em
+/// `crate::preco::total`, `model` em `model.User`. Pelo separador que só liga
+/// método (`member_separators`), o nome só fica quando é o próprio objeto
+/// (`self_receivers`): outro nome ali é um valor. Quando o que vem antes do
+/// separador não é um nome (`f().total`, `a[0].total`, `...total`), ou é um
+/// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho. O comentário
+/// escrito no meio não conta ([`code_before`]), nem a marca de acesso
+/// opcional ou de valor não nulo ([`before_separator`]). O nome de uma letra é
+/// nome como o de duas: o `p` do receptor em `p.total`, o `u` de
+/// `import * as u`.
+fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> String {
+    let before = code_before(bytes, comments, node.start_byte());
+    let strip = |separators: &[&str]| separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes()));
+    let (before, only_member) = match (strip(qualifier_separators(lang)), strip(member_separators(lang))) {
+        (Some(before), _) => (before, false),
+        (None, Some(before)) => (before, true),
+        (None, None) => return String::new(),
+    };
+    let before = before_separator(bytes, comments, before.len());
     let start = before
         .iter()
         .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
         .map_or(0, |i| i + 1);
     match std::str::from_utf8(&before[start..]) {
-        Ok(q) if is_identifier(q) => q.to_string(),
-        _ => String::new(),
+        Ok(q) if is_name(q) && (!only_member || self_receivers(lang).contains(&q)) => q.to_string(),
+        _ => RECEIVER.to_string(),
     }
+}
+
+/// O código escrito antes do separador que começa no byte `at`, sem o espaço
+/// e os comentários ([`code_before`]) e sem a marca de acesso escrita entre o
+/// objeto e o separador: a de acesso opcional (o `?` de `pedido?.Total` e de
+/// `$pedido?->total`) e a de valor não nulo (o `!` de `pedido!.Total`). O
+/// objeto é o mesmo do acesso comum, e o membro também.
+fn before_separator<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
+    let before = code_before(bytes, comments, at);
+    match before.strip_suffix(b"?").or_else(|| before.strip_suffix(b"!")) {
+        Some(object) => code_before(bytes, comments, object.len()),
+        None => before,
+    }
+}
+
+/// O caminho sem os argumentos de tipo escritos nele (`<u8>` em
+/// `crate::a::Caixa::<u8>`): cada trecho entre `<` e o `>` que o fecha sai, e
+/// o separador que fica sem parte de um lado ou do outro sai junto.
+fn without_type_arguments(path: &str, separators: &[&str]) -> String {
+    if !path.contains('<') {
+        return path.to_string();
+    }
+    let mut out = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for ch in path.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    for sep in separators.iter().filter(|sep| !sep.is_empty()) {
+        let doubled = format!("{sep}{sep}");
+        while out.contains(&doubled) {
+            out = out.replace(&doubled, sep);
+        }
+        while let Some(rest) = out.strip_suffix(sep) {
+            out = rest.to_string();
+        }
+    }
+    out
+}
+
+/// A primeira parte de um nome qualificado: o texto até o primeiro dos
+/// `separators`, ou o texto inteiro quando não há nenhum.
+fn first_segment<'a>(path: &'a str, separators: &[&str]) -> &'a str {
+    let cut = separators.iter().filter_map(|sep| path.find(sep)).min().unwrap_or(path.len());
+    &path[..cut]
 }
 
 /// The node touches a quote on either side: it is the text of a string, not a
@@ -791,17 +2224,30 @@ fn followed_by_open_paren(node: Node, bytes: &[u8]) -> bool {
 /// letter or an underscore. Two characters at least, the same floor
 /// [`simple_type_name`] uses.
 fn is_identifier(text: &str) -> bool {
-    let mut chars = text.chars();
-    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && text.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && text.chars().count() >= 2
+    is_name(text) && text.chars().count() >= 2
 }
 
-/// Split a `.scm` source into top-level patterns and keep the ones that compile
-/// against this grammar. Resilience over strictness: a query referencing a node
-/// a given grammar version lacks drops that one pattern, not the language.
-fn compile_good_patterns(lang: &Language, src: &str, name: &str) -> Vec<String> {
-    split_patterns(src)
+/// O texto se lê como nome, de qualquer tamanho: letras, algarismos e `_`,
+/// começando por letra ou `_`.
+fn is_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Split a `.scm` source into top-level patterns and compile, as one query,
+/// the ones that hold against this grammar. Resilience over strictness: a
+/// query referencing a node a given grammar version lacks drops that one
+/// pattern, not the language. O todo se compila primeiro, e quase sempre
+/// vale: cada padrão só se compila sozinho, para achar o que cai, quando o
+/// todo não compila. `None`, com o aviso, quando nenhum padrão vale.
+pub(crate) fn compile_good_query(lang: &Language, src: &str, name: &str) -> Option<Query> {
+    let patterns = split_patterns(src);
+    if !patterns.is_empty()
+        && let Ok(query) = Query::new(lang, &patterns.join("\n"))
+    {
+        return Some(query);
+    }
+    let good: Vec<String> = patterns
         .into_iter()
         .filter(|p| match Query::new(lang, p) {
             Ok(_) => true,
@@ -810,7 +2256,18 @@ fn compile_good_patterns(lang: &Language, src: &str, name: &str) -> Vec<String> 
                 false
             }
         })
-        .collect()
+        .collect();
+    if good.is_empty() {
+        eprintln!("grain: no usable query patterns for '{name}' — skipping");
+        return None;
+    }
+    match Query::new(lang, &good.join("\n")) {
+        Ok(query) => Some(query),
+        Err(e) => {
+            eprintln!("grain: query for '{name}' failed to compile: {e}");
+            None
+        }
+    }
 }
 
 /// Break a query into its top-level S-expression patterns. A pattern runs from a
@@ -886,5 +2343,56 @@ fn simple_type_name(txt: &str) -> Option<String> {
         Some(name)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A gramática de qualquer língua do registro: o curinga `(_)` vale em
+    /// todas, e o nó inventado, em nenhuma.
+    fn any_grammar() -> Language {
+        raw_langs().into_iter().next().expect("the registry declares a language").language
+    }
+
+    #[test]
+    fn a_pattern_the_grammar_lacks_drops_alone_and_the_rest_compiles() {
+        let grammar = any_grammar();
+        let good = "(_) @node";
+        let bad = "(node_no_grammar_declares) @node";
+
+        let whole = compile_good_query(&grammar, &format!("{good}\n{good}"), "test").expect("every pattern holds");
+        assert_eq!(whole.pattern_count(), 2);
+
+        let kept = compile_good_query(&grammar, &format!("{good}\n{bad}\n{good}"), "test").expect("two patterns hold");
+        assert_eq!(kept.pattern_count(), 2);
+
+        assert!(compile_good_query(&grammar, bad, "test").is_none());
+        assert!(compile_good_query(&grammar, "", "test").is_none());
+    }
+
+    /// A passada só prepara as línguas que o projeto tem; a consulta inteira
+    /// de cada língua do registro compila sem perder padrão, tenha o projeto
+    /// a língua ou não.
+    #[test]
+    fn every_language_of_the_registry_compiles_its_whole_query() {
+        for raw in raw_langs() {
+            let whole = Query::new(&raw.language, raw.query);
+            assert!(whole.is_ok(), "{}: {:?}", raw.name, whole.err());
+        }
+    }
+
+    #[test]
+    fn only_the_language_a_file_asks_for_is_prepared() {
+        let asked = detect_language(Path::new("src/lib.rs")).expect("the registry reads the extension");
+        let registry = registry();
+
+        assert!(registry.compiled_languages().next().is_none(), "no language is prepared before a file asks");
+        assert!(registry.get(&asked).is_some());
+        assert!(registry.get(&asked).is_some(), "asking again reuses the prepared language");
+
+        let prepared: Vec<&str> = registry.compiled_languages().map(|a| a.name.as_str()).collect();
+        assert_eq!(prepared, vec![asked.as_str()]);
     }
 }

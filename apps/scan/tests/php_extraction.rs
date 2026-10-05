@@ -5,17 +5,12 @@
 //! `use` import path, the `namespace` name, and each `@definition.<kind>` with
 //! its name and supertypes — straight out of a real `.php` source.
 
-use std::process::Command;
+#[path = "support/model.rs"]
+mod model;
 
 /// Scan a project dir holding a single PHP file and return the emitted model.
 fn scan_to_model(dir: &std::path::Path) -> serde_json::Value {
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON")
+    model::scan(dir, dir, &[]).0
 }
 
 #[test]

@@ -133,10 +133,11 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // lista é vazia, e a branch que o próprio remoto chama de padrão passava a
     // contar como unidade de alguém.
     if flow.has_unit_record(&branch) && !on_integration_base(&main, &branch, &cfg) {
-        // The unit's OWN record answers where to go back to; `origin/HEAD` is
-        // the last resort, so nothing here spells a branch name of its own.
+        // What the flow and the branch name establish answers where to go back
+        // to; `origin/HEAD` is the last resort, so nothing here spells a branch
+        // name of its own.
         // Same three sources, same order, as the refusal of the pull request
-        // list: the unit's own record, then the DECLARED primary base when the
+        // list: the unit's own base, then the DECLARED primary base when the
         // project states one — naming `origin/HEAD` there sends a unit that
         // integrates into `dev` off to `main` — and only then the remote's own
         // default.
@@ -236,12 +237,9 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
 
     // Then the git side. The work-branch gate cuts every unit IN PLACE — no
     // worktree of its own — so there is no separate floor to free here.
-    // `worktreeRemoved` stays in the report, permanently `false`, so a caller
-    // reading the field keeps reading valid JSON.
     //
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
-    let worktree_removed = false;
     let branch_deleted = local && git_ok(&main, &["branch", "-D", unit]);
     let remote_deleted = remote && git_ok(&main, &["push", "origin", "--delete", unit]);
 
@@ -252,7 +250,6 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
         "branch": branch,
         "unit": unit,
         "base": flow.base_of(unit).into_known(),
-        "worktreeRemoved": worktree_removed,
         "branchDeleted": branch_deleted,
         "remoteDeleted": remote_deleted,
         "pr": pr,
@@ -456,7 +453,7 @@ mod tests {
     /// servidor contar como unidade de alguém: a lista dos pull requests
     /// recusava rodar de cima dela e a exclusão aceitava apagá-la.
     #[test]
-    fn a_branch_padrao_do_servidor_e_base_para_todas_as_portas() {
+    fn server_default_branch_is_the_base_for_every_door() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         git(root, &["init", "."]);

@@ -34,8 +34,14 @@ const OWN_DENY: [&str; 1] = ["Bash(curl:*)"];
 
 /// Roda o binário no projeto, com uma pasta pessoal falsa e sem `claude` à mão.
 fn rt(root: &Path, home: &Path, args: &[&str], stdin: &str) -> Output {
+    rt_with_env(root, home, args, stdin, &[])
+}
+
+/// O `rt`, com as variáveis de ambiente `envs` a mais no processo.
+fn rt_with_env(root: &Path, home: &Path, args: &[&str], stdin: &str, envs: &[(&str, &str)]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(args)
+        .envs(envs.iter().copied())
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)
         .env("HOME", home)
@@ -254,4 +260,77 @@ fn a_session_without_project_page_asks_to_publish_it() {
     // O índice refeito do zero guarda o endereço gravado sem spec.
     rt_ok(&root, &home, &["run", "index"], "");
     assert!(!session_start(&root, &home, "startup").contains(&template), "the rebuilt index lost the address");
+}
+
+/// A instalação local preenche o idioma de resposta do Claude Code e desliga a
+/// compactação automática só no projeto, pelo `upsert` que a pessoa roda: o
+/// idioma da conversa vira o valor da chave, trocar o idioma e instalar de novo
+/// troca o valor, e o que a pessoa já tinha nas duas chaves fica. A compactação
+/// pedida à mão não é tocada, e o resto do `env` da pessoa segue igual.
+#[test]
+fn the_install_fills_the_response_language_and_turns_off_the_automatic_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = fresh_repo(dir.path());
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+    std::fs::write(root.join(".claude/settings.local.json"), r#"{"env":{"MY_OWN":"1"}}"#).unwrap();
+    rt_ok(&root, &home, &["run", "upsert"], "");
+    let settings = local_settings(&root);
+    assert_eq!(settings["language"], json!("português do Brasil"), "{settings}");
+    assert_eq!(settings["env"]["DISABLE_AUTO_COMPACT"], json!("1"), "{settings}");
+    assert!(settings["env"].get("DISABLE_COMPACT").is_none(), "the manual /compact stays on: {settings}");
+    assert_eq!(settings["env"]["MY_OWN"], json!("1"), "the person's own variable stays: {settings}");
+    let settled = std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap();
+    rt_ok(&root, &home, &["run", "upsert"], "");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap(),
+        settled,
+        "a second install changes nothing",
+    );
+
+    // Trocar o idioma e instalar de novo troca o valor do idioma de resposta.
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+    rt_ok(&root, &home, &["run", "upsert"], "");
+    assert_eq!(local_settings(&root)["language"], json!("English"), "a language change swaps the value");
+
+    // O que a pessoa escolheu por conta própria nas duas chaves fica.
+    let mut own = local_settings(&root);
+    own["language"] = json!("japanese");
+    own["env"]["DISABLE_AUTO_COMPACT"] = json!("0");
+    std::fs::write(root.join(".claude/settings.local.json"), serde_json::to_string_pretty(&own).unwrap()).unwrap();
+    rt_ok(&root, &home, &["run", "upsert"], "");
+    let kept = local_settings(&root);
+    assert_eq!(kept["language"], json!("japanese"), "the person's own language stays: {kept}");
+    assert_eq!(kept["env"]["DISABLE_AUTO_COMPACT"], json!("0"), "the person's own value stays: {kept}");
+}
+
+/// A barra de status não traz o ponto em que a conversa seria compactada, nem
+/// com a variável da fatia de compactação definida no ambiente de quem a roda.
+#[test]
+fn the_status_line_has_no_compaction_point_even_with_the_variable_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = fresh_repo(dir.path());
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+    rt_ok(&root, &home, &["run", "upsert"], "");
+    let payload = json!({
+        "workspace": {"current_dir": root},
+        "model": {"display_name": "Opus 5 (1M context)"},
+        "context_window": {"total_input_tokens": 230_000, "total_output_tokens": 10_000},
+    })
+    .to_string();
+    for lang in ["pt-BR", "en-US"] {
+        std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{lang}"}}}}"#)).unwrap();
+        let out = rt_with_env(
+            &root,
+            &home,
+            &["run", "statusline"],
+            &payload,
+            &[("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "25")],
+        );
+        assert!(out.status.success(), "{lang}: {}", String::from_utf8_lossy(&out.stderr));
+        let bar = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(bar.contains("Opus 5"), "{lang}: the bar still draws: {bar}");
+        for part in ["compacta em", "compacts at", "faltam", "left"] {
+            assert!(!bar.contains(part), "{lang}: the bar shows the compaction point (`{part}`): {bar}");
+        }
+    }
 }

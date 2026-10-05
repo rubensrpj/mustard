@@ -15,18 +15,22 @@
 //!     Everything Laravel/Django-specific lives in the fixtures and in the data
 //!     files (core's stacks.toml); `src/` stays blind to stack names.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 use mustard_core::domain::vocabulary::stacks::{CONFIDENCE_THREE_CLASSES, CONFIDENCE_TWO_CLASSES};
 
 /// A committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
-/// Scan a fixture into a temp `grain.model.json` and return the parsed value.
+/// Scan a fixture into a temp map and return the parsed value.
 /// Mirrors `php_laravel_fixture.rs`: a temp dir owned by the test, removed at
 /// the end. The `label` keeps each test's temp dir distinct — both tests in
 /// this file run in the same binary in parallel, so a process-id-only path
@@ -34,30 +38,8 @@ fn fixture(name: &str) -> PathBuf {
 /// other.
 fn scan_fixture(name: &str, label: &str) -> (tempfile::TempDir, serde_json::Value) {
     let temp = tempfile::Builder::new().prefix(&format!("scan-stacks-{}-", label)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
+    let (v, _) = model::scan(&fixture(name), temp.path(), &[]);
     (temp, v)
-}
-
-/// Run the digest command over an already-written `grain.model.json` (so the
-/// digest is a projection of the model, never a re-scan of the repo) and
-/// return the parsed digest JSON.
-fn digest_of_model(dir: &std::path::Path) -> serde_json::Value {
-    let model = dir.join("grain.model.json");
-    let digest = dir.join("digest.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["digest", model.to_str().unwrap(), "--out", digest.to_str().unwrap()])
-        .output()
-        .expect("run digest over model");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&digest).expect("read digest")).expect("valid digest JSON")
 }
 
 /// The detection's signals as plain strings.
@@ -77,7 +59,7 @@ fn assert_confidence(detection: &serde_json::Value, expected: f32) {
 
 #[test]
 fn stack_detection_e2e_laravel_converges_three_signal_classes_at_high_confidence() {
-    let (dir, v) = scan_fixture("php_laravel", "laravel");
+    let (_dir, v) = scan_fixture("php_laravel", "laravel");
 
     // Exactly one stack detected — no invented detections from the rest of
     // the built-in registry.
@@ -112,18 +94,6 @@ fn stack_detection_e2e_laravel_converges_three_signal_classes_at_high_confidence
     assert_eq!(unit_stacks.len(), 1, "root unit detects exactly laravel: {unit_stacks:?}");
     assert_eq!(unit_stacks[0]["name"], "laravel");
     assert_confidence(&unit_stacks[0], CONFIDENCE_THREE_CLASSES);
-
-    // DIGEST copies the model's detections verbatim (a projection of the
-    // model, never a re-inference): same array, byte-for-byte as JSON values.
-    let digest = digest_of_model(dir.path());
-    let digest_stacks = digest["detected_stacks"].as_array().expect("digest carries detected_stacks");
-    assert_eq!(digest_stacks.len(), 1, "digest carries laravel: {digest_stacks:?}");
-    assert_eq!(digest_stacks[0]["name"], "laravel");
-    assert_eq!(
-        digest["detected_stacks"], v["detected_stacks"],
-        "digest must copy the model's detected_stacks verbatim"
-    );
-
 }
 
 #[test]
@@ -156,4 +126,85 @@ fn stack_detection_e2e_django_converges_path_and_code_classes_at_medium_confiden
     // And by construction: no dependency evidence at all.
     assert!(!sigs.iter().any(|s| s.starts_with("dep:")), "no dep signals expected: {sigs:?}");
 
+}
+
+/// A Rust project whose strings quote what a PHP or Dart framework looks like
+/// (the registry itself and the tests of an inference do) is not a PHP or a
+/// Dart project: the scan detects no stack, in the repo and in its unit, and
+/// still detects one when a file of the stack's language is there.
+#[test]
+fn stack_detection_e2e_words_of_another_language_inside_rust_strings_detect_no_stack() {
+    let project = tempfile::Builder::new().prefix("scan-stacks-quoted-").tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = project.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("Cargo.toml", "[package]\nname = \"quoted\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(
+        "src/lib.rs",
+        "pub const LARAVEL: &str = \"class PostController extends Controller\";\n\
+         pub const FLUTTER: &str = \"import 'package:flutter/material.dart';\";\n",
+    );
+
+    let out = tempfile::Builder::new().prefix("scan-stacks-quoted-map-").tempdir().unwrap();
+    let (v, _) = model::scan(project.path(), out.path(), &[]);
+    let stacks = v["detected_stacks"].as_array().expect("model carries detected_stacks");
+    assert!(stacks.is_empty(), "no stack from Rust strings: {stacks:?}");
+    for unit in v["projects"].as_array().expect("model carries projects") {
+        let unit_stacks = unit["detected_stacks"].as_array().expect("unit carries detected_stacks");
+        assert!(unit_stacks.is_empty(), "no stack in unit {}: {unit_stacks:?}", unit["dir"]);
+    }
+
+    // The same words in a file of the stack's own language do count.
+    write("src/Http/PostController.php", "<?php\nclass PostController extends Controller {}\n");
+    let out = tempfile::Builder::new().prefix("scan-stacks-quoted-php-").tempdir().unwrap();
+    let (v, _) = model::scan(project.path(), out.path(), &[]);
+    let names: Vec<&str> =
+        v["detected_stacks"].as_array().unwrap().iter().map(|d| d["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["laravel"], "the PHP file confirms the PHP stack; the Dart words stay text");
+}
+
+/// The words of a JavaScript framework written in a Rust source and in a TOML
+/// text are not JavaScript code, even in a project that has a real `.js` file:
+/// the scan reads a stack's signature only in the files of the stack's own
+/// language, so no Next.js is detected in the repo or in its unit. The same
+/// words in a `.tsx` file do count (TypeScript and JavaScript are one family).
+#[test]
+fn stack_detection_e2e_next_words_outside_the_js_files_detect_no_nextjs() {
+    let project = tempfile::Builder::new().prefix("scan-stacks-next-").tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = project.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("Cargo.toml", "[package]\nname = \"tooling\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write("scripts/build.js", "console.log('build');\n");
+    write("src/lib.rs", "pub const PAGE: &str = \"import Link from 'next/link'\";\n");
+    write("docs/stacks.toml", "code_signatures = [\"next/router\", \"next/navigation\", \"next/link\"]\n");
+
+    let scan = |label: &str| {
+        let out = tempfile::Builder::new().prefix(&format!("scan-stacks-next-{label}-")).tempdir().unwrap();
+        model::scan(project.path(), out.path(), &[]).0
+    };
+    let names = |stacks: &serde_json::Value| -> Vec<String> {
+        stacks.as_array().expect("carries detected_stacks").iter().map(|d| d["name"].as_str().unwrap().to_string()).collect()
+    };
+
+    let v = scan("rust");
+    assert!(names(&v["detected_stacks"]).is_empty(), "no stack from Rust and TOML text: {:?}", v["detected_stacks"]);
+    for unit in v["projects"].as_array().expect("model carries projects") {
+        assert!(names(&unit["detected_stacks"]).is_empty(), "no stack in unit {}: {:?}", unit["dir"], unit["detected_stacks"]);
+    }
+
+    // The same words in a file of the stack's language (a `.tsx` is a file of
+    // the JavaScript family) are the stack's code.
+    write("src/app/page.tsx", "import Link from 'next/link';\nexport default function Page() { return <Link href=\"/\" />; }\n");
+    let v = scan("tsx");
+    assert_eq!(names(&v["detected_stacks"]), ["nextjs"], "a .tsx file holds the Next.js words");
+    assert!(
+        v["projects"].as_array().unwrap().iter().any(|unit| names(&unit["detected_stacks"]) == ["nextjs"]),
+        "the unit that holds the .tsx file has the stack: {:?}",
+        v["projects"]
+    );
 }

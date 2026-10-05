@@ -1,0 +1,67 @@
+# As rotas do ASP.NET Core. O nome deste arquivo é o nome do framework; a
+# consulta que acha as rotas está em `aspnetcore/routes.scm`, e o que cada
+# captura dela diz, em `src/routes.rs`. O caminho do controlador junta o
+# `[Route("…")]` da classe e o atributo da ação (`[HttpGet("{id}")]`); o da
+# API mínima junta os `MapGroup("…")` de que o objeto da rota nasce e o
+# `MapGet("…")` chamado nele.
+#
+# O grupo da API mínima (`route.nest`) vale guardado numa variável
+# (`var pedidos = app.MapGroup("/pedidos");`, `route.variable` com o valor em
+# `route.value`), em qualquer ponto da cadeia
+# (`app.MapGroup("/p").WithTags("P").RequireAuthorization()`), como objeto
+# da rota (`app.MapGroup("/a").MapGet("/b", h)`) e como objeto de outro grupo
+# (`a.MapGroup("/b")` soma os dois).
+#
+# O grupo que chega por parâmetro: o parâmetro de um método cujo tipo leva um
+# grupo (`IEndpointRouteBuilder`, `RouteGroupBuilder`) é `route.parameter`,
+# e o marcado com `this` é o receptor (`route.parameter.receiver`). A rota
+# registrada nele fica com o prefixo em aberto. A chamada (`route.call`) cujo
+# objeto (`api.MapOrders()`) ou argumento (`module.MapEndpoints(api, v)`,
+# `route.argument`) é grupo entrega o prefixo dele ao método com esse nome, no
+# mesmo projeto, na posição do receptor ou na do argumento.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador
+#   (`Microsoft.AspNetCore.Mvc.…`). O `global using` de outro arquivo liga a
+#   regra nos arquivos da pasta do projeto dele, como o próprio `using`.
+# - `manifest_dependencies`: a regra roda também, sem import nenhum, nos
+#   arquivos cujo manifesto mais próximo acima declara uma destas
+#   dependências: o projeto web (`<Project Sdk="Microsoft.NET.Sdk.Web">`).
+# - `methods`: o nome do atributo ou do método e o método HTTP que ele diz;
+#   `"*"` é qualquer método (`[Route]` na ação, sem atributo de método). O
+#   nome fora da tabela não faz rota.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{id:int}`, `{id?}`, `{*resto}`).
+# - `reset_marks`: o começo que faz o caminho da ação não se juntar ao da
+#   classe (`[HttpGet("/raiz")]`, `[HttpGet("~/raiz")]`). O do `MapGroup`
+#   continua: na API mínima, o caminho sempre começa pela barra.
+# - `class_marker` e `class_suffix`: o marcador que, no caminho, vira o nome
+#   da classe sem o sufixo (`[controller]` em `PedidosController` é
+#   `Pedidos`).
+
+language = ["csharp"]
+imports = ["Microsoft.AspNetCore.Mvc", "Microsoft.AspNetCore.Builder"]
+manifest_dependencies = ["Microsoft.NET.Sdk.Web"]
+param_wrappers = [["{", "}"]]
+reset_marks = ["/", "~/"]
+class_marker = "[controller]"
+class_suffix = "Controller"
+
+[methods]
+HttpGet = "GET"
+HttpPost = "POST"
+HttpPut = "PUT"
+HttpPatch = "PATCH"
+HttpDelete = "DELETE"
+HttpHead = "HEAD"
+HttpOptions = "OPTIONS"
+Route = "*"
+MapGet = "GET"
+MapPost = "POST"
+MapPut = "PUT"
+MapPatch = "PATCH"
+MapDelete = "DELETE"
+MapMethods = "*"

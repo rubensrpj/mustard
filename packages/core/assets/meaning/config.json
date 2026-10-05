@@ -1,0 +1,14 @@
+{
+    "model_type": "model2vec",
+    "architectures": [
+        "StaticModel"
+    ],
+    "tokenizer_name": "BAAI/bge-m3",
+    "apply_pca": null,
+    "apply_zipf": null,
+    "sif_coefficient": null,
+    "hidden_dim": 256,
+    "seq_length": 1000000,
+    "normalize": true,
+    "embedding_dtype": "int8"
+}

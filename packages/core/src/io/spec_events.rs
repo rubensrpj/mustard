@@ -122,7 +122,9 @@ pub fn write_at(
 /// existe, versão nova de outro tipo, filtro de remoção que não pega nada e
 /// expurgo cujo trecho não aparece no alvo. O expurgo reescreve o arquivo com
 /// o trecho dos alvos trocado por "…"; as outras gravações só acrescentam uma
-/// linha. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
+/// linha, mesmo quando uma linha do arquivo está sem o `search`: o campo que
+/// falta se põe na instalação ([`crate::io::spec_index::rebuild`]), não
+/// aqui. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
 /// [`write_guarded`] recebe também a procura de segredo. Um nome de código citado num fato que
 /// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
 /// [`Written::citation_warnings`]. O `last` de uma gravação `copy` que aponta
@@ -179,49 +181,127 @@ fn write_inner(
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    let Prepared { mut event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
+    let prepared = prepare(event_type, draft, cite_roots)?;
+    let file = LockedFile::exclusive(path).map_err(io_refusal)?;
+    let mut locked = LockedLog::read(file, path)?;
+    locked.write_prepared(prepared, event_type, at, find, guard, then)
+}
 
-    let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
-    let content = file.read_to_string().map_err(io_refusal)?;
-    let log = model::parse_log(&content);
-    // O `last` de uma cópia da página da spec nunca aponta além do que o
-    // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
-    // pedido errado, é trocado pelo último item do arquivo, sem recusa —
-    // senão a cópia seguinte pularia os itens até esse número para sempre.
-    if event_type == "copy"
-        && let Some(last) = event.get("last").and_then(Value::as_u64)
-        && last > log.max_id()
-    {
-        event.insert("last".to_string(), Value::from(log.max_id()));
+/// O arquivo de eventos com a trava exclusiva presa, para quem lê o
+/// arquivo, mexe em outra coisa que depende dele e grava um evento sem soltar
+/// a trava no meio ([`with_locked_writer`]). A trava solta quando o valor sai
+/// de cena.
+#[derive(Debug)]
+pub struct LockedLog {
+    file: LockedFile,
+    path: PathBuf,
+    content: String,
+    log: SpecLog,
+}
+
+impl LockedLog {
+    /// Lê o arquivo pelo manipulador `file`, que já segura a trava.
+    fn read(mut file: LockedFile, path: &Path) -> Result<Self, Refusal> {
+        let content = file.read_to_string().map_err(io_refusal)?;
+        let log = model::parse_log(&content);
+        Ok(Self { file, path: path.to_path_buf(), content, log })
     }
-    // O arquivo como ficaria, conferido antes de qualquer escrita.
-    let Staged { next, appended, after, id, code, effects } = stage(&content, &log, event, asked, at, find)?;
-    guard(&log, &after)?;
-    match appended {
-        Some(added) => file.append_line(&added).map_err(io_refusal)?,
-        None => file.replace(next.as_bytes()).map_err(io_refusal)?,
+
+    /// O arquivo como está, com o que este trecho já gravou.
+    #[must_use]
+    pub fn log(&self) -> &SpecLog {
+        &self.log
     }
-    let log = after;
-    // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
-    // publicação da página do projeto leva o endereço para a linha do
-    // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
-    // template vai junto, e a publicação sem ela é a da página antiga.
-    let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
-        crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
-            .map(|url| (url, crate::domain::spec_index::is_template(e)))
-    });
-    let index_warning = crate::io::spec_index::index_for(path).and_then(|(index, name)| {
-        crate::io::spec_index::refresh_line(&index, &name, &log)
-            .and_then(|()| {
-                project_url.map_or(Ok(()), |(url, template)| {
-                    crate::io::spec_index::set_project_url(&index, url, template)
+
+    /// Grava um evento com a hora de agora sem soltar a trava: a mesma
+    /// gravação, com as mesmas conferências, de [`write_guarded`]. Depois
+    /// dela, [`LockedLog::log`] já traz o evento.
+    ///
+    /// # Errors
+    ///
+    /// As recusas de [`write_guarded`]; nesse caso, nada muda.
+    pub fn write_guarded(
+        &mut self,
+        event_type: &str,
+        draft: Map<String, Value>,
+        cite_roots: &[PathBuf],
+        find: &dyn Fn(&str) -> Vec<String>,
+        guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+        then: impl FnOnce(&SpecLog),
+    ) -> Result<Written, Refusal> {
+        let prepared = prepare(event_type, draft, cite_roots)?;
+        self.write_prepared(prepared, event_type, &now(), find, guard, then)
+    }
+
+    /// Grava o evento já conferido sozinho, sobre o arquivo como este trecho
+    /// o tem, e refaz a linha da spec no índice.
+    fn write_prepared(
+        &mut self,
+        prepared: Prepared,
+        event_type: &str,
+        at: &str,
+        find: &dyn Fn(&str) -> Vec<String>,
+        guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+        then: impl FnOnce(&SpecLog),
+    ) -> Result<Written, Refusal> {
+        let Prepared { mut event, asked, citation_warnings } = prepared;
+        // A linha cortada pelo disco cheio vira registro na memória, antes de
+        // tudo: a gravação, a conferência e o arquivo que sai partem do
+        // arquivo já consertado, e uma recusa deixa o arquivo como estava.
+        let repaired = repaired_base(&self.content, &self.log);
+        let (base_content, base_log) = repaired.as_ref().map_or((&self.content, &self.log), |(c, l)| (c, l));
+        // O `last` de uma cópia da página da spec nunca aponta além do que o
+        // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
+        // pedido errado, é trocado pelo último item do arquivo, sem recusa —
+        // senão a cópia seguinte pularia os itens até esse número para sempre.
+        if event_type == "copy"
+            && let Some(last) = event.get("last").and_then(Value::as_u64)
+            && last > base_log.max_id()
+        {
+            event.insert("last".to_string(), Value::from(base_log.max_id()));
+        }
+        // O arquivo como ficaria, conferido antes de qualquer escrita.
+        let Staged { next, appended, after, id, code, effects } =
+            stage(base_content, base_log, event, asked, at, find)?;
+        guard(base_log, &after)?;
+        match appended {
+            // O arquivo consertado é regravado inteiro; sem conserto, só
+            // acrescenta a linha.
+            Some(added) if repaired.is_none() => self.file.append_line(&added).map_err(io_refusal)?,
+            _ => self.file.replace(next.as_bytes()).map_err(io_refusal)?,
+        }
+        self.content = next;
+        self.log = after;
+        let log = &self.log;
+        // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
+        // publicação da página do projeto leva o endereço para a linha do
+        // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
+        // template vai junto, e a publicação sem ela é a da página antiga.
+        let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
+            crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
+                .map(|url| (url, crate::domain::spec_index::is_template(e)))
+        });
+        let index_warning = crate::io::spec_index::index_for(&self.path).and_then(|(index, name)| {
+            crate::io::spec_index::refresh_line(&index, &name, log)
+                .and_then(|()| {
+                    project_url.map_or(Ok(()), |(url, template)| {
+                        crate::io::spec_index::set_project_url(&index, url, template)
+                    })
                 })
-            })
-            .err()
-    });
-    then(&log);
-    drop(file);
-    Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
+                .err()
+        });
+        then(log);
+        Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
+    }
+}
+
+/// O arquivo `content`, lido como `log`, com as linhas cortadas trocadas por
+/// registros ([`model::repair_cut_lines`]), e a leitura dele; `None` quando
+/// nenhuma linha pede o conserto.
+fn repaired_base(content: &str, log: &SpecLog) -> Option<(String, SpecLog)> {
+    let repaired = model::repair_cut_lines(content, log)?;
+    let log = model::parse_log(&repaired);
+    Some((repaired, log))
 }
 
 /// O evento conferido sozinho, antes de a trava ser pega.
@@ -339,6 +419,8 @@ impl<'a> DryRun<'a> {
 
     /// Confere a gravação de um evento do tipo `event_type` com os campos de
     /// `draft`, como [`write_guarded`] a conferiria, e passa a contar com ela.
+    /// Devolve o número que o ensaio deu ao evento: a gravação de verdade
+    /// pode dar outro, quando outra entra no arquivo no meio.
     ///
     /// # Errors
     ///
@@ -348,13 +430,15 @@ impl<'a> DryRun<'a> {
         event_type: &str,
         draft: Map<String, Value>,
         guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
-    ) -> Result<(), Refusal> {
+    ) -> Result<u64, Refusal> {
         let Prepared { event, asked, .. } = prepare(event_type, draft, &self.cite_roots)?;
-        let staged = stage(&self.content, &self.log, event, asked, &now(), self.find)?;
-        guard(&self.log, &staged.after)?;
+        let repaired = repaired_base(&self.content, &self.log);
+        let (base_content, base_log) = repaired.as_ref().map_or((&self.content, &self.log), |(c, l)| (c, l));
+        let staged = stage(base_content, base_log, event, asked, &now(), self.find)?;
+        guard(base_log, &staged.after)?;
         self.content = staged.next;
         self.log = staged.after;
-        Ok(())
+        Ok(staged.id)
     }
 }
 
@@ -374,14 +458,28 @@ pub fn read(path: &Path) -> Result<Option<SpecLog>, Refusal> {
 /// nenhuma gravação entra no meio, então nenhuma das duas fica atrás do
 /// arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada é criado.
 pub fn with_locked_log<R>(path: &Path, f: impl FnOnce(&SpecLog) -> R) -> Result<Option<R>, Refusal> {
-    let mut file = match LockedFile::existing(path) {
+    with_locked_writer(path, |locked| f(locked.log()))
+}
+
+/// Como [`with_locked_log`], e `f` ainda grava pelo [`LockedLog`] sem soltar
+/// a trava: quem lê o arquivo, mexe numa pasta que depende dele e grava um
+/// evento no fim faz tudo num trecho só, e quem pega a mesma trava para mexer
+/// na mesma pasta espera o trecho acabar. `Ok(None)` quando a spec ainda não
+/// tem arquivo; nada é criado.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando o arquivo existe e não abre, não trava ou não pode
+/// ser lido.
+pub fn with_locked_writer<R>(path: &Path, f: impl FnOnce(&mut LockedLog) -> R) -> Result<Option<R>, Refusal> {
+    let file = match LockedFile::existing(path) {
         Ok(file) => file,
         Err(Error::NotFound(_)) => return Ok(None),
         Err(e) => return Err(io_refusal(e)),
     };
-    let content = file.read_to_string().map_err(io_refusal)?;
-    let out = f(&model::parse_log(&content));
-    drop(file);
+    let mut locked = LockedLog::read(file, path)?;
+    let out = f(&mut locked);
+    drop(locked);
     Ok(Some(out))
 }
 
@@ -428,6 +526,7 @@ pub(crate) fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::normalize::Languages;
     use crate::domain::spec_events::{Block, BlockQuery, EventRef, Hidden, SkipReason, Step, TYPES};
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
@@ -592,7 +691,8 @@ mod tests {
         assert!(rule_line.contains(r#""search":"#), "{rule_line}");
         let log = spec.log();
         let rule = log.get(spec.ids["rule"]).unwrap();
-        assert!(rule.matches(&model::search_terms("apagando"), None), "the stem of the key matches");
+        let found = model::found_by(log.events.iter().collect(), "apagando", &log.codes(), &Languages::new(["pt-BR"]));
+        assert!(found.iter().any(|e| e.id == rule.id), "the stem of the key matches");
         assert!(!rule.shown().contains("search"));
     }
 
@@ -644,7 +744,7 @@ mod tests {
         for event in log.step(&Step::Dispatch { wave: 2 }) {
             assert_ne!(event.block(), Some(Block::Conversation), "{}", event.shown());
         }
-        assert_eq!(got(Step::Question { term: "Contoso".into() }), spec.ids(&["response"]));
+        assert_eq!(got(Step::Question { term: "Contoso".into(), languages: Languages::new(["pt-BR", "en-US"]) }), spec.ids(&["response"]));
     }
 
     #[test]
@@ -683,9 +783,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         put(&path, &[], "message", &at("10:00"), json!({"author": "user", "text": "antes"}));
-        // The machine went down in the middle of the second write.
+        // The machine went down in the middle of the second write, and what is
+        // left does not start as an event line ("v" is missing): it stays as
+        // it is.
         let mut torn = std::fs::read_to_string(&path).unwrap();
-        torn.push_str(r#"{"v":1,"id":2,"at":"2026-09-11T10:01"#);
+        torn.push_str(r#"{"id":2,"at":"2026-09-11T10:01"#);
         std::fs::write(&path, &torn).unwrap();
 
         let after = put(&path, &[], "message", &at("10:02"), json!({"author": "user", "text": "depois"}));
@@ -699,6 +801,178 @@ mod tests {
         assert_eq!((log.skipped[0].line, log.skipped[0].reason), (2, SkipReason::Unreadable));
         let warning = log.skipped[0].message(crate::platform::i18n::Locale::PtBr);
         assert!(warning.contains("linha 2") && warning.contains("pulada"), "{warning}");
+    }
+
+    /// O arquivo de uma spec com três eventos, a linha 4 cortada pelo disco
+    /// cheio e dois eventos gravados depois dela: como a gravação seguinte a
+    /// um disco cheio o deixa. Devolve o caminho, o pedaço cortado e o texto
+    /// do arquivo.
+    fn spec_with_a_cut_line(dir: &Path, piece: &str) -> (PathBuf, String) {
+        let path = dir.join("spec.ndjson");
+        seed_message(&path);
+        put(&path, &[], "note", &at("09:01"), json!({"text": "um", "keys": ["k"], "origin": 1}));
+        put(&path, &[], "note", &at("09:02"), json!({"text": "dois", "keys": ["k"], "origin": 1}));
+        let tail = |id: u64, code: &str, hm: &str, text: &str| {
+            let event = model::normalize(obj(json!({"author": "user", "text": text})), "message");
+            format!("{}\n", model::render_line(&model::stamp(event, id, Some(code), &at(hm))))
+        };
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str(piece);
+        raw.push('\n');
+        raw.push_str(&tail(5, "MSTD-MSG-0002", "09:05", "depois do corte"));
+        raw.push_str(&tail(6, "MSTD-MSG-0003", "09:06", "e mais uma"));
+        std::fs::write(&path, &raw).unwrap();
+        (path, raw)
+    }
+
+    /// A linha cortada pelo disco cheio, que começa como um evento, vira um
+    /// registro que se lê na gravação seguinte: o mesmo número, o código e a
+    /// hora que o pedaço traz, o autor do binário e o pedaço todo. Nenhum
+    /// outro evento muda, o arquivo não avisa mais, e o número do código da
+    /// linha cortada não é dado de novo.
+    #[test]
+    fn a_line_cut_by_a_full_disk_becomes_a_record_on_the_next_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let piece = r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03:00-03:00","type":"note","text":"meio da fra"#;
+        let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+        let old = read(&path).unwrap().unwrap();
+        assert_eq!(old.skipped.len(), 1, "the file warns before the write: {:?}", old.skipped);
+
+        let written = put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
+
+        let log = read(&path).unwrap().unwrap();
+        assert!(log.skipped.is_empty(), "no warning after the write: {:?}", log.skipped);
+        assert_eq!(log.events.iter().map(|e| e.id).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6, 7], "the numbers stay in order");
+        let record = log.get(4).unwrap();
+        assert_eq!(record.event_type, model::CUT_LINE_TYPE);
+        assert_eq!(record.str_field("piece"), Some(piece), "the whole piece is kept");
+        assert_eq!(record.str_field("code"), Some("MSTD-NOTE-0003"));
+        assert_eq!(record.at(), "2026-09-11T09:03:00-03:00");
+        assert_eq!(record.str_field("author"), Some("binary"));
+        assert_eq!(record.line, 4, "replaced in place");
+
+        // The neighbours are the very same events, and every other line is byte-equal.
+        for id in [1, 2, 3, 5, 6] {
+            assert_eq!(log.get(id), old.get(id), "event {id} did not change");
+        }
+        let now = std::fs::read_to_string(&path).unwrap();
+        let (was, is): (Vec<&str>, Vec<&str>) = (before.lines().collect(), now.lines().collect());
+        assert_eq!(is.len(), was.len() + 1, "only the new event is a new line");
+        for (n, line) in was.iter().enumerate().filter(|(n, _)| *n != 3) {
+            assert_eq!(is[n], *line, "line {} is untouched", n + 1);
+        }
+        assert_eq!(is[3], model::render_line(&record.fields));
+
+        // The number the cut line carried stays with it: the new note is the next one.
+        assert_eq!(written.id, 7);
+        assert_eq!(written.code.as_deref(), Some("MSTD-NOTE-0004"));
+        assert_eq!(log.codes()[&4], "MSTD-NOTE-0003", "the code finds the record");
+    }
+
+    /// Do pedaço cortado só entra o que veio por inteiro: o código e a hora
+    /// cortados no meio ficam de fora, e o registro traz o número e o pedaço.
+    #[test]
+    fn the_record_of_a_cut_line_carries_only_what_the_piece_has_whole() {
+        for (piece, code, at_field) in [
+            (r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03"#, Some("MSTD-NOTE-0003"), None),
+            (r#"{"v":1,"id":4,"code":"MSTD-NO"#, None, None),
+            (r#"{"v":1,"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#, None, Some("2026-09-11T09:03:00-03:00")),
+            (r#"{"v":1,"id":4,"#, None, None),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, _) = spec_with_a_cut_line(dir.path(), piece);
+            put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
+            let log = read(&path).unwrap().unwrap();
+            assert!(log.skipped.is_empty(), "{piece}: {:?}", log.skipped);
+            let record = log.get(4).unwrap();
+            assert_eq!(record.event_type, model::CUT_LINE_TYPE, "{piece}");
+            assert_eq!(record.str_field("code"), code, "{piece}");
+            assert_eq!(record.str_field("at"), at_field, "{piece}");
+            assert_eq!(record.str_field("piece"), Some(piece));
+        }
+    }
+
+    /// A linha que não começa como um evento, a que pode ter perdido dígitos
+    /// do número e a que repete o número de um evento que se lê ficam como
+    /// estão, com o aviso.
+    #[test]
+    fn a_broken_line_that_does_not_start_as_an_event_is_left_alone() {
+        for piece in [
+            r#"{"v":1,"id":41"#,
+            r#"{"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#,
+            r#"{"v":1,"id":2,"at":"2026-09-11T09:03:00-03:00","ty"#,
+            r"lixo qualquer",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+            put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
+            let log = read(&path).unwrap().unwrap();
+            assert_eq!(log.skipped.len(), 1, "{piece}: the line is still skipped");
+            assert_eq!(log.skipped[0].line, 4);
+            let now = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(now.lines().nth(3), Some(piece), "the line is untouched");
+            assert!(now.starts_with(&before), "{piece}: the write only appended");
+        }
+    }
+
+    /// A conferência sem gravar parte do arquivo já consertado, como a
+    /// gravação de verdade: o arquivo em disco não muda, e o que ela vê depois
+    /// da gravação conferida não tem linha pulada.
+    #[test]
+    fn a_dry_run_sees_the_cut_line_repaired_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let piece = r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03:00-03:00","type":"note","te"#;
+        let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+        let find = |_: &str| Vec::new();
+
+        let mut dry = DryRun::open(&path, Vec::new(), &find).unwrap();
+        assert_eq!(dry.log().skipped.len(), 1);
+        dry.write("note", obj(json!({"text": "tres", "keys": ["k"], "origin": 1})), |before, after| {
+            assert_eq!((before.skipped.len(), after.events.len() - before.events.len()), (0, 1));
+            Ok(())
+        })
+        .unwrap();
+        assert!(dry.log().skipped.is_empty());
+        assert_eq!(dry.log().get(4).map(|e| e.event_type.as_str()), Some(model::CUT_LINE_TYPE));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "a dry run never writes");
+    }
+
+    /// A gravação recusada deixa o arquivo como estava, com a linha cortada
+    /// por consertar; a que passa conserta e grava de uma vez.
+    #[test]
+    fn a_refused_write_leaves_the_cut_line_unrepaired() {
+        let dir = tempfile::tempdir().unwrap();
+        let piece = r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03:00-03:00","type":"note","te"#;
+        let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+
+        let refused = write_guarded(
+            &path,
+            "note",
+            obj(json!({"text": "tres", "keys": ["k"], "origin": 1})),
+            &[],
+            &|_| Vec::new(),
+            |_, _| Err(Refusal::Io { detail: "recusada".into() }),
+            |_| {},
+        );
+        assert!(refused.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "a refusal never touches the file");
+        assert_eq!(read(&path).unwrap().unwrap().skipped.len(), 1);
+
+        let mut seen = None;
+        write_guarded(
+            &path,
+            "note",
+            obj(json!({"text": "tres", "keys": ["k"], "origin": 1})),
+            &[],
+            &|_| Vec::new(),
+            |before, after| {
+                seen = Some((before.skipped.len(), after.skipped.len(), after.events.len() - before.events.len()));
+                Ok(())
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(seen, Some((0, 0, 1)), "the check sees the repaired file before and after, one event apart");
     }
 
     #[test]
@@ -747,6 +1021,31 @@ mod tests {
         edited.push_str("{\"v\":1,\"id\":40,\"at\":\"2026-09-11T10:02:00-03:00\",\"type\":\"message\",\"author\":\"user\",\"text\":\"à mão\"}\n");
         std::fs::write(&path, edited).unwrap();
         assert_eq!(put(&path, &[], "message", &at("10:03"), json!({"author": "user", "text": "três"})).id, 41);
+    }
+
+    /// A linha gravada sem o `search` continua sem ele depois de uma gravação
+    /// comum: a gravação só acrescenta a linha nova no fim, sem reler nem
+    /// reescrever as outras, e o campo que falta fica para a instalação pôr,
+    /// uma vez só.
+    #[test]
+    fn a_write_only_appends_even_when_an_older_line_has_no_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
+        put(&path, &[], "note", &at("10:00"), json!({"text": "Apagar a pasta.", "keys": ["pasta"], "origin": 1}));
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(
+            "{\"v\":1,\"id\":3,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1}\n",
+        );
+        std::fs::write(&path, &content).unwrap();
+        assert_eq!(model::refresh_search_lines(&content).1, 1, "the third line has no search");
+
+        put(&path, &[], "message", &at("10:02"), json!({"author": "user", "text": "depois"}));
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with(&content), "a write rewrote the lines before it:\n{after}");
+        assert_eq!(after.lines().count(), content.lines().count() + 1, "{after}");
+        assert_eq!(model::refresh_search_lines(&after).1, 1, "the missing search waits for the install");
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -838,9 +1137,8 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/real.rs"), "fn a() {}\nfn ler_linha() {}\nfn c() {}\n").unwrap();
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(
-            crate::io::project_map::model_path(&root),
+        crate::io::project_map::write_text(
+            &root,
             r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"ler_linha","line":2}]}]}"#,
         )
         .unwrap();
@@ -850,7 +1148,7 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let write =
             |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point("tamanho", source, text), &roots, &at("10:00"));
-        let plan = |source: &str, text: &str| crate::io::citation::check_at(&roots, &root, source, text);
+        let plan = |source: &str, text: &str| citation::check(&DiskWorld::new(roots.clone(), Some(&root)), source, text);
 
         let without = write(None, "o pedido não tem teto").unwrap_err();
         assert_eq!(without, Refusal::FactWithoutSource { fact: 1 });
@@ -895,7 +1193,7 @@ mod tests {
         for (i, source) in sources.into_iter().enumerate() {
             let gap = format!("lacuna {i}");
             let shared: Vec<Finding> =
-                crate::io::citation::check_at(&roots, &root, source, "").into_iter().filter(Finding::is_refusal).collect();
+                citation::check(&DiskWorld::new(roots.clone(), Some(&root)), source, "").into_iter().filter(Finding::is_refusal).collect();
             let door = match write_at(&path, "point", one_fact_point(&gap, Some(source), "t"), &roots, &at("10:00")) {
                 Ok(_) => Vec::new(),
                 Err(Refusal::CitedFileMissing { path, .. }) => vec![Finding::MissingFile { path }],
@@ -1138,6 +1436,34 @@ mod tests {
         assert!(!dir.path().join("nada.ndjson").exists());
     }
 
+    /// O trecho travado lê o arquivo, grava um evento sem soltar a trava e
+    /// já o vê na leitura dele; outro manipulador só pega a trava depois do
+    /// trecho. A recusa de uma gravação ali dentro não muda nada, e a spec
+    /// sem arquivo não ganha um.
+    #[test]
+    fn a_write_inside_the_locked_section_keeps_the_lock_until_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
+        let free = || std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap().try_lock().is_ok();
+        let find = |_: &str| Vec::new();
+        let (written, refused, seen, free_inside) = with_locked_writer(&path, |locked| {
+            let written = locked.write_guarded("rule", obj(rule("regra")), &[], &find, |_, _| Ok(()), |_| {}).unwrap();
+            let refused = locked.write_guarded("remove", obj(json!({"targets": [9], "reason": "r"})), &[], &find,
+                |_, _| Ok(()), |_| {});
+            (written.id, refused.is_err(), ids_of(&locked.log().events.iter().collect::<Vec<_>>()), free())
+        })
+        .unwrap()
+        .unwrap();
+        assert!(!free_inside, "the lock is held for the whole section");
+        assert!(refused, "the refused write changes nothing");
+        assert_eq!(seen, [1, written], "the section sees its own write");
+        assert_eq!(read(&path).unwrap().map(|log| log.max_id()), Some(written), "the write is on disk");
+        assert!(free(), "the lock is released once the section ends");
+        let none = dir.path().join("nada.ndjson");
+        assert!(with_locked_writer(&none, |_| ()).unwrap().is_none() && !none.exists());
+    }
+
     #[test]
     fn a_spec_without_file_reads_as_none_and_a_bad_name_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -1181,7 +1507,7 @@ mod tests {
     /// A sobra sem título ou sem detalhe é recusada sem gravar nada, e a que
     /// traz os dois passa.
     #[test]
-    fn a_volta_da_onda_fica_fora_da_leitura_ate_a_rodada_assumir() {
+    fn the_wave_return_stays_out_of_the_read_until_the_round_assumes_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);
@@ -1246,7 +1572,7 @@ mod tests {
     /// veredito oficial com `replaces` para ele, ele não espera mais, e a
     /// aprovação final é a oficial.
     #[test]
-    fn o_veredito_final_sem_onda_e_lido_como_volta() {
+    fn the_final_verdict_without_a_wave_is_read_as_a_return() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);

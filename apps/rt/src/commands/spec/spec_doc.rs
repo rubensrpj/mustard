@@ -36,7 +36,7 @@ mod tests {
     /// endereço da última. A publicação da página do projeto, gravada na
     /// mesma spec, não troca o link da página da spec.
     #[test]
-    fn vale_o_endereco_da_ultima_publicacao() {
+    fn address_of_the_last_publication_counts() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         seed_event(root, "x", "state", json!({"phase": "running"}));

@@ -4,3 +4,4 @@ pub mod cli;
 
 pub mod scratch_gc;
 pub mod upsert;
+pub(crate) mod work_copies;

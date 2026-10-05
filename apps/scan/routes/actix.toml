@@ -1,0 +1,50 @@
+# As rotas do Actix Web. O nome deste arquivo é o nome do framework; a
+# consulta que acha as rotas está em `actix/routes.scm`, e o que cada captura
+# dela diz, em `src/routes.rs`.
+#
+# A rota pelo atributo na função, que é quem a atende: `#[get("/aves/{id}")]`
+# diz o método pelo nome; `#[route("/x", method = "GET", method = "POST")]`
+# dá uma rota por método escrito. A rota pela chamada: o
+# `web::resource("/x").route(web::get().to(h))` e o
+# `.route("/x", web::post().to(h))`, com o método no nome da função
+# (`web::get`) e quem atende no `.to(h)`.
+#
+# O `web::scope("/api")` e o `web::resource("/x")` fazem um grupo com o
+# prefixo. O `.service(ler)` e o `.configure(config)` chamados na cadeia de
+# um grupo montam nele a função que nomeiam: o prefixo do grupo vale para a
+# rota da função `ler` e para as rotas escritas na função `config`, no mesmo
+# arquivo ou no arquivo de onde o nome vem. O escopo ou o recurso escrito
+# dentro do `.service(...)` de outro escopo soma os dois prefixos, o de fora
+# primeiro: `web::scope("/api").service(web::scope("/v1").service(ler))` dá
+# `api/v1` à rota de `ler`, também com o escopo de dentro guardado numa
+# variável (`let v1 = web::scope("/v1").service(ler);` e
+# `web::scope("/api").service(v1)`). O prefixo do `.configure(config)` vale
+# também para o que a função `config` monta: o escopo escrito nela soma o de
+# fora ao dele.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`actix_web::web`).
+# - `methods`: o nome do atributo ou da função de método e o método HTTP que
+#   ele diz. O nome fora da tabela não faz rota. O método escrito como texto
+#   (`method = "GET"`, `route.method.text`) vale sem as aspas, em
+#   maiúsculas.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{resto:.*}`).
+
+language = ["rust"]
+imports = ["actix_web"]
+param_wrappers = [["{", "}"]]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+head = "HEAD"
+options = "OPTIONS"
+trace = "TRACE"
+connect = "CONNECT"

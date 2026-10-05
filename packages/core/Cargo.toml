@@ -6,6 +6,12 @@ rust-version = "1.89"
 description = "Shared foundation crate for the Mustard hook/script/CLI Rust migration: event model, hook contract, and pipeline-state types."
 license = "MIT"
 publish = false
+autotests = false
+
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 # Dependency versions are declared once in the workspace `[workspace.dependencies]`
 # table (root Cargo.toml); each crate references them with `{ workspace = true }`.
@@ -13,25 +19,37 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
-# Multi-pattern string matching for `vocabulary::VocabularyMatcher`. The
-# automaton matches all needles in a single linear pass over the haystack
-# (O(n + m)), which is roughly an order of magnitude faster than running 100
-# independent `str::contains` calls or compiling a regex alternation. Pinned
-# to 1.1; the 1.x line has been API-stable since 2023.
+# Multi-pattern string matching for the stack-signature detector
+# (`vocabulary::aho`). The automaton matches all needles in a single linear
+# pass over the haystack (O(n + m)), which is roughly an order of magnitude
+# faster than running 100 independent `str::contains` calls or compiling a
+# regex alternation. Pinned to 1.1; the 1.x line has been API-stable since 2023.
 aho-corasick = "1.1"
-# TOML deserializer for `.claude/vocab/regression.toml` — the runtime-editable
-# vocabulary file consumed by `VocabLayer::parse_from_toml`. The 1.x line is
-# the current stable major on crates.io (May 2026); this crate only uses
-# `toml::from_str` (deserialize), which is unchanged across the 0.8 -> 1.0
-# transition. The dep is crate-local because `vocabulary` is the only consumer.
+# TOML deserializer for the stack registry (`vocabulary::stacks`), built in and
+# overridable by `.claude/vocab/stacks.toml`. The 1.x line is the current
+# stable major on crates.io (May 2026); this crate only uses `toml::from_str`
+# (deserialize), which is unchanged across the 0.8 -> 1.0 transition. The dep
+# is crate-local because `vocabulary` is the only consumer.
 toml = "1"
-# The Portuguese stemmer behind the `search` field of the spec event file
-# (`domain::spec_events`). Version lives in the workspace table.
+# The Snowball stemmers behind every word search, one per language the
+# project declares (`domain::normalize`). Version lives in the workspace table.
 rust-stemmers = { workspace = true }
 # Local date and time with the offset (`2026-09-11T21:03:12-03:00`) for the
 # `at` field of each spec event: the person removes "the messages from 21:03 to
 # 21:10" in the clock they read, never in UTC.
 chrono = { workspace = true }
+# The project map as one SQLite file (`io::map_db`). Version and the bundled
+# SQLite live in the workspace table.
+rusqlite = { workspace = true }
+# The static sense model behind `io::map_meaning`: a table of vectors per word
+# piece plus a mean, read from the bytes embedded in the binary. `local-only`
+# keeps the Hugging Face download out and `fancy-regex` is the pure Rust
+# regex engine of the tokenizer, so no C library is linked.
+model2vec-rs = { version = "0.3", default-features = false, features = ["local-only", "fancy-regex"] }
+# Os padrões de caminho das regras avulsas do projeto (`io::wave_prompt::rules`),
+# lidos como o Claude Code os lê: `**`, `{a,b}` e `[abc]`. A mesma linha 0.4 que o
+# `scan` já usa, então nenhum código novo entra na árvore.
+globset = "0.4"
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.

@@ -1,13 +1,15 @@
-//! `scan` — mine the workspace into `grain.model.json` via the bundled grain
+//! `scan` — mine the workspace into the project map via the bundled grain
 //! tool. This is THE scan now: it replaces the old in-tree scan engine
 //! (miner / ast / vocabulary / cluster discovery / skill+agent generation),
 //! which is removed. grain is deterministic and fully
 //! language-agnostic; Mustard never reads project source to understand a repo.
 //!
-//! The model lands at `<root>/.claude/grain.model.json` (the durable product,
-//! re-run when the codebase changes). Downstream commands consume it through the
-//! [`mustard_core::Scan`] client (`digest --query`, `spec`), never by reading
-//! source. No skills or agents are produced; with `--full`, the one file
+//! The model lands in the SQLite map at `<root>/.claude/grain.db` (the durable
+//! product, re-run when the codebase changes; only the blocks that changed are
+//! written again). Downstream commands consume it through the
+//! project map (`run map`), never by reading source; the
+//! [`mustard_core::Scan`] client only runs the pass that writes it. No skills
+//! or agents are produced; with `--full`, the one file
 //! written per subproject is its `.claude/scan-map.md`.
 //!
 //! A cada vez que roda, o scan também lê o banco de lições e aponta o que
@@ -18,11 +20,13 @@
 //! falta só é apontado com o mapa desta vez: quando a ferramenta do scan
 //! falha, só as lições parecidas saem.
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 use mustard_core::Scan;
 use mustard_core::domain::lessons::{self, MissingPaths};
 use mustard_core::domain::project_map::{self, ProjectMap};
+use mustard_core::io::project_map as store;
 use mustard_core::domain::scan::{mark_own_git_roots, read_projects, ScanReport};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
@@ -30,39 +34,45 @@ use serde_json::{json, Value};
 
 use super::scan_claude;
 
-/// Default model location under the project's `.claude/` directory.
-pub(crate) fn default_model_path(root: &Path) -> PathBuf {
-    root.join(".claude").join("grain.model.json")
-}
-
 /// Run `grain scan <root> --out <model>`; print a small JSON result. Fail-open:
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
 /// With a model of this project already on disk, only the files that changed
 /// since are read again; the result says how many (`read`, a count, never
 /// the list of names) and whether every file was (`full`). Nothing is
-/// written to git and nothing runs this on its own.
+/// written to git and nothing runs this on its own. With the map written, the
+/// reading of the history of every file starts in the background; the command
+/// does not wait for it.
 ///
 /// When `full` is `true`, (re)generates the mustard-owned
 /// `.claude/scan-map.md` per subproject after the model is written; no
 /// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
-    let result = scan_at(root, out, full, |root, model| Scan::locate().scan(root, model));
+    let session = crate::shared::spec_state::session_from_env();
+    let result = scan_at(root, out, full, session.as_deref(), |root, model| Scan::locate().scan_then_read_history(root, model));
+    // Com o mapa do projeto gravado, o texto dos pull requests que a
+    // história dele cita e ele ainda não tem, lido do provedor sem travar.
+    if out.is_none() && result["ok"] == json!(true) {
+        crate::shared::pr_history::refresh(root);
+    }
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
 /// O núcleo testável de [`run`]: o relatório que o comando imprime. `mine`
 /// é a leitura do projeto pela ferramenta do scan, que grava o mapa em
 /// `model`; o comando passa a ferramenta instalada, e o teste, uma que
-/// grava o mapa dos arquivos do disco ou que falha.
+/// grava o mapa dos arquivos do disco ou que falha. O teto do nome comum
+/// escrito errado no `mustard.json` sai em `warning` uma vez na sessão
+/// `session`.
 pub(crate) fn scan_at(
     root: &Path,
     out: Option<&Path>,
     full: bool,
+    session: Option<&str>,
     mine: impl FnOnce(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Value {
-    let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
+    let model_path = out.map_or_else(|| store::model_path(root), Path::to_path_buf);
 
     // Preflight BEFORE the miner: an unpopulated submodule is indistinguishable
     // from an absent subtree once the walk runs — it visits the directory, finds
@@ -108,6 +118,9 @@ pub(crate) fn scan_at(
 
     // Only run the map pass when grain succeeded (model file is valid).
     if scan_result.is_ok() {
+        if let Some(warning) = ceiling_warning(root, session) {
+            result["warning"] = json!(warning);
+        }
         let mut projects = read_projects(&model_path);
         // The grain miner is git-blind; stamp the git-boundary FACT onto the
         // census here (a `.git` dir/file at each subproject's dir) so the
@@ -143,6 +156,23 @@ pub(crate) fn scan_at(
     result
 }
 
+/// O aviso do teto do nome comum inválido no `mustard.json` de `root`, com o
+/// valor lido e o padrão que o scan usou no lugar dele, quando ainda não saiu
+/// na sessão `session`. `None` com o teto válido ou ausente.
+pub(crate) fn ceiling_warning(root: &Path, session: Option<&str>) -> Option<String> {
+    let config = mustard_core::ProjectConfig::load(root);
+    let (ceiling, invalid) = config.scan_max_same_name();
+    if !invalid || !crate::shared::search_door::first_warning(root, session, "scan.max_same_name") {
+        return None;
+    }
+    let written = config.scan.max_same_name.as_ref().map_or_else(String::new, Value::to_string);
+    Some(
+        translate("scan.bad_max_same_name", config.language().text_or_default())
+            .replace("{value}", &written)
+            .replace("{default}", &ceiling.to_string()),
+    )
+}
+
 /// Lê o banco de lições e põe no relatório o que enxugar nele: em `lessons`,
 /// os grupos de lições parecidas (`similar`) e as lições que citam caminhos
 /// que o projeto já não tem (`missing_paths`); em `next`, o que o assistente
@@ -155,34 +185,55 @@ fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
     let home = mustard_core::io::spec_events::spec_root(root);
     let Some(path) = ClaudePaths::for_project(&home).ok().map(|paths| paths.lessons_path()) else { return };
     let Ok(Some(bank)) = mustard_core::io::lessons::read(&path) else { return };
-    let map: Option<ProjectMap> =
-        model_path.and_then(|model| std::fs::read_to_string(model).ok()).and_then(|text| serde_json::from_str(&text).ok());
+    // Só os caminhos dos arquivos: é tudo o que a conferência das lições lê.
+    let map: Option<ProjectMap> = model_path.and_then(|model| store::read_for_at(model, store::Need::Paths).ok());
     let missing = map.as_ref().map_or_else(Vec::new, |map| {
         lessons::citing_missing_paths(&bank, |cited: &str, inside: Option<&str>| path_found(root, map, cited, inside))
     });
     let leaving: Vec<u64> = missing.iter().map(|m| m.id).collect();
-    let similar = lessons::similar(&bank, &leaving);
+    let config = mustard_core::ProjectConfig::load(&home);
+    let similar = lessons::similar(&bank, &leaving, &mustard_core::domain::normalize::Languages::of(&config));
     if similar.is_empty() && missing.is_empty() {
         return;
     }
-    let lang = mustard_core::ProjectConfig::load(&home).language().text_or_default();
+    let lang = config.language().text_or_default();
     result["lessons"] = json!({
         "similar": similar,
         "missing_paths": missing.iter().map(|m| json!({ "id": m.id, "paths": m.paths })).collect::<Vec<_>>(),
     });
-    result["next"] = json!(next_step(&similar, &missing, lang));
+    // Os grupos de defeito e de regra do projeto a gravação recusa juntar: eles
+    // vão para a dica de virar teste ou sair do banco, não para a de juntar.
+    let class_of: BTreeMap<u64, &str> = lessons::kept(&bank).into_iter().map(|lesson| (lesson.id, lesson.event_type.as_str())).collect();
+    let (for_the_code, to_merge): (Vec<Vec<u64>>, Vec<Vec<u64>>) = similar.iter().cloned().partition(|group| {
+        group.iter().any(|id| class_of.get(id).is_some_and(|class| refused_for_a_merge(class)))
+    });
+    result["next"] = json!(next_step(&to_merge, &for_the_code, &missing, lang));
 }
 
-/// O passo seguinte do scan: juntar cada grupo e retirar as lições que já
-/// não valem, pelo `run write lesson`.
-fn next_step(similar: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if !similar.is_empty() {
-        let groups: Vec<String> = similar
+/// A classe de lição que o `write lesson` recusa juntar: a mesma que ele
+/// recusa gravar ([`lessons::for_the_code`]).
+fn refused_for_a_merge(class: &str) -> bool {
+    let draft = serde_json::Map::from_iter([("class".to_string(), json!(class))]);
+    lessons::for_the_code(&draft).is_some()
+}
+
+/// O passo seguinte do scan: juntar cada grupo de `to_merge` e retirar as
+/// lições que já não valem, pelo `run write lesson`. Os grupos de `for_the_code`
+/// não se juntam: viram teste no código ou saem do banco.
+fn next_step(to_merge: &[Vec<u64>], for_the_code: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> String {
+    let shown = |groups: &[Vec<u64>]| -> String {
+        let groups: Vec<String> = groups
             .iter()
             .map(|group| format!("[{}]", group.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")))
             .collect();
-        parts.push(translate("lessons.scan_merge", lang).replace("{groups}", &groups.join(", ")));
+        groups.join(", ")
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if !to_merge.is_empty() {
+        parts.push(translate("lessons.scan_merge", lang).replace("{groups}", &shown(to_merge)));
+    }
+    if !for_the_code.is_empty() {
+        parts.push(translate("lessons.scan_test_or_retire", lang).replace("{groups}", &shown(for_the_code)));
     }
     if !missing.is_empty() {
         let shown: Vec<String> = missing.iter().map(|m| format!("{} ({})", m.id, m.paths.join(", "))).collect();
@@ -259,6 +310,7 @@ fn hollow_submodules(root: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn write(path: &Path, body: &str) {
         if let Some(parent) = path.parent() {
@@ -290,7 +342,7 @@ mod tests {
         let mut modules = Vec::new();
         walk(root, root, &mut modules);
         let files = modules.len();
-        write(model, &json!({ "modules": modules }).to_string());
+        store::write_text_at(model, &json!({ "modules": modules }).to_string())?;
         Ok(ScanReport { full: true, files, ..ScanReport::default() })
     }
 
@@ -303,7 +355,12 @@ mod tests {
     /// Uma regra do projeto como o importador das instruções a deixa no
     /// banco, gravada pelo mesmo gravador do comando de gravar lição.
     fn rule(bank: &Path, subproject: &str, text: &str, keys: &[&str]) -> u64 {
-        let draft = serde_json::json!({"class": "project_rule", "text": text, "keys": keys,
+        lesson_of(bank, "project_rule", subproject, text, keys)
+    }
+
+    /// Uma lição da classe `class`, gravada pelo mesmo gravador.
+    fn lesson_of(bank: &Path, class: &str, subproject: &str, text: &str, keys: &[&str]) -> u64 {
+        let draft = serde_json::json!({"class": class, "text": text, "keys": keys,
             "applies_to": {"subproject": subproject}, "found_in": {"source": format!("{subproject}/CLAUDE.md")}});
         let Value::Object(draft) = draft else { unreachable!() };
         mustard_core::io::lessons::write(bank, draft, None).expect("a lição entra no banco").id
@@ -316,6 +373,41 @@ mod tests {
     /// apagado, aponta as duas parecidas como um grupo a juntar e a outra como
     /// candidata a sair, e o passo seguinte manda juntar e retirar pelo
     /// comando de gravar lição. O banco fica com os mesmos bytes.
+    /// O teto do nome comum escrito errado no `mustard.json` (aqui, texto;
+    /// zero e negativo têm a prova própria na leitura da configuração) sai em `warning` na primeira passada da sessão, com a chave,
+    /// o valor lido e o padrão que valeu; a segunda passada da mesma sessão
+    /// não o repete, a de outra sessão o traz de novo, e sem sessão ele sai
+    /// toda vez. O teto válido não avisa.
+    #[test]
+    fn an_invalid_common_name_ceiling_warns_once_per_session() {
+        let bad = "\"dois\"";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/lib.rs"), "pub fn run() {}\n");
+        write(&root.join("mustard.json"), &format!(r#"{{"scan": {{"max_same_name": {bad}}}}}"#));
+
+        let first = scan_at(root, None, false, Some("sessao-a"), mine_disk);
+        let warning = first["warning"].as_str().unwrap_or_else(|| panic!("{bad}: sem aviso: {first}"));
+        for part in ["scan.max_same_name", bad, "8"] {
+            assert!(warning.contains(part), "{bad}: o aviso cita {part}: {warning}");
+        }
+        let again = scan_at(root, None, false, Some("sessao-a"), mine_disk);
+        assert!(again.get("warning").is_none(), "{bad}: um aviso por sessão: {again}");
+        let other = scan_at(root, None, false, Some("sessao-b"), mine_disk);
+        assert!(other.get("warning").is_some(), "{bad}: outra sessão avisa: {other}");
+        for _ in 0..2 {
+            let unknown = scan_at(root, None, false, None, mine_disk);
+            assert!(unknown.get("warning").is_some(), "{bad}: sem sessão, avisa sempre: {unknown}");
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/lib.rs"), "pub fn run() {}\n");
+        write(&root.join("mustard.json"), r#"{"scan": {"max_same_name": 12}}"#);
+        let valid = scan_at(root, None, false, None, mine_disk);
+        assert!(valid.get("warning").is_none(), "{valid}");
+    }
+
     #[test]
     fn the_scan_points_out_similar_lessons_and_the_one_citing_a_deleted_file_without_touching_the_bank() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -331,13 +423,13 @@ mod tests {
         let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
         let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
-        let before = scan_at(root, None, false, mine_disk);
+        let before = scan_at(root, None, false, None, mine_disk);
         assert_eq!(before["lessons"]["similar"], serde_json::json!([[first, second]]), "{before}");
         assert_eq!(before["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo ainda existe: {before}");
 
         std::fs::remove_file(&cited).expect("apaga o arquivo citado");
         let bytes = std::fs::read(&bank).expect("o banco");
-        let result = scan_at(root, None, false, mine_disk);
+        let result = scan_at(root, None, false, None, mine_disk);
         assert_eq!(result["lessons"]["similar"], serde_json::json!([[first, second]]), "{result}");
         assert_eq!(
             result["lessons"]["missing_paths"],
@@ -347,8 +439,73 @@ mod tests {
         let next = result["next"].as_str().expect("o passo seguinte");
         assert!(next.contains(&format!("[{first}, {second}]")), "{next}");
         assert!(next.contains(&format!("{stale} (domain/economy/estimator.rs)")), "{next}");
-        assert!(next.contains("mustard-rt run write lesson") && next.contains("\"replaces\"") && next.contains("\"targets\""), "{next}");
+        assert!(next.contains("mustard-rt run write lesson") && next.contains("\"targets\""), "{next}");
+        assert!(!next.contains("\"replaces\""), "a regra do projeto não se junta: {next}");
         assert_eq!(std::fs::read(&bank).expect("o banco"), bytes, "o scan não muda o banco");
+    }
+
+    /// Dois pares de lições parecidas por classe: o par de defeito e o par de
+    /// regra do projeto, que a gravação recusa juntar, ganham a dica de virar
+    /// teste ou sair do banco, com o comando de retirada pronto e sem o
+    /// `"replaces"`; o par de armadilha do ambiente e o de preferência do
+    /// usuário, que ela aceita juntar, ganham a de juntar. Cada dica cita só os
+    /// grupos da sua classe.
+    #[test]
+    fn the_scan_offers_a_merge_only_for_the_lessons_the_write_accepts_to_merge() {
+        let words = |extra: &'static str| ["rt", "subcomando", "exige", "quatro", "registros", extra];
+        let text = |what: &str, more: &str| format!("{what} novo de `run` exige QUATRO registros{more}.");
+        let mut groups = std::collections::BTreeMap::new();
+        for (class, what) in
+            [("defect", "Defeito"), ("project_rule", "Regra"), ("environment_trap", "Armadilha"), ("user_preference", "Preferência")]
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            write(&root.join("apps/rt/src/main.rs"), "fn main() {}\n");
+            let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+            let first = lesson_of(&bank, class, "apps/rt", &text(what, ";"), &words("esquecer"));
+            let second = lesson_of(&bank, class, "apps/rt", &text(what, " (variante e braço)"), &words("variante"));
+            let result = scan_at(root, None, false, None, mine_disk);
+            assert_eq!(result["lessons"]["similar"], serde_json::json!([[first, second]]), "{class}: {result}");
+            groups.insert(class, (format!("[{first}, {second}]"), result["next"].as_str().expect("o passo seguinte").to_string()));
+        }
+        for class in ["defect", "project_rule"] {
+            let (group, next) = &groups[class];
+            assert!(next.contains(group.as_str()), "{class}: {next}");
+            assert!(next.contains("Transforme cada uma num teste no código"), "{class} vira teste ou sai: {next}");
+            assert!(next.contains("mustard-rt run write lesson --json '{\"targets\":["), "{class} traz o comando de retirada: {next}");
+            assert!(!next.contains("\"replaces\"") && !next.contains("Junte cada grupo"), "{class} não manda juntar: {next}");
+        }
+        for class in ["environment_trap", "user_preference"] {
+            let (group, next) = &groups[class];
+            assert!(next.contains(group.as_str()), "{class}: {next}");
+            assert!(next.contains("Junte cada grupo") && next.contains("\"replaces\""), "{class} manda juntar: {next}");
+            assert!(!next.contains("Transforme cada uma num teste"), "{class} não manda virar teste: {next}");
+        }
+    }
+
+    /// Com um grupo de cada tipo no mesmo banco, cada dica cita só o grupo da
+    /// sua classe: a de juntar não leva o grupo de defeito, e a de virar teste
+    /// ou sair não leva o de armadilha do ambiente.
+    #[test]
+    fn each_scan_hint_names_only_the_groups_of_its_own_class() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("apps/rt/src/main.rs"), "fn main() {}\n");
+        write(&root.join("apps/scan/src/main.rs"), "fn main() {}\n");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        let place = |class: &str, sub: &str, what: &str| {
+            let keys = |extra: &'static str| [sub, "subcomando", "exige", "quatro", "registros", extra];
+            let a = lesson_of(&bank, class, sub, &format!("{what} novo de `run` exige QUATRO registros;"), &keys("esquecer"));
+            let b = lesson_of(&bank, class, sub, &format!("{what} novo de `run` exige QUATRO registros (variante)."), &keys("variante"));
+            format!("[{a}, {b}]")
+        };
+        let defect = place("defect", "apps/rt", "Defeito");
+        let trap = place("environment_trap", "apps/scan", "Armadilha");
+        let result = scan_at(root, None, false, None, mine_disk);
+        let next = result["next"].as_str().expect("o passo seguinte");
+        let (merge, retire) = next.split_once("Estes grupos").expect("as duas dicas");
+        assert!(merge.contains(&trap) && !merge.contains(&defect), "a dica de juntar cita só a armadilha: {next}");
+        assert!(retire.contains(&defect) && !retire.contains(&trap), "a dica de teste cita só o defeito: {next}");
     }
 
     /// Quando a ferramenta do scan falha, não há mapa desta vez, e o disco
@@ -370,19 +527,54 @@ mod tests {
         let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
         rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
-        let mined = scan_at(root, None, false, mine_disk);
+        let mined = scan_at(root, None, false, None, mine_disk);
         assert_eq!(mined["lessons"]["missing_paths"], serde_json::json!([]), "o mapa acha o arquivo: {mined}");
 
-        let failed = scan_at(root, None, false, mine_fails);
+        let failed = scan_at(root, None, false, None, mine_fails);
         assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo existe: {failed}");
         assert_eq!(failed["lessons"]["similar"], serde_json::json!([[first, second]]), "{failed}");
         let next = failed["next"].as_str().expect("o passo seguinte");
-        assert!(!next.contains("\"targets\""), "nada a retirar: {next}");
+        assert!(!next.contains("citam um caminho"), "nenhuma lição cita caminho que falta: {next}");
+        assert!(next.contains("Junte cada grupo") || next.contains("Estes grupos"), "os grupos parecidos seguem apontados: {next}");
 
         std::fs::remove_file(&cited).expect("apaga o arquivo citado");
-        let failed = scan_at(root, None, false, mine_fails);
+        let failed = scan_at(root, None, false, None, mine_fails);
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "sem o mapa, nada falta: {failed}");
+    }
+
+    /// A ferramenta do scan que grava o mapa com uma coluna que a conferência
+    /// das lições não lê guardando o tipo errado: um texto onde cada arquivo
+    /// guarda a lista das importações.
+    fn mine_disk_with_a_broken_column(root: &Path, model: &Path) -> mustard_core::platform::error::Result<ScanReport> {
+        mine_disk(root, model)?;
+        let mut map: Value = serde_json::from_str(&store::read_stored_at(model).expect("o mapa gravado").json)?;
+        for module in map["modules"].as_array_mut().expect("os arquivos") {
+            module["deps"] = json!("um texto no lugar da lista");
+        }
+        store::write_text_at(model, &map.to_string())?;
+        assert!(store::read_at(model).is_err(), "the whole map refuses the broken column");
+        Ok(ScanReport { full: true, ..ScanReport::default() })
+    }
+
+    /// Com uma coluna que ela não lê estragada, a conferência das lições, que
+    /// lê só os caminhos dos arquivos, ainda acha pelo fim do caminho o
+    /// arquivo que existe e aponta a lição cujo arquivo saiu.
+    #[test]
+    fn the_lessons_are_checked_even_when_a_map_column_they_do_not_read_is_broken() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("packages/core/src/domain/economy/estimator.rs"), "pub fn estimate() -> usize { 0 }\n");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
+        let gone = rule(&bank, "packages/core", "O cálculo do frete (`domain/economy/freight.rs`) arredonda para cima.", &["core", "frete", "arredonda"]);
+
+        let result = scan_at(root, None, false, None, mine_disk_with_a_broken_column);
+        assert_eq!(
+            result["lessons"]["missing_paths"],
+            serde_json::json!([{"id": gone, "paths": ["domain/economy/freight.rs"]}]),
+            "{result}"
+        );
     }
 
     /// Uma lição que cita um arquivo que ainda não existe é apontada como
@@ -402,7 +594,7 @@ mod tests {
         let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
         // O arquivo ainda não existe: um mapeamento bom aponta a lição.
-        let before = scan_at(root, None, false, mine_disk);
+        let before = scan_at(root, None, false, None, mine_disk);
         assert_eq!(
             before["lessons"]["missing_paths"],
             serde_json::json!([{"id": stale, "paths": ["domain/economy/estimator.rs"]}]),
@@ -412,12 +604,45 @@ mod tests {
         // O arquivo nasce, e um mapeamento que falha roda: sem o mapa desta
         // vez, a lição não é apontada como sem arquivo.
         write(&cited, "pub fn estimate() -> usize { 0 }\n");
-        let failed = scan_at(root, None, false, mine_fails);
+        let failed = scan_at(root, None, false, None, mine_fails);
         assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
         assert!(
             failed.get("lessons").is_none(),
             "o arquivo já existe, e sem mapa nada é dado como faltando: {failed}"
         );
+    }
+
+    /// Depois de um scan de verdade, a lista de projetos lida só da tabela
+    /// deles traz cada subprojeto pela pasta dele, com os frameworks, os
+    /// scripts e as pilhas dos manifestos que ficam sob ela.
+    #[test]
+    fn the_projects_table_holds_each_subproject_after_a_real_scan() {
+        let scan = Scan::locate();
+        assert!(
+            scan.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("web/composer.json"), r#"{"name": "acme/web", "require": {"php": "^8.2", "laravel/framework": "^11.0"}, "scripts": {"test": "phpunit"}}"#);
+        write(&root.join("web/artisan"), "#!/usr/bin/env php\n<?php\n");
+        write(&root.join("web/app/Http/Controller.php"), "<?php\nnamespace App\\Http;\nclass Controller {}\n");
+        write(&root.join("packages/core/Cargo.toml"), "[package]\nname = \"core\"\n\n[dependencies]\nserde = \"1\"\n");
+        write(&root.join("packages/core/src/lib.rs"), "pub fn run() {}\n");
+        let model = store::model_path(root);
+        scan.scan(root, &model).expect("the scan writes the map");
+
+        let projects = read_projects(&model);
+        let dirs: Vec<&str> = projects.iter().map(|p| p.dir.as_str()).collect();
+        assert_eq!(dirs, ["packages/core", "web"], "{projects:?}");
+        let core = &projects[0];
+        assert_eq!(core.frameworks, ["serde"], "{core:?}");
+        assert!(core.scripts.is_empty() && core.detected_stacks.is_empty(), "{core:?}");
+        let web = &projects[1];
+        assert_eq!(web.frameworks, ["php", "laravel/framework"], "{web:?}");
+        assert_eq!(web.scripts, ["test: phpunit"], "{web:?}");
+        let stacks: Vec<&str> = web.detected_stacks.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(stacks, ["laravel"], "{web:?}");
     }
 
     /// Roda `git <args>` em `root`, ignorando o resultado: só monta o
@@ -458,11 +683,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         write(&root.join("src/main.rs"), "fn main() {}\n");
-        let result = scan_at(root, None, false, mine_disk);
+        let result = scan_at(root, None, false, None, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
         let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
         rule(&bank, "src", "O `main.rs` só chama a biblioteca.", &["main"]);
-        let result = scan_at(root, None, false, mine_disk);
+        let result = scan_at(root, None, false, None, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
     }
 
@@ -491,14 +716,14 @@ mod tests {
         let head = "345b9361a952fba302c9f811626e26bea7fac2f2";
 
         let whole = format!(r#"{{"ok":true,"full":true,"read":["src/lib.rs","src/main.rs"],"files":2,"head":"{head}"}}"#);
-        let answer = scan_at(root, None, false, mine_reporting(whole));
+        let answer = scan_at(root, None, false, None, mine_reporting(whole));
         assert_eq!(answer["ok"], json!(true), "{answer}");
         assert_eq!(answer["full"], json!(true), "{answer}");
         assert_eq!(answer["read"], json!(2), "{answer}");
         assert_eq!(answer["files"], json!(2), "{answer}");
 
         let changed = format!(r#"{{"ok":true,"full":false,"read":["src/lib.rs"],"files":2,"head":"{head}"}}"#);
-        let answer = scan_at(root, None, false, mine_reporting(changed));
+        let answer = scan_at(root, None, false, None, mine_reporting(changed));
         assert_eq!(answer["full"], json!(false), "{answer}");
         assert_eq!(answer["read"], json!(1), "{answer}");
         let text = answer.to_string();
@@ -506,7 +731,7 @@ mod tests {
 
         let read: Vec<String> = (0..1349).map(|n| format!("src/modulo_{n}.ts")).collect();
         let suzano = json!({"ok": true, "full": true, "read": read, "files": 1349, "head": head}).to_string();
-        let answer = scan_at(root, None, false, mine_reporting(suzano));
+        let answer = scan_at(root, None, false, None, mine_reporting(suzano));
         assert_eq!(answer["read"], json!(1349), "{answer}");
         let text = answer.to_string();
         assert!(!text.contains("modulo_"), "a resposta não leva os nomes: {text}");

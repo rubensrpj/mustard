@@ -15,9 +15,7 @@
 /// Index 0 is the canonical EN display name; the last entry is the canonical
 /// PT display name.
 ///
-/// The keys here are the language-agnostic canonical identifiers used by
-/// [`mustard_core::domain::spec::contract::PRD_SECTIONS`] /
-/// [`PLAN_SECTIONS`](mustard_core::domain::spec::contract::PLAN_SECTIONS) and
+/// The keys here are the language-agnostic canonical identifiers used
 /// throughout the rt parsers. They are matched case-insensitively, and both
 /// the kebab (`acceptance-criteria`, `non-goals`) and the legacy camelCase
 /// (`acceptanceCriteria`, `nonGoals`) spellings resolve to the same variants
@@ -39,22 +37,17 @@ fn variants(key: &str) -> Option<&'static [&'static str]> {
         "non-goals" | "nongoals" => &["Non-Goals", "Não-Objetivos"],
         "concerns" => &["Concerns", "Preocupações"],
         "decisions" => &["Decisions", "Decisões não-óbvias"],
-        // The conversation channel (`spec-draft --material`). The drafter emits
-        // the EN display heading — language-agnostic, exactly like
-        // `## Checklist` — so every reader keys off one literal; the PT variant
-        // is registered so a hand-authored PT spec still resolves through THIS
-        // resolver instead of growing a second parser.
+        // Seções do canal da conversa: definições, evidências e riscos. As duas
+        // grafias resolvem aqui, então a spec escrita à mão em qualquer idioma
+        // é lida por esta tabela, sem um segundo leitor de títulos.
         "definitions" => &["Definitions", "Definições"],
         "evidence" => &["Evidence", "Evidências"],
-        // Os riscos do canal de material. O rascunho escreve o título no idioma
-        // da spec, então as duas grafias precisam resolver aqui — é por esta
-        // tabela que o `--material-only` acha a seção para trocá-la.
         "risks" => &["Risks", "Riscos"],
         // The reality obligations a plan declares per wave — duties to check the
         // world OUTSIDE the repository (an official document, a live endpoint, a
         // stored row) before writing the code they govern. Rendered into each
-        // wave's `spec.md` by the wave-scaffold renderer and read back by the
-        // dispatch prompt and by `wave-done`; registered HERE so all three resolve
+        // wave's `spec.md` by the wave-layout renderer and read back by the
+        // dispatch prompt and by the wave completion step; registered HERE so all three resolve
         // the heading through the one resolver instead of matching a literal.
         "reality-obligations" | "realityobligations" => {
             &["Reality Obligations", "Obrigações de Realidade"]
@@ -147,8 +140,8 @@ pub fn section_end(lines: &[&str], heading_idx: usize) -> usize {
 /// Defensive pick among HOMONYMOUS sections: legacy drafts (from binaries
 /// older than the single AC heading key) duplicated the AC heading — a placeholder
 /// body first ("Ver abaixo."), the real list second — so "first heading wins"
-/// returned the placeholder to every reader (qa-run, analyze-validation,
-/// wave-scaffold's AC carry). Among duplicates, the first block carrying a
+/// returned the placeholder to every reader (the QA run, the validation analysis,
+/// the wave layout's AC carry). Among duplicates, the first block carrying a
 /// markdown list item (`- `) wins; with no such block, the first one (the
 /// historical behaviour, and the only case for well-formed specs).
 #[must_use]

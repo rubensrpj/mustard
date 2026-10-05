@@ -41,8 +41,8 @@ use serde_json::{json, Value};
 
 use crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE};
 use crate::shared::pr_provider::{
-    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrRef,
-    PrToOpen, PrView, HEADS, PROVIDER_AZURE,
+    checks_from_rows, short_ref, status_from_azure, PrChecks, PrLineComment, PrOpened, PrProvider,
+    PrRef, PrText, PrTextRead, PrToOpen, PrView, HEADS, PROVIDER_AZURE,
 };
 
 /// The Azure DevOps REST API version every call pins. One spelling, so a bump
@@ -170,6 +170,11 @@ impl AzureRemote {
             "{}/{}/_apis/git/repositories/{}/pullrequests",
             self.base, self.project, self.repo
         )
+    }
+
+    /// A consulta de pull requests por commit deste repositório.
+    pub(crate) fn api_pull_query(&self) -> String {
+        format!("{}/{}/_apis/git/repositories/{}/pullrequestquery", self.base, self.project, self.repo)
     }
 
     /// The REST collection the branch policies of this project live in.
@@ -383,8 +388,9 @@ pub(crate) fn do_open(
     Ok(PrOpened { number, url: remote.pr_url(number) })
 }
 
-/// PATCH one field of PR `number`. `edit_body` and `ready` are both this —
-/// the REST contract updates a PR by PATCHing the fields that change.
+/// PATCH one field of PR `number`. `edit_body`, `edit_title`, `ready` and
+/// `mark_draft` are all this — the REST contract updates a PR by PATCHing the
+/// fields that change.
 fn do_patch(
     remote: &AzureRemote,
     transport: &dyn AzureTransport,
@@ -674,17 +680,21 @@ impl PrProvider for AzurePrRest {
         do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "isDraft": false }))
     }
 
+    fn edit_title(&self, number: u64, title: &str) -> Result<(), String> {
+        let (remote, auth) = self.context()?;
+        do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "title": title }))
+    }
+
+    fn mark_draft(&self, number: u64) -> Result<(), String> {
+        let (remote, auth) = self.context()?;
+        do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "isDraft": true }))
+    }
+
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
         let (remote, auth) = self.context()?;
         match which {
             PrRef::Number(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
             PrRef::Head(head) => do_view_branch(&remote, self.transport.as_ref(), &auth, head),
-            PrRef::Checkout => {
-                let branch = mustard_core::current_branch(&self.repo).ok_or_else(|| {
-                    "azure-branch-unreadable: the checkout names no branch".to_string()
-                })?;
-                do_view_branch(&remote, self.transport.as_ref(), &auth, &branch)
-            }
         }
     }
 
@@ -697,6 +707,111 @@ impl PrProvider for AzurePrRest {
         let (remote, auth) = self.context()?;
         do_branch_policy(&remote, self.transport.as_ref(), &auth, branch)
     }
+
+    fn text(&self, number: u64, _known: &str) -> Result<PrTextRead, String> {
+        let (remote, auth) = self.context()?;
+        do_text(&remote, self.transport.as_ref(), &auth, number).map(PrTextRead::Read)
+    }
+
+    fn line_comments(&self, number: u64) -> Result<Vec<PrLineComment>, String> {
+        let (remote, auth) = self.context()?;
+        do_line_comments(&remote, self.transport.as_ref(), &auth, number)
+    }
+
+    fn pr_of_commit(&self, sha: &str) -> Result<Option<u64>, String> {
+        let (remote, auth) = self.context()?;
+        do_pr_of_commit(&remote, self.transport.as_ref(), &auth, sha)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// O texto de um pull request mesclado, para a história das funções
+// ---------------------------------------------------------------------------
+
+/// GET do pull request `number`: o título e a descrição. O Azure DevOps não
+/// dá marca de versão nessa leitura, e a volta a um pull request já lido o
+/// lê de novo.
+pub(crate) fn do_text(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    number: u64,
+) -> Result<PrText, String> {
+    let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
+    let doc = transport.call("GET", &url, auth, None)?;
+    let title = doc.get("title").and_then(Value::as_str).ok_or_else(|| "parse-error".to_string())?;
+    let body = doc.get("description").and_then(Value::as_str).unwrap_or_default();
+    Ok(PrText { title: title.to_string(), body: body.to_string(), etag: String::new() })
+}
+
+/// GET do pull request `number` e das conversas dele: os comentários das
+/// conversas presas a uma linha do lado novo (`threadContext` com
+/// `rightFileStart`), com o último commit do ramo de origem, que é a versão
+/// que o lado novo mostra. A conversa geral, a apagada e o comentário do
+/// sistema ficam fora.
+pub(crate) fn do_line_comments(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    number: u64,
+) -> Result<Vec<PrLineComment>, String> {
+    let pr = transport.call("GET", &format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls()), auth, None)?;
+    let commit = pr
+        .pointer("/lastMergeSourceCommit/commitId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "parse-error".to_string())?;
+    let doc = transport.call("GET", &format!("{}/{number}/threads?api-version={API_VERSION}", remote.api_pulls()), auth, None)?;
+    let threads = doc.get("value").and_then(Value::as_array).ok_or_else(|| "parse-error".to_string())?;
+    Ok(line_comments_from_azure(threads, commit))
+}
+
+/// Os comentários presos a linhas nas conversas `threads`, todos no commit
+/// `commit`.
+fn line_comments_from_azure(threads: &[Value], commit: &str) -> Vec<PrLineComment> {
+    let mut found = Vec::new();
+    for thread in threads {
+        if thread.get("isDeleted").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(context) = thread.get("threadContext").filter(|context| !context.is_null()) else { continue };
+        let path = context.get("filePath").and_then(Value::as_str).unwrap_or_default().trim_start_matches('/');
+        let Some(line) = context.pointer("/rightFileStart/line").and_then(Value::as_u64).filter(|line| *line > 0) else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let comments = thread.get("comments").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        for comment in comments {
+            let kind = comment.get("commentType").and_then(Value::as_str).unwrap_or_default();
+            if kind == "system" || comment.get("isDeleted").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            let body = comment.get("content").and_then(Value::as_str).unwrap_or_default();
+            found.push(PrLineComment { commit: commit.to_string(), path: path.to_string(), line, body: body.to_string() });
+        }
+    }
+    found
+}
+
+/// O pull request mesclado que levou o commit `sha` à base, pela consulta
+/// do Azure DevOps por commit de merge. É um POST, mas só consulta: nada se
+/// grava no servidor.
+pub(crate) fn do_pr_of_commit(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    sha: &str,
+) -> Result<Option<u64>, String> {
+    let url = format!("{}?api-version={API_VERSION}", remote.api_pull_query());
+    let query = serde_json::json!({ "queries": [{ "type": "lastMergeCommit", "items": [sha] }] });
+    let doc = transport.call("POST", &url, auth, Some(&query))?;
+    let results = doc.get("results").and_then(Value::as_array).ok_or_else(|| "parse-error".to_string())?;
+    Ok(results
+        .iter()
+        .filter_map(|result| result.get(sha).and_then(Value::as_array))
+        .flatten()
+        .find_map(|row| row.get("pullRequestId").and_then(Value::as_u64)))
 }
 
 /// Test-only fixtures shared with the AC-pinned tests that live in
@@ -957,7 +1072,7 @@ mod tests {
     /// branch em que um envio direto passa — que é exatamente a frase que esta
     /// conferência existe para não dizer errado.
     #[test]
-    fn a_politica_da_branch_so_conta_quando_liga_e_bloqueia() {
+    fn branch_policy_only_counts_when_enabled_and_blocking() {
         let remote = remote();
         let url = format!(
             "{}?refName=refs/heads/master&api-version=7.1",
@@ -985,9 +1100,9 @@ mod tests {
             "e uma que só avisa também não",
         );
 
-        let sem_value = FakeTransport::of(&[("GET", &url, json!({}))]);
+        let without_value = FakeTransport::of(&[("GET", &url, json!({}))]);
         assert!(
-            do_branch_policy(&remote, &sem_value, "a", "master").is_err(),
+            do_branch_policy(&remote, &without_value, "a", "master").is_err(),
             "resposta ilegível é erro, nunca uma branch aberta medida",
         );
     }

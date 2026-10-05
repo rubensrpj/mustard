@@ -1,0 +1,9 @@
+{
+  /* Apelidos de pasta do projeto. */
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@app/*": ["src/app/*"], // a pasta do app
+    },
+  },
+}

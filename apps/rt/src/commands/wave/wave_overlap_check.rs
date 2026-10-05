@@ -40,9 +40,6 @@ pub(crate) struct WaveGraph {
     pub(crate) cycle: Vec<u64>,
     /// Os arquivos que as tarefas de cada onda declaram.
     pub(crate) files: BTreeMap<u64, BTreeSet<String>>,
-    /// As tarefas de cada onda, pelo código, com os arquivos que cada uma
-    /// declara: a onda sem tarefa nenhuma é a que o backlog esvaziou.
-    pub(crate) tasks: BTreeMap<u64, Vec<(String, BTreeSet<String>)>>,
 }
 
 /// O grafo das ondas do bloco `waves` de uma spec.
@@ -59,18 +56,13 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
         entry.extend(wave.ints("depends_on").into_iter().filter(|on| declared.contains(on)));
     }
 
-    let codes = log.codes();
     let mut files: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
-    // As tarefas de cada onda, com os arquivos de cada uma.
-    let mut by_task: BTreeMap<u64, Vec<(String, BTreeSet<String>)>> = BTreeMap::new();
     for task in events.iter().filter(|e| e.event_type == "task") {
         let Some(n) = task.wave() else { continue };
         // A tarefa de uma onda que o plano não tem está no backlog.
         if !declared.contains(&n) {
             continue;
         }
-        let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
-        let mut mine: BTreeSet<String> = BTreeSet::new();
         let entry = files.entry(n).or_default();
         for path in task
             .fields
@@ -83,14 +75,12 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
         {
             let path = normalise_declared_path(path);
             if !path.is_empty() {
-                entry.insert(path.clone());
-                mine.insert(path);
+                entry.insert(path);
             }
         }
-        by_task.entry(n).or_default().push((code, mine));
     }
     let levels = assign_levels(&deps);
-    WaveGraph { level: levels.level, cycle: levels.cycle, files, tasks: by_task }
+    WaveGraph { level: levels.level, cycle: levels.cycle, files }
 }
 
 #[cfg(test)]
@@ -140,6 +130,6 @@ mod tests {
         let graph = wave_graph(&log);
         assert!(graph.cycle.is_empty());
         assert_eq!(graph.level.keys().copied().collect::<Vec<_>>(), [1]);
-        assert!(!graph.tasks.contains_key(&9), "{:?}", graph.tasks);
+        assert!(!graph.files.contains_key(&9), "{:?}", graph.files);
     }
 }

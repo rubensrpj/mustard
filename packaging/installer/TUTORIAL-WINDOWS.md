@@ -14,8 +14,7 @@ Mustard_<versao>_x64-setup.exe
 O que o instalador faz:
 
 ```
-- instala os binários (mustard, mustard-rt, scan, rtk) e os templates do
-  `mustard init` na pasta do programa
+- instala os binários (mustard, mustard-rt, scan, rtk) na pasta do programa
 - adiciona o CLI ao PATH do seu usuário
 ```
 
@@ -79,7 +78,7 @@ mustard init
 
 Isso escreve, escondidos do git do projeto, o `mustard.json` na raiz e a pasta
 `.claude/`: o `.claude/settings.local.json` (com o gancho do rtk e o estilo de
-resposta do idioma do projeto), o mapa do início da sessão e os três agentes do
+resposta do idioma do projeto), o mapa do início da sessão e os dois agentes do
 Mustard. Os **hooks** do Mustard **não** vêm daqui: chegam junto com o plugin,
 que é o passo do item 6, e é por isso que ele não é opcional.
 
@@ -87,7 +86,7 @@ que é o passo do item 6, e é por isso que ele não é opcional.
 
 ## 6. Instalar o plugin dentro do Claude Code
 
-O `.exe` traz **binários e templates**; ele não toca no seu `%USERPROFILE%\.claude`.
+O `.exe` traz **os binários**; ele não toca no seu `%USERPROFILE%\.claude`.
 Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin
 do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
 
@@ -152,8 +151,8 @@ velha É o binário velho. Confira qual está sendo achado com
 ## 8. Desinstalar
 
 Vá em **Configurações → Aplicativos → Aplicativos instalados**, procure
-**"Mustard"** e clique em **Desinstalar**. Isso remove os binários, os templates
-e a entrada do PATH.
+**"Mustard"** e clique em **Desinstalar**. Isso remove os binários e a entrada do
+PATH.
 
 Em projetos testados, a pasta `.claude/` e o `mustard.json` podem ser apagados à
 vontade.

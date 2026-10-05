@@ -69,6 +69,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::io::fs::lock::LockedFile;
+use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::git;
 use mustard_core::ClaudePaths;
 
@@ -93,6 +94,30 @@ pub(crate) fn git_step_lock(root: &Path) -> Result<LockedFile, String> {
     LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| e.to_string())
 }
 
+/// [`git_step_lock`] sem esperar: `None` quando outra rodada ou outra sessão
+/// segura a trava agora, ou quando ela não pode ser pega. É para quem tem
+/// teto curto e não pode ficar parado atrás do commit de uma rodada.
+pub(crate) fn git_step_lock_if_free(root: &Path) -> Option<LockedFile> {
+    let paths = ClaudePaths::for_project(root).ok()?;
+    LockedFile::exclusive_if_free(&paths.spec_dir().join(GIT_LOCK_FILE)).ok().flatten()
+}
+
+/// `true` quando a lista de travas do sistema (`/proc/locks`) mostra este
+/// processo esperando a trava do arquivo de número `inode`: a linha de quem
+/// espera traz `->` antes do tipo da trava. É como um teste sabe, sem
+/// relógio, que outra linha de execução parou na trava.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn waiting_for_lock(inode: u64) -> bool {
+    let pid = std::process::id().to_string();
+    let inode = inode.to_string();
+    std::fs::read_to_string("/proc/locks").unwrap_or_default().lines().any(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.get(1) == Some(&"->")
+            && fields.get(5) == Some(&pid.as_str())
+            && fields.get(6).and_then(|file| file.rsplit(':').next()) == Some(inode.as_str())
+    })
+}
+
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
     git::run(dir, args).out()
@@ -103,16 +128,18 @@ pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> bool {
     git::run(dir, args).ok
 }
 
-/// Resolve the MAIN checkout root from anywhere inside the repo — including
-/// from inside a linked worktree (`--git-common-dir` names the shared `.git`).
+/// Resolve the MAIN checkout root from anywhere inside the repo, read from the
+/// files git leaves behind. From inside a linked worktree — a wave's separate
+/// copy, even of a submodule project, whose shared folder lives under the
+/// outer project's `.git/modules` — it is the checkout that worktree belongs
+/// to; elsewhere, the nearest folder above `from` that holds a `.git`. `None`
+/// when `from` does not exist or no folder above it is a checkout.
 pub(crate) fn main_checkout_root(from: &Path) -> Option<PathBuf> {
-    let common = git_out(from, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-    let common = PathBuf::from(common);
-    if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
-        common.parent().map(Path::to_path_buf)
-    } else {
-        git_out(from, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+    let from = std::fs::canonicalize(from).ok()?;
+    if let Some(main) = linked_worktree_main(&from) {
+        return Some(main);
     }
+    from.ancestors().find(|folder| is_git_repo_root(folder)).map(Path::to_path_buf)
 }
 
 /// A path as the report shows it: forward slashes, so one JSON shape reads the
@@ -955,19 +982,17 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // Whether the refusal was reached with FRESH refs or stale ones, said
             // out loud. The two are different situations with different next
             // moves, and only one of them is the operator's to solve: offline,
-            // the measurement never really ran, and telling them to write the
-            // base down by hand would freeze a note the repository can prove on
-            // its own the moment the network is back.
+            // the measurement never really ran, and the merge the repository can
+            // prove on its own may simply not have arrived yet.
             "fetched": fetched,
             "hint": if fetched {
-                "unidade sem base registrada, e o trabalho não está contido em exatamente uma \
-                 base — nem o registro do corte nem a medição responderam. O ritual de saída \
-                 não escolhe por você"
+                "o fluxo declara mais de uma base, o nome da unidade não diz qual, e o trabalho \
+                 não está contido em exatamente uma base — a medição não respondeu. O ritual de \
+                 saída não escolhe por você"
             } else {
                 "não foi possível buscar do remoto, então a medição não rodou: as referências \
                  locais podem estar atrasadas em relação a um merge recém-feito. Reconecte e \
-                 repita ANTES de gravar a base à mão — um registro escrito agora envelhece, a \
-                 medição não"
+                 repita"
             },
         });
     }
@@ -1061,14 +1086,12 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     // settle that could not free the local floor has no business killing the
     // server branch: that branch is then the only ref of the unit this pass is
     // certain it did not strand, and deleting it is the single step of the three
-    // no rerun can undo. `worktreeRemoved` is permanently `false` on every one of
-    // the three outcomes below — no pass removes a worktree any more; the field
-    // survives only so a caller reading the old shape keeps reading valid JSON.
-    let (action, worktree_removed, branch_deleted, remote_deleted) =
+    // no rerun can undo.
+    let (action, branch_deleted, remote_deleted) =
         if unit_entry.is_some_and(|e| cwd.starts_with(&e.path)) {
             // Inside our own worktree we cannot remove our floor; verify+update
             // already ran, so hand back the finish step and touch nothing else.
-            ("exit-and-rerun", false, false, false)
+            ("exit-and-rerun", false, false)
         } else if !base_advanced {
             // THE authorisation for the prune, and the ONLY one: the base
             // advanced, so the local tree now HOLDS the merged work. Nothing else
@@ -1092,16 +1115,13 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // verified merged but is NOT off the local stage. `pass_is_ok` turns
             // `base_advanced == false` into `ok:false` + `reason:"base-behind"`
             // below — now without having spent the branch to say so.
-            ("partial", false, false, false)
+            ("partial", false, false)
         } else {
             // The work-branch gate cuts every unit IN PLACE — no worktree of
             // its own — so a `Some(e)` here can only be a copy of the unit
             // left on disk by an older install, never something this pass
             // created. This pass does not remove it, so the floor is clear
             // only when there is no such copy to begin with.
-            // `worktreeRemoved` stays in the report, permanently `false`, so
-            // a caller reading the old field shape keeps reading valid JSON.
-            let worktree_removed = false;
             let floor_clear = match unit_entry {
                 Some(_) => false,
                 // In-place: the "floor" is the unit branch checked out on the
@@ -1120,7 +1140,7 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // this pass could not free → "partial", and nothing was deleted on
             // either side; the per-field booleans tell the true story.
             let action = if floor_clear { "settled" } else { "partial" };
-            (action, worktree_removed, branch_deleted, remote_deleted)
+            (action, branch_deleted, remote_deleted)
         };
 
     // An IN-PLACE unit that did NOT prune was checked out onto its base above —
@@ -1217,7 +1237,6 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             "merged": true,
             "inPlace": in_place,
             "action": action,
-            "worktreeRemoved": worktree_removed,
             "branchDeleted": branch_deleted,
             "remoteDeleted": remote_deleted,
             "restoredToUnit": restored_to_unit,
@@ -1355,9 +1374,9 @@ mod tests {
     #[test]
     fn base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix() {
         let flow = settle_flow();
-        // The base no longer follows from the unit's KIND — it is recorded at
-        // the cut. With several bases declared and nothing recorded, the prefix
-        // answers nothing, and both kinds read the same way.
+        // The base no longer follows from the unit's KIND — it is the operator's
+        // answer, kept in the spec's record. With several bases declared the
+        // prefix answers nothing, and both kinds read the same way.
         assert_eq!(flow.base_of("fix/fix-thing").known(), None);
         assert_eq!(flow.base_of("hotfix/login").known(), None);
         // …and a unit still in flight keeps being read by its prefix.
@@ -1439,6 +1458,7 @@ mod tests {
         let template = TEMPLATE.get_or_init(|| {
             let d = tempdir().expect("template tempdir");
             build_fixture(d.path());
+            crate::shared::test_fixture::quiet_maintenance(&d.path().join("repo"));
             d
         });
         let dir = crate::shared::test_fixture::clone_of(template.path());
@@ -1676,7 +1696,7 @@ mod tests {
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["ok"], json!(true), "{v}");
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(false));
+        assert!(v["unit"].get("worktreeRemoved").is_none(), "the report keeps no worktree flag: {v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(true));
         assert_eq!(v["baseCheckout"]["updated"], json!(true), "base ff'd: {v}");
         assert!(
@@ -1753,7 +1773,6 @@ mod tests {
             json!(true),
             "the BASE advanced — so only the blocked FLOOR can explain what follows: {v}",
         );
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(false), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
         assert!(wt.exists(), "settle never touches the copy — it survives untouched");
@@ -1931,39 +1950,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_submodule_paths_keeps_initialized_entries_sorted() {
-        let status = " 1111111 packages/one (heads/dev)\n\
-                      +2222222 apps/two (v1.0-2-g2222222)\n\
-                      -3333333 not/initialized\n\
-                      U4444444 conflicted/three\n";
-        assert_eq!(
-            parse_submodule_paths(status),
-            vec!["apps/two", "conflicted/three", "packages/one"],
-            "the `-` entry has no checkout to inspect and is skipped"
-        );
-        assert!(parse_submodule_paths("").is_empty(), "a repo with no submodules yields none");
-    }
-
-    /// The shape the ONLY caller can actually deliver. `git_out` trims the whole
-    /// stdout, so a CLEAN submodule — marked by a leading SPACE — arrives with
-    /// that marker already gone from the FIRST line. The previous test fed a
-    /// leading space the parser never sees in production and stayed green while
-    /// a clean single-submodule monorepo reported no submodule at all.
+    /// Every shape goes through the trim its ONLY caller applies: `git_out`
+    /// trims the whole stdout, so a CLEAN submodule — marked by a leading
+    /// SPACE — arrives with that marker already gone from the FIRST line. An
+    /// input with a leading space the parser never sees in production would
+    /// stay green while a clean single-submodule monorepo reported no
+    /// submodule at all. Entries come back sorted; the `-` marker is not
+    /// whitespace, so it still survives and still means "no checkout to
+    /// inspect"; a repo with no submodules yields none.
     #[test]
     fn parse_submodule_paths_survives_the_trim_its_caller_applies() {
-        let raw = " 1111111 sub (heads/dev)\n";
-        assert_eq!(
-            parse_submodule_paths(raw.trim()),
-            vec!["sub"],
-            "a clean lone submodule must survive the caller's trim",
-        );
-        // Two clean entries: the first loses its marker, the second keeps it.
-        let two = " aaaaaaa first (heads/dev)\n aaaaaaa second (heads/dev)\n";
-        assert_eq!(parse_submodule_paths(two.trim()), vec!["first", "second"]);
-        // The `-` marker is not whitespace, so it still survives and still means
-        // "no checkout to inspect".
-        assert!(parse_submodule_paths("-3333333 not/initialized".trim()).is_empty());
+        let cases: [(&str, &str, Vec<&str>); 5] = [
+            ("a clean lone submodule", " 1111111 sub (heads/dev)\n", vec!["sub"]),
+            (
+                "two clean entries: the first loses its marker, the second keeps it",
+                " aaaaaaa first (heads/dev)\n aaaaaaa second (heads/dev)\n",
+                vec!["first", "second"],
+            ),
+            ("an uninitialized entry", "-3333333 not/initialized", vec![]),
+            (
+                "the four markers, sorted, with the uninitialized one skipped",
+                " 1111111 packages/one (heads/dev)\n\
+                 +2222222 apps/two (v1.0-2-g2222222)\n\
+                 -3333333 not/initialized\n\
+                 U4444444 conflicted/three\n",
+                vec!["apps/two", "conflicted/three", "packages/one"],
+            ),
+            ("a repo with no submodules", "", vec![]),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(parse_submodule_paths(raw.trim()), expected, "{case}");
+        }
     }
 
     /// A submodule carries no `mustard.json` of its own, so the bases of a unit
@@ -1978,6 +1995,27 @@ mod tests {
         assert!(!sub.join("mustard.json").exists(), "the submodule has no config of its own");
 
         let v = settle_at(&sub, Some("dev_done"));
+        assert_eq!(v["base"], json!("dev"), "base read from the superproject's git.flow: {v}");
+        assert_eq!(v["reason"], json!("not-merged"), "recognised the unit, then gated on merge: {v}");
+    }
+
+    /// A wave's separate copy of a submodule project is a linked worktree whose
+    /// shared git folder lives under the outer project's `.git/modules`, a
+    /// folder not named `.git`. From inside that copy the settle still finds
+    /// the submodule's checkout — not the copy, not the outer project — and
+    /// reads the bases the way it does from the checkout itself.
+    #[test]
+    fn git_settle_in_a_copy_of_a_submodule_project_finds_the_submodule_checkout() {
+        let (dir, main) = fixture_with_submodule();
+        let sub = main.join("sub");
+        let copy = dir.path().join("cache").join("copias").join("sub-1");
+        git(&sub, &["worktree", "add", "-q", "--detach", copy.to_string_lossy().as_ref(), "HEAD"]);
+        let sub = std::fs::canonicalize(&sub).expect("the submodule checkout");
+
+        assert_eq!(main_checkout_root(&copy), Some(sub.clone()), "the copy leads to the submodule checkout");
+        assert_eq!(main_checkout_root(&sub), Some(sub.clone()), "the submodule checkout is its own main checkout");
+
+        let v = settle_at(&copy, Some("dev_done"));
         assert_eq!(v["base"], json!("dev"), "base read from the superproject's git.flow: {v}");
         assert_eq!(v["reason"], json!("not-merged"), "recognised the unit, then gated on merge: {v}");
     }
@@ -2111,8 +2149,8 @@ mod tests {
     /// The base is MEASURED against fresh refs, so a unit merged seconds ago
     /// settles instead of being declared ambiguous.
     ///
-    /// Two bases and no cut record leave the base underivable from the name, so
-    /// the resolution falls to the containment measurement — and a measurement
+    /// Two bases leave the base underivable from the name, so the resolution
+    /// falls to the containment measurement — and a measurement
     /// is only as fresh as the refs it reads. The fetch used to run AFTER this
     /// refusal, so `branch --contains` asked remote-tracking refs that predated
     /// the merge. Measured in the field, 2026-09-07: a unit merged through the
@@ -2152,8 +2190,8 @@ mod tests {
         git(&main, &["branch", "main"]);
         git(&main, &["push", "-u", "origin", "main"]);
 
-        // The unit: a `{kind}/{slug}` branch with a unit RECORD but no
-        // `.cut-base` — the shape a hand-cut branch leaves behind.
+        // The unit: a `{kind}/{slug}` branch with a unit RECORD and nothing that
+        // names its base — the shape a hand-cut branch leaves behind.
         git(&main, &["checkout", "-b", "fix/stale"]);
         std::fs::create_dir_all(main.join(".claude").join("spec").join("stale"))
             .expect("unit record");
@@ -2245,6 +2283,10 @@ mod tests {
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("ambiguous-base"), "{v}");
         assert!(v["hint"].as_str().is_some_and(|h| !h.is_empty()), "the refusal still explains itself: {v}");
+        assert!(
+            v["hint"].as_str().is_some_and(|h| !h.contains("registr")),
+            "no record of the base exists to be missing or to be written: {v}",
+        );
         assert!(!v.to_string().contains("work-unit-open"), "the refusal names no cut command: {v}");
     }
 
@@ -2419,7 +2461,6 @@ mod tests {
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("base-behind"), "{v}");
         assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(false), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
         assert_eq!(

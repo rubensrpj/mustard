@@ -23,7 +23,25 @@ pub enum Refusal {
     /// sem ninguém ver, e nunca seria lido por nada.
     UnknownField { event_type: String, field: String, accepted: String },
     UnknownTarget { target: EventRef },
+    /// O item citado existe e segue vigente, mas é de outro tipo que o campo
+    /// pede: `found` é o tipo dele, `expected` o que o campo aceita.
+    TargetOtherType { target: EventRef, found: String, expected: String },
     ReplacesOtherType { id: u64, found: String, event_type: String },
+    /// A versão nova aponta em `replaces` o evento `id`, que outra versão já
+    /// substituiu: gravá-la dividiria o item em duas pontas. `current` é a
+    /// versão vigente, pelo código e pelo número, ou só pelo número no tipo
+    /// sem código. Nada é gravado.
+    ReplacesSuperseded { id: u64, current: String },
+    /// A versão nova de uma tarefa aponta em `replaces` o evento `id`, versão
+    /// que a remoção `by` tirou da leitura: gravá-la traria de volta o
+    /// trabalho removido. Refazer é gravar uma tarefa nova. Nada é gravado.
+    ReplacesRemoved { id: u64, by: u64 },
+    /// A tarefa gravada na onda `wave`, que ainda não saiu, depende das
+    /// tarefas de `missing`: nenhuma está nessa onda, numa onda entregue ou
+    /// numa onda que ela espera, e a rodada soltaria a onda antes delas. Cada
+    /// tarefa vai pelo código e pelo número, ou só pelo número sem código.
+    /// Nada é gravado.
+    DependsOutsideWave { wave: u64, missing: Vec<String> },
     FilterMatchesNothing { event_type: String, from: String, to: String },
     UnknownBlock { found: String },
     BadSpecName { spec: String },
@@ -126,10 +144,23 @@ pub enum Refusal {
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
     OwnerMissing { event_type: String },
-    /// Uma tarefa gravada sem uma das três declarações obrigatórias: o que
-    /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
-    /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
-    TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
+    /// Uma tarefa gravada sem uma das declarações obrigatórias: o que ela
+    /// faz, os arquivos que toca, de quais tarefas depende e, na do modelo,
+    /// o título e os itens que ela cobre. Nada é gravado, e a mensagem nomeia
+    /// exatamente qual (ou quais) faltou. Quando faltam os itens cobertos,
+    /// `uncovered` traz os que nenhuma tarefa da spec cobre ainda, cada um
+    /// pelo número e pelo código, como dica de qual cobrir.
+    TaskDeclarationMissing { missing: Vec<TaskDeclaration>, uncovered: Vec<String> },
+    /// Um item que descreve o trabalho, gravado pelo modelo, sem uma das
+    /// partes da forma fixa: o título curto, a parte do usuário e a parte do
+    /// agente; ou com a parte do usuário citando o que é do agente. Nada é
+    /// gravado, e a mensagem nomeia tudo o que faltou de uma vez.
+    ItemFormMissing { missing: Vec<ItemPart> },
+    /// O título ou a parte do usuário de um item não passou na conferência
+    /// de escrita das respostas. `fields` traz cada campo com defeito e a
+    /// medição dele; a mensagem diz todos os defeitos de uma vez, cada um com
+    /// o campo em que apareceu. Nada é gravado.
+    ItemUnclear { fields: Vec<(String, ClarityReport)> },
     /// Uma tarefa cujo `depends_on` aponta uma tarefa que não existe nesta
     /// spec. Nada é gravado, e a mensagem nomeia as duas.
     TaskDependsOnUnknown { task: String, depends_on: String },
@@ -141,6 +172,20 @@ pub enum Refusal {
     /// item combinado vigente de fora dela. Nada é gravado, e a mensagem
     /// nomeia pelo código cada item que faltou.
     AgreedItemsMissing { missing: Vec<String> },
+    /// A entrega da onda `wave` sem a resposta, em `agreed`, por algum item
+    /// combinado que o pedido dela levou. Nada é gravado, e a mensagem nomeia
+    /// pelo código cada item que faltou.
+    DeliveryAgreedMissing { wave: u64, missing: Vec<String> },
+    /// A entrega da onda `wave` sem a leitura, registrada, de algum item que o
+    /// pedido dela lista: o código do item, ou `lesson-<número>` da lição.
+    /// Nada é gravado, e a mensagem nomeia cada item não lido e manda lê-lo de
+    /// dentro da cópia.
+    DeliveryReadMissing { wave: u64, missing: Vec<String> },
+    /// O veredito da revisão final sem a leitura, registrada, de algum item
+    /// que o pedido dela lista: o código do item. Nada é gravado, e a
+    /// mensagem nomeia cada item não lido e manda lê-lo de dentro da cópia do
+    /// revisor.
+    VerdictReadMissing { missing: Vec<String> },
     /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
@@ -151,6 +196,28 @@ pub enum Refusal {
     /// adiante, um comando que o shell não acha. `criterion` é o critério, e
     /// `found` o texto que veio no lugar do comando.
     ProofNotACommand { criterion: String, found: String },
+    /// A prova de um critério cujo primeiro termo não é um programa que o
+    /// shell ache: a frase escrita no lugar do comando, ou o nome solto de um
+    /// teste. `term` é o termo que falhou. Nada é gravado.
+    ProofProgramUnknown { term: String },
+    /// A prova que liga comandos por ponto e vírgula: só o último decide o
+    /// resultado, e os de antes podem falhar sem que ninguém veja. `found` é
+    /// a prova como veio. Nada é gravado.
+    ProofChainedBySemicolon { found: String },
+    /// A prova que é uma busca sozinha, sem `!` na frente e sem o modo
+    /// silencioso: ela sai com sucesso quando acha texto, e a busca que devia
+    /// sair vazia passa achando o resto. `found` é a prova como veio. Nada é
+    /// gravado.
+    ProofSearchNotNegated { found: String },
+    /// Um pedido gravado pelo assistente numa spec que já fechou, com a fase
+    /// `phase` (fechada ou com o pull request aberto). Ela recebe o pedido
+    /// depois de reaberta, na mesma spec e na mesma branch: a mensagem aponta
+    /// a reabertura. Nada é gravado.
+    RequestOnClosedSpec { spec: String, phase: String },
+    /// Um pedido ou uma tarefa (`event_type`) gravado pelo assistente numa
+    /// spec entregue na base ou descartada, com a fase `phase`. Ela não volta
+    /// por caminho nenhum: a mensagem aponta uma spec nova. Nada é gravado.
+    WorkOnFinishedSpec { spec: String, phase: String, event_type: String },
     Io { detail: String },
 }
 
@@ -169,10 +236,47 @@ pub enum TaskDeclaration {
     /// diz o que a tarefa entrega. Falta tanto quando não vem quanto quando
     /// passa do tamanho.
     Title,
+    /// Os itens da spec que a tarefa entrega (`covers`), pelo número: a onda
+    /// leva como critérios os itens que as tarefas dela cobrem, e a onda sem
+    /// critério não se forma. Falta quando não vem ou vem vazio.
+    Covers,
 }
+
+/// Quantos itens sem tarefa a recusa da tarefa sem `covers` mostra; os
+/// outros saem contados.
+const UNCOVERED_SHOWN: usize = 10;
 
 /// O tamanho máximo do título de uma tarefa, em caracteres.
 pub const TASK_TITLE_MAX: usize = 70;
+
+/// Uma das partes da forma fixa de um item que descreve o trabalho.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemPart {
+    /// O título curto (`title`), de até [`TASK_TITLE_MAX`] caracteres. Falta
+    /// tanto quando não vem quanto quando passa do tamanho.
+    Title,
+    /// A parte do usuário (`text`), com o porquê.
+    UserPart,
+    /// A parte do agente (`agent`), com arquivos, linhas, comandos e o que
+    /// testar.
+    AgentPart,
+    /// A parte do usuário cita o que é do agente: `found` é o trecho, uma
+    /// crase, um caminho de arquivo ou o código de outro item.
+    UserPartCites { found: String },
+}
+
+impl ItemPart {
+    fn label(&self, lang: Locale) -> String {
+        match self {
+            Self::Title => translate("spec_events.item_part_title", lang).to_string(),
+            Self::UserPart => translate("spec_events.item_part_user", lang).to_string(),
+            Self::AgentPart => translate("spec_events.item_part_agent", lang).to_string(),
+            Self::UserPartCites { found } => {
+                translate("spec_events.item_part_user_cites", lang).replace("{found}", found)
+            }
+        }
+    }
+}
 
 impl TaskDeclaration {
     fn label(self, lang: Locale) -> &'static str {
@@ -181,6 +285,7 @@ impl TaskDeclaration {
             Self::Files => translate("spec_events.task_declaration_files", lang),
             Self::DependsOn => translate("spec_events.task_declaration_depends_on", lang),
             Self::Title => translate("spec_events.task_declaration_title", lang),
+            Self::Covers => translate("spec_events.task_declaration_covers", lang),
         }
     }
 }
@@ -201,7 +306,11 @@ impl Refusal {
             Self::BinaryOnlyField { .. } => "binary-only-field",
             Self::UnknownField { .. } => "unknown-field",
             Self::UnknownTarget { .. } => "unknown-target",
+            Self::TargetOtherType { .. } => "target-other-type",
             Self::ReplacesOtherType { .. } => "replaces-other-type",
+            Self::ReplacesSuperseded { .. } => "replaces-superseded",
+            Self::ReplacesRemoved { .. } => "replaces-removed",
+            Self::DependsOutsideWave { .. } => "depends-outside-wave",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
@@ -240,11 +349,21 @@ impl Refusal {
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
+            Self::ItemFormMissing { .. } => "item-form-missing",
+            Self::ItemUnclear { .. } => "item-unclear",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
+            Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
+            Self::DeliveryReadMissing { .. } => "delivery-read-missing",
+            Self::VerdictReadMissing { .. } => "verdict-read-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
+            Self::ProofProgramUnknown { .. } => "proof-program-unknown",
+            Self::ProofChainedBySemicolon { .. } => "proof-chained-by-semicolon",
+            Self::ProofSearchNotNegated { .. } => "proof-search-not-negated",
+            Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
+            Self::WorkOnFinishedSpec { .. } => "work-on-finished-spec",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -320,6 +439,16 @@ impl Refusal {
             Self::UnknownTarget { target: EventRef::Code(code) } => {
                 fill("spec_events.unknown_code", &[("{code}", code.clone())])
             }
+            Self::TargetOtherType { target, found, expected } => {
+                let item = match target {
+                    EventRef::Id(id) => id.to_string(),
+                    EventRef::Code(code) => code.clone(),
+                };
+                fill(
+                    "spec_events.target_other_type",
+                    &[("{item}", item), ("{found}", found.clone()), ("{expected}", expected.clone())],
+                )
+            }
             Self::ReplacesOtherType { id, found, event_type } => fill(
                 "spec_events.replaces_other_type",
                 &[
@@ -327,6 +456,18 @@ impl Refusal {
                     ("{found}", found.clone()),
                     ("{type}", event_type.clone()),
                 ],
+            ),
+            Self::ReplacesSuperseded { id, current } => fill(
+                "spec_events.replaces_superseded",
+                &[("{id}", id.to_string()), ("{current}", current.clone())],
+            ),
+            Self::ReplacesRemoved { id, by } => fill(
+                "spec_events.replaces_removed",
+                &[("{id}", id.to_string()), ("{by}", by.to_string())],
+            ),
+            Self::DependsOutsideWave { wave, missing } => fill(
+                "spec_events.depends_outside_wave",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
             Self::FilterMatchesNothing { event_type, from, to } => fill(
                 "spec_events.filter_matches_nothing",
@@ -435,13 +576,37 @@ impl Refusal {
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }
-            Self::TaskDeclarationMissing { missing } => fill(
-                "spec_events.task_declaration_missing",
-                &[(
-                    "{missing}",
-                    missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
-                )],
+            Self::TaskDeclarationMissing { missing, uncovered } => {
+                let mut text = fill(
+                    "spec_events.task_declaration_missing",
+                    &[(
+                        "{missing}",
+                        missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
+                    )],
+                );
+                if !uncovered.is_empty() {
+                    let mut items = uncovered.iter().take(UNCOVERED_SHOWN).cloned().collect::<Vec<_>>().join(", ");
+                    if uncovered.len() > UNCOVERED_SHOWN {
+                        items.push(' ');
+                        let more = (uncovered.len() - UNCOVERED_SHOWN).to_string();
+                        items.push_str(&fill("spec_events.task_uncovered_more", &[("{n}", more)]));
+                    }
+                    text.push(' ');
+                    text.push_str(&fill("spec_events.task_uncovered_items", &[("{items}", items)]));
+                }
+                text
+            }
+            Self::ItemFormMissing { missing } => fill(
+                "spec_events.item_form_missing",
+                &[("{missing}", missing.iter().map(|part| part.label(lang)).collect::<Vec<_>>().join("; "))],
             ),
+            Self::ItemUnclear { fields } => {
+                let defects: Vec<String> = fields
+                    .iter()
+                    .flat_map(|(field, report)| report.defects(lang).into_iter().map(move |d| format!("{field}: {d}")))
+                    .collect();
+                fill("spec_events.item_unclear", &[("{defects}", defects.join("; "))])
+            }
             Self::TaskDependsOnUnknown { task, depends_on } => fill(
                 "spec_events.task_depends_on_unknown",
                 &[("{task}", task.clone()), ("{depends_on}", depends_on.clone())],
@@ -454,10 +619,38 @@ impl Refusal {
                 "spec_events.agreed_items_missing",
                 &[("{missing}", missing.join(", "))],
             ),
+            Self::DeliveryAgreedMissing { wave, missing } => fill(
+                "spec_events.delivery_agreed_missing",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
+            ),
+            Self::DeliveryReadMissing { wave, missing } => fill(
+                "spec_events.delivery_read_missing",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
+            ),
+            Self::VerdictReadMissing { missing } => {
+                fill("spec_events.verdict_read_missing", &[("{missing}", missing.join(", "))])
+            }
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::ProofNotACommand { criterion, found } => fill(
                 "spec_events.proof_not_a_command",
                 &[("{criterion}", criterion.clone()), ("{found}", found.clone())],
+            ),
+            Self::ProofProgramUnknown { term } => {
+                fill("spec_events.proof_program_unknown", &[("{term}", term.clone())])
+            }
+            Self::ProofChainedBySemicolon { found } => {
+                fill("spec_events.proof_chained_by_semicolon", &[("{found}", found.clone())])
+            }
+            Self::ProofSearchNotNegated { found } => {
+                fill("spec_events.proof_search_not_negated", &[("{found}", found.clone())])
+            }
+            Self::RequestOnClosedSpec { spec, phase } => fill(
+                "spec_events.request_on_closed_spec",
+                &[("{spec}", spec.clone()), ("{phase}", phase.clone())],
+            ),
+            Self::WorkOnFinishedSpec { spec, phase, event_type } => fill(
+                "spec_events.work_on_finished_spec",
+                &[("{spec}", spec.clone()), ("{phase}", phase.clone()), ("{type}", event_type.clone())],
             ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
@@ -477,4 +670,32 @@ fn opening(text: &str, max: usize) -> String {
     let mut cut: String = text.chars().take(max).collect();
     cut.push('…');
     cut
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A recusa da tarefa sem os itens que ela cobre mostra até dez dos itens
+    /// que nenhuma tarefa cobre, na ordem em que vieram, e conta os outros;
+    /// sem item nenhum, fica só a declaração que falta.
+    #[test]
+    fn the_refusal_of_a_task_without_covers_shows_ten_uncovered_items_and_counts_the_rest() {
+        let uncovered: Vec<String> = (1..=12).map(|n| format!("{n} (MSTD-CRIT-{n:04})")).collect();
+        let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered };
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("10 (MSTD-CRIT-0010) e mais 2."), "{pt}");
+        assert!(!pt.contains("MSTD-CRIT-0011"), "{pt}");
+        let en = refusal.message(Locale::EnUs);
+        assert!(en.contains("1 (MSTD-CRIT-0001), 2 (MSTD-CRIT-0002)") && en.contains("and 2 more."), "{en}");
+
+        let ten: Vec<String> = (1..=10).map(|n| n.to_string()).collect();
+        let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered: ten };
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.ends_with("9, 10."), "ten items are all shown, with no count: {pt}");
+
+        let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered: Vec::new() };
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("`covers`") && !pt.contains("Itens que nenhuma tarefa cobre"), "{pt}");
+    }
 }

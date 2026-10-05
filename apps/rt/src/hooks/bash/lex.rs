@@ -26,7 +26,7 @@ const REDIRECT_OPERATORS: &[&str] =
 /// One word of a command: `text` is what the program receives (no quotes, no
 /// escaping backslash); `raw` is the word as it was written.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct Word {
+pub(crate) struct Word {
     pub text: String,
     pub raw: String,
 }
@@ -55,14 +55,14 @@ impl Word {
 /// One redirect (`>`, `>>`, `2>`, `&>`, `<`, `>&`, `<<`, `<<<`, …) and its
 /// target. For a heredoc the target is the delimiter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Redirect {
+pub(crate) struct Redirect {
     pub op: String,
     pub target: Word,
 }
 
 /// One simple command of the line, split the way the terminal splits it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct Segment {
+pub(crate) struct Segment {
     /// The program, after the `NAME=value` assignments, the structure words
     /// and the wrappers (`rtk`, `sudo`, `env`, `command`, `exec`, `nohup`,
     /// `time`, `nice`, `timeout`, `xargs`). Empty when the command only
@@ -76,6 +76,9 @@ pub(super) struct Segment {
     /// the program, in order: `while pgrep x` is `["while"]`, `do sleep 1` is
     /// `["do"]`. A wrapper or an assignment in between is skipped, not kept.
     pub leading: Vec<String>,
+    /// `true` when the command hands its output to the next one through a
+    /// pipe (`|` or `|&`).
+    pub piped: bool,
 }
 
 impl Segment {
@@ -97,7 +100,7 @@ impl Segment {
 /// of a body whose delimiter has no quote (`<<EOF`), which the terminal runs;
 /// `<<'EOF'` keeps the whole body as text. The reader walks the text once,
 /// never panics, and stops descending past [`MAX_DEPTH`] levels.
-pub(super) fn segments(cmd: &str) -> Vec<Segment> {
+pub(crate) fn segments(cmd: &str) -> Vec<Segment> {
     read_line(cmd, 0)
 }
 
@@ -122,6 +125,7 @@ struct Pending {
     words: Vec<Word>,
     redirects: Vec<Redirect>,
     inner: Vec<Segment>,
+    piped: bool,
 }
 
 /// What a `${…}` or `$((…))` is, which tells where it closes.
@@ -194,9 +198,11 @@ impl Reader {
                 '&' if self.peek(1) == Some('>') => self.redirect(&mut cur, String::new(), close, depth),
                 '&' | '|' => {
                     self.advance(1);
-                    if matches!(self.peek(0), Some('&' | '|')) {
+                    let second = self.peek(0).filter(|next| matches!(next, '&' | '|'));
+                    if second.is_some() {
                         self.advance(1);
                     }
+                    cur.piped = c == '|' && second != Some('|');
                     finish(&mut cur, &mut out, depth);
                 }
                 '<' | '>' if self.peek(1) != Some('(') => {
@@ -542,9 +548,9 @@ fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
 /// Close the command being read: resolve its program and push it, followed by
 /// the commands found inside it.
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
-    let Pending { words, redirects, inner } = std::mem::take(cur);
+    let Pending { words, redirects, inner, piped } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let segment = simple_command(words, redirects);
+        let segment = Segment { piped, ..simple_command(words, redirects) };
         let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
@@ -568,7 +574,7 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
         .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects, leading }
+    Segment { program, args: rest.collect(), redirects, leading, piped: false }
 }
 
 /// Where the command really starts: past the structure words, a function

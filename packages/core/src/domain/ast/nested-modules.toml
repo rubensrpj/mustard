@@ -1,0 +1,21 @@
+# As línguas em que o módulo pai declara o módulo filho, e o filho mora dentro
+# da pasta do pai — dados embutidos na compilação (include_str!) e lidos uma
+# vez. Mudar a lista é mudar dado, nunca a regra: a regra, em `conventions.rs`,
+# só compara caminhos, sem saber de língua nenhuma.
+#
+# Nessas línguas, a linha do pai que aponta para o filho (`mod filho;`) não é
+# uma dependência de execução: é a declaração de que o filho existe, e o filho
+# que usa o que é do pai (`use super::Coisa`) é o jeito normal da língua. Os
+# dois juntos parecem um ciclo no grafo de importações do mapa e não são um.
+#
+# A pasta do módulo de um arquivo é a pasta do arquivo, quando ele é o de
+# entrada da pasta (`entry-files.toml`), e a pasta com o nome dele sem a
+# extensão, no outro caso: `a.rs` e `a/mod.rs` têm os filhos em `a/`. Por isso
+# a língua daqui precisa ter também uma lista em `entry-files.toml`.
+#
+# A chave é o `name` da língua em `apps/scan/languages.toml`. A língua sem chave
+# não declara módulo filho: a família do TypeScript, por exemplo, importa o
+# `./x` pelo caminho, e o `index` que reexporta o `./x` de onde o `./x` importa
+# o `index` é um ciclo de verdade.
+
+rust = true

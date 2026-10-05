@@ -127,7 +127,7 @@ jobs:
         run: ./packaging/build-packages.ps1 -Targets rtk
 
       # The installer is assembled from a staging tree, so makensis only has to
-      # copy three folders and mustard.nsi never has to know where a build put
+      # copy one folder and mustard.nsi never has to know where a build put
       # what. Layout mirrors what lands on the machine — see mustard.nsi.
       - name: Monta o payload do instalador
         shell: bash
@@ -139,7 +139,6 @@ jobs:
             cp "target/release/$b.exe" "$PAYLOAD/bin/$b.exe"
           done
           cp dist/_rtk/rtk.exe "$PAYLOAD/bin/rtk.exe"
-          cp -R apps/cli/templates "$PAYLOAD/templates"
 
       # NSIS ships with some runner images and not others (it left windows-2025),
       # so the presence is checked instead of assumed — the assumption is exactly
@@ -178,11 +177,6 @@ jobs:
             cp "target/release/$b.exe" dist/bins/
           done
           cp dist/_rtk/rtk.exe dist/bins/rtk.exe
-          # O `mustard init` procura o templates/ AO LADO do binário. Sem ele o
-          # CLI que veio por esta via morre com "could not locate the Mustard
-          # templates/ directory" — os instaladores por SO levam o seu, este
-          # pacote precisa levar o dele. São 11 KB.
-          cp -R apps/cli/templates dist/bins/templates
           (cd dist/bins && 7z a "../mustard-bins-$VERSION-windows-x64.zip" .)
 
       - name: Coleta o instalador
@@ -240,9 +234,6 @@ jobs:
             lipo -create "target/x86_64-apple-darwin/release/$b" "target/aarch64-apple-darwin/release/$b" -output "dist/bins/$b"
             chmod +x "dist/bins/$b"
           done
-          # Ver a nota no job do Windows: o templates/ tem de viajar junto, ou
-          # o `mustard init` deste pacote não acha a própria carga.
-          cp -R apps/cli/templates dist/bins/templates
           tar -czf "dist/mustard-bins-$VERSION-macos-universal.tar.gz" -C dist/bins .
 
       - name: Coleta o instalador
@@ -297,9 +288,6 @@ jobs:
           for b in scan mustard-rt mustard; do
             cp "target/release/$b" dist/bins/
           done
-          # Ver a nota no job do Windows: o templates/ tem de viajar junto, ou
-          # o `mustard init` deste pacote não acha a própria carga.
-          cp -R apps/cli/templates dist/bins/templates
           tar -czf "dist/mustard-bins-$VERSION-linux-x64.tar.gz" -C dist/bins .
 
       - name: Coleta o .deb + instalador

@@ -222,6 +222,41 @@ impl HookInput {
         self.raw.get("prompt").and_then(Value::as_str)
     }
 
+    /// The path of the session transcript the harness keeps (`transcript_path`).
+    /// `None` when the field is absent, blank or not a string.
+    #[must_use]
+    pub fn transcript_path(&self) -> Option<&str> {
+        self.raw.get("transcript_path").and_then(Value::as_str).map(str::trim).filter(|path| !path.is_empty())
+    }
+
+    /// The identifier of the subagent the hook fired inside (`agent_id`),
+    /// trimmed. `None` in the main conversation, or when the field is blank.
+    #[must_use]
+    pub fn subagent_id(&self) -> Option<&str> {
+        let typed = self.agent_id.as_deref();
+        let id = typed.or_else(|| self.raw.get("agent_id").and_then(Value::as_str));
+        id.map(str::trim).filter(|id| !id.is_empty())
+    }
+
+    /// The file name of the subagent's own transcript, which the harness keeps
+    /// in a `subagents/` folder next to the main one: `agent-<id>.jsonl`, with
+    /// the prefix not repeated when the id already carries it. `None` outside
+    /// a subagent. The `transcript_path` of such a hook is always the main
+    /// conversation, never the subagent's.
+    #[must_use]
+    pub fn subagent_transcript_name(&self) -> Option<String> {
+        let id = self.subagent_id()?;
+        Some(if id.starts_with("agent-") { format!("{id}.jsonl") } else { format!("agent-{id}.jsonl") })
+    }
+
+    /// The one-line description the agent gave the tool call
+    /// (`tool_input.description`, on `Bash` and the agent tools). `None`
+    /// when the call has none, or it is blank.
+    #[must_use]
+    pub fn tool_description(&self) -> Option<&str> {
+        self.tool_input.get("description").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
+    }
+
     /// The assistant's final text for the turn (`last_assistant_message`, on
     /// `Stop` and `SubagentStop`).
     #[must_use]
@@ -534,9 +569,9 @@ pub trait Check {
     /// # Errors
     ///
     /// Returns an [`Error`] only when the check could not reach a decision —
-    /// e.g. the input was malformed ([`Error::InvalidInput`]) or the check's
-    /// own logic failed ([`Error::CheckFailed`]). Implementations fail open:
-    /// prefer `Ok(Verdict::Allow)` over an `Err` whenever the input is usable.
+    /// e.g. the check's own logic failed ([`Error::CheckFailed`]).
+    /// Implementations fail open: prefer `Ok(Verdict::Allow)` over an `Err`
+    /// whenever the input is usable.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error>;
 }
 
@@ -581,6 +616,39 @@ mod tests {
         assert_eq!(find("Quais?").labels, ["B", "C"], "blank labels are left out");
         assert!(find("Vazia?").labels.is_empty());
         assert_eq!(answers.items.len(), 3);
+    }
+
+    #[test]
+    fn the_transcript_and_the_tool_description_are_read_from_the_harness_fields() {
+        let input: HookInput = serde_json::from_value(serde_json::json!({
+            "transcript_path": " /home/p/.claude/projects/x/s.jsonl ",
+            "tool_name": "Bash",
+            "tool_input": { "command": "grep -rn pay src", "description": " Search for the pay code " }
+        }))
+        .expect("valid hook input");
+        assert_eq!(input.transcript_path(), Some("/home/p/.claude/projects/x/s.jsonl"));
+        assert_eq!(input.tool_description(), Some("Search for the pay code"));
+
+        let blank: HookInput = serde_json::from_value(serde_json::json!({
+            "transcript_path": "  ",
+            "tool_input": { "command": "ls", "description": "   " }
+        }))
+        .expect("valid hook input");
+        assert_eq!((blank.transcript_path(), blank.tool_description()), (None, None));
+        let absent: HookInput = serde_json::from_value(serde_json::json!({ "tool_input": { "pattern": "x" } }))
+            .expect("valid hook input");
+        assert_eq!((absent.transcript_path(), absent.tool_description()), (None, None));
+    }
+
+    #[test]
+    fn the_subagent_transcript_name_comes_from_the_agent_id_without_repeating_the_prefix() {
+        let name = |json: serde_json::Value| -> Option<String> {
+            serde_json::from_value::<HookInput>(json).expect("valid hook input").subagent_transcript_name()
+        };
+        assert_eq!(name(serde_json::json!({"agent_id": "a3d2d3dc4c50296bf"})), Some("agent-a3d2d3dc4c50296bf.jsonl".into()));
+        assert_eq!(name(serde_json::json!({"agent_id": " agent-a3d2 "})), Some("agent-a3d2.jsonl".into()));
+        assert_eq!(name(serde_json::json!({"agent_id": ""})), None, "a blank id is the main conversation");
+        assert_eq!(name(serde_json::json!({"transcript_path": "/p/s.jsonl"})), None, "no id, no subagent");
     }
 
     #[test]

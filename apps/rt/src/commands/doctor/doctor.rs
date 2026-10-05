@@ -16,7 +16,7 @@
 //!   and refs for mentions of paths/commands that no longer exist (dead `.js`
 //!   names, `scripts/` entries with no resolvable target). WARN per hit.
 //! - **scratch-residue** (`--residue` só) — tamanho total das sobras que o
-//!   `scratch-gc` recolheria e o da compilação compartilhada, pela MESMA
+//!   `clean` recolheria e o da compilação compartilhada, pela MESMA
 //!   varredura dele. WARN quando há sobra ou quando a compilação passou do teto.
 //! - **drift** — compare by hash the folders a fresh payload owns
 //!   (`CORE_FOLDERS`) between the installed `.claude/` and the
@@ -24,7 +24,7 @@
 //!   reachable from cwd (consumer project).
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
 //!   spec), expired `closed-followup` state files, missing
-//!   `grain.model.json`. WARN per anomaly.
+//!   `grain.db`. WARN per anomaly.
 //! - **nerd-font** — at least one Nerd Font detected in the OS font
 //!   directories. WARN with install hint (`mustard install-nerd-font`) when
 //!   absent. Powerline statusline themes require this; without it the
@@ -36,7 +36,7 @@
 //!   this project may not use at all.
 //! - **spec-index** — o índice das specs (`.claude/spec/index.ndjson`) contra
 //!   os arquivos de eventos: índice que falta, linha que falta, sobra ou
-//!   difere, e campo `search` calculado por outro redutor. Só lê e acusa, com
+//!   difere, e linha sem o campo `search`. Só lê e acusa, com
 //!   WARN e a mensagem no idioma do projeto, que manda rodar
 //!   `mustard-rt run index`.
 //! - **switches** — as escolhas do `mustard.json` contra as configurações
@@ -132,15 +132,19 @@ impl CheckResult {
 // Known valid events
 // ---------------------------------------------------------------------------
 
-/// The shipped hook manifest (`plugin/hooks/hooks.json`), embedded at build
-/// time. That file is the only thing that decides which `<event>` names the
-/// harness ever hands to `mustard-rt on`; embedding it makes the doctor read
-/// the same artefact the harness reads, the way the wiring check's
-/// `known_run_subcommands` reads the same clap tree the binary dispatches on.
-/// A hand-kept copy drifted in both directions (it carried `PreCompact`, which
-/// nothing registers, and omitted `Stop` and `WorktreeCreate`, which are
-/// registered).
-const SHIPPED_HOOKS_MANIFEST: &str = include_str!("../../../../../plugin/hooks/hooks.json");
+/// O manifesto de ganchos que o plugin entrega (`plugin/hooks/hooks.json`),
+/// embutido na compilação. Esse arquivo é o único que decide quais nomes de
+/// `<evento>` o Claude Code entrega a `mustard-rt on`; embuti-lo faz o
+/// doutor ler o mesmo artefato que o Claude Code lê, como a conferência da
+/// fiação lê, em `known_run_subcommands`, a mesma árvore do clap em que o
+/// binário despacha. O conjunto de eventos vem dele e não de uma lista à mão,
+/// que sairia de sincronia: `PreCompact`, `Stop` e `WorktreeCreate` entram
+/// porque o manifesto os registra.
+///
+/// O script de build o copia antes para `OUT_DIR`: embutido de `plugin/`,
+/// fora deste crate, o cargo o guardava pelo caminho absoluto da cópia que o
+/// compilou, e trocar de cópia recompilava o crate.
+const SHIPPED_HOOKS_MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/hooks.json"));
 
 /// All hook event names `mustard-rt on <event>` recognizes — the keys of the
 /// shipped manifest's `hooks` object.
@@ -416,8 +420,8 @@ mod tests {
 
         // Minimal settings.json so wiring check doesn't fail hard.
         make_minimal_settings(&claude_dir, "mustard-rt on PreToolUse");
-        // grain.model.json to keep state-health from warning.
-        write_file(&claude_dir.join("grain.model.json"), "{}");
+        // A project map, to keep state-health from warning.
+        mustard_core::io::project_map::write_text(dir.path(), "{}").unwrap();
 
         // Run all checks the same way `run()` does, rooted at the tempdir.
         let results: Vec<CheckResult> = vec![
@@ -494,7 +498,7 @@ mod tests {
     /// cada parte da pasta dela, pela medida única do núcleo.
     #[test]
     fn no_file_of_the_doctor_goes_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("doctor").join("doctor.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("commands").join("doctor").join("doctor.rs");
         assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

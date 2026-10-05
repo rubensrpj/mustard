@@ -4,25 +4,37 @@
 //! `MultiEdit` e `NotebookEdit` —, o arquivo passa pelo classificador único
 //! ([`WriteTarget::classify`]) e depois pelas regras ([`WriteRule`]), na ordem
 //! de [`RULES`]. A primeira regra que responde decide; sem resposta, a
-//! ferramenta passa.
+//! ferramenta passa. A busca (`Grep`) não tem um arquivo só e responde à
+//! parte, em [`search_verdict`].
 //!
 //! 1. **Segredo** ([`SecretRule`]): credenciais, chaves e a configuração do
 //!    git não são lidas nem escritas, dentro ou fora do projeto.
-//! 2. **Arquivos da spec** ([`SpecFileRule`]): o `spec.ndjson`, o `spec.md`, o
+//! 2. **Chave do Jev** ([`ConfigKeyRule`]): a leitura do `mustard.json` que
+//!    guarda a chave volta com o arquivo, e a chave trocada por `***`.
+//! 3. **Arquivos da spec** ([`SpecFileRule`]): o `spec.ndjson`, o `spec.md`, o
 //!    `spec.html` e o `meta.json` da raiz de uma spec, o índice das specs e o
 //!    banco de lições são gravados só pelo binário. A leitura passa.
-//! 3. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
+//! 4. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
 //!    a spec atual não está numa fase aprovada, pela mesma lista do `State`:
 //!    em levantamento, em plano ou descartada; sem nenhum `state`, pela
 //!    regra do [`lock_state`].
-//! 4. **Branch da spec** ([`BranchRule`]): uma edição fora da branch em que a
+//! 5. **Branch da spec** ([`BranchRule`]): uma edição fora da branch em que a
 //!    spec mora só avisa, nomeando as duas.
-//! 5. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
+//! 6. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
 //!    `git.flow` do `mustard.json` declara, fora dos planos e da evidência
 //!    descartável. Sem `git.flow`, nenhuma branch é base; o portão nunca
 //!    pergunta ao git qual é a branch padrão. Um `mustard.json` que existe e
 //!    não se lê não é um projeto sem bases: ali o portão recusa toda escrita,
 //!    menos a do próprio arquivo, que é como ele volta a se ler.
+//! 7. **Leitura inteira grande** ([`WholeReadRule`]): a leitura inteira de um
+//!    arquivo de código do mapa que traria mais de 300 linhas volta com as
+//!    partes dele e o comando que traz só a parte certa.
+//! 8. **Leitura cortada** ([`ReadCutRule`]): a leitura inteira de um arquivo
+//!    com os testes dentro dele para antes deles.
+//!
+//! As regras da leitura valem também para o arquivo de uma cópia de trabalho
+//! ligada ao mesmo repositório, como a cópia de uma onda: o caminho dela se
+//! lê como o do projeto.
 //!
 //! O estado da spec vem do [`lock_state`], a regra única da trava: com algum
 //! `state` no arquivo de eventos, vale a dobra deles; sem nenhum e com o
@@ -60,10 +72,14 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_state::{SpecState, State};
 use mustard_core::platform::error::Error;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::Locale;
 
 use crate::commands::git_settle::main_checkout_root;
-use crate::shared::paths::{Access, PathClass, WriteTarget};
+use crate::commands::spec_events::conversation::record_measured_call;
+use crate::shared::code_route::{self, ProjectPath};
+use crate::shared::config_key;
+use crate::shared::paths::{self, Access, PathClass, WriteTarget};
+use crate::shared::word_search;
 use crate::shared::spec_state::{lock_state, DiskSpecState};
 
 /// O portão de escrita: todas as [`RULES`], e a primeira resposta vence.
@@ -94,6 +110,13 @@ pub(crate) struct WriteContext {
     /// arquivo ([`test_cut_line`]); `None` numa escrita, numa leitura que já
     /// pede um trecho, ou num arquivo sem a marca de uma linguagem conhecida.
     pub(crate) read_cut: Option<ReadCut>,
+    /// A recusa da leitura inteira de um arquivo de código do mapa que traria
+    /// mais linhas que o teto ([`code_route::whole_read`]); `None` fora da
+    /// leitura inteira, no arquivo pequeno e no que o mapa não guarda.
+    pub(crate) whole_read: Option<String>,
+    /// A recusa da leitura do `mustard.json` que guarda a chave do Jev, com o
+    /// arquivo sem a chave ([`config_key::refusal`]); `None` em todo o resto.
+    pub(crate) config_key: Option<String>,
 }
 
 /// Onde a leitura inteira de um arquivo para, antes dos testes: o caminho
@@ -110,6 +133,17 @@ impl WriteContext {
     /// escrita, e o estado e a branch para uma escrita num arquivo do projeto
     /// que não é do harness.
     fn read(root: &str, input: &HookInput, ctx: &Ctx, target: &WriteTarget) -> Self {
+        let lang = ctx.config.language().text_or_default();
+        let whole = whole_read_of(root, input, target);
+        let read_cut = whole.as_ref().and_then(|(file, content)| test_cut_line(file, content, input));
+        let whole_read = whole.as_ref().and_then(|(file, content)| {
+            let lines = read_cut.as_ref().map_or_else(|| content.lines().count(), |cut| cut.line as usize - 1);
+            code_route::whole_read(Path::new(root), file, content, lines, lang)
+        });
+        let config_key = (target.access == Access::Read && config_key::is_config_file(&target.path))
+            .then(|| input.file_path())
+            .flatten()
+            .and_then(|given| config_key::refusal(&target.path, &Path::new(root).join(given), lang));
         let mut at = Self {
             spec: None,
             state: None,
@@ -117,8 +151,10 @@ impl WriteContext {
             in_project_repo: false,
             bases: ctx.config.git.declared_bases(),
             config_unreadable: ctx.config.unreadable,
-            lang: ctx.config.language().text_or_default(),
-            read_cut: test_cut_line(root, input, target),
+            lang,
+            read_cut,
+            whole_read,
+            config_key,
         };
         if target.access != Access::Write {
             return at;
@@ -155,10 +191,19 @@ pub(crate) trait WriteRule {
     fn judge(&self, target: &WriteTarget, at: &WriteContext) -> Option<Verdict>;
 }
 
-/// As regras, na ordem em que respondem. A leitura cortada vem por último:
-/// um segredo, ou a spec, decide primeiro se a leitura passa.
-pub(crate) const RULES: &[&dyn WriteRule] =
-    &[&SecretRule, &SpecFileRule, &ApprovalRule, &BranchRule, &BaseRule, &ReadCutRule];
+/// As regras, na ordem em que respondem. As da leitura inteira vêm por
+/// último: um segredo, a chave ou a spec decidem primeiro se a leitura passa,
+/// e a leitura grande volta antes de ser cortada.
+pub(crate) const RULES: &[&dyn WriteRule] = &[
+    &SecretRule,
+    &ConfigKeyRule,
+    &SpecFileRule,
+    &ApprovalRule,
+    &BranchRule,
+    &BaseRule,
+    &WholeReadRule,
+    &ReadCutRule,
+];
 
 /// A marca que abre o módulo de testes de dentro do arquivo de código, pela
 /// extensão do arquivo. Lugar único: uma linguagem nova entra numa linha,
@@ -166,23 +211,46 @@ pub(crate) const RULES: &[&dyn WriteRule] =
 /// num arquivo separado, nenhuma extensão bate, e a leitura passa inteira.
 const TEST_MARKERS: &[(&str, &str)] = &[("rs", "#[cfg(test)]")];
 
-/// A linha, contada a partir de 1, em que os testes começam — quando `input`
-/// pede a leitura INTEIRA (sem `offset` nem `limit`) de um arquivo de código
-/// do projeto cuja extensão está em [`TEST_MARKERS`] e cujo conteúdo tem a
-/// marca. `None` numa leitura que já pede um trecho, numa escrita, num
-/// arquivo fora do projeto ou sem a marca — nesses casos a leitura passa
-/// como veio.
-fn test_cut_line(root: &str, input: &HookInput, target: &WriteTarget) -> Option<ReadCut> {
-    if target.access != Access::Read || target.class != PathClass::Production {
+/// O arquivo e o conteúdo de uma leitura INTEIRA (sem `offset` nem `limit`)
+/// de um arquivo de código do projeto: na raiz, ou numa cópia de trabalho
+/// ligada ao mesmo repositório, onde ele se classifica a partir da raiz da
+/// cópia. `None` numa escrita, numa leitura que já pede um trecho, num
+/// arquivo que não é código do projeto ou que não se lê.
+fn whole_read_of(root: &str, input: &HookInput, target: &WriteTarget) -> Option<(ProjectPath, String)> {
+    if target.access != Access::Read {
         return None;
     }
     let ti = &input.tool_input;
     if ti.get("offset").is_some() || ti.get("limit").is_some() {
         return None;
     }
-    let extension = Path::new(&target.path).extension()?.to_str()?;
+    let file = match target.class {
+        PathClass::Production => ProjectPath {
+            tree: Path::new(root).to_path_buf(),
+            rel: target.path.clone(),
+            abs: Path::new(root).join(&target.path),
+        },
+        PathClass::OutsideRepo => {
+            let file = code_route::project_path(root, root, &input.file_path()?)?;
+            let inner = WriteTarget::classify(&file.tree.to_string_lossy(), input)?;
+            if inner.class != PathClass::Production {
+                return None;
+            }
+            file
+        }
+        _ => return None,
+    };
+    let content = std::fs::read_to_string(&file.abs).ok()?;
+    Some((file, content))
+}
+
+/// A linha, contada a partir de 1, em que os testes começam na leitura
+/// inteira de `file`, com o conteúdo `content`, quando a extensão dele está
+/// em [`TEST_MARKERS`] e o conteúdo tem a marca. `None` sem a marca — a
+/// leitura então passa como veio.
+fn test_cut_line(file: &ProjectPath, content: &str, input: &HookInput) -> Option<ReadCut> {
+    let extension = Path::new(&file.rel).extension()?.to_str()?;
     let marker = TEST_MARKERS.iter().find(|(ext, _)| *ext == extension)?.1;
-    let content = std::fs::read_to_string(Path::new(root).join(&target.path)).ok()?;
     let before = content.lines().position(|line| line.trim_start() == marker)?;
     if before == 0 {
         return None;
@@ -204,6 +272,11 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
         return Verdict::Allow;
     }
     let root = ctx.project_dir_or_cwd(input);
+    match input.tool_name.as_deref() {
+        Some("Grep") => return search_verdict(&root, input, ctx),
+        Some("Glob") => return glob_verdict(&root, input, ctx),
+        _ => {}
+    }
     let Some(target) = WriteTarget::classify(&root, input) else {
         return Verdict::Allow;
     };
@@ -211,17 +284,145 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
     judge(rules, &target, &at)
 }
 
+/// A busca (`Grep`): no `mustard.json` que guarda a chave do Jev, a recusa
+/// com o arquivo sem a chave; numa pasta de código do projeto — a raiz, sem
+/// `path`, ou uma cópia de trabalho dele —, a resposta do mapa
+/// ([`word_search`]): com o mapa cravado, a busca que traz as linhas
+/// (`output_mode` `content`) é recusada com a resposta agrupada por função no
+/// lugar dela; com o parcial, a busca roda, com a nota do mapa junto, só como
+/// contexto (o parcial passa antes pelo filtro do mapa, que entrega só as
+/// peças certas, e sem chave ou com o filtro falhando vale a triagem, com o
+/// aviso uma vez por sessão); a que só lista arquivos ou conta segue, sem
+/// filtro e com uma linha da marca; sem achado, ou com o filtro dizendo que
+/// nada serve, a busca segue com uma linha do que o mapa não achou. A busca num arquivo só, fora do projeto,
+/// com um `glob` que deixa só arquivos fora do mapa — pelos filtros de entrada
+/// ou pelos de saída (`!*.rs`) — ou com a chave `search.answer` desligada
+/// passa. A busca que traz as linhas numa pasta que guarda o arquivo com a
+/// chave, com um `glob` que casa com o nome dele e passa por cima do que o
+/// git ignora, é recusada também.
+fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
+    let lang = ctx.config.language().text_or_default();
+    let ti = &input.tool_input;
+    let text = |field: &str| ti.get(field).and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty());
+    let flag = |field: &str| ti.get(field).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
+    let path = text("path");
+    if let Some(path) = path.filter(|path| config_key::is_config_file(path)) {
+        return match config_key::refusal(path, &Path::new(base).join(path), lang) {
+            Some(reason) => Verdict::Deny { reason },
+            None => Verdict::Allow,
+        };
+    }
+    let Some(pattern) = text("pattern") else { return Verdict::Allow };
+    let (mut filters, typed) = word_search::tool_filters(text("glob"), text("type"));
+    let walk = config_key::Walk::Rg { unignored: false };
+    let answered = match (typed, code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())) {
+        (Some(typed), Some(folder)) if !flag("multiline") => {
+            filters.extend(typed);
+            let patterns = [pattern.to_string()];
+            let search = word_search::Search {
+                patterns: &patterns,
+                dialect: word_search::Dialect::Rust,
+                ignore_case: flag("-i"),
+                whole_word: false,
+                folders: std::slice::from_ref(&folder),
+                filters: &filters,
+                walk,
+                shows_lines: text("output_mode") == Some("content"),
+            };
+            search_reply(root, input, ctx, &search)
+        }
+        _ => word_search::Reply::Pass,
+    };
+    if let word_search::Reply::Answer(reason) = answered {
+        return Verdict::Deny { reason };
+    }
+    // Só o modo que traz as linhas mostraria a chave; os outros listam
+    // arquivos ou contam.
+    if text("output_mode") == Some("content") {
+        let folder = Path::new(base).join(path.unwrap_or("."));
+        if let Some(file) = config_key::swept(&[folder], Path::new(root), walk, &filters) {
+            return Verdict::Deny { reason: say("config_key.swept_tool", lang, &[("{file}", &file)]) };
+        }
+    }
+    match answered {
+        word_search::Reply::Note(context) => Verdict::Inject { context },
+        _ => Verdict::Allow,
+    }
+}
+
+/// A busca por nome de arquivo (`Glob`): as palavras do padrão de nome
+/// (`**/*payment*.ts` dá `payment`) vão à mesma triagem do mapa da busca por
+/// palavra, e a busca roda como veio, com a linha da marca ou do que o mapa
+/// não achou ([`word_search::names_search`]). O padrão sem palavra
+/// (`**/*.ts`), a pasta fora do projeto ou sem código do mapa, e a chave
+/// `search.answer` desligada passam calados.
+fn glob_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
+    let ti = &input.tool_input;
+    let text = |field: &str| ti.get(field).and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty());
+    let Some(pattern) = text("pattern") else { return Verdict::Allow };
+    let words = word_search::name_words(pattern, false);
+    if words.is_empty() {
+        return Verdict::Allow;
+    }
+    let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
+    let folder = glob_folder(pattern, text("path"));
+    let Some(folder) = code_route::project_path(root, base, &folder).filter(|folder| folder.abs.is_dir()) else {
+        return Verdict::Allow;
+    };
+    let filters = word_search::extension_filters(pattern);
+    let search = word_search::names_search(&words, std::slice::from_ref(&folder), &filters);
+    match search_reply(root, input, ctx, &search) {
+        word_search::Reply::Note(context) => Verdict::Inject { context },
+        _ => Verdict::Allow,
+    }
+}
+
+/// A pasta do padrão de nome, em texto com barra normal: a `path` da
+/// ferramenta (ou `.`) e as partes do padrão antes da primeira que traz
+/// curinga (`packages/core/src/**/*.rs`). O padrão que abre com `/` ou com a
+/// letra de uma unidade (`C:/` ou `C:\`) já traz a pasta inteira, e a `path`
+/// fica de lado.
+fn glob_folder(pattern: &str, path: Option<&str>) -> String {
+    let pattern = pattern.replace('\\', "/");
+    let root_len = if pattern.starts_with('/') {
+        1
+    } else if paths::is_absolute(&pattern) {
+        3
+    } else {
+        0
+    };
+    let (mut folder, rest) = match root_len {
+        0 => (path.unwrap_or(".").replace('\\', "/"), pattern.as_str()),
+        len => (pattern[..len].to_string(), &pattern[len..]),
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let named = parts[..parts.len() - 1].iter().take_while(|part| !part.contains(['*', '?', '[', '{']));
+    for part in named.filter(|part| !part.is_empty()) {
+        if !folder.ends_with('/') {
+            folder.push('/');
+        }
+        folder.push_str(part);
+    }
+    folder
+}
+
+/// A resposta do gancho à busca `search`, com a chamada medida da busca
+/// parcial gravada na spec da conversa. É o único lugar em que os ganchos
+/// ligam a busca por palavra, que é parte compartilhada, à gravação da
+/// conversa, que é de quem a grava.
+pub(crate) fn search_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &word_search::Search<'_>) -> word_search::Reply {
+    word_search::hook_reply(root, input, ctx, search, &record_measured_call)
+}
+
 /// A primeira resposta de `rules` para `target`; sem resposta, passa.
 pub(crate) fn judge(rules: &[&dyn WriteRule], target: &WriteTarget, at: &WriteContext) -> Verdict {
     rules.iter().find_map(|rule| rule.judge(target, at)).unwrap_or(Verdict::Allow)
 }
 
-/// Um texto do catálogo com as vagas preenchidas.
-pub(crate) fn say(key: &str, lang: Locale, slots: &[(&str, &str)]) -> String {
-    slots
-        .iter()
-        .fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
-}
+// O preenchimento do catálogo mora em `shared::say`; os leitores que já o
+// pediam por aqui seguem pedindo.
+pub(crate) use crate::shared::say::say;
 
 /// Um arquivo do projeto que não é estado do harness: o que a branch protege.
 fn is_repo_work(class: &PathClass) -> bool {
@@ -238,6 +439,16 @@ impl WriteRule for SecretRule {
         };
         let reason = say("write_gate.secret", at.lang, &[("{file}", &target.path), ("{pattern}", pattern)]);
         Some(Verdict::Deny { reason })
+    }
+}
+
+/// A leitura do `mustard.json` que guarda a chave do Jev volta com o arquivo,
+/// e a chave trocada por `***`: a chave nunca entra na conversa.
+pub(crate) struct ConfigKeyRule;
+
+impl WriteRule for ConfigKeyRule {
+    fn judge(&self, _target: &WriteTarget, at: &WriteContext) -> Option<Verdict> {
+        at.config_key.clone().map(|reason| Verdict::Deny { reason })
     }
 }
 
@@ -337,6 +548,18 @@ impl WriteRule for BaseRule {
     }
 }
 
+/// A leitura inteira de um arquivo de código do mapa que traria mais linhas
+/// que o teto volta com as partes dele e o comando que traz só a parte certa
+/// ([`code_route::whole_read`]). Quem vai editar lê o trecho com `offset` e
+/// `limit`: a edição aceita o arquivo lido por um trecho.
+pub(crate) struct WholeReadRule;
+
+impl WriteRule for WholeReadRule {
+    fn judge(&self, _target: &WriteTarget, at: &WriteContext) -> Option<Verdict> {
+        at.whole_read.clone().map(|reason| Verdict::Deny { reason })
+    }
+}
+
 /// A leitura inteira de um arquivo de código com os testes dentro dele
 /// ([`test_cut_line`]) para antes deles: o agente recebe só a produção, e um
 /// aviso, nos dois idiomas, com a linha onde os testes começam e como pedir
@@ -376,9 +599,48 @@ fn local_tree_of(input: &HookInput, root: &str) -> String {
     root.to_string()
 }
 
+/// A conversa de teste da busca: a spec aberta e a sessão ligada a ela, e as
+/// chamadas medidas que a busca por palavra gravou nela.
+#[cfg(test)]
+pub(crate) mod conversation_fixture {
+    use std::path::Path;
+
+    use mustard_core::domain::spec_state::SpecState;
+    use serde_json::{json, Map, Value};
+
+    use crate::shared::context::session::bind_session_spec;
+    use crate::shared::spec_state::DiskSpecState;
+
+    /// Abre a spec `spec` no projeto e liga a sessão `session` a ela: a spec
+    /// da conversa, onde a chamada medida da busca é gravada.
+    pub(crate) fn converse(root: &Path, spec: &str, session: &str) {
+        std::fs::create_dir_all(root.join(".claude/spec").join(spec)).expect("spec folder");
+        let opened = crate::commands::spec_events::write::record_open(root, spec, &format!("feature/{spec}"), "dev");
+        assert_eq!(opened, Ok(true), "the spec opens");
+        bind_session_spec(&root.to_string_lossy(), session, spec);
+    }
+
+    /// As chamadas `word search` gravadas na spec `spec`, com os campos de
+    /// cada uma.
+    pub(crate) fn word_searches(root: &Path, spec: &str) -> Vec<Map<String, Value>> {
+        DiskSpecState::new(root)
+            .log(spec)
+            .map(|log| {
+                log.visible()
+                    .into_iter()
+                    .filter(|event| event.event_type == "call" && event.fields.get("command") == Some(&json!("word search")))
+                    .map(|event| event.fields.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::conversation_fixture::{converse, word_searches};
+    use crate::shared::code_route::fixture;
     use crate::shared::context::session::bind_session_spec;
     use crate::shared::spec_state::stand_on_spec_branch;
     use mustard_core::io::spec_events as store;
@@ -463,13 +725,15 @@ mod tests {
 
     /// Um repositório com um commit, parado em `branch`.
     fn repo_on(root: &Path, branch: &str) {
-        git(root, &["init", "-q"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-q", "-b", branch]);
-        std::fs::write(root.join("f.txt"), "hi").expect("file");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-q", "-m", "init"]);
+        crate::shared::test_fixture::repo_from_template(root, &format!("write_gate.repo_on:{branch}"), |root| {
+            git(root, &["init", "-q"]);
+            git(root, &["config", "user.email", "t@example.com"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-q", "-b", branch]);
+            std::fs::write(root.join("f.txt"), "hi").expect("file");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+        });
     }
 
     fn kind(verdict: &Verdict) -> &'static str {
@@ -621,6 +885,8 @@ mod tests {
             config_unreadable: false,
             lang: Locale::PtBr,
             read_cut: None,
+            whole_read: None,
+            config_key: None,
         };
         let warned = judge(RULES, &target, &at("feature/y"));
         assert_eq!(
@@ -655,6 +921,8 @@ mod tests {
             config_unreadable: false,
             lang: Locale::PtBr,
             read_cut: None,
+            whole_read: None,
+            config_key: None,
         };
         assert_eq!(
             judge(RULES, &target, &at(Some("minha-branch"))),
@@ -752,7 +1020,7 @@ mod tests {
             let dir = project(&cfg);
             let root = dir.path();
             std::fs::create_dir_all(root.join("src")).unwrap();
-            std::fs::write(root.join("src/a.rs"), "fn soma() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
+            std::fs::write(root.join("src/a.rs"), "fn sum() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
             let path = abs(root, "src/a.rs");
             match WriteGate.evaluate(&call(root, "Read", &path, None), &ctx(root)).expect("never errors") {
                 Verdict::Rewrite { tool_input, note } => {
@@ -772,7 +1040,7 @@ mod tests {
         let dir = project("{}");
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/a.rs"), "fn soma() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn sum() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
         let path = abs(root, "src/a.rs");
         for tool_input in [json!({ "file_path": path, "offset": 1 }), json!({ "file_path": path, "limit": 10 })] {
             let input = HookInput {
@@ -793,7 +1061,7 @@ mod tests {
         let dir = project("{}");
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/a.rs"), "fn soma() {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn sum() {}\n").unwrap();
         let path = abs(root, "src/a.rs");
         assert_eq!(gate(root, "Read", &path), Verdict::Allow);
     }
@@ -907,13 +1175,10 @@ mod tests {
     fn an_edit_inside_a_linked_worktree_is_judged_by_the_worktree_branch() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // No macOS a pasta temporária é um atalho (`/var` aponta para
-        // `/private/var`), e o portão compara caminhos já resolvidos.
-        // No Windows o caminho resolvido volta com o prefixo `\\?\`, que o
-        // classificador não usa; tirá-lo deixa a comparação igual nos dois.
-        let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
-        let tmp_root = std::path::PathBuf::from(
-            tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
-        );
+        // `/private/var`) e no Windows o caminho resolvido traz o prefixo
+        // `\\?\`: a pasta vem na forma que o sistema dá, e o portão a compara
+        // com a mesma conta de todo caminho.
+        let tmp_root = std::path::PathBuf::from(crate::shared::paths::on_disk(tmp.path()));
         let main = tmp_root.join("repo");
         std::fs::create_dir_all(&main).expect("main");
         std::fs::write(main.join("mustard.json"), DEV_MAIN).expect("config");
@@ -1067,5 +1332,613 @@ mod tests {
 
         let bare = tempfile::tempdir().expect("tempdir");
         assert_eq!(gate(bare.path(), "Write", &abs(bare.path(), "f.txt")), Verdict::Allow);
+    }
+
+    /// A resposta do despachante à ferramenta `tool` com `tool_input`, chamada
+    /// de `cwd` na sessão `session`: o caminho que a sessão usa, pelo registro
+    /// dos ganchos. Sem sessão, a resposta do mapa à busca não tem onde
+    /// guardar a busca respondida e passa.
+    fn hook_in(cwd: &Path, tool: &str, tool_input: Value, session: Option<&str>) -> Verdict {
+        let input = HookInput {
+            tool_name: Some(tool.to_string()),
+            tool_input,
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id: session.map(str::to_string),
+            ..HookInput::default()
+        };
+        crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict
+    }
+
+    /// O mesmo, numa chamada sem sessão.
+    fn hook_on(cwd: &Path, tool: &str, tool_input: Value) -> Verdict {
+        hook_in(cwd, tool, tool_input, None)
+    }
+
+    /// O motivo de uma recusa; qualquer outra resposta derruba o teste.
+    fn refused(verdict: Verdict, what: &str) -> String {
+        match verdict {
+            Verdict::Deny { reason } => reason,
+            other => panic!("{what} is refused, got {other:?}"),
+        }
+    }
+
+    /// A nota que vai junto da busca, que roda como veio; qualquer outra
+    /// resposta derruba o teste.
+    fn noted(verdict: Verdict, what: &str) -> String {
+        match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("{what} runs with a note, got {other:?}"),
+        }
+    }
+
+    /// A leitura inteira de um arquivo de código do mapa com mais de 300
+    /// linhas é recusada, nos dois idiomas: o motivo traz o tamanho, o
+    /// comando do trecho pronto para o arquivo e as partes com as linhas,
+    /// sem os campos.
+    #[test]
+    fn the_whole_read_of_a_large_mapped_file_is_refused_with_its_parts() {
+        for (tag, words) in [("pt-BR", "Partes:"), ("en-US", "Parts:")] {
+            let (_dir, root) = fixture::project(&format!(r#"{{"language":{{"text":"{tag}"}}}}"#), true);
+            let reason = refused(
+                hook_on(&root, "Read", json!({ "file_path": abs(&root, "src/big.rs") })),
+                "the whole read of a large mapped file",
+            );
+            assert!(reason.contains("`mustard-rt run map slice --file src/big.rs --name "), "{tag}: {reason}");
+            assert!(reason.contains("400"), "{tag}: {reason}");
+            assert!(reason.contains(&format!("{words} Alpha 1-150, alpha 151-400.")), "{tag}: {reason}");
+            assert!(!reason.contains("size"), "a field is not a part: {reason}");
+        }
+    }
+
+    /// A leitura com faixa de linhas, a de um arquivo pequeno e a de um
+    /// arquivo grande que o mapa não guarda passam.
+    #[test]
+    fn a_read_with_a_range_a_small_file_or_a_file_off_the_map_passes() {
+        let (_dir, root) = fixture::project("{}", true);
+        let big = abs(&root, "src/big.rs");
+        for tool_input in [
+            json!({ "file_path": big, "offset": 120, "limit": 40 }),
+            json!({ "file_path": big, "limit": 350 }),
+            json!({ "file_path": abs(&root, "src/small.rs") }),
+            json!({ "file_path": abs(&root, "docs/big.md") }),
+        ] {
+            assert_eq!(hook_on(&root, "Read", tool_input.clone()), Verdict::Allow, "{tool_input}");
+        }
+    }
+
+    /// Um arquivo com os testes dentro cuja parte de produção cabe no limite
+    /// continua cortado antes dos testes; quando a parte de produção passa do
+    /// limite, a leitura é recusada, e as partes dizem onde os testes começam.
+    #[test]
+    fn the_production_part_decides_between_the_cut_and_the_refusal() {
+        let (_dir, root) = fixture::project("{}", true);
+        let short = abs(&root, "src/tested.rs");
+        match hook_on(&root, "Read", json!({ "file_path": short })) {
+            Verdict::Rewrite { tool_input, .. } => assert_eq!(tool_input, json!({ "file_path": short, "limit": 100 })),
+            other => panic!("the short production part is cut, got {other:?}"),
+        }
+        let reason = refused(
+            hook_on(&root, "Read", json!({ "file_path": abs(&root, "src/long_tested.rs") })),
+            "the long production part",
+        );
+        assert!(reason.contains("350"), "{reason}");
+        assert!(reason.contains("delta 1-350; testes a partir da linha 351."), "{reason}");
+    }
+
+    /// Sem mapa, ou com um mapa que não se lê, a leitura inteira e a busca
+    /// passam: o erro da trava nunca segura a ação.
+    #[test]
+    fn without_a_readable_map_the_read_and_the_search_pass() {
+        let (_none, bare) = fixture::project("{}", false);
+        let (_broken, garbled) = fixture::project("{}", false);
+        mustard_core::io::project_map::write_text(&garbled, "isto não é um mapa").expect("garbled map");
+        for root in [&bare, &garbled] {
+            assert_eq!(hook_on(root, "Read", json!({ "file_path": abs(root, "src/big.rs") })), Verdict::Allow);
+            assert_eq!(hook_on(root, "Grep", json!({ "pattern": "Alpha", "path": abs(root, "src") })), Verdict::Allow);
+        }
+        let (_none, without) = word_search::fixture::repo("{}");
+        let (_broken, unreadable) = word_search::fixture::repo("{}");
+        std::fs::remove_file(mustard_core::io::project_map::model_path(&without)).expect("no map");
+        mustard_core::io::project_map::write_text(&unreadable, "isto não é um mapa").expect("garbled map");
+        for (n, root) in [&without, &unreadable].into_iter().enumerate() {
+            let tool_input = json!({ "pattern": "calcular_frete", "path": abs(root, "src") });
+            assert_eq!(hook_in(root, "Grep", tool_input, Some(&format!("sem-mapa-{n}"))), Verdict::Allow, "{root:?}");
+        }
+    }
+
+    /// Numa cópia de trabalho do projeto, fora da pasta dele, a leitura
+    /// inteira de um arquivo grande do mapa é recusada como no projeto. Com
+    /// linhas novas no topo do arquivo da cópia, as partes saem com as linhas
+    /// da cópia: dez linhas a mais levam `Alpha` para 11-160 e `alpha` para
+    /// 161-410; cinco a mais levam `delta` para 6-355, e os testes para a
+    /// linha 356.
+    #[test]
+    fn the_whole_read_inside_a_working_copy_is_refused_with_the_copy_lines() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp_root = std::path::PathBuf::from(crate::shared::paths::on_disk(tmp.path()));
+        let main = tmp_root.join("repo");
+        std::fs::create_dir_all(&main).expect("main");
+        repo_on(&main, "dev");
+        git(&main, &["worktree", "add", "-q", "../copy", "-b", "work"]);
+        std::fs::write(main.join("mustard.json"), "{}").expect("config");
+        mustard_core::io::project_map::write_text(&main, fixture::MAP).expect("map");
+        let copy = tmp_root.join("copy");
+        fixture::write_files(&main);
+        fixture::write_files(&copy);
+
+        let reason = refused(
+            hook_on(&copy, "Read", json!({ "file_path": abs(&copy, "src/big.rs") })),
+            "the whole read inside the working copy",
+        );
+        assert!(reason.contains("--file src/big.rs"), "{reason}");
+        assert!(reason.contains("Alpha 1-150, alpha 151-400."), "{reason}");
+        let ranged = json!({ "file_path": abs(&copy, "src/big.rs"), "offset": 1, "limit": 10 });
+        assert_eq!(hook_on(&copy, "Read", ranged), Verdict::Allow);
+
+        let on_top = |count: usize, file: &str| {
+            let text = std::fs::read_to_string(main.join(file)).expect("project file");
+            std::fs::write(copy.join(file), format!("{}{text}", "// nova\n".repeat(count))).expect("copy file");
+        };
+        on_top(10, "src/big.rs");
+        on_top(5, "src/long_tested.rs");
+        let moved = refused(
+            hook_on(&copy, "Read", json!({ "file_path": abs(&copy, "src/big.rs") })),
+            "the whole read of the moved file",
+        );
+        assert!(moved.contains("410"), "{moved}");
+        assert!(moved.contains("Alpha 11-160, alpha 161-410."), "{moved}");
+        let tested = refused(
+            hook_on(&copy, "Read", json!({ "file_path": abs(&copy, "src/long_tested.rs") })),
+            "the whole read of the moved tested file",
+        );
+        assert!(tested.contains("355"), "{tested}");
+        assert!(tested.contains("delta 6-355; testes a partir da linha 356."), "{tested}");
+    }
+
+    /// A leitura e a busca do `mustard.json` que guarda a chave são
+    /// recusadas; o motivo traz o arquivo com a chave trocada, e nunca a
+    /// chave. Sem a chave, a leitura passa.
+    #[test]
+    fn the_config_file_with_the_key_is_shown_without_it() {
+        let config = format!(r#"{{"language": {{"text": "pt-BR"}}, "jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let file = abs(&root, "mustard.json");
+        for (tool, tool_input) in [
+            ("Read", json!({ "file_path": file })),
+            ("Grep", json!({ "pattern": "jev", "path": file })),
+            ("Grep", json!({ "pattern": "key", "path": "mustard.json" })),
+        ] {
+            let reason = refused(hook_on(&root, tool, tool_input.clone()), "the config file with the key");
+            assert!(!reason.contains(fixture::FAKE_KEY), "{tool} {tool_input}: the key leaked");
+            assert!(reason.contains(r#""key": "***""#), "{tool} {tool_input}: {reason}");
+            assert!(reason.contains(r#""language": {"text": "pt-BR"}"#), "the rest of the file stays: {reason}");
+        }
+
+        let (_plain, plain) = fixture::project(r#"{"language": {"text": "pt-BR"}}"#, true);
+        assert_eq!(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })), Verdict::Allow);
+    }
+
+    /// A busca por nome de arquivo (`Glob`) com uma palavra do nome que o mapa
+    /// conhece roda como veio, com uma linha só da marca; a pasta do padrão e
+    /// a `path` da ferramenta valem; o nome que o mapa não acha traz a linha
+    /// do que ele não achou. O padrão sem palavra, o de documento, o de pasta
+    /// fora do código, o sem sessão e o com a chave `search.answer` desligada
+    /// passam calados.
+    #[test]
+    fn a_glob_with_a_word_of_the_name_runs_with_one_line_of_the_mark() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, tool_input) in [
+            json!({ "pattern": "**/*frete*.rs" }),
+            json!({ "pattern": "src/**/*frete*.rs" }),
+            json!({ "pattern": "**/*frete*.rs", "path": "src" }),
+            json!({ "pattern": "*frete*", "path": abs(&root, "src") }),
+            json!({ "pattern": format!("{}/**/*frete*.rs", abs(&root, "src")) }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match hook_in(&root, "Glob", tool_input.clone(), Some(&format!("glob{n}"))) {
+                Verdict::Inject { context } => {
+                    assert_eq!(context.lines().count(), 1, "{tool_input}: {context}");
+                    assert!(context.starts_with("Cravado."), "{tool_input}: {context}");
+                }
+                other => panic!("{tool_input}: the glob runs with a line, got {other:?}"),
+            }
+        }
+        match hook_in(&root, "Glob", json!({ "pattern": "**/*zzyzx*.rs" }), Some("glob-nada")) {
+            Verdict::Inject { context } => assert!(context.starts_with("Não achei"), "{context}"),
+            other => panic!("the glob runs with the line of what the map lacks, got {other:?}"),
+        }
+        for tool_input in [
+            json!({ "pattern": "**/*.rs" }),
+            json!({ "pattern": "src/**/*.{rs,toml}" }),
+            json!({ "pattern": "**/*frete*.md" }),
+            json!({ "pattern": "docs/**/*frete*" }),
+            json!({ "pattern": "**/*frete*.rs", "path": "fora-do-projeto" }),
+        ] {
+            assert_eq!(hook_in(&root, "Glob", tool_input.clone(), Some("glob-calado")), Verdict::Allow, "{tool_input}");
+        }
+        assert_eq!(hook_on(&root, "Glob", json!({ "pattern": "**/*frete*.rs" })), Verdict::Allow, "no session");
+        let (_off, off) = word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
+        assert_eq!(hook_in(&off, "Glob", json!({ "pattern": "**/*frete*.rs" }), Some("glob-off")), Verdict::Allow);
+    }
+
+    /// A pasta de um padrão de nome sai inteira do padrão que abre com a letra
+    /// de uma unidade, com barra normal ou invertida, como do que abre com
+    /// `/`, e a `path` da ferramenta fica de lado; o padrão relativo parte da
+    /// `path`, ou da pasta de trabalho sem ela.
+    #[test]
+    fn the_folder_of_a_glob_with_a_drive_letter_is_the_whole_folder_of_the_pattern() {
+        for (pattern, path, folder) in [
+            (r"C:/a/b\src/**/*frete*.rs", Some("fora"), "C:/a/b/src"),
+            (r"d:\a\*frete*", None, "d:/a"),
+            ("C:/*frete*", None, "C:/"),
+            ("/a/b/src/**/*frete*.rs", Some("fora"), "/a/b/src"),
+            ("src/**/*frete*.rs", Some("lib"), "lib/src"),
+            ("src/**/*frete*.rs", None, "./src"),
+            ("**/*frete*.rs", Some(r"C:\a\src"), "C:/a/src"),
+        ] {
+            assert_eq!(glob_folder(pattern, path), folder, "{pattern} {path:?}");
+        }
+    }
+
+    /// A busca que mostra as linhas de um nome do mapa numa pasta de código —
+    /// a pasta dada, a raiz sem pasta, com um filtro de código, com a opção
+    /// de caixa e com o tipo de arquivo — é respondida no lugar dela, agrupada
+    /// por função com a linha de começo e a de fim.
+    #[test]
+    fn a_search_for_a_mapped_name_in_a_code_folder_is_answered_by_function() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, tool_input) in [
+            json!({ "pattern": "calcular_frete", "path": abs(&root, "src"), "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "path": "src", "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "glob": "*.rs", "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "output_mode": "content", "-n": true }),
+            json!({ "pattern": "CALCULAR_FRETE", "-i": true, "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "type": "rust", "output_mode": "content" }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reason = refused(hook_in(&root, "Grep", tool_input.clone(), Some(&format!("g{n}"))), "the search for a mapped name");
+            assert!(reason.starts_with("Cravado."), "{tool_input}: {reason}");
+            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{tool_input}: {reason}");
+            assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{tool_input}: {reason}");
+            assert!(reason.contains("\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n"), "the first function carries its code: {tool_input}: {reason}");
+            assert!(!reason.contains("| pub fn fechar_pedido"), "the second comes with its line only: {tool_input}: {reason}");
+        }
+    }
+
+    /// A busca que só lista nomes de arquivo (o modo de saída de sempre) ou só
+    /// conta roda como veio, com uma linha só da marca: cravada ou parcial com
+    /// a palavra que falta. Ela não vale como respondida, e a busca que mostra
+    /// as linhas, logo depois, recebe a resposta por função.
+    #[test]
+    fn a_search_that_only_lists_names_or_counts_runs_plain_with_one_line_of_the_mark() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for tool_input in [
+            json!({ "pattern": "calcular_frete" }),
+            json!({ "pattern": "calcular_frete", "output_mode": "files_with_matches", "path": "src" }),
+            json!({ "pattern": "calcular_frete", "output_mode": "count" }),
+        ] {
+            match hook_in(&root, "Grep", tool_input.clone(), Some("nomes")) {
+                Verdict::Inject { context } => {
+                    assert_eq!(context.lines().count(), 1, "{tool_input}: {context}");
+                    assert!(context.starts_with("Cravado."), "{tool_input}: {context}");
+                    assert!(!context.contains("src/frete.rs"), "{tool_input}: no answer goes with it: {context}");
+                }
+                other => panic!("{tool_input}: the plain search runs with a line, got {other:?}"),
+            }
+        }
+        let with_missing_word = json!({ "pattern": "calcular_frete|desconto_frete|imposto", "output_mode": "count" });
+        match hook_in(&root, "Grep", with_missing_word, Some("nomes")) {
+            Verdict::Inject { context } => {
+                assert!(context.starts_with("Cravado.") && !context.contains("imposto"), "{context}");
+            }
+            other => panic!("the pinned search runs with a line, got {other:?}"),
+        }
+        let lines = json!({ "pattern": "calcular_frete", "output_mode": "content" });
+        let reason = refused(hook_in(&root, "Grep", lines, Some("nomes")), "the search that shows lines");
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{reason}");
+    }
+
+    /// A busca com uma palavra que o primeiro arquivo do mapa não traz em
+    /// campo forte continua cravada: a resposta cita só as palavras achadas,
+    /// não pede nova busca e traz a linha do comentário com a palavra solta.
+    #[test]
+    fn a_search_with_a_word_the_map_lacks_is_answered_as_pinned_without_asking_again() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let tool_input = json!({ "pattern": "calcular_frete|desconto_frete|imposto", "output_mode": "content" });
+        let reason = refused(hook_in(&root, "Grep", tool_input, Some("parcial")), "the pinned search");
+        assert!(reason.starts_with("Cravado."), "{reason}");
+        assert!(!reason.contains("Falta") && !reason.contains("Busque de novo"), "{reason}");
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "{reason}");
+    }
+
+    /// Sem achado no mapa a busca comum roda, com uma linha do que o mapa não
+    /// achou; a mesma busca repetida na sessão roda sem a linha, e a que a
+    /// resposta já deu passa em qualquer modo de saída.
+    #[test]
+    fn a_search_the_map_finds_nothing_for_runs_plain_with_one_line() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let tool_input = json!({ "pattern": "zzznada", "path": "src" });
+        match hook_in(&root, "Grep", tool_input.clone(), Some("nada")) {
+            Verdict::Inject { context } => {
+                assert_eq!(context.lines().count(), 1, "{context}");
+                assert!(context.contains(r#"grep -rniE "zzznada" ."#), "{context}");
+            }
+            other => panic!("the plain search runs with a line, got {other:?}"),
+        }
+        assert_eq!(hook_in(&root, "Grep", tool_input, Some("nada")), Verdict::Allow);
+
+        let found = json!({ "pattern": "calcular_frete", "path": "src", "output_mode": "content" });
+        refused(hook_in(&root, "Grep", found.clone(), Some("repete")), "the first search");
+        for repeated in [found.clone(), json!({ "pattern": "calcular_frete", "path": "src", "output_mode": "count" })] {
+            assert_eq!(hook_in(&root, "Grep", repeated.clone(), Some("repete")), Verdict::Allow, "{repeated}");
+        }
+        refused(hook_in(&root, "Grep", found, Some("outra")), "another session");
+    }
+
+    /// A chave `search.answer` desligada deixa passar a busca que seria
+    /// respondida.
+    #[test]
+    fn the_answer_key_off_lets_the_search_pass() {
+        let tool_input = json!({ "pattern": "calcular_frete", "path": "src", "output_mode": "content" });
+        let (_off, off) = word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
+        assert_eq!(hook_in(&off, "Grep", tool_input.clone(), Some("off")), Verdict::Allow);
+        let (_on, on) = word_search::fixture::repo(r#"{"search":{"answer":true}}"#);
+        refused(hook_in(&on, "Grep", tool_input, Some("on")), "the key on");
+    }
+
+    /// A busca de um nome cujo `glob` tira todo o código do mapa da pasta —
+    /// um filtro de saída, vários separados por espaço ou vírgula, ou o de
+    /// saída que um de entrada não desfaz depois — passa; o `glob` de
+    /// entrada que vem depois do de saída traz o código de volta, e o de
+    /// saída de outro tipo de arquivo não tira o código: a busca é
+    /// respondida. Vários filtros no `glob` valem todos, não só o último.
+    #[test]
+    fn a_search_whose_glob_leaves_out_all_the_mapped_code_passes() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, tool_input) in [
+            json!({ "pattern": "calcular_frete", "glob": "!*.rs" }),
+            json!({ "pattern": "calcular_frete", "glob": "!*.{rs,toml}", "path": abs(&root, "src") }),
+            json!({ "pattern": "calcular_frete", "glob": "!*.rs !*.md" }),
+            json!({ "pattern": "calcular_frete", "glob": "!*.rs,!*.md" }),
+            json!({ "pattern": "calcular_frete", "glob": "*.rs !*.rs" }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(hook_in(&root, "Grep", tool_input.clone(), Some(&format!("a{n}"))), Verdict::Allow, "{tool_input}");
+        }
+        for (n, tool_input) in [
+            json!({ "pattern": "calcular_frete", "glob": "!*.md", "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "glob": "!*.rs *.rs", "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "glob": "*.rs *.md", "output_mode": "content" }),
+            json!({ "pattern": "calcular_frete", "glob": "!frete.rs", "output_mode": "content" }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reason = refused(hook_in(&root, "Grep", tool_input.clone(), Some(&format!("b{n}"))), "the search for a mapped name");
+            assert!(reason.contains("calcular_frete"), "{tool_input}: {reason}");
+        }
+    }
+
+    /// A busca num arquivo só, com o tipo ou o `glob` de outra família, só em
+    /// documentos, numa pasta sem código do mapa, fora do projeto, sem
+    /// sessão ou em várias linhas passa.
+    #[test]
+    fn a_search_in_one_file_or_outside_the_code_passes() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let outside = tempfile::tempdir().expect("tempdir");
+        for (n, tool_input) in [
+            json!({ "pattern": "calcular_frete", "path": abs(&root, "src/frete.rs") }),
+            json!({ "pattern": "calcular_frete", "glob": "*.md" }),
+            json!({ "pattern": "calcular_frete", "path": abs(&root, "docs") }),
+            json!({ "pattern": "calcular_frete", "path": outside.path().to_string_lossy() }),
+            json!({ "pattern": "calcular_frete", "type": "rust", "glob": "*.rs" }),
+            json!({ "pattern": "calcular_frete", "type": "fortran" }),
+            json!({ "pattern": "calcular_frete.*peso", "multiline": true }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(hook_in(&root, "Grep", tool_input.clone(), Some(&format!("c{n}"))), Verdict::Allow, "{tool_input}");
+        }
+        let unnamed = json!({ "pattern": "calcular_frete", "path": "src" });
+        assert_eq!(hook_on(&root, "Grep", unnamed), Verdict::Allow, "no session, no answer");
+    }
+
+    /// Numa cópia de trabalho do projeto, a busca lê a árvore da cópia: o
+    /// arquivo que a onda mudou vem relido, marcado como mudado e com as
+    /// linhas da cópia.
+    #[test]
+    fn a_search_inside_a_working_copy_rereads_the_files_the_wave_changed() {
+        let (dir, root) = word_search::fixture::repo("{}");
+        let copy = dir.path().parent().expect("parent").join(format!("copia-grep-{}", std::process::id()));
+        word_search::fixture::git(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda"]);
+        let copy = std::fs::canonicalize(&copy).expect("copy");
+        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", word_search::fixture::FREIGHT)).expect("edit");
+        let tool_input = json!({ "pattern": "calcular_frete", "path": abs(&copy, "src"), "output_mode": "content" });
+        let reason = refused(hook_in(&copy, "Grep", tool_input, Some("copia")), "a search in the working copy");
+        assert!(reason.contains("src/frete.rs (mudado depois do mapa)\n  5-9 calcular_frete (5)"), "{reason}");
+        assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{reason}");
+        word_search::fixture::git(&root, &["worktree", "remove", "--force", &copy.to_string_lossy()]);
+    }
+
+    /// A resposta do mapa nunca traz o `mustard.json` com a chave; a busca
+    /// comum que roda por falta de achado segue sob a trava da chave.
+    #[test]
+    fn the_answer_never_carries_the_key_and_the_plain_search_still_hides_it() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = word_search::fixture::repo(&config);
+        let answered = json!({ "pattern": "calcular_frete", "output_mode": "content" });
+        let reason = refused(hook_in(&root, "Grep", answered, Some("chave")), "the answer");
+        assert!(reason.starts_with("Cravado.") && !reason.contains(fixture::FAKE_KEY), "{reason}");
+        let plain = json!({ "pattern": "zzznada", "glob": "*.json", "output_mode": "content" });
+        let swept = refused(hook_in(&root, "Grep", plain, Some("chave")), "the plain search through the key file");
+        assert!(swept.contains("mustard.json") && !swept.contains(fixture::FAKE_KEY), "{swept}");
+    }
+
+    /// A busca que a rota do nome deixa passar por causa do `glob` — só
+    /// documentos e configuração, com o código de fora — continua sob a trava
+    /// da chave: traz o `mustard.json` com a chave e é recusada sem mostrá-la.
+    #[test]
+    fn a_search_the_route_lets_pass_still_hides_the_key() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let tool_input = json!({ "pattern": "Alpha", "glob": "*.json !*.rs", "output_mode": "content" });
+        let reason = refused(hook_on(&root, "Grep", tool_input.clone()), "the search through the key file");
+        assert!(!reason.contains(fixture::FAKE_KEY), "{tool_input}: the key leaked");
+        assert!(reason.contains("mustard.json"), "{tool_input}: {reason}");
+        let names_only = json!({ "pattern": "Alpha", "glob": "!*.rs" });
+        assert_eq!(hook_on(&root, "Grep", names_only), Verdict::Allow);
+    }
+
+    /// A busca que traz as linhas numa pasta com o `mustard.json` que guarda
+    /// a chave, com um `glob` que casa com o nome dele, é recusada sem
+    /// mostrar a chave. Sem o `glob`, com um `glob` que não casa, no modo que
+    /// só lista arquivos ou conta, numa pasta de dentro ou sem a chave, passa.
+    #[test]
+    fn a_search_whose_glob_reaches_the_key_file_is_refused() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        for tool_input in [
+            json!({ "pattern": "key", "glob": "*.json", "output_mode": "content" }),
+            json!({ "pattern": "key", "glob": "*.{json,md}", "output_mode": "content", "path": abs(&root, ".") }),
+            json!({ "pattern": "key", "glob": "*.rs mustard.json", "output_mode": "content" }),
+        ] {
+            let reason = refused(hook_on(&root, "Grep", tool_input.clone()), "the search through the key file");
+            assert!(!reason.contains(fixture::FAKE_KEY), "{tool_input}: the key leaked");
+            assert!(reason.contains("mustard.json") && reason.contains("`type`"), "{tool_input}: {reason}");
+        }
+        for tool_input in [
+            json!({ "pattern": "key", "output_mode": "content" }),
+            json!({ "pattern": "key", "glob": "*.rs", "output_mode": "content" }),
+            json!({ "pattern": "key", "glob": "*.json" }),
+            json!({ "pattern": "key", "glob": "*.json", "output_mode": "count" }),
+            json!({ "pattern": "key", "glob": "*.json", "output_mode": "content", "path": abs(&root, "src") }),
+        ] {
+            assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
+        }
+        let (_plain, plain) = fixture::project("{}", true);
+        let tool_input = json!({ "pattern": "key", "glob": "*.json", "output_mode": "content" });
+        assert_eq!(hook_on(&plain, "Grep", tool_input), Verdict::Allow);
+    }
+
+    /// A busca parcial do `Grep`, pelo gancho de verdade, vai ao filtro que a
+    /// sessão tem, e a chamada medida dela fica gravada na spec da conversa:
+    /// o comando, o filtro, quantos candidatos foram e quantas peças
+    /// voltaram. A nota que vai junto da busca traz só a peça que o filtro
+    /// entregou.
+    #[test]
+    fn a_partial_grep_through_the_hook_records_its_measured_call_in_the_conversation_spec() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-grava");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let tool_input = json!({ "pattern": "imposto", "output_mode": "content" });
+
+        let verdict = judge.installed(|| hook_in(&root, "Grep", tool_input, Some("s-grava")));
+
+        let reason = noted(verdict, "the partial search that shows lines");
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{reason}");
+        assert!(!reason.contains("desconto_frete"), "only what the filter delivered: {reason}");
+        assert_eq!(judge.calls(), 1, "the filter of the session is the one asked");
+        let calls = word_searches(&root, "conversa");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let call = &calls[0];
+        assert_eq!(call["author"], json!("binary"));
+        assert_eq!(call["result"], json!("ok"));
+        assert_eq!(
+            [&call["filter"], &call["candidates"], &call["returned"]],
+            [&json!("jev"), &json!(2), &json!(1)],
+            "the measure of the filter travels with the call: {call:?}"
+        );
+    }
+
+    /// O filtro que falha na busca parcial deixa a resposta da triagem, e a
+    /// chamada fica gravada mesmo assim, com o motivo no nome do filtro.
+    #[test]
+    fn a_partial_grep_whose_filter_fails_records_the_call_with_the_reason() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-falha");
+        let judge = word_search::fixture::Judge::failing(mustard_core::domain::map_filter::FilterError::Timeout);
+        let tool_input = json!({ "pattern": "imposto", "output_mode": "content" });
+
+        let verdict = judge.installed(|| hook_in(&root, "Grep", tool_input, Some("s-falha")));
+
+        let reason = noted(verdict, "the partial search with a failing filter");
+        assert!(reason.contains("src/frete.rs"), "the triage answers: {reason}");
+        let calls = word_searches(&root, "conversa");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0]["filter"].as_str().is_some_and(|name| name.starts_with("jev:")), "{:?}", calls[0]);
+    }
+
+    /// Nenhuma chamada é gravada quando a busca não chega ao filtro — a
+    /// cravada, a que só lista nomes e a busca por nome de arquivo — nem
+    /// quando a sessão não tem spec para receber a conversa; a resposta sai
+    /// do mesmo jeito.
+    #[test]
+    fn a_search_the_filter_never_judges_or_a_session_with_no_spec_records_no_call() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-cala");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+
+        judge.installed(|| {
+            let pinned = json!({ "pattern": "fechar_pedido", "output_mode": "content" });
+            refused(hook_in(&root, "Grep", pinned, Some("s-cala")), "the pinned search");
+            let names_only = json!({ "pattern": "imposto", "output_mode": "files_with_matches" });
+            assert!(matches!(hook_in(&root, "Grep", names_only, Some("s-cala")), Verdict::Inject { .. }));
+            let by_name = json!({ "pattern": "**/*frete*.rs" });
+            assert!(matches!(hook_in(&root, "Glob", by_name, Some("s-cala")), Verdict::Inject { .. }));
+        });
+        assert_eq!(judge.calls(), 0, "the filter is never asked");
+        assert!(word_searches(&root, "conversa").is_empty());
+
+        let lines = json!({ "pattern": "imposto", "output_mode": "content" });
+        let reason = noted(judge.installed(|| hook_in(&root, "Grep", lines, Some("s-sem-spec"))), "the search with no spec");
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "the answer does not need the spec: {reason}");
+        assert_eq!(judge.calls(), 1);
+        assert!(word_searches(&root, "conversa").is_empty(), "a session bound to no spec writes to no spec");
+    }
+
+    /// A resposta do despachante ao `Grep`, como o gancho a escreve para o
+    /// Claude Code, no evento de antes da ferramenta.
+    fn written(cwd: &Path, tool_input: Value, session: &str) -> Value {
+        let input = HookInput {
+            tool_name: Some("Grep".to_string()),
+            tool_input,
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id: Some(session.to_string()),
+            ..HookInput::default()
+        };
+        let outcome = crate::dispatch::run_event(Some(Trigger::PreToolUse), &input);
+        let json = crate::hook_output::hook_specific_output("PreToolUse", &outcome).expect("the search is answered");
+        serde_json::from_str(&json).expect("valid JSON")
+    }
+
+    /// A busca parcial pelo `Grep` roda com a nota do mapa junto, escrita só
+    /// como contexto, sem decisão de permissão; a nota diz que é o que o mapa
+    /// achou e não manda buscar de novo. A cravada segue no lugar da busca,
+    /// com a recusa escrita como `deny`.
+    #[test]
+    fn a_partial_grep_runs_with_a_note_and_no_permission_while_the_pinned_one_is_denied() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let partial = written(&root, json!({ "pattern": "imposto", "output_mode": "content" }), "s-parcial");
+        let output = &partial["hookSpecificOutput"];
+        assert!(output.get("permissionDecision").is_none(), "a note approves nothing: {partial}");
+        let note = output["additionalContext"].as_str().expect("the note");
+        assert!(note.starts_with("Parcial."), "{note}");
+        assert!(note.contains("ao lado do resultado da busca"), "{note}");
+        assert!(!note.contains("Busque de novo"), "{note}");
+        assert!(note.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{note}");
+
+        let pinned = written(&root, json!({ "pattern": "calcular_frete", "output_mode": "content" }), "s-cravada");
+        assert_eq!(pinned["hookSpecificOutput"]["permissionDecision"], json!("deny"), "{pinned}");
+        assert!(pinned["hookSpecificOutput"]["permissionDecisionReason"].as_str().is_some_and(|reason| reason.starts_with("Cravado.")), "{pinned}");
     }
 }
