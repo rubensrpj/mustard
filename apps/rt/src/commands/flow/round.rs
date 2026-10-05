@@ -135,6 +135,7 @@ mod read_check;
 mod rehearsal;
 mod removed_check;
 mod report;
+mod sent_tasks;
 mod size_check;
 mod slots;
 mod stops;

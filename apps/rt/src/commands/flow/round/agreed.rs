@@ -73,7 +73,7 @@ pub(super) fn covered_codes(log: &SpecLog, returning: &BTreeSet<u64>) -> BTreeSe
 /// ([`agreed_prompt::dispatch_items`]). O pedido não levou esses itens: a
 /// entrega não é cobrada por eles, e a resposta que der a algum deles não
 /// cria tarefa.
-pub(super) fn removed_by_analysis(log: &SpecLog, wave: u64) -> BTreeSet<String> {
+fn removed_by_analysis(log: &SpecLog, wave: u64) -> BTreeSet<String> {
     let then = as_dispatched(log, wave);
     let Some(choice) = agreed_prompt::recorded_choice(&then, wave) else { return BTreeSet::new() };
     let codes = then.codes();
@@ -161,6 +161,35 @@ pub(super) fn settle_agreed(
     Ok((tasks, missing))
 }
 
+/// A resposta `agreed` da volta `wave`, já na entrega oficial `draft` dela,
+/// resolvida por [`settle_agreed`]: devolve a tarefa de cada item não
+/// cumprido que ainda pede trabalho. Não ganha tarefa o item que uma tarefa
+/// ainda por entregar já cobre — a que a onda deixou por fazer, que o recebeu
+/// ([`join_unmet`]), inclusive —, o que uma tarefa nascida antes na mesma
+/// rodada cobre (`covered_now`) e o que a análise da onda tirou do pedido. As
+/// tarefas da onda que volta e das que o conserto dela fecha não contam: a
+/// entrega as fecha agora. Na volta cujas tarefas por fazer outra onda já
+/// levou, todas, nenhum item ganha tarefa: ele está no pedido da onda que
+/// levou a tarefa, que responde por ele. Cada item que ganha tarefa entra em
+/// `covered_now`.
+pub(super) fn settle_wave_agreed(
+    log: &SpecLog,
+    wave: &WaveReport,
+    draft: &mut Map<String, Value>,
+    covered_now: &mut BTreeSet<String>,
+) -> Result<Vec<Map<String, Value>>, Refusal> {
+    let returning: BTreeSet<u64> = std::iter::once(wave.wave).chain(wave.fixes.iter().copied()).collect();
+    let mut covered = covered_codes(log, &returning);
+    covered.extend(covered_now.iter().cloned());
+    let known = covered.clone();
+    let (tasks, _) = settle_agreed(log, draft, &[], "wave", &mut covered, &removed_by_analysis(log, wave.wave))?;
+    if wave.taken_elsewhere && wave.undone.is_empty() {
+        return Ok(Vec::new());
+    }
+    covered_now.extend(covered.difference(&known).cloned());
+    Ok(tasks)
+}
+
 /// Junta o item combinado que cada volta de `waves` não cumpriu à tarefa que
 /// ela deixou por fazer, em vez de deixá-lo virar tarefa nova: `returned` traz
 /// a versão que volta ao backlog de cada tarefa não feita, com a onda que a
@@ -171,7 +200,9 @@ pub(super) fn settle_agreed(
 /// Fica de fora, como em [`settle_agreed`], o item que outra tarefa ainda por
 /// entregar ou a própria tarefa devolvida já cobre e o que a análise da onda
 /// tirou do pedido; o item que uma volta já juntou não entra de novo pela
-/// seguinte. A volta que fez todas as tarefas não junta nada.
+/// seguinte. A volta que fez todas as tarefas não junta nada, nem a que
+/// deixou por fazer só tarefas que outra onda já levou: nenhuma delas volta
+/// ao backlog.
 pub(super) fn join_unmet(
     log: &SpecLog,
     waves: &[WaveReport],

@@ -4,7 +4,8 @@
 //! pedido e a mudança de plano que um agente propõe. A mudança que não troca
 //! decisão do usuário segue e fica registrada; a que troca só segue com o
 //! clique do usuário e, enquanto espera, segura só a onda dela. As tarefas
-//! que a onda não fez voltam ao backlog quando a rodada assume a volta.
+//! que a onda não fez voltam ao backlog quando a rodada assume a volta, menos
+//! a que outra onda já levou, que fica com ela.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +15,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::{without_final_period, RoundRefusal};
 use super::report::{backlog_return, PlanChange, WaveReport};
+use super::sent_tasks::sent_tasks;
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
 /// última delas para a onda e as que dependem dela: o problema é de desenho,
@@ -273,10 +275,15 @@ pub(super) fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
-/// As tarefas que a volta da onda `wave` diz não ter feito (`undone`), cada
-/// uma pelo número da versão vigente e pelo código. Cada código citado
-/// aponta uma tarefa vigente da própria onda; o que não aponta recusa a
-/// volta, com as tarefas da onda. Com a mudança de plano (`replan`), a lista
+/// O que a volta da onda `wave` diz não ter feito (`undone`): as tarefas que
+/// voltam ao backlog, cada uma pelo número da versão vigente e pelo código, e
+/// se alguma das citadas já foi para outra onda. Cada código citado aponta
+/// uma tarefa com que a onda saiu ([`sent_tasks`]), regravada ou não depois
+/// do envio; o que não aponta recusa a volta, com essas tarefas. Volta ao
+/// backlog só a tarefa cuja versão vigente leva a própria onda ou nenhuma. A
+/// que leva outra onda conta para assumir a volta, mas fica com a onda que a
+/// levou, na mesma versão: devolvê-la à fila faria um agente refazer o que
+/// essa onda entrega ou já entregou. Com a mudança de plano (`replan`), a lista
 /// é obrigatória, vazia quando a onda fez todas: sem ela, a rodada daria por
 /// feitas as tarefas que o agente não fez. Sem a mudança, a ausência quer
 /// dizer que a onda fez todas.
@@ -285,26 +292,28 @@ pub(super) fn undone_of(
     wave: u64,
     fields: &Map<String, Value>,
     replan: bool,
-) -> Result<Vec<(u64, String)>, RoundRefusal> {
+) -> Result<(Vec<(u64, String)>, bool), RoundRefusal> {
     let codes = log.codes();
     let code_of = |task: &SpecEvent| codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
-    let own: Vec<&SpecEvent> =
-        log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)).collect();
+    let own = sent_tasks(log, wave);
     let tasks = || own.iter().map(|task| code_of(task)).collect::<Vec<_>>();
     let Some(cited) = fields.get("undone").and_then(Value::as_array) else {
-        return if replan { Err(RoundRefusal::ReplanNeedsUndone { wave, tasks: tasks() }) } else { Ok(Vec::new()) };
+        return if replan { Err(RoundRefusal::ReplanNeedsUndone { wave, tasks: tasks() }) } else { Ok((Vec::new(), false)) };
     };
     let mut undone: Vec<(u64, String)> = Vec::new();
+    let mut taken_elsewhere = false;
     for value in cited {
         let said = value.as_str().map_or_else(|| value.to_string(), |code| code.trim().to_string());
         let Some(task) = own.iter().find(|task| code_of(task) == said) else {
             return Err(RoundRefusal::UndoneNotInWave { wave, code: said, tasks: tasks() });
         };
-        if !undone.iter().any(|(id, _)| *id == task.id) {
+        if task.wave().is_some_and(|other| other != wave) {
+            taken_elsewhere = true;
+        } else if !undone.iter().any(|(id, _)| *id == task.id) {
             undone.push((task.id, said));
         }
     }
-    Ok(undone)
+    Ok((undone, taken_elsewhere))
 }
 
 /// A versão nova da tarefa `task`, que a onda `wave` não fez: a mesma volta

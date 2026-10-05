@@ -27,7 +27,7 @@ use super::commit::{
     write_joined, UNMADE_SHA,
 };
 use super::copy_check::check_against_copies;
-use super::agreed::{covered_codes, join_unmet, removed_by_analysis, request_agreed, settle_agreed};
+use super::agreed::{covered_codes, join_unmet, request_agreed, settle_agreed, settle_wave_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{rehearse, Recording, Rehearsed};
@@ -79,6 +79,9 @@ pub(crate) struct WaveReport {
     /// versão vigente e pelo código: voltam ao backlog quando a rodada
     /// assume a volta.
     pub undone: Vec<(u64, String)>,
+    /// O agente citou como não feita alguma tarefa que, depois do envio,
+    /// outra onda levou: ela fica com essa onda, fora de `undone`.
+    pub taken_elsewhere: bool,
     /// As sobras, cada uma com o título e o detalhe: a rodada grava cada uma
     /// como tarefa da spec quando assume a volta ([`Leftover`]).
     pub leftovers: Vec<Leftover>,
@@ -532,7 +535,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?)))
         .collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
-    let undone = undone_of(log, wave, fields, replan.is_some())?;
+    let (undone, taken_elsewhere) = undone_of(log, wave, fields, replan.is_some())?;
     let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
@@ -543,6 +546,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         fixes,
         replan,
         undone,
+        taken_elsewhere,
         leftovers,
         agreed: listed("agreed"),
         returns: Vec::new(),
@@ -1052,22 +1056,12 @@ fn check_reports(
                 draft.insert("replaces".into(), returns);
             }
             // A resposta pelo combinado do pedido fica na entrega oficial,
-            // com cada item pelo número; o item não cumprido vira tarefa,
-            // a menos que uma tarefa ainda por entregar já o cubra — a que a
-            // onda deixou por fazer, que o recebeu, inclusive — ou que a
-            // análise da onda o tenha tirado do pedido. As da
-            // onda que volta e das que o conserto dela fecha não contam: a
-            // entrega as fecha agora. A falta de resposta já foi recusada
-            // na gravação da volta.
+            // com cada item pelo número; o item não cumprido vira tarefa
+            // quando ainda pede trabalho ([`settle_wave_agreed`]). A falta de
+            // resposta já foi recusada na gravação da volta.
             if wave == report.wave && !report.agreed.is_empty() {
                 draft.insert("agreed".into(), json!(report.agreed));
-                let returning: BTreeSet<u64> = std::iter::once(report.wave).chain(report.fixes.iter().copied()).collect();
-                let mut covered = covered_codes(check.log(), &returning);
-                covered.extend(covered_now.iter().cloned());
-                let known = covered.clone();
-                let removed = removed_by_analysis(check.log(), wave);
-                let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave", &mut covered, &removed)?;
-                covered_now.extend(covered.difference(&known).cloned());
+                let tasks = settle_wave_agreed(check.log(), report, &mut draft, &mut covered_now)?;
                 wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
             }
             draft.insert("author".into(), json!("wave"));
