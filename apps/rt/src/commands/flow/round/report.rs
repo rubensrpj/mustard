@@ -1564,9 +1564,9 @@ mod tests {
             assert_eq!(back["ok"], json!(true), "{lang:?}: {back}");
             let (subject, body) = last_commit(root);
             let (title, summary) = if lang == Locale::PtBr {
-                ("feat(onda-1): a soma sai", "- onda 1: a soma sai\n\n- onda 1: +2 -1, 0 testes, 1 arquivos")
+                ("feat(onda-1): a soma sai", "- onda 1: a soma sai\n\n- onda 1: +2 -1, 1 arquivos")
             } else {
-                ("feat(wave-1): the sum ships", "- wave 1: the sum ships\n\n- wave 1: +2 -1, 0 tests, 1 files")
+                ("feat(wave-1): the sum ships", "- wave 1: the sum ships\n\n- wave 1: +2 -1, 1 files")
             };
             assert_eq!(subject, title, "{lang:?}");
             assert_eq!(body, summary, "{lang:?}");
@@ -2438,7 +2438,7 @@ mod tests {
         assert!(!waves_to_redo(&log).contains(&1), "wave 1's fix already delivered: {out}");
         let (subject, body) = last_commit(root);
         assert_eq!(subject, "fix(onda-2): o commit sai do resumo");
-        assert_eq!(body, "- onda 2: o commit sai do resumo (conserta: onda 1)\n\n- onda 2: +2 -1, 0 testes, 1 arquivos");
+        assert_eq!(body, "- onda 2: o commit sai do resumo (conserta: onda 1)\n\n- onda 2: +2 -1, 1 arquivos");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let visible = log.visible();
         let fixed_delivery = visible.iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();

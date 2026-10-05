@@ -38,7 +38,6 @@ use crate::domain::wave_prompt::{
     self, tasks_text, wave_files, Choice, Execution, Material, PatternExample, Skill, TaskPattern, WaveCopy,
 };
 use crate::io::project_map::{MapReader, Need};
-use crate::io::wave_size;
 use crate::platform::i18n::Locale;
 
 mod changed;
@@ -925,10 +924,7 @@ fn execution(context: &Context, wave: u64) -> Execution {
         Some(copy) => Some(copy.clone()),
         None => recorded_copy(log, wave).filter(|_| flight.running.contains(&wave)),
     };
-    // A linha do tamanho é da onda que está fora ou que sai agora, e só ela
-    // lê o git.
-    let wave_median = flight.running.contains(&wave).then(|| wave_size::median_added(context.root, context.lang)).flatten();
-    Execution { running, copy, wave_median, ..context.base.clone() }
+    Execution { running, copy, ..context.base.clone() }
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.

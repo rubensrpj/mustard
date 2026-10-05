@@ -183,9 +183,6 @@ pub struct Execution {
     /// O esforço dos agentes que o `mustard.json` declara em `agents.effort`;
     /// vazio, o padrão da instalação ([`Execution::requested_effort`]).
     pub effort: String,
-    /// A mediana de linhas postas pelas entregas do projeto: o pedido da onda
-    /// a cita em "Como trabalhar". Sem ela, o pedido não fala de tamanho.
-    pub wave_median: Option<u64>,
 }
 
 impl Execution {

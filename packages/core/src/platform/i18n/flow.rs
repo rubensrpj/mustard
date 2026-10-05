@@ -742,28 +742,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{file}` line {line} is a test that only calls `{name}`, new code with no use outside tests. \
              Remove the test along with it."
         }
-        // A onda que cresce além do que a tarefa pede, ou traz testes demais
-        // para os critérios (`apps/rt/src/commands/flow/round/size_check.rs`).
-        ("round.size.over", Locale::PtBr) => {
-            "A onda {wave} pôs {added} linhas e tirou {removed}: o código cresceu {growth}. O limite é \
-             {limit}, o maior entre 600 e três vezes a mediana de {median} linhas postas por onda. Corte o \
-             que a tarefa não exige e mande o resto para `leftovers` da entrega."
-        }
-        ("round.size.over", Locale::EnUs) => {
-            "Wave {wave} added {added} lines and removed {removed}: the code grew by {growth}. The limit is \
-             {limit}, the larger of 600 and three times the median of {median} lines added per wave. Cut \
-             what the task does not require and send the rest to the delivery's `leftovers`."
-        }
-        ("round.size.tests", Locale::PtBr) => {
-            "A onda {wave} traz {tests} testes novos para {covered} critérios e regras cobertos. O limite é \
-             {limit}, o maior entre 6 e dois por critério ou regra. Corte o teste que repete outro e o que \
-             a tarefa não exige, e mande o resto para `leftovers` da entrega."
-        }
-        ("round.size.tests", Locale::EnUs) => {
-            "Wave {wave} brings {tests} new tests for {covered} criteria and rules covered. The limit is \
-             {limit}, the larger of 6 and two per criterion or rule. Cut the test that repeats another and \
-             what the task does not require, and send the rest to the delivery's `leftovers`."
-        }
         ("round.criterion_proof_failed", Locale::PtBr) => {
             "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
              `{command}` — {output}"
@@ -832,8 +810,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.commit.line", Locale::EnUs) => "- wave {wave}: {summary}",
         ("round.commit.fixes", Locale::PtBr) => "(conserta: onda {waves})",
         ("round.commit.fixes", Locale::EnUs) => "(fixes: wave {waves})",
-        ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {tests} testes, {files} arquivos",
-        ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {tests} tests, {files} files",
+        ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {files} arquivos",
+        ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {files} files",
         ("round.not_approved", Locale::PtBr) => {
             "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário."
         }
@@ -1848,8 +1826,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            223,
-            0x8672_050c_77c1_5c77,
+            221,
+            0x2daa_d498_52f4_e6a8,
         );
     }
 
@@ -2052,8 +2030,6 @@ mod tests {
             ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused_test", &["{file}", "{line}", "{name}"][..]),
-            ("round.size.over", &["{wave}", "{added}", "{removed}", "{growth}", "{limit}", "{median}"][..]),
-            ("round.size.tests", &["{wave}", "{tests}", "{covered}", "{limit}"][..]),
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("round.criterion_missing_test", &["{code}", "{name}"][..]),
@@ -2064,7 +2040,7 @@ mod tests {
             ("round.commit.scope.many", &["{waves}"][..]),
             ("round.commit.line", &["{wave}", "{summary}"][..]),
             ("round.commit.fixes", &["{waves}"][..]),
-            ("round.size.line", &["{wave}", "{added}", "{removed}", "{tests}", "{files}"][..]),
+            ("round.size.line", &["{wave}", "{added}", "{removed}", "{files}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.closed", &["{spec}", "{phase}"][..]),
             ("round.finished", &["{spec}", "{phase}"][..]),
@@ -2307,8 +2283,6 @@ mod tests {
             "round.after_wave.orphan",
             "round.after_wave.unused",
             "round.after_wave.unused_test",
-            "round.size.over",
-            "round.size.tests",
         ];
         let words = [
             ("{waves}", "3"),
@@ -2325,13 +2299,6 @@ mod tests {
             ("{along}", "24"),
             ("{total}", "25"),
             ("{name}", "old_total"),
-            ("{added}", "1900"),
-            ("{removed}", "40"),
-            ("{growth}", "1860"),
-            ("{limit}", "900"),
-            ("{median}", "300"),
-            ("{tests}", "9"),
-            ("{covered}", "2"),
         ];
         for lang in [Locale::PtBr, Locale::EnUs] {
             for key in keys {

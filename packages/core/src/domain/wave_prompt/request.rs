@@ -303,9 +303,6 @@ impl Writer<'_> {
             let _ = writeln!(body, "- {}", self.t("prompt.execution.no_commit"));
         }
         self.build_line(&mut body);
-        if let Some(median) = execution.wave_median {
-            let _ = writeln!(body, "- {}", self.t("prompt.execution.median").replace("{median}", &median.to_string()));
-        }
         if !execution.running.is_empty() {
             let _ = writeln!(body, "- {}", self.t("prompt.execution.running"));
         }

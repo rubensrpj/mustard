@@ -735,8 +735,7 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
 /// uso fora de teste, um teste por comportamento e nenhum código que só serve
 /// a medição, e a tarefa que só tira código, junta testes ou muda
 /// configuração se prova pela suíte, sem teste novo. O revisor tem por Maior
-/// o teste repetido, o código de laboratório no programa instalado e a onda
-/// acima da mediana de linhas do pedido sem justificativa na entrega.
+/// o teste repetido e o código de laboratório no programa instalado.
 #[test]
 fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
     for (lang, tools, boundary, severity, wave_said, review_said) in [
@@ -755,7 +754,6 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             [
                 "repete outro teste",
                 "código só de laboratório no programa instalado",
-                "passa da mediana de linhas do pedido sem justificativa na entrega",
             ],
         ),
         (
@@ -773,7 +771,6 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             [
                 "repeats another test",
                 "laboratory-only code in the installed program",
-                "passes the line median of its request without a reason in the delivery",
             ],
         ),
     ] {

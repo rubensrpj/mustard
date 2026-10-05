@@ -381,14 +381,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.execution", Locale::EnUs) => "Execution rules",
         ("prompt.execution.build", Locale::PtBr) => "Compile com `{command}`.",
         ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
-        ("prompt.execution.median", Locale::PtBr) => {
-            "A mediana das entregas deste projeto é de {median} linhas postas; passar dela pede \
-             justificativa na entrega (Fronteira da tarefa)."
-        }
-        ("prompt.execution.median", Locale::EnUs) => {
-            "The median delivery of this project puts {median} lines; going past it needs a reason \
-             in the delivery (Task boundary)."
-        }
         ("prompt.execution.running", Locale::PtBr) => {
             "Ondas em andamento, cada uma na sua cópia. O arquivo que você dividir com elas é \
              juntado na volta; o trecho que conflitar para a rodada até ser resolvido."
@@ -598,8 +590,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            100,
-            0x53f7_a4e6_8d29_4e8d,
+            99,
+            0x1fc9_2396_ab8a_4494,
         );
     }
 
