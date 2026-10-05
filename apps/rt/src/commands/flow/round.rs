@@ -125,6 +125,7 @@ mod imports_check;
 pub(crate) mod item_choice;
 mod keep;
 mod leftovers;
+mod lost_commit;
 mod queue;
 mod read_check;
 mod removed_check;

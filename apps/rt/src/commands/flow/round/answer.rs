@@ -652,6 +652,10 @@ pub(super) fn run_entered_round(
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    // O commit que uma rodada anterior fez e não chegou a anotar, porque caiu
+    // logo depois dele, é anotado agora, antes de qualquer despacho: sem ele
+    // o fechamento recusa a obra.
+    recorded.extend(super::lost_commit::record_lost_commits(&opts.root, root, &spec, &locked, lang, &held_lock)?);
     let waves_jev = crate::shared::jev::for_waves(root);
     if waves_jev.key_in_git && first_warning(root, session, "round.key_in_git") {
         warnings.push(json!({ "reason": "key-in-git", "hint": translate("map.round.key_in_git", lang) }));
