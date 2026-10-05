@@ -245,8 +245,8 @@ fn nested_absent(event: &Map<String, Value>, event_type: &str) -> Vec<String> {
 }
 
 /// Os campos que só são obrigatórios numa situação: a testemunha na
-/// aprovação, o motivo no descarte, o endereço da publicação que deu certo, a
-/// fonte dos fatos do ponto aberto, os exemplos da skill que nasce, o alvo da
+/// aprovação, o motivo no descarte, o endereço da publicação que deu certo, os
+/// fatos do ponto aberto que o assistente grava, os exemplos da skill que nasce, o alvo da
 /// remoção, os critérios da revisão de uma onda. O ponto que fecha outro
 /// (`closes`) nunca fica aberto, e o que "não se aplica" leva o motivo.
 fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), Refusal> {
@@ -305,7 +305,10 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 if has("closes") {
                     return Err(Refusal::ClosingPointOpen);
                 }
-                return need("facts");
+                // O ponto que o `grill` grava nasce sem fato: o assistente
+                // soma os fatos depois, antes de mostrá-lo ao usuário. O ponto
+                // aberto que o assistente grava já traz os dele.
+                return if word("author") == "binary" { Ok(()) } else { need("facts") };
             }
             // A versão nova de um ponto pode vir sem `closes`: o binário copia
             // o da versão antiga e confere de novo (veja

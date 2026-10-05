@@ -353,6 +353,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.not_applicable_reason", Locale::EnUs) => {
             "A point marked \"not applicable\" takes the reason in `reason`. Nothing was written."
         }
+        ("spec_events.point_without_facts", Locale::PtBr) => {
+            "O ponto {code} não tem fato nenhum, e ponto sem fato não fecha com resposta (`result`). \
+             Some os fatos que você conferiu no código ou na conversa numa versão nova dele, só com \
+             `replaces` e `facts`, ou feche-o como `not_applicable`, com o motivo. Nada foi gravado."
+        }
+        ("spec_events.point_without_facts", Locale::EnUs) => {
+            "Point {code} has no fact, and a point without facts does not close with an answer \
+             (`result`). Add the facts you checked in the code or in the conversation in a new version \
+             of it, with only `replaces` and `facts`, or close it as `not_applicable`, with the reason. \
+             Nothing was written."
+        }
         ("spec_events.open_point_removed", Locale::PtBr) => {
             "O ponto {code} está aberto e não sai com `remove`: feche-o com um ponto que o aponte em \
              `closes`, com a resposta ou o motivo. Nada foi gravado."
@@ -990,6 +1001,7 @@ mod tests {
             ("spec_events.point_not_open", &["{id}", "{open}"][..]),
             ("spec_events.closing_point_open", &[][..]),
             ("spec_events.not_applicable_reason", &[][..]),
+            ("spec_events.point_without_facts", &["{code}"][..]),
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.purge_excerpt_not_found", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),

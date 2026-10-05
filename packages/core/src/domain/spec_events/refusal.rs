@@ -123,6 +123,9 @@ pub enum Refusal {
     ClosingPointOpen,
     /// Um `point` marcado "não se aplica" sem o motivo.
     NotApplicableNeedsReason,
+    /// Um `point` que fecha com resposta (`result`) um ponto sem fato
+    /// nenhum, nem no ponto nem no fechamento.
+    PointWithoutFacts { code: String },
     /// Um `remove` que tiraria um ponto aberto da leitura.
     OpenPointRemoved { code: String },
     /// Um `purge` cujo trecho não aparece no item: nem o que o pedido indica,
@@ -341,6 +344,7 @@ impl Refusal {
             Self::PointNotOpen { .. } => "point-not-open",
             Self::ClosingPointOpen => "closing-point-open",
             Self::NotApplicableNeedsReason => "not-applicable-needs-reason",
+            Self::PointWithoutFacts { .. } => "point-without-facts",
             Self::OpenPointRemoved { .. } => "open-point-removed",
             Self::PurgeExcerptNotFound { .. } => "purge-excerpt-not-found",
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
@@ -558,6 +562,7 @@ impl Refusal {
             }
             Self::ClosingPointOpen => fill("spec_events.closing_point_open", &[]),
             Self::NotApplicableNeedsReason => fill("spec_events.not_applicable_reason", &[]),
+            Self::PointWithoutFacts { code } => fill("spec_events.point_without_facts", &[("{code}", code.clone())]),
             Self::OpenPointRemoved { code } => fill("spec_events.open_point_removed", &[("{code}", code.clone())]),
             Self::PurgeExcerptNotFound { code } => {
                 fill("spec_events.purge_excerpt_not_found", &[("{code}", code.clone())])

@@ -213,6 +213,7 @@ pub fn check_against(
             }
             if let Some(target) = event.get("closes").and_then(Value::as_u64) {
                 check_closes(log, event, target)?;
+                check_answer_has_facts(log, event, target)?;
             } else if event.get("replaces").is_none()
                 && let Some(existing) = same_open_point(log, event)
             {
@@ -351,6 +352,70 @@ fn check_closes(log: &SpecLog, event: &Map<String, Value>, target: u64) -> Resul
     }
     let id = log.codes().get(&target).map_or_else(|| target.to_string(), |code| format!("{code} ({target})"));
     Err(Refusal::PointNotOpen { id, open: survey::describe(log, &open) })
+}
+
+/// O ponto que fecha com resposta (`result`) precisa de fato: no fechamento,
+/// na versão vigente do ponto ou no fechamento que ele revê. O ponto que o
+/// `grill` gravou nasce sem fato, e responder a ele sem conferir nada no
+/// código nem na conversa é o que esta recusa barra. O "não se aplica" passa
+/// sem fato, com o motivo.
+fn check_answer_has_facts(log: &SpecLog, event: &Map<String, Value>, target: u64) -> Result<(), Refusal> {
+    let answered = event.get("result").is_some_and(|v| !is_empty(v));
+    let not_applicable = event.get("status").and_then(Value::as_str) == Some("not_applicable");
+    let with_facts = |fields: &Map<String, Value>| fields.get("facts").is_some_and(|v| !is_empty(v));
+    if !answered || not_applicable || with_facts(event) {
+        return Ok(());
+    }
+    let Some(first) = log.get(target).filter(|e| e.event_type == "point").map(|e| original_of(log, e)) else {
+        return Ok(());
+    };
+    let Some(point) = survey::points(log).into_iter().find(|point| point.first() == first) else {
+        return Ok(());
+    };
+    if with_facts(&point.shown().fields) || point.closing().is_some_and(|closing| with_facts(&closing.fields)) {
+        return Ok(());
+    }
+    let code = log.codes().get(&target).cloned().unwrap_or_else(|| target.to_string());
+    Err(Refusal::PointWithoutFacts { code })
+}
+
+/// A versão nova de um ponto aberto que traz só os fatos (`replaces` e
+/// `facts`, sem `status` nem `closes`) recebe da versão antiga o bloco, a
+/// lacuna, a origem do ponto, a situação, a mensagem de origem e os
+/// lembretes, e os fatos dela somados aos novos, sem repetir. É como o
+/// assistente acrescenta os fatos ao ponto que o `grill` gravou sem copiar o
+/// ponto inteiro. Roda antes da conferência do evento sozinho, que pede esses
+/// campos. A versão antiga já gravada não muda, então lê-la antes da trava
+/// não perde nada. Outro evento sai como entrou.
+pub fn carry_open_point(log: &SpecLog, event: &mut Map<String, Value>) {
+    if event.contains_key("status") || event.contains_key("closes") {
+        return;
+    }
+    let codes = log.codes();
+    let old = match event.get("replaces").and_then(EventRef::from_value) {
+        Some(EventRef::Id(id)) => log.get(id),
+        Some(EventRef::Code(code)) => {
+            log.events.iter().rev().find(|e| codes.get(&e.id).is_some_and(|c| *c == code))
+        }
+        None => None,
+    };
+    let Some(old) = old.filter(|old| old.event_type == "point" && old.str_field("status") == Some("open")) else {
+        return;
+    };
+    for field in ["block", "gap", "from", "status", "origin", "reminders"] {
+        if let Some(value) = old.fields.get(field).filter(|_| !event.contains_key(field)) {
+            event.insert(field.to_string(), value.clone());
+        }
+    }
+    let mut facts: Vec<Value> = old.fields.get("facts").and_then(Value::as_array).cloned().unwrap_or_default();
+    for fact in event.get("facts").and_then(Value::as_array).cloned().unwrap_or_default() {
+        if !facts.contains(&fact) {
+            facts.push(fact);
+        }
+    }
+    if !facts.is_empty() {
+        event.insert("facts".into(), Value::Array(facts));
+    }
 }
 
 /// O código do primeiro ponto aberto entre os alvos de um `remove`, por

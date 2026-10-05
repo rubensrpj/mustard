@@ -31,12 +31,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Nothing was written."
         }
         ("grill.kinds_missing", Locale::PtBr) => {
-            "Diga o tipo de trabalho em --kinds: feature, fix ou refactor, mais de um no pedido \
-             misto. Nada foi gravado."
+            "A spec não tem tipo de trabalho gravado, e a branch dela não começa por um tipo \
+             (feature/, fix/ ou refactor/). Diga o tipo em --kinds: feature, fix ou refactor, mais de \
+             um no pedido misto. Nada foi gravado."
         }
         ("grill.kinds_missing", Locale::EnUs) => {
-            "Give the work type in --kinds: feature, fix or refactor, more than one for a mixed \
-             request. Nothing was written."
+            "The spec has no work type recorded, and its branch does not start with a type \
+             (feature/, fix/ or refactor/). Give the type in --kinds: feature, fix or refactor, more \
+             than one for a mixed request. Nothing was written."
         }
         ("grill.kinds_narrowed", Locale::PtBr) => {
             "O levantamento da spec {spec} já tem as lacunas de {recorded}. Um tipo a menos não tira \
@@ -85,19 +87,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              visible in the conversation. What the reason does not touch stays as it is, and is \
              never asked again."
         }
-        ("survey.record_points", Locale::PtBr) => {
-            "Grave cada ponto de `points` que ainda não tem `id` com `mustard-rt run write point \
-             --spec {spec}`, na ordem. Copie os campos como vieram, com `status` open. Em `facts`, \
-             ponha o que você conferiu no código ou na conversa. Cada fato leva a fonte: arquivo e \
-             linha, comando ou número da mensagem. Os fatos que já vêm no ponto ficam. A gravação \
-             do último ponto já devolve o primeiro, para mostrar ao usuário."
+        ("survey.rerun_grill", Locale::PtBr) => {
+            "Falta ponto para alguma lacuna do tipo de trabalho. Rode `mustard-rt run grill --spec \
+             {spec}`, que grava os pontos que faltam e devolve o primeiro aberto."
         }
-        ("survey.record_points", Locale::EnUs) => {
-            "Record each point in `points` that has no `id` yet with `mustard-rt run write point \
-             --spec {spec}`, in order. Copy its fields as they came, with `status` open. In `facts`, \
-             put what you checked in the code or in the conversation. Each fact carries its source: \
-             file and line, command or message number. The facts the point already brings stay. \
-             Recording the last point already returns the first one, to show the user."
+        ("survey.rerun_grill", Locale::EnUs) => {
+            "Some gap of the work type has no point. Run `mustard-rt run grill --spec {spec}`, which \
+             records the missing points and returns the first open one."
         }
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
@@ -225,7 +221,7 @@ mod tests {
             ("reopen.draft_failed".into(), &["{spec}", "{reason}"][..]),
             ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
-            ("survey.record_points".into(), &["{spec}"][..]),
+            ("survey.rerun_grill".into(), &["{spec}"][..]),
             ("survey.touched".into(), &["{count}", "{reason}"][..]),
             ("survey.done".into(), &[][..]),
             ("survey.review_step".into(), &["{block}", "{continue}"][..]),

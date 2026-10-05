@@ -199,7 +199,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::clarity::ClarityReport;
 use mustard_core::domain::lessons::{for_the_code, DEFECT, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, EventRef, Hidden, ItemPart, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    carry_open_point, type_spec, EventRef, Hidden, ItemPart, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
@@ -209,7 +209,7 @@ use mustard_core::domain::spec_state::{
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
-use mustard_core::io::{lessons, project_map, spec_events as store};
+use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
@@ -933,6 +933,13 @@ fn record_to(
     if event_type == "task" && by.is_some() {
         inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
     }
+    // A versão de um ponto aberto que traz só os fatos recebe o resto da
+    // versão antiga, antes da conferência que pede o bloco e a lacuna.
+    if event_type == "point" && draft.contains_key("replaces")
+        && let Some(log) = Source::of(&path, locked.as_deref()).log()?
+    {
+        carry_open_point(&log, &mut draft);
+    }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
@@ -942,7 +949,7 @@ fn record_to(
         record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
         // O passo do levantamento só vai ao relatório do modelo.
         if by.is_none() {
-            survey = survey_report(&project.root, &name, before, after, lang);
+            survey = survey_report(&name, before, after, lang);
         }
         Ok(())
     };
@@ -1197,8 +1204,8 @@ impl RecordCheck {
 
 /// O passo do levantamento depois de uma gravação na spec `spec`, lido do
 /// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
-/// fazer, no idioma do projeto; em `point`, o ponto a apresentar; em
-/// `points`, os pontos que faltam gravar, como o `grill` os lista, ou os
+/// fazer, no idioma do projeto, e, quando falta ponto de lacuna, a ordem de
+/// rodar o `grill` de novo; em `point`, o ponto a apresentar; em `points`, os
 /// pontos abertos do levantamento condensado, mostrados de uma vez; em
 /// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
 /// a pergunta e as opções, "Seguir" por último; em `unrouted`, as mensagens
@@ -1206,7 +1213,6 @@ impl RecordCheck {
 /// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
 /// de rodar o revisor de fora. `None` quando não há passo.
 fn survey_report(
-    root: &Path,
     spec: &str,
     before: &SpecLog,
     after: &SpecLog,
@@ -1258,39 +1264,12 @@ fn survey_report(
                 out.insert("unrouted".to_string(), json!(listed));
             }
             SurveyStep::Record(_) => {
-                next.push(translate("survey.record_points", lang).replace("{spec}", spec));
-                out.insert("points".to_string(), json!(unrecorded_points(root, spec, after, lang)));
+                next.push(translate("survey.rerun_grill", lang).replace("{spec}", spec));
             }
         }
     }
     out.insert("next".to_string(), json!(next.join(" ")));
     Some(out)
-}
-
-/// Os itens da lista do `grill` para as lacunas do tipo de trabalho que ainda
-/// não têm ponto, como o `grill` os mostra: os campos que o assistente copia,
-/// com a mensagem do objetivo como origem e o que o mapa do projeto já
-/// responde.
-fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<Value> {
-    let kinds = survey::work_type(log).map(survey::kinds_of).unwrap_or_default();
-    let goal = survey::goal(log);
-    let map = |need: project_map::Need<'_>| project_map::read_for(root, need);
-    let list = survey::build(&survey::Sources {
-        kinds: &kinds,
-        goal: goal.and_then(|g| g.str_field("text")).map(str::trim).unwrap_or_default(),
-        goal_agent: goal.and_then(|g| g.str_field("agent")).map(str::trim).unwrap_or_default(),
-        current: spec,
-        bank: None,
-        lessons_file: "",
-        index: &[],
-        prior: &[],
-        map: Some(&map),
-        condensed: survey::condensed(log),
-        lang,
-        languages: &mustard_core::domain::normalize::Languages::of_project(root),
-    });
-    let origin = goal.and_then(|g| g.int("origin"));
-    survey::missing(log, &list).into_iter().map(|item| item.to_value(origin)).collect()
 }
 
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
@@ -4037,8 +4016,8 @@ mod tests {
     /// Uma spec em levantamento com o objetivo, o tipo de trabalho `kinds`
     /// gravado pela porta do binário, como o `grill` grava, e um ponto aberto
     /// por lacuna, na ordem da lista; no condensado, todos num bloco só.
-    /// Enquanto a lista está sendo gravada, cada gravação pede os pontos das
-    /// lacunas que faltam; a gravação do último ponto devolve o primeiro.
+    /// Enquanto falta ponto de lacuna, cada gravação manda rodar o `grill` de
+    /// novo; a gravação do último ponto devolve o primeiro.
     /// Devolve a mensagem do objetivo e os pontos.
     fn listed(root: &std::path::Path, kinds: &[&str], condensed: bool) -> (u64, Vec<Opened>) {
         surveyed(root);
@@ -4064,13 +4043,9 @@ mod tests {
                 gap: gap.to_string(),
             });
             if i + 1 < gaps.len() {
-                let ask = translate("survey.record_points", Locale::PtBr).replace("{spec}", "teste");
+                let ask = translate("survey.rerun_grill", Locale::PtBr).replace("{spec}", "teste");
                 assert_eq!(report["next"], json!(ask), "{report}");
-                let left: Vec<&str> =
-                    report["points"].as_array().unwrap().iter().filter_map(|item| item["gap"].as_str()).collect();
-                let expected: Vec<&str> = gaps[i + 1..].iter().map(|key| key.label(Locale::PtBr)).collect();
-                assert_eq!(left, expected, "each write asks for the gaps still without a point: {report}");
-                assert!(report.get("point").is_none(), "no point before the list is recorded: {report}");
+                assert!(report.get("point").is_none() && report.get("points").is_none(), "{report}");
             } else if condensed {
                 assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
             } else {
@@ -4446,8 +4421,8 @@ mod tests {
         assert!(refusal.message(Locale::EnUs).contains("How to prove it is done"));
     }
 
-    /// Uma lacuna que ficou sem ponto é pedida pela gravação seguinte, com o
-    /// item a copiar, no lugar do próximo ponto; fechar os outros pontos não
+    /// Uma lacuna que ficou sem ponto faz a gravação seguinte mandar rodar o
+    /// `grill` de novo, no lugar do próximo ponto; fechar os outros pontos não
     /// traz o fim nem manda rodar o revisor de fora. Gravado o ponto que
     /// faltava, ele é o próximo.
     #[test]
@@ -4476,11 +4451,10 @@ mod tests {
                 gap: key.label(Locale::PtBr).to_string(),
             });
         }
-        let ask = translate("survey.record_points", Locale::PtBr).replace("{spec}", "teste");
+        let ask = translate("survey.rerun_grill", Locale::PtBr).replace("{spec}", "teste");
         let asks_again = |report: &Value| {
             assert!(report["next"].as_str().is_some_and(|next| next.ends_with(&ask)), "{report}");
-            let item = json!({"block": "defect", "gap": forgotten.label(Locale::PtBr), "from": "gap", "origin": said});
-            assert_eq!(report["points"], json!([item]), "{report}");
+            assert!(report.get("points").is_none(), "{report}");
             assert!(report.get("point").is_none() && report.get("unrouted").is_none(), "{report}");
         };
         asks_again(&answer(root, said));
