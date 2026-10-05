@@ -36,6 +36,8 @@ mod support;
 const SPEC: &str = "backlog-lotes";
 const GOAL: &str = "Trocar a saudação do programa.";
 const SESSION: &str = "s-backlog-lotes";
+/// O motivo da marca de prioridade das tarefas marcadas nos testes.
+const PRIORITY: &str = "O usuário pediu esta antes das outras.";
 
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git").args(args).current_dir(root).output().expect("git");
@@ -225,16 +227,23 @@ fn approve(project: &Project) {
 /// `depends_on` como a lista de ids das tarefas de que ela depende.
 /// Devolve o `id` gravado.
 fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], depends_on: &[u64]) -> u64 {
+    backlog_task_with(project, criterion, said, files, depends_on, &json!({}))
+}
+
+/// [`backlog_task`] com os campos de `extra` por cima, como a marca de
+/// prioridade.
+fn backlog_task_with(project: &Project, criterion: u64, said: u64, files: &[&str], depends_on: &[u64], extra: &Value) -> u64 {
     // `"new": true` marca um arquivo que a tarefa ainda vai criar: sem isso
     // o plano recusa a pergunta de aprovação, porque o arquivo sintético do
     // teste não existe no repositório.
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
     let depends_on: Vec<Value> = depends_on.iter().map(|id| json!(id)).collect();
-    let written = project.write(
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
-            "covers": [criterion], "origin": said}),
-    );
+    let mut task = json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
+            "covers": [criterion], "origin": said});
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        task[key] = value.clone();
+    }
+    let written = project.write("task", &task);
     written["id"].as_u64().expect("the recorded task has an id")
 }
 
@@ -407,6 +416,12 @@ fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
 /// `files`, sem dependência entre elas. Devolve o projeto, o critério, a fala
 /// do usuário e as tarefas, na ordem de `files`.
 fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
+    marked_backlog_project(files, &[])
+}
+
+/// [`backlog_project`] com a marca de prioridade nas tarefas das posições
+/// `marked` de `files`.
+fn marked_backlog_project(files: &[&[&str]], marked: &[usize]) -> (Project, u64, u64, Vec<u64>) {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -416,7 +431,14 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
-    let tasks = files.iter().map(|f| backlog_task(&project, crit_id, said, f, &[])).collect();
+    let tasks = files
+        .iter()
+        .enumerate()
+        .map(|(at, f)| {
+            let extra = if marked.contains(&at) { json!({"priority": PRIORITY}) } else { json!({}) };
+            backlog_task_with(&project, crit_id, said, f, &[], &extra)
+        })
+        .collect();
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
     (project, crit_id, said, tasks)
@@ -425,12 +447,19 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
 /// Uma tarefa semeada no backlog depois da aprovação, sem onda, como o
 /// conserto a deixa. Devolve o `id` gravado.
 fn seed_backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str]) -> u64 {
+    seed_task_with(project, criterion, said, files, &json!({}))
+}
+
+/// [`seed_backlog_task`] com os campos de `extra` por cima, como a marca de
+/// prioridade ou a dependência.
+fn seed_task_with(project: &Project, criterion: u64, said: u64, files: &[&str], extra: &Value) -> u64 {
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
-    project.seed(
-        "task",
-        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
-            "covers": [criterion], "origin": said}),
-    )
+    let mut task = json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
+            "covers": [criterion], "origin": said});
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        task[key] = value.clone();
+    }
+    project.seed("task", &task)
 }
 
 /// A onda que levou a tarefa `task`, pela versão vigente dela.
@@ -903,6 +932,108 @@ fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
     let calls = assembly_calls(&refused);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0]["filter"], json!("jev:key_refused"), "{calls:?}");
+}
+
+// ---------------------------------------------------------------------------
+// A marca de prioridade na montagem das ondas
+// ---------------------------------------------------------------------------
+
+/// Deixa o projeto com uma vaga só: uma onda por vez.
+fn one_slot(project: &Project) {
+    std::fs::write(project.root.join("mustard.json"), json!({
+        "language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
+        "lintCommand": "git --version", "maxCompilingWaves": 1}).to_string()).expect("config");
+}
+
+/// Três tarefas prontas, cada uma no seu arquivo, e a de número maior com a
+/// marca de prioridade: com uma vaga só, é ela que sai, sem o Jev e com o
+/// Jev de teste, que a julga limpeza, o último tipo da ordem fixa.
+#[test]
+fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev() {
+    let files: [&[&str]; 3] = [&["a.rs"], &["b.rs"], &["c.rs"]];
+    let (project, _, _, tasks) = marked_backlog_project(&files, &[2]);
+    one_slot(&project);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[2]]], "sem o Jev, a marcada ocupa a vaga");
+
+    let jev = FakeJev::judging(|at| if at == 2 { ("test_cleanup", 0.9) } else { ("defect", 0.9) }, |_, _| 0.0);
+    let (mut judged, _, _, tasks) = marked_backlog_project(&files, &[2]);
+    judged.jev = Some(jev.url.clone());
+    one_slot(&judged);
+    judged.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[2]]], "com o Jev, a marcada passa à frente dos defeitos");
+    assert!(
+        jev.requests().iter().all(|asked| !asked.to_string().contains(PRIORITY)),
+        "o quadro mandado ao Jev não leva a marca: {:?}",
+        jev.requests()
+    );
+}
+
+/// A tarefa marcada pequena, de um arquivo só, sai ao lado de uma onda em
+/// andamento sem arquivo em comum; a não marcada do mesmo tamanho espera
+/// juntar trabalho.
+#[test]
+fn a_small_marked_task_leaves_while_another_wave_runs() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
+    let plain = seed_backlog_task(&project, crit, said, &["b.rs"]);
+    let marked = seed_task_with(&project, crit, said, &["c.rs"], &json!({"priority": PRIORITY}));
+
+    let (_, out) = dispatch_ready(&project);
+    let wave = wave_of(&project, marked).expect("a marcada pequena vira onda");
+    assert_eq!(out, vec![wave], "só a marcada sai ao lado da onda em andamento");
+    assert_eq!(wave_of(&project, plain), None, "a não marcada pequena espera juntar trabalho");
+}
+
+/// A marcada que espera uma tarefa ainda aberta fica no backlog: a marca não
+/// passa por cima do `depends_on`.
+#[test]
+fn a_marked_task_with_an_open_dependency_waits() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let marked = seed_task_with(&project, crit, said, &["b.rs"], &json!({"priority": PRIORITY, "depends_on": [tasks[0]]}));
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a dependência vira onda")], "só a dependência sai");
+    assert_eq!(wave_of(&project, marked), None, "a marcada espera a dependência");
+
+    let (_, out) = dispatch_ready(&project);
+    assert!(out.is_empty(), "com a dependência em andamento, a marcada segue esperando: {out:?}");
+    assert_eq!(wave_of(&project, marked), None);
+}
+
+/// A marcada que divide arquivo com uma onda em andamento espera no backlog:
+/// a marca não passa por cima dos arquivos de quem está no ar.
+#[test]
+fn a_marked_task_sharing_a_file_with_the_wave_in_progress_waits() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")]);
+    let marked = seed_task_with(&project, crit, said, &["a.rs"], &json!({"priority": PRIORITY}));
+
+    let (_, out) = dispatch_ready(&project);
+    assert!(out.is_empty(), "nada sai por cima de a.rs em andamento: {out:?}");
+    assert_eq!(wave_of(&project, marked), None, "a marcada espera a onda de a.rs");
+}
+
+/// A não marcada de número menor que divide `a.rs` com a marcada sai depois
+/// dela: sem o Jev, as duas vão na mesma onda, com a marcada à frente; com o
+/// Jev, de tipos diferentes, a marcada sai, e a outra espera no backlog.
+#[test]
+fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_one() {
+    let files: [&[&str]; 2] = [&["a.rs"], &["a.rs"]];
+    let (project, _, _, tasks) = marked_backlog_project(&files, &[1]);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[1], tasks[0]]], "a marcada à frente na mesma onda");
+
+    let jev = FakeJev::judging(|at| if at == 0 { ("defect", 0.9) } else { ("feature", 0.9) }, |_, _| 0.0);
+    let (judged, _, _, tasks) = {
+        let (mut project, crit, said, tasks) = marked_backlog_project(&files, &[1]);
+        project.jev = Some(jev.url.clone());
+        (project, crit, said, tasks)
+    };
+    judged.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[1]]], "a marcada sai");
+    assert_eq!(wave_of(&judged, tasks[0]), None, "o defeito de número menor espera atrás dela");
 }
 
 // ---------------------------------------------------------------------------

@@ -596,40 +596,35 @@ mod tests {
     /// A mudança de plano que não troca decisão do usuário não pede clique: a
     /// rodada assume a volta, comita o que a onda entregou, grava a mudança na
     /// entrega e manda contá-la entre as decisões que o assistente tomou
-    /// sozinho. A decisão só em branco também não troca nada.
+    /// sozinho. A decisão em branco não chega aqui: a gravação a recusa.
     #[test]
     fn a_plan_change_that_swaps_no_decision_goes_on_without_a_click_and_is_told_as_decided_alone() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
-        for decision in [None, Some("   ")] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-            round(root, "x", None);
-            std::fs::write(copy_of(root, 1).join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
-            let change = "Dividir a soma em duas funções.";
-            let mut back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
-                "replan": change, "undone": []});
-            if let Some(decision) = decision {
-                back["changes_decision"] = json!(decision);
-            }
-            assert_eq!(returned(root, back)["ok"], json!(true));
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        std::fs::write(copy_of(root, 1).join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
+        let change = "Dividir a soma em duas funções.";
+        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
+            "replan": change, "undone": []});
+        assert_eq!(returned(root, back)["ok"], json!(true));
 
-            let out = round(root, "x", None);
-            assert_eq!(out["ok"], json!(true), "{out}");
-            assert!(change_asked(&out).is_null(), "sem decisão trocada não há clique a esperar: {out}");
-            assert_eq!(official_deliveries(root), BTreeSet::from([1]), "{out}");
-            assert_eq!(last_commit_files(root), "src/a.rs", "{out}");
-            let noted = warning_of(&out, "plan-changed");
-            assert_eq!(noted["wave"], json!(1), "{noted}");
-            let hint = noted["hint"].as_str().unwrap_or_default();
-            assert!(hint.contains("Dividir a soma em duas funções") && hint.contains("O que eu decidi sozinho"), "{hint}");
-            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let recorded = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("a entrega");
-            assert_eq!(recorded.str_field("replan"), Some(change), "a mudança fica gravada na entrega");
-            assert!(!swaps_decision(recorded), "{:?}", recorded.fields);
-        }
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(change_asked(&out).is_null(), "sem decisão trocada não há clique a esperar: {out}");
+        assert_eq!(official_deliveries(root), BTreeSet::from([1]), "{out}");
+        assert_eq!(last_commit_files(root), "src/a.rs", "{out}");
+        let noted = warning_of(&out, "plan-changed");
+        assert_eq!(noted["wave"], json!(1), "{noted}");
+        let hint = noted["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("Dividir a soma em duas funções") && hint.contains("O que eu decidi sozinho"), "{hint}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let recorded = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("a entrega");
+        assert_eq!(recorded.str_field("replan"), Some(change), "a mudança fica gravada na entrega");
+        assert!(!swaps_decision(recorded), "{:?}", recorded.fields);
     }
 
     /// O aviso que manda perguntar não leva texto nenhum do agente — nem a

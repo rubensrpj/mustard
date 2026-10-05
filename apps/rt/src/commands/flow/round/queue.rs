@@ -587,9 +587,9 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 }
 
 /// As tarefas vigentes da spec como o motor do backlog as lê: cada uma com as
-/// dependências resolvidas para a versão vigente, os arquivos que declara e
+/// dependências resolvidas para a versão vigente, os arquivos que declara,
 /// se já está feita — a onda dela está entre as entregues e aprovadas
-/// (`done_waves`).
+/// (`done_waves`) — e se traz a marca de prioridade.
 pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
     log.visible()
@@ -605,7 +605,10 @@ pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> V
                 .filter_map(|value| backlog_task_ref(log, &codes, value))
                 .collect();
             let done = task.wave().is_some_and(|w| done_waves.contains(&w));
-            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done }
+            // A marca de prioridade é lida do evento, como o usuário a deu: o
+            // Jev não a julga.
+            let priority = task.str_field("priority").is_some_and(|reason| !reason.trim().is_empty());
+            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done, priority }
         })
         .collect()
 }

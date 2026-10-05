@@ -214,6 +214,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.invalid_value", Locale::EnUs) => {
             "The {field} field of the {type} event must be {expected}. Nothing was written."
         }
+        ("spec_events.empty_text", Locale::PtBr) => {
+            "O campo {field} do evento {type} veio vazio. Escreva o valor ou tire o campo. Nada foi \
+             gravado."
+        }
+        ("spec_events.empty_text", Locale::EnUs) => {
+            "The {field} field of the {type} event came empty. Write its value or drop the field. \
+             Nothing was written."
+        }
         ("spec_events.wrong_count", Locale::PtBr) => {
             "O campo {field} do evento {type} leva de {min} a {max} itens, e vieram {count}. Nada \
              foi gravado."
@@ -947,8 +955,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            122,
-            0x80c6_4bf5_ceda_a70a,
+            123,
+            0xdbab_7c00_bde5_024f,
         );
     }
 
@@ -986,6 +994,7 @@ mod tests {
             ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
             ("spec_events.proof_search_not_negated", &["{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
+            ("spec_events.empty_text", &["{type}", "{field}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
             ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),

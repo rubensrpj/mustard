@@ -3414,6 +3414,52 @@ mod tests {
         (out, before, std::fs::read(&file).unwrap())
     }
 
+    /// O campo opcional de texto que chega vazio, ou só com espaço — a marca
+    /// de prioridade da tarefa e o motivo de a decisão não virar código — é
+    /// recusado com a mesma razão, que diz o campo e manda escrever o valor
+    /// ou tirar o campo, nos dois idiomas, e o arquivo da spec fica com os
+    /// mesmos bytes. Com o texto escrito, o mesmo evento grava; a lista vazia
+    /// da tarefa (`files`, `depends_on`) segue aceita.
+    #[test]
+    fn an_optional_text_field_that_comes_empty_is_refused_in_both_languages() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (language, write_or_drop, nothing) in [
+            ("pt-BR", "Escreva o valor ou tire o campo", "Nada foi gravado"),
+            ("en-US", "Write its value or drop the field", "Nothing was written"),
+        ] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let spec = format!("texto-vazio-{}", language.to_lowercase());
+            let said = spec_in_phase(root, &spec, "running");
+            let crit = crate::shared::spec_state::seed_event(root, &spec, "criterion", json!({"when": "a obra roda",
+                "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous"}));
+            let task = |priority: &str| json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador",
+                "files": [], "depends_on": [], "covers": [crit], "origin": said, "priority": priority});
+            let decision = |no_code: &str| json!({"title": "Sem tela nova", "text": "A tela fica como está.", "agent": "- nenhuma tela",
+                "why": "O usuário pediu.", "keys": ["tela"], "applies_to": {"files": ["**"]}, "origin": said, "no_code": no_code});
+            type Draft<'a> = &'a dyn Fn(&str) -> Value;
+            let cases: [(&str, &str, Draft, &str); 2] = [
+                ("task", "priority", &task, "O usuário pediu esta antes."),
+                ("decision", "no_code", &decision, "Só muda o combinado."),
+            ];
+            for (event_type, field, draft, written) in cases {
+                for empty in ["", "   "] {
+                    let (out, before, after) = by_assistant(root, &spec, event_type, &draft(empty));
+                    assert_eq!(out["ok"], json!(false), "{language} {event_type} {empty:?}: {out}");
+                    assert_eq!(out["reason"], json!("empty-text"), "{language} {event_type}: {out}");
+                    let hint = out["hint"].as_str().unwrap_or_default();
+                    assert!(
+                        hint.contains(field) && hint.contains(event_type) && hint.contains(write_or_drop) && hint.contains(nothing),
+                        "{language}: {hint}"
+                    );
+                    assert_eq!(after, before, "{language} {event_type}: nothing was written");
+                }
+                let (out, _, _) = by_assistant(root, &spec, event_type, &draft(written));
+                assert_eq!(out["ok"], json!(true), "{language} {event_type}: the text is written: {out}");
+            }
+        }
+    }
+
     /// O pedido novo que o assistente grava numa spec fechada, e noutra com o
     /// pull request aberto, é recusado com a razão própria e a frase que
     /// manda reabrir a spec pelo `reopen`, nos dois idiomas, e o arquivo da

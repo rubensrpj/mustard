@@ -664,6 +664,13 @@ pub const TYPES: &[TypeSpec] = &[
             // até o fim da obra, para sair junto das outras numa onda só.
             // Ausente é tarefa comum.
             opt("cleanup", Kind::Bool),
+            // A marca de prioridade: o motivo, em texto, que o usuário deu
+            // para a tarefa sair antes das outras. A montagem das ondas solta
+            // primeiro a tarefa marcada, sem passar por cima da dependência,
+            // dos arquivos de uma onda em andamento nem das vagas. Vazia, a
+            // gravação recusa, como todo texto opcional vazio
+            // (`check::check_field`). Ausente é tarefa comum.
+            opt("priority", Kind::Text),
             // O par de papéis cuja direção de importação esta tarefa muda,
             // por pedido formal do usuário: a conferência depois da onda
             // libera a importação entre os dois só nos arquivos desta

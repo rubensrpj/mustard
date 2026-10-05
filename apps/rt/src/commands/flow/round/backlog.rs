@@ -66,12 +66,21 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
 ///
+/// A tarefa com a marca de prioridade (`priority`), que o usuário deu, sai
+/// antes da ordem fixa dos tipos e do número, com o Jev e sem ele: o lote
+/// dela vai na frente, e a tarefa que divide arquivo com ela espera atrás
+/// dela. A marca não passa por cima da dependência, dos arquivos de uma onda
+/// em andamento nem das vagas, e a limpeza segue saindo por último, marcada
+/// ou não. O Jev não a julga: ela é lida do evento, e o quadro mandado a ele
+/// não muda.
+///
 /// A onda pequena espera juntar trabalho: o lote com menos de
 /// [`MIN_WAVE_FILES`](crate::shared::dag::MIN_WAVE_FILES) arquivos declarados
 /// não sai enquanto houver onda em andamento ([`waves_in_progress`]). Sai
 /// quando chega a esse tamanho — com as tarefas do mesmo tipo que o Jev juntou
-/// nele — ou quando nada roda. A onda que continua um resumo que vale e a
-/// tarefa do curinga da árvore inteira não esperam. O lote que espera reserva
+/// nele — ou quando nada roda. A onda que continua um resumo que vale, a que
+/// leva uma tarefa marcada como prioridade e a tarefa do curinga da árvore
+/// inteira não esperam. O lote que espera reserva
 /// os arquivos dele, como a tarefa bloqueada: a que vem depois e os divide
 /// também espera.
 ///
@@ -163,6 +172,9 @@ pub(crate) fn dispatch_backlog(
     // gravação recusa a que ficaria sem nenhum.
     let bare = |id: &u64| by_id.get(id).is_some_and(|task| covers_nothing(task));
     let population = backlog_population(log, &done_waves);
+    // As tarefas com a marca de prioridade, lidas do evento: o lote delas
+    // sai antes dos outros e não espera juntar trabalho.
+    let marked: BTreeSet<u64> = population.iter().filter(|task| task.priority).map(|task| task.id).collect();
     // A versão vigente, em `locked`, do que a leitura de entrada via.
     let in_locked = |ids: BTreeSet<u64>| -> BTreeSet<u64> {
         ids.into_iter().filter_map(|id| log.current(id)).map(|task| task.id).collect()
@@ -216,9 +228,12 @@ pub(crate) fn dispatch_backlog(
         _ => {
             let mut batches =
                 if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, &waiting, &busy) };
-            // O curinga da árvore inteira primeiro; os outros pela tarefa de
-            // código mais baixo, e a ordem de prontidão do motor desempata.
-            batches.sort_by_key(|batch| (!touches_whole_tree(&batch.files), batch.tasks.iter().map(&code_of).min()));
+            // O lote com a tarefa marcada como prioridade primeiro; depois o
+            // curinga da árvore inteira; os outros pela tarefa de código mais
+            // baixo, e a ordem de prontidão do motor desempata.
+            batches.sort_by_key(|batch| {
+                (!batch.holds_any(&marked), !touches_whole_tree(&batch.files), batch.tasks.iter().map(&code_of).min())
+            });
             batches
         }
     };
@@ -251,8 +266,9 @@ pub(crate) fn dispatch_backlog(
             continue;
         }
         // A onda pequena espera enquanto outra roda, salvo a que continua um
-        // resumo. Ela reserva os arquivos como a bloqueada.
-        let waits = summary.is_none() && !running.is_empty() && batch.waits_to_grow();
+        // resumo e a que leva uma tarefa marcada como prioridade. Ela
+        // reserva os arquivos como a bloqueada.
+        let waits = summary.is_none() && !running.is_empty() && batch.waits_to_grow() && !batch.holds_any(&marked);
         if reserved.lets_out(&batch.files, held || waits) {
             chosen.push((batch, summary));
         }

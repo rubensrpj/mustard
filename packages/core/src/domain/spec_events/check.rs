@@ -153,8 +153,16 @@ fn accepted_fields(spec: &TypeSpec) -> String {
     own.into_iter().chain(rest).collect::<Vec<_>>().join(", ")
 }
 
+/// Confere um campo do evento pelo tipo dele. O obrigatório ausente ou vazio
+/// falta. O opcional de texto que chega vazio, ou só com espaço, é recusado
+/// pelo nome: ele entraria calado e diria que existe um valor que ninguém
+/// escreveu. Lista e objeto vazios seguem aceitos, porque a lista vazia diz
+/// "nenhum" (`files: []`, `depends_on: []`).
 pub(crate) fn check_field(event: &Map<String, Value>, event_type: &str, field: Field) -> Result<(), Refusal> {
     match event.get(field.name) {
+        Some(Value::String(text)) if !field.required && field.kind == Kind::Text && text.trim().is_empty() => {
+            Err(Refusal::EmptyText { event_type: event_type.to_string(), field: field.name.to_string() })
+        }
         Some(value) if !is_empty(value) => {
             if field.kind.accepts(value) {
                 Ok(())
