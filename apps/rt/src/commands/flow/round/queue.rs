@@ -2531,14 +2531,11 @@ mod tests {
                 kinds: Some("fix".into()),
                 condensed: false,
             };
+            // O `grill` grava os pontos abertos; cada um é fechado pelo número.
             let listed = crate::commands::flow::grill::grill_for(&opts, None);
             for item in listed["points"].as_array().cloned().unwrap_or_default() {
-                let mut point = item.clone();
-                point["status"] = json!("open");
-                point["facts"] = json!([{"text": goal, "source": "src/a.rs:1"}]);
-                let opened = write(root, "x", "point", point);
                 let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
-                    "status": "not_applicable", "closes": id_of(&opened), "reason": "Já respondido.", "origin": said});
+                    "status": "not_applicable", "closes": id_of(&item), "reason": "Já respondido.", "origin": said});
                 assert_eq!(write(root, "x", "point", closing)["ok"], json!(true));
             }
             before(said);

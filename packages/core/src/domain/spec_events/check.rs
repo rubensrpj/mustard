@@ -512,6 +512,20 @@ mod tests {
         );
     }
 
+    /// O ponto aberto que o levantamento grava nasce sem fato; o mesmo ponto
+    /// aberto gravado pelo assistente continua recusado sem os fatos.
+    #[test]
+    fn an_open_point_without_facts_passes_only_from_the_binary() {
+        let point = json!({"block": "context", "gap": "Quem usa e para quê", "from": "gap", "status": "open", "origin": 1});
+        let mut by_binary = point.clone();
+        by_binary["author"] = json!("binary");
+        assert!(checked("point", by_binary).is_ok());
+        assert_eq!(
+            checked("point", point).unwrap_err(),
+            Refusal::MissingField { event_type: "point".into(), field: "facts".into() }
+        );
+    }
+
     /// Uma tarefa que não cita arquivo entra sem o campo; quando o campo vem,
     /// cada arquivo continua precisando do caminho.
     #[test]

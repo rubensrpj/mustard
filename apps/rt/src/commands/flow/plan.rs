@@ -585,14 +585,11 @@ mod tests {
         let said = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": GOAL})));
         id_of(&write(root, Some(spec), "context", json!({"text": GOAL, "origin": said})));
         let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.into()), kinds: Some("fix".into()), condensed: false };
+        // O `grill` grava os pontos abertos; cada um é fechado pelo número.
         let listed = grill_for(&opts, None);
         for item in listed["points"].as_array().cloned().unwrap_or_default() {
-            let mut point = item.clone();
-            point["status"] = json!("open");
-            point["facts"] = json!([{"text": GOAL, "source": "src/a.rs:1"}]);
-            let opened = write(root, Some(spec), "point", point);
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
-                "status": "not_applicable", "closes": id_of(&opened),
+                "status": "not_applicable", "closes": id_of(&item),
                 "reason": "Já respondido.", "origin": said});
             assert_eq!(write(root, Some(spec), "point", closing)["ok"], json!(true));
         }
