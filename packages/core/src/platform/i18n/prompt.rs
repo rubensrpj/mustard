@@ -530,6 +530,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.project_rules.source", Locale::EnUs) => {
             "The text of the `CLAUDE.md` at the project root. Follow it in this review."
         }
+        ("prompt.project_rules.sources", Locale::PtBr) => {
+            "Os arquivos de regras da raiz e das pastas onde a obra mexeu, cada um sob o caminho dele. Siga todos \
+             nesta revisão."
+        }
+        ("prompt.project_rules.sources", Locale::EnUs) => {
+            "The rules files of the root and of the folders the work touched, each under its path. Follow them all \
+             in this review."
+        }
         _ => return None,
     })
 }
@@ -544,8 +552,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            94,
-            0xe636_a93e_7bd4_aed4,
+            95,
+            0x6839_b7ea_f21d_8588,
         );
     }
 

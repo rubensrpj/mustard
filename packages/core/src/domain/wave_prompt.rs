@@ -55,7 +55,7 @@ mod summary;
 pub use changed::TaskChange;
 pub use request::listed;
 pub use review::listed_final_review;
-pub use rules::{carries_project_rules, project_rules_section};
+pub use rules::{carries_project_rules, project_rules_section, touched_by, RulesFile, ROOT_RULES_FILE};
 pub use summary::summary_of;
 
 /// A linha dos dois idiomas do projeto, no topo de todo pedido a um agente:
@@ -274,10 +274,10 @@ pub struct Material<'a> {
     /// código da tarefa ([`TaskChange`]): a linha sob a tarefa manda
     /// conferir no código antes de mudar. A tarefa sem mudança fica de fora.
     pub task_changes: BTreeMap<String, TaskChange>,
-    /// O texto do `CLAUDE.md` da raiz do projeto, que só o pedido da revisão
-    /// final leva, numa seção no fim ([`project_rules_section`]). `None` sem o
-    /// arquivo ou com ele vazio.
-    pub project_rules: Option<String>,
+    /// Os arquivos de regras da raiz e das pastas onde a obra mexeu, que só o
+    /// pedido da revisão final leva, numa seção no fim
+    /// ([`project_rules_section`]). Vazia, o pedido sai sem a seção.
+    pub project_rules: Vec<RulesFile>,
 }
 
 /// O teto, em caracteres, do bloco do padrão sob uma tarefa
@@ -1123,15 +1123,21 @@ fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
 pub fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for task in log.block(BlockQuery::Wave(wave)).iter().filter(|e| e.event_type == "task") {
-        let files = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-        for file in files {
-            let path = file.as_str().or_else(|| file.get("path").and_then(Value::as_str)).unwrap_or_default();
-            if !path.is_empty() && !out.iter().any(|seen| seen == path) {
+        for path in declared_paths(task) {
+            if !out.iter().any(|seen| seen == path) {
                 out.push(path.to_string());
             }
         }
     }
     out
+}
+
+/// Os caminhos que um evento declara em `files`, na ordem gravada: o texto
+/// de cada um, como a entrega grava, ou o `path` dele, como a tarefa grava. O
+/// caminho vazio fica de fora.
+fn declared_paths(event: &SpecEvent) -> impl Iterator<Item = &str> {
+    let files = event.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    files.iter().filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str))).filter(|path| !path.is_empty())
 }
 
 /// O que as tarefas da onda `wave` atendem, pelo número com que a tarefa o

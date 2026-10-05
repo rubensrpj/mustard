@@ -84,8 +84,8 @@ impl Writer<'_> {
         while out.ends_with("\n\n") {
             out.pop();
         }
-        if let Some(rules) = &m.project_rules {
-            let _ = writeln!(out, "\n{}", project_rules_section(rules, self.lang));
+        if let Some(section) = project_rules_section(&m.project_rules, self.lang) {
+            let _ = writeln!(out, "\n{section}");
         }
         out
     }

@@ -19,10 +19,11 @@
 //! dos nomes. O texto que já traz a linha, como o pedido da rodada,
 //! passa como veio. O despacho ao `mustard-review` que o orquestrador
 //! escreve — a revisão do levantamento e a do pull request — ganha no fim as
-//! regras do projeto, o texto do `CLAUDE.md` da raiz, porque o revisor é
-//! instalado sem ele; o que manda ler o pedido da revisão final não ganha,
-//! porque esse pedido já as traz. O despacho de uma onda também: ele abre com o título do
-//! pedido dela, e é por esse título, na primeira linha da conversa do agente,
+//! regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
+//! mexe, porque o revisor é instalado sem eles; o que manda ler o pedido da
+//! revisão final não ganha, porque esse pedido já as traz. O despacho de uma
+//! onda também: ele abre com o título do pedido dela, e é por esse título,
+//! na primeira linha da conversa do agente,
 //! que a rodada acha o agente e soma o gasto da onda; a linha na frente o
 //! empurraria para baixo, e o pedido que o agente lê pelo comando do despacho
 //! já traz a linha dos idiomas. Qualquer outro despacho sem bilhete é uma tarefa
@@ -35,17 +36,18 @@ use std::path::Path;
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
-use mustard_core::domain::spec_state::State;
+use mustard_core::domain::spec_state::{SpecState as _, State};
 use mustard_core::domain::wave_prompt::{carries_project_rules, is_wave_title, language_line, project_rules_section};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::transcript::heading_of;
-use mustard_core::io::wave_prompt::{project_rules, prompts, Flight};
+use mustard_core::io::wave_prompt::{project_rules, prompts, touched_files, Flight};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{ProjectConfig, AGENT_NAMES};
 use serde_json::Value;
 
 use crate::hooks::write::write_gate::say;
+use crate::shared::spec_state::DiskSpecState;
 use crate::shared::word_search;
 
 /// O começo da linha do bilhete: depois dele vêm a spec e o número da onda.
@@ -183,15 +185,19 @@ fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// As regras do projeto que o despacho ao revisor ganha no fim, quando o
 /// texto é do orquestrador — a revisão do levantamento e a do pull request:
 /// o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
-/// único caminho delas. Nada ao agente de onda, ao texto que já traz a seção
-/// e ao que manda ler o pedido gravado da revisão final, que já a traz; nada
-/// também sem o `CLAUDE.md` na raiz ou com ele vazio.
+/// único caminho delas. São os arquivos de regras da raiz e das pastas dos
+/// arquivos que a obra da spec atual mexe ([`touched_files`]), a mesma
+/// leitura da revisão final. Nada ao agente de onda, ao texto que já traz a
+/// seção e ao que manda ler o pedido gravado da revisão final, que já a traz;
+/// nada também sem arquivo de regras com texto.
 fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
     let to_reviewer = input.tool_input.get("subagent_type").and_then(Value::as_str) == Some("mustard-review");
     if !to_reviewer || prompt.contains("run read request-review") || carries_project_rules(prompt, lang) {
         return None;
     }
-    project_rules(root).map(|rules| project_rules_section(&rules, lang))
+    let disk = DiskSpecState::new(root);
+    let log = disk.active(input.session_id.as_deref()).and_then(|spec| disk.log(&spec));
+    project_rules_section(&project_rules(root, &touched_files(root, log.as_ref())), lang)
 }
 
 impl Check for SubagentInject {
@@ -446,17 +452,22 @@ mod tests {
     }
 
     /// O despacho que o orquestrador escreve ao revisor — a revisão do
-    /// levantamento, a do pull request — ganha no fim as regras do projeto, o
-    /// texto do `CLAUDE.md` da raiz; sem o arquivo, sai como antes, só com a
-    /// linha dos idiomas. Não as ganham: o texto que já traz a seção, o
-    /// despacho que manda ler o pedido gravado da revisão final, que já as
-    /// traz, o conserto ao agente de onda e o pedido da onda.
+    /// levantamento, a do pull request — ganha no fim as regras do projeto: o
+    /// texto do `CLAUDE.md` da raiz e, quando a pasta de um arquivo das
+    /// tarefas da spec da branch tem regras, também as dela, cada uma sob o
+    /// caminho; sem arquivo de regras, sai como antes, só com a linha dos
+    /// idiomas. Não as ganham: o texto que já traz a seção, o despacho que
+    /// manda ler o pedido gravado da revisão final, que já as traz, o conserto
+    /// ao agente de onda e o pedido da onda.
     #[test]
     fn a_review_dispatch_written_by_the_conductor_ends_with_the_project_rules() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         planned(root, 1);
+        append_raw(root, "task", json!({"text": "Mexer na biblioteca.", "files": [{"path": "lib/sub/a.rs"}], "depends_on": []}), 900);
         approve(root);
+        let init = std::process::Command::new("git").args(["init", "-q", "-b", "feature/x"]).current_dir(root).output().unwrap();
+        assert!(init.status.success(), "{init:?}");
         std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
         let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
         let survey = "Confira o levantamento inteiro da spec x.";
@@ -469,12 +480,21 @@ mod tests {
         assert_eq!(review, format!("{line}\n\n{survey}\n\n{section}"));
         assert_eq!(dispatch_to(root, "mustard-review", &review), Verdict::Allow, "the section is never repeated");
 
+        std::fs::create_dir_all(root.join("lib/sub")).unwrap();
+        std::fs::write(root.join("lib/sub/CLAUDE.md"), "- A biblioteca não lê o disco.\n").unwrap();
+        let nested = rewritten(dispatch_to(root, "mustard-review", survey));
+        let sources = translate("prompt.project_rules.sources", Locale::PtBr);
+        let both = format!(
+            "## Regras do projeto\n\n{sources}\n\n### `CLAUDE.md`\n\n{rules}\n\n### `lib/sub/CLAUDE.md`\n\n- A biblioteca não lê o disco."
+        );
+        assert_eq!(nested, format!("{line}\n\n{survey}\n\n{both}"));
+
         let final_review = format!("{line}\n\nmustard-rt run read request-review --root /r --spec x");
         assert_eq!(dispatch_to(root, "mustard-review", &final_review), Verdict::Allow, "the recorded request has them");
         let fix = rewritten(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."));
         assert_eq!(fix, format!("{line}\n\nConserte o teste da soma."));
         let wave = rewritten(dispatch_to(root, "mustard-wave", "MUSTARD-WAVE: x 1"));
-        assert!(!wave.contains("configuração do git") && wave == assembled(root), "{wave}");
+        assert!(!wave.contains("configuração do git") && !wave.contains("lê o disco") && wave == assembled(root), "{wave}");
     }
 
     /// O despacho de uma onda — o texto que abre com o título do pedido dela e

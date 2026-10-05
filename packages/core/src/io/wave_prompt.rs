@@ -44,7 +44,7 @@ use crate::platform::i18n::Locale;
 mod changed;
 mod rules;
 
-pub use rules::{project_rules, PROJECT_RULES_FILE};
+pub use rules::{project_rules, touched_files};
 
 /// O pedido do revisor final, como o disco o entrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,8 +473,9 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// ondas do plano com as tarefas, as emendas gravadas para elas, a entrega
 /// mais nova de cada onda, os critérios, os commits que já entraram na branch
 /// e a cópia do revisor, no commit mais novo da spec e na pasta de compilação
-/// que a última onda enviada usou. No fim vêm as regras do projeto, o texto
-/// do `CLAUDE.md` da raiz ([`project_rules`]), quando ele existe com texto.
+/// que a última onda enviada usou. No fim vêm as regras do projeto: os
+/// arquivos de regras da raiz e das pastas dos arquivos que a obra mexe
+/// ([`project_rules`], [`touched_files`]), quando algum existe com texto.
 ///
 /// Depois de um veredito final que reprovou, o pedido é o da revisão de
 /// volta: ele lista o que mudou desde esse veredito
@@ -540,7 +541,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
         since_verdict: wave_prompt::since_last_verdict(log),
         execution,
         codes: log.codes(),
-        project_rules: project_rules(root),
+        project_rules: project_rules(root, &touched_files(root, Some(log))),
         ..Material::default()
     };
     FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
@@ -896,7 +897,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         task_changes,
         // As regras do projeto vão só ao revisor: o agente da onda recebe o
         // arquivo dele e este pedido.
-        project_rules: None,
+        project_rules: Vec::new(),
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
