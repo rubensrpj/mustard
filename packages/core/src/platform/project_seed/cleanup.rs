@@ -8,13 +8,13 @@
 //!   scan wrote the `@.claude/scan-map.md` import, the `> Parent: … |
 //!   Orchestrator: …` line and the `## Guards` block between
 //!   `<!-- mustard:guards -->` and `<!-- /mustard:guards -->`;
-//! - the team's `.claude/settings.json`, where an older install wrote the lines
-//!   of its seed (its deny rules stay: a protection rule never leaves the
-//!   team's file unless someone asks). The one exception: each of the three
-//!   deny rules an older seed wrote with both wildcard forms becomes, in its
-//!   place, the spelling that works, so the protection holds and Claude Code
-//!   stops warning; an absent one never enters, and the person commits the
-//!   changed lines;
+//! - o `.claude/settings.json` da equipe, onde uma instalação antiga escreveu
+//!   as linhas do molde dela (as regras de bloqueio ficam: uma regra de
+//!   proteção nunca sai do arquivo da equipe sem alguém pedir). A única
+//!   exceção: cada uma das três regras de bloqueio que um molde antigo
+//!   escreveu com as duas formas de asterisco vira, no mesmo lugar, a escrita
+//!   que funciona, e assim a proteção vale e o Claude Code para de avisar; a
+//!   que não está lá nunca entra, e quem comita as linhas mudadas é a pessoa;
 //! - `.claude/CLAUDE.md`, the orchestrator an older install planted;
 //! - a spec's own `spec.md` and `spec.html`, left behind by an older binary
 //!   that rendered the page to disk beside `spec.ndjson`, which is the ONLY
@@ -108,14 +108,15 @@ pub struct FileChange {
     pub action: Action,
     /// What leaves the file, one entry per line or block, in file order.
     pub removes: Vec<String>,
-    /// The deny rules rewritten in place, in file order. Only the team's
-    /// settings file has them.
+    /// As regras de bloqueio reescritas no lugar, na ordem do arquivo. Só o
+    /// arquivo de configurações da equipe as tem.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub swaps: Vec<RuleSwap>,
 }
 
-/// One deny rule of the team's settings file that changes in place: the text
-/// an older seed wrote with both wildcard forms, and the one that replaces it.
+/// Uma regra de bloqueio do arquivo de configurações da equipe que muda no
+/// lugar: o texto que um molde antigo escreveu com as duas formas de
+/// asterisco, e o que o substitui.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleSwap {
@@ -123,17 +124,17 @@ pub struct RuleSwap {
     pub to: String,
 }
 
-/// The line that tells the person, in `lang`, that the deny rule `swap` of the
-/// file `path` changed in place. Said only once the file was written: the plan
-/// says it with [`planned_swap_line`].
+/// A linha que diz à pessoa, em `lang`, que a regra de bloqueio `swap` do
+/// arquivo `path` mudou no lugar. Só é dita depois que o arquivo foi gravado:
+/// o plano diz o mesmo com [`planned_swap_line`].
 #[must_use]
 pub fn swap_line(path: &str, swap: &RuleSwap, lang: Locale) -> String {
     filled_swap_line("cleanup.deny_rule_swapped", path, swap, lang)
 }
 
-/// The line of the plan, in `lang`: `/mustard:upsert` will change the deny
-/// rule `swap` of the file `path` in place, and the changed line is the
-/// person's to commit. Nothing was written yet when it is said.
+/// A linha do plano, em `lang`: o `/mustard:upsert` vai trocar no lugar a
+/// regra de bloqueio `swap` do arquivo `path`, e a linha mudada é da pessoa
+/// para comitar. Quando ela é dita, nada foi gravado ainda.
 #[must_use]
 pub fn planned_swap_line(path: &str, swap: &RuleSwap, lang: Locale) -> String {
     filled_swap_line("cleanup.deny_rule_to_swap", path, swap, lang)
@@ -213,8 +214,8 @@ pub struct CleanupDone {
     pub edited: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deleted: Vec<String>,
-    /// One line per deny rule changed in place ([`swap_line`]), in the
-    /// project's language, once its file was written.
+    /// Uma linha por regra de bloqueio mudada no lugar ([`swap_line`]), no
+    /// idioma do projeto, depois que o arquivo dela foi gravado.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub swapped: Vec<String>,
     /// The number of the pending item that holds the rules that left.
@@ -307,8 +308,9 @@ fn stale_spec_pages(root: &Path) -> Vec<FileChange> {
     out
 }
 
-/// The team's settings file without the seed's lines and with the deny rules
-/// that mix both wildcard forms swapped in place, when it has any of either.
+/// O arquivo de configurações da equipe sem as linhas do molde e com as regras
+/// de bloqueio que misturam as duas formas de asterisco trocadas no lugar,
+/// quando ele tem uma coisa ou outra.
 fn team_settings_change(root: &Path) -> Option<FileChange> {
     let raw = fs::read_to_string(team_settings_path(root)).ok()?;
     let parsed = serde_json::from_str::<Value>(&raw).ok()?;
@@ -324,11 +326,12 @@ fn team_settings_change(root: &Path) -> Option<FileChange> {
     })
 }
 
-/// The team's settings as the cleanup leaves them: without the seed's lines
-/// ([`without_seed_lines`]) and with each deny rule that mixes both wildcard
-/// forms swapped in place ([`swap_mixed_wildcard_deny_rules`]). Answers the
-/// settings, what left and what was swapped. The plan and the rewrite both
-/// read the file through here, so what is written is what was listed.
+/// As configurações da equipe como a limpeza as deixa: sem as linhas do molde
+/// ([`without_seed_lines`]) e com cada regra de bloqueio que mistura as duas
+/// formas de asterisco trocada no lugar ([`swap_mixed_wildcard_deny_rules`]).
+/// Responde as configurações, o que saiu e o que foi trocado. O plano e a
+/// regravação leem o arquivo por aqui, então o que se grava é o que foi
+/// listado.
 fn cleaned_team_settings(settings: &Map<String, Value>) -> (Map<String, Value>, Vec<String>, Vec<RuleSwap>) {
     let (mut left, removes) = without_seed_lines(settings);
     let swaps =

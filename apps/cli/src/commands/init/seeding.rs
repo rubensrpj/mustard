@@ -168,16 +168,17 @@ pub(super) fn report_migration(migrated: &[String]) {
     }
 }
 
-/// Say, in one line, how many files carry what an older Mustard left and who
-/// takes it out; a file with the traces of an older scan and no mark keeps its
-/// short note. Each deny rule of the team's settings that the cleanup will
-/// change in place gets its own line, in the project's language `lang`, saying
-/// that `/mustard:upsert` swaps it and that the changed line is the person's to
-/// commit. Nothing is taken out or swapped here: the plugin's door does it.
+/// Diz, numa linha, quantos arquivos guardam o que um Mustard antigo deixou e
+/// quem tira; um arquivo com os rastros de um scan antigo e sem marca mantém a
+/// nota curta dele. Cada regra de bloqueio das configurações da equipe que a
+/// limpeza vai mudar no lugar ganha uma linha só dela, no idioma do projeto
+/// `lang`, dizendo que o `/mustard:upsert` faz a troca e que a linha mudada é
+/// da pessoa para comitar. Nada sai nem é trocado aqui: quem faz isso é a
+/// porta do plugin.
 ///
-/// Writes to `out` (the install passes stdout) so a test reads exactly what
-/// `mustard init` prints. A failed write is dropped: a notice never aborts the
-/// install.
+/// Escreve em `out` (a instalação passa a saída padrão) para que um teste leia
+/// exatamente o que o `mustard init` imprime. A escrita que falha é deixada de
+/// lado: um aviso nunca interrompe a instalação.
 pub(super) fn report_cleanup(out: &mut impl Write, plan: &CleanupPlan, lang: Locale) {
     // Uma linha só para todos os arquivos com sobras: a lista por arquivo,
     // com todos os trechos, repetia o mesmo texto e parecia uma lista de erros.

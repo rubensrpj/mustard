@@ -1,8 +1,9 @@
-//! O diagnóstico da instalação: o que o `doctor` acusa sobre a proteção da
-//! branch, as chaves do `mustard.json`, as sobras do Mustard e o que o scan
-//! escreve; e as duas linhas da limpeza sobre a regra de bloqueio trocada no
-//! lugar: a do plano, que diz o que o `/mustard:upsert` vai trocar, e a do
-//! relatório, que diz o que já foi trocado.
+//! Os textos da instalação. São dois grupos: o diagnóstico, que é o que o
+//! `doctor` acusa sobre a proteção da branch, as chaves do `mustard.json`, as
+//! sobras do Mustard e o que o scan escreve; e as duas linhas da limpeza sobre
+//! a regra de bloqueio trocada no lugar, a do plano, que diz o que o
+//! `/mustard:upsert` vai trocar, e a do relatório, que diz o que já foi
+//! trocado.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta

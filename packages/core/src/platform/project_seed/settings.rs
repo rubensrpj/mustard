@@ -63,16 +63,17 @@ fn is_own_allow_rule(rule: &str) -> bool {
     rule.starts_with("Bash(mustard-rt run ") || rule == PAGE_DATABASE_TOOL
 }
 
-/// Lines older seeds wrote and the current seed no longer carries, spelled
-/// exactly as they were written.
+/// As linhas que um molde antigo escrevia e o de hoje não traz mais, letra por
+/// letra, como foram escritas.
 ///
-/// One use, narrow: the local settings file is Mustard's own, so these rules
-/// leave it on the next install. The cleanup of a team's `.claude/settings.json`
-/// never reads them: a deny rule stays in the team's file.
+/// Um uso só, estreito: o arquivo de configurações locais é do Mustard, então
+/// essas regras saem dele na próxima instalação. A limpeza do
+/// `.claude/settings.json` da equipe nunca as lê: a regra de bloqueio fica no
+/// arquivo da equipe.
 ///
-/// The four branch rules named the bases `main` and `master` by hand; the bases
-/// come from `mustard.json#git.flow`, and deleting a base is the command guard's
-/// to refuse.
+/// As quatro regras de branch citavam as bases `main` e `master` à mão; as
+/// bases vêm de `mustard.json#git.flow`, e quem recusa apagar uma base é a
+/// trava de comandos.
 const RETIRED_DENY_RULES: &[&str] = &[
     "Bash(git branch -D main:*)",
     "Bash(git branch -D master:*)",
@@ -423,9 +424,11 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
         return;
     };
     for (list, wanted) in [("allow", allow), ("deny", deny)] {
-        // A rule the operator filed in any OTHER list is a decision, and a
-        // default never overrides a decision.
-        let decided: Vec<String> = ["allow", "deny", "ask"]
+        // A regra que a pessoa guardou em OUTRA lista é uma decisão, e o padrão
+        // nunca passa por cima de uma decisão. O texto antigo de um par de
+        // `MIXED_WILDCARD_DENY_SWAPS` guardado em outra lista é a decisão dela
+        // sobre a regra nova do par, que por isso também fica de fora.
+        let mut decided: Vec<String> = ["allow", "deny", "ask"]
             .iter()
             .filter(|other| **other != list)
             .filter_map(|other| perms.get(*other))
@@ -434,6 +437,12 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect();
+        let renamed: Vec<String> = MIXED_WILDCARD_DENY_SWAPS
+            .iter()
+            .filter(|(old, _)| decided.iter().any(|rule| rule == old))
+            .map(|(_, new)| (*new).to_string())
+            .collect();
+        decided.extend(renamed);
         let Some(rules) = perms.get_mut(list).and_then(Value::as_array_mut) else {
             continue;
         };
@@ -737,20 +746,21 @@ impl Switches {
 // A team's settings file: the lines the seed wrote into it
 // ---------------------------------------------------------------------------
 
-/// `settings` without the lines the seed wrote, and the name of each line
-/// taken out, in file order.
+/// `settings` sem as linhas que o molde escreveu, e o nome de cada linha
+/// tirada, na ordem do arquivo.
 ///
-/// A line is the seed's when its text is exactly the seed's: a top-level key
-/// with the seed's value, an `env` variable with the seed's value, an allow or
-/// ask rule the seed lists, and the signature an older seed wrote. Anything the
-/// team changed, even by one character, is theirs and stays. A container the
-/// removal empties goes too.
+/// Uma linha é do molde quando o texto dela é exatamente o do molde: uma chave
+/// do topo com o valor do molde, uma variável do `env` com o valor do molde,
+/// uma regra de `allow` ou de `ask` que o molde lista, e a assinatura que um
+/// molde antigo escrevia. O que a equipe mudou, nem que seja um caractere, é
+/// dela e fica. O objeto ou a lista que a remoção esvazia sai junto.
 ///
-/// Deny rules always stay, even the seed's: a protection rule never leaves the
-/// team's file unless someone asks, so a file with one is never emptied. The
-/// one exception is not made here but by the cleanup, after this: each of the
-/// three deny rules an older seed wrote with both wildcard forms becomes, in
-/// its place, the spelling that works ([`swap_mixed_wildcard_deny_rules`]).
+/// As regras de bloqueio sempre ficam, até as do molde: uma regra de proteção
+/// nunca sai do arquivo da equipe sem alguém pedir, então um arquivo com uma
+/// delas nunca fica vazio. A única exceção não é feita aqui, e sim pela
+/// limpeza, depois desta: cada uma das três regras de bloqueio que um molde
+/// antigo escreveu com as duas formas de asterisco vira, no mesmo lugar, a
+/// escrita que funciona ([`swap_mixed_wildcard_deny_rules`]).
 #[must_use]
 pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
     let seed = parse_json_object(SETTINGS_SEED);
@@ -822,9 +832,9 @@ fn is_retired_env(name: &str, value: &Value) -> bool {
     RETIRED_ENV.iter().any(|(retired, written)| name == *retired && value.as_str() == Some(*written))
 }
 
-/// The permission lists whose seed rules leave a team's file. `deny` is not
-/// one of them: its rules stay, and only the three of
-/// [`MIXED_WILDCARD_DENY_SWAPS`] change, swapped in place by the cleanup.
+/// As listas de permissão cujas regras do molde saem do arquivo da equipe.
+/// `deny` não é uma delas: as regras dela ficam, e só as três de
+/// [`MIXED_WILDCARD_DENY_SWAPS`] mudam, trocadas no lugar pela limpeza.
 const SEED_LINE_LISTS: [&str; 2] = ["allow", "ask"];
 
 /// The rules the seed lists under `permissions.<list>`.
@@ -1219,6 +1229,50 @@ mod tests {
         assert_eq!(deny[0], "Bash(git checkout * -f*)");
         assert!(!deny.iter().any(|rule| rule == "Bash(git checkout * -f:*)"), "the old one only leaves: {deny:?}");
         assert_eq!(deny.iter().filter(|rule| *rule == "Bash(git checkout * -f*)").count(), 1, "{deny:?}");
+    }
+
+    /// Quem guardou o texto antigo de uma das três regras na lista que pede
+    /// confirmação, ou na do que é liberado, decidiu sobre ela: a atualização
+    /// não põe a regra nova desse par na lista do que é barrado, e o texto
+    /// antigo fica na lista da pessoa, escrito como estava. As regras novas dos
+    /// outros pares, que ninguém mexeu, entram. As antigas estão escritas aqui
+    /// por extenso, como o molde antigo as gravava.
+    #[test]
+    fn an_old_rule_kept_in_another_list_keeps_the_new_one_out_of_deny() {
+        let rules_of = |root: &Path, list: &str| -> Vec<String> {
+            local_settings(root)["permissions"][list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        };
+        for (list, old, new) in [
+            ("ask", "Bash(git checkout * --force:*)", "Bash(git checkout * --force*)"),
+            ("allow", "Bash(git reset * --hard:*)", "Bash(git reset * --hard*)"),
+        ] {
+            let dir = tempdir().unwrap();
+            let claude = dir.path().join(".claude");
+            std_fs::create_dir_all(&claude).unwrap();
+            std_fs::write(
+                claude.join("settings.local.json"),
+                format!(r#"{{"permissions":{{"{list}":["{old}"],"deny":["Bash(my-rule:*)"]}}}}"#),
+            )
+            .unwrap();
+
+            seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+
+            let deny = rules_of(dir.path(), "deny");
+            assert!(!deny.iter().any(|rule| rule == new), "{new} entered deny over the {list} decision: {deny:?}");
+            assert!(!deny.iter().any(|rule| rule == old), "{old} moved to deny: {deny:?}");
+            let kept = rules_of(dir.path(), list);
+            assert_eq!(kept.iter().filter(|rule| *rule == old).count(), 1, "{old} left {list}: {kept:?}");
+            assert!(!kept.iter().any(|rule| rule == new), "{old} was rewritten in {list}: {kept:?}");
+            for (_, other) in MIXED_WILDCARD_DENY_SWAPS.iter().filter(|(_, other)| *other != new) {
+                assert!(deny.iter().any(|rule| rule == other), "{other} did not enter deny: {deny:?}");
+            }
+        }
     }
 
     // --- a team's settings file ---------------------------------------------

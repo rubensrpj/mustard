@@ -40,29 +40,29 @@
 //!    the first search of the assistant already has a map to answer from,
 //!    also with `--yes` and in a project with no code yet. A scan that fails
 //!    is a warning: the next session start or search creates the map;
-//! 7. list what an older Mustard left in files that are not its own — the
-//!    marks in the `CLAUDE.md` files, the seed's lines in the team's
-//!    `.claude/settings.json`, a planted `.claude/CLAUDE.md` — and say how to
-//!    take it out, with one line, in the text language, for each deny rule of
-//!    the team's file that `/mustard:upsert` will swap in place and leave for
-//!    the person to commit. Nothing of it is removed or swapped here:
-//!    that happens through `/mustard:upsert`, after the person says yes to the
-//!    list.
+//! 7. listar o que um Mustard antigo deixou em arquivos que não são dele (as
+//!    marcas nos arquivos `CLAUDE.md`, as linhas do molde no
+//!    `.claude/settings.json` da equipe, um `.claude/CLAUDE.md` plantado) e
+//!    dizer como tirar, com uma linha, no idioma do texto, para cada regra de
+//!    bloqueio do arquivo da equipe que o `/mustard:upsert` vai trocar no
+//!    lugar e deixar para a pessoa comitar. Nada disso sai nem é trocado aqui:
+//!    isso acontece pelo `/mustard:upsert`, depois que a pessoa diz sim à
+//!    lista.
 //!
 //! Nothing is staged or committed, and nothing is written outside the project:
 //! `~/.claude/` is never touched. A re-run re-stamps `mustard.json#version`,
 //! and in a repository that versions the file the new stamp is a change for the
 //! person to commit.
 //!
-//! The install is always PRIVATE (`mustard_core::InstallMode::Private`): every
-//! file above lands on disk — the harness needs it there — but none of it is
-//! visible to the host repository's git, and nothing is written outside
-//! `.claude/` but `mustard.json`. There is no flag and no prompt for it. The
-//! team's `.claude/settings.json` is never written by `init`: only the cleanup
-//! of `/mustard:upsert` touches it, to take the seed's lines out and, the one
-//! exception among its deny rules, to swap in place each of the three an older
-//! seed wrote with both wildcard forms; those changed lines are the person's
-//! to commit.
+//! A instalação é sempre PRIVADA (`mustard_core::InstallMode::Private`): cada
+//! arquivo acima vai para o disco, porque o harness precisa dele lá, mas
+//! nenhum fica visível ao git do repositório hospedeiro, e nada se grava fora
+//! de `.claude/` além do `mustard.json`. Não há opção nem pergunta para isso.
+//! O `init` nunca grava o `.claude/settings.json` da equipe: só a limpeza do
+//! `/mustard:upsert` mexe nele, para tirar as linhas do molde e, como única
+//! exceção entre as regras de bloqueio dele, trocar no lugar cada uma das três
+//! que um molde antigo escreveu com as duas formas de asterisco; essas linhas
+//! mudadas são da pessoa para comitar.
 //!
 //! Everything laid down is compiled into the binary: `init` looks up no folder
 //! of molds, so it runs in an empty project with no extra setting.
