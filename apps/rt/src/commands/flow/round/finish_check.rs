@@ -401,11 +401,32 @@ mod tests {
     }
 
     /// A primeira tarefa lista `src/a.rs`; a segunda, devolvida, lista o
+    /// mesmo arquivo e `src/b.rs`. A volta que devolve a segunda grava, e o
+    /// conserto seguinte muda só `src/a.rs`, com o que pode ser trabalho
+    /// começado na tarefa devolvida: o arquivo que a tarefa feita também
+    /// lista fica com o conserto, e a entrega grava.
+    #[test]
+    fn a_fix_with_a_new_change_only_in_a_file_the_done_task_also_lists_goes_in() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = wave_of(root, &["src/a.rs"], &["src/a.rs", "src/b.rs"]);
+        edit(&copy, "src/a.rs", "a soma saiu");
+        step(root, "MSTD-TASK-0001", json!({}));
+        let body = json!({"wave": 1, "text": "A soma saiu; o total ficou.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "undone": ["MSTD-TASK-0002"]});
+        assert_eq!(returned_unread(root, body.clone())["ok"], json!(true));
+
+        edit(&copy, "src/a.rs", "o total começou");
+        let fixed = returned_unread(root, body);
+        assert_eq!(fixed["ok"], json!(true), "the file the done task also lists stays with the fix: {fixed}");
+    }
+
+    /// A primeira tarefa lista `src/a.rs`; a segunda, devolvida, lista o
     /// mesmo arquivo e `src/b.rs`, que a primeira também mudou antes do passo
-    /// dela. O conserto em `src/a.rs`, que a tarefa feita também lista, grava;
-    /// a mudança nova em `src/b.rs`, só da tarefa devolvida, é trabalho
-    /// começado nela e recusa citando só ela, sem gravar nada; com
-    /// `src/b.rs` de volta ao que o passo guardou, a mesma entrega grava.
+    /// dela. Depois da volta que devolve a segunda, a mudança nova em
+    /// `src/b.rs`, só da tarefa devolvida, é trabalho começado nela e recusa
+    /// o conserto citando só ela, sem gravar nada; com `src/b.rs` de volta ao
+    /// que o passo guardou, a mesma entrega grava.
     #[test]
     fn work_started_on_a_given_back_task_during_the_fix_refuses_the_fix() {
         let dir = tempdir().unwrap();
@@ -417,10 +438,6 @@ mod tests {
         let body = json!({"wave": 1, "text": "A soma saiu; o total ficou.", "files": ["src/a.rs", "src/b.rs"],
             "commit": "a soma sai", "undone": ["MSTD-TASK-0002"]});
         assert_eq!(returned_unread(root, body.clone())["ok"], json!(true));
-
-        edit(&copy, "src/a.rs", "a soma conserta o sinal");
-        let fixed = returned_unread(root, body.clone());
-        assert_eq!(fixed["ok"], json!(true), "the fix in the file the done task lists goes in: {fixed}");
 
         let stepped = std::fs::read_to_string(copy.join("src/b.rs")).unwrap();
         edit(&copy, "src/b.rs", "o total começou");

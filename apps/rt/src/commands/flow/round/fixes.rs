@@ -243,6 +243,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
+    use super::super::commit::copy_of;
     use super::fix_file;
     use crate::commands::flow::round::tests::*;
 
@@ -256,19 +257,30 @@ mod tests {
     /// A onda `wave` volta com o arquivo `file` mudado na cópia dela e, com
     /// `proof`, a verificação nova do critério da spec na entrega.
     fn back_with(root: &Path, wave: u64, file: &str, proof: Option<&str>) {
-        let copy = mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
+        back_fixing(root, wave, &[], file, proof);
+    }
+
+    /// [`back_with`] da onda cuja entrega diz consertar as ondas `fixes`. A
+    /// cópia é a que o envio da onda gravou, em qualquer vaga.
+    fn back_fixing(root: &Path, wave: u64, fixes: &[u64], file: &str, proof: Option<&str>) {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = copy_of(&log, wave).unwrap_or_else(|| panic!("the copy of wave {wave}"));
         let before = std::fs::read_to_string(copy.join(file)).unwrap_or_default();
         std::fs::write(copy.join(file), format!("{before}// onda {wave}\n")).unwrap();
         let mut body = json!({"wave": wave, "text": "Saiu.", "files": [file], "commit": format!("a onda {wave} sai")});
+        if !fixes.is_empty() {
+            body["fixes"] = json!(fixes);
+        }
         if let Some(proof) = proof {
             body["proofs"] = json!([{"criterion": "MSTD-CRIT-0001", "proof": proof}]);
         }
         assert_eq!(returned(root, body)["ok"], json!(true));
     }
 
-    /// Duas ondas, cada uma com o próprio critério: a onda 2 passa a cobrir
-    /// só o critério novo, que sempre passa.
-    fn two_waves_two_criteria(root: &Path) {
+    /// Duas ondas, cada uma com o próprio critério, e até `slots` delas
+    /// compilando ao mesmo tempo: a onda 2 passa a cobrir só o critério novo,
+    /// que sempre passa.
+    fn two_waves_two_criteria(root: &Path, slots: u64) {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
             let crit = write(root, "x", "criterion", json!({"when": "a dobra roda", "then": "a dobra passa",
                 "proof": "git --version", "form": "ubiquitous", "origin": said}));
@@ -278,7 +290,7 @@ mod tests {
                 "origin": said, "replaces": old});
             assert_eq!(write(root, "x", "wave", wave)["ok"], json!(true));
         });
-        std::fs::write(root.join("mustard.json"), json!({"maxCompilingWaves": 2}).to_string()).unwrap();
+        std::fs::write(root.join("mustard.json"), json!({"maxCompilingWaves": slots}).to_string()).unwrap();
     }
 
     /// Duas ondas na mesma rodada, e a verificação do critério que só a onda
@@ -292,7 +304,7 @@ mod tests {
     fn a_failing_criterion_verification_sends_the_fix_to_the_wave_that_covers_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        two_waves_two_criteria(root);
+        two_waves_two_criteria(root, 2);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         back_with(root, 2, "src/b.rs", None);
         let fix = |key: &str, slots: &[(&str, &str)]| {
@@ -322,6 +334,39 @@ mod tests {
         assert_eq!(fix_kept(root, 1), Some(expected), "{no_test}");
         assert_eq!(fix_kept(root, 2), None, "{no_test}");
         assert_eq!(delivered_count(root), 0, "nothing was taken: {no_test}");
+    }
+
+    /// Com uma vaga só, a onda 1 é comitada e reprovada, e a onda 2, que só
+    /// cobre o critério novo, entrega o conserto dela com a verificação nova
+    /// do critério da onda 1, que não passa. A onda 2 cobre o critério pela
+    /// onda que conserta: a recusa manda a onda 2 de volta ao agente dela, e o
+    /// trecho de conserto fica gravado para a volta dela.
+    #[test]
+    fn a_failing_criterion_of_the_fixed_wave_sends_the_fix_to_the_wave_that_fixes_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        two_waves_two_criteria(root, 1);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        back_with(root, 1, "src/a.rs", None);
+        let next = round(root, "x", None);
+        assert_eq!(waves_in(&next, "dispatch"), vec![2], "{next}");
+        let rejected = round(root, "x", Some(&verdict(root, 1, "rejected", "a soma erra o sinal")));
+        assert_eq!(waves_in(&rejected, "dispatch"), Vec::<u64>::new(), "the only slot is taken by wave 2: {rejected}");
+
+        let broken = "git --nao-existe-esta-opcao";
+        back_fixing(root, 2, &[1], "src/b.rs", Some(broken));
+        let failed = round(root, "x", None);
+        assert_eq!(failed["reason"], json!("round-criterion-proof-failed"), "{failed}");
+        let line = translate("round_checks.criterion_wave", Locale::PtBr).replace("{wave}", "2").replace("{code}", "MSTD-CRIT-0001");
+        let hint = failed["hint"].as_str().unwrap_or_default();
+        assert!(hint.ends_with(&format!("\n- {line}")), "{hint}");
+        let kept = fix_kept(root, 2).unwrap_or_else(|| panic!("the fix of wave 2 is kept: {failed}"));
+        let head = translate("round_checks.criterion_failed_fix", Locale::PtBr)
+            .replace("{wave}", "2")
+            .replace("{code}", "MSTD-CRIT-0001")
+            .replace("{command}", broken);
+        let head = head.split_once("{output}").map(|(head, _)| head.to_string()).unwrap();
+        assert!(kept.starts_with(&head) && kept.contains("nao-existe-esta-opcao"), "{kept}");
     }
 
     /// Duas ondas na mesma rodada cobrem o mesmo critério, e a verificação
