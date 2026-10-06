@@ -353,19 +353,6 @@ fn leading_string(tail: &mut &str, key: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-/// Onde está um resumo: a entrega que uma onda gravou ao parar, com tarefas por
-/// fazer ([`SpecLog::summaries`]). O estado sai só da spec, sem marca solta.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SummaryState {
-    /// Nenhum envio o cita, ou só envio de onda que saiu do plano sem
-    /// entregar: a próxima montagem o faz base de uma onda.
-    Unused,
-    /// Um envio o cita, e a onda dele segue no plano sem entrega.
-    InUse,
-    /// A onda que o citou entregou.
-    Used,
-}
-
 impl SpecLog {
     /// O evento de número `id`, removido ou não.
     #[must_use]
@@ -531,48 +518,49 @@ impl SpecLog {
             .collect()
     }
 
-    /// Os resumos da spec, em ordem de número, cada um com o estado dele
-    /// ([`SummaryState`]). Resumo é a entrega — a que a leitura mostra, já
+    /// Os resumos que ainda valem, em ordem de número, cada um com as tarefas
+    /// que ele acompanha e que não foram entregues, pelo número da versão
+    /// vigente de cada uma. Resumo é a entrega — a que a leitura mostra, já
     /// assumida pela rodada — com `undone` não vazio: a onda parou e deixou
-    /// tarefas por fazer. Um envio o cita pelo campo `summary` (o número da
-    /// entrega, lido na versão vigente dela). Se a onda de algum envio que o
-    /// cita entregou, o resumo está usado; se ela segue no plano
-    /// ([`Self::planned_waves`]) sem entrega, está em uso; senão — ninguém o
-    /// citou, ou a onda que o citou foi cortada e saiu do plano —, não usado.
+    /// tarefas por fazer. Cada tarefa é acompanhada pelo resumo mais novo que
+    /// a deixou: quem continuou um resumo e parou de novo escreveu um que o
+    /// substitui. A tarefa está entregue quando a onda dela tem entrega, salvo
+    /// a onda que a deixou por fazer. O resumo vale enquanto acompanha uma
+    /// tarefa não entregue, em quantas ondas ela sair; sem nenhuma, sai da
+    /// lista.
     #[must_use]
-    pub fn summaries(&self) -> Vec<(&SpecEvent, SummaryState)> {
-        let waves = self.block(BlockQuery::Block(Block::Waves));
+    pub fn live_summaries(&self) -> Vec<(&SpecEvent, BTreeSet<u64>)> {
+        let codes = self.codes();
         let delivered = self.delivered_waves();
-        let planned = self.planned_waves();
-        let mut citing: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-        for send in waves.iter().filter(|e| e.event_type == "send") {
-            let (Some(summary), Some(wave)) = (send.int("summary"), send.wave()) else { continue };
-            let current = self.current(summary).map_or(summary, |event| event.id);
-            citing.entry(current).or_default().push(wave);
-        }
-        waves
+        let summaries: Vec<&SpecEvent> = self
+            .block(BlockQuery::Block(Block::Waves))
             .into_iter()
             .filter(|e| e.event_type == "delivered")
             .filter(|e| e.fields.get("undone").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty()))
+            .collect();
+        let mut carried: BTreeMap<u64, (u64, Option<u64>)> = BTreeMap::new();
+        for summary in &summaries {
+            for value in summary.fields.get("undone").and_then(Value::as_array).into_iter().flatten() {
+                if let Some(task) = super::against::current_task(self, &codes, value) {
+                    carried.insert(task.id, (summary.id, task.wave()));
+                }
+            }
+        }
+        summaries
+            .into_iter()
             .map(|summary| {
-                let by = citing.get(&summary.id).map(Vec::as_slice).unwrap_or_default();
-                let state = if by.iter().any(|wave| delivered.contains(wave)) {
-                    SummaryState::Used
-                } else if by.iter().any(|wave| planned.contains(wave)) {
-                    SummaryState::InUse
-                } else {
-                    SummaryState::Unused
-                };
-                (summary, state)
+                let pending: BTreeSet<u64> = carried
+                    .iter()
+                    .filter(|(_, (by, _))| *by == summary.id)
+                    .filter(|(_, (_, wave))| {
+                        wave.is_none_or(|wave| !delivered.contains(&wave) || summary.wave() == Some(wave))
+                    })
+                    .map(|(task, _)| *task)
+                    .collect();
+                (summary, pending)
             })
+            .filter(|(_, pending)| !pending.is_empty())
             .collect()
-    }
-
-    /// Os resumos não usados ([`SummaryState::Unused`]), em ordem de número:
-    /// cada um é a base de uma onda da próxima montagem.
-    #[must_use]
-    pub fn unused_summaries(&self) -> Vec<&SpecEvent> {
-        self.summaries().into_iter().filter(|(_, state)| *state == SummaryState::Unused).map(|(event, _)| event).collect()
     }
 
     /// As voltas que a rodada ou o fechamento ainda não assumiu, em ordem de
@@ -669,18 +657,36 @@ impl SpecLog {
             .collect()
     }
 
-    /// O maior número de onda que a leitura mostra, com a onda que saiu do
-    /// plano por ficar vazia ([`Self::planned_waves`]) incluída; zero sem
-    /// onda nenhuma. A onda nova nasce depois dele, para nunca repetir o
-    /// número de uma onda que já foi gravada.
+    /// O maior número de onda gravado no arquivo, com a onda que saiu do
+    /// plano por ficar vazia ([`Self::planned_waves`]) e a removida
+    /// incluídas; zero sem onda nenhuma. A onda nova nasce depois dele, para
+    /// nunca repetir o número de uma onda que já foi gravada: o envio e as
+    /// tarefas que ainda trazem o número velho passariam a ser dela.
     #[must_use]
     pub fn last_wave_number(&self) -> u64 {
-        self.block(BlockQuery::Block(Block::Waves))
-            .into_iter()
+        self.events.iter().filter(|e| e.event_type == "wave").filter_map(SpecEvent::wave).max().unwrap_or(0)
+    }
+
+    /// As tarefas vigentes presas a uma onda que a remoção `removed` tirou da
+    /// leitura, lidas no arquivo já com ela: a onda sem entrega e sem outra
+    /// versão à mostra, e as tarefas que ainda levam o número dela. A onda
+    /// entregue fica de fora: as tarefas dela seguem como estão.
+    #[must_use]
+    pub fn tasks_of_removed_waves(&self, removed: &[u64]) -> Vec<&SpecEvent> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let delivered = self.delivered_waves();
+        let gone: BTreeSet<u64> = removed
+            .iter()
+            .filter_map(|id| self.get(*id))
             .filter(|e| e.event_type == "wave")
             .filter_map(SpecEvent::wave)
-            .max()
-            .unwrap_or(0)
+            .filter(|n| !delivered.contains(n))
+            .filter(|n| !waves.iter().any(|e| e.event_type == "wave" && e.wave() == Some(*n)))
+            .collect();
+        self.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| gone.contains(&n)))
+            .collect()
     }
 
     /// Os vereditos de cada onda do plano, do mais velho ao mais novo.
@@ -952,6 +958,21 @@ mod tests {
         assert_eq!(parse_log("").last_wave_number(), 0);
     }
 
+    /// Só a onda removida sem entrega deixa as tarefas presas ao número de uma
+    /// onda que não existe mais; as da onda entregue seguem como estão.
+    #[test]
+    fn only_a_removed_wave_without_a_delivery_leaves_its_tasks_behind() {
+        let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Uma.\"}\n\
+                       {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"wave\",\"n\":2,\"text\":\"Duas.\"}\n\
+                       {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Mexer.\"}\n\
+                       {\"v\":1,\"id\":4,\"at\":\"t\",\"type\":\"task\",\"wave\":2,\"text\":\"Mexer mais.\"}\n\
+                       {\"v\":1,\"id\":5,\"at\":\"t\",\"type\":\"delivered\",\"wave\":2,\"text\":\"Saiu.\"}\n\
+                       {\"v\":1,\"id\":6,\"at\":\"t\",\"type\":\"remove\",\"targets\":[1,2],\"reason\":\"Saíram.\"}\n";
+        let log = parse_log(content);
+        let left: Vec<u64> = log.tasks_of_removed_waves(&[1, 2]).into_iter().map(|e| e.id).collect();
+        assert_eq!(left, [3]);
+    }
+
     /// Conta a onda entregue e a que a última versão de uma tarefa não
     /// removida aponta, e só elas, de qualquer autor: a que perdeu a tarefa
     /// para outra onda, a que a remoção esvaziou e a combinada à mão sem
@@ -1166,96 +1187,64 @@ mod tests {
         assert_eq!(repair_cut_lines("", &parse_log("")), None);
     }
 
-    /// A spec em que a onda 1 parou e deixou a tarefa por fazer: o resumo é a
-    /// entrega 3. `rest` são as linhas que vêm depois, uma por linha.
+    /// A spec em que a onda 1 parou e deixou por fazer as duas tarefas dela,
+    /// A e B: o resumo é a entrega 4. `rest` são as linhas que vêm depois, uma
+    /// por linha.
     fn stopped_wave_log(rest: &[&str]) -> SpecLog {
         let head = [
             r#"{"v":1,"id":1,"at":"t","type":"wave","n":1,"text":"Uma.","author":"binary"}"#,
-            r#"{"v":1,"id":2,"at":"t","type":"task","wave":1,"text":"Mexer."}"#,
-            r#"{"v":1,"id":3,"at":"t","type":"delivered","wave":1,"text":"Parei.","undone":["MSTD-TASK-0002"]}"#,
+            r#"{"v":1,"id":2,"at":"t","type":"task","code":"MSTD-TASK-0001","wave":1,"text":"A."}"#,
+            r#"{"v":1,"id":3,"at":"t","type":"task","code":"MSTD-TASK-0002","wave":1,"text":"B."}"#,
+            r#"{"v":1,"id":4,"at":"t","type":"delivered","wave":1,"text":"Parei.","undone":["MSTD-TASK-0001","MSTD-TASK-0002"]}"#,
         ];
         parse_log(&head.iter().chain(rest).flat_map(|line| [*line, "\n"]).collect::<String>())
     }
 
-    /// Cada resumo da spec, pelo número da entrega, com o estado dele.
-    fn the_summary(log: &SpecLog) -> Vec<(u64, SummaryState)> {
-        log.summaries().into_iter().map(|(event, state)| (event.id, state)).collect()
+    /// Cada resumo que ainda vale, pelo número da entrega, com as tarefas que
+    /// ele acompanha.
+    fn live(log: &SpecLog) -> Vec<(u64, Vec<u64>)> {
+        log.live_summaries().into_iter().map(|(event, tasks)| (event.id, tasks.into_iter().collect())).collect()
     }
 
-    /// O resumo nasce não usado e passa por três estados só pela spec: nenhum
-    /// envio o cita (não usado); um envio o cita e a onda dele segue sem
-    /// entrega (em uso); a onda dele entregou (usado). O resumo não usado é
-    /// o que a próxima montagem toma como base.
+    /// O resumo vale enquanto alguma tarefa que ele deixou não foi entregue,
+    /// em quantas ondas ela sair: a onda que parou não entrega o que deixou,
+    /// a volta ao backlog o mantém, a onda 2 leva A e entrega, e ele segue só
+    /// com B; a onda 3 leva B e entrega, e ele sai da lista.
     #[test]
-    fn a_summary_is_unused_then_in_use_then_used_by_the_wave_that_cites_it() {
-        let wave_two = [
-            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
-            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
+    fn a_summary_holds_until_every_task_it_left_is_delivered() {
+        let back = [
+            r#"{"v":1,"id":5,"at":"t","type":"task","text":"A.","replaces":2}"#,
+            r#"{"v":1,"id":6,"at":"t","type":"task","text":"B.","replaces":3}"#,
         ];
-        let sent = r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#;
-        let delivered = r#"{"v":1,"id":7,"at":"t","type":"delivered","wave":2,"text":"Saiu."}"#;
-
-        let before = stopped_wave_log(&[]);
-        assert_eq!(the_summary(&before), [(3, SummaryState::Unused)]);
-        assert_eq!(before.unused_summaries().iter().map(|e| e.id).collect::<Vec<_>>(), [3]);
-
-        let formed = stopped_wave_log(&wave_two);
-        assert_eq!(the_summary(&formed), [(3, SummaryState::Unused)], "a onda formada e não enviada não o usa");
-
-        let in_use = stopped_wave_log(&[wave_two[0], wave_two[1], sent]);
-        assert_eq!(the_summary(&in_use), [(3, SummaryState::InUse)]);
-        assert!(in_use.unused_summaries().is_empty(), "o resumo em uso não é base de outra onda");
-
-        let used = stopped_wave_log(&[wave_two[0], wave_two[1], sent, delivered]);
-        assert_eq!(the_summary(&used), [(3, SummaryState::Used)]);
-        assert!(used.unused_summaries().is_empty());
+        let first = [
+            r#"{"v":1,"id":7,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":4}"#,
+            r#"{"v":1,"id":8,"at":"t","type":"task","text":"A.","wave":2,"replaces":5}"#,
+            r#"{"v":1,"id":9,"at":"t","type":"delivered","wave":2,"text":"Saiu."}"#,
+        ];
+        let second = [
+            r#"{"v":1,"id":10,"at":"t","type":"wave","n":3,"text":"Três.","author":"binary","summary":4}"#,
+            r#"{"v":1,"id":11,"at":"t","type":"task","text":"B.","wave":3,"replaces":6}"#,
+            r#"{"v":1,"id":12,"at":"t","type":"delivered","wave":3,"text":"Saiu."}"#,
+        ];
+        assert_eq!(live(&stopped_wave_log(&[])), [(4, vec![2, 3])], "the wave that stopped did not deliver them");
+        assert_eq!(live(&stopped_wave_log(&back)), [(4, vec![5, 6])], "back in the backlog, the summary holds");
+        let after_first: Vec<&str> = back.iter().chain(&first).copied().collect();
+        assert_eq!(live(&stopped_wave_log(&after_first)), [(4, vec![6])], "A was delivered, B still waits");
+        let after_both: Vec<&str> = after_first.iter().copied().chain(second).collect();
+        assert!(live(&stopped_wave_log(&after_both)).is_empty(), "every task it left was delivered");
     }
 
-    /// A onda que entrega sem parar deixa o resumo lido usado e não cria
-    /// resumo novo: a entrega sem tarefa por fazer não é resumo.
+    /// Quem continuou o resumo e parou de novo escreveu um que o substitui: a
+    /// tarefa que a onda 2 deixou por fazer passa ao resumo dela, e o
+    /// anterior, sem tarefa por entregar, sai da lista.
     #[test]
-    fn a_wave_that_delivers_everything_leaves_the_summary_used_and_makes_no_new_one() {
+    fn a_wave_that_stops_again_replaces_the_summary_it_continued() {
         let log = stopped_wave_log(&[
-            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
-            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
-            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
-            r#"{"v":1,"id":7,"at":"t","type":"delivered","wave":2,"text":"Saiu.","undone":[]}"#,
+            r#"{"v":1,"id":5,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":4}"#,
+            r#"{"v":1,"id":6,"at":"t","type":"task","text":"A.","wave":2,"replaces":2}"#,
+            r#"{"v":1,"id":7,"at":"t","type":"task","text":"B.","wave":2,"replaces":3}"#,
+            r#"{"v":1,"id":8,"at":"t","type":"delivered","wave":2,"text":"Parei.","undone":["MSTD-TASK-0002"]}"#,
         ]);
-        assert_eq!(the_summary(&log), [(3, SummaryState::Used)]);
-    }
-
-    /// A onda que para de novo deixa o resumo que leu usado, e o dela nasce
-    /// não usado: quem continua lê o último resumo, nunca uma pilha deles.
-    #[test]
-    fn a_wave_that_stops_leaves_the_read_summary_used_and_its_own_unused() {
-        let log = stopped_wave_log(&[
-            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
-            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
-            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
-            r#"{"v":1,"id":7,"at":"t","type":"delivered","wave":2,"text":"Parei.","undone":["MSTD-TASK-0005"]}"#,
-        ]);
-        assert_eq!(the_summary(&log), [(3, SummaryState::Used), (7, SummaryState::Unused)]);
-        assert_eq!(log.unused_summaries().iter().map(|e| e.id).collect::<Vec<_>>(), [7]);
-    }
-
-    /// A onda cortada, que o binário formou e ficou sem tarefa — a rodada
-    /// devolveu as tarefas dela ao backlog antes de entregar —, sai do plano,
-    /// e o resumo que o envio dela citava volta a não usado.
-    #[test]
-    fn a_cut_wave_gives_its_summary_back_as_unused() {
-        let log = stopped_wave_log(&[
-            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
-            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
-            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
-        ]);
-        assert_eq!(the_summary(&log), [(3, SummaryState::InUse)]);
-
-        let cut = stopped_wave_log(&[
-            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
-            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
-            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
-            r#"{"v":1,"id":7,"at":"t","type":"task","text":"Mexer de novo.","replaces":5}"#,
-        ]);
-        assert_eq!(the_summary(&cut), [(3, SummaryState::Unused)]);
+        assert_eq!(live(&log), [(8, vec![7])]);
     }
 }

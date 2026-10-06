@@ -46,15 +46,15 @@ mod refusal;
 mod search;
 mod types;
 
-pub use against::{carry_closed_identity, check_against, resolve_codes, Effects};
-pub use check::{normalize, validate};
+pub use against::{carry_closed_identity, carry_open_point, check_against, resolve_codes, Effects};
+pub use check::{normalize, validate, COPY_FILES_FIELD, COPY_STATE_FIELD};
 pub(crate) use check::{check_field, is_empty};
 pub use codes::code_after;
 pub use line::{render_line, shown_line, stamp};
 pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
 pub use purge::{purge_excerpts, purge_lines};
 pub use read::{
-    parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, SummaryState, TimeFilter,
+    parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter,
 };
 pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
 pub use search::{calls_command, found_by, refresh_search_lines, search_field};

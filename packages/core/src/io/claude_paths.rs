@@ -149,11 +149,11 @@ const DOCUMENTED_DIRS: &[&str] = &[
     ".dispatch",
     // Estado de sessão e de agente. Cada sessão tem a sua pasta de eventos,
     // lida pelo servidor MCP e pelo observador do painel. Soltos na raiz, fora
-    // de qualquer sessão, ficam os arquivos `size-limit-agent-<id>` e
-    // `size-calls-agent-<id>` do aviso de tamanho do agente de onda: o tamanho
-    // da conversa quando o aviso chegou e as chamadas feitas desde então. Ficam
-    // por agente porque o `/clear` de quem conduz troca a sessão no meio da
-    // onda, e o aviso não se repete nem a folga recomeça.
+    // de qualquer sessão, ficam os arquivos `size-steps-agent-<id>` e
+    // `size-deliver-agent-<id>` da medida do agente de onda: o tamanho da
+    // conversa em cada fim de tarefa e a ordem de entregar. Ficam por agente
+    // porque o `/clear` de quem conduz troca a sessão no meio da onda, e nem
+    // as tarefas medidas nem a ordem se perdem.
     ".session",
     // Lista de pendências fora de qualquer unidade (`run pending`), resolvida
     // no checkout principal — sobrevive à troca de branch e ao fim da unidade.

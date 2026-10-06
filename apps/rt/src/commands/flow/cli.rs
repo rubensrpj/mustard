@@ -49,20 +49,23 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Conduz o levantamento de uma spec: grava o tipo de trabalho e monta a
+    /// Conduz o levantamento de uma spec: grava o tipo de trabalho, monta a
     /// lista de pontos — as lacunas de cada tipo (juntas sem repetir num
     /// pedido misto), as lições e as specs anteriores que casam com o
     /// objetivo, e até três mensagens antigas do usuário como lembretes
-    /// dentro desses pontos. O assistente grava cada ponto com `write point`;
-    /// rodar o grill de novo com os mesmos tipos não grava nada e devolve o
-    /// primeiro ponto aberto.
+    /// dentro desses pontos — e grava cada ponto que falta, aberto, com os
+    /// fatos que a lista traz. O assistente só soma os fatos que conferiu, com
+    /// `write point` levando `replaces` e `facts`, e responde cada ponto com
+    /// `answer`, que grava a resposta e fecha o ponto. Rodar o grill de novo
+    /// não grava nada e devolve o primeiro ponto aberto.
     #[command(display_order = 1)]
     Grill {
         /// A spec levantada. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
         /// O tipo de trabalho, separado por vírgula: `feature`, `fix`,
-        /// `refactor`.
+        /// `refactor`. Sem ele, vale o tipo já gravado e, na primeira vez, o
+        /// do começo da branch da spec (`fix/x` dá `fix`).
         #[arg(long)]
         kinds: Option<String>,
         /// Um pedido que cabe numa frase: todos os pontos num bloco só,
@@ -112,7 +115,10 @@ pub enum FlowCmd {
         /// terminou, a linha `<USAGE>{"wave":1}</USAGE>`, só com a onda — o
         /// consumo a rodada mede nos arquivos de conversa que a plataforma
         /// grava, nunca digitado pelo agente nem por quem despacha — e a
-        /// `<PAUSED>`.
+        /// `<PAUSED>`. Para reprovar a volta de uma onda, no lugar da `USAGE`
+        /// dela vai a linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
+        /// com o motivo: a rodada segura a volta fora do commit, a onda espera
+        /// um agente novo, e o motivo vai a ele.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
@@ -216,6 +222,46 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Grava numa chamada só a resposta de um ponto do levantamento: o item
+    /// da resposta, pela mesma porta e com as mesmas recusas do `write`; o
+    /// ponto que fecha o aberto; e o passo seguinte, como o `write` o
+    /// devolve. O item sem `origin` recebe o número da última mensagem do
+    /// usuário, e o fechamento aponta a mesma mensagem. As duas gravações vão
+    /// juntas, sob a trava da spec: o item recusado não fecha o ponto, e o
+    /// fechamento recusado tira o item. No levantamento condensado, `points`
+    /// traz o código, o número e a lacuna de cada ponto aberto, e `point`
+    /// traz o próximo inteiro.
+    #[command(display_order = 25)]
+    Answer {
+        /// A spec do levantamento. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// O ponto respondido, pelo número ou pelo código que a página
+        /// mostra. Sem ele, o primeiro ponto aberto.
+        #[arg(long)]
+        point: Option<String>,
+        /// O tipo do item da resposta, como `decision` ou `rule`. Vem junto
+        /// com `--json`.
+        #[arg(long = "type", value_name = "TYPE")]
+        event_type: Option<String>,
+        /// Os campos do item da resposta, num objeto JSON, nos mesmos campos
+        /// do `write`. Vem junto com `--type`.
+        #[arg(long)]
+        json: Option<String>,
+        /// Os itens já gravados que respondem o ponto, por número ou código,
+        /// separados por vírgula: somam-se ao item novo, ou vêm sozinhos.
+        #[arg(long)]
+        result: Option<String>,
+        /// O ponto não se aplica: fecha sem item, com o motivo em `--reason`.
+        #[arg(long)]
+        not_applicable: bool,
+        /// O motivo do fechamento. Obrigatório com `--not-applicable`.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Despacha um comando `run` da família do fluxo: roda o passo e responde
@@ -255,6 +301,10 @@ pub fn dispatch(cmd: FlowCmd) {
         FlowCmd::Reopen { reason, fix, spec, root } => {
             let opts = flow::reopen::ReopenOpts { root, spec, reason, fix };
             flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts));
+        }
+        FlowCmd::Answer { spec, point, event_type, json, result, not_applicable, reason, root } => {
+            let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, result, not_applicable, reason };
+            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts));
         }
     }
 }

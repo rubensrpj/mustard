@@ -162,6 +162,9 @@ pub(super) mod tests {
     use tempfile::tempdir;
 
     use super::super::tests::{approved_with, delivered, round, round_with_mine, write};
+    // Só o teste do envio fechado o usa, e ele roda só no Linux.
+    #[cfg(target_os = "linux")]
+    use super::super::tests::orphan_the_send;
     use super::*;
 
     /// Um mapa com cinco controllers e cinco services em `src/`, os
@@ -306,6 +309,137 @@ pub(super) mod tests {
         let hint = last["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("regra controller importa service, seguida em 24 de 25 importações"), "{hint}");
         assert!(hint.contains(&format!("`{SERVICE}` linha 1 importa `{CONTROLLER}`")), "{hint}");
+        // A onda no limite vai ao usuário: nenhum trecho fica para o agente.
+        let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let fix = crate::commands::flow::round::fix_file(root, "x", &log, 1).expect("the last return");
+        assert!(!fix.exists(), "{}", fix.display());
+    }
+
+    /// A mensagem com que o condutor manda `message` ao agente `to`, na
+    /// sessão cuja conversa é `transcript`, pelo gancho do despacho.
+    fn hook_message(root: &Path, transcript: &Path, to: &str, message: &str) -> mustard_core::domain::model::contract::Verdict {
+        use crate::hooks::task::subagent_inject::SubagentInject;
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("SendMessage".to_string()),
+            tool_input: json!({ "to": to, "summary": "conserto", "message": message }),
+            raw: json!({ "transcript_path": transcript.to_string_lossy() }),
+            ..HookInput::default()
+        };
+        let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
+        ctx.config = mustard_core::ProjectConfig::load(root);
+        SubagentInject.evaluate(&input, &ctx).expect("never errors")
+    }
+
+    /// Depois de a conferência depois da onda recusar a volta, a mensagem do
+    /// condutor ao agente da onda — achado pelo título da primeira mensagem
+    /// da conversa dele — sai só com o trecho que a rodada devolveu para a
+    /// onda, com o recado ao condutor; a mensagem que já é o trecho passa como
+    /// veio, e a mensagem a outro agente também. Quando a onda grava a entrega
+    /// de novo, o trecho da volta velha não volta ao agente.
+    #[test]
+    fn a_fix_message_to_a_wave_agent_carries_only_what_the_round_returned() {
+        use mustard_core::domain::model::contract::Verdict;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let out = back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        let section = &hint[hint.find("Onda 1, rodada de conserto 1 de 2:").unwrap_or_else(|| panic!("{hint}"))..];
+
+        let sessions = tempdir().unwrap();
+        let transcript = sessions.path().join("-obra").join("sessao.jsonl");
+        let agents = sessions.path().join("-obra").join("sessao").join("subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        for (agent, first) in [("onda1", format!("{}\n\nmustard-rt run read request-1", mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr))), ("outro", "Investigue o gancho.".to_string())] {
+            let line = json!({"type": "user", "timestamp": "2026-01-10T21:54:28.200Z", "message": {"role": "user", "content": first}});
+            std::fs::write(agents.join(format!("agent-{agent}.jsonl")), line.to_string()).unwrap();
+        }
+
+        let asked = "Conserte a importação e rode a suíte inteira antes, por favor.";
+        match hook_message(root, &transcript, "onda1", asked) {
+            Verdict::Rewrite { tool_input, note } => {
+                assert_eq!(tool_input["message"], json!(section), "só o trecho da onda");
+                assert_eq!((tool_input["to"].clone(), tool_input["summary"].clone()), (json!("onda1"), json!("conserto")));
+                assert_eq!(note, Some(translate("subagent.fix_replaced", Locale::PtBr).replace("{wave}", "1")));
+            }
+            other => panic!("the message is rewritten, got {other:?}"),
+        }
+        assert_eq!(hook_message(root, &transcript, "onda1", section), Verdict::Allow);
+        assert_eq!(hook_message(root, &transcript, "outro", asked), Verdict::Allow);
+
+        let _ = delivered(root, 1, "Consertei.", &[SERVICE]);
+        assert_eq!(hook_message(root, &transcript, "onda1", asked), Verdict::Allow, "the old section never goes back");
+    }
+
+    /// Com o Claude Code que mandou a onda aberto, a recusa da conferência
+    /// depois da onda manda o conserto ao agente dela. Fechado ele, a rodada
+    /// seguinte recusa a mesma volta e manda despachar um agente novo pelo
+    /// título da onda.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_refusal_asks_for_a_new_agent_once_the_sender_of_the_wave_closed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let after = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let new_agent = translate("round.after_wave.new_agent", Locale::PtBr).replace("{wave}", "1").replace("{title}", &title);
+        let open = back(root, after.clone());
+        assert_eq!(open["reason"], json!("round-after-wave"), "{open}");
+        assert!(!open["hint"].as_str().unwrap_or_default().contains(&new_agent), "{open}");
+
+        orphan_the_send(root, 1);
+        let closed = round_with_mine(root, "x", None, &mine_giving(after));
+        assert_eq!(closed["reason"], json!("round-after-wave"), "{closed}");
+        assert!(closed["hint"].as_str().unwrap_or_default().ends_with(&format!("\n\n{new_agent}")), "{closed}");
+    }
+
+    /// Os trechos de conserto na pasta de despacho da spec, pelo nome, e o
+    /// nome do trecho da volta pendente da onda 1.
+    fn fixes_kept(root: &Path) -> (Vec<String>, Option<String>) {
+        let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let pending = crate::commands::flow::round::fix_file(root, "x", &log, 1);
+        let name = |path: &Path| path.file_name().unwrap().to_string_lossy().into_owned();
+        let folder = root.join(".claude/spec/x/.dispatch");
+        let mut names: Vec<String> =
+            std::fs::read_dir(folder).map(|entries| entries.flatten().map(|e| name(&e.path())).collect()).unwrap_or_default();
+        names.sort();
+        (names, pending.as_deref().map(name))
+    }
+
+    /// A volta nova recusada de novo tira da pasta de despacho o trecho da
+    /// volta velha: fica só o da volta pendente.
+    #[test]
+    fn a_new_refused_return_drops_the_fix_of_the_old_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let against = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
+        assert_eq!(back(root, against.clone())["reason"], json!("round-after-wave"));
+        let (first, old) = fixes_kept(root);
+        assert_eq!(first, old.clone().into_iter().collect::<Vec<_>>(), "the first fix");
+        assert_eq!(back(root, against)["reason"], json!("round-after-wave"));
+        let (kept, pending) = fixes_kept(root);
+        assert_ne!(pending, old, "the new return has its own fix");
+        assert_eq!(kept, pending.into_iter().collect::<Vec<_>>(), "only the pending return's fix stays");
+    }
+
+    /// A rodada que comita a volta consertada tira o trecho dela da pasta de
+    /// despacho, e a pasta vazia sai junto.
+    #[test]
+    fn the_committed_return_leaves_no_fix_behind() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let clean = two_roles(24, 1, &[]);
+        project(root, SERVICE, None, &clean);
+        assert_eq!(back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]))["reason"], json!("round-after-wave"));
+        assert_eq!(fixes_kept(root).0.len(), 1, "the fix for the agent");
+        let out = back(root, clean);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!root.join(".claude/spec/x/.dispatch").exists(), "{:?}", fixes_kept(root));
     }
 
     #[test]

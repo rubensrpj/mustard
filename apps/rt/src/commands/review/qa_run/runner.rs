@@ -25,8 +25,8 @@ pub(crate) const EXIT_COMMAND_NOT_FOUND: i64 = 127;
 /// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in the pipeline verifier.
 const AC_TIMEOUT_CARGO_SECS: u64 = 600;
 
-/// Teto (uma hora) dos dois comandos que o servidor roda e que o fechamento
-/// repete — o `lintCommand` e o `testCommand` do `mustard.json`. Não é o teto
+/// Teto (uma hora) dos dois comandos que o servidor roda e que a rodada e o
+/// fechamento repetem — o `lintCommand` e o `testCommand` do `mustard.json`. Não é o teto
 /// de uma prova de critério: uma suíte inteira leva o tempo que o projeto
 /// precisa, e o `pnpm test` de um projeto Node passa com folga dos 2 minutos
 /// de um critério. Ele só existe para a máquina não ficar presa num processo

@@ -34,7 +34,7 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 ## Gravidade
 
 - Crítico: o código faz a coisa errada ou tira uma proteção, ou o teste de um critério não confere a regra (a única verificação dele).
-- Maior: o código está certo, mas outro teste deixaria passar erro futuro, repete lógica que o projeto já tem, repete outro teste, traz código só de laboratório no programa instalado ou a onda passa da mediana de linhas do pedido sem justificativa na entrega. Diga onde.
+- Maior: o código está certo, mas outro teste deixaria passar erro futuro, repete lógica que o projeto já tem, repete outro teste ou traz código só de laboratório no programa instalado. Diga onde.
 - Menor: nome, estilo, sugestão.
 
 Só o crítico reprova.

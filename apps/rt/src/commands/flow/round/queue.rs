@@ -5,7 +5,7 @@
 //! agente de teste dedicado que o fechamento pede.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
 use mustard_core::domain::wave_prompt::{dispatch_items, Choice};
@@ -293,6 +293,40 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
     open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && !claude_still_here(log, *sent)).collect()
 }
 
+/// As ondas que esperam um agente novo, cada uma com o arquivo do trecho de
+/// conserto dela: a rodada recusou a volta e gravou o trecho em disco
+/// ([`super::fixes::fix_file`]), e o Claude Code que mandou a onda já fechou,
+/// levando o agente dela. Só nesse caso a onda aceita outro agente, que
+/// recebe o pedido e o trecho e trabalha na mesma cópia; com o Claude Code do
+/// envio aberto, o conserto vai ao agente que fez a onda. A volta que quem
+/// conduz a obra reprovou também espera um agente novo, com o Claude Code do
+/// envio aberto ou fechado, até o despacho dele ([`rejected_unclaimed`]). O
+/// despacho do agente novo grava uma versão do envio com o Claude Code dele,
+/// e a onda sai daqui enquanto esse Claude Code está aberto. A entrega nova
+/// muda o nome do trecho, e a onda sai daqui sozinha. O gancho do despacho e
+/// a recusa da rodada leem daqui, e só daqui.
+pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, PathBuf> {
+    let sends = log.last_by_wave("send");
+    waves_returned(log)
+        .into_iter()
+        .filter(|n| sends.get(n).is_some_and(|sent| rejected_unclaimed(log, *n, *sent) || !claude_still_here(log, *sent)))
+        .filter_map(|n| super::fixes::fix_file(root, spec, log, n).filter(|file| file.is_file()).map(|file| (n, file)))
+        .collect()
+}
+
+/// A volta pendente da onda `wave` é a que quem conduz a obra reprovou, e o
+/// envio mais novo dela (`sent`) é o que gravou a reprovação, sem Claude Code
+/// nenhum: a reprovação tirou a onda do agente que a fez, e nenhum agente novo
+/// a tomou ainda. Quem reprova diz que o agente terminou, então o Claude Code
+/// que mandou a onda, aberto ou fechado, não segura nada aqui; o despacho do
+/// agente novo grava o Claude Code dele, e a regra de sempre volta a valer.
+fn rejected_unclaimed(log: &SpecLog, wave: u64, sent: u64) -> bool {
+    let unclaimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_none());
+    unclaimed
+        && super::rejection::rejection_of(log, wave)
+            .is_some_and(|(back, _)| super::rejection::pending_return(log, wave) == Some(back))
+}
+
 /// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou
 /// depois do envio que a despachou e que nenhuma rodada assumiu ainda — a
 /// que pede novo plano sem o clique do usuário, a que uma conferência da
@@ -568,9 +602,9 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 }
 
 /// As tarefas vigentes da spec como o motor do backlog as lê: cada uma com as
-/// dependências resolvidas para a versão vigente, os arquivos que declara e
+/// dependências resolvidas para a versão vigente, os arquivos que declara,
 /// se já está feita — a onda dela está entre as entregues e aprovadas
-/// (`done_waves`).
+/// (`done_waves`) — e se traz a marca de prioridade.
 pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
     log.visible()
@@ -586,7 +620,10 @@ pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> V
                 .filter_map(|value| backlog_task_ref(log, &codes, value))
                 .collect();
             let done = task.wave().is_some_and(|w| done_waves.contains(&w));
-            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done }
+            // A marca de prioridade é lida do evento, como o usuário a deu: o
+            // Jev não a julga.
+            let priority = task.str_field("priority").is_some_and(|reason| !reason.trim().is_empty());
+            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done, priority }
         })
         .collect()
 }
@@ -793,6 +830,32 @@ mod tests {
         mustard_core::io::wave_prompt::recorded_copy(&log, wave).unwrap_or_else(|| panic!("wave {wave}")).path
     }
 
+    /// A volta que quem conduz a obra reprovou espera um agente novo até o
+    /// despacho dele, também onde o envio sem Claude Code conta como aberto:
+    /// o envio que gravou a reprovação, sem Claude Code nenhum, solta a onda;
+    /// o despacho do agente novo, com o Claude Code dele, a segura de novo; e
+    /// a reprovação de uma volta que não é a pendente não solta nada.
+    #[test]
+    fn a_rejected_return_waits_for_a_new_agent_until_one_is_dispatched() {
+        let send = r#""type":"send","wave":1,"role":"wave","text":"pedido","lines":1,"chars":6,"mustard":"t""#;
+        let at = r#""at":"2026-01-10T21:54:28-03:00""#;
+        let rejected = r#""rejected":{"delivered":2,"reason":"faltou o teste"}"#;
+        let log_with = |more: &[&str]| {
+            let mut lines = vec![
+                format!(r#"{{"v":1,"id":1,{at},{send},"claude_pid":1,"claude_started":1}}"#),
+                format!(r#"{{"v":1,"id":2,{at},"type":"delivered","wave":1,"text":"saiu","returned":true}}"#),
+            ];
+            lines.extend(more.iter().map(|line| (*line).to_string()));
+            mustard_core::domain::spec_events::parse_log(&lines.join("\n"))
+        };
+        let rejection = format!(r#"{{"v":1,"id":3,{at},{send},"replaces":1,{rejected}}}"#);
+        assert!(rejected_unclaimed(&log_with(&[&rejection]), 1, 3), "the rejection frees the wave");
+        let taken = format!(r#"{{"v":1,"id":4,{at},{send},"replaces":3,{rejected},"claude_pid":1,"claude_started":1}}"#);
+        assert!(!rejected_unclaimed(&log_with(&[&rejection, &taken]), 1, 4), "the new agent holds it");
+        let other = rejection.replace(r#""delivered":2"#, r#""delivered":9"#);
+        assert!(!rejected_unclaimed(&log_with(&[&other]), 1, 3), "the rejection of another return frees nothing");
+    }
+
     /// Duas ondas sem dependência e sem arquivo em comum saem juntas, cada
     /// uma na sua vaga — a pasta fixa `a`, `b`… sob a pasta da spec —,
     /// posta no commit atual. O pedido de cada uma traz a cópia e nunca uma
@@ -971,11 +1034,9 @@ mod tests {
         });
         drop(log);
 
-        let mut dead = Command::new("true").spawn().expect("spawn the fixture process");
-        let dead_pid = dead.id();
-        dead.wait().expect("reap the fixture process");
+        let (dead_pid, dead_started) = closed_process();
         draft["claude_pid"] = json!(dead_pid);
-        draft["claude_started"] = json!(1);
+        draft["claude_started"] = json!(dead_started);
         store::write_at(
             &path,
             "send",
@@ -2531,14 +2592,11 @@ mod tests {
                 kinds: Some("fix".into()),
                 condensed: false,
             };
+            // O `grill` grava os pontos abertos; cada um é fechado pelo número.
             let listed = crate::commands::flow::grill::grill_for(&opts, None);
             for item in listed["points"].as_array().cloned().unwrap_or_default() {
-                let mut point = item.clone();
-                point["status"] = json!("open");
-                point["facts"] = json!([{"text": goal, "source": "src/a.rs:1"}]);
-                let opened = write(root, "x", "point", point);
                 let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
-                    "status": "not_applicable", "closes": id_of(&opened), "reason": "Já respondido.", "origin": said});
+                    "status": "not_applicable", "closes": id_of(&item), "reason": "Já respondido.", "origin": said});
                 assert_eq!(write(root, "x", "point", closing)["ok"], json!(true));
             }
             before(said);

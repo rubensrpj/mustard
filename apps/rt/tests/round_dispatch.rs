@@ -17,7 +17,7 @@
 
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -32,10 +32,14 @@ use serde_json::{json, Value};
 
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/closed_process.rs"]
+mod closed_process;
 
 const SPEC: &str = "backlog-lotes";
 const GOAL: &str = "Trocar a saudação do programa.";
 const SESSION: &str = "s-backlog-lotes";
+/// O motivo da marca de prioridade das tarefas marcadas nos testes.
+const PRIORITY: &str = "O usuário pediu esta antes das outras.";
 
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git").args(args).current_dir(root).output().expect("git");
@@ -173,8 +177,8 @@ fn user_says(project: &Project, text: &str) -> u64 {
     said.id
 }
 
-/// O levantamento inteiro: o objetivo, o `grill` e cada ponto gravado,
-/// respondido e fechado.
+/// O levantamento inteiro: o objetivo, o `grill`, que grava os pontos, e
+/// cada ponto com os fatos somados, respondido e fechado.
 fn survey(project: &Project) -> u64 {
     let said = user_says(project, GOAL);
     project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -183,10 +187,8 @@ fn survey(project: &Project) -> u64 {
     assert!(!points.is_empty(), "{grilled}");
     let mut current = Value::Null;
     for point in &points {
-        let mut open = point.clone();
-        open["status"] = json!("open");
-        open["facts"] = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
-        current = project.write("point", &open)["point"].clone();
+        let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
+        current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
@@ -227,16 +229,23 @@ fn approve(project: &Project) {
 /// `depends_on` como a lista de ids das tarefas de que ela depende.
 /// Devolve o `id` gravado.
 fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], depends_on: &[u64]) -> u64 {
+    backlog_task_with(project, criterion, said, files, depends_on, &json!({}))
+}
+
+/// [`backlog_task`] com os campos de `extra` por cima, como a marca de
+/// prioridade.
+fn backlog_task_with(project: &Project, criterion: u64, said: u64, files: &[&str], depends_on: &[u64], extra: &Value) -> u64 {
     // `"new": true` marca um arquivo que a tarefa ainda vai criar: sem isso
     // o plano recusa a pergunta de aprovação, porque o arquivo sintético do
     // teste não existe no repositório.
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
     let depends_on: Vec<Value> = depends_on.iter().map(|id| json!(id)).collect();
-    let written = project.write(
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
-            "covers": [criterion], "origin": said}),
-    );
+    let mut task = json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
+            "covers": [criterion], "origin": said});
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        task[key] = value.clone();
+    }
+    let written = project.write("task", &task);
     written["id"].as_u64().expect("the recorded task has an id")
 }
 
@@ -374,7 +383,12 @@ fn test_process() -> (u32, u64) {
 /// ganha uma versão nova, como a volta da onda grava, com o par do processo
 /// do teste: a onda segue em andamento não importa quem lançou a suíte.
 fn keep_sent(project: &Project, waves: &[u64]) {
-    let (pid, started) = test_process();
+    sent_by(project, waves, test_process());
+}
+
+/// O envio mais recente de cada onda de `waves` ganha uma versão nova, como
+/// a volta da onda grava, com o par `(pid, started)` de quem o mandou.
+fn sent_by(project: &Project, waves: &[u64], (pid, started): (u32, u64)) {
     let log = project.log();
     let last = log.last_by_wave("send");
     for wave in waves {
@@ -409,6 +423,12 @@ fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
 /// `files`, sem dependência entre elas. Devolve o projeto, o critério, a fala
 /// do usuário e as tarefas, na ordem de `files`.
 fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
+    marked_backlog_project(files, &[])
+}
+
+/// [`backlog_project`] com a marca de prioridade nas tarefas das posições
+/// `marked` de `files`.
+fn marked_backlog_project(files: &[&[&str]], marked: &[usize]) -> (Project, u64, u64, Vec<u64>) {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -418,7 +438,14 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
-    let tasks = files.iter().map(|f| backlog_task(&project, crit_id, said, f, &[])).collect();
+    let tasks = files
+        .iter()
+        .enumerate()
+        .map(|(at, f)| {
+            let extra = if marked.contains(&at) { json!({"priority": PRIORITY}) } else { json!({}) };
+            backlog_task_with(&project, crit_id, said, f, &[], &extra)
+        })
+        .collect();
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
     (project, crit_id, said, tasks)
@@ -427,12 +454,19 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
 /// Uma tarefa semeada no backlog depois da aprovação, sem onda, como o
 /// conserto a deixa. Devolve o `id` gravado.
 fn seed_backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str]) -> u64 {
+    seed_task_with(project, criterion, said, files, &json!({}))
+}
+
+/// [`seed_backlog_task`] com os campos de `extra` por cima, como a marca de
+/// prioridade ou a dependência.
+fn seed_task_with(project: &Project, criterion: u64, said: u64, files: &[&str], extra: &Value) -> u64 {
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
-    project.seed(
-        "task",
-        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
-            "covers": [criterion], "origin": said}),
-    )
+    let mut task = json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
+            "covers": [criterion], "origin": said});
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        task[key] = value.clone();
+    }
+    project.seed("task", &task)
 }
 
 /// A onda que levou a tarefa `task`, pela versão vigente dela.
@@ -500,6 +534,62 @@ fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches
     let outside_wave = wave_of(&project, outside).expect("docs vira onda");
     assert_eq!(wave_of(&project, inside), None, "src/b.rs, presa a src/** em andamento, espera no backlog");
     assert_eq!(out, vec![outside_wave], "docs, que src/** não casa, sai");
+}
+
+/// Uma spec com duas tarefas de `a.rs` cuja onda 1 saiu e foi removida pelo
+/// `run write`, sem entrega. Devolve o projeto, as tarefas e a saída da
+/// remoção.
+fn removed_first_wave() -> (Project, Vec<u64>, Value) {
+    let (project, _, _, tasks) = backlog_project(&[&["a.rs"], &["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![1], "as duas tarefas de a.rs saem na onda 1");
+    let wave = project.log().visible().into_iter().find(|e| e.event_type == "wave").expect("a onda 1").id;
+    let removal = project.write("remove", &json!({"targets": [wave], "reason": "A onda saiu do plano."}));
+    (project, tasks, removal)
+}
+
+/// A onda que saiu e foi removida sem entrega devolve as tarefas dela ao
+/// backlog na mesma gravação: cada uma ganha a versão sem onda, e a leitura
+/// do backlog a mostra sem onda.
+#[test]
+fn removing_a_sent_wave_without_a_delivery_gives_its_tasks_back_to_the_backlog() {
+    let (project, tasks, removal) = removed_first_wave();
+
+    let log = project.log();
+    let current: BTreeSet<u64> = tasks.iter().map(|task| log.current(*task).expect("a tarefa segue").id).collect();
+    let returned: BTreeSet<u64> = removal["returned"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+    assert_eq!(returned, current, "a remoção grava junto a versão sem onda de cada tarefa: {removal}");
+    for task in &tasks {
+        assert_eq!(wave_of(&project, *task), None, "a tarefa da onda removida volta sem onda");
+    }
+    let backlog = project.run(&["read", "backlog", "--spec", SPEC]);
+    let shown: BTreeMap<u64, Value> = backlog["events"]
+        .as_array()
+        .expect("the backlog lines")
+        .iter()
+        .map(|line| (line["id"].as_u64().expect("the task number"), line["wave"].clone()))
+        .collect();
+    assert_eq!(shown, current.iter().map(|id| (*id, Value::Null)).collect(), "o backlog mostra as duas sem onda: {backlog}");
+}
+
+/// Depois da remoção, a rodada numera a onda nova adiante da removida, e não
+/// com o número dela: a onda nova sai, e o pedido dela lista só as tarefas
+/// da ordem dela.
+#[test]
+fn after_a_wave_is_removed_the_next_one_takes_a_new_number_and_its_request_lists_only_its_tasks() {
+    let (project, tasks, _) = removed_first_wave();
+
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![2], "a onda nova nasce adiante da removida");
+    let log = project.log();
+    let codes = log.codes();
+    let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(2)).expect("a onda 2");
+    let order: BTreeSet<&String> = wave.ints("order").iter().filter_map(|id| codes.get(id)).collect();
+    assert_eq!(order.len(), tasks.len(), "a onda nova leva as duas tarefas devolvidas: {:?}", wave.fields);
+    let out = project.command(&["run", "read", "request-2", "--spec", SPEC], "");
+    let request = String::from_utf8_lossy(&out.stdout);
+    let listed: BTreeSet<&String> = tasks.iter().filter_map(|id| codes.get(id)).filter(|code| request.contains(code.as_str())).collect();
+    assert_eq!(listed, order, "o pedido lista só as tarefas da ordem: {request}");
 }
 
 // ---------------------------------------------------------------------------
@@ -852,6 +942,108 @@ fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
 }
 
 // ---------------------------------------------------------------------------
+// A marca de prioridade na montagem das ondas
+// ---------------------------------------------------------------------------
+
+/// Deixa o projeto com uma vaga só: uma onda por vez.
+fn one_slot(project: &Project) {
+    std::fs::write(project.root.join("mustard.json"), json!({
+        "language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
+        "lintCommand": "git --version", "maxCompilingWaves": 1}).to_string()).expect("config");
+}
+
+/// Três tarefas prontas, cada uma no seu arquivo, e a de número maior com a
+/// marca de prioridade: com uma vaga só, é ela que sai, sem o Jev e com o
+/// Jev de teste, que a julga limpeza, o último tipo da ordem fixa.
+#[test]
+fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev() {
+    let files: [&[&str]; 3] = [&["a.rs"], &["b.rs"], &["c.rs"]];
+    let (project, _, _, tasks) = marked_backlog_project(&files, &[2]);
+    one_slot(&project);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[2]]], "sem o Jev, a marcada ocupa a vaga");
+
+    let jev = FakeJev::judging(|at| if at == 2 { ("test_cleanup", 0.9) } else { ("defect", 0.9) }, |_, _| 0.0);
+    let (mut judged, _, _, tasks) = marked_backlog_project(&files, &[2]);
+    judged.jev = Some(jev.url.clone());
+    one_slot(&judged);
+    judged.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[2]]], "com o Jev, a marcada passa à frente dos defeitos");
+    assert!(
+        jev.requests().iter().all(|asked| !asked.to_string().contains(PRIORITY)),
+        "o quadro mandado ao Jev não leva a marca: {:?}",
+        jev.requests()
+    );
+}
+
+/// A tarefa marcada pequena, de um arquivo só, sai ao lado de uma onda em
+/// andamento sem arquivo em comum; a não marcada do mesmo tamanho espera
+/// juntar trabalho.
+#[test]
+fn a_small_marked_task_leaves_while_another_wave_runs() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
+    let plain = seed_backlog_task(&project, crit, said, &["b.rs"]);
+    let marked = seed_task_with(&project, crit, said, &["c.rs"], &json!({"priority": PRIORITY}));
+
+    let (_, out) = dispatch_ready(&project);
+    let wave = wave_of(&project, marked).expect("a marcada pequena vira onda");
+    assert_eq!(out, vec![wave], "só a marcada sai ao lado da onda em andamento");
+    assert_eq!(wave_of(&project, plain), None, "a não marcada pequena espera juntar trabalho");
+}
+
+/// A marcada que espera uma tarefa ainda aberta fica no backlog: a marca não
+/// passa por cima do `depends_on`.
+#[test]
+fn a_marked_task_with_an_open_dependency_waits() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let marked = seed_task_with(&project, crit, said, &["b.rs"], &json!({"priority": PRIORITY, "depends_on": [tasks[0]]}));
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a dependência vira onda")], "só a dependência sai");
+    assert_eq!(wave_of(&project, marked), None, "a marcada espera a dependência");
+
+    let (_, out) = dispatch_ready(&project);
+    assert!(out.is_empty(), "com a dependência em andamento, a marcada segue esperando: {out:?}");
+    assert_eq!(wave_of(&project, marked), None);
+}
+
+/// A marcada que divide arquivo com uma onda em andamento espera no backlog:
+/// a marca não passa por cima dos arquivos de quem está no ar.
+#[test]
+fn a_marked_task_sharing_a_file_with_the_wave_in_progress_waits() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")]);
+    let marked = seed_task_with(&project, crit, said, &["a.rs"], &json!({"priority": PRIORITY}));
+
+    let (_, out) = dispatch_ready(&project);
+    assert!(out.is_empty(), "nada sai por cima de a.rs em andamento: {out:?}");
+    assert_eq!(wave_of(&project, marked), None, "a marcada espera a onda de a.rs");
+}
+
+/// A não marcada de número menor que divide `a.rs` com a marcada sai depois
+/// dela: sem o Jev, as duas vão na mesma onda, com a marcada à frente; com o
+/// Jev, de tipos diferentes, a marcada sai, e a outra espera no backlog.
+#[test]
+fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_one() {
+    let files: [&[&str]; 2] = [&["a.rs"], &["a.rs"]];
+    let (project, _, _, tasks) = marked_backlog_project(&files, &[1]);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[1], tasks[0]]], "a marcada à frente na mesma onda");
+
+    let jev = FakeJev::judging(|at| if at == 0 { ("defect", 0.9) } else { ("feature", 0.9) }, |_, _| 0.0);
+    let (judged, _, _, tasks) = {
+        let (mut project, crit, said, tasks) = marked_backlog_project(&files, &[1]);
+        project.jev = Some(jev.url.clone());
+        (project, crit, said, tasks)
+    };
+    judged.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[1]]], "a marcada sai");
+    assert_eq!(wave_of(&judged, tasks[0]), None, "o defeito de número menor espera atrás dela");
+}
+
+// ---------------------------------------------------------------------------
 // Os itens do pedido pelo Jev, de ponta a ponta
 // ---------------------------------------------------------------------------
 
@@ -1066,4 +1258,416 @@ fn once_the_month_is_spent_the_round_assembles_and_picks_the_items_without_the_j
     assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
     let reasons: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().map(|warning| &warning["reason"]).collect();
     assert_eq!(reasons, [&json!("jev-over-budget")], "{out}");
+}
+
+/// O arquivo que a tarefa das provas da reprovação cria.
+const GREETING: &str = "src/greeting.txt";
+/// O motivo com que quem conduz a obra reprova a volta, nas provas.
+const REJECTION: &str = "A saudação saiu em inglês, e o combinado pede português.";
+
+/// O envio mais novo da onda `wave`, com a cópia e a lista de leitura dela.
+fn last_send(project: &Project, wave: u64) -> mustard_core::domain::spec_events::SpecEvent {
+    let log = project.log();
+    let id = *log.last_by_wave("send").get(&wave).expect("a onda saiu");
+    log.get(id).expect("o envio").clone()
+}
+
+/// O agente da onda `wave` faz o trabalho dela: escreve `content` em
+/// [`GREETING`] dentro da cópia, lê de lá cada item que o pedido manda ler,
+/// grava o passo de término de cada tarefa e grava a entrega, que responde
+/// por todo o combinado. Devolve a cópia.
+fn deliver_in_copy(project: &Project, wave: u64, content: &str) -> PathBuf {
+    let sent = last_send(project, wave);
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join(GREETING), content).expect("the change");
+    let root = project.root.display().to_string();
+    let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+    for item in listed.iter().filter_map(Value::as_str) {
+        let block = format!("item-{item}");
+        let lesson = item.strip_prefix("lesson-");
+        let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+        args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+        args.extend(["--root", &root, "--spec", SPEC]);
+        let out = project.command_in(&copy, &args, "");
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+    }
+    let log = project.log();
+    let codes = log.codes();
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
+        let item = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+        project.write("step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
+    }
+    let agreed: Vec<Value> =
+        mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+    let delivered = json!({"wave": wave, "text": "A saudação saiu.", "files": [GREETING], "commit": "saudação nova",
+        "agreed": agreed});
+    project.write("delivered", &delivered);
+    copy
+}
+
+/// Uma spec aprovada com uma tarefa que cria [`GREETING`], despachada pela
+/// rodada e entregue pelo agente na cópia dela. Com `alive`, o envio fica com
+/// o processo do teste, como o Claude Code que mandou a onda ainda aberto;
+/// sem ele, com um processo que já terminou. Devolve o projeto e a cópia.
+fn delivered_wave(alive: bool) -> (Project, PathBuf) {
+    let (project, _, _, _) = backlog_project(&[&[GREETING]]);
+    let first = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    sent_by(&project, &[1], if alive { test_process() } else { closed_process::closed_process() });
+    let copy = deliver_in_copy(&project, 1, "hello\n");
+    (project, copy)
+}
+
+/// A rodada com a linha que reprova a volta da onda `wave` pelo motivo
+/// `reason`, como veio.
+fn reject(project: &Project, wave: u64, reason: &str) -> Value {
+    let line = format!("<REJECTED>{}</REJECTED>", json!({"wave": wave, "reason": reason}));
+    project.answer(&["round", "--spec", SPEC, "--report", &line])
+}
+
+/// O commit em que o repositório principal está.
+fn head(project: &Project) -> String {
+    let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&project.root).output().expect("git");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// O aviso da onda reprovada na resposta `out`.
+fn rejected_warning(out: &Value) -> Value {
+    out["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|warning| warning["reason"] == json!("round-wave-rejected"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the warning of the rejected wave: {out}"))
+}
+
+/// A frase que manda despachar o agente novo da onda 1, reprovada por
+/// [`REJECTION`].
+fn new_agent_line() -> String {
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+    translate("round.rejected", Locale::PtBr)
+        .replace("{wave}", "1")
+        .replace("{reason}", REJECTION.trim_end_matches('.'))
+        .replace("{title}", &title)
+}
+
+/// O gancho de antes da ferramenta com `payload`, pelo binário: a resposta
+/// dele, como o harness a lê, ou `null` quando a chamada passa sem resposta.
+fn before_tool(project: &Project, payload: &Value) -> Value {
+    let out = project.command(&["on", "PreToolUse"], &payload.to_string());
+    assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    if out.stdout.trim_ascii().is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+/// O despacho de um agente de onda pelo título do pedido da onda 1, pelo
+/// gancho de verdade: a resposta dele, como o harness a lê.
+fn dispatch_new_agent(project: &Project) -> Value {
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+    before_tool(
+        project,
+        &json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {"subagent_type": "mustard-wave", "description": "onda 1", "prompt": title},
+            "session_id": SESSION,
+            "cwd": project.root.to_string_lossy(),
+        }),
+    )
+}
+
+/// O começo da conversa do agente que fez a volta reprovada nas provas: bem
+/// antes da volta que ele gravou.
+const OLD_AGENT_START: &str = "2026-01-10T21:54:28.200Z";
+
+/// O instante de agora, como o Claude Code o carimba na conversa.
+fn now_stamp() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// A conversa principal de quem conduz a obra nas provas do agente antigo:
+/// os agentes que ela despachou moram ao lado, em `sessao/subagents/`.
+fn conductor_transcript(project: &Project) -> PathBuf {
+    project.home.join("sessoes").join("-projeto").join("sessao.jsonl")
+}
+
+/// A conversa do agente `agent` da onda 1, despachado na sessão de
+/// [`conductor_transcript`]: abre com o título do pedido da onda e começa no
+/// instante `started`.
+fn wave_agent(project: &Project, agent: &str, started: &str) {
+    let dir = conductor_transcript(project).with_extension("").join("subagents");
+    std::fs::create_dir_all(&dir).expect("the agents' folder");
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+    let opening = format!("{title}\n\nmustard-rt run read request-1 --root {} --spec {SPEC}", project.root.display());
+    let line = json!({"type": "user", "timestamp": started, "message": {"role": "user", "content": opening}});
+    std::fs::write(dir.join(format!("agent-{agent}.jsonl")), format!("{line}\n")).expect("the agent's conversation");
+}
+
+/// A mensagem de quem conduz ao agente `agent`, pelo gancho de verdade: a
+/// resposta dele, como o harness a lê.
+fn message_to(project: &Project, agent: &str) -> Value {
+    before_tool(
+        project,
+        &json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "tool_input": {"to": agent, "summary": "conserto", "message": "Conserte a saudação, por favor."},
+            "session_id": SESSION,
+            "transcript_path": conductor_transcript(project).to_string_lossy(),
+            "cwd": project.root.to_string_lossy(),
+        }),
+    )
+}
+
+/// O agente `agent` recebeu a ordem de entregar: a marca que o fim de tarefa
+/// grava quando a conversa dele passa do limite, e que fecha a trava.
+fn ordered_to_deliver(project: &Project, agent: &str) {
+    let marks = project.root.join(".claude").join(".session");
+    std::fs::create_dir_all(&marks).expect("the marks' folder");
+    std::fs::write(marks.join(format!("size-deliver-agent-{agent}")), "200000").expect("the order to deliver");
+}
+
+/// O agente `agent` chama a ferramenta `tool` com `input`, pelo gancho de
+/// verdade: a resposta dele, como o harness a lê.
+fn agent_calls(project: &Project, agent: &str, tool: &str, input: &Value) -> Value {
+    before_tool(
+        project,
+        &json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": tool,
+            "tool_input": input,
+            "session_id": SESSION,
+            "agent_id": agent,
+            "transcript_path": conductor_transcript(project).to_string_lossy(),
+            "cwd": project.root.to_string_lossy(),
+        }),
+    )
+}
+
+/// O motivo da recusa na resposta `out` do gancho; a resposta que não recusa
+/// derruba o teste.
+fn denial(out: &Value) -> String {
+    assert_eq!(out.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{out}");
+    out.pointer("/hookSpecificOutput/permissionDecisionReason").and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// Com o Claude Code do envio aberto, a mensagem de quem conduz ao agente
+/// que fez a volta reprovada é barrada, antes do despacho do agente novo e
+/// depois dele: a onda saiu daquele agente, e a cópia nunca tem dois agentes.
+/// A mensagem ao agente novo passa, só com o motivo.
+#[test]
+fn a_message_to_the_agent_of_a_rejected_return_is_refused_and_the_new_agent_gets_it() {
+    let (project, _) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+
+    let waiting = translate("subagent.rejected_agent", Locale::PtBr).replace("{wave}", "1").replace("{title}", &title);
+    assert_eq!(denial(&message_to(&project, "antigo")), waiting, "before the new agent");
+
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    keep_sent(&project, &[1]);
+    wave_agent(&project, "novo", &now_stamp());
+    let working = translate("subagent.rejected_agent_working", Locale::PtBr).replace("{wave}", "1");
+    assert_eq!(denial(&message_to(&project, "antigo")), working, "after the new agent");
+
+    let fix = translate("round.rejected_fix", Locale::PtBr).replace("{wave}", "1").replace("{reason}", REJECTION);
+    let to_new = message_to(&project, "novo");
+    assert_eq!(to_new.pointer("/hookSpecificOutput/updatedInput/message"), Some(&json!(fix)), "{to_new}");
+}
+
+/// Com o Claude Code do envio aberto, toda chamada do agente que fez a volta
+/// reprovada é recusada depois da reprovação, sem a ordem de entregar e com
+/// ela: o comando qualquer, a edição, ler e gravar na spec. Antes da
+/// reprovação, as mesmas chamadas passam. O agente novo, com a ordem de
+/// entregar, tem a trava aberta para consertar e gravar a volta dele.
+#[test]
+fn every_call_of_the_agent_of_a_rejected_return_is_refused() {
+    let (project, copy) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    let root = project.root.display();
+    let calls = [
+        ("Bash", json!({"command": "ls src"})),
+        ("Edit", json!({"file_path": copy.join(GREETING), "old_string": "hello", "new_string": "olá"})),
+        ("Bash", json!({"command": format!("mustard-rt run read request-1 --root {root} --spec {SPEC}")})),
+        ("Bash", json!({"command": format!("mustard-rt run write delivered --root {root} --spec {SPEC} --json '{{}}'")})),
+    ];
+    let passes = |agent: &str, when: &str| {
+        for (tool, input) in &calls {
+            let out = agent_calls(&project, agent, tool, input);
+            assert_ne!(out.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{when}: {input} {out}");
+        }
+    };
+    passes("antigo", "before the rejection");
+
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let locked = translate("subagent.rejected_agent_locked", Locale::PtBr).replace("{wave}", "1");
+    for (tool, input) in &calls {
+        assert_eq!(denial(&agent_calls(&project, "antigo", tool, input)), locked, "{input}");
+    }
+    ordered_to_deliver(&project, "antigo");
+    assert_eq!(denial(&agent_calls(&project, "antigo", calls[0].0, &calls[0].1)), locked, "with the order to deliver");
+
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    keep_sent(&project, &[1]);
+    wave_agent(&project, "novo", &now_stamp());
+    ordered_to_deliver(&project, "novo");
+    passes("novo", "the new agent");
+}
+
+/// Com o Claude Code do envio aberto, o agente que fez a volta reprovada
+/// ainda devolve o relatório a quem conduz, sem a ordem de entregar e com
+/// ela: a devolução não grava na spec nem na cópia, e é o fim dele. No mesmo
+/// instante, o comando qualquer segue recusado pela reprovação.
+#[test]
+fn the_agent_of_a_rejected_return_still_hands_back_its_report() {
+    let (project, _) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let locked = translate("subagent.rejected_agent_locked", Locale::PtBr).replace("{wave}", "1");
+    let report = json!({"message": "A onda 1 saiu de mim."});
+    for ordered in [false, true] {
+        if ordered {
+            ordered_to_deliver(&project, "antigo");
+        }
+        assert_eq!(denial(&agent_calls(&project, "antigo", "Bash", &json!({"command": "ls src"}))), locked, "ordered: {ordered}");
+        let out = agent_calls(&project, "antigo", "SubagentHandback", &report);
+        assert_ne!(out.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "ordered: {ordered}: {out}");
+    }
+}
+
+/// A rodada com a linha da reprovação deixa a volta fora do commit e a cópia
+/// como está, e manda despachar um agente novo pelo título da onda: com o
+/// Claude Code que mandou a onda aberto, e com ele fechado.
+#[test]
+fn a_rejected_return_stays_out_of_the_commit_and_waits_for_a_new_agent() {
+    for alive in [true, false] {
+        let (project, copy) = delivered_wave(alive);
+        let before = head(&project);
+
+        let out = reject(&project, 1, REJECTION);
+
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out.get("commit"), None, "nada comitado: {out}");
+        assert_eq!(head(&project), before, "o repositório principal fica no mesmo commit");
+        assert!(!project.root.join(GREETING).exists(), "a volta reprovada não chega ao repositório principal");
+        assert!(std::fs::read_to_string(copy.join(GREETING)).expect("a cópia").contains("hello"), "a cópia fica como está");
+        let warning = rejected_warning(&out);
+        assert_eq!(warning["wave"], json!(1), "{warning}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains(&new_agent_line()), "alive={alive}: {next}");
+        let sent = last_send(&project, 1);
+        let delivered = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta reprovada");
+        assert_eq!(sent.fields.get("rejected"), Some(&json!({"delivered": delivered, "reason": REJECTION})), "alive={alive}");
+    }
+}
+
+/// O despacho do agente novo da onda reprovada traz o motivo de quem
+/// reprovou, junto do pedido; com o Claude Code desse agente aberto, outro
+/// agente novo é barrado: a cópia nunca tem dois agentes.
+#[test]
+fn the_new_agent_of_a_rejected_wave_gets_the_reason_and_keeps_the_copy_alone() {
+    let (project, _) = delivered_wave(true);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+
+    let first = dispatch_new_agent(&project);
+    let prompt = first.pointer("/hookSpecificOutput/updatedInput/prompt").and_then(Value::as_str).unwrap_or_default();
+    let fix = translate("round.rejected_fix", Locale::PtBr).replace("{wave}", "1").replace("{reason}", REJECTION);
+    assert!(prompt.ends_with(&fix), "o motivo vai ao agente novo: {first}");
+    assert!(prompt.contains("run read request-1"), "com o pedido da onda: {prompt}");
+
+    keep_sent(&project, &[1]);
+    let second = dispatch_new_agent(&project);
+    assert_eq!(second.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{second}");
+}
+
+/// A rodada seguinte, sem a linha no relatório, segue segurando a volta
+/// reprovada fora do commit, com o mesmo motivo.
+#[test]
+fn the_round_after_a_rejection_keeps_holding_the_wave_without_the_line() {
+    let (project, _) = delivered_wave(false);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let before = head(&project);
+
+    let out = project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(out.get("commit"), None, "{out}");
+    assert_eq!(head(&project), before);
+    assert!(!project.root.join(GREETING).exists());
+    assert!(rejected_warning(&out)["hint"].as_str().unwrap_or_default().contains(REJECTION.trim_end_matches('.')), "{out}");
+    assert!(out["next"].as_str().unwrap_or_default().contains(&new_agent_line()), "{out}");
+}
+
+/// A volta nova da onda reprovada, gravada pelo agente novo, desfaz a
+/// reprovação: a rodada a assume e comita como qualquer outra, e a entrega
+/// oficial substitui as duas voltas.
+#[test]
+fn the_new_return_of_a_rejected_wave_is_taken_and_committed() {
+    let (project, _) = delivered_wave(false);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let rejected = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta reprovada");
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    let fixed = "olá\n";
+    deliver_in_copy(&project, 1, fixed);
+    let renewed = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta nova");
+
+    let out = project.run(&["round", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+
+    assert!(out.get("commit").is_some(), "{out}");
+    assert_eq!(std::fs::read_to_string(project.root.join(GREETING)).expect("o arquivo entrou"), fixed);
+    let log = project.log();
+    let official = log.visible().into_iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(1)).expect("a entrega oficial");
+    assert_eq!(official.fields.get("replaces"), Some(&json!([rejected, renewed])), "{:?}", official.fields);
+    assert!(out["warnings"].as_array().into_iter().flatten().all(|w| w["reason"] != json!("round-wave-rejected")), "{out}");
+}
+
+/// Os eventos da spec, fora as chamadas de comando que toda chamada grava:
+/// o que a rodada gravou de fato.
+fn recorded(project: &Project) -> Vec<u64> {
+    project.log().events.iter().filter(|e| e.event_type != "call").map(|e| e.id).collect()
+}
+
+/// O projeto passa a falar `lang`.
+fn speak(project: &Project, lang: Locale) {
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["language"]["text"] = json!(lang.as_str());
+    std::fs::write(&path, config.to_string()).expect("config");
+}
+
+/// Reprovar a onda que não tem volta gravada é recusado, nos dois idiomas,
+/// sem gravar nada.
+#[test]
+fn rejecting_a_wave_without_a_return_is_refused_in_both_languages() {
+    let (project, _, _, _) = backlog_project(&[&[GREETING]]);
+    project.run(&["round", "--spec", SPEC]);
+    let before = recorded(&project);
+    for lang in [Locale::PtBr, Locale::EnUs] {
+        speak(&project, lang);
+        let out = reject(&project, 1, REJECTION);
+        assert_eq!(out["reason"], json!("round-rejected-without-return"), "{out}");
+        assert_eq!(out["hint"], json!(translate("round.rejected_without_return", lang).replace("{wave}", "1")), "{out}");
+    }
+    assert_eq!(recorded(&project), before, "nada gravado");
+}
+
+/// Reprovar a onda cuja volta já entrou num commit é recusado, nos dois
+/// idiomas, com o commit, sem gravar nada.
+#[test]
+fn rejecting_a_committed_wave_is_refused_in_both_languages() {
+    let (project, _) = delivered_wave(false);
+    let taken = project.run(&["round", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+    let sha = taken["commit"]["sha"].as_str().unwrap_or_else(|| panic!("the commit: {taken}")).to_string();
+    let before = recorded(&project);
+    for lang in [Locale::PtBr, Locale::EnUs] {
+        speak(&project, lang);
+        let out = reject(&project, 1, REJECTION);
+        assert_eq!(out["reason"], json!("round-rejected-committed"), "{out}");
+        let hint = translate("round.rejected_committed", lang).replace("{wave}", "1").replace("{sha}", &sha[..7]);
+        assert_eq!(out["hint"], json!(hint), "{out}");
+    }
+    assert_eq!(recorded(&project), before, "nada gravado");
 }

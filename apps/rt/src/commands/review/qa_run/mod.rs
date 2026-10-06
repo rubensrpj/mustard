@@ -3,8 +3,8 @@
 //! the loop that the close and the round both call to run a list of
 //! criteria in order and stop at the first that does not pass,
 //! [`run_command`], which runs a flow command that is not a proof,
-//! [`run_server_command`], which the close calls for the lint and the whole
-//! suite the server runs, and the section reader the page uses.
+//! [`run_server_command`], which the round and the close call for the lint
+//! and the whole suite the server runs, and the section reader the page uses.
 //!
 //! As duas portas rodam o mesmo comando do mesmo jeito e se separam em duas
 //! leituras, que valem só na prova de um critério, que promete rodar teste, e
@@ -67,8 +67,9 @@ pub(crate) struct ProofRun {
 /// Só a prova de um critério promete rodar teste, e por isso só ela é lida
 /// assim: verde sem rodar teste nenhum não passa, porque o nome do teste não
 /// casou, e verde citando um teste que não existe também não. O comando do
-/// fluxo que não é prova de critério — o lint do projeto — roda por
-/// [`run_command`], que não faz essas leituras.
+/// fluxo que não é prova de critério — a compilação, o lint e a suíte do
+/// projeto — roda por [`run_command`] ou [`run_server_command`], que não
+/// fazem essas leituras.
 pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), Some((command, cwd)))
 }
@@ -85,7 +86,8 @@ pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
 }
 
 /// Roda um dos dois comandos que o servidor roda — o `lintCommand` e o
-/// `testCommand` do `mustard.json` —, como o fechamento os repete. Mesmo
+/// `testCommand` do `mustard.json` —, como a rodada os roda antes de cada
+/// commit e o fechamento os repete. Mesmo
 /// executor e mesma leitura de [`run_command`], com um teto só deles, de uma
 /// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
 /// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.

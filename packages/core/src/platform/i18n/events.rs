@@ -214,6 +214,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.invalid_value", Locale::EnUs) => {
             "The {field} field of the {type} event must be {expected}. Nothing was written."
         }
+        ("spec_events.empty_text", Locale::PtBr) => {
+            "O campo {field} do evento {type} veio vazio. Escreva o valor ou tire o campo. Nada foi \
+             gravado."
+        }
+        ("spec_events.empty_text", Locale::EnUs) => {
+            "The {field} field of the {type} event came empty. Write its value or drop the field. \
+             Nothing was written."
+        }
         ("spec_events.wrong_count", Locale::PtBr) => {
             "O campo {field} do evento {type} leva de {min} a {max} itens, e vieram {count}. Nada \
              foi gravado."
@@ -353,13 +361,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.not_applicable_reason", Locale::EnUs) => {
             "A point marked \"not applicable\" takes the reason in `reason`. Nothing was written."
         }
+        ("spec_events.point_without_facts", Locale::PtBr) => {
+            "O ponto {code} não tem fato nenhum, e ponto sem fato não fecha com resposta (`result`). \
+             Some os fatos que você conferiu no código ou na conversa numa versão nova dele, só com \
+             `replaces` e `facts`, ou feche-o como `not_applicable`, com o motivo. Nada foi gravado."
+        }
+        ("spec_events.point_without_facts", Locale::EnUs) => {
+            "Point {code} has no fact, so it does not close with an answer (`result`). Add the facts \
+             you checked in the code or in the conversation. Write them in a new version of the \
+             point, with only `replaces` and `facts`. Or close it as `not_applicable`, with the \
+             reason. Nothing was written."
+        }
         ("spec_events.open_point_removed", Locale::PtBr) => {
-            "O ponto {code} está aberto e não sai com `remove`: feche-o com um ponto que o aponte em \
-             `closes`, com a resposta ou o motivo. Nada foi gravado."
+            "O ponto {code} está aberto e não sai com `remove`. Se ele não se aplica, feche-o com \
+             `mustard-rt run answer --point {code} --not-applicable --reason \"<motivo>\"`. Se ele \
+             tem resposta, troque o `--not-applicable` e o `--reason` por `--type` e `--json`. Nada \
+             foi gravado."
         }
         ("spec_events.open_point_removed", Locale::EnUs) => {
-            "Point {code} is open and does not leave with `remove`: close it with a point that names \
-             it in `closes`, with the answer or the reason. Nothing was written."
+            "Point {code} is open and does not leave with `remove`. If it does not apply, close it \
+             with `mustard-rt run answer --point {code} --not-applicable --reason \"<reason>\"`. If \
+             it has an answer, swap `--not-applicable` and `--reason` for `--type` and `--json`. \
+             Nothing was written."
         }
         ("spec_events.purge_excerpt_not_found", Locale::PtBr) => {
             "O item {code} não traz o trecho a expurgar: nem o que o pedido indica em `excerpt`, nem \
@@ -418,11 +441,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
-             relatório leva só as linhas `USAGE` e `PAUSED`."
+             relatório leva só as linhas `USAGE`, `PAUSED` e `REJECTED`."
         }
         ("spec_events.report_carries_return_line", Locale::EnUs) => {
             "The delivery and the verdict live in the spec: the agent writes them with mustard-rt \
-             run write. The report carries only the `USAGE` and `PAUSED` lines."
+             run write. The report carries only the `USAGE`, `PAUSED` and `REJECTED` lines."
         }
         ("spec_events.return_missing", Locale::PtBr) => {
             "A onda {wave} terminou sem gravar a entrega: peça ao agente que a grave com `mustard-rt \
@@ -936,8 +959,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            121,
-            0x191f_f282_7de1_35ce,
+            123,
+            0x8203_21c3_de92_c9f5,
         );
     }
 
@@ -975,6 +998,7 @@ mod tests {
             ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
             ("spec_events.proof_search_not_negated", &["{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
+            ("spec_events.empty_text", &["{type}", "{field}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
             ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),
@@ -990,6 +1014,7 @@ mod tests {
             ("spec_events.point_not_open", &["{id}", "{open}"][..]),
             ("spec_events.closing_point_open", &[][..]),
             ("spec_events.not_applicable_reason", &[][..]),
+            ("spec_events.point_without_facts", &["{code}"][..]),
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.purge_excerpt_not_found", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),

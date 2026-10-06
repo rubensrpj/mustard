@@ -52,6 +52,7 @@ fn orphans(log: &SpecLog) -> BTreeMap<u64, (WaveReport, i64)> {
                 fixes: last_return.ints("fixes"),
                 replan: None,
                 undone: Vec::new(),
+                taken_elsewhere: false,
                 leftovers: Vec::new(),
                 agreed: Vec::new(),
                 returns: Vec::new(),

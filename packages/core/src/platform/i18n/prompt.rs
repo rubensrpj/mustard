@@ -42,6 +42,94 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("subagent.no_wave", Locale::EnUs) => {
             "[Mustard] The dispatch was blocked: the plan of the spec {spec} has no wave {wave}."
         }
+        ("subagent.wave_not_running", Locale::PtBr) => {
+            "[Mustard] O despacho foi barrado: a onda {wave} da spec {spec} não está em andamento. Só \
+             sai a onda que a rodada soltou."
+        }
+        ("subagent.wave_not_running", Locale::EnUs) => {
+            "[Mustard] The dispatch was blocked: wave {wave} of the spec {spec} is not in progress. \
+             Only a wave the round sent out goes."
+        }
+        // O texto do condutor trocado pelo que o Mustard monta: o recado diz
+        // o que saiu.
+        ("subagent.dispatch_replaced", Locale::PtBr) => {
+            "[Mustard] O despacho da onda {wave} saiu só com o título e o comando de leitura. O texto a \
+             mais foi tirado. O que a onda precisa saber se grava na spec, e o pedido dela já traz."
+        }
+        ("subagent.dispatch_replaced", Locale::EnUs) => {
+            "[Mustard] The dispatch of wave {wave} went out with only the title and the read command. \
+             The extra text was taken out. What the wave needs to know is recorded in the spec, and its \
+             request already carries it."
+        }
+        ("subagent.fix_replaced", Locale::PtBr) => {
+            "[Mustard] A mensagem ao agente da onda {wave} saiu só com o que a rodada devolveu para ela. \
+             O texto a mais foi tirado. O que a onda precisa saber se grava na spec."
+        }
+        ("subagent.fix_replaced", Locale::EnUs) => {
+            "[Mustard] The message to the agent of wave {wave} went out with only what the round sent \
+             back for it. The extra text was taken out. What the wave needs to know is recorded in the spec."
+        }
+        // A onda recusada que espera um agente novo: a frase que abre o
+        // trecho de conserto ao agente novo e o recado ao condutor. Elas valem
+        // para a volta que a rodada recusou, com o Claude Code que mandou a
+        // onda já fechado, e para a que o condutor reprovou, com esse Claude
+        // Code aberto ou fechado. Por isso nenhuma diz quem recusou, nem que o
+        // agente anterior sumiu: só que ele terminou. O motivo vem no trecho
+        // de conserto.
+        ("subagent.new_agent_fix", Locale::PtBr) => {
+            "[Mustard] Um agente anterior já fez a onda {wave}, e o código dele está na cópia. A entrega \
+             dele foi recusada: conserte só o que vem abaixo, teste e entregue de novo."
+        }
+        ("subagent.new_agent_fix", Locale::EnUs) => {
+            "[Mustard] An earlier agent already did wave {wave}, and its code is in the copy. Its delivery \
+             was refused: fix only what follows, test, and deliver again."
+        }
+        ("subagent.new_agent", Locale::PtBr) => {
+            "[Mustard] A entrega da onda {wave} foi recusada, e o agente que a fez já terminou. O despacho \
+             saiu para um agente novo, com o título, o comando de leitura e o trecho de conserto."
+        }
+        ("subagent.new_agent", Locale::EnUs) => {
+            "[Mustard] Wave {wave}'s delivery was refused, and the agent that did it has already finished. \
+             The dispatch went to a new agent, with the title, the read command and the fix section."
+        }
+        // A mensagem ao agente que a reprovação de quem conduz tirou da onda:
+        // ela é barrada, e o motivo vai só ao agente novo. Com a onda à espera
+        // dele, a frase diz o título que o despacha; com ele já despachado,
+        // que ele recebeu o motivo.
+        ("subagent.rejected_agent", Locale::PtBr) => {
+            "[Mustard] A mensagem foi barrada: você reprovou a volta da onda {wave}, e o agente que a \
+             fez saiu da onda. Uma mensagem a ele poria dois agentes na mesma cópia. Despache um agente \
+             novo com o título `{title}`: o Mustard junta o pedido e o seu motivo."
+        }
+        ("subagent.rejected_agent", Locale::EnUs) => {
+            "[Mustard] The message was blocked: you rejected wave {wave}'s return, and the agent that \
+             did it left the wave. A message to it would put two agents in the same copy. Dispatch a new \
+             agent with the title `{title}`: Mustard adds its request and your reason."
+        }
+        ("subagent.rejected_agent_working", Locale::PtBr) => {
+            "[Mustard] A mensagem foi barrada: você reprovou a volta da onda {wave}, e o agente que a \
+             fez saiu da onda. Uma mensagem a ele poria dois agentes na mesma cópia. O agente novo da \
+             onda já recebeu o seu motivo no despacho."
+        }
+        ("subagent.rejected_agent_working", Locale::EnUs) => {
+            "[Mustard] The message was blocked: you rejected wave {wave}'s return, and the agent that \
+             did it left the wave. A message to it would put two agents in the same copy. The wave's new \
+             agent already got your reason in its dispatch."
+        }
+        // A recusa a toda chamada do próprio agente que a reprovação tirou
+        // da onda, ler e gravar na spec inclusive.
+        ("subagent.rejected_agent_locked", Locale::PtBr) => {
+            "[Mustard] A chamada foi barrada: quem conduz a obra reprovou a volta da onda {wave}, e a \
+             onda saiu de você. O conserto é de um agente novo. Só passa a devolução do relatório a \
+             quem conduz. Nenhuma outra chamada sua passa, nem ler ou gravar na spec: uma entrega sua \
+             desfaria a reprovação. Pare aqui e termine a resposta."
+        }
+        ("subagent.rejected_agent_locked", Locale::EnUs) => {
+            "[Mustard] The call was blocked: whoever leads the work rejected wave {wave}'s return, and \
+             the wave left you. A new agent does the fix. Only handing the report back to whoever \
+             leads passes. No other call of yours does, not even reading or writing the spec: a \
+             delivery from you would undo the rejection. Stop here and end your reply."
+        }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
@@ -144,8 +232,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.step.files", Locale::EnUs) => "Files: {files}",
         ("prompt.step.read_before", Locale::PtBr) => "Leia antes: {hints}",
         ("prompt.step.read_before", Locale::EnUs) => "Read before: {hints}",
-        ("prompt.step.suite", Locale::PtBr) => "Rode a suíte do projeto com `{command}`.",
-        ("prompt.step.suite", Locale::EnUs) => "Run the project's suite with `{command}`.",
         ("prompt.step.deliver", Locale::PtBr) => "Grave a entrega, como diz \"{part}\".",
         ("prompt.step.deliver", Locale::EnUs) => "Record the delivery, as \"{part}\" says.",
         // Sem lição para os arquivos da onda, a seção diz isso em vez de
@@ -335,14 +421,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.execution", Locale::EnUs) => "Execution rules",
         ("prompt.execution.build", Locale::PtBr) => "Compile com `{command}`.",
         ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
-        ("prompt.execution.median", Locale::PtBr) => {
-            "A mediana das entregas deste projeto é de {median} linhas postas; passar dela pede \
-             justificativa na entrega (Fronteira da tarefa)."
-        }
-        ("prompt.execution.median", Locale::EnUs) => {
-            "The median delivery of this project puts {median} lines; going past it needs a reason \
-             in the delivery (Task boundary)."
-        }
         ("prompt.execution.running", Locale::PtBr) => {
             "Ondas em andamento, cada uma na sua cópia. O arquivo que você dividir com elas é \
              juntado na volta; o trecho que conflitar para a rodada até ser resolvido."
@@ -552,8 +630,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            95,
-            0x6839_b7ea_f21d_8588,
+            101,
+            0xdde3_2c85_eb81_0ee3,
         );
     }
 
@@ -618,7 +696,6 @@ mod tests {
                 "prompt.step.file",
                 "prompt.step.files",
                 "prompt.step.read_before",
-                "prompt.step.suite",
                 "prompt.step.deliver",
                 "prompt.obey.no_lessons",
                 "prompt.return.loose",

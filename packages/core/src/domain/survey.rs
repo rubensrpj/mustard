@@ -43,7 +43,7 @@ use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::search::{shared_words, SearchIndex, TOP};
 use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
 use crate::domain::spec_index::{title_of, IndexLine};
-use crate::domain::spec_state::{original_of, State};
+use crate::domain::spec_state::{birth_event, original_of, State};
 use crate::domain::text::fold_accents;
 use crate::platform::i18n::{translate, Locale};
 
@@ -318,6 +318,20 @@ pub fn kinds_of(event: &SpecEvent) -> Vec<&'static str> {
     WORK_KINDS.iter().copied().filter(|kind| listed.contains(kind)).collect()
 }
 
+/// Os tipos de trabalho que o levantamento lembra quando ninguém os diz: os
+/// do `work_type` gravado e, antes de haver um, o do começo da branch com que
+/// a spec nasceu, que o usuário escolheu na abertura (`fix/x` dá `fix`).
+/// Vazio quando nenhum dos dois diz um tipo.
+#[must_use]
+pub fn remembered_kinds(log: &SpecLog) -> Vec<&'static str> {
+    if let Some(event) = work_type(log) {
+        return kinds_of(event);
+    }
+    let branch = birth_event(log).and_then(|event| event.str_field("branch")).unwrap_or_default();
+    let prefix = branch.trim().split_once('/').map(|(prefix, _)| prefix).unwrap_or_default();
+    WORK_KINDS.iter().copied().filter(|kind| *kind == prefix).collect()
+}
+
 /// A lacuna `key` já tem um ponto gravado, aberto ou fechado, pela leitura
 /// dos pares ([`points`]).
 #[must_use]
@@ -556,8 +570,8 @@ pub enum SurveyStep<'a> {
 ///   bloco que não é o do levantamento condensado; o revisor de fora só é
 ///   mandado rodar quando o levantamento acabou e nenhum ponto veio dele ainda;
 /// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
-///   tem ponto (a lista do `grill` ainda sendo gravada, ou um ponto
-///   esquecido), gravar os pontos que faltam; senão, o próximo ponto aberto,
+///   tem ponto (a gravação do `grill` parou no meio, ou um ponto saiu), rodar
+///   o `grill` de novo, que grava os que faltam; senão, o próximo ponto aberto,
 ///   o primeiro na ordem dos blocos; sem ponto aberto, o fim, com as
 ///   mensagens do usuário sem destino. O fim sai na gravação que fecha o
 ///   último ponto e, depois dela, em cada gravação que muda a lista dessas
@@ -728,7 +742,7 @@ pub struct Fact {
     pub source: String,
 }
 
-/// Um item da lista que o `grill` monta: o ponto que o assistente grava.
+/// Um item da lista que o `grill` monta: o ponto que ele grava, aberto.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposed {
     pub block: String,
@@ -743,7 +757,7 @@ pub struct Proposed {
 }
 
 impl Proposed {
-    /// O ponto como o assistente o grava, com a mensagem de origem.
+    /// O ponto como o `grill` o grava, com a mensagem de origem.
     #[must_use]
     pub fn to_value(&self, origin: Option<u64>) -> Value {
         let mut out = Map::new();

@@ -34,7 +34,7 @@ You check someone else's work once, at the end: the waves, what each delivered, 
 ## Severity
 
 - Critical: the code does the wrong thing or removes a protection, or a criterion's test does not check the rule (its only verification).
-- Major: the code is right, but another test would let a future error through, repeats logic the project already has, repeats another test, ships laboratory-only code in the installed program, or the wave passes the line median of its request without a reason in the delivery. Say where.
+- Major: the code is right, but another test would let a future error through, repeats logic the project already has, repeats another test, or ships laboratory-only code in the installed program. Say where.
 - Minor: naming, style, suggestion.
 
 Only a critical finding rejects.

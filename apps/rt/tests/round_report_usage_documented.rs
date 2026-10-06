@@ -38,3 +38,11 @@ fn round_help_no_longer_teaches_the_analysis_line() {
     assert!(!help.contains("ANALYSIS"), "the help still teaches the ANALYSIS line: {help}");
     assert!(help.contains("PAUSED"), "{help}");
 }
+
+/// A ajuda do `--report` ensina a linha com que quem conduz a obra reprova a
+/// volta de uma onda, com a onda e o motivo.
+#[test]
+fn round_help_documents_the_rejected_line() {
+    let help = round_help();
+    assert!(help.contains(r#"<REJECTED>{"wave":1,"reason":"…"}</REJECTED>"#), "{help}");
+}

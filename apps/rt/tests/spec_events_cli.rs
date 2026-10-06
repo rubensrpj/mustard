@@ -83,6 +83,19 @@ fn read_request(root: &Path, wave: u64) {
     }
 }
 
+/// O agente da onda `wave` grava, pelo comando que o pedido ensina, o passo de
+/// término de cada tarefa dela: sem ele, a entrega que dá a tarefa como feita
+/// é recusada.
+fn finish_tasks(root: &Path, wave: u64) {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    let codes = log.codes();
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
+        let item = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+        write(root, "step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
+    }
+}
+
 /// A spec já aberta: o arquivo de eventos existe antes de qualquer gravação,
 /// como o comando que abre a spec o deixa. Sem ele, o `write` recusa e manda
 /// abrir a spec.
@@ -260,6 +273,7 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
             let file = format!("a{wave}.rs");
             std::fs::write(root.join(&file), format!("fn one() {{}}\n// {text}\n")).expect("the wave's change");
             read_request(root, wave);
+            finish_tasks(root, wave);
             write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")}));
         }
         let writers: Vec<_> = (0..2)
@@ -665,6 +679,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     std::fs::write(copy(1).join("a1.rs"), "fn one() {}\n// muda\n").expect("a1 muda");
     std::fs::write(copy(1).join("extra.rs"), "fn main() {}\n").expect("extra");
     read_request(root, 1);
+    finish_tasks(root, 1);
     write(root, "delivered", &json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"}));
     let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 1");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
@@ -694,6 +709,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     let before = head();
     std::fs::write(copy(2).join("Makefile"), "default:\n\texit 1\n").expect("Makefile quebrado");
     read_request(root, 2);
+    finish_tasks(root, 2);
     write(root, "delivered", &json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"}));
     let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 2");
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
