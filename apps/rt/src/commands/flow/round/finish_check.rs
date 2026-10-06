@@ -1,30 +1,92 @@
 //! A conferência de que a onda não devolve trabalho começado como não feito.
 //! Cada passo de término — o passo que aponta uma tarefa com que a onda saiu
-//! — guarda a impressão da cópia da onda naquela hora, e a entrega compara a
-//! cópia de agora com a do último passo de término. A tarefa dada como feita
-//! também pede o passo de término dela: é na resposta dele que o agente lê o
-//! tamanho da conversa e a ordem de seguir ou entregar.
+//! — guarda a impressão da cópia da onda naquela hora, a da cópia inteira e
+//! a de cada arquivo das tarefas, e a entrega compara a cópia de agora com a
+//! do último passo de término. A tarefa dada como feita também pede o passo
+//! de término dela: é na resposta dele que o agente lê o tamanho da conversa
+//! e a ordem de seguir ou entregar.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Hidden, SpecEvent, SpecLog, COPY_STATE_FIELD};
+use mustard_core::domain::spec_events::{Hidden, SpecEvent, SpecLog, COPY_FILES_FIELD, COPY_STATE_FIELD};
+use mustard_core::io::sha256::Sha256;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::tree_state::tree_state;
+use mustard_core::platform::git;
 use serde_json::{json, Map, Value};
 
 use super::answer::{ref_shown, RoundRefusal};
-use super::commit::copy_of;
+use super::commit::{changed_paths, copy_of};
+use super::queue::task_files;
 use super::read_check::opened_at;
 use super::report::WaveReport;
 use super::sent_tasks::sent_tasks;
+
+/// Quantos caracteres do SHA-256 do conteúdo a impressão de um arquivo guarda.
+const FILE_DIGEST_LEN: usize = 12;
 
 /// A impressão da cópia da onda `wave` agora: o resumo do que ela tem mudado
 /// em relação ao commit dela, vazio com a cópia limpa. `None` sem cópia no
 /// disco, ou sem git: aí nada se afirma sobre ela.
 fn copy_state_now(log: &SpecLog, wave: u64) -> Option<String> {
     let copy = copy_of(log, wave)?;
-    tree_state(&|args| mustard_core::platform::git::run(&copy, args).out()).map(|state| state.diff)
+    tree_state(&|args| git::run(&copy, args).out()).map(|state| state.diff)
+}
+
+/// A impressão por arquivo da cópia da onda `wave` agora, só dos arquivos que
+/// as tarefas `tasks` listam: cada um que a cópia tem mudado em relação ao
+/// commit dela, com o começo do SHA-256 do conteúdo, vazio no arquivo
+/// apagado. Vazia com esses arquivos como no commit; `None` sem cópia no
+/// disco, ou sem git.
+fn copy_files_now(log: &SpecLog, wave: u64, tasks: &[(String, &SpecEvent)]) -> Option<BTreeMap<String, String>> {
+    let copy = copy_of(log, wave)?;
+    let status = git::run(&copy, &["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=all"]);
+    if !status.ok {
+        return None;
+    }
+    let listed: BTreeSet<String> = tasks.iter().flat_map(|(_, task)| task_files(task)).collect();
+    let digest = |path: &str| {
+        let Ok(body) = std::fs::read(copy.join(path)) else { return String::new() };
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        hasher.hex_digest()[..FILE_DIGEST_LEN].to_string()
+    };
+    let changed = changed_paths(&status.stdout).into_iter().filter(|path| listed.contains(path));
+    Some(changed.map(|path| (path.clone(), digest(&path))).collect())
+}
+
+/// As tarefas de `again` — as que a entrega devolve de novo, depois de uma
+/// entrega conferida que já as devolveu — que têm arquivo só delas mudado
+/// desde o passo de término `last` (sem passo, desde o commit da cópia).
+/// Arquivo só dela é o que ela lista e nenhuma tarefa feita da onda — fora de
+/// `undone` — lista: o conserto mexe nos arquivos das tarefas feitas, e o
+/// arquivo que uma delas também lista fica com o conserto. A cópia que não se
+/// lê não aponta nada.
+fn started_again(
+    log: &SpecLog,
+    wave: u64,
+    tasks: &[(String, &SpecEvent)],
+    undone: &[String],
+    again: &[String],
+    last: Option<&SpecEvent>,
+) -> Vec<String> {
+    if again.is_empty() {
+        return Vec::new();
+    }
+    let Some(now) = copy_files_now(log, wave, tasks) else { return Vec::new() };
+    let then = last.and_then(|step| step.fields.get(COPY_FILES_FIELD)).and_then(Value::as_object);
+    let changed = |path: &String| now.get(path).map(String::as_str) != then.and_then(|then| then.get(path)?.as_str());
+    let done: BTreeSet<String> = tasks
+        .iter()
+        .filter(|(code, task)| task.wave() == Some(wave) && !undone.contains(code))
+        .flat_map(|(_, task)| task_files(task))
+        .collect();
+    tasks
+        .iter()
+        .filter(|(code, task)| again.contains(code) && task_files(task).iter().any(|f| !done.contains(f) && changed(f)))
+        .map(|(code, _)| code.clone())
+        .collect()
 }
 
 /// O código de cada tarefa com que a onda `wave` saiu ([`sent_tasks`]), com
@@ -39,24 +101,31 @@ fn step_task(item: Option<&Value>, codes: &BTreeMap<u64, String>) -> String {
     ref_shown(item, codes).trim().to_string()
 }
 
-/// Põe no passo `draft` da spec `spec`, do projeto `root`, a impressão da
-/// cópia da onda dele, quando ele é o passo de término de uma tarefa com que
-/// a onda saiu. O que vier no campo de quem grava sai sempre: a impressão é
-/// da gravação. A cópia limpa, a que não se lê e o passo de um critério ficam
-/// sem o campo.
+/// Põe no passo `draft` da spec `spec`, do projeto `root`, as impressões da
+/// cópia da onda dele — a da cópia inteira e a de cada arquivo das tarefas
+/// —, quando ele é o passo de término de uma tarefa com que a onda saiu. O
+/// que vier nos campos de quem grava sai sempre: a impressão é da gravação.
+/// A cópia limpa, a que não se lê e o passo de um critério ficam sem os
+/// campos; a impressão por arquivo fica de fora também quando nenhum arquivo
+/// das tarefas mudou.
 pub(crate) fn mark_step_copy(root: &Path, spec: &str, draft: &mut Map<String, Value>) {
     draft.remove(COPY_STATE_FIELD);
+    draft.remove(COPY_FILES_FIELD);
     let Some(wave) = draft.get("wave").and_then(Value::as_u64) else { return };
     let Some(log) = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
         return;
     };
     let codes = log.codes();
     let item = step_task(draft.get("item"), &codes);
-    if !wave_tasks(&log, wave, &codes).iter().any(|(code, _)| *code == item) {
+    let tasks = wave_tasks(&log, wave, &codes);
+    if !tasks.iter().any(|(code, _)| *code == item) {
         return;
     }
     if let Some(state) = copy_state_now(&log, wave).filter(|state| !state.is_empty()) {
         draft.insert(COPY_STATE_FIELD.into(), json!(state));
+    }
+    if let Some(files) = copy_files_now(&log, wave, &tasks).filter(|files| !files.is_empty()) {
+        draft.insert(COPY_FILES_FIELD.into(), json!(files));
     }
 }
 
@@ -87,12 +156,15 @@ fn given_back_before(log: &SpecLog, wave: u64, since: u64) -> BTreeSet<String> {
 /// devolvida em `undone` e sem mudança de plano, a cópia de agora tem de ser
 /// a do último passo de término desde o pedido — sem passo nenhum, a cópia
 /// limpa —, e a recusa diz para concluir a tarefa começada. A entrega que
-/// conserta uma volta recusada não é conferida de novo pelas tarefas que uma
-/// entrega anterior desde o pedido já devolveu ([`given_back_before`]): a
-/// cópia mudou pelo conserto, que é parte da tarefa feita. A tarefa devolvida
-/// pela primeira vez é conferida como sempre. Depois, cada tarefa da onda que
-/// a entrega não devolve, e que nenhuma outra onda levou, tem de ter o passo
-/// de término dela. A cópia que não se lê não recusa nada.
+/// conserta uma volta recusada não confere a cópia inteira pelas tarefas que
+/// uma entrega anterior desde o pedido já devolveu ([`given_back_before`]): a
+/// cópia mudou pelo conserto, que é parte da tarefa feita. Delas, confere só
+/// os arquivos de cada uma, contra a impressão por arquivo do mesmo passo
+/// ([`started_again`]), e o arquivo só dela mudado recusa como trabalho
+/// começado. A tarefa devolvida pela primeira vez é conferida como sempre.
+/// Depois, cada tarefa da onda que a entrega não devolve, e que nenhuma outra
+/// onda levou, tem de ter o passo de término dela. A cópia que não se lê não
+/// recusa nada.
 pub(super) fn unfinished_work(
     log: &SpecLog,
     sent: u64,
@@ -110,18 +182,25 @@ pub(super) fn unfinished_work(
         .map(|step| (step_task(step.fields.get("item"), &codes), step))
         .filter(|(item, _)| tasks.iter().any(|(code, _)| code == item))
         .collect();
+    let last = steps.last().map(|(_, step)| *step);
     // A cópia mudada é conferida antes da tarefa sem passo: o passo gravado
     // de uma tarefa depois de começar outra não esconde o trabalho começado.
     let given_back = given_back_before(log, wave, since);
-    let fresh: Vec<String> =
-        report.undone.iter().map(|(_, code)| code.clone()).filter(|code| !given_back.contains(code)).collect();
+    let undone: Vec<String> = report.undone.iter().map(|(_, code)| code.clone()).collect();
+    let (again, fresh): (Vec<String>, Vec<String>) = undone.iter().cloned().partition(|code| given_back.contains(code));
     if !fresh.is_empty()
         && report.replan.is_none()
         && let Some(now) = copy_state_now(log, wave)
     {
-        let then = steps.last().and_then(|(_, step)| step.str_field(COPY_STATE_FIELD)).unwrap_or_default();
+        let then = last.and_then(|step| step.str_field(COPY_STATE_FIELD)).unwrap_or_default();
         if now != then {
             return Err(RoundRefusal::StartedWorkUndone { wave, tasks: fresh });
+        }
+    }
+    if report.replan.is_none() {
+        let started = started_again(log, wave, &tasks, &undone, &again, last);
+        if !started.is_empty() {
+            return Err(RoundRefusal::StartedWorkUndone { wave, tasks: started });
         }
     }
     let cited = undone_cited(fields);
@@ -141,7 +220,7 @@ pub(super) fn unfinished_work(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use mustard_core::domain::spec_events::COPY_STATE_FIELD;
+    use mustard_core::domain::spec_events::{COPY_FILES_FIELD, COPY_STATE_FIELD};
     use mustard_core::io::spec_events as store;
     use mustard_core::platform::i18n::{translate, Locale};
     use serde_json::{json, Value};
@@ -152,13 +231,21 @@ mod tests {
     use super::super::tests::{approved_with, read_request, returned_unread, round, waves_in, write};
     use crate::commands::spec_events::write::{write_at, WriteOpts};
 
-    /// A onda 1 com duas tarefas, a primeira em `src/a.rs` e a segunda em
-    /// `src/b.rs`, despachada numa cópia e com o pedido lido. Devolve a
-    /// cópia.
+    /// A onda 1 com duas tarefas, a primeira em `src/a.rs` e `src/b.rs` e a
+    /// segunda em `src/b.rs`, despachada numa cópia e com o pedido lido.
+    /// Devolve a cópia.
     fn two_task_wave(root: &Path) -> PathBuf {
-        approved_with(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[])], |said| {
-            let task = json!({"wave": 1, "text": "Segunda tarefa da onda 1.", "files": [{"path": "src/b.rs"}],
-                "depends_on": [], "origin": said});
+        wave_of(root, &["src/a.rs", "src/b.rs"], &["src/b.rs"])
+    }
+
+    /// A onda 1 com duas tarefas, a primeira listando os arquivos `first`,
+    /// que o commit traz, e a segunda os arquivos `second`, despachada numa
+    /// cópia e com o pedido lido. Devolve a cópia.
+    fn wave_of(root: &Path, first: &[&str], second: &[&str]) -> PathBuf {
+        approved_with(root, "x", &[(1, first, &[])], |said| {
+            let files: Vec<Value> = second.iter().map(|path| json!({"path": path})).collect();
+            let task = json!({"wave": 1, "text": "Segunda tarefa da onda 1.", "files": files, "depends_on": [],
+                "origin": said});
             assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
         });
         let sent = round(root, "x", None);
@@ -206,29 +293,39 @@ mod tests {
     }
 
     /// O passo de término de uma tarefa da onda guarda a impressão da cópia
-    /// de agora, e a que quem grava mandou é trocada; com a cópia limpa, e no
-    /// passo de um critério, o campo fica de fora.
+    /// de agora e a de cada arquivo que as tarefas listam, e as que quem grava
+    /// mandou são trocadas; com a cópia limpa, e no passo de um critério, os
+    /// campos ficam de fora. O arquivo que nenhuma tarefa lista muda a
+    /// impressão da cópia, mas não entra na impressão por arquivo.
     #[test]
     fn the_task_step_keeps_the_copy_state_of_the_moment() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let copy = two_task_wave(root);
+        let by_hand = json!({"copy_state": "escrito-a-mao", "copy_files": {"src/a.rs": "escrito-a-mao"}});
 
-        let clean = step(root, "MSTD-TASK-0001", json!({"copy_state": "escrito-a-mao"}));
-        assert_eq!(clean.get(COPY_STATE_FIELD), None, "the clean copy leaves no mark: {clean}");
+        let clean = step(root, "MSTD-TASK-0001", by_hand.clone());
+        assert_eq!((clean.get(COPY_STATE_FIELD), clean.get(COPY_FILES_FIELD)), (None, None), "the clean copy leaves no mark: {clean}");
 
         edit(&copy, "src/a.rs", "a soma saiu");
-        let first = step(root, "MSTD-TASK-0001", json!({"copy_state": "escrito-a-mao"}));
+        let first = step(root, "MSTD-TASK-0001", by_hand);
         let mark = first[COPY_STATE_FIELD].as_str().unwrap_or_else(|| panic!("the step keeps the copy: {first}"));
         assert_ne!(mark, "escrito-a-mao", "{first}");
+        let files = first[COPY_FILES_FIELD].as_object().unwrap_or_else(|| panic!("the step keeps each file: {first}"));
+        let sum = files["src/a.rs"].as_str().unwrap_or_default();
+        assert!(files.len() == 1 && sum.len() == 12 && sum != "escrito-a-mao", "{first}");
         assert_eq!(step(root, "MSTD-TASK-0001", json!({}))[COPY_STATE_FIELD], json!(mark), "the same copy, the same mark");
 
         edit(&copy, "src/b.rs", "o total saiu");
+        edit(&copy, "src/fora.rs", "o rascunho de fora");
         let second = step(root, "MSTD-TASK-0002", json!({}));
         assert!(second[COPY_STATE_FIELD].as_str().is_some_and(|other| other != mark), "a changed copy, another mark: {second}");
+        let files = second[COPY_FILES_FIELD].as_object().unwrap_or_else(|| panic!("the step keeps each file: {second}"));
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["src/a.rs", "src/b.rs"], "only the files of the tasks: {second}");
+        assert_eq!(files["src/a.rs"], json!(sum), "the same file, the same mark: {second}");
 
         let criterion = step(root, "MSTD-CRIT-0001", json!({}));
-        assert_eq!(criterion.get(COPY_STATE_FIELD), None, "a criterion step is no task end: {criterion}");
+        assert_eq!((criterion.get(COPY_STATE_FIELD), criterion.get(COPY_FILES_FIELD)), (None, None), "a criterion step is no task end: {criterion}");
     }
 
     /// A tarefa devolvida como não feita, com a cópia mudada depois do último
@@ -301,6 +398,42 @@ mod tests {
             let fixed = returned_unread(root, body.clone());
             assert_eq!(fixed["ok"], json!(true), "{fix}: {fixed}");
         }
+    }
+
+    /// A primeira tarefa lista `src/a.rs`; a segunda, devolvida, lista o
+    /// mesmo arquivo e `src/b.rs`, que a primeira também mudou antes do passo
+    /// dela. O conserto em `src/a.rs`, que a tarefa feita também lista, grava;
+    /// a mudança nova em `src/b.rs`, só da tarefa devolvida, é trabalho
+    /// começado nela e recusa citando só ela, sem gravar nada; com
+    /// `src/b.rs` de volta ao que o passo guardou, a mesma entrega grava.
+    #[test]
+    fn work_started_on_a_given_back_task_during_the_fix_refuses_the_fix() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = wave_of(root, &["src/a.rs"], &["src/a.rs", "src/b.rs"]);
+        edit(&copy, "src/a.rs", "a soma saiu");
+        edit(&copy, "src/b.rs", "a soma pede o total");
+        step(root, "MSTD-TASK-0001", json!({}));
+        let body = json!({"wave": 1, "text": "A soma saiu; o total ficou.", "files": ["src/a.rs", "src/b.rs"],
+            "commit": "a soma sai", "undone": ["MSTD-TASK-0002"]});
+        assert_eq!(returned_unread(root, body.clone())["ok"], json!(true));
+
+        edit(&copy, "src/a.rs", "a soma conserta o sinal");
+        let fixed = returned_unread(root, body.clone());
+        assert_eq!(fixed["ok"], json!(true), "the fix in the file the done task lists goes in: {fixed}");
+
+        let stepped = std::fs::read_to_string(copy.join("src/b.rs")).unwrap();
+        edit(&copy, "src/b.rs", "o total começou");
+        let before = spec_lines(root);
+        let refused = returned_unread(root, body.clone());
+        assert_eq!(refused["reason"], json!("delivery-started-work-undone"), "{refused}");
+        let expected = translate("round.started_work_undone", Locale::PtBr).replace("{wave}", "1").replace("{tasks}", "MSTD-TASK-0002");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert_eq!(spec_lines(root), before, "nothing was written: {refused}");
+
+        std::fs::write(copy.join("src/b.rs"), stepped).unwrap();
+        let wrote = returned_unread(root, body);
+        assert_eq!(wrote["ok"], json!(true), "the given-back file as the step left it goes in: {wrote}");
     }
 
     /// O conserto só dispensa a conferência das tarefas que uma entrega

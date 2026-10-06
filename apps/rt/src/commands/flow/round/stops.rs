@@ -20,10 +20,11 @@ use super::sent_tasks::sent_tasks;
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
 /// última delas para a onda e as que dependem dela: o problema é de desenho,
-/// e vai ao usuário. O mesmo teto vale para a conferência depois da onda e
-/// para a compilação, o lint e a suíte que caem antes do commit, contados
-/// por [`fix_rounds_done`]: passadas todas, a recusa seguinte vira a mesma
-/// pergunta ao usuário.
+/// e vai ao usuário. O mesmo teto vale para a conferência depois da onda,
+/// para a compilação, o lint e a suíte que caem antes do commit e para a
+/// verificação de critério que não passa, numa conta só, por
+/// [`fix_rounds_done`]: passadas todas, a recusa seguinte, venha de qual
+/// delas vier, vira a mesma pergunta ao usuário.
 pub(super) const MAX_FIX_ROUNDS: usize = 2;
 
 /// Por quantas rodadas de conserto a onda `wave` de `waves` já passou: cada
@@ -31,6 +32,26 @@ pub(super) const MAX_FIX_ROUNDS: usize = 2;
 /// primeira entrega não conta. A onda fora de `waves` não passou por nenhuma.
 pub(super) fn fix_rounds_done(waves: &[WaveReport], wave: u64) -> usize {
     waves.iter().find(|w| w.wave == wave).map_or(0, |w| w.returns.len().saturating_sub(1))
+}
+
+/// As ondas `waves` a quem volta o conserto de uma recusa antes do commit,
+/// separadas pelo teto de rodadas de conserto ([`MAX_FIX_ROUNDS`], contadas
+/// por [`fix_rounds_done`] em `reports`): primeiro as que já passaram por
+/// todas, que vão ao usuário, depois as que ainda voltam ao agente delas.
+pub(super) fn split_at_fix_limit(waves: &[u64], reports: &[WaveReport]) -> (Vec<u64>, Vec<u64>) {
+    waves.iter().partition(|wave| fix_rounds_done(reports, **wave) >= MAX_FIX_ROUNDS)
+}
+
+/// A recusa que para a rodada no teto de rodadas de conserto, com a pergunta
+/// da conferência depois da onda ao usuário: as ondas `stuck` já passaram por
+/// todas e vão a ele, e não ao agente. `refused` é a recusa do que caiu, já
+/// sem elas, e `fixes` leva o trecho de conserto de cada outra onda, que
+/// ainda volta ao agente dela.
+pub(super) fn fix_limit_refusal(stuck: &[u64], refused: &str, fixes: Vec<(u64, String)>, lang: Locale) -> RoundRefusal {
+    let names: Vec<String> = stuck.iter().map(u64::to_string).collect();
+    let fill = |key: &str| translate(key, lang).replace("{waves}", &names.join(", ")).replace("{max}", &MAX_FIX_ROUNDS.to_string());
+    let text = format!("{}\n\n{refused}", fill("round.after_wave.limit"));
+    RoundRefusal::AfterWave { text, question: Some(fill("round.after_wave.question")), fixes }
 }
 
 /// As ondas paradas pelo limite de consertos, na resposta da rodada: cada uma

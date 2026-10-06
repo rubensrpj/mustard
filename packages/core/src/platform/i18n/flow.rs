@@ -790,25 +790,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Criterion {code}'s verification did not run or did not pass, and the round committed nothing: \
              `{command}` — {output}"
         }
+        // As duas recusas abaixo só dizem o que a verificação fez: o passo de
+        // quem conduz vem logo depois delas, e é mandar a onda de volta ao
+        // agente que a fez.
         ("round.criterion_ran_no_test", Locale::PtBr) => {
             "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
-             {count} testes. A rodada não comitou nada. Grave a versão nova do critério com a verificação \
-             certa e rode a rodada de novo."
+             {count} testes. A rodada não comitou nada."
         }
         ("round.criterion_ran_no_test", Locale::EnUs) => {
             "The verification of criterion {code} came out green without running any test: `{command}` says \
-             it ran {count} tests. The round committed nothing. Record the criterion's new version with the \
-             right verification and run the round again."
+             it ran {count} tests. The round committed nothing."
         }
         ("round.criterion_missing_test", Locale::PtBr) => {
             "A verificação do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
-             projeto. A rodada não comitou nada. Escreva esse teste ou grave a versão nova do critério com o \
-             nome certo, e rode a rodada de novo."
+             projeto. A rodada não comitou nada."
         }
         ("round.criterion_missing_test", Locale::EnUs) => {
             "The verification of criterion {code} names the test {name}, which appears in no file of the \
-             project. The round committed nothing. Write that test or record the criterion's new version with \
-             the right name, and run the round again."
+             project. The round committed nothing."
         }
         ("round.development_build_failed", Locale::PtBr) => {
             "O commit saiu, mas a versão em construção do Mustard não compilou, e a sessão segue no \
@@ -1956,7 +1955,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             231,
-            0xce3a_7244_3fd8_7ac5,
+            0x587e_24f7_3793_445f,
         );
     }
 

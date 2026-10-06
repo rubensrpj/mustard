@@ -116,6 +116,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              did it left the wave. A message to it would put two agents in the same copy. The wave's new \
              agent already got your reason in its dispatch."
         }
+        // A recusa a toda chamada do próprio agente que a reprovação tirou
+        // da onda, ler e gravar na spec inclusive.
+        ("subagent.rejected_agent_locked", Locale::PtBr) => {
+            "[Mustard] A chamada foi barrada: quem conduz a obra reprovou a volta da onda {wave}, e a \
+             onda saiu de você. O conserto é de um agente novo. Nenhuma chamada sua passa, nem ler ou \
+             gravar na spec: uma entrega sua desfaria a reprovação. Pare aqui e termine a resposta."
+        }
+        ("subagent.rejected_agent_locked", Locale::EnUs) => {
+            "[Mustard] The call was blocked: whoever leads the work rejected wave {wave}'s return, and \
+             the wave left you. A new agent does the fix. None of your calls pass, not even reading or \
+             writing the spec: a delivery from you would undo the rejection. Stop here and end your reply."
+        }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
@@ -616,8 +628,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            100,
-            0x05ff_0779_ba6e_f212,
+            101,
+            0x0896_e7d9_3971_a5fa,
         );
     }
 

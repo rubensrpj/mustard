@@ -18,7 +18,8 @@
 //!   (`conversation_size::SizeNotice`): a quem conduz, o de limpar ou
 //!   compactar, com o bloco de retomada; ao agente de onda, no fim de cada
 //!   tarefa, a ordem de seguir ou de entregar, e a recusa de toda ferramenta,
-//!   menos gravar na spec e compilar, depois da ordem de entregar.
+//!   menos gravar na spec e compilar, depois da ordem de entregar; ao agente
+//!   que a reprovação de quem conduz tirou da onda, a recusa de tudo.
 //! - `task` — a conferência do fim da resposta (`end_of_turn_check`, com as
 //!   regras dela) e o pedido do subagente (`subagent_inject`).
 //!

@@ -40,6 +40,15 @@ pub(super) const GIVES_BACK_FIELD: &str = "gives_back";
 /// declara, e só ele a aceita.
 pub const COPY_STATE_FIELD: &str = "copy_state";
 
+/// A impressão por arquivo da cópia da onda no mesmo passo: cada arquivo que
+/// as tarefas da onda listam e que a cópia tinha mudado naquela hora, com o
+/// resumo do conteúdo dele, ausente com esses arquivos como no commit. A
+/// entrega que conserta uma volta compara por ela os arquivos de cada tarefa
+/// que volta devolvida de novo, que a impressão da cópia inteira não separa
+/// do conserto. Como a outra, quem a escreve é a gravação do passo, e só o
+/// passo a aceita.
+pub const COPY_FILES_FIELD: &str = "copy_files";
+
 /// O rascunho de quem grava, pronto para a conferência: sem os campos que só
 /// o binário escreve, com o tipo pedido, com o autor (o assistente, quando
 /// quem grava não diz) e, na remoção, com a marca `gives_back`, que diz que
@@ -146,13 +155,13 @@ const COMMON_FIELDS: &[&str] =
     &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys"];
 
 /// O tipo aceita este campo? Aceita os comuns a toda linha, os que ele
-/// declara, na remoção a marca que o binário põe nela e, no passo, a
-/// impressão da cópia que a gravação dele põe.
+/// declara, na remoção a marca que o binário põe nela e, no passo, as duas
+/// impressões da cópia que a gravação dele põe.
 fn accepts_field(spec: &TypeSpec, name: &str) -> bool {
     COMMON_FIELDS.contains(&name)
         || spec.fields.iter().any(|field| field.name == name)
         || (spec.name == "remove" && name == GIVES_BACK_FIELD)
-        || (spec.name == "step" && name == COPY_STATE_FIELD)
+        || (spec.name == "step" && [COPY_STATE_FIELD, COPY_FILES_FIELD].contains(&name))
 }
 
 /// Os campos que um tipo aceita, separados por vírgula: os que ele declara,
@@ -450,18 +459,24 @@ mod tests {
         assert_eq!(validate(&note), Ok(()));
     }
 
-    /// A impressão da cópia entra só no passo: no passo de término ela passa,
-    /// e em qualquer outro tipo é campo desconhecido, recusado pelo nome.
+    /// As duas impressões da cópia entram só no passo: no passo de término
+    /// elas passam, e em qualquer outro tipo cada uma é campo desconhecido,
+    /// recusado pelo nome.
     #[test]
     fn only_the_step_takes_the_copy_state() {
-        let step = json!({"author": "wave", "wave": 1, "item": "MSTD-TASK-0001", "text": "Pronta.", "copy_state": "0123abcd4567"});
+        let files = json!({"src/a.rs": "89ab01cd23ef"});
+        let step = json!({"author": "wave", "wave": 1, "item": "MSTD-TASK-0001", "text": "Pronta.",
+            "copy_state": "0123abcd4567", "copy_files": files});
         assert_eq!(checked("step", step), Ok(()));
-        let note = json!({"text": "t", "keys": ["k"], "origin": 1, "copy_state": "0123abcd4567"});
-        let refused = checked("note", note).unwrap_err();
-        assert!(
-            matches!(&refused, Refusal::UnknownField { event_type, field, .. } if event_type == "note" && field == COPY_STATE_FIELD),
-            "{refused:?}"
-        );
+        for (name, value) in [(COPY_STATE_FIELD, json!("0123abcd4567")), (COPY_FILES_FIELD, files)] {
+            let mut note = json!({"text": "t", "keys": ["k"], "origin": 1});
+            note[name] = value;
+            let refused = checked("note", note).unwrap_err();
+            assert!(
+                matches!(&refused, Refusal::UnknownField { event_type, field, .. } if event_type == "note" && field == name),
+                "{refused:?}"
+            );
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
-use super::stops::{fix_rounds_done, MAX_FIX_ROUNDS};
+use super::stops::{fix_limit_refusal, split_at_fix_limit};
 use crate::commands::review::qa_run::{run_command, run_server_command, ProofRun};
 
 /// Qual dos comandos que o projeto declara caiu antes do commit.
@@ -137,24 +137,20 @@ pub(super) fn ensure_checks_pass(root: &Path, waves: &[WaveReport], lang: Locale
 }
 
 /// A recusa do comando que caiu, com o teto de rodadas de conserto que a
-/// conferência depois da onda também tem ([`MAX_FIX_ROUNDS`], contado por
-/// [`fix_rounds_done`] em `reports`). Nenhuma onda a quem o conserto volta
-/// passou por todas: a recusa sai como veio. Alguma passou: a rodada para e
-/// faz ao usuário a mesma pergunta da conferência depois da onda, com o que
-/// caiu e o fim da saída; a onda no teto vai ao usuário, e não ao agente, e
-/// só as outras ganham o trecho de conserto.
+/// conferência depois da onda também tem ([`split_at_fix_limit`] em
+/// `reports`). Nenhuma onda a quem o conserto volta passou por todas: a
+/// recusa sai como veio. Alguma passou: a rodada para e faz ao usuário a
+/// mesma pergunta da conferência depois da onda, com o que caiu e o fim da
+/// saída ([`fix_limit_refusal`]); a onda no teto vai ao usuário, e não ao
+/// agente, e só as outras ganham o trecho de conserto.
 fn capped(failure: CheckFailure, reports: &[WaveReport], lang: Locale) -> RoundRefusal {
-    let (stuck, back): (Vec<u64>, Vec<u64>) =
-        failure.waves.iter().partition(|wave| fix_rounds_done(reports, **wave) >= MAX_FIX_ROUNDS);
+    let (stuck, back) = split_at_fix_limit(&failure.waves, reports);
     if stuck.is_empty() {
         return RoundRefusal::CheckFailed(Box::new(failure));
     }
-    let names: Vec<String> = stuck.iter().map(u64::to_string).collect();
-    let fill = |key: &str| translate(key, lang).replace("{waves}", &names.join(", ")).replace("{max}", &MAX_FIX_ROUNDS.to_string());
     let rest = CheckFailure { waves: back, ..failure };
-    let text = format!("{}\n\n{}", fill("round.after_wave.limit"), rest.message(lang));
     let fixes = rest.waves.iter().map(|wave| (*wave, rest.fix(*wave, lang))).collect();
-    RoundRefusal::AfterWave { text, question: Some(fill("round.after_wave.question")), fixes }
+    fix_limit_refusal(&stuck, &rest.message(lang), fixes, lang)
 }
 
 /// As ondas de `waves` a quem volta o conserto do comando que caiu com a

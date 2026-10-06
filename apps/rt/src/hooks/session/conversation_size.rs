@@ -30,10 +30,12 @@
 //!   comando de compilar do projeto, cada um sem outro comando na mesma
 //!   linha. Enquanto a rodada espera o conserto da volta que recusou — o
 //!   trecho de conserto dela está em disco —, a trava fica aberta, e a
-//!   entrega nova a fecha de novo. A trava do agente que a reprovação de quem
-//!   conduz tirou da onda segue fechada: o conserto é do agente novo. Antes
-//!   da ordem nada é recusado por tamanho, nem a conversa acima do limite no
-//!   meio de uma tarefa. O resumo
+//!   entrega nova a fecha de novo. Antes da ordem nada é recusado por
+//!   tamanho, nem a conversa acima do limite no meio de uma tarefa. O agente
+//!   que a reprovação de quem conduz tirou da onda — a conversa dele começou
+//!   antes da volta reprovada — tem toda chamada recusada, com ou sem a
+//!   ordem, ler e gravar na spec inclusive: uma volta nova dele desfaria a
+//!   reprovação, e o conserto é do agente novo. O resumo
 //!   é o salto do tamanho entre a resposta que chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
 //!   o comando que o pedido da onda manda — e a resposta seguinte, somado
 //!   quando o agente lê mais de um; sem resumo lido, conta a conversa inteira.
@@ -112,7 +114,8 @@ fn precompact_text(root: &Path, session: Option<&str>) -> Option<String> {
 /// O tamanho da conversa nos dois lados de cada ferramenta: depois dela, a
 /// quem conduz, o aviso de limpar ou compactar, e ao agente de onda que
 /// terminou uma tarefa, a ordem de seguir ou de entregar; antes dela, só o
-/// agente de onda que recebeu a ordem de entregar é recusado.
+/// agente de onda que recebeu a ordem de entregar e o que a reprovação tirou
+/// da onda são recusados.
 pub struct SizeNotice;
 
 impl Check for SizeNotice {
@@ -515,11 +518,7 @@ fn passes_after_the_order(input: &HookInput, build: Option<&str>) -> bool {
 /// pedido da onda no idioma `lang`, e o trecho de conserto da volta pendente
 /// dela ([`fix_file`](crate::commands::flow::round::fix_file)) está em disco,
 /// na spec de `root`. A entrega nova muda o nome do trecho, e a resposta
-/// volta a ser `false` sozinha, sem marca a apagar. O agente que a
-/// reprovação de quem conduz tirou da onda
-/// ([`replaced_by_rejection`](crate::commands::flow::round::replaced_by_rejection)),
-/// pelo primeiro carimbo da conversa dele, não espera conserto nenhum: o
-/// conserto é do agente novo.
+/// volta a ser `false` sozinha, sem marca a apagar.
 fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
     let pieces = agent_transcript(input).map(|transcript| agent_pieces(&transcript)).unwrap_or_default();
     let Some(first) = pieces.first() else { return false };
@@ -528,22 +527,43 @@ fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
     let Some(log) = store::spec_file(&root, &spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
         return false;
     };
-    let replaced =
-        first_stamp(first).is_some_and(|started| crate::commands::flow::round::replaced_by_rejection(&log, wave, started));
-    !replaced && crate::commands::flow::round::fix_file(&root, &spec, &log, wave).is_some_and(|file| file.is_file())
+    crate::commands::flow::round::fix_file(&root, &spec, &log, wave).is_some_and(|file| file.is_file())
 }
 
-/// A recusa ao agente de onda depois da ordem de entregar: a trava fechada
-/// por [`task_end_text`], e a chamada `input` não é ler ou gravar na spec nem
-/// o comando de compilar do projeto ([`passes_after_the_order`]). `None`
-/// fora de um agente de onda, antes da ordem — por maior que a conversa
-/// esteja —, para o que passa e enquanto a rodada espera o conserto da volta
-/// que recusou ([`awaits_its_fix`]): quem conserta é o agente que fez a onda,
-/// mesmo acima do limite, e a entrega nova fecha a trava de novo. O agente
-/// que a reprovação de quem conduz tirou da onda segue travado.
+/// A onda de que a reprovação de quem conduz tirou o agente de `input`: o
+/// pedaço mais antigo da conversa dele abre com o título do pedido da onda
+/// no idioma `lang`, e o primeiro carimbo dele vem antes da volta reprovada,
+/// gravada na spec de `root`
+/// ([`replaced_in_file`](crate::commands::flow::round::replaced_in_file)).
+/// `None` fora de um agente de onda, sem carimbo na conversa e sem
+/// reprovação gravada para a onda.
+fn left_by_rejection(input: &HookInput, root: &Path, lang: Locale) -> Option<u64> {
+    let pieces = agent_pieces(&agent_transcript(input)?);
+    let first = pieces.first()?;
+    let (spec, wave) = wave_opened(first, lang)?;
+    let started = first_stamp(first)?;
+    let path = store::spec_file(&store::spec_root(root), &spec).ok()?;
+    crate::commands::flow::round::replaced_in_file(&path, wave, started).then_some(wave)
+}
+
+/// A recusa ao agente de onda de `input`. O agente que a reprovação de quem
+/// conduz tirou da onda ([`left_by_rejection`]) tem toda chamada recusada,
+/// com ou sem a ordem de entregar, ler e gravar na spec inclusive: uma volta
+/// nova dele desfaria a reprovação, e o conserto é do agente novo. Os outros
+/// só depois da ordem de entregar: a trava fechada por [`task_end_text`], e a
+/// chamada não é ler ou gravar na spec nem o comando de compilar do projeto
+/// ([`passes_after_the_order`]). `None` fora de um agente de onda, antes da
+/// ordem — por maior que a conversa esteja —, para o que passa e enquanto a
+/// rodada espera o conserto da volta que recusou ([`awaits_its_fix`]): quem
+/// conserta é o agente que fez a onda, mesmo acima do limite, e a entrega
+/// nova fecha a trava de novo.
 fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
     if !input.is_subagent() {
         return None;
+    }
+    let lang = ctx.config.language().text_or_default();
+    if let Some(wave) = left_by_rejection(input, root, lang) {
+        return Some(translate("subagent.rejected_agent_locked", lang).replace("{wave}", &wave.to_string()));
     }
     let (_, order) = wave_marks(root, input)?;
     if !order.exists() {
@@ -553,7 +573,6 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
     if passes_after_the_order(input, build.as_deref()) {
         return None;
     }
-    let lang = ctx.config.language().text_or_default();
     if awaits_its_fix(input, root, lang) {
         return None;
     }

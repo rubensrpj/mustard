@@ -163,7 +163,7 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{agents_refreshed, read_command, wave_dispatch, RoundRefusal};
 pub(crate) use fixes::{fix_file, sweep_fixes};
-pub(crate) use rejection::replaced_by_rejection;
+pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
 pub(crate) use queue::{
     backlog_left, open_review, open_sends, send_revision, tasks_left, wave_states, waves_awaiting_new_agent, waves_in_progress,
     waves_pending_fix,

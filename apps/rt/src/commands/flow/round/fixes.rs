@@ -16,6 +16,7 @@ use super::answer::RoundRefusal;
 use super::commit::ensure_criteria_proofs;
 use super::queue::waves_awaiting_new_agent;
 use super::report::WaveReport;
+use super::stops::{fix_limit_refusal, split_at_fix_limit};
 
 /// A verificação de um critério que caiu antes do commit, e as ondas a quem
 /// o conserto volta.
@@ -25,7 +26,8 @@ pub(crate) struct CriterionFix {
     pub refused: RoundRefusal,
     /// O código do critério.
     pub code: String,
-    /// As ondas da rodada que cobrem o critério, na ordem do relatório.
+    /// As ondas da rodada que cobrem o critério e a quem o conserto ainda
+    /// volta, na ordem do relatório.
     pub waves: Vec<u64>,
     /// As ondas de `waves` que esperam um agente novo, cada uma com o título
     /// que o despacha: a rodada as preenche depois de gravar os trechos.
@@ -78,8 +80,9 @@ impl CriterionFix {
 /// critério que uma tarefa devolvida como não feita ainda cobre, e com a
 /// verificação nova entregue (`delivered`) no lugar da gravada. A que não
 /// passa recusa, e a recusa grava, antes de sair, o trecho de conserto de
-/// cada onda que cobre o critério ([`criterion_fix`], [`keep_fixes`]): o
-/// conserto volta ao agente que a fez. Devolve as verificações que passaram.
+/// cada onda que cobre o critério e ainda não passou por todas as rodadas de
+/// conserto ([`criterion_fix`], [`keep_fixes`]): o conserto volta ao agente
+/// que a fez. Devolve as verificações que passaram.
 pub(super) fn prove_criteria(
     root: &Path,
     spec: &str,
@@ -91,7 +94,7 @@ pub(super) fn prove_criteria(
 ) -> Result<Vec<String>, RoundRefusal> {
     let undone: Vec<u64> = reports.iter().flat_map(|wave| wave.undone.iter().map(|(id, _)| *id)).collect();
     ensure_criteria_proofs(root, log, waves, &undone, delivered).map_err(|refused| {
-        let refused = criterion_fix(refused, log, reports);
+        let refused = criterion_fix(refused, log, reports, lang);
         keep_fixes(root, spec, log, &refused, lang);
         refused
     })
@@ -100,9 +103,14 @@ pub(super) fn prove_criteria(
 /// A recusa `refused` da verificação de um critério, com as ondas de
 /// `reports` que cobrem o critério — pela onda de cada uma e pelas que ela
 /// conserta, a mesma leitura que escolheu as verificações a rodar —, para o
-/// conserto voltar ao agente de cada uma ([`keep_fixes`]). Outra recusa sai
-/// como veio.
-fn criterion_fix(refused: RoundRefusal, log: &SpecLog, reports: &[WaveReport]) -> RoundRefusal {
+/// conserto voltar ao agente de cada uma ([`keep_fixes`]), até o teto de
+/// rodadas de conserto que a compilação, o lint e a suíte também têm
+/// ([`split_at_fix_limit`]). Alguma onda que cobre o critério já passou por
+/// todas: a rodada para e faz ao usuário a pergunta da conferência depois da
+/// onda, com a recusa da verificação ([`fix_limit_refusal`]); a onda no teto
+/// vai ao usuário, e não ao agente, e só as outras ganham o trecho de
+/// conserto. Outra recusa sai como veio.
+fn criterion_fix(refused: RoundRefusal, log: &SpecLog, reports: &[WaveReport], lang: Locale) -> RoundRefusal {
     let code = match &refused {
         RoundRefusal::CriterionProofFailed { code, .. }
         | RoundRefusal::CriterionRanNoTest { code, .. }
@@ -114,8 +122,14 @@ fn criterion_fix(refused: RoundRefusal, log: &SpecLog, reports: &[WaveReport]) -
         let own: Vec<u64> = std::iter::once(report.wave).chain(report.fixes.iter().copied()).collect();
         log.criteria_for_waves(&own).iter().any(|e| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()) == code)
     };
-    let waves = reports.iter().filter(|report| covers(report)).map(|report| report.wave).collect();
-    RoundRefusal::CriterionFix(Box::new(CriterionFix { refused, code, waves, new_agents: Vec::new() }))
+    let waves: Vec<u64> = reports.iter().filter(|report| covers(report)).map(|report| report.wave).collect();
+    let (stuck, back) = split_at_fix_limit(&waves, reports);
+    let fix = CriterionFix { refused, code, waves: back, new_agents: Vec::new() };
+    if stuck.is_empty() {
+        return RoundRefusal::CriterionFix(Box::new(fix));
+    }
+    let fixes = fix.waves.iter().map(|wave| (*wave, fix.section(*wave, lang))).collect();
+    fix_limit_refusal(&stuck, &fix.message(lang), fixes, lang)
 }
 
 /// O arquivo com o trecho que a conferência depois da onda, o comando
@@ -270,10 +284,10 @@ mod tests {
     /// Duas ondas na mesma rodada, e a verificação do critério que só a onda
     /// 1 cobre não passa. A recusa diz a quem conduz que mande a onda 1 de
     /// volta ao agente dela, e o trecho de conserto fica gravado para a volta
-    /// dela, e não para a da onda 2. Cada motivo da recusa — a verificação
-    /// que cai, a que sai verde sem rodar teste e a que cita um teste que não
-    /// existe — chega ao agente com o critério e o que a verificação fez.
-    /// Nada é comitado.
+    /// dela, e não para a da onda 2. A verificação que cai e a que sai verde
+    /// sem rodar teste chegam ao agente com o critério e o que a verificação
+    /// fez; a que cita um teste que não existe, no teste do teto de rodadas
+    /// de conserto. Nada é comitado.
     #[test]
     fn a_failing_criterion_verification_sends_the_fix_to_the_wave_that_covers_it() {
         let dir = tempdir().unwrap();
@@ -306,15 +320,60 @@ mod tests {
         assert_eq!(no_test["reason"], json!("round-criterion-ran-no-test"), "{no_test}");
         let expected = fix("round_checks.criterion_no_test_fix", &[("{command}", zero), ("{count}", "0")]);
         assert_eq!(fix_kept(root, 1), Some(expected), "{no_test}");
+        assert_eq!(fix_kept(root, 2), None, "{no_test}");
+        assert_eq!(delivered_count(root), 0, "nothing was taken: {no_test}");
+    }
 
+    /// Duas ondas na mesma rodada cobrem o mesmo critério, e a verificação
+    /// dele cita um teste que não existe. Só a onda 1 grava a entrega de
+    /// novo. Na primeira e na segunda rodada de conserto dela a verificação
+    /// ainda devolve o conserto, com o critério e o nome que faltou; na volta
+    /// que vem depois das duas, a rodada para e faz ao usuário a pergunta da
+    /// conferência depois da onda, com a recusa da verificação, e não grava
+    /// trecho para a onda 1. A onda 2, que não passou por rodada de conserto
+    /// nenhuma, ainda recebe o dela. Nada é comitado.
+    #[test]
+    fn a_failing_criterion_verification_returns_the_fix_for_two_fix_rounds_and_then_asks_the_user() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), json!({"maxCompilingWaves": 2}).to_string()).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        back_with(root, 2, "src/b.rs", None);
         let absent = "echo running 1 test teste_que_nao_existe_aqui";
+        let section = |wave: &str| {
+            translate("round_checks.criterion_missing_test_fix", Locale::PtBr)
+                .replace("{wave}", wave)
+                .replace("{code}", "MSTD-CRIT-0001")
+                .replace("{name}", "teste_que_nao_existe_aqui")
+        };
+        for fix_round in 1..=2 {
+            back_with(root, 1, "src/a.rs", Some(absent));
+            let fixed = round(root, "x", None);
+            assert_eq!(fixed["reason"], json!("round-criterion-missing-test"), "fix round {fix_round}: {fixed}");
+            assert_eq!(fixed.get("question"), None, "fix round {fix_round}: {fixed}");
+            assert_eq!(fix_kept(root, 1), Some(section("1")), "fix round {fix_round}: {fixed}");
+        }
+
         back_with(root, 1, "src/a.rs", Some(absent));
-        let missing = round(root, "x", None);
-        assert_eq!(missing["reason"], json!("round-criterion-missing-test"), "{missing}");
-        let expected = fix("round_checks.criterion_missing_test_fix", &[("{name}", "teste_que_nao_existe_aqui")]);
-        assert_eq!(fix_kept(root, 1), Some(expected), "{missing}");
-        assert_eq!(fix_kept(root, 2), None, "{missing}");
-        assert_eq!(delivered_count(root), 0, "nothing was taken: {missing}");
+        let asked = round(root, "x", None);
+        assert_eq!(asked["reason"], json!("round-after-wave-limit"), "{asked}");
+        let question = translate("round.after_wave.question", Locale::PtBr).replace("{waves}", "1").replace("{max}", "2");
+        assert_eq!(asked["question"], json!(question), "{asked}");
+        let hint = asked["hint"].as_str().unwrap_or_default();
+        let limit = translate("round.after_wave.limit", Locale::PtBr).replace("{waves}", "1").replace("{max}", "2");
+        let refused = translate("round.criterion_missing_test", Locale::PtBr)
+            .replace("{code}", "MSTD-CRIT-0001")
+            .replace("{name}", "teste_que_nao_existe_aqui");
+        let line = |wave: &str| {
+            let line = translate("round_checks.criterion_wave", Locale::PtBr).replace("{wave}", wave).replace("{code}", "MSTD-CRIT-0001");
+            format!("\n- {line}")
+        };
+        assert!(hint.starts_with(&format!("{limit}\n\n{refused}")), "{hint}");
+        assert!(hint.ends_with(&line("2")) && !hint.contains(&line("1")), "{hint}");
+        assert_eq!(fix_kept(root, 1), None, "the wave past its fix rounds goes to the user: {asked}");
+        assert_eq!(fix_kept(root, 2), Some(section("2")), "{asked}");
+        assert_eq!(delivered_count(root), 0, "nothing was taken: {asked}");
     }
 
     /// Com o Claude Code que mandou a onda aberto, a verificação do critério

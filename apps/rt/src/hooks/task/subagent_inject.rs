@@ -192,7 +192,10 @@ fn new_agent_fix(root: &Path, spec: &str, wave: u64) -> Option<String> {
 /// pedido da onda — que a reprovação de quem conduz tirou dela
 /// ([`crate::commands::flow::round::replaced_by_rejection`]), a mensagem é
 /// barrada ([`replaced_agent_reason`]): o motivo vai só ao agente novo, e a
-/// cópia nunca tem dois agentes. Quando a rodada gravou o trecho da
+/// cópia nunca tem dois agentes. Toda chamada daquele agente já é recusada
+/// pela trava do tamanho da conversa, também a que ele faria acordado pela
+/// mensagem; a recusa aqui poupa essa volta e diz a quem conduz para onde
+/// mandar o motivo. Quando a rodada gravou o trecho da
 /// conferência depois da onda para a volta do agente da onda
 /// ([`crate::commands::flow::round::fix_file`]), a mensagem sai só com esse
 /// trecho. O resto passa como veio.

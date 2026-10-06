@@ -4264,7 +4264,10 @@ fn main() { sum_by_the_new_name(); }
     /// certo, e não pela recusa de saída vazia. A que cita um teste que não
     /// existe em arquivo nenhum do projeto diz o critério e o nome que
     /// faltou; a que não roda teste nenhum diz o critério e o comando. Nas
-    /// duas, nada é comitado nem gravado.
+    /// duas, nada é comitado nem gravado, e o único passo que a recusa dá a
+    /// quem conduz é mandar a onda de volta ao agente que a fez: o que a
+    /// verificação fez termina em "a rodada não comitou nada", sem mandar
+    /// quem conduz gravar ele mesmo a versão nova do critério.
     #[test]
     fn round_refuses_the_green_proof_for_the_missing_name_and_the_test_that_did_not_run() {
         let dir = tempdir().unwrap();
@@ -4272,6 +4275,13 @@ fn main() { sum_by_the_new_name(); }
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         let head_before = git_text(root, &["rev-parse", "HEAD"]);
+        let only_step = |hint: &str, code: &str, out: &Value| {
+            let (said, step) = hint.split_once("\n\n").unwrap_or_default();
+            assert!(said.ends_with("A rodada não comitou nada."), "a recusa só diz o que a verificação fez: {out}");
+            let wave = translate("round_checks.criterion_wave", Locale::PtBr).replace("{wave}", "1").replace("{code}", code);
+            let next = format!("{}\n- {wave}", translate("round_checks.criterion_next", Locale::PtBr));
+            assert_eq!(step, next, "o passo é mandar a onda de volta ao agente dela: {out}");
+        };
 
         let absent = "echo running 1 test teste_que_nao_existe_aqui";
         let code = reprove_wave_criterion(root, 1, absent);
@@ -4283,6 +4293,7 @@ fn main() { sum_by_the_new_name(); }
             .replace("{name}", "teste_que_nao_existe_aqui");
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.starts_with(&format!("{expected}\n\n")), "a recusa diz o critério e o nome que faltou: {out}");
+        only_step(hint, &code, &out);
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
 
@@ -4297,6 +4308,7 @@ fn main() { sum_by_the_new_name(); }
             .replace("{count}", "0");
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.starts_with(&format!("{expected}\n\n")), "a recusa diz o critério e o comando: {out}");
+        only_step(hint, &code, &out);
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
     }

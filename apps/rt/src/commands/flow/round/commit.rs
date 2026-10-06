@@ -1046,7 +1046,7 @@ fn build_development_version_with(
 
 /// Os caminhos que o `status --porcelain -z` lista, inclusive o nome antigo
 /// de um arquivo renomeado.
-fn changed_paths(status: &str) -> Vec<String> {
+pub(super) fn changed_paths(status: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut entries = status.split('\0').filter(|entry| !entry.is_empty());
     while let Some(entry) = entries.next() {

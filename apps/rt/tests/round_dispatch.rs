@@ -1438,15 +1438,15 @@ fn ordered_to_deliver(project: &Project, agent: &str) {
     std::fs::write(marks.join(format!("size-deliver-agent-{agent}")), "200000").expect("the order to deliver");
 }
 
-/// O agente `agent` roda `command` no terminal, pelo gancho de verdade: a
-/// resposta dele, como o harness a lê.
-fn agent_runs(project: &Project, agent: &str, command: &str) -> Value {
+/// O agente `agent` chama a ferramenta `tool` com `input`, pelo gancho de
+/// verdade: a resposta dele, como o harness a lê.
+fn agent_calls(project: &Project, agent: &str, tool: &str, input: &Value) -> Value {
     before_tool(
         project,
         &json!({
             "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": command},
+            "tool_name": tool,
+            "tool_input": input,
             "session_id": SESSION,
             "agent_id": agent,
             "transcript_path": conductor_transcript(project).to_string_lossy(),
@@ -1487,25 +1487,43 @@ fn a_message_to_the_agent_of_a_rejected_return_is_refused_and_the_new_agent_gets
     assert_eq!(to_new.pointer("/hookSpecificOutput/updatedInput/message"), Some(&json!(fix)), "{to_new}");
 }
 
-/// Com o Claude Code do envio aberto, o agente que fez a volta reprovada e
-/// recebeu a ordem de entregar segue travado depois da reprovação: o motivo
-/// em disco não reabre a trava dele. O agente novo, com a mesma ordem, tem a
-/// trava aberta para consertar.
+/// Com o Claude Code do envio aberto, toda chamada do agente que fez a volta
+/// reprovada é recusada depois da reprovação, sem a ordem de entregar e com
+/// ela: o comando qualquer, a edição, ler e gravar na spec. Antes da
+/// reprovação, as mesmas chamadas passam. O agente novo, com a ordem de
+/// entregar, tem a trava aberta para consertar e gravar a volta dele.
 #[test]
-fn the_lock_of_the_agent_of_a_rejected_return_stays_closed() {
-    let (project, _) = delivered_wave(true);
+fn every_call_of_the_agent_of_a_rejected_return_is_refused() {
+    let (project, copy) = delivered_wave(true);
     wave_agent(&project, "antigo", OLD_AGENT_START);
-    ordered_to_deliver(&project, "antigo");
+    let root = project.root.display();
+    let calls = [
+        ("Bash", json!({"command": "ls src"})),
+        ("Edit", json!({"file_path": copy.join(GREETING), "old_string": "hello", "new_string": "olá"})),
+        ("Bash", json!({"command": format!("mustard-rt run read request-1 --root {root} --spec {SPEC}")})),
+        ("Bash", json!({"command": format!("mustard-rt run write delivered --root {root} --spec {SPEC} --json '{{}}'")})),
+    ];
+    let passes = |agent: &str, when: &str| {
+        for (tool, input) in &calls {
+            let out = agent_calls(&project, agent, tool, input);
+            assert_ne!(out.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{when}: {input} {out}");
+        }
+    };
+    passes("antigo", "before the rejection");
+
     assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let locked = translate("subagent.rejected_agent_locked", Locale::PtBr).replace("{wave}", "1");
+    for (tool, input) in &calls {
+        assert_eq!(denial(&agent_calls(&project, "antigo", tool, input)), locked, "{input}");
+    }
+    ordered_to_deliver(&project, "antigo");
+    assert_eq!(denial(&agent_calls(&project, "antigo", calls[0].0, &calls[0].1)), locked, "with the order to deliver");
+
     assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
     keep_sent(&project, &[1]);
     wave_agent(&project, "novo", &now_stamp());
     ordered_to_deliver(&project, "novo");
-
-    let locked = translate("conversation_size.wave_locked", Locale::PtBr).replace("{build}", "");
-    assert_eq!(denial(&agent_runs(&project, "antigo", "ls src")), locked);
-    let new_agent = agent_runs(&project, "novo", "ls src");
-    assert_ne!(new_agent.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{new_agent}");
+    passes("novo", "the new agent");
 }
 
 /// A rodada com a linha da reprovação deixa a volta fora do commit e a cópia

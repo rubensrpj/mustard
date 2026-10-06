@@ -5,14 +5,17 @@
 //! pelo arquivo do trecho de conserto que o gancho do despacho lê. Enquanto a
 //! volta reprovada for a última da onda, cada rodada segue segurando-a; a
 //! volta nova desfaz a reprovação, e a rodada a assume como qualquer outra.
+//! Ela só pode vir do agente novo: toda chamada do agente que a reprovação
+//! tirou da onda é recusada ([`replaced_in_file`]), gravar na spec inclusive.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{parse_log, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::wave_prompt::wave_title;
+use mustard_core::io::fs::lock::read_shared;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
@@ -30,6 +33,10 @@ use crate::commands::spec_events::write::record;
 /// que o agente terminou, como a `USAGE`: o consumo dele é medido junto, sem a
 /// outra linha.
 const REJECTED_LINE: &str = "REJECTED";
+
+/// O campo do envio da onda que guarda a reprovação de quem conduz a obra:
+/// a volta reprovada e o motivo.
+const REJECTED_FIELD: &str = "rejected";
 
 /// Cada linha `REJECTED` do relatório `raw`, com a onda e o motivo, na ordem.
 /// A linha sem a onda, sem o motivo ou com o motivo em branco é recusada pelo
@@ -51,7 +58,7 @@ pub(super) fn rejected_lines(raw: &str) -> Result<Vec<(u64, String)>, RoundRefus
 /// envio que o despacho de um agente novo grava depois a leva junto.
 pub(super) fn rejection_of(log: &SpecLog, wave: u64) -> Option<(u64, String)> {
     let sent = log.get(*log.last_by_wave("send").get(&wave)?)?;
-    let rejected = sent.fields.get("rejected")?;
+    let rejected = sent.fields.get(REJECTED_FIELD)?;
     Some((rejected.get("delivered")?.as_u64()?, rejected.get("reason")?.as_str()?.to_string()))
 }
 
@@ -65,6 +72,24 @@ pub(crate) fn replaced_by_rejection(log: &SpecLog, wave: u64, started: DateTime<
     let Some((back, _)) = rejection_of(log, wave) else { return false };
     let returned = log.get(back).and_then(|event| DateTime::parse_from_rfc3339(event.at()).ok());
     returned.is_some_and(|returned| started < returned.with_timezone(&Utc))
+}
+
+/// A mesma pergunta de [`replaced_by_rejection`], lida do arquivo de eventos
+/// em `path`. Quem pergunta é o gancho, a cada chamada de um agente de onda,
+/// e ler todos os eventos custa várias vezes o resto do gancho: eles só são
+/// lidos quando uma linha do arquivo traz o campo da reprovação num envio da
+/// onda `wave`. Sem reprovação dela, o agente das outras ondas não paga essa
+/// leitura. Nada sem arquivo legível.
+pub(crate) fn replaced_in_file(path: &Path, wave: u64, started: DateTime<Utc>) -> bool {
+    let Ok(content) = read_shared(path) else { return false };
+    let line_of = |at: usize| {
+        let start = content[..at].rfind('\n').map_or(0, |end| end + 1);
+        &content[start..content[at..].find('\n').map_or(content.len(), |end| at + end)]
+    };
+    let marked = content.match_indices(&format!("\"{REJECTED_FIELD}\":")).any(|(at, _)| {
+        parse_log(line_of(at)).events.iter().any(|event| event.event_type == "send" && event.wave() == Some(wave))
+    });
+    marked && replaced_by_rejection(&parse_log(&content), wave, started)
 }
 
 /// A volta da onda `wave` que espera a rodada: a última entrega que o agente
@@ -132,7 +157,7 @@ pub(super) fn record_rejections(
             warnings.push(usage_missing(wave, lang));
         }
         let mut extra = usage.fields();
-        extra.insert("rejected".into(), json!({ "delivered": back, "reason": reason }));
+        extra.insert(REJECTED_FIELD.into(), json!({ "delivered": back, "reason": reason }));
         let Some(mut draft) = send_revision(log, wave, extra) else { continue };
         // A primeira reprovação da volta tira a onda do agente que a fez: sem
         // Claude Code no envio, ela espera um agente novo.

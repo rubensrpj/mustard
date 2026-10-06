@@ -196,8 +196,9 @@ impl Registry {
             // O tamanho da conversa nos dois lados de cada ferramenta. Depois
             // dela: a quem conduz, o aviso de limpar ou compactar; ao agente
             // de onda que terminou uma tarefa, a ordem de seguir ou de
-            // entregar. Antes dela: só o agente de onda que recebeu a ordem
-            // de entregar é recusado, menos para gravar na spec e compilar.
+            // entregar. Antes dela: o agente de onda que recebeu a ordem de
+            // entregar é recusado, menos para gravar na spec e compilar, e o
+            // que a reprovação de quem conduz tirou da onda, em tudo.
             Module {
                 id: "size_notice",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Any), (Trigger::PreToolUse, ToolMatch::Any)],
