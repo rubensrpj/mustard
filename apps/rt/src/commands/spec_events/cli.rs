@@ -111,7 +111,9 @@ pub enum SpecEventsCmd {
     /// repeats a lesson already in the bank (spaces, case and accents aside)
     /// is refused, naming that lesson. A lesson with `"replaces":[3,5]` merges
     /// those lessons into one; `{"targets":[4],"reason":"…"}`, with no
-    /// `class` and no other field, retires lesson 4.
+    /// `class` and no other field, retires lesson 4. The answer to a survey
+    /// point goes through `answer` instead, which records the item and
+    /// closes the point in one call.
     #[command(display_order = 9, after_help = fields_of_each_type())]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or
@@ -128,7 +130,9 @@ pub enum SpecEventsCmd {
         /// The event's own fields as one JSON object, e.g.
         /// `{"text":"…","keys":["…"],"example":"…","origin":3}`. The binary
         /// sets `v`, `id`, `code`, `at` and `search`; a `code` sent here is
-        /// refused.
+        /// refused. An item of a type that needs `origin` and comes without
+        /// it takes the number of the user's latest message; with no user
+        /// message in the spec, the missing field is refused.
         #[arg(long, default_value = "{}")]
         json: String,
         /// After the write, prepare the copy of the spec page for its

@@ -213,6 +213,34 @@ impl LockedLog {
         &self.log
     }
 
+    /// O conteúdo do arquivo como este trecho o tem. Quem grava mais de um
+    /// evento sob a mesma trava guarda o de antes, para voltar a ele
+    /// ([`LockedLog::restore`]) quando uma gravação seguinte é recusada.
+    #[must_use]
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Volta o arquivo a `content`, o conteúdo que [`LockedLog::content`] deu
+    /// antes, e refaz a linha da spec no índice: as gravações feitas depois
+    /// dele saem do arquivo, e nada fica de uma gravação que só valia junto
+    /// com a seguinte.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Io`] quando a escrita falha.
+    pub fn restore(&mut self, content: String) -> Result<(), Refusal> {
+        self.file.replace(content.as_bytes()).map_err(io_refusal)?;
+        self.log = model::parse_log(&content);
+        self.content = content;
+        if let Some((index, name)) = crate::io::spec_index::index_for(&self.path) {
+            // Como na gravação: o arquivo de eventos já está certo, e o índice
+            // que não pôde ser refeito se refaz pelo `index`.
+            let _ = crate::io::spec_index::refresh_line(&index, &name, &self.log);
+        }
+        Ok(())
+    }
+
     /// Grava um evento com a hora de agora sem soltar a trava: a mesma
     /// gravação, com as mesmas conferências, de [`write_guarded`]. Depois
     /// dela, [`LockedLog::log`] já traz o evento.

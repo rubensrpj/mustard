@@ -430,6 +430,18 @@ impl Project {
             .env_remove("CLAUDE_CODE_SESSION_ID")
     }
 
+    /// O agente grava, pelo comando que o pedido ensina, o passo de término
+    /// de cada tarefa da onda `wave`: sem ele, a entrega que dá a tarefa como
+    /// feita é recusada.
+    fn finish_tasks(&self, wave: u64) {
+        let log = self.log();
+        let codes = log.codes();
+        for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
+            let item = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+            self.write("step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
+        }
+    }
+
     /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
     /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
     /// isso a entrega é recusada.
@@ -543,8 +555,8 @@ fn user_says(project: &Project, text: &str) -> u64 {
     said.id
 }
 
-/// O levantamento inteiro: o objetivo, o `grill` e cada ponto gravado,
-/// respondido e fechado.
+/// O levantamento inteiro: o objetivo, o `grill`, que grava os pontos, e
+/// cada ponto com os fatos somados, respondido e fechado.
 fn survey(project: &Project) {
     let said = user_says(project, GOAL);
     project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -553,10 +565,8 @@ fn survey(project: &Project) {
     assert!(!points.is_empty(), "{grilled}");
     let mut current = Value::Null;
     for point in &points {
-        let mut open = point.clone();
-        open["status"] = json!("open");
-        open["facts"] = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
-        current = project.write("point", &open)["point"].clone();
+        let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
+        current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
@@ -674,6 +684,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
     project.read_request(1);
+    project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("reviews").is_none(), "{second}");
@@ -769,6 +780,7 @@ fn closed_with_one_wave(project: &Project) -> Vec<String> {
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
     project.read_request(1);
+    project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
     project.run(&["close", "--spec", SPEC]);
@@ -962,6 +974,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
         "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam",
         "agreed": agreed_all_met(project)});
     project.read_request(1);
+    project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(
@@ -1335,6 +1348,7 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": [file],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
     project.read_request(1);
+    project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
 }
 

@@ -414,6 +414,14 @@ mod tests {
         assert_eq!(out["command"], json!("mustard-rt run grill --spec x"), "{out}");
         assert_eq!(out["next"], json!(translate("resume.next.survey", Locale::PtBr)), "{out}");
         assert!(!out.to_string().contains("http"), "nenhum endereço entra na resposta: {out}");
+        // A linha roda como veio: com o objetivo gravado, o `grill` sem o tipo
+        // usa o da branch e não é recusado.
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let said = seed("message", json!({"author": "user", "text": "Travar o merge."}));
+        seed("context", json!({"text": "Travar o merge.", "origin": said}));
+        let grilled = crate::commands::flow::grill::run_grill_line(root, out["command"].as_str().unwrap_or_default());
+        assert_eq!(grilled["ok"], json!(true), "{grilled}");
+        assert_eq!(grilled["kinds"], json!(["feature"]), "{grilled}");
 
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
         let out = resume(root, "x");

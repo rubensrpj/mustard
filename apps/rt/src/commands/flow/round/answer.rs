@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_message, wave_files, WaveCopy};
+use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_message, wave_files, wave_title, WaveCopy};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -18,11 +18,13 @@ use serde_json::{json, Map, Value};
 
 use super::backlog::{dispatch_backlog, Judge};
 use super::commit::git_lock;
+use super::fixes::{new_agents_named, sweep_fixes};
 use super::item_choice::choose_items;
 use super::queue::{
     backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
     sent_items, silent_minutes, waves_in_progress, waves_returned,
 };
+use super::rejection::rejected_message;
 use super::report::Taken;
 use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{stopped_waves, waves_stuck};
@@ -100,10 +102,33 @@ pub(crate) enum RoundRefusal {
     /// A entrega cita como não feita uma tarefa que não é da onda dela: o
     /// código citado e as tarefas da onda.
     UndoneNotInWave { wave: u64, code: String, tasks: Vec<String> },
+    /// A entrega devolve tarefas como não feitas (`tasks`), sem mudar o
+    /// plano, e a cópia da onda mudou depois do último passo de término — ou
+    /// mudou sem passo de término nenhum: há trabalho começado. O agente
+    /// conclui a tarefa, grava o passo e entrega de novo.
+    StartedWorkUndone { wave: u64, tasks: Vec<String> },
+    /// A entrega dá como feitas as tarefas `tasks` sem o passo de término de
+    /// cada uma: sem o passo, o agente não leu a medida da conversa.
+    DoneWithoutStep { wave: u64, tasks: Vec<String> },
+    /// Quem conduz a obra reprovou a volta da onda, com o motivo dele: a
+    /// volta fica fora do commit, a cópia fica como está, e a onda espera um
+    /// agente novo, que recebe o motivo. Com `title`, o agente novo ainda não
+    /// saiu, e a resposta manda despachá-lo por esse título; sem ele, o agente
+    /// novo já saiu e trabalha na cópia.
+    Rejected { wave: u64, reason: String, title: Option<String> },
+    /// A linha `REJECTED` aponta uma onda sem volta gravada à espera da
+    /// rodada: não há entrega a reprovar.
+    RejectedWithoutReturn { wave: u64 },
+    /// A linha `REJECTED` aponta uma onda cuja volta já entrou no commit
+    /// `sha`: a rodada não desfaz commit.
+    RejectedCommitted { wave: u64, sha: String },
     /// O git recusou o commit.
     Git { detail: String },
-    /// O repositório principal não compilou antes do commit da rodada.
-    BuildFailed { command: String, output: String },
+    /// Um comando que o projeto declara — a compilação, o lint ou a suíte
+    /// inteira ([`super::checks::Check`]) — caiu no repositório principal
+    /// antes do commit da rodada, com o comando, o fim da saída e as ondas a
+    /// quem o conserto volta: nada foi comitado.
+    CheckFailed(Box<super::checks::CheckFailure>),
     /// A prova de um critério que as ondas deste relatório cobrem não
     /// executou ou não passou: nada foi comitado.
     CriterionProofFailed { code: String, command: String, output: String },
@@ -115,13 +140,18 @@ pub(crate) enum RoundRefusal {
     /// citando um teste que não existe no projeto, com o nome que faltou:
     /// nada foi comitado.
     CriterionMissingTest { code: String, name: String },
+    /// Uma das três recusas da prova de critério acima, com as ondas da
+    /// rodada que cobrem o critério: o conserto volta ao agente de cada uma
+    /// ([`super::fixes::CriterionFix`]).
+    CriterionFix(Box<super::fixes::CriterionFix>),
     /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
     /// gravar o envio, com o tamanho medido e o teto.
     TokenCap { wave: u64, tokens: u64 },
     /// A conferência depois da onda achou o que consertar: nada foi comitado.
     /// Com `question`, uma onda já passou por todas as rodadas de conserto, e
-    /// a pergunta vai ao usuário.
-    AfterWave { text: String, question: Option<String> },
+    /// a pergunta vai ao usuário. `fixes` leva, de cada onda recusada, o
+    /// trecho de `text` que é dela: é o que volta ao agente da onda.
+    AfterWave { text: String, question: Option<String>, fixes: Vec<(u64, String)> },
 }
 
 impl RoundRefusal {
@@ -147,11 +177,17 @@ impl RoundRefusal {
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
             Self::ReplanNeedsUndone { .. } => "replan-needs-undone".into(),
             Self::UndoneNotInWave { .. } => "undone-not-in-wave".into(),
+            Self::StartedWorkUndone { .. } => "delivery-started-work-undone".into(),
+            Self::DoneWithoutStep { .. } => "delivery-done-without-step".into(),
+            Self::Rejected { .. } => "round-wave-rejected".into(),
+            Self::RejectedWithoutReturn { .. } => "round-rejected-without-return".into(),
+            Self::RejectedCommitted { .. } => "round-rejected-committed".into(),
             Self::Git { .. } => "git-refused".into(),
-            Self::BuildFailed { .. } => "round-build-failed".into(),
+            Self::CheckFailed(failure) => failure.check.reason().into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
             Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
             Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
+            Self::CriterionFix(fix) => fix.refused.reason(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
             Self::AfterWave { question, .. } => {
                 if question.is_some() { "round-after-wave-limit".into() } else { "round-after-wave".into() }
@@ -228,10 +264,21 @@ impl RoundRefusal {
                 "round.undone_not_in_wave",
                 &[("{wave}", wave.to_string()), ("{code}", code.clone()), ("{tasks}", task_list(tasks, lang))],
             ),
-            Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
-            Self::BuildFailed { command, output } => {
-                fill("round.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
+            Self::StartedWorkUndone { wave, tasks } => fill(
+                "round.started_work_undone",
+                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
+            ),
+            Self::DoneWithoutStep { wave, tasks } => fill(
+                "round.done_without_step",
+                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
+            ),
+            Self::Rejected { wave, reason, title } => rejected_message(*wave, reason, title.as_deref(), lang),
+            Self::RejectedWithoutReturn { wave } => fill("round.rejected_without_return", &[("{wave}", wave.to_string())]),
+            Self::RejectedCommitted { wave, sha } => {
+                fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())])
             }
+            Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
+            Self::CheckFailed(failure) => failure.message(lang),
             Self::CriterionProofFailed { code, command, output } => fill(
                 "round.criterion_proof_failed",
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())],
@@ -243,6 +290,7 @@ impl RoundRefusal {
             Self::CriterionMissingTest { code, name } => {
                 fill("round.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())])
             }
+            Self::CriterionFix(fix) => fix.message(lang),
             Self::TokenCap { wave, tokens } => {
                 token_cap_message(*wave, *tokens, lang).unwrap_or_default()
             }
@@ -320,7 +368,7 @@ fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
 
 /// O código ou o número de um campo que aponta outro evento (`item`, num
 /// passo): o código quando o mapa o conhece, senão o próprio número.
-fn ref_shown(value: Option<&Value>, codes: &BTreeMap<u64, String>) -> String {
+pub(super) fn ref_shown(value: Option<&Value>, codes: &BTreeMap<u64, String>) -> String {
     match value {
         Some(Value::String(code)) => code.clone(),
         Some(v) => v.as_u64().map_or_else(String::new, |n| codes.get(&n).cloned().unwrap_or_else(|| n.to_string())),
@@ -613,7 +661,8 @@ pub(super) fn run_entered_round(
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held } =
-        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
+        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)
+            .map_err(|refused| new_agents_named(refused, root, &spec, &log, lang))?;
 
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
@@ -652,6 +701,9 @@ pub(super) fn run_entered_round(
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    // Com a trava presa e a spec relida, sai da pasta de despacho o trecho de
+    // conserto da onda que a rodada comitou ou que voltou de novo.
+    sweep_fixes(root, &spec, Some(&locked));
     // O commit que uma rodada anterior fez e não chegou a anotar, porque caiu
     // logo depois dele, é anotado agora, antes de qualquer despacho: sem ele
     // o fechamento recusa a obra.
@@ -946,7 +998,7 @@ pub(super) fn run_entered_round(
     // com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
     // quem confere o trabalho é o agente de teste dedicado que o fechamento
     // pede, uma vez por obra.
-    let report_back = translate("round.report", lang);
+    let report_back = super::checks::report_back(root, lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
         format!("{} {report_back}", translate("round.next", lang))
@@ -1047,6 +1099,14 @@ pub(super) fn run_entered_round(
 /// caminho do repositório principal, onde a spec mora.
 fn request_command(root: &Path, spec: &str, wave: u64) -> String {
     read_command(root, spec, &format!("request-{wave}"))
+}
+
+/// O texto com que o condutor despacha a onda `wave`: o título do pedido
+/// dela, na primeira linha, e o comando que o lê, o mesmo de
+/// `dispatch[].read`. O gancho do despacho troca por ele o texto que o
+/// condutor escreveu.
+pub(crate) fn wave_dispatch(root: &Path, spec: &str, wave: u64, lang: Locale) -> String {
+    format!("{}\n\n{}", wave_title(spec, wave, lang), request_command(root, spec, wave))
 }
 
 /// O comando `read` de uma leitura da spec (`block`), com o caminho do
@@ -1976,17 +2036,6 @@ mod tests {
         store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], at).unwrap();
     }
 
-    /// O processo e a hora de início de um Claude Code que já fechou: um
-    /// processo nascido e já colhido nunca mais aparece com a mesma hora de
-    /// início. Só os testes de onda órfã usam, e eles só valem no Linux.
-    #[cfg(target_os = "linux")]
-    fn closed_sender() -> (u32, u64) {
-        let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
-        let pid = dead.id();
-        dead.wait().expect("reap the fixture process");
-        (pid, 1)
-    }
-
     /// O passo que o agente grava pelo `run write step`; a onda pausada e a
     /// órfã, de um Claude Code que fechou, reenviam o pedido de antes,
     /// palavra por palavra, com os passos e o aviso, e o envio novo aponta o
@@ -2029,7 +2078,7 @@ mod tests {
 
         // A onda 2 é órfã: o Claude Code dela fechou — um processo nascido e
         // já colhido nunca mais aparece com a mesma hora de início.
-        let (dead_pid, dead_started) = closed_sender();
+        let (dead_pid, dead_started) = closed_process();
         // O envio dela é de antes da vaga fixa: ainda grava a pasta de
         // compilação, o campo antigo que o envio novo não grava mais.
         let mut draft2 = draft2;
@@ -2164,7 +2213,7 @@ mod tests {
         let mut draft = resend_draft(sent_of(1));
         draft["copy"] = json!(shared);
         let (claude_pid, claude_started) =
-            if alive { crate::commands::flow::stuck::sender_process() } else { closed_sender() };
+            if alive { crate::commands::flow::stuck::sender_process() } else { closed_process() };
         draft["claude_pid"] = json!(claude_pid);
         draft["claude_started"] = json!(claude_started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2269,7 +2318,7 @@ mod tests {
         let root = dir.path();
         let copy = wave_one_without_its_copy(root);
         let mut draft = resend_draft(&sends_of(root)[0]);
-        let (pid, started) = closed_sender();
+        let (pid, started) = closed_process();
         draft["claude_pid"] = json!(pid);
         draft["claude_started"] = json!(started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2366,7 +2415,7 @@ mod tests {
             let sent = log.visible().into_iter().find(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
             resend_draft(sent)
         };
-        let (dead_pid, dead_started) = closed_sender();
+        let (dead_pid, dead_started) = closed_process();
         let mut draft1 = draft1;
         draft1["claude_pid"] = json!(dead_pid);
         draft1["claude_started"] = json!(dead_started);
@@ -2376,8 +2425,9 @@ mod tests {
         assert_eq!(waves_in(&second, "dispatch"), vec![1], "a onda 2 não usa a vaga da órfã: {second}");
     }
 
-    /// O pedido da onda nova traz os comandos do projeto e a outra onda que
-    /// sai junto, com o arquivo dela. O do conserto traz também o veredito,
+    /// O pedido da onda nova traz o comando de compilar do projeto — o de
+    /// testar não, porque a suíte é da rodada — e a outra onda que sai junto,
+    /// com o arquivo dela. O do conserto traz também o veredito,
     /// a entrega anterior e a decisão gravada depois do envio. Entregue o
     /// conserto, a rodada não pede revisão nenhuma dele: a resposta não traz
     /// o campo `reviews`, e a onda 1 sai da fila sem veredito novo.
@@ -2387,15 +2437,15 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make","testCommand":"make test"}"#).unwrap();
-        // `make` é o comando de compilação de verdade agora: a rodada roda
-        // ele antes de comitar, e sem um Makefile de verdade o teste
-        // pegaria a recusa de build em vez do fluxo que ele testa.
-        std::fs::write(root.join("Makefile"), "default:\n\t@true\n").unwrap();
+        // `make` e `make test` rodam de verdade: a rodada compila e roda a
+        // suíte antes de comitar, e sem um Makefile de verdade o teste
+        // pegaria a recusa de uma delas em vez do fluxo que ele testa.
+        std::fs::write(root.join("Makefile"), "default:\n\t@true\ntest:\n\t@true\n").unwrap();
         let first = request_of(&round(root, "x", None), 1);
         for line in ["- Compile com `make`.", "  - Onda 2: `src/b.rs`"] {
             assert!(first.contains(line), "{line}: {first}");
         }
-        assert!(first.lines().any(|l| l == "2. Rode a suíte do projeto com `make test`."), "{first}");
+        assert!(!first.contains("make test"), "{first}");
         assert!(!first.contains(translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));

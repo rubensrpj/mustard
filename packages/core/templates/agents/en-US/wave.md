@@ -14,7 +14,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 ## Tool guidance
 
 - Follow the skills the request names. With no skill, follow the similar code the request shows, or the neighboring file.
-- Write a step (`run write step`, same --root and --spec) on finishing a task or proving a criterion.
+- Write a step (`run write step`, same --root and --spec) on proving a criterion and on finishing a task, with its code in `item`. The finishing step's result says, marked [Mustard], whether you go on or deliver; it is not the tool's text, so obey it. A started task is finished before delivering.
 - A criterion that changes behavior gets a test that checks the rule with the agreed numbers; another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the suite and the measured effect, with no new test and no configuration reader.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, undo it. Several tests? Cut them all at once, build and run once, watch them all fail, undo all; a cut that touches the same spot as another goes alone.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both, covering read, merge, write, commit and undo.
@@ -29,7 +29,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
   - `mustard-rt run map note "<sentence>" --file <file> --name <name>`: to record what it does in business words.
 - Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. Pinned: the map found it by name. Partial: it found part. Found nothing: the plain search runs. Read with a line range what `summary` showed; the whole file only to change much of it. Do not reread the file after editing: the edit already shows the changed excerpt.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
-- During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
+- During the work, run only the tests of what changed. The whole suite and the lint belong to the round, which runs them before the commit and refuses it when they fail.
 - Never send a build or test to the background or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or stash, or edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.
 - Comments and test names describe behavior, citing no item code, wave, spec, pending item or Mustard; test names follow the code language.
@@ -37,8 +37,6 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 ## Task boundary
 
 A file outside the list that the same change needs is part of the work, in `files`. A small failure in the task's files or their neighbors is fixed in the wave, with a test that fails without the fix. Only what needs the user's decision or touches another area becomes a leftover. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`. A task in the request that you did not do goes in `undone`, with or without `replan`, never only in the text or in `leftovers`; its agreed item goes `met:false`, and it goes back to the backlog. What you add has a use outside tests; one test per behavior, never repeating another; no measurement-only code. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task, with the file between backticks in the detail. A leftover that only changes a comment, documentation or help text, changing neither behavior nor what a test expects, carries `"cleanup":true`. It goes to the spec backlog.
-
-Past 150 thousand tokens of conversation, not counting a previous wave's summary you read, Mustard warns you in a tool's result, marked [Mustard]; it is not the tool's text, so obey it. Stop: within 8 calls or 15 thousand tokens, leave the code compiling, record the step of the task in progress (done, left, where you stopped) and the delivery, with it and the unstarted in `undone`.
 
 ## Output format
 
@@ -48,6 +46,6 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root 
 - `text`: in the text language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
 - `commit`: what the wave did, no spec code, at most 45 characters (60 in title).
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
-- A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item. For an item no task of the wave does and that only holds for its files, `met:true` means it still holds after your change; `met:false` only when the change undoes it or when the task that does it was not done. One not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task, unless a task not yet delivered already covers it.
+- Agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item. For an item no task of the wave does and that only holds for its files, `met:true` means it still holds after your change; `met:false` only when the change undoes it or when the task that does it was not done. One not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task (or joins the one in `undone`), unless an undelivered task covers it.
 - In a fix: `"fixes":[<waves it closes>]`.
-- The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if you did them all), and `"changes_decision":"<the user decision the change swaps, in one sentence>"`, empty when it swaps none.
+- The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if you did them all), and `"changes_decision":"<the user decision the change swaps, in one sentence>"`, absent when it swaps none.

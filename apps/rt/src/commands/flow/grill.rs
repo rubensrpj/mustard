@@ -1,15 +1,16 @@
-//! `mustard-rt run grill --kinds <tipos> [--spec <nome>] [--condensed]` — o
-//! levantamento de uma spec: grava o tipo de trabalho e monta a lista de
-//! pontos.
+//! `mustard-rt run grill [--kinds <tipos>] [--spec <nome>] [--condensed]` — o
+//! levantamento de uma spec: grava o tipo de trabalho e os pontos da lista.
 //!
 //! Roda só numa spec em levantamento que já tem o objetivo, o primeiro
 //! `context`, que é a resposta do usuário à pergunta do `open`. O tipo de
 //! trabalho vem em `--kinds` (`feature`, `fix` ou `refactor`, mais de um no
 //! pedido misto) e é gravado como `work_type`, com o autor `assistant` e a
-//! mensagem do objetivo como origem; é a única porta que o grava. Os mesmos
-//! tipos de novo não gravam nada; um tipo a mais grava a versão nova do
-//! `work_type`, e a lista ganha só as lacunas que faltam; um tipo a menos é
-//! recusado, porque ponto nenhum sai por isso.
+//! mensagem do objetivo como origem; é a única porta que o grava. Sem
+//! `--kinds`, vale o tipo gravado e, na primeira vez, o do começo da branch
+//! com que a spec nasceu (`fix/x` dá `fix`); sem nenhum dos dois, a recusa
+//! pede o tipo. Os mesmos tipos de novo não gravam nada; um tipo a mais grava
+//! a versão nova do `work_type`, e a lista ganha só as lacunas que faltam; um
+//! tipo a menos é recusado, porque ponto nenhum sai por isso.
 //!
 //! A lista (`mustard_core::domain::survey::build`) junta as lacunas dos
 //! tipos, as lições do banco e as specs anteriores que casam com o objetivo e,
@@ -19,18 +20,22 @@
 //! principal, também vistos de um worktree. Com `--condensed`, o pedido que
 //! cabe numa frase, todos os pontos vão para um bloco só.
 //!
-//! O `grill` não grava os pontos: quem os grava é o assistente, pelo `write`,
-//! copiando cada item de `points`. O item já gravado traz o número, o código e
-//! a situação do ponto que o registra. Enquanto falta ponto, a resposta pede
-//! para gravá-los; com todos gravados, devolve em `next` o primeiro ponto
-//! aberto ou, no condensado, pede para mostrar tudo de uma vez; sem ponto
-//! aberto, lista em `unrouted` as mensagens do usuário sem destino. Chamar de
-//! novo com os mesmos tipos não grava nada e devolve o mesmo passo.
+//! O `grill` grava cada item da lista que ainda não tem ponto como ponto
+//! aberto, com o autor `binary`, os fatos que a lista já traz e os lembretes;
+//! o fato do mapa que cita um arquivo que não existe mais fica de fora, e o
+//! ponto é gravado assim mesmo. O ponto pode nascer sem fato; o assistente soma os fatos que conferiu numa
+//! versão nova só com `replaces` e `facts`, e o ponto sem fato não fecha com
+//! resposta. Cada item da resposta traz o número, o código e a situação do
+//! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
+//! ou, no condensado, pede para mostrar todos de uma vez; sem ponto aberto,
+//! lista em `unrouted` as mensagens do usuário sem destino. Chamar de novo
+//! com os mesmos tipos não grava nada e devolve o mesmo passo.
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "work_type": 4, "kinds": ["feature"], "condensed": false,
-//!  "points": [{"block": "context", "gap": "Quem usa e para quê", "from": "gap", "origin": 2}, …],
-//!  "to_record": 9, "reminders": 0, "hint": "Grave cada ponto de `points` …"}
+//!  "points": [{"block": "context", "gap": "Quem usa e para quê", "from": "gap", "origin": 2,
+//!              "id": 5, "code": "MSTD-POINT-0001", "status": "open"}, …],
+//!  "reminders": 0, "next": {"id": 5, …}, "hint": "Apresente o ponto MSTD-POINT-0001 …"}
 //! ```
 //!
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
@@ -39,12 +44,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::citation::{self, Finding};
 use mustard_core::domain::spec_events::{
     found_by, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS,
 };
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
+use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
@@ -146,10 +153,13 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let goal_agent = goal.str_field("agent").unwrap_or_default().trim().to_string();
     let origin = goal.int("origin");
 
-    // Os tipos: os mesmos não gravam nada, um a mais grava a versão nova, um
-    // a menos é recusado.
+    // Os tipos: sem eles, os lembrados (o gravado ou o da branch); os mesmos
+    // não gravam nada, um a mais grava a versão nova, um a menos é recusado.
     let asked = match survey::parse_kinds(opts.kinds.as_deref().unwrap_or_default()) {
-        Ok(kinds) if kinds.is_empty() => return refuse(GrillRefusal::KindsMissing),
+        Ok(kinds) if kinds.is_empty() => match survey::remembered_kinds(&log) {
+            remembered if remembered.is_empty() => return refuse(GrillRefusal::KindsMissing),
+            remembered => remembered,
+        },
         Ok(kinds) => kinds,
         Err(_) => {
             return refuse(GrillRefusal::Spec(Refusal::InvalidValue {
@@ -188,7 +198,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let prior = spec_index::read_specs(&project.root);
     let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
-    let list = survey::build(&Sources {
+    let mut list = survey::build(&Sources {
         kinds: &kinds,
         goal: &goal_text,
         goal_agent: &goal_agent,
@@ -202,9 +212,28 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         lang,
         languages: &project.languages,
     });
+    drop_stale_facts(&mut list, &opts.root, &project.root);
+
+    // Os pontos que faltam são gravados aqui, abertos, com os fatos que a
+    // lista traz e os lembretes; o assistente soma os fatos que conferiu antes
+    // de mostrar cada um.
+    let missing = survey::missing(&log, &list);
+    for item in &missing {
+        if let Err(refusal) = record_point(&opts.root, &spec, item, origin) {
+            return refuse(GrillRefusal::Spec(refusal));
+        }
+    }
+    let log = if missing.is_empty() {
+        log
+    } else {
+        match store::read(&path) {
+            Ok(Some(log)) => log,
+            Ok(None) => return refuse(GrillRefusal::Spec(Refusal::NoSpecFile { spec })),
+            Err(refusal) => return refuse(GrillRefusal::Spec(refusal)),
+        }
+    };
 
     let codes = log.codes();
-    let to_record = survey::missing(&log, &list).len();
     let points: Vec<Value> = list
         .iter()
         .map(|item| {
@@ -233,7 +262,6 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "kinds": kinds,
         "condensed": condensed,
         "points": points,
-        "to_record": to_record,
         "reminders": reminders,
     });
     // Numa spec que voltou ao levantamento, o motivo da volta é a consulta: o
@@ -252,9 +280,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     }
     spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
     let open = survey::open_points(&log);
-    if to_record > 0 {
-        report["hint"] = json!(translate("survey.record_points", lang).replace("{spec}", &spec));
-    } else if let Some(first) = open.first() {
+    if let Some(first) = open.first() {
         if condensed {
             report["hint"] = json!(translate("survey.present_all", lang));
         } else {
@@ -341,6 +367,48 @@ fn record_work_type(
     record(start, spec, "work_type", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
 }
 
+/// Tira da lista o fato que cita um arquivo que não existe, ou uma linha que
+/// passa do fim dele, pela mesma conferência que recusaria a gravação do
+/// ponto: o mapa velho, que ainda cita o arquivo apagado, não para o
+/// levantamento. O ponto pode ficar sem fato nenhum, e os outros fatos ficam.
+fn drop_stale_facts(list: &mut [survey::Proposed], start: &Path, root: &Path) {
+    let world = DiskWorld::new(store::citation_roots(start, root), None);
+    for item in list {
+        item.facts.retain(|fact| !citation::check(&world, &fact.source, "").iter().any(Finding::is_refusal));
+    }
+}
+
+/// Grava um item da lista como ponto aberto, com o autor `binary` e a
+/// mensagem do objetivo como origem, pela mesma gravação do `run write`.
+fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Option<u64>) -> Result<u64, Refusal> {
+    let Value::Object(mut draft) = item.to_value(origin) else {
+        return Ok(0);
+    };
+    draft.insert("status".to_string(), json!("open"));
+    draft.insert("author".to_string(), json!("binary"));
+    record(start, spec, "point", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
+}
+
+/// Roda a linha do `grill` que uma resposta manda rodar (`line`, como ela
+/// vem, de `mustard-rt run grill …`) pelo parser do binário, na pasta `root`,
+/// e devolve a resposta dele: o comando mostrado roda como veio.
+#[cfg(test)]
+pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
+    use crate::commands::{flow::cli::FlowCmd, RunCmd};
+    #[derive(clap::Parser)]
+    struct Harness {
+        #[command(subcommand)]
+        cmd: RunCmd,
+    }
+    let root_arg = root.to_string_lossy().into_owned();
+    let argv = ["run"].into_iter().chain(line.split_whitespace().skip(2)).chain(["--root", &root_arg]);
+    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root }) }) =
+        clap::Parser::try_parse_from(argv)
+    else {
+        panic!("not the grill: {line}");
+    };
+    grill_for(&GrillOpts { root, spec, kinds, condensed }, None)
+}
 
 #[cfg(test)]
 mod tests {
@@ -380,7 +448,12 @@ mod tests {
     /// Uma spec em levantamento, com o objetivo gravado apontando a mensagem
     /// do usuário. Devolve o número da mensagem do objetivo.
     fn surveyed(root: &Path, spec: &str) -> u64 {
-        assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
+        surveyed_on(root, spec, &format!("feature/{spec}"))
+    }
+
+    /// [`surveyed`] numa spec aberta com a branch `branch`.
+    fn surveyed_on(root: &Path, spec: &str, branch: &str) -> u64 {
+        assert_eq!(record_open(root, spec, branch, "dev"), Ok(true));
         let said = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": GOAL})));
         id_of(&write(root, Some(spec), "context", json!({"text": GOAL, "origin": said})));
         said
@@ -472,32 +545,12 @@ mod tests {
     fn the_dependents_gap_reads_its_map_parts_even_when_another_column_is_broken() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        mustard_core::io::project_map::write_text(
-            root,
-            r#"{"modules": [
-                {"path": "src/a.rs", "tests": "um texto no lugar da lista",
-                 "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
-                {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#,
-        )
-        .unwrap();
+        let map = r#"{"modules": [
+            {"path": "src/a.rs", "tests": "um texto no lugar da lista",
+             "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+            {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#;
+        let report = refactor_with_map(root, map, "- Tirar `record_birth` do fluxo.");
         assert!(project_map::read(root).is_err(), "the whole map refuses the broken column");
-        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
-        let goal = "Tirar o registro de nascimento do fluxo.";
-        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
-        id_of(&write(
-            root,
-            Some("x"),
-            "context",
-            json!({
-                "title": "Tirar o registro de nascimento",
-                "text": goal,
-                "agent": "- Tirar `record_birth` do fluxo.",
-                "origin": said,
-            }),
-        ));
-
-        let report = grill(root, "x", Some("refactor"), false);
         let sources: Vec<&str> = report["points"]
             .as_array()
             .into_iter()
@@ -506,6 +559,45 @@ mod tests {
             .filter_map(|fact| fact["source"].as_str())
             .collect();
         assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{report}");
+    }
+
+    /// Uma spec de refatoração com o mapa `map`, o arquivo `src/a.rs` com três
+    /// linhas e o objetivo que cita os nomes na parte do agente `agent`. Devolve
+    /// a resposta do `grill`.
+    fn refactor_with_map(root: &Path, map: &str, agent: &str) -> Value {
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("a.rs"), "fn a() {}\n\nfn record_birth() {}\n").unwrap();
+        mustard_core::io::project_map::write_text(root, map).unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let goal = "Tirar o registro de nascimento do fluxo.";
+        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
+        let context = json!({"title": "Tirar o registro de nascimento", "text": goal, "agent": agent, "origin": said});
+        id_of(&write(root, Some("x"), "context", context));
+        grill(root, "x", Some("refactor"), false)
+    }
+
+    /// O mapa velho ainda declara um nome num arquivo que foi apagado: o
+    /// ponto de quem depende é gravado sem o fato desse arquivo, com os fatos
+    /// do arquivo que existe, e o `grill` não recusa.
+    #[test]
+    fn a_map_fact_citing_a_deleted_file_is_left_out_of_the_recorded_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let map = r#"{"modules": [
+            {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+            {"path": "src/gone.rs", "declarations": [{"kind": "function", "name": "drop_birth", "line": 2}]},
+            {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#;
+        let report = refactor_with_map(root, map, "- Tirar `record_birth` e `drop_birth` do fluxo.");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let points = recorded_points(root, "x");
+        let dependents = points
+            .iter()
+            .find(|p| p.str_field("gap") == Some(survey::GapKey::Dependents.label(Locale::PtBr)))
+            .expect("the dependents point is recorded");
+        let sources: Vec<&str> =
+            dependents.fields["facts"].as_array().unwrap().iter().filter_map(|fact| fact["source"].as_str()).collect();
+        assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{dependents:?}");
     }
 
     /// O `grill` não escreve página nem prepara cópia: o levantamento não é
@@ -533,22 +625,10 @@ mod tests {
         report["points"].as_array().unwrap_or_else(|| panic!("no points: {report}"))
     }
 
-    /// Grava, como o assistente, cada item da lista que ainda não tem ponto:
-    /// os campos como vieram, aberto, e um fato com a fonte quando a lista não
-    /// trouxe nenhum.
-    fn record_list(root: &Path, spec: &str, report: &Value) {
-        for item in items(report) {
-            if item.get("id").is_some() {
-                continue;
-            }
-            let mut point = item.clone();
-            point["status"] = json!("open");
-            if point.get("facts").is_none() {
-                point["facts"] = json!([{"text": GOAL, "source": format!("mensagem {}", item["origin"])}]);
-            }
-            let written = write(root, Some(spec), "point", point);
-            assert_eq!(written["ok"], json!(true), "{written}");
-        }
+    /// Os pontos gravados, na ordem do arquivo.
+    fn recorded_points(root: &Path, spec: &str) -> Vec<SpecEvent> {
+        let log = mustard_core::domain::spec_events::parse_log(&events(root, spec));
+        log.visible().into_iter().filter(|e| e.event_type == "point").cloned().collect()
     }
 
     /// Uma lição que casa com o objetivo no banco, e uma spec anterior que
@@ -581,11 +661,11 @@ mod tests {
         id_of(&write(root, old, "message", json!({"author": "user", "text": "O merge com pendência aberta passou sem aviso."})));
     }
 
-    /// O `grill` grava o tipo de trabalho, com o autor e a origem do
-    /// objetivo, e lista um ponto por lacuna, na ordem dos blocos; gravados os
-    /// pontos, devolve o primeiro aberto.
+    /// O `grill` numa spec nova grava o tipo de trabalho, com o autor e a
+    /// origem do objetivo, e um ponto aberto por lacuna, na ordem dos blocos,
+    /// do binário e sem fato; a resposta devolve o primeiro.
     #[test]
-    fn grill_records_the_work_type_and_lists_one_point_per_gap_in_block_order() {
+    fn grill_records_the_work_type_and_one_open_point_per_gap_and_returns_the_first() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -598,29 +678,36 @@ mod tests {
         assert_eq!(work_type.str_field("author"), Some("assistant"));
         assert_eq!(work_type.int("origin"), Some(said));
 
-        let gaps: Vec<&str> = items(&report).iter().map(|item| item["gap"].as_str().unwrap()).collect();
         let expected: Vec<&str> =
             survey::gaps(&["feature"]).into_iter().map(|key| key.label(Locale::PtBr)).collect();
+        let gaps: Vec<&str> = items(&report).iter().map(|item| item["gap"].as_str().unwrap()).collect();
         assert_eq!(gaps, expected);
         assert!(items(&report).iter().all(|item| item["from"] == json!("gap") && item["origin"] == json!(said)));
-        assert_eq!(report["to_record"], json!(9));
-        assert!(report["hint"].as_str().unwrap().contains("mustard-rt run write point --spec x"), "{report}");
-        assert!(!events(root, "x").contains("\"type\":\"point\""), "the grill never writes a point");
+        assert!(items(&report).iter().all(|item| item["status"] == json!("open") && item["id"].is_u64()), "{report}");
+        let points = recorded_points(root, "x");
+        let recorded: Vec<&str> = points.iter().filter_map(|p| p.str_field("gap")).collect();
+        assert_eq!(recorded, expected, "one point per gap, in block order");
+        for point in &points {
+            assert_eq!(point.str_field("author"), Some("binary"), "{point:?}");
+            assert_eq!(point.str_field("status"), Some("open"), "{point:?}");
+            assert_eq!(point.int("origin"), Some(said), "{point:?}");
+            assert!(point.fields.get("facts").is_none(), "the point is born without facts: {point:?}");
+        }
+        assert!(report.get("to_record").is_none(), "{report}");
 
-        record_list(root, "x", &report);
-        let next = grill(root, "x", Some("feature"), false);
-        assert_eq!(next["to_record"], json!(0), "{next}");
-        assert_eq!(next["next"]["gap"], json!("Quem usa e para quê"), "{next}");
-        assert_eq!(next["next"]["block"], json!("context"));
-        let hint = next["hint"].as_str().unwrap();
-        let code = next["next"]["code"].as_str().unwrap();
-        assert!(hint.contains(code) && hint.contains(&next["next"]["id"].to_string()), "{hint}");
+        assert_eq!(report["next"]["gap"], json!("Quem usa e para quê"), "{report}");
+        assert_eq!(report["next"]["block"], json!("context"));
+        assert_eq!(report["next"]["id"], json!(points[0].id));
+        let hint = report["hint"].as_str().unwrap();
+        let code = report["next"]["code"].as_str().unwrap();
+        assert!(hint.contains(code) && hint.contains(&report["next"]["id"].to_string()), "{hint}");
         // O ponto é apresentado na ordem de explicar do estilo de resposta.
         assert!(hint.contains("na ordem de explicar do estilo de resposta"), "{hint}");
     }
 
-    /// Repetir o `grill` com os mesmos tipos não grava nada e devolve o mesmo
-    /// próximo ponto.
+    /// Repetir o `grill` com os mesmos tipos, ou sem eles, não grava nada e
+    /// devolve o mesmo próximo ponto; numa spec com os pontos já copiados à mão, como as de
+    /// antes, ele não grava ponto repetido.
     #[test]
     fn running_grill_again_writes_nothing_and_returns_the_same_next_point() {
         let dir = tempdir().unwrap();
@@ -628,15 +715,86 @@ mod tests {
         surveyed(root, "x");
         let first = grill(root, "x", Some("fix"), false);
         let bytes = events(root, "x");
-        assert_eq!(grill(root, "x", Some("fix"), false), first, "the list is the same");
-        assert_eq!(events(root, "x"), bytes);
-        record_list(root, "x", &first);
-        let bytes = events(root, "x");
-        let one = grill(root, "x", Some("fix"), false);
-        let two = grill(root, "x", Some("fix"), false);
-        assert_eq!(one["next"], two["next"]);
-        assert_eq!(one["next"]["gap"], json!("O sintoma"));
+        assert_eq!(grill(root, "x", Some("fix"), false), first, "the same step");
+        // Sem os tipos, vale o gravado, antes do da branch `feature/x`.
+        assert_eq!(grill(root, "x", None, false), first, "the recorded fix, not the feature of the branch");
+        assert_eq!(first["next"]["gap"], json!("O sintoma"));
         assert_eq!(events(root, "x"), bytes, "nothing was written");
+
+        // Noutro projeto, para a spec `x` não casar como spec anterior.
+        let other = tempdir().unwrap();
+        let root = other.path();
+        let said = surveyed(root, "manual");
+        assert!(record_work_type(root, "manual", &["fix"], Some(said), None).is_ok());
+        for key in survey::gaps(&["fix"]) {
+            let point = json!({"block": key.block(), "gap": key.label(Locale::PtBr), "from": "gap", "status": "open",
+                "origin": said, "facts": [{"text": GOAL, "source": format!("mensagem {said}")}]});
+            assert_eq!(write(root, Some("manual"), "point", point)["ok"], json!(true));
+        }
+        let bytes = events(root, "manual");
+        let report = grill(root, "manual", Some("fix"), false);
+        assert_eq!(report["next"]["gap"], json!("O sintoma"), "{report}");
+        assert_eq!(events(root, "manual"), bytes, "no point twice");
+    }
+
+    /// O assistente soma os fatos ao ponto que o `grill` gravou com uma
+    /// versão nova só com `replaces` e `facts`, pelo número ou pelo código: o
+    /// ponto segue o mesmo, aberto, com o resto da versão antiga e os fatos
+    /// somados, sem repetir.
+    #[test]
+    fn a_new_version_with_only_facts_keeps_the_point_and_adds_its_facts() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let first = grill(root, "x", Some("fix"), false)["next"].clone();
+        let (id, code) = (id_of(&first), first["code"].as_str().unwrap().to_string());
+        let one = json!({"text": "O sintoma aparece no merge.", "source": format!("mensagem {said}")});
+        let two = json!({"text": "O merge lê a pendência.", "source": format!("mensagem {said}")});
+        let added = write(root, Some("x"), "point", json!({"replaces": id, "facts": [one]}));
+        assert_eq!(added["ok"], json!(true), "{added}");
+        let again = write(root, Some("x"), "point", json!({"replaces": code, "facts": [one, two]}));
+        assert_eq!(again["ok"], json!(true), "{again}");
+
+        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+        let (old, newest) = (log.get(id).unwrap(), log.get(id_of(&again)).unwrap());
+        for field in ["block", "gap", "from", "status", "origin"] {
+            assert_eq!(newest.fields.get(field), old.fields.get(field), "{field}");
+        }
+        assert_eq!(newest.fields["facts"], json!([one, two]), "the facts add up, none twice");
+        assert_eq!(survey::open_points(&log).len(), survey::gaps(&["fix"]).len(), "still one open point per gap");
+        let next = grill(root, "x", Some("fix"), false);
+        assert_eq!(next["next"]["code"], json!(code), "the same point: {next}");
+        assert_eq!(next["next"]["facts"], json!([one, two]), "{next}");
+    }
+
+    /// O ponto sem fato não fecha com resposta, só como "não se aplica", com
+    /// o motivo; somados os fatos, a mesma resposta fecha.
+    #[test]
+    fn answering_a_point_without_facts_is_refused_until_its_facts_are_added() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let listed = grill(root, "x", Some("fix"), false);
+        let (first, second) = (&items(&listed)[0], &items(&listed)[1]);
+        let decided = id_of(&write(root, Some("x"), "decision", json!({"text": "Resposta.", "keys": ["k"], "why": "w", "origin": said})));
+        let answer = |item: &Value| {
+            json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "closed",
+                "closes": item["id"], "result": [decided], "origin": said})
+        };
+        let bytes = events(root, "x");
+        let refused = write(root, Some("x"), "point", answer(first));
+        assert_eq!(refused["reason"], json!("point-without-facts"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains(first["code"].as_str().unwrap()), "{refused}");
+        assert_eq!(events(root, "x"), bytes, "nothing was written");
+
+        let skipped = json!({"block": second["block"], "gap": second["gap"], "from": "gap", "status": "not_applicable",
+            "closes": second["id"], "reason": "Não vale aqui.", "origin": said});
+        assert_eq!(write(root, Some("x"), "point", skipped)["ok"], json!(true));
+
+        let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
+        assert_eq!(write(root, Some("x"), "point", json!({"replaces": first["id"], "facts": [fact]}))["ok"], json!(true));
+        let closed = write(root, Some("x"), "point", answer(first));
+        assert_eq!(closed["ok"], json!(true), "{closed}");
     }
 
     /// Um tipo a mais grava a versão nova do tipo de trabalho, e a lista
@@ -647,19 +805,15 @@ mod tests {
         let root = dir.path();
         surveyed(root, "x");
         let first = grill(root, "x", Some("feature"), false);
-        record_list(root, "x", &first);
+        let before = recorded_points(root, "x").len();
         let wider = grill(root, "x", Some("fix,feature"), false);
         assert_eq!(wider["kinds"], json!(["feature", "fix"]), "{wider}");
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         let now = survey::work_type(&log).unwrap();
         assert_eq!(now.int("replaces"), first["work_type"].as_u64());
-        let left: Vec<&str> = items(&wider)
-            .iter()
-            .filter(|item| item.get("id").is_none())
-            .map(|item| item["gap"].as_str().unwrap())
-            .collect();
-        assert_eq!(left, ["O sintoma", "Como reproduzir", "O esperado contra o obtido", "A causa"]);
-        assert_eq!(wider["to_record"], json!(4));
+        let points = recorded_points(root, "x");
+        let added: Vec<&str> = points[before..].iter().filter_map(|p| p.str_field("gap")).collect();
+        assert_eq!(added, ["O sintoma", "Como reproduzir", "O esperado contra o obtido", "A causa"]);
     }
 
     /// Um tipo a menos é recusado, e nada é gravado.
@@ -676,20 +830,39 @@ mod tests {
         assert_eq!(events(root, "x"), bytes);
     }
 
-    /// Sem os tipos, ou com um tipo que não existe, o `grill` recusa, e nada
-    /// é gravado.
+    /// Sem os tipos, numa spec sem tipo gravado e com uma branch que não
+    /// começa por um tipo, ou com um tipo que não existe, o `grill` recusa, e
+    /// nada é gravado.
     #[test]
     fn grill_without_kinds_or_with_an_unknown_kind_is_refused() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        surveyed(root, "x");
+        surveyed_on(root, "x", "x");
         let bytes = events(root, "x");
-        assert_eq!(grill(root, "x", None, false)["reason"], json!("kinds-missing"));
+        let missing = grill(root, "x", None, false);
+        assert_eq!(missing["reason"], json!("kinds-missing"), "{missing}");
+        assert!(missing["hint"].as_str().unwrap().contains("--kinds"), "{missing}");
         assert_eq!(grill(root, "x", Some(" , "), false)["reason"], json!("kinds-missing"));
         let unknown = grill(root, "x", Some("feature,bug"), false);
         assert_eq!(unknown["reason"], json!("invalid-value"), "{unknown}");
         assert!(unknown["hint"].as_str().unwrap().contains("refactor"), "{unknown}");
         assert_eq!(events(root, "x"), bytes);
+    }
+
+    /// Sem os tipos e sem tipo gravado, vale o do começo da branch com que a
+    /// spec nasceu.
+    #[test]
+    fn grill_without_kinds_on_a_fix_branch_records_fix() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed_on(root, "x", "fix/x");
+        let report = grill(root, "x", None, false);
+        assert_eq!(report["kinds"], json!(["fix"]), "{report}");
+        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+        let work_type = survey::work_type(&log).expect("the work type is recorded");
+        assert_eq!(survey::kinds_of(work_type), ["fix"]);
+        assert_eq!(work_type.int("origin"), Some(said));
+        assert_eq!(report["next"]["gap"], json!("O sintoma"), "{report}");
     }
 
     /// Sem o objetivo, o `grill` recusa nos dois idiomas, com a pergunta a
@@ -734,8 +907,8 @@ mod tests {
         }
     }
 
-    /// No pedido que cabe numa frase, o `grill` devolve todas as lacunas de
-    /// uma vez, num bloco só; gravados os pontos, pede um sim só.
+    /// No pedido que cabe numa frase, o `grill` grava todas as lacunas de uma
+    /// vez, num bloco só, e pede um sim só.
     #[test]
     fn a_condensed_survey_returns_every_gap_at_once_in_one_block() {
         let dir = tempdir().unwrap();
@@ -745,7 +918,7 @@ mod tests {
         assert_eq!(report["condensed"], json!(true), "{report}");
         assert_eq!(items(&report).len(), 13);
         assert!(items(&report).iter().all(|item| item["block"] == json!(survey::CONDENSED)), "{report}");
-        record_list(root, "x", &report);
+        assert!(recorded_points(root, "x").iter().all(|p| p.str_field("block") == Some(survey::CONDENSED)));
         let all = grill(root, "x", Some("feature,fix"), false);
         assert_eq!(all["condensed"], json!(true), "the recorded points keep the survey condensed");
         assert!(all.get("next").is_none(), "{all}");
@@ -770,7 +943,7 @@ mod tests {
         let bank = std::fs::read_to_string(root.join(".claude").join("spec").join("lessons.ndjson")).unwrap();
         let search = serde_json::from_str::<Value>(bank.lines().next().unwrap()).unwrap()["search"].as_str().unwrap().to_string();
         assert!(!report.to_string().contains(&search), "the search field never shows: {report}");
-        record_list(root, "x", &report);
+        assert_eq!(lesson["status"], json!("open"), "the point with that source was recorded: {report}");
     }
 
     /// A lição da armadilha do ambiente que casa com o objetivo mas diz os
@@ -874,7 +1047,12 @@ mod tests {
         assert_eq!(report["reminders"], json!(1));
         let reminders: Vec<&Value> = items(&report).iter().filter_map(|item| item.get("reminders")).flat_map(|r| r.as_array().unwrap()).collect();
         assert_eq!(reminders, [&json!({"spec": "antiga", "message": 5, "text": "O merge com pendência aberta passou sem aviso."})]);
-        record_list(root, "x", &report);
+        let recorded = recorded_points(root, "x");
+        let point = recorded.iter().find(|p| p.str_field("from") == Some("prior_spec")).expect("the prior spec point");
+        assert_eq!(point.fields["facts"], prior["facts"], "the point keeps the facts of the list");
+        let reminded = items(&report).iter().find(|item| item.get("reminders").is_some()).unwrap();
+        let point = recorded.iter().find(|p| p.str_field("gap") == reminded["gap"].as_str()).expect("the reminded point");
+        assert_eq!(point.fields["reminders"], json!(reminders), "the point keeps its reminders");
     }
 
     /// A spec do levantamento nunca é a própria spec anterior, nem dá
@@ -911,8 +1089,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let report = grill(root, "x", Some("fix"), false);
-        record_list(root, "x", &report);
         let listed = grill(root, "x", Some("fix"), false);
         for item in items(&listed) {
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
@@ -938,7 +1114,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        record_list(root, "x", &grill(root, "x", Some("fix"), false));
         let listed = grill(root, "x", Some("fix"), false);
         let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
         let close = |item: &Value, closes: u64| {
@@ -992,22 +1167,21 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        record_list(root, "x", &grill(root, "x", Some("fix"), false));
         let listed = grill(root, "x", Some("fix"), false);
         let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
+        // O fato com o segredo vem na versão em que o assistente o soma.
+        let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
+        let version = id_of(&write(root, Some("x"), "point", json!({"replaces": ids[0], "facts": [fact]})));
         for (item, id) in items(&listed).iter().zip(&ids) {
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
                 "closes": id, "reason": "O fato tinha um segredo.", "origin": said});
             assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
         }
-        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
-        let excerpt = log.get(ids[0]).unwrap().fields["facts"][0]["text"].clone();
         let purged = write(root, Some("x"), "purge",
-            json!({"targets": [ids[0]], "reason": "client_data", "excerpt": excerpt, "origin": said}));
-        assert_eq!(purged["purged"], json!([ids[0]]), "{purged}");
+            json!({"targets": [version], "reason": "client_data", "excerpt": GOAL, "origin": said}));
+        assert_eq!(purged["purged"], json!([version]), "{purged}");
 
         let after = grill(root, "x", Some("fix"), false);
-        assert_eq!(after["to_record"], json!(0), "{after}");
         assert!(items(&after).iter().all(|item| item["status"] == json!("closed")), "{after}");
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         assert_eq!(survey::points(&log).iter().filter(|p| p.is_open()).count(), 0);
@@ -1025,7 +1199,8 @@ mod tests {
     /// fechado e depois expurgado no trecho, fechado e depois removido, e as
     /// duas coisas juntas: a lacuna segue coberta e o ponto conta como
     /// fechado. O fechamento grava a lacuna do original, e o `grill` mostra o
-    /// número do original enquanto ele existe — o expurgo não o tira — e,
+    /// número da versão vigente do original enquanto ele existe — o expurgo
+    /// não o tira — e,
     /// depois que ele sai, o do fechamento.
     #[test]
     fn a_closed_point_counts_the_same_on_survey_points_grill_write_and_passage() {
@@ -1035,7 +1210,6 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
-            record_list(root, "x", &grill(root, "x", Some("fix"), false));
             let listed = grill(root, "x", Some("fix"), false);
             let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
             let close = |item: &Value, closes: u64, gap: &str| {
@@ -1053,14 +1227,18 @@ mod tests {
 
             let first = &items(&listed)[0];
             let gap = first["gap"].as_str().unwrap();
+            // O fato a expurgar vem na versão em que o assistente o soma, que
+            // passa a ser o original vigente.
+            let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
+            let version = (leaves == Some("purge"))
+                .then(|| id_of(&write(root, Some("x"), "point", json!({"replaces": ids[0], "facts": [fact]}))));
             let mut last = close(first, ids[0], if reworded { "Outro texto na lacuna" } else { gap });
             let closing = id_of(&last);
             let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
             assert_eq!(log.get(closing).and_then(|e| e.str_field("gap")), Some(gap), "{case}: the closing carries the gap");
             if let Some(kind) = leaves {
-                let body = if kind == "purge" {
-                    let fact = log.get(ids[0]).unwrap().fields["facts"][0]["text"].clone();
-                    json!({"targets": [ids[0]], "reason": "client_data", "excerpt": fact})
+                let body = if let Some(version) = version {
+                    json!({"targets": [version], "reason": "client_data", "excerpt": GOAL})
                 } else {
                     json!({"targets": [ids[0]], "reason": "O fato tinha um segredo."})
                 };
@@ -1074,9 +1252,8 @@ mod tests {
                 assert_eq!(report["point"]["id"], json!(ids[1]), "{case}: {report}");
             }
             let after = grill(root, "x", Some("fix"), false);
-            assert_eq!(after["to_record"], json!(0), "{case}: {after}");
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{case}: {after}");
-            let shown = if leaves == Some("remove") { closing } else { ids[0] };
+            let shown = if leaves == Some("remove") { closing } else { version.unwrap_or(ids[0]) };
             assert_eq!(items(&after)[0]["id"], json!(shown), "{case}: {after}");
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{case}: {after}");
@@ -1104,7 +1281,6 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
-            record_list(root, "x", &grill(root, "x", Some("fix"), false));
             let listed = grill(root, "x", Some("fix"), false);
             let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
             let close = |item: &Value, closes: u64| {
@@ -1132,7 +1308,6 @@ mod tests {
             assert_eq!(log.get(id_of(&revised)).and_then(|e| e.int("closes")), Some(ids[0]), "{leaves}");
 
             let after = grill(root, "x", Some("fix"), false);
-            assert_eq!(after["to_record"], json!(0), "{leaves}: {after}");
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{leaves}: {after}");
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{leaves}: {after}");
@@ -1181,7 +1356,7 @@ mod tests {
         let from: Vec<&str> = items(&report).iter().map(|item| item["from"].as_str().unwrap()).collect();
         assert!(from.contains(&"lesson") && from.contains(&"prior_spec"), "{report}");
         assert!(events(&main, "x").contains("\"type\":\"work_type\""));
+        assert!(events(&main, "x").contains("\"type\":\"point\""), "the points go to the main checkout");
         assert!(!worktree.join(".claude").exists(), "nothing of the Mustard inside the worktree");
-        record_list(&worktree, "x", &report);
     }
 }

@@ -178,14 +178,29 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
     Levels { level, cycle }
 }
 
-/// Uma tarefa do backlog: o que ela depende, os arquivos que declara e se o
-/// trabalho dela já está entregue ou aprovado.
+/// Uma tarefa do backlog: o que ela depende, os arquivos que declara, se o
+/// trabalho dela já está entregue ou aprovado e se ela traz a marca de
+/// prioridade que o usuário deu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BacklogTask<N> {
     pub(crate) id: N,
     pub(crate) depends_on: BTreeSet<N>,
     pub(crate) files: BTreeSet<String>,
     pub(crate) done: bool,
+    pub(crate) priority: bool,
+}
+
+/// As tarefas de `tasks` com a marca de prioridade.
+fn marked<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> BTreeSet<N> {
+    tasks.iter().filter(|t| t.priority).map(|t| t.id.clone()).collect()
+}
+
+impl<N: Ord> Batch<N> {
+    /// `true` quando alguma tarefa do lote está em `marked`, a marca de
+    /// prioridade: o lote sai antes dos outros e não espera juntar trabalho.
+    pub(crate) fn holds_any(&self, marked: &BTreeSet<N>) -> bool {
+        self.tasks.iter().any(|id| marked.contains(id))
+    }
 }
 
 /// Um lote de despacho: as tarefas dentro dele, na ordem em que entraram, e
@@ -336,7 +351,12 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> V
 /// 2. As partes seguem na ordem em que a primeira tarefa de cada uma aparece
 ///    em `order`. A que cruza arquivo de uma onda ainda aberta (`busy`) é um
 ///    lote como os outros, sozinho; quem decide que ela espera é quem solta.
-/// 3. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
+/// 3. A marca de prioridade vem antes de tudo isso: o lote com uma tarefa
+///    marcada sai antes dos outros, curinga incluído, e a marcada sai antes
+///    das outras tarefas do lote dela — a que divide arquivo com ela espera
+///    atrás dela, mesmo pronta antes. Entre os marcados, e entre os não
+///    marcados, vale a ordem de antes.
+/// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
 ///    ele ([`chain_dependents`]).
 pub(crate) fn pack_batches<N: Ord + Clone>(
     tasks: &[BacklogTask<N>],
@@ -344,16 +364,18 @@ pub(crate) fn pack_batches<N: Ord + Clone>(
     waiting: &[N],
     busy: &BTreeSet<String>,
 ) -> Vec<Batch<N>> {
+    let marked = marked(tasks);
     let readiness = |id: &N| order.iter().position(|ready| ready == id).unwrap_or(usize::MAX);
     let (mut batches, mut groups): (Vec<Batch<N>>, Vec<Batch<N>>) = clustered_by_file(tasks, order)
         .into_iter()
         .map(|mut group| {
-            group.tasks.sort_by_key(&readiness);
+            group.tasks.sort_by_key(|id| (!marked.contains(id), readiness(id)));
             group
         })
         .partition(|g| touches_whole_tree(&g.files));
     groups.sort_by_key(|g| g.tasks.iter().map(&readiness).min());
     batches.extend(groups);
+    batches.sort_by_key(|batch| !batch.holds_any(&marked));
     chain_dependents(tasks, &mut batches, waiting, busy);
     batches
 }
@@ -485,6 +507,12 @@ const UNJUDGED: Judgement = Judgement { kind: TaskKind::Feature, confidence: 0.0
 ///    ele ([`chain_dependents`]). Elas não foram julgadas e não entram na
 ///    soma.
 ///
+/// A marca de prioridade da tarefa vem antes do tipo e do número, em tudo
+/// isso: a marcada é olhada primeiro, reserva os arquivos primeiro quando
+/// espera, sai primeiro no lote dela, e o lote com uma marcada sai antes dos
+/// outros, curinga incluído. A marca não é do Jev: vem do evento da tarefa.
+/// Entre as marcadas, e entre as não marcadas, vale a ordem de sempre.
+///
 /// Dois lotes podem dividir arquivo, do mesmo tipo ou de tipos diferentes:
 /// quem solta só deixa sair, juntos, os que não se cruzam.
 pub(crate) fn pack_by_kind<N: Ord + Clone>(
@@ -507,9 +535,10 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
         }
         candidates.push((id, task, judged.get(id).copied().unwrap_or(UNJUDGED)));
     }
-    // A prioridade de saída é a dos lotes: o tipo e, dentro dele, o número. É
-    // nessa ordem que o bloqueado reserva os arquivos dele.
-    candidates.sort_by_key(|(id, _, verdict)| (verdict.kind, number(id), (*id).clone()));
+    // A prioridade de saída é a dos lotes: a marca, o tipo e, dentro dele, o
+    // número. É nessa ordem que o bloqueado reserva os arquivos dele.
+    let marked = marked(tasks);
+    candidates.sort_by_key(|(id, _, verdict)| (!marked.contains(*id), verdict.kind, number(id), (*id).clone()));
     let mut reserved = Reserved::default();
     // Os lotes de cada tipo, com a soma do tamanho das tarefas de cada um; só o
     // último de cada tipo está aberto.
@@ -542,10 +571,11 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
         .chain(alone)
         .collect();
     for (_, group) in &mut groups {
-        group.tasks.sort_by_key(|id| (number(id), id.clone()));
+        group.tasks.sort_by_key(|id| (!marked.contains(id), number(id), id.clone()));
     }
     groups.sort_by_key(|(kind, group)| (*kind, group.tasks.iter().map(number).min()));
     batches.extend(groups.into_iter().map(|(_, group)| group));
+    batches.sort_by_key(|batch| !batch.holds_any(&marked));
     let blocked: BTreeSet<String> = busy.union(reserved.files()).cloned().collect();
     chain_dependents(tasks, &mut batches, waiting, &blocked);
     batches
@@ -678,7 +708,13 @@ mod tests {
             depends_on: depends_on.iter().copied().collect(),
             files: files.iter().map(|f| f.to_string()).collect(),
             done,
+            priority: false,
         }
+    }
+
+    /// A tarefa `task` com a marca de prioridade.
+    fn marked_task(task: BacklogTask<u32>) -> BacklogTask<u32> {
+        BacklogTask { priority: true, ..task }
     }
 
     /// O exemplo da regra em código, com os dois lados: a tarefa 7 depende
@@ -1085,6 +1121,81 @@ mod tests {
         let busy = BTreeSet::from(["open.rs".to_string()]);
         let batches = pack_by_kind(&tasks, &[1, 3], &[4, 5], &busy, &judged, &|id| u64::from(*id), BUDGET);
         assert_eq!(batch_tasks(&batches), vec![vec![3, 5]], "a 4 cruza a reserva da 1 e a 5 entra: {batches:?}");
+    }
+
+    /// Três tarefas prontas, cada uma no seu arquivo, e a 3, de número maior,
+    /// com a marca de prioridade: o lote dela sai primeiro pelo arquivo e
+    /// pelo tipo, ainda que o tipo dela seja o último da ordem fixa; com as
+    /// três do mesmo tipo, ela abre o lote, antes do número. Sem a marca, a
+    /// ordem de sempre.
+    #[test]
+    fn a_marked_task_with_the_highest_number_leaves_first() {
+        let plain = [task(1, &[], &["a.rs"], false), task(2, &[], &["b.rs"], false), task(3, &[], &["c.rs"], false)];
+        let [one, two, three] = plain.clone();
+        let tasks = [one, two, marked_task(three)];
+        assert_eq!(batch_tasks(&pack_batches(&tasks, &[1, 2, 3], &[], &BTreeSet::new())), vec![vec![3], vec![1], vec![2]]);
+        assert_eq!(batch_tasks(&pack_batches(&plain, &[1, 2, 3], &[], &BTreeSet::new())), vec![vec![1], vec![2], vec![3]]);
+
+        let sure = |kind| judged_as(kind, 0.9, 0.0);
+        let by_kind = [(1, sure(TaskKind::Defect)), (2, sure(TaskKind::Feature)), (3, sure(TaskKind::TestCleanup))];
+        assert_eq!(packed_by_kind(&tasks, &by_kind, &BTreeSet::new()), vec![vec![3], vec![1], vec![2]]);
+        assert_eq!(packed_by_kind(&plain, &by_kind, &BTreeSet::new()), vec![vec![1], vec![2], vec![3]]);
+        let one_kind = [(1, sure(TaskKind::Feature)), (2, sure(TaskKind::Feature)), (3, sure(TaskKind::Feature))];
+        assert_eq!(packed_by_kind(&tasks, &one_kind, &BTreeSet::new()), vec![vec![3, 1, 2]]);
+    }
+
+    /// Duas marcadas saem entre si pela ordem de sempre: o tipo e o número.
+    #[test]
+    fn two_marked_tasks_keep_the_usual_order_between_them() {
+        let tasks = [
+            task(1, &[], &["a.rs"], false),
+            marked_task(task(2, &[], &["b.rs"], false)),
+            marked_task(task(3, &[], &["c.rs"], false)),
+        ];
+        let sure = |kind| judged_as(kind, 0.9, 0.0);
+        let judged = [(1, sure(TaskKind::Defect)), (2, sure(TaskKind::TextFix)), (3, sure(TaskKind::Feature))];
+        assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![3], vec![2], vec![1]]);
+        assert_eq!(batch_tasks(&pack_batches(&tasks, &[1, 2, 3], &[], &BTreeSet::new())), vec![vec![2], vec![3], vec![1]]);
+    }
+
+    /// A tarefa não marcada de número menor que divide `a.rs` com a marcada
+    /// sai depois dela: no mesmo lote, atrás dela, pelo arquivo; em outro
+    /// lote, que vem depois do dela, pelo tipo.
+    #[test]
+    fn an_unmarked_task_sharing_a_file_with_the_marked_one_leaves_after_it() {
+        let tasks = [task(1, &[], &["a.rs"], false), marked_task(task(2, &[], &["a.rs"], false))];
+        assert_eq!(batch_tasks(&pack_batches(&tasks, &[1, 2], &[], &BTreeSet::new())), vec![vec![2, 1]]);
+        let judged = [(1, judged_as(TaskKind::Defect, 0.9, 0.0)), (2, judged_as(TaskKind::Feature, 0.9, 0.0))];
+        assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![2], vec![1]]);
+    }
+
+    /// A marcada que divide arquivo com uma onda em andamento espera, e a não
+    /// marcada de número menor que divide arquivo com ela espera atrás dela,
+    /// em vez de tomar a vaga; a sem arquivo em comum sai. Sem a marca, a de
+    /// número menor sai.
+    #[test]
+    fn a_marked_task_held_by_an_open_wave_waits_and_keeps_its_file_reserved() {
+        let plain = [
+            task(1, &[], &["a.rs"], false),
+            task(2, &[], &["a.rs", "open.rs"], false),
+            task(3, &[], &["c.rs"], false),
+        ];
+        let [one, two, three] = plain.clone();
+        let tasks = [one, marked_task(two), three];
+        let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
+        let judged = [(1, sure), (2, sure), (3, sure)];
+        let busy = BTreeSet::from(["open.rs".to_string()]);
+        assert_eq!(packed_by_kind(&tasks, &judged, &busy), vec![vec![3]], "a 2 espera a onda, a 1 espera a 2");
+        assert_eq!(packed_by_kind(&plain, &judged, &busy), vec![vec![1, 3]], "sem a marca, a 1 sai");
+    }
+
+    /// A marcada que espera uma dependência aberta não fica pronta: a marca
+    /// não passa por cima do `depends_on`.
+    #[test]
+    fn a_marked_task_waits_for_its_open_dependency() {
+        let tasks = [task(1, &[], &["a.rs"], false), marked_task(task(2, &[1], &["b.rs"], false))];
+        assert_eq!(ready_tasks(&tasks), vec![1]);
+        assert_eq!(batch_tasks(&pack_batches(&tasks, &[1], &[2], &BTreeSet::new())), vec![vec![1]]);
     }
 
     // O backlog inteiro, com dependência e arquivo compartilhado, despachada

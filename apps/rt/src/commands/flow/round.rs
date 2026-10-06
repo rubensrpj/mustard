@@ -48,7 +48,8 @@
 //! mensagem montada do resumo e grava cada sobra como tarefa da spec, no
 //! backlog. O `--report` leva só o que o orquestrador
 //! escreve: a linha `<USAGE>{"wave":1}</USAGE>`, que marca que o agente da
-//! onda terminou e a `<PAUSED>`. O consumo de
+//! onda terminou, a `<PAUSED>` e a `<REJECTED>`, com que ele reprova a volta
+//! de uma onda e dá o motivo, que vai ao agente novo dela. O consumo de
 //! cada onda assumida — o modelo, os passos e os tokens do agente dela — e o
 //! da conversa principal no ramo da spec a rodada mede nos arquivos de
 //! conversa que a plataforma grava, na pasta de configuração dela e na sessão
@@ -74,8 +75,7 @@
 //! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
 //! critério, o comando inteiro e a saída de erro; a conferência depois da
 //! onda, também antes de comitar, que recusa a importação nova contra uma
-//! regra forte do padrão do projeto, o resto do que a onda tirou e a onda que
-//! cresce além do limite de linhas ou de testes novos — a lista
+//! regra forte do padrão do projeto e o resto do que a onda tirou — a lista
 //! vai inteira numa mensagem só, a onda conserta na mesma cópia e grava a
 //! entrega de novo, e depois da segunda rodada de conserto a pergunta vai ao
 //! usuário; o relatório em que um agente
@@ -113,8 +113,8 @@
 //! que não pôde ser criada, cuja onda fica para a rodada seguinte; e a cópia
 //! com mudança fora da entrega, que fica no disco em vez de ser apagada.
 //! Cada onda que mudou arquivo volta com a linha de tamanho — as linhas
-//! postas e tiradas, os testes novos e os arquivos mudados —, que sai na
-//! resposta como aviso `wave-size` e no corpo do commit.
+//! postas e tiradas e os arquivos mudados —, que sai na resposta como aviso
+//! `wave-size` e no corpo do commit. O tamanho nunca recusa a onda.
 //!
 //! A página da spec e a do projeto são refeitas no fim da rodada, e a resposta
 //! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço
@@ -123,8 +123,11 @@
 mod agreed;
 mod answer;
 mod backlog;
+mod checks;
 mod commit;
 mod copy_check;
+mod finish_check;
+mod fixes;
 mod imports_check;
 pub(crate) mod item_choice;
 mod keep;
@@ -133,13 +136,21 @@ mod lost_commit;
 mod queue;
 mod read_check;
 mod rehearsal;
+mod rejection;
 mod removed_check;
 mod report;
+mod sent_tasks;
 mod size_check;
 mod slots;
 mod stops;
 mod summary_wave;
 mod usage;
+
+// O processo que já fechou, que os testes da rodada, os do gancho do despacho
+// e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
+#[cfg(test)]
+#[path = "../../../tests/support/closed_process.rs"]
+mod closed_process;
 
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
@@ -156,8 +167,13 @@ use serde_json::Value;
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::{agents_refreshed, read_command, RoundRefusal};
-pub(crate) use queue::{backlog_left, open_review, open_sends, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use answer::{agents_refreshed, read_command, wave_dispatch, RoundRefusal};
+pub(crate) use fixes::{fix_file, sweep_fixes};
+pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
+pub(crate) use queue::{
+    backlog_left, open_review, open_sends, send_revision, tasks_left, wave_states, waves_awaiting_new_agent, waves_in_progress,
+    waves_pending_fix,
+};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use keep::Kept;
@@ -167,8 +183,13 @@ pub(crate) use slots::{
 };
 pub(crate) use read_check::request_name;
 #[cfg(test)]
-pub(crate) use tests::{read_request, read_review, seed_read, shipped_agent};
-pub(crate) use report::{check_return, check_verdict_return, take_report};
+pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+// Fora da rodada, só os testes do gancho do despacho leem o processo fechado,
+// e eles rodam só no Linux.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use tests::closed_process;
+pub(crate) use finish_check::mark_step_copy;
+pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
 /// As opções de `mustard-rt run round`.
@@ -228,6 +249,7 @@ mod tests {
     use mustard_core::io::spec_events as store;
     use serde_json::{json, Value};
 
+    pub(crate) use super::closed_process::closed_process;
     use super::read_check::unread_items;
     use super::*;
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
@@ -474,18 +496,51 @@ mod tests {
         format!("<{tag}>{body}</{tag}>")
     }
 
+    /// Os passos de término que o agente da onda `wave` da spec `spec` grava
+    /// antes de entregar: um por tarefa com que a onda saiu, pelo
+    /// `run write step`, como o agente o grava — a gravação põe a impressão
+    /// da cópia de agora em cada um.
+    pub(crate) fn finish_tasks(root: &Path, spec: &str, wave: u64) {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        for task in sent_tasks::sent_tasks(&log, wave) {
+            let item = codes.get(&task.id).map_or_else(|| json!(task.id), |code| json!(code));
+            let step = crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some(spec.to_string()),
+                event_type: "step".into(),
+                json: json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}).to_string(),
+            });
+            assert_eq!(step["ok"], json!(true), "o passo da onda {wave} não gravou: {step}");
+        }
+    }
+
+    /// A volta de uma onda da spec `spec`, gravada como o agente a grava, pela
+    /// gravação `write`. A recusa por item do pedido não lido leva o agente a
+    /// ler o pedido e gravar de novo; a recusa por tarefa sem passo de
+    /// término, ou por trabalho começado, leva-o a gravar o passo de cada
+    /// tarefa e entregar de novo. A resposta é a da última gravação; qualquer
+    /// outra recusa volta como veio, sem nada gravado.
+    pub(crate) fn deliver_after_refusals(root: &Path, spec: &str, body: &Value, write: &dyn Fn(&Value) -> Value) -> Value {
+        let mut out = write(body);
+        let Some(wave) = body["wave"].as_u64() else { return out };
+        for _ in 0..2 {
+            match out["reason"].as_str() {
+                Some("delivery-read-missing") => read_request(root, spec, wave),
+                Some("delivery-done-without-step" | "delivery-started-work-undone") => finish_tasks(root, spec, wave),
+                _ => return out,
+            }
+            out = write(body);
+        }
+        out
+    }
+
     /// A volta de uma onda da spec `x`, gravada como o agente a grava: pelo
-    /// `run write delivered`, com os campos de `body`. A recusa por item do
-    /// pedido não lido leva o agente a ler o pedido e gravar de novo, e a
-    /// resposta é a da segunda gravação; qualquer outra recusa volta como
-    /// veio, sem leitura nenhuma gravada.
+    /// `run write delivered`, com os campos de `body`, depois de ler o pedido
+    /// e de gravar o passo de cada tarefa quando a gravação os cobra
+    /// ([`deliver_after_refusals`]).
     pub(super) fn returned(root: &Path, body: Value) -> Value {
-        let first = returned_unread(root, body.clone());
-        let Some(wave) = body["wave"].as_u64().filter(|_| first["reason"] == json!("delivery-read-missing")) else {
-            return first;
-        };
-        read_request(root, "x", wave);
-        returned_unread(root, body)
+        deliver_after_refusals(root, "x", &body, &|body| returned_unread(root, body.clone()))
     }
 
     /// Como [`returned`], sem ler o pedido antes: a gravação do agente que
@@ -666,6 +721,18 @@ mod tests {
     pub(super) fn seed_send(root: &Path, n: u64) {
         crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": n, "role": "wave",
             "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary"}));
+    }
+
+    /// O envio da onda `wave` da spec `x` de um Claude Code que fechou: a
+    /// versão nova dele leva um processo que já acabou ([`closed_process`]).
+    pub(super) fn orphan_the_send(root: &Path, wave: u64) {
+        let (pid, started) = closed_process();
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let extra = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned().unwrap();
+        let draft = send_revision(&log, wave, extra).expect("the send of the wave");
+        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        store::write_at(&path, "send", draft, &[], &at).unwrap();
     }
 
     /// Nenhum arquivo da rodada passa do teto de linhas de código: a porta e

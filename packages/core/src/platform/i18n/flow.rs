@@ -481,19 +481,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("wave_prompt.token_cap", Locale::EnUs) => {
             "Wave {wave}'s request has {tokens} tokens, above the {cap} cap. Split the batch in two."
         }
-        // O bloco em destaque do começo do pedido da onda que continua o
-        // resumo de outra (`packages/core/src/domain/wave_prompt/summary.rs`).
+        // O bloco em destaque do começo do pedido que leva tarefas que
+        // voltaram com o resumo de um agente que encheu a conversa
+        // (`packages/core/src/domain/wave_prompt/summary.rs`).
         ("wave_prompt.summary.title", Locale::PtBr) => "Trabalho já começado",
         ("wave_prompt.summary.title", Locale::EnUs) => "Work already started",
         ("wave_prompt.summary.read", Locale::PtBr) => {
-            "Esta onda continua o trabalho de um agente que parou no limite, e o resumo dele é {code}. \
-             Antes de qualquer outro passo, leia-o com `mustard-rt run read item-{code} {root}--spec {spec}` \
-             e faça só o que falta. A entrega é recusada sem essa leitura."
+            "Estas tarefas voltaram de um agente que encheu a conversa, e o resumo dele é {code}. \
+             Antes de qualquer outro passo, leia-o com `mustard-rt run read item-{code} {root}--spec {spec}`. \
+             A entrega é recusada sem essa leitura. O que o resumo dá como feito e decidido vale: não \
+             confira de novo nem refaça a escolha. Se você também entregar antes do fim, o seu resumo \
+             substitui este."
         }
         ("wave_prompt.summary.read", Locale::EnUs) => {
-            "This wave continues the work of an agent that stopped at the limit, and its summary is {code}. \
-             Before any other step, read it with `mustard-rt run read item-{code} {root}--spec {spec}` \
-             and do only what is left. The delivery is refused without that reading."
+            "These tasks came back from an agent whose conversation filled up, and its summary is {code}. \
+             Before any other step, read it with `mustard-rt run read item-{code} {root}--spec {spec}`. \
+             The delivery is refused without that reading. What the summary gives as done and decided \
+             holds: do not check it again or redo the choice. If you also deliver before the end, your \
+             summary replaces this one."
         }
         // A linha sob a tarefa cujo arquivo mudou no git depois do texto dela
         // (`packages/core/src/domain/wave_prompt/changed.rs`).
@@ -563,50 +568,66 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              compacting, the resume block comes back on its own; in a clean window, paste this \
              block: {block}"
         }
-        // O aviso ao agente de onda que passou do limite da conversa, sem o
-        // resumo que ele leu: parar, com a folga para deixar o código
-        // compilando e gravar o passo e a entrega.
-        ("conversation_size.wave_limit", Locale::PtBr) => {
-            "[Mustard] A sua conversa está em {now} mil tokens; sem o resumo da onda anterior, \
-             {counted} mil, acima do limite de {limit} mil. Pare. Você tem no máximo {calls} \
-             chamadas ou {grace} mil tokens para deixar o código compilando; só compile, sem rodar \
-             a suíte. Depois grave o passo da tarefa em curso: o que foi feito nela, o que falta e \
-             onde você parou. Grave a entrega como o pedido manda. Nela, diga o que você aprendeu do \
-             código, que poupa leitura a quem continuar. Ponha em `undone` a tarefa em curso e as \
-             que você não começou. Passada a folga, o Mustard recusa toda ferramenta, menos `run \
-             read` e `run write` na spec e o comando de compilar, cada um sozinho na linha. Um \
-             agente novo continua pelo resumo."
+        // A medida no fim de uma tarefa do agente de onda, quando ainda cabe
+        // outra: o tamanho da conversa, sem o resumo que ele leu, o limite, o
+        // gasto da maior tarefa e a ordem de seguir.
+        ("conversation_size.wave_continue", Locale::PtBr) => {
+            "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
+             anterior, {counted} mil. O limite é {limit} mil, e a maior tarefa gastou {largest} \
+             mil. Siga para a próxima tarefa."
         }
-        ("conversation_size.wave_limit", Locale::EnUs) => {
-            "[Mustard] Your conversation is at {now} thousand tokens; without the previous wave's \
-             summary, {counted} thousand, over the limit of {limit} thousand. Stop. You have at most \
-             {calls} calls or {grace} thousand tokens to leave the code compiling; only compile, \
-             without running the suite. Then record the step of the task in progress: what was done \
-             in it, what is left and where you stopped. Record the delivery as the request says. In \
-             it, say what you learned from the code, which saves reading for whoever continues. Put \
-             the task in progress and the ones you did not start in `undone`. After the grace, \
-             Mustard refuses every tool except `run read` and `run write` on the spec and the build \
-             command, each alone on its line. A new agent continues from the summary."
+        ("conversation_size.wave_continue", Locale::EnUs) => {
+            "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
+             previous wave's summary, {counted} thousand. The limit is {limit} thousand, and the \
+             largest task took {largest} thousand. Go on to the next task."
         }
-        // A recusa ao agente de onda que gastou a folga depois do limite.
-        ("conversation_size.wave_stop", Locale::PtBr) => {
-            "[Mustard] Passou a folga depois do limite de {limit} mil tokens. Só passam ler e gravar \
-             na spec (`mustard-rt run read` e `run write`){build}, cada um sozinho na linha, sem \
-             `&&`, `;`, `|` nem `$(…)`. Grave agora o passo da tarefa em curso, com o que foi \
-             feito, o que falta e onde você parou. Grave a entrega, com a tarefa em curso e as não \
-             começadas em `undone`, e pare."
+        // A mesma medida quando outra tarefa não cabe: a ordem de entregar,
+        // que fecha a trava, e como escrever o resumo, em cinco blocos fixos.
+        // O texto da entrega é o único lugar do resumo.
+        ("conversation_size.wave_deliver", Locale::PtBr) => {
+            "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
+             anterior, {counted} mil. O limite é {limit} mil, e a maior tarefa gastou {largest} \
+             mil: outra não cabe. Grave a entrega, com as tarefas não começadas em `undone`. O texto \
+             dela é o resumo, e um agente novo continua só por ele. Escreva cinco blocos, nesta \
+             ordem. Estado: se compila, cada teste que rodou, com o comando e o resultado, e o que \
+             não rodou. Feito: cada tarefa concluída numa frase. Decidido: cada escolha que vale \
+             para as tarefas que sobram, com o motivo, sem alternativa aberta. Fatos: o que você \
+             descobriu e o próximo vai precisar, com a fonte e o comando que confere. Dúvidas: o que \
+             você não sabe; sem nenhuma, escreva \"nenhuma\". Se você continuou outro resumo, o seu \
+             o substitui: traga dele o que ainda vale. Daqui em diante, só passam ler e gravar na \
+             spec, o comando de compilar e a devolução do relatório a quem conduz."
         }
-        ("conversation_size.wave_stop", Locale::EnUs) => {
-            "[Mustard] The grace after the limit of {limit} thousand tokens is spent. Only reading and \
-             writing the spec (`mustard-rt run read` and `run write`){build} pass, each alone on its \
-             line, with no `&&`, `;`, `|` or `$(…)`. Record now the step of the task in progress, \
-             with what was done, what is left and where you stopped. Record the delivery, with the \
-             task in progress and the ones not started in `undone`, and stop."
+        ("conversation_size.wave_deliver", Locale::EnUs) => {
+            "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
+             previous wave's summary, {counted} thousand. The limit is {limit} thousand, and the \
+             largest task took {largest} thousand: another does not fit. Record the delivery, with \
+             the tasks not started in `undone`. Its text is the summary, and a new agent continues \
+             from it alone. Write five blocks, in this order. State: whether it builds, each test \
+             that ran, with the command and the result, and what did not run. Done: each finished \
+             task in one sentence. Decided: each choice that holds for the remaining tasks, with the \
+             reason, with no open alternative. Facts: what you found out and the next one will \
+             need, with the source and the command that checks it. Doubts: what you do not know; \
+             with none, write \"none\". If you continued another summary, yours replaces it: bring \
+             from it what still holds. From here on, only reading and writing the spec, the build \
+             command and handing the report back to whoever leads pass."
+        }
+        // A recusa ao agente de onda depois da ordem de entregar.
+        ("conversation_size.wave_locked", Locale::PtBr) => {
+            "[Mustard] A ordem de entregar já saiu. Só passam ler e gravar na spec (`mustard-rt run \
+             read` e `run write`){build}, cada um sozinho na linha, sem `&&`, `;`, `|` nem `$(…)`. \
+             A devolução do relatório a quem conduz também passa. Grave a entrega, com as tarefas \
+             não começadas em `undone`, e pare."
+        }
+        ("conversation_size.wave_locked", Locale::EnUs) => {
+            "[Mustard] The order to deliver is out. Only reading and writing the spec (`mustard-rt \
+             run read` and `run write`){build} pass, each alone on its line, with no `&&`, `;`, `|` \
+             or `$(…)`. Handing the report back to whoever leads passes too. Record the delivery, \
+             with the tasks not started in `undone`, and stop."
         }
         // O que a recusa acrescenta quando o projeto declara o comando de
         // compilar.
-        ("conversation_size.wave_stop_build", Locale::PtBr) => " e `{command}`",
-        ("conversation_size.wave_stop_build", Locale::EnUs) => " and `{command}`",
+        ("conversation_size.wave_locked_build", Locale::PtBr) => " e `{command}`",
+        ("conversation_size.wave_locked_build", Locale::EnUs) => " and `{command}`",
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
              fora {missing}. Todos entraram no commit mesmo assim."
@@ -631,6 +652,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.build_failed", Locale::EnUs) => {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
         }
+        // A suíte e o lint que o projeto declara, rodados pela rodada no
+        // repositório principal antes do commit, com o fim da saída.
+        ("round.tests_failed", Locale::PtBr) => {
+            "A suíte do projeto (`{command}`) não passou no repositório principal, e a rodada não \
+             comitou nada: {output}"
+        }
+        ("round.tests_failed", Locale::EnUs) => {
+            "The project suite (`{command}`) did not pass in the main repository, and the round \
+             committed nothing: {output}"
+        }
+        ("round.lint_failed", Locale::PtBr) => {
+            "O lint do projeto (`{command}`) não passou no repositório principal, e a rodada não \
+             comitou nada: {output}"
+        }
+        ("round.lint_failed", Locale::EnUs) => {
+            "The project lint (`{command}`) did not pass in the main repository, and the round \
+             committed nothing: {output}"
+        }
         // A conferência depois da onda, antes do commit: as importações novas
         // contra o padrão do projeto e os restos do que a onda tirou.
         ("round.after_wave", Locale::PtBr) => {
@@ -643,14 +682,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              below back to its agent, in the same copy. The agent fixes them, records the delivery again, \
              and you run the round once more. Warnings do not hold the round."
         }
+        // O teto das rodadas de conserto abre a recusa da conferência depois
+        // da onda, a da compilação, do lint ou da suíte que caem e a da
+        // verificação de um critério que cai: a frase serve a todas, e o que
+        // vem abaixo diz o que caiu.
         ("round.after_wave.limit", Locale::PtBr) => {
-            "A onda {waves} já passou por {max} rodadas de conserto, e a conferência depois da onda ainda \
-             recusa. A rodada não comitou nada. Mostre ao usuário a lista abaixo e faça a pergunta de \
-             `question`."
+            "A onda {waves} já passou por {max} rodadas de conserto, e a rodada ainda recusa a entrega. \
+             Nada foi comitado. Mostre ao usuário o que vem abaixo e faça a pergunta de `question`."
         }
         ("round.after_wave.limit", Locale::EnUs) => {
-            "Wave {waves} has already gone through {max} fix rounds, and the after-wave check still \
-             refuses. The round committed nothing. Show the user the list below and ask the question in \
+            "Wave {waves} has already gone through {max} fix rounds, and the round still refuses the \
+             delivery. Nothing was committed. Show the user what follows and ask the question in \
              `question`."
         }
         ("round.after_wave.question", Locale::PtBr) => {
@@ -669,6 +711,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.after_wave.wave", Locale::EnUs) => "Wave {wave}, fix round {round} of {max}:",
         ("round.after_wave.wave_warnings", Locale::PtBr) => "Onda {wave}, só avisos:",
         ("round.after_wave.wave_warnings", Locale::EnUs) => "Wave {wave}, warnings only:",
+        // A onda recusada cujo agente se foi com o Claude Code que a mandou:
+        // o conserto vai a um agente novo, e não ao que fez a onda.
+        ("round.after_wave.new_agent", Locale::PtBr) => {
+            "O Claude Code que mandou a onda {wave} fechou, e o agente dela não existe mais. Despache um \
+             agente novo com o título `{title}`: o Mustard junta o pedido e o trecho dela."
+        }
+        ("round.after_wave.new_agent", Locale::EnUs) => {
+            "The Claude Code that sent wave {wave} closed, and its agent no longer exists. Dispatch a new \
+             agent with the title `{title}`: Mustard adds its request and its section."
+        }
         ("round.after_wave.import", Locale::PtBr) => {
             "`{file}` linha {line} importa `{target}`: {from} importando {to} vai contra a regra \
              {rule_from} importa {rule_to}, seguida em {along} de {total} importações. Leve essa chamada \
@@ -733,28 +785,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{file}` line {line} is a test that only calls `{name}`, new code with no use outside tests. \
              Remove the test along with it."
         }
-        // A onda que cresce além do que a tarefa pede, ou traz testes demais
-        // para os critérios (`apps/rt/src/commands/flow/round/size_check.rs`).
-        ("round.size.over", Locale::PtBr) => {
-            "A onda {wave} pôs {added} linhas e tirou {removed}: o código cresceu {growth}. O limite é \
-             {limit}, o maior entre 600 e três vezes a mediana de {median} linhas postas por onda. Corte o \
-             que a tarefa não exige e mande o resto para `leftovers` da entrega."
-        }
-        ("round.size.over", Locale::EnUs) => {
-            "Wave {wave} added {added} lines and removed {removed}: the code grew by {growth}. The limit is \
-             {limit}, the larger of 600 and three times the median of {median} lines added per wave. Cut \
-             what the task does not require and send the rest to the delivery's `leftovers`."
-        }
-        ("round.size.tests", Locale::PtBr) => {
-            "A onda {wave} traz {tests} testes novos para {covered} critérios e regras cobertos. O limite é \
-             {limit}, o maior entre 6 e dois por critério ou regra. Corte o teste que repete outro e o que \
-             a tarefa não exige, e mande o resto para `leftovers` da entrega."
-        }
-        ("round.size.tests", Locale::EnUs) => {
-            "Wave {wave} brings {tests} new tests for {covered} criteria and rules covered. The limit is \
-             {limit}, the larger of 6 and two per criterion or rule. Cut the test that repeats another and \
-             what the task does not require, and send the rest to the delivery's `leftovers`."
-        }
         ("round.criterion_proof_failed", Locale::PtBr) => {
             "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
              `{command}` — {output}"
@@ -763,25 +793,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Criterion {code}'s verification did not run or did not pass, and the round committed nothing: \
              `{command}` — {output}"
         }
+        // As duas recusas abaixo só dizem o que a verificação fez: o passo de
+        // quem conduz vem logo depois delas, e é mandar a onda de volta ao
+        // agente que a fez.
         ("round.criterion_ran_no_test", Locale::PtBr) => {
             "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
-             {count} testes. A rodada não comitou nada. Grave a versão nova do critério com a verificação \
-             certa e rode a rodada de novo."
+             {count} testes. A rodada não comitou nada."
         }
         ("round.criterion_ran_no_test", Locale::EnUs) => {
             "The verification of criterion {code} came out green without running any test: `{command}` says \
-             it ran {count} tests. The round committed nothing. Record the criterion's new version with the \
-             right verification and run the round again."
+             it ran {count} tests. The round committed nothing."
         }
         ("round.criterion_missing_test", Locale::PtBr) => {
             "A verificação do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
-             projeto. A rodada não comitou nada. Escreva esse teste ou grave a versão nova do critério com o \
-             nome certo, e rode a rodada de novo."
+             projeto. A rodada não comitou nada."
         }
         ("round.criterion_missing_test", Locale::EnUs) => {
             "The verification of criterion {code} names the test {name}, which appears in no file of the \
-             project. The round committed nothing. Write that test or record the criterion's new version with \
-             the right name, and run the round again."
+             project. The round committed nothing."
         }
         ("round.development_build_failed", Locale::PtBr) => {
             "O commit saiu, mas a versão em construção do Mustard não compilou, e a sessão segue no \
@@ -823,8 +852,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.commit.line", Locale::EnUs) => "- wave {wave}: {summary}",
         ("round.commit.fixes", Locale::PtBr) => "(conserta: onda {waves})",
         ("round.commit.fixes", Locale::EnUs) => "(fixes: wave {waves})",
-        ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {tests} testes, {files} arquivos",
-        ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {tests} tests, {files} files",
+        ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {files} arquivos",
+        ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {files} files",
         ("round.not_approved", Locale::PtBr) => {
             "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário."
         }
@@ -933,8 +962,76 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Task {code} is not in wave {wave}, and `undone` only takes tasks of the wave itself. \
              The wave's tasks: {tasks}. Nothing was recorded."
         }
+        ("round.started_work_undone", Locale::PtBr) => {
+            "A onda {wave} devolve {tasks} como não feitas, mas a cópia mudou depois do último passo \
+             de término. Conclua a tarefa começada, grave o passo dela com `mustard-rt run write step` \
+             e entregue de novo. Nada foi gravado."
+        }
+        ("round.started_work_undone", Locale::EnUs) => {
+            "Wave {wave} gives back {tasks} as not done, but the copy changed after the last task-end \
+             step. Finish the started task, record its step with `mustard-rt run write step`, and \
+             deliver again. Nothing was recorded."
+        }
+        ("round.done_without_step", Locale::PtBr) => {
+            "A onda {wave} dá como feitas as tarefas {tasks} sem o passo de término de cada uma. \
+             Grave o passo de cada uma com `mustard-rt run write step` e entregue de novo. Nada foi \
+             gravado."
+        }
+        ("round.done_without_step", Locale::EnUs) => {
+            "Wave {wave} gives tasks {tasks} as done without the task-end step of each. Record each \
+             one's step with `mustard-rt run write step` and deliver again. Nothing was recorded."
+        }
+        // A reprovação de quem conduz a obra (`<REJECTED>` no relatório): a
+        // volta fica fora do commit, e a onda espera um agente novo, que
+        // recebe o motivo.
+        ("round.rejected", Locale::PtBr) => {
+            "Você reprovou a volta da onda {wave} com o motivo \"{reason}\". A cópia ficou como \
+             estava, e a onda espera um agente novo. Despache um agente novo com o título `{title}`: \
+             o Mustard junta o pedido e o seu motivo."
+        }
+        ("round.rejected", Locale::EnUs) => {
+            "You rejected wave {wave}'s return with the reason \"{reason}\". The copy stayed as it \
+             was, and the wave waits for a new agent. Dispatch a new agent with the title `{title}`: \
+             Mustard adds its request and your reason."
+        }
+        ("round.rejected_working", Locale::PtBr) => {
+            "Você reprovou a volta da onda {wave} com o motivo \"{reason}\", e o agente novo dela já \
+             trabalha na cópia. A rodada assume a volta nova quando ele a gravar."
+        }
+        ("round.rejected_working", Locale::EnUs) => {
+            "You rejected wave {wave}'s return with the reason \"{reason}\", and its new agent is \
+             already working in the copy. The round takes the new return once it records it."
+        }
+        ("round.rejected_fix", Locale::PtBr) => {
+            "Quem conduz a obra reprovou a entrega da onda {wave}, com este motivo: {reason}"
+        }
+        ("round.rejected_fix", Locale::EnUs) => {
+            "Whoever runs the work rejected wave {wave}'s delivery, for this reason: {reason}"
+        }
+        ("round.rejected_without_return", Locale::PtBr) => {
+            "A linha `<REJECTED>` aponta a onda {wave}, que não tem volta gravada à espera da \
+             rodada. Só se reprova a entrega que o agente gravou e a rodada ainda não assumiu. Tire \
+             a linha e rode a rodada de novo. Nada foi gravado."
+        }
+        ("round.rejected_without_return", Locale::EnUs) => {
+            "The `<REJECTED>` line points at wave {wave}, which has no recorded return waiting for \
+             the round. Only a delivery the agent recorded and the round has not taken yet can be \
+             rejected. Drop the line and run the round again. Nothing was recorded."
+        }
+        ("round.rejected_committed", Locale::PtBr) => {
+            "A linha `<REJECTED>` aponta a onda {wave}, cuja volta já entrou no commit {sha}, e a \
+             rodada não desfaz commit. Tire a linha e grave o que falta como tarefa nova. Nada foi \
+             gravado."
+        }
+        ("round.rejected_committed", Locale::EnUs) => {
+            "The `<REJECTED>` line points at wave {wave}, whose return is already in commit {sha}, \
+             and the round does not undo a commit. Drop the line and record what is missing as a new \
+             task. Nothing was recorded."
+        }
         ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
+        ("round.unmet_joined", Locale::PtBr) => "Item não cumprido na volta da onda {wave} — {code}: {text}",
+        ("round.unmet_joined", Locale::EnUs) => "Item not met when wave {wave} came back — {code}: {text}",
         ("round.leftover_joined", Locale::PtBr) => concat!(
             "Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ",
             map_commands_pt!(),
@@ -1046,7 +1143,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              assume. O de onda grava com `mustard-rt run write delivered`, o revisor com \
              `mustard-rt run write verdict`. Quando cada agente de onda terminar, rode a rodada de \
              novo com uma linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, \
-             só com o número da onda. O consumo de cada onda e o seu a rodada mede nos arquivos de \
+             só com o número da onda. Quando você reprovar a volta de uma onda, mande a linha \
+             `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` no lugar da `USAGE` dela, com o seu \
+             motivo. A rodada segura a volta fora do commit e leva o motivo a um agente novo da \
+             onda. O consumo de cada onda e o seu a rodada mede nos arquivos de \
              conversa que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
              `commit` de cada entrega. Quando a volta de um agente não estiver na spec, mande o \
              agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele."
@@ -1056,11 +1156,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the round takes it over. The wave agent records with `mustard-rt run write delivered`, \
              the reviewer with `mustard-rt run write verdict`. When each wave agent finishes, run \
              the round again with one line per wave, all in the same `--report '…'`: \
-             `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. The round measures each \
-             wave's usage and yours from the conversation files the platform records, never from a \
-             typed number. The round builds the commit from each delivery's `commit`. When an \
+             `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. When you reject a wave's \
+             return, send the line `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` instead of \
+             its `USAGE`, with your reason. The round keeps the return out of the commit and takes \
+             the reason to a new agent of the wave. The \
+             round measures each wave's usage and yours from the conversation files the platform \
+             records, never from a typed number. The round builds the commit from each delivery's \
+             `commit`. When an \
              agent's return is not in the spec, have the agent record it again through the tool. \
              Never assemble it from its prose."
+        }
+        // No projeto que declara a suíte ou o lint, quem os roda é a rodada,
+        // antes do commit, e a rodada passa a demorar o que a suíte demora.
+        ("round.report.checks", Locale::PtBr) => {
+            "Antes do commit, a rodada roda a suíte e o lint que o projeto declara. Quando um deles \
+             cai, ela recusa o commit. Não rode teste nem lint por conta própria. Rode a rodada em \
+             segundo plano e espere o aviso de fim. A suíte inteira pode passar dos 10 minutos que \
+             o terminal espera por um comando."
+        }
+        ("round.report.checks", Locale::EnUs) => {
+            "Before the commit, the round runs the suite and the lint the project declares. When \
+             either fails, it refuses the commit. Do not run tests or lint on your own. Run the \
+             round in the background and wait for the notice that it ended. The whole suite can \
+             take longer than the 10 minutes the terminal waits for a command."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1692,23 +1810,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              change into the base. Put it in draft on the provider if you can; Mustard's merge \
              refuses until the spec closes again."
         }
+        // O levantamento lembra o tipo de trabalho gravado: o comando sai sem
+        // o tipo e roda como veio.
         ("reopen.next", Locale::PtBr) => {
             "A spec {spec} voltou ao levantamento, e o motivo ficou gravado. Rode `mustard-rt run \
-             grill --spec {spec} --kinds <tipos>` para montar os pontos: os novos convivem com o \
-             que já foi decidido, e nada do que estava gravado foi apagado."
+             grill --spec {spec}` para montar os pontos: os novos convivem com o que já foi \
+             decidido, e nada do que estava gravado foi apagado."
         }
         ("reopen.next", Locale::EnUs) => {
             "The spec {spec} is back in the survey, and the reason is on the record. Run \
-             `mustard-rt run grill --spec {spec} --kinds <types>` to build the points: the new ones \
-             live alongside what was already decided, and nothing written was erased."
+             `mustard-rt run grill --spec {spec}` to build the points: the new ones live alongside \
+             what was already decided, and nothing written was erased."
         }
         ("reopen.already", Locale::PtBr) => {
             "A spec {spec} já está em levantamento, e nada foi gravado. Rode `mustard-rt run grill \
-             --spec {spec} --kinds <tipos>` para montar os pontos."
+             --spec {spec}` para montar os pontos."
         }
         ("reopen.already", Locale::EnUs) => {
             "The spec {spec} is already under survey, and nothing was written. Run `mustard-rt run \
-             grill --spec {spec} --kinds <types>` to build the points."
+             grill --spec {spec}` to build the points."
         }
         ("reopen.fix_opened", Locale::PtBr) => {
             "O servidor reprovou os testes do pull request {pr}, e a onda de conserto {wave} está \
@@ -1837,8 +1957,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            220,
-            0x8a53_ab14_6959_1f58,
+            231,
+            0x2f76_9535_1dd0_df1d,
         );
     }
 
@@ -2012,9 +2132,10 @@ mod tests {
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{block}"][..]),
-            ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}", "{calls}", "{grace}"][..]),
-            ("conversation_size.wave_stop", &["{limit}", "{build}"][..]),
-            ("conversation_size.wave_stop_build", &["{command}"][..]),
+            ("conversation_size.wave_continue", &["{now}", "{counted}", "{limit}", "{largest}"][..]),
+            ("conversation_size.wave_deliver", &["{now}", "{counted}", "{limit}", "{largest}"][..]),
+            ("conversation_size.wave_locked", &["{build}"][..]),
+            ("conversation_size.wave_locked_build", &["{command}"][..]),
             ("wave_prompt.summary.title", &[][..]),
             ("wave_prompt.summary.read", &["{code}", "{root}", "{spec}"][..]),
             ("wave_prompt.task_changed", &["{commits}", "{files}"][..]),
@@ -2022,10 +2143,13 @@ mod tests {
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.tests_failed", &["{command}", "{output}"][..]),
+            ("round.lint_failed", &["{command}", "{output}"][..]),
             ("round.after_wave.limit", &["{waves}", "{max}"][..]),
             ("round.after_wave.question", &["{waves}", "{max}"][..]),
             ("round.after_wave.wave", &["{wave}", "{round}", "{max}"][..]),
             ("round.after_wave.wave_warnings", &["{wave}"][..]),
+            ("round.after_wave.new_agent", &["{wave}", "{title}"][..]),
             (
                 "round.after_wave.import",
                 &["{file}", "{line}", "{target}", "{from}", "{to}", "{rule_from}", "{rule_to}", "{along}", "{total}"][..],
@@ -2039,8 +2163,6 @@ mod tests {
             ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused_test", &["{file}", "{line}", "{name}"][..]),
-            ("round.size.over", &["{wave}", "{added}", "{removed}", "{growth}", "{limit}", "{median}"][..]),
-            ("round.size.tests", &["{wave}", "{tests}", "{covered}", "{limit}"][..]),
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("round.criterion_missing_test", &["{code}", "{name}"][..]),
@@ -2051,7 +2173,7 @@ mod tests {
             ("round.commit.scope.many", &["{waves}"][..]),
             ("round.commit.line", &["{wave}", "{summary}"][..]),
             ("round.commit.fixes", &["{waves}"][..]),
-            ("round.size.line", &["{wave}", "{added}", "{removed}", "{tests}", "{files}"][..]),
+            ("round.size.line", &["{wave}", "{added}", "{removed}", "{files}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.closed", &["{spec}", "{phase}"][..]),
             ("round.finished", &["{spec}", "{phase}"][..]),
@@ -2064,7 +2186,15 @@ mod tests {
             ("round.no_tasks", &[][..]),
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
+            ("round.started_work_undone", &["{wave}", "{tasks}"][..]),
+            ("round.done_without_step", &["{wave}", "{tasks}"][..]),
+            ("round.rejected", &["{wave}", "{reason}", "{title}"][..]),
+            ("round.rejected_working", &["{wave}", "{reason}"][..]),
+            ("round.rejected_fix", &["{wave}", "{reason}"][..]),
+            ("round.rejected_without_return", &["{wave}"][..]),
+            ("round.rejected_committed", &["{wave}", "{sha}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
+            ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.held_return", &["{wave}", "{hint}"][..]),
@@ -2079,6 +2209,7 @@ mod tests {
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),
             ("round.report", &[][..]),
+            ("round.report.checks", &[][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
             ("round.review_open", &[][..]),
@@ -2117,7 +2248,6 @@ mod tests {
             ("prompt.step.file", &["{files}"][..]),
             ("prompt.step.files", &["{files}"][..]),
             ("prompt.step.read_before", &["{hints}"][..]),
-            ("prompt.step.suite", &["{command}"][..]),
             ("prompt.step.deliver", &["{part}"][..]),
             ("prompt.obey.no_lessons", &[][..]),
             ("prompt.return.loose", &[][..]),
@@ -2293,8 +2423,6 @@ mod tests {
             "round.after_wave.orphan",
             "round.after_wave.unused",
             "round.after_wave.unused_test",
-            "round.size.over",
-            "round.size.tests",
         ];
         let words = [
             ("{waves}", "3"),
@@ -2311,13 +2439,6 @@ mod tests {
             ("{along}", "24"),
             ("{total}", "25"),
             ("{name}", "old_total"),
-            ("{added}", "1900"),
-            ("{removed}", "40"),
-            ("{growth}", "1860"),
-            ("{limit}", "900"),
-            ("{median}", "300"),
-            ("{tests}", "9"),
-            ("{covered}", "2"),
         ];
         for lang in [Locale::PtBr, Locale::EnUs] {
             for key in keys {

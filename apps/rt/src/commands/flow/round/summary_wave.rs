@@ -1,19 +1,18 @@
-//! As ondas que continuam um resumo: a cada resumo não usado
-//! ([`SpecLog::unused_summaries`]), a montagem forma primeiro uma onda com as
-//! tarefas que o resumo deixou por fazer (`undone`, na versão vigente de
-//! cada uma) e as do backlog pronto que dividem arquivo com elas. Uma onda
-//! leva no máximo um resumo, e as tarefas dela não entram em outra onda da
-//! mesma montagem, saia ela agora ou espere a vez pela regra de conflito.
+//! As ondas que continuam um resumo: a cada resumo que ainda vale
+//! ([`SpecLog::live_summaries`]), a montagem forma primeiro uma onda com as
+//! tarefas dele que estão prontas no backlog e as do backlog pronto que
+//! dividem arquivo com elas. O resumo acompanha cada tarefa que deixou até
+//! ela ser entregue, em quantas ondas ela sair. Uma onda leva no máximo um
+//! resumo, e as tarefas dela não entram em outra onda da mesma montagem,
+//! saia ela agora ou espere a vez pela regra de conflito.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
-use serde_json::Value;
+use mustard_core::domain::spec_events::SpecLog;
 
-use super::queue::backlog_task_ref;
 use crate::shared::dag::{sets_cross, touches_whole_tree, BacklogTask, Batch};
 
-/// Uma onda formada a partir de um resumo não usado.
+/// Uma onda formada a partir de um resumo que ainda vale.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct SummaryWave {
     /// O número da entrega que é o resumo.
@@ -22,19 +21,20 @@ pub(super) struct SummaryWave {
     pub batch: Batch<u64>,
 }
 
-/// As ondas dos resumos não usados, na ordem de número do resumo. `ready` é
-/// o backlog pronto, na ordem de prontidão, e `population` traz os arquivos
-/// de cada tarefa. De cada resumo entram as tarefas de `undone` que estão
-/// prontas e as prontas que dividem arquivo com elas, direto; a tarefa com o
-/// curinga da árvore inteira nunca entra de carona, e uma tarefa só vai a um
-/// resumo. O resumo sem nenhuma tarefa pronta não forma onda.
+/// As ondas dos resumos que ainda valem, na ordem de número do resumo.
+/// `ready` é o backlog pronto, na ordem de prontidão, e `population` traz os
+/// arquivos de cada tarefa. De cada resumo entram as tarefas que ele
+/// acompanha e que estão prontas, e as prontas que dividem arquivo com elas,
+/// direto; a tarefa com o curinga da árvore inteira nunca entra de carona, nem
+/// a que outro resumo acompanha, que sai na onda dele. Uma tarefa só vai a um
+/// resumo, e o resumo sem nenhuma tarefa pronta não forma onda.
 pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<SummaryWave> {
-    let codes = log.codes();
     let files_of = |id: u64| population.iter().find(|task| task.id == id).map(|task| &task.files);
+    let live = log.live_summaries();
+    let carried: BTreeSet<u64> = live.iter().flat_map(|(_, tasks)| tasks.iter().copied()).collect();
     let mut taken: BTreeSet<u64> = BTreeSet::new();
     let mut out = Vec::new();
-    for summary in log.unused_summaries() {
-        let left = left_by(log, summary, &codes);
+    for (summary, left) in live {
         let base: Vec<u64> = ready.iter().copied().filter(|id| left.contains(id) && !taken.contains(id)).collect();
         if base.is_empty() {
             continue;
@@ -46,7 +46,7 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
         if !touches_whole_tree(&batch.files) {
             let sharing = |id: &u64| {
                 !taken.contains(id)
-                    && !base.contains(id)
+                    && !carried.contains(id)
                     && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && sets_cross(files, &batch.files))
             };
             let along: Vec<u64> = ready.iter().copied().filter(sharing).collect();
@@ -60,19 +60,6 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
         out.push(SummaryWave { summary: summary.id, batch });
     }
     out
-}
-
-/// As tarefas que o resumo `summary` deixou por fazer (`undone`), cada uma
-/// pelo número da versão vigente dela.
-fn left_by(log: &SpecLog, summary: &SpecEvent, codes: &BTreeMap<u64, String>) -> BTreeSet<u64> {
-    summary
-        .fields
-        .get("undone")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|code| backlog_task_ref(log, codes, code))
-        .collect()
 }
 
 #[cfg(test)]
@@ -89,16 +76,23 @@ mod tests {
         backlog_project, backlog_task_on, max_parallel, open_sends, seed_running, spec_now, wave_order, SIX_FILES,
     };
     use super::super::read_check::{request_name, unread_items};
-    use super::super::tests::{returned_unread, round, seed_read, seed_send, waves_in};
+    use super::super::tests::{
+        delivered, id_of, request_at, returned_unread, round, seed_read, seed_send, waves_in, write,
+    };
     use crate::commands::spec_events::read::{read_for, ReadOpts};
     use crate::shared::spec_state::seed_event;
 
     /// A entrega de uma onda que parou e deixou por fazer as tarefas `left`,
     /// pelo código, gravada como o agente a grava. Devolve o número dela.
     fn stopped_with(root: &Path, left: &[u64]) -> u64 {
+        stopped_in(root, 7, left)
+    }
+
+    /// [`stopped_with`] da onda `wave`.
+    fn stopped_in(root: &Path, wave: u64, left: &[u64]) -> u64 {
         let codes = spec_now(root).codes();
         let undone: Vec<&String> = left.iter().map(|id| &codes[id]).collect();
-        seed_event(root, "x", "delivered", json!({"wave": 7, "text": "Parei no limite.", "files": [], "undone": undone}))
+        seed_event(root, "x", "delivered", json!({"wave": wave, "text": "Parei no limite.", "files": [], "undone": undone}))
     }
 
     /// O envio da onda `wave`, que cita o resumo `summary` quando ela o leva.
@@ -110,13 +104,13 @@ mod tests {
         }
     }
 
-    /// O resumo não usado é a primeira onda da montagem, mesmo com tarefa de
+    /// O resumo que vale é a primeira onda da montagem, mesmo com tarefa de
     /// código mais baixo pronta no backlog: a onda leva só as tarefas que ele
     /// deixou, e o evento dela grava o resumo. A outra tarefa sai na onda
-    /// seguinte, sem resumo. Com o envio citando o resumo ele está em uso, e
-    /// nenhuma outra montagem forma onda com ele.
+    /// seguinte, sem resumo. Com a tarefa dele já numa onda enviada, nenhuma
+    /// outra montagem forma onda com ele.
     #[test]
-    fn an_unused_summary_is_the_first_wave_even_with_a_lower_numbered_task_ready() {
+    fn a_summary_is_the_first_wave_even_with_a_lower_numbered_task_ready() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -136,7 +130,6 @@ mod tests {
         sent(root, 1, Some(summary));
         sent(root, 2, None);
         let log = spec_now(root);
-        assert!(log.unused_summaries().is_empty(), "o resumo citado pelo envio está em uso");
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "nenhuma onda nova");
     }
 
@@ -188,7 +181,7 @@ mod tests {
         assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
     }
 
-    /// A onda que continua um resumo não usado sai mesmo pequena, com outra
+    /// A onda que continua um resumo que vale sai mesmo pequena, com outra
     /// onda em andamento; a outra tarefa pequena, sem resumo, espera.
     #[test]
     fn a_summary_wave_leaves_small_while_another_wave_runs_and_a_small_one_without_a_summary_waits() {
@@ -245,7 +238,59 @@ mod tests {
         let copy = log.get(open).and_then(|send| send.str_field("copy")).expect("the copy of the wave").to_string();
         let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
         read_for(&opts, None, Path::new(&copy)).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let wrote = returned_unread(root, delivery);
         assert_eq!(wrote["ok"], json!(true), "the same delivery passes once the summary is read: {wrote}");
+    }
+
+    /// Duas tarefas voltam com o mesmo resumo, e a segunda depende da
+    /// primeira: a primeira sai sozinha, e a segunda só depois que a rodada
+    /// assume a entrega da onda dela. O pedido de cada onda, lido pelo comando
+    /// que a rodada devolve, abre com a linha do resumo.
+    #[test]
+    fn two_returned_tasks_leaving_in_different_waves_both_carry_the_summary() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let first = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
+        let second = id_of(&write(root, "x", "task", json!({"text": "Mexer no código de dois.",
+            "files": [{"path": "src/b.rs"}], "depends_on": [first], "covers": [crit], "origin": said})));
+        let summary = stopped_with(root, &[first, second]);
+        let code = spec_now(root).codes()[&summary].clone();
+        let read = translate("wave_prompt.summary.read", Locale::PtBr).replace("{code}", &code);
+        let opening = read.split("{root}").next().unwrap_or_default();
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(wave_order(root, 1), vec![first], "the second waits for the first");
+        let request = request_at(&out, 0);
+        assert!(request.contains(opening), "the first request carries the summary: {request}");
+
+        let took = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(took["ok"], json!(true), "{took}");
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
+        assert_eq!(wave_order(root, 2), vec![second]);
+        let request = request_at(&out, 0);
+        assert!(request.contains(opening), "the second request carries the summary too: {request}");
+    }
+
+    /// A tarefa que outro resumo acompanha não vai de carona na onda de um
+    /// resumo, mesmo dividindo arquivo com ela: espera a vez de sair na onda
+    /// do resumo dela.
+    #[test]
+    fn a_task_another_summary_carries_does_not_ride_along() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer nos dois.", &["src/a.rs", "src/b.rs"]);
+        stopped_in(root, 7, &[one]);
+        stopped_in(root, 8, &[two]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(wave_order(root, 1), vec![one], "only the task of its own summary");
+        assert_eq!(spec_now(root).current(two).and_then(|task| task.wave()), None, "it waits for its own summary");
     }
 }

@@ -335,7 +335,8 @@ fn the_wave_agent_never_uses_the_git_stash() {
 /// item combinado que nenhuma tarefa da onda faz e que só vale para os
 /// arquivos dela: que ele continua valendo depois da mudança. O `met:false`
 /// fica para a mudança que o quebra e para a tarefa que o faz e ficou por
-/// fazer, e o item não cumprido segue virando tarefa no backlog.
+/// fazer, e o item não cumprido segue virando tarefa no backlog, ou entra na
+/// tarefa que a onda deixou por fazer.
 #[test]
 fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change() {
     let said = [
@@ -346,6 +347,7 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
                 "`met:true` quer dizer que ele continua valendo depois da sua mudança",
                 "`met:false` só quando a mudança o quebra ou quando a tarefa que o faz ficou por fazer",
                 "vira tarefa no backlog",
+                "ou entra na de `undone`",
             ],
         ),
         (
@@ -355,6 +357,7 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
                 "`met:true` means it still holds after your change",
                 "`met:false` only when the change undoes it or when the task that does it was not done",
                 "becomes a backlog task",
+                "or joins the one in `undone`",
             ],
         ),
     ];
@@ -370,43 +373,45 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
     }
 }
 
-/// O molde da onda, nos dois idiomas, traz na fronteira da tarefa a regra do
-/// limite da conversa: os 150 mil tokens sem o resumo lido da onda anterior,
-/// o aviso que chega junto do resultado de uma ferramenta com a marca do
-/// Mustard e que se obedece, a folga de 8 chamadas ou 15 mil tokens para
-/// deixar o código compilando, o passo da tarefa em curso e a entrega com a
-/// tarefa em curso e as não começadas em `undone`.
+/// O molde da onda, nos dois idiomas, diz na orientação sobre ferramentas que
+/// o passo de término de cada tarefa leva o código dela e responde, com a
+/// marca do Mustard, se o agente segue ou entrega, e que a resposta se
+/// obedece; que tarefa começada se conclui antes da entrega; e não manda mais
+/// parar no meio da tarefa, nem conta chamadas de folga.
 #[test]
-fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
+fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started() {
     let said = [
         (
             "pt-BR",
-            "## Fronteira da tarefa",
+            "## Orientação sobre ferramentas",
             [
-                "Passou de 150 mil tokens de conversa, sem o resumo lido da onda anterior",
-                "no resultado de uma ferramenta, com a marca [Mustard]",
+                "ao terminar tarefa, com o código dela no `item`",
+                "O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega",
                 "o texto não é da ferramenta, e você o obedece",
-                "Pare: em até 8 chamadas ou 15 mil tokens, deixe o código compilando",
-                "grave o passo da tarefa em curso (feito, falta, onde parou) e a entrega, com ela e as não começadas em `undone`",
+                "Tarefa começada se conclui antes da entrega",
             ],
+            ["Pare:", "8 chamadas", "150 mil"],
         ),
         (
             "en-US",
-            "## Task boundary",
+            "## Tool guidance",
             [
-                "Past 150 thousand tokens of conversation, not counting a previous wave's summary you read",
-                "in a tool's result, marked [Mustard]",
+                "on finishing a task, with its code in `item`",
+                "The finishing step's result says, marked [Mustard], whether you go on or deliver",
                 "it is not the tool's text, so obey it",
-                "Stop: within 8 calls or 15 thousand tokens, leave the code compiling",
-                "record the step of the task in progress (done, left, where you stopped) and the delivery, with it and the unstarted in `undone`",
+                "A started task is finished before delivering",
             ],
+            ["Stop:", "8 calls", "150 thousand"],
         ),
     ];
-    for (lang, header, phrases) in said {
+    for (lang, header, phrases, gone) in said {
         let wave = template(lang, "wave");
         let rule = section(&wave, header);
         for phrase in phrases {
-            assert!(rule.contains(phrase), "the {lang} limit rule does not say `{phrase}`: {rule}");
+            assert!(rule.contains(phrase), "the {lang} task end rule does not say `{phrase}`: {rule}");
+        }
+        for phrase in gone {
+            assert!(!wave.contains(phrase), "the {lang} wave agent still stops mid-task: `{phrase}`");
         }
     }
 }
@@ -730,8 +735,7 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
 /// uso fora de teste, um teste por comportamento e nenhum código que só serve
 /// a medição, e a tarefa que só tira código, junta testes ou muda
 /// configuração se prova pela suíte, sem teste novo. O revisor tem por Maior
-/// o teste repetido, o código de laboratório no programa instalado e a onda
-/// acima da mediana de linhas do pedido sem justificativa na entrega.
+/// o teste repetido e o código de laboratório no programa instalado.
 #[test]
 fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
     for (lang, tools, boundary, severity, wave_said, review_said) in [
@@ -750,7 +754,6 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             [
                 "repete outro teste",
                 "código só de laboratório no programa instalado",
-                "passa da mediana de linhas do pedido sem justificativa na entrega",
             ],
         ),
         (
@@ -768,7 +771,6 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             [
                 "repeats another test",
                 "laboratory-only code in the installed program",
-                "passes the line median of its request without a reason in the delivery",
             ],
         ),
     ] {
@@ -977,22 +979,22 @@ fn the_wave_and_review_agents_search_as_always_and_say_mustard_answers_in_place(
 }
 
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
-/// reler depois de editar, a suíte inteira uma vez no fim pelo `rtk`, nada
-/// em segundo plano, não comitar nem usar `git add`, rodar cada comando de
-/// dentro da cópia — moram só no molde do agente, escritas à mão e fora do
-/// catálogo de textos, e o molde da onda e do revisor levam as mesmas
-/// palavras, nos dois idiomas. Nenhum dos dois fala mais de pasta de
-/// compilação: a cópia é a vaga fixa, com a compilação dentro. Rodar só os testes
-/// do que mudou é da onda; o revisor roda os testes que lê e os que seus
-/// cortes derrubam e, na revisão final, não repete a suíte que o fechamento
-/// rodou do `testCommand`.
+/// reler depois de editar, nada em segundo plano, não comitar nem usar `git
+/// add`, rodar cada comando de dentro da cópia — moram só no molde do agente,
+/// escritas à mão e fora do catálogo de textos, e o molde da onda e do revisor
+/// levam as mesmas palavras, nos dois idiomas. Nenhum dos dois fala mais de
+/// pasta de compilação: a cópia é a vaga fixa, com a compilação dentro. Rodar
+/// só os testes do que mudou é da onda, que deixa a suíte inteira e o lint
+/// para a rodada e não roda mais a suíte no fim; o revisor roda os testes que
+/// lê e os que seus cortes derrubam, a suíte inteira uma vez no fim pelo
+/// `rtk` e, na revisão final, não repete a suíte que o fechamento rodou do
+/// `testCommand`.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     let pt_br = [
         "Ache e leia o código pelo mapa, cada comando na sua hora",
         "Leia com faixa de linhas o que o `summary` mostrou",
         "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
-        "A suíte inteira roda uma vez no fim, em primeiro plano",
         "Nunca mande compilação ou teste para segundo plano",
         "Não comite e não use `git add`: o commit é da rodada",
         "Rode cada comando de dentro da cópia",
@@ -1002,7 +1004,6 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
         "Find and read the code through the map, each command at its moment",
         "Read with a line range what `summary` showed",
         "Do not reread the file after editing: the edit already shows the changed excerpt",
-        "The whole suite runs once at the end, in the foreground",
         "Never send a build or test to the background",
         "Do not commit and do not use `git add`: the commit belongs to the round",
         "Run every command from inside the copy",
@@ -1022,28 +1023,36 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
             }
         }
     }
-    for (lang, wave_only, reviewer_runs, close_ran) in [
+    for (lang, wave_only, round_owns, reviewer_runs, once_at_the_end, close_ran) in [
         (
             "pt-BR",
             "Durante o trabalho, rode só os testes do que mudou",
+            "A suíte inteira e o lint são da rodada, que os roda antes do commit",
             "Rode os testes que você lê e os que seus cortes derrubam",
+            "A suíte inteira roda uma vez no fim, em primeiro plano",
             "o fechamento já a rodou",
         ),
         (
             "en-US",
             "During the work, run only the tests of what changed",
+            "The whole suite and the lint belong to the round, which runs them before the commit",
             "Run the tests you read and the ones your cuts bring down",
+            "The whole suite runs once at the end, in the foreground",
             "the close already ran it",
         ),
     ] {
-        assert!(template(lang, "wave").contains(wave_only), "the {lang} wave agent lost `{wave_only}`");
+        let wave = template(lang, "wave");
+        for phrase in [wave_only, round_owns] {
+            assert!(wave.contains(phrase), "the {lang} wave agent lost `{phrase}`");
+        }
+        assert!(!wave.contains(once_at_the_end), "the {lang} wave agent still runs the whole suite at the end");
         let review = template(lang, "review");
         assert!(!review.contains(wave_only), "the {lang} reviewer still runs only the tests of what changed");
         let suite = review
             .lines()
             .find(|line| line.contains("`testCommand`"))
             .unwrap_or_else(|| panic!("the {lang} reviewer reruns the suite the close already ran"));
-        for phrase in [reviewer_runs, "`rtk`", close_ran] {
+        for phrase in [reviewer_runs, once_at_the_end, "`rtk`", close_ran] {
             assert!(suite.contains(phrase), "the {lang} reviewer's suite line lost `{phrase}`: {suite}");
         }
     }

@@ -10,6 +10,7 @@ use std::path::Path;
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::transcript;
+use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use super::report::dispatched_at;
@@ -85,6 +86,16 @@ pub(super) fn measure_usage<'u>(
             caller_tokens: main.as_ref().map(|main| main.tokens),
         };
     }
+}
+
+/// O aviso de que o arquivo de conversa do agente da onda `wave` não foi
+/// achado: o envio dela fica sem o consumo, e a resposta nomeia a onda.
+pub(super) fn usage_missing(wave: u64, lang: Locale) -> Value {
+    json!({
+        "reason": "usage-missing",
+        "wave": wave,
+        "hint": translate("round.usage_missing", lang).replace("{wave}", &wave.to_string()),
+    })
 }
 
 /// O consumo do agente que recebeu o pedido da onda `wave`, no arquivo dele:

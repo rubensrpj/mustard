@@ -77,7 +77,11 @@
 //! A onda nasce do backlog, e só o programa a grava: pelo `run write`, a onda é
 //! recusada, e a tarefa que traz um número de onda também, a não ser na
 //! versão nova de uma tarefa que repete a onda da versão que ela substitui.
-//! Tirar uma onda continua valendo. Um pedido (`request`) devolve em `next` o
+//! Tirar uma onda continua valendo: a remoção da onda sem entrega grava junto,
+//! com a trava presa, a versão sem onda de cada tarefa que ainda levava o
+//! número dela, e a saída lista essas versões em `returned`. As tarefas da
+//! onda entregue ficam como estão, e o número da removida não volta a nascer.
+//! Um pedido (`request`) devolve em `next` o
 //! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram no
 //! backlog, ou as versões novas das que mudam, na mesma spec e na mesma branch.
 //!
@@ -163,6 +167,10 @@
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
 //! de pontos junto: este comando não o grava, nem o tira ou o revê.
 //!
+//! O item que o assistente grava a partir da conversa e que vem sem `origin`
+//! recebe o número da última mensagem do usuário. Sem mensagem do usuário na
+//! spec, a recusa do campo que falta continua.
+//!
 //! Depois da aprovação, o item combinado novo nasce com dono
 //! (`mustard_core::domain::wave_prompt::owner_rule`): as ondas das tarefas
 //! que o cobrem, as que ele diz em `waves` — mesmo a que ainda vai entrar no
@@ -199,21 +207,22 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::clarity::ClarityReport;
 use mustard_core::domain::lessons::{for_the_code, DEFECT, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, EventRef, Hidden, ItemPart, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
-    TASK_TITLE_MAX,
+    carry_open_point, type_spec, EventRef, Hidden, ItemPart, Refusal, SpecEvent, SpecLog, TaskDeclaration,
+    DEFAULT_AUTHOR, PHASES, TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
-    PhaseWriter, SpecState, State,
+    birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running,
+    survey_rule, PhaseWriter, SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
-use mustard_core::io::{lessons, project_map, spec_events as store};
+use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
+use crate::commands::flow::round::backlog_return;
 use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -306,13 +315,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
 
-    let mut draft = match serde_json::from_str::<Value>(&opts.json) {
-        Ok(Value::Object(map)) => map,
-        Ok(other) => {
-            let shown: String = other.to_string().chars().take(80).collect();
-            return refuse(Refusal::NotAnObject { detail: shown });
-        }
-        Err(e) => return refuse(Refusal::NotAnObject { detail: e.to_string() }),
+    let mut draft = match draft_object(&opts.json) {
+        Ok(draft) => draft,
+        Err(refusal) => return refuse(refusal),
     };
     if draft.get("author").and_then(Value::as_str).map(str::trim) == Some("binary") {
         return refuse(Refusal::BinaryAuthor);
@@ -334,33 +339,19 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
             Refusal::UnknownType { found: event_type.to_string() }
         });
     };
-    if event_type == "state" {
-        return refuse(Refusal::StateByFlowOnly { spec: spec.trim().to_string() });
-    }
-    if event_type == "work_type" {
-        return refuse(Refusal::WorkTypeByGrill);
-    }
     // A entrega e o veredito são as exceções dos tipos do binário: a onda e o
     // revisor gravam a própria volta, conferida mais abaixo, e a rodada ou o
     // fechamento grava a versão oficial.
-    if BINARY_ONLY.contains(&event_type) && !["delivered", "verdict"].contains(&event_type) {
-        return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
-    }
-    // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
-    // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
-    if event_type == "wave" {
-        return refuse(Refusal::WaveByBacklog);
-    }
-    if event_type == "message" && hook_only_message(&draft) {
-        return refuse(Refusal::UserMessageByHook { spec: spec.trim().to_string() });
-    }
-    if event_type == "deferred"
-        && let Err(refusal) = point_to_open_pending(&opts.root, &mut draft)
-    {
+    if let Err(refusal) = draft_rules(&opts.root, spec, event_type, &mut draft, true) {
         return refuse(refusal);
     }
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
+    }
+    // O passo de término de uma tarefa guarda a impressão da cópia da onda,
+    // que a entrega compara com a cópia dela na hora de entregar.
+    if event_type == "step" {
+        crate::commands::flow::round::mark_step_copy(&project.root, spec, &mut draft);
     }
     // A volta da onda só entra com envio aberto para ela, e passa antes pelas
     // conferências que só leem a volta: a recusa vem antes de gravar, e o
@@ -377,15 +368,6 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     } else {
         None
     };
-    // A prova do critério é o comando que a rodada e o fechamento rodam: a que
-    // não roda, liga comandos por `;` ou é uma busca sem `!` recusa antes de
-    // gravar.
-    if event_type == "criterion"
-        && let Some(refusal) =
-            draft.get("proof").and_then(Value::as_str).and_then(super::proof_check::proof_defect)
-    {
-        return refuse(refusal);
-    }
     // A volta do revisor só entra com pedido de revisão aberto, e o veredito
     // final que não responde por todo o combinado recusa antes de gravar.
     if event_type == "verdict"
@@ -398,10 +380,14 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     let next = (event_type == "request")
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
-    let recorded = record_in(&project, &opts.root, spec, event_type, draft, None);
+    let recorded = if event_type == "remove" {
+        record_removal(&project, &opts.root, spec, draft)
+    } else {
+        record_in(&project, &opts.root, spec, event_type, draft, None)
+    };
     drop(held);
     match recorded {
-        Ok(Recorded { written, survey }) => {
+        Ok(Recorded { written, survey, returned }) => {
             // O item gravado entra no bloco das specs do mapa. A gravação na
             // spec já está feita: a falha no mapa não a desfaz, e a próxima
             // resposta do mapa tenta de novo.
@@ -420,6 +406,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
             }
             if !written.purged.is_empty() {
                 report["purged"] = json!(written.purged);
+            }
+            if !returned.is_empty() {
+                report["returned"] = json!(returned);
             }
             // Se não deu para refazer a linha da spec no índice, o evento já
             // está no arquivo: fica o aviso. O nome citado num fato que o
@@ -531,6 +520,70 @@ pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     }
 }
 
+/// Os campos do evento que o `--json` traz, num objeto.
+///
+/// # Errors
+///
+/// [`Refusal::NotAnObject`], com o começo do que veio no lugar do objeto.
+pub(crate) fn draft_object(json: &str) -> Result<Map<String, Value>, Refusal> {
+    match serde_json::from_str::<Value>(json) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(other) => Err(Refusal::NotAnObject { detail: other.to_string().chars().take(80).collect() }),
+        Err(e) => Err(Refusal::NotAnObject { detail: e.to_string() }),
+    }
+}
+
+/// As recusas do pedido do modelo na spec `spec` que olham só o tipo e os
+/// campos, antes de ler a spec: o autor do programa; o estado e o tipo de
+/// trabalho, que têm porta própria; os tipos que só o binário grava; a onda,
+/// que nasce do backlog; a fala que só um gancho grava; a pendência que o
+/// pedido adiado aponta, vista de `start`; e a prova do critério que não
+/// roda. Com `returns`, a volta da onda e a do revisor passam, para a
+/// conferência delas; sem ele, são recusadas como os outros tipos do binário.
+pub(crate) fn draft_rules(
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: &mut Map<String, Value>,
+    returns: bool,
+) -> Result<(), Refusal> {
+    let spec = spec.trim().to_string();
+    if draft.get("author").and_then(Value::as_str).map(str::trim) == Some("binary") {
+        return Err(Refusal::BinaryAuthor);
+    }
+    if event_type == "state" {
+        return Err(Refusal::StateByFlowOnly { spec });
+    }
+    if event_type == "work_type" {
+        return Err(Refusal::WorkTypeByGrill);
+    }
+    let a_return = returns && ["delivered", "verdict"].contains(&event_type);
+    if BINARY_ONLY.contains(&event_type) && !a_return {
+        return Err(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec });
+    }
+    // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
+    // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
+    if event_type == "wave" {
+        return Err(Refusal::WaveByBacklog);
+    }
+    if event_type == "message" && hook_only_message(draft) {
+        return Err(Refusal::UserMessageByHook { spec });
+    }
+    if event_type == "deferred" {
+        point_to_open_pending(start, draft)?;
+    }
+    // A prova do critério é o comando que a rodada e o fechamento rodam: a que
+    // não roda, liga comandos por `;` ou é uma busca sem `!` recusa antes de
+    // gravar.
+    if event_type == "criterion"
+        && let Some(refusal) =
+            draft.get("proof").and_then(Value::as_str).and_then(super::proof_check::proof_defect)
+    {
+        return Err(refusal);
+    }
+    Ok(())
+}
+
 /// A spec `spec` foi aberta: o arquivo de eventos dela existe, ou a pasta é
 /// do formato antigo, que tem a recusa própria na gravação.
 ///
@@ -586,6 +639,9 @@ pub struct Recorded {
     /// O passo do levantamento depois de uma gravação do modelo, como o
     /// relatório o mostra ([`survey_report`]).
     pub(crate) survey: Option<Map<String, Value>>,
+    /// Os números das versões sem onda que a remoção de uma onda devolveu ao
+    /// backlog ([`record_removal`]); vazio nas outras gravações.
+    pub(crate) returned: Vec<u64>,
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
@@ -894,6 +950,23 @@ pub(crate) fn record_locked(
     record_to(&super::project(start), start, spec, event_type, draft, Some(by), Some(locked))
 }
 
+/// [`record_locked`] pela porta do modelo: as conferências do `run write`, a
+/// forma do item e a conferência de escrita inclusive, e o passo do
+/// levantamento no que a gravação deixou.
+///
+/// # Errors
+///
+/// As recusas do `run write` que leem a spec.
+pub(crate) fn record_locked_by_model(
+    locked: &mut store::LockedLog,
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+) -> Result<Recorded, Refusal> {
+    record_to(&super::project(start), start, spec, event_type, draft, None, Some(locked))
+}
+
 /// O corpo de [`record_in`] e de [`record_locked`]: com `locked`, lê e grava
 /// pelo trecho travado; sem ele, pelo caminho do arquivo.
 fn record_to(
@@ -933,6 +1006,23 @@ fn record_to(
     if event_type == "task" && by.is_some() {
         inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
     }
+    // A versão de um ponto aberto que traz só os fatos recebe o resto da
+    // versão antiga, antes da conferência que pede o bloco e a lacuna.
+    if event_type == "point" && draft.contains_key("replaces")
+        && let Some(log) = Source::of(&path, locked.as_deref()).log()?
+    {
+        carry_open_point(&log, &mut draft);
+    }
+    // O item que o modelo grava a partir da conversa sem dizer de onde veio
+    // vem da última mensagem do usuário. Sem mensagem do usuário na spec, a
+    // conferência do tipo recusa a falta do campo.
+    if by.is_none()
+        && origin_missing(event_type, &draft)
+        && let Some(log) = Source::of(&path, locked.as_deref()).log()?
+        && let Some(said) = last_user_message(&log)
+    {
+        draft.insert("origin".to_string(), json!(said.id));
+    }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
@@ -942,7 +1032,7 @@ fn record_to(
         record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
         // O passo do levantamento só vai ao relatório do modelo.
         if by.is_none() {
-            survey = survey_report(&project.root, &name, before, after, lang);
+            survey = survey_report(&name, before, after, lang, false);
         }
         Ok(())
     };
@@ -951,7 +1041,45 @@ fn record_to(
         Some(locked) => locked.write_guarded(event_type, draft, &roots, find, guard, |_| {})?,
         None => store::write_guarded(&path, event_type, draft, &roots, find, guard, |_| {})?,
     };
-    Ok(Recorded { written, survey })
+    Ok(Recorded { written, survey, returned: Vec::new() })
+}
+
+/// A remoção que o modelo grava e, no mesmo trecho com a trava do arquivo
+/// presa, a volta ao backlog das tarefas da onda que ela tirou sem entrega
+/// ([`SpecLog::tasks_of_removed_waves`]): cada uma ganha a versão sem `wave`
+/// ([`backlog_return`]), gravada pelo programa. Sem isso a tarefa ficaria
+/// presa ao número de uma onda que não existe mais, fora do backlog.
+///
+/// # Errors
+///
+/// A recusa da remoção, sem nada gravado, ou a da volta de uma tarefa.
+fn record_removal(
+    project: &super::Project,
+    start: &Path,
+    spec: &str,
+    draft: Map<String, Value>,
+) -> Result<Recorded, Refusal> {
+    let path = store::spec_file(&project.root, spec)?;
+    let held = store::with_locked_writer(&path, |locked| -> Result<Recorded, Refusal> {
+        let mut removal = record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked))?;
+        let freed: Vec<Map<String, Value>> =
+            locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
+        for task in freed {
+            let back = record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked))?;
+            removal.returned.push(back.written.id);
+        }
+        Ok(removal)
+    })?;
+    // Sem o arquivo de eventos, a gravação comum dá a recusa de sempre.
+    held.unwrap_or_else(|| record_in(project, start, spec, "remove", draft, None))
+}
+
+/// O rascunho do assistente de um tipo que exige `origin` veio sem ele.
+fn origin_missing(event_type: &str, draft: &Map<String, Value>) -> bool {
+    let author = draft.get("author").and_then(Value::as_str).map_or(DEFAULT_AUTHOR, str::trim);
+    author == DEFAULT_AUTHOR
+        && !draft.contains_key("origin")
+        && type_spec(event_type).is_some_and(|spec| spec.needs_origin)
 }
 
 /// A fase que uma gravação de `state` traz e o `state` que ela revê; nos
@@ -1197,20 +1325,24 @@ impl RecordCheck {
 
 /// O passo do levantamento depois de uma gravação na spec `spec`, lido do
 /// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
-/// fazer, no idioma do projeto; em `point`, o ponto a apresentar; em
-/// `points`, os pontos que faltam gravar, como o `grill` os lista, ou os
+/// fazer, no idioma do projeto, e, quando falta ponto de lacuna, a ordem de
+/// rodar o `grill` de novo; em `point`, o ponto a apresentar; em `points`, os
 /// pontos abertos do levantamento condensado, mostrados de uma vez; em
 /// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
 /// a pergunta e as opções, "Seguir" por último; em `unrouted`, as mensagens
 /// do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
 /// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
 /// de rodar o revisor de fora. `None` quando não há passo.
-fn survey_report(
-    root: &Path,
+///
+/// Com `brief`, o levantamento condensado não repete o texto dos pontos
+/// abertos: `points` traz o código, o número e a lacuna de cada um, e `point`
+/// traz inteiro só o próximo.
+pub(crate) fn survey_report(
     spec: &str,
     before: &SpecLog,
     after: &SpecLog,
     lang: Locale,
+    brief: bool,
 ) -> Option<Map<String, Value>> {
     let steps = survey::next_step(before, after);
     if steps.is_empty() {
@@ -1241,8 +1373,14 @@ fn survey_report(
             }
             SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
                 next.push(translate("survey.present_all", lang).to_string());
-                let open: Vec<Value> = survey::open_points(after).into_iter().map(|p| super::shown(p, &codes)).collect();
-                out.insert("points".to_string(), json!(open));
+                let open = survey::open_points(after);
+                if brief {
+                    out.insert("points".to_string(), json!(survey::describe(after, &open)));
+                    out.insert("point".to_string(), super::shown(point, &codes));
+                } else {
+                    let open: Vec<Value> = open.into_iter().map(|p| super::shown(p, &codes)).collect();
+                    out.insert("points".to_string(), json!(open));
+                }
             }
             SurveyStep::Point(point) => {
                 next.push(
@@ -1258,39 +1396,12 @@ fn survey_report(
                 out.insert("unrouted".to_string(), json!(listed));
             }
             SurveyStep::Record(_) => {
-                next.push(translate("survey.record_points", lang).replace("{spec}", spec));
-                out.insert("points".to_string(), json!(unrecorded_points(root, spec, after, lang)));
+                next.push(translate("survey.rerun_grill", lang).replace("{spec}", spec));
             }
         }
     }
     out.insert("next".to_string(), json!(next.join(" ")));
     Some(out)
-}
-
-/// Os itens da lista do `grill` para as lacunas do tipo de trabalho que ainda
-/// não têm ponto, como o `grill` os mostra: os campos que o assistente copia,
-/// com a mensagem do objetivo como origem e o que o mapa do projeto já
-/// responde.
-fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<Value> {
-    let kinds = survey::work_type(log).map(survey::kinds_of).unwrap_or_default();
-    let goal = survey::goal(log);
-    let map = |need: project_map::Need<'_>| project_map::read_for(root, need);
-    let list = survey::build(&survey::Sources {
-        kinds: &kinds,
-        goal: goal.and_then(|g| g.str_field("text")).map(str::trim).unwrap_or_default(),
-        goal_agent: goal.and_then(|g| g.str_field("agent")).map(str::trim).unwrap_or_default(),
-        current: spec,
-        bank: None,
-        lessons_file: "",
-        index: &[],
-        prior: &[],
-        map: Some(&map),
-        condensed: survey::condensed(log),
-        lang,
-        languages: &mustard_core::domain::normalize::Languages::of_project(root),
-    });
-    let origin = goal.and_then(|g| g.int("origin"));
-    survey::missing(log, &list).into_iter().map(|item| item.to_value(origin)).collect()
 }
 
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
@@ -3308,6 +3419,52 @@ mod tests {
         (out, before, std::fs::read(&file).unwrap())
     }
 
+    /// O campo opcional de texto que chega vazio, ou só com espaço — a marca
+    /// de prioridade da tarefa e o motivo de a decisão não virar código — é
+    /// recusado com a mesma razão, que diz o campo e manda escrever o valor
+    /// ou tirar o campo, nos dois idiomas, e o arquivo da spec fica com os
+    /// mesmos bytes. Com o texto escrito, o mesmo evento grava; a lista vazia
+    /// da tarefa (`files`, `depends_on`) segue aceita.
+    #[test]
+    fn an_optional_text_field_that_comes_empty_is_refused_in_both_languages() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (language, write_or_drop, nothing) in [
+            ("pt-BR", "Escreva o valor ou tire o campo", "Nada foi gravado"),
+            ("en-US", "Write its value or drop the field", "Nothing was written"),
+        ] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let spec = format!("texto-vazio-{}", language.to_lowercase());
+            let said = spec_in_phase(root, &spec, "running");
+            let crit = crate::shared::spec_state::seed_event(root, &spec, "criterion", json!({"when": "a obra roda",
+                "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous"}));
+            let task = |priority: &str| json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador",
+                "files": [], "depends_on": [], "covers": [crit], "origin": said, "priority": priority});
+            let decision = |no_code: &str| json!({"title": "Sem tela nova", "text": "A tela fica como está.", "agent": "- nenhuma tela",
+                "why": "O usuário pediu.", "keys": ["tela"], "applies_to": {"files": ["**"]}, "origin": said, "no_code": no_code});
+            type Draft<'a> = &'a dyn Fn(&str) -> Value;
+            let cases: [(&str, &str, Draft, &str); 2] = [
+                ("task", "priority", &task, "O usuário pediu esta antes."),
+                ("decision", "no_code", &decision, "Só muda o combinado."),
+            ];
+            for (event_type, field, draft, written) in cases {
+                for empty in ["", "   "] {
+                    let (out, before, after) = by_assistant(root, &spec, event_type, &draft(empty));
+                    assert_eq!(out["ok"], json!(false), "{language} {event_type} {empty:?}: {out}");
+                    assert_eq!(out["reason"], json!("empty-text"), "{language} {event_type}: {out}");
+                    let hint = out["hint"].as_str().unwrap_or_default();
+                    assert!(
+                        hint.contains(field) && hint.contains(event_type) && hint.contains(write_or_drop) && hint.contains(nothing),
+                        "{language}: {hint}"
+                    );
+                    assert_eq!(after, before, "{language} {event_type}: nothing was written");
+                }
+                let (out, _, _) = by_assistant(root, &spec, event_type, &draft(written));
+                assert_eq!(out["ok"], json!(true), "{language} {event_type}: the text is written: {out}");
+            }
+        }
+    }
+
     /// O pedido novo que o assistente grava numa spec fechada, e noutra com o
     /// pull request aberto, é recusado com a razão própria e a frase que
     /// manda reabrir a spec pelo `reopen`, nos dois idiomas, e o arquivo da
@@ -3782,6 +3939,26 @@ mod tests {
         assert_eq!(context(root, "Outro contexto, livre.", said)["ok"], json!(true));
     }
 
+    /// O item que o assistente grava sem `origin` vem da última mensagem do
+    /// usuário; sem mensagem do usuário na spec, a falta do campo continua
+    /// recusada, e nada é gravado.
+    #[test]
+    fn an_item_without_origin_comes_from_the_last_user_message() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let note = json!({"title": "Nota", "text": "Uma nota.", "keys": ["n"]}).to_string();
+        let refused = write(root, "note", &note);
+        assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("origin"), "{refused}");
+        assert_eq!(lines(root), 0, "a refusal writes nothing");
+        message(root, "user", "Primeira fala.");
+        let said = message(root, "user", "Segunda fala.");
+        let written = write(root, "note", &note);
+        let id = written["id"].as_u64().unwrap_or_else(|| panic!("not written: {written}"));
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.get(id).and_then(|event| event.int("origin")), Some(said));
+    }
+
     /// A resposta do assistente, gravada pelo binário como o despachante a
     /// grava no fim do turno, ligada à mensagem `reply_to`.
     fn response(root: &std::path::Path, text: &str, reply_to: u64) -> u64 {
@@ -4037,8 +4214,8 @@ mod tests {
     /// Uma spec em levantamento com o objetivo, o tipo de trabalho `kinds`
     /// gravado pela porta do binário, como o `grill` grava, e um ponto aberto
     /// por lacuna, na ordem da lista; no condensado, todos num bloco só.
-    /// Enquanto a lista está sendo gravada, cada gravação pede os pontos das
-    /// lacunas que faltam; a gravação do último ponto devolve o primeiro.
+    /// Enquanto falta ponto de lacuna, cada gravação manda rodar o `grill` de
+    /// novo; a gravação do último ponto devolve o primeiro.
     /// Devolve a mensagem do objetivo e os pontos.
     fn listed(root: &std::path::Path, kinds: &[&str], condensed: bool) -> (u64, Vec<Opened>) {
         surveyed(root);
@@ -4064,13 +4241,9 @@ mod tests {
                 gap: gap.to_string(),
             });
             if i + 1 < gaps.len() {
-                let ask = translate("survey.record_points", Locale::PtBr).replace("{spec}", "teste");
+                let ask = translate("survey.rerun_grill", Locale::PtBr).replace("{spec}", "teste");
                 assert_eq!(report["next"], json!(ask), "{report}");
-                let left: Vec<&str> =
-                    report["points"].as_array().unwrap().iter().filter_map(|item| item["gap"].as_str()).collect();
-                let expected: Vec<&str> = gaps[i + 1..].iter().map(|key| key.label(Locale::PtBr)).collect();
-                assert_eq!(left, expected, "each write asks for the gaps still without a point: {report}");
-                assert!(report.get("point").is_none(), "no point before the list is recorded: {report}");
+                assert!(report.get("point").is_none() && report.get("points").is_none(), "{report}");
             } else if condensed {
                 assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
             } else {
@@ -4446,8 +4619,8 @@ mod tests {
         assert!(refusal.message(Locale::EnUs).contains("How to prove it is done"));
     }
 
-    /// Uma lacuna que ficou sem ponto é pedida pela gravação seguinte, com o
-    /// item a copiar, no lugar do próximo ponto; fechar os outros pontos não
+    /// Uma lacuna que ficou sem ponto faz a gravação seguinte mandar rodar o
+    /// `grill` de novo, no lugar do próximo ponto; fechar os outros pontos não
     /// traz o fim nem manda rodar o revisor de fora. Gravado o ponto que
     /// faltava, ele é o próximo.
     #[test]
@@ -4476,11 +4649,10 @@ mod tests {
                 gap: key.label(Locale::PtBr).to_string(),
             });
         }
-        let ask = translate("survey.record_points", Locale::PtBr).replace("{spec}", "teste");
+        let ask = translate("survey.rerun_grill", Locale::PtBr).replace("{spec}", "teste");
         let asks_again = |report: &Value| {
             assert!(report["next"].as_str().is_some_and(|next| next.ends_with(&ask)), "{report}");
-            let item = json!({"block": "defect", "gap": forgotten.label(Locale::PtBr), "from": "gap", "origin": said});
-            assert_eq!(report["points"], json!([item]), "{report}");
+            assert!(report.get("points").is_none(), "{report}");
             assert!(report.get("point").is_none() && report.get("unrouted").is_none(), "{report}");
         };
         asks_again(&answer(root, said));
@@ -4641,20 +4813,39 @@ mod tests {
     }
 
     /// Um ponto aberto não sai com `remove`, nem pelo número nem pelo código:
-    /// ele só fecha. Nada é gravado.
+    /// ele só fecha, e nada é gravado. A recusa, nos dois idiomas, ensina o
+    /// comando que o fecha como "não se aplica", e o comando ensinado fecha o
+    /// ponto e devolve o próximo.
     #[test]
-    fn an_open_point_cannot_be_removed_only_closed() {
+    fn an_open_point_cannot_be_removed_and_the_refusal_teaches_how_to_close_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
+        let (_, points) = listed(root, &["fix"], false);
         let before = lines(root);
+        let taught = format!("`mustard-rt run answer --point {} --not-applicable --reason ", points[0].code);
         for target in [json!(points[0].id), json!(points[0].code)] {
             let removal = write(root, "remove", &json!({"targets": [target], "reason": "não vale"}).to_string());
             assert_eq!(removal["reason"], json!("open-point-removed"), "{removal}");
-            assert!(removal["hint"].as_str().unwrap().contains(&points[0].code), "{removal}");
+            assert!(removal["hint"].as_str().unwrap().contains(&taught), "{removal}");
         }
+        let english = Refusal::OpenPointRemoved { code: points[0].code.clone() }.message(Locale::EnUs);
+        assert!(english.contains(&taught), "{english}");
         assert_eq!(lines(root), before);
-        assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
+        let closed = crate::commands::flow::answer::answer_for(
+            &crate::commands::flow::answer::AnswerOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                point: Some(points[0].code.clone()),
+                event_type: None,
+                json: None,
+                result: None,
+                not_applicable: true,
+                reason: Some("Não vale para este pedido.".into()),
+            },
+            None,
+        );
+        assert_eq!(closed["closed"]["status"], json!("not_applicable"), "{closed}");
+        assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
     }
 
     /// Um ponto aberto é expurgado só no trecho, pelo número ou pelo código:

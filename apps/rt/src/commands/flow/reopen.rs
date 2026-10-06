@@ -1291,7 +1291,10 @@ mod tests {
     }
 
     /// Depois da volta, o `grill` roda de novo na mesma spec: é a recusa que
-    /// ele dava fora do levantamento que a volta desfaz.
+    /// ele dava fora do levantamento que a volta desfaz. O comando que a
+    /// resposta da volta manda rodar, e o da volta pedida com a spec já em
+    /// levantamento, rodam como vieram, sem o tipo de trabalho: o levantamento
+    /// usa o que já sabe.
     #[test]
     fn after_the_return_the_survey_runs_again() {
         let dir = tempdir().unwrap();
@@ -1316,7 +1319,8 @@ mod tests {
         );
         assert_eq!(refused["reason"], json!("not-in-survey"), "{refused}");
 
-        assert_eq!(reopen(root, "epico", "Faltou levantar.")["ok"], json!(true));
+        let back = reopen(root, "epico", "Faltou levantar.");
+        assert_eq!(back["ok"], json!(true), "{back}");
         let goal = seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("epico".into()),
@@ -1324,15 +1328,19 @@ mod tests {
             json: json!({"text": "Travar o merge.", "origin": said}).to_string(),
         });
         assert_eq!(goal["ok"], json!(true), "{goal}");
-        let after = crate::commands::flow::grill::grill_for(
-            &crate::commands::flow::grill::GrillOpts {
-                root: root.to_path_buf(),
-                spec: Some("epico".into()),
-                kinds: Some("fix".into()),
-                condensed: false,
-            },
-            None,
-        );
+        // O comando entre crases da resposta, como quem conduz o copia.
+        let shown = |answer: &Value| -> String {
+            let next = answer["next"].as_str().unwrap_or_default();
+            next.split('`').find(|part| part.starts_with("mustard-rt run grill")).unwrap_or_else(|| panic!("{next}")).to_string()
+        };
+        let after = crate::commands::flow::grill::run_grill_line(root, &shown(&back));
         assert_eq!(after["ok"], json!(true), "the survey runs again: {after}");
+        assert_eq!(after["kinds"], json!(["feature"]), "{after}");
+
+        let already = reopen(root, "epico", "Faltou levantar de novo.");
+        assert_eq!(already["recorded"], json!(false), "{already}");
+        let again = crate::commands::flow::grill::run_grill_line(root, &shown(&already));
+        assert_eq!(again["ok"], json!(true), "{again}");
+        assert_eq!(again["kinds"], json!(["feature"]), "{again}");
     }
 }

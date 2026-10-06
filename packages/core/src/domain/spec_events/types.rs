@@ -664,6 +664,13 @@ pub const TYPES: &[TypeSpec] = &[
             // até o fim da obra, para sair junto das outras numa onda só.
             // Ausente é tarefa comum.
             opt("cleanup", Kind::Bool),
+            // A marca de prioridade: o motivo, em texto, que o usuário deu
+            // para a tarefa sair antes das outras. A montagem das ondas solta
+            // primeiro a tarefa marcada, sem passar por cima da dependência,
+            // dos arquivos de uma onda em andamento nem das vagas. Vazia, a
+            // gravação recusa, como todo texto opcional vazio
+            // (`check::check_field`). Ausente é tarefa comum.
+            opt("priority", Kind::Text),
             // O par de papéis cuja direção de importação esta tarefa muda,
             // por pedido formal do usuário: a conferência depois da onda
             // libera a importação entre os dois só nos arquivos desta
@@ -763,6 +770,14 @@ pub const TYPES: &[TypeSpec] = &[
             // aberto.
             opt("claude_pid", Kind::Int),
             opt("claude_started", Kind::Int),
+            // A reprovação de quem conduz a obra: a volta da onda que ele
+            // reprovou, pelo número (`delivered`), e o motivo dele (`reason`).
+            // Enquanto essa volta for a última da onda, ela fica fora do
+            // commit e a onda espera um agente novo, que recebe o motivo. A
+            // versão que grava a reprovação sai sem o Claude Code do envio: a
+            // reprovação diz que o agente terminou. A volta nova da onda
+            // desfaz a reprovação.
+            opt("rejected", Kind::Object),
         ],
     ),
     ty(
@@ -803,7 +818,8 @@ pub const TYPES: &[TypeSpec] = &[
             // como a do veredito final (`item`, `met`): o item que não vem
             // cumprido vira tarefa no backlog quando a rodada assume a volta,
             // se nenhuma tarefa ainda por entregar já o cobre e se a análise
-            // da onda não o tirou do pedido.
+            // da onda não o tirou do pedido; com tarefa em `undone`, ele entra
+            // na versão dela que volta ao backlog.
             opt("agreed", Kind::Objects),
             RETURNED,
         ],

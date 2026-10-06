@@ -31,7 +31,6 @@ pub mod map_triage;
 mod map_words;
 pub mod map_specs;
 pub mod wave_prompt;
-pub mod wave_size;
 pub mod transcript;
 pub mod spend;
 pub mod measure;

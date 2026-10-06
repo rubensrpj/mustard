@@ -15,10 +15,11 @@ pub(crate) fn request_name(wave: Option<u64>) -> String {
     wave.map_or_else(|| String::from("request-review"), |wave| format!("request-{wave}"))
 }
 
-/// A posição a partir da qual as leituras valem para o pedido `sent`: a em que
-/// o pedido despachou ([`SpecLog::dispatch_position`]) e, num reenvio, a do
-/// primeiro pedido da cadeia dele — o reenvio não zera as leituras da onda.
-fn opened_at(log: &SpecLog, sent: u64) -> u64 {
+/// A posição a partir da qual as leituras e os passos valem para o pedido
+/// `sent`: a em que o pedido despachou ([`SpecLog::dispatch_position`]) e,
+/// num reenvio, a do primeiro pedido da cadeia dele — o reenvio não zera as
+/// leituras nem os passos da onda.
+pub(super) fn opened_at(log: &SpecLog, sent: u64) -> u64 {
     let mut first = sent;
     // A cadeia de reenvios é finita, mas a spec é um arquivo de texto: o
     // passo conta os saltos para um círculo gravado à mão não prender a volta.

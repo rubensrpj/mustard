@@ -32,6 +32,23 @@ pub(crate) fn is_empty(value: &Value) -> bool {
 /// que vier nela de quem grava é trocado.
 pub(super) const GIVES_BACK_FIELD: &str = "gives_back";
 
+/// A impressão da cópia da onda no passo que o agente grava: o resumo do que
+/// a cópia tinha mudado naquela hora, ausente com a cópia limpa. A entrega
+/// compara a cópia de agora com a do último passo de término e recusa o
+/// trabalho começado e devolvido como não feito. Quem a escreve é a gravação
+/// do passo, que troca o que vier nela de quem grava; o tipo do passo não a
+/// declara, e só ele a aceita.
+pub const COPY_STATE_FIELD: &str = "copy_state";
+
+/// A impressão por arquivo da cópia da onda no mesmo passo: cada arquivo que
+/// as tarefas da onda listam e que a cópia tinha mudado naquela hora, com o
+/// resumo do conteúdo dele, ausente com esses arquivos como no commit. A
+/// entrega que conserta uma volta compara por ela os arquivos de cada tarefa
+/// que volta devolvida de novo, que a impressão da cópia inteira não separa
+/// do conserto. Como a outra, quem a escreve é a gravação do passo, e só o
+/// passo a aceita.
+pub const COPY_FILES_FIELD: &str = "copy_files";
+
 /// O rascunho de quem grava, pronto para a conferência: sem os campos que só
 /// o binário escreve, com o tipo pedido, com o autor (o assistente, quando
 /// quem grava não diz) e, na remoção, com a marca `gives_back`, que diz que
@@ -138,11 +155,13 @@ const COMMON_FIELDS: &[&str] =
     &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys"];
 
 /// O tipo aceita este campo? Aceita os comuns a toda linha, os que ele
-/// declara e, na remoção, a marca que o binário põe nela.
+/// declara, na remoção a marca que o binário põe nela e, no passo, as duas
+/// impressões da cópia que a gravação dele põe.
 fn accepts_field(spec: &TypeSpec, name: &str) -> bool {
     COMMON_FIELDS.contains(&name)
         || spec.fields.iter().any(|field| field.name == name)
         || (spec.name == "remove" && name == GIVES_BACK_FIELD)
+        || (spec.name == "step" && [COPY_STATE_FIELD, COPY_FILES_FIELD].contains(&name))
 }
 
 /// Os campos que um tipo aceita, separados por vírgula: os que ele declara,
@@ -153,8 +172,16 @@ fn accepted_fields(spec: &TypeSpec) -> String {
     own.into_iter().chain(rest).collect::<Vec<_>>().join(", ")
 }
 
+/// Confere um campo do evento pelo tipo dele. O obrigatório ausente ou vazio
+/// falta. O opcional de texto que chega vazio, ou só com espaço, é recusado
+/// pelo nome: ele entraria calado e diria que existe um valor que ninguém
+/// escreveu. Lista e objeto vazios seguem aceitos, porque a lista vazia diz
+/// "nenhum" (`files: []`, `depends_on: []`).
 pub(crate) fn check_field(event: &Map<String, Value>, event_type: &str, field: Field) -> Result<(), Refusal> {
     match event.get(field.name) {
+        Some(Value::String(text)) if !field.required && field.kind == Kind::Text && text.trim().is_empty() => {
+            Err(Refusal::EmptyText { event_type: event_type.to_string(), field: field.name.to_string() })
+        }
         Some(value) if !is_empty(value) => {
             if field.kind.accepts(value) {
                 Ok(())
@@ -184,6 +211,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
+    ("send", "rejected", &["delivered", "reason"]),
     // A sobra que a onda relata vira tarefa da spec: sem título ou sem
     // detalhe, não há o que abrir.
     ("delivered", "leftovers", &["title", "detail"]),
@@ -245,8 +273,8 @@ fn nested_absent(event: &Map<String, Value>, event_type: &str) -> Vec<String> {
 }
 
 /// Os campos que só são obrigatórios numa situação: a testemunha na
-/// aprovação, o motivo no descarte, o endereço da publicação que deu certo, a
-/// fonte dos fatos do ponto aberto, os exemplos da skill que nasce, o alvo da
+/// aprovação, o motivo no descarte, o endereço da publicação que deu certo, os
+/// fatos do ponto aberto que o assistente grava, os exemplos da skill que nasce, o alvo da
 /// remoção, os critérios da revisão de uma onda. O ponto que fecha outro
 /// (`closes`) nunca fica aberto, e o que "não se aplica" leva o motivo.
 fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), Refusal> {
@@ -305,7 +333,10 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 if has("closes") {
                     return Err(Refusal::ClosingPointOpen);
                 }
-                return need("facts");
+                // O ponto que o `grill` grava nasce sem fato: o assistente
+                // soma os fatos depois, antes de mostrá-lo ao usuário. O ponto
+                // aberto que o assistente grava já traz os dele.
+                return if word("author") == "binary" { Ok(()) } else { need("facts") };
             }
             // A versão nova de um ponto pode vir sem `closes`: o binário copia
             // o da versão antiga e confere de novo (veja
@@ -428,6 +459,26 @@ mod tests {
         assert_eq!(validate(&note), Ok(()));
     }
 
+    /// As duas impressões da cópia entram só no passo: no passo de término
+    /// elas passam, e em qualquer outro tipo cada uma é campo desconhecido,
+    /// recusado pelo nome.
+    #[test]
+    fn only_the_step_takes_the_copy_state() {
+        let files = json!({"src/a.rs": "89ab01cd23ef"});
+        let step = json!({"author": "wave", "wave": 1, "item": "MSTD-TASK-0001", "text": "Pronta.",
+            "copy_state": "0123abcd4567", "copy_files": files});
+        assert_eq!(checked("step", step), Ok(()));
+        for (name, value) in [(COPY_STATE_FIELD, json!("0123abcd4567")), (COPY_FILES_FIELD, files)] {
+            let mut note = json!({"text": "t", "keys": ["k"], "origin": 1});
+            note[name] = value;
+            let refused = checked("note", note).unwrap_err();
+            assert!(
+                matches!(&refused, Refusal::UnknownField { event_type, field, .. } if event_type == "note" && field == name),
+                "{refused:?}"
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_type_is_refused_by_name() {
         let refusal = checked("licao", json!({"text": "x"})).unwrap_err();
@@ -506,6 +557,20 @@ mod tests {
         assert_eq!(
             checked("criterion", criterion).unwrap_err(),
             Refusal::MissingField { event_type: "criterion".into(), field: "origin".into() }
+        );
+    }
+
+    /// O ponto aberto que o levantamento grava nasce sem fato; o mesmo ponto
+    /// aberto gravado pelo assistente continua recusado sem os fatos.
+    #[test]
+    fn an_open_point_without_facts_passes_only_from_the_binary() {
+        let point = json!({"block": "context", "gap": "Quem usa e para quê", "from": "gap", "status": "open", "origin": 1});
+        let mut by_binary = point.clone();
+        by_binary["author"] = json!("binary");
+        assert!(checked("point", by_binary).is_ok());
+        assert_eq!(
+            checked("point", point).unwrap_err(),
+            Refusal::MissingField { event_type: "point".into(), field: "facts".into() }
         );
     }
 

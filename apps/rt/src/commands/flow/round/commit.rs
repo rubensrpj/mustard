@@ -804,21 +804,6 @@ pub(super) fn real_changed_files(root: &Path, log: &SpecLog, wave: u64) -> Optio
     Some(copy_changed(&copy, &subs))
 }
 
-/// Compila o repositório principal com o comando de compilação do projeto, o
-/// mesmo que o pedido de cada onda já ensina; sem ele declarado, nada é
-/// rodado, porque não há como compilar sem saber o comando. A rodada não
-/// comita nada quando a compilação falha.
-pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
-    let Some(build) = mustard_core::ProjectConfig::load(root).commands().build else {
-        return Ok(());
-    };
-    let out = crate::commands::review::qa_run::run_command(&build, root);
-    if out.result == "pass" {
-        return Ok(());
-    }
-    Err(RoundRefusal::BuildFailed { command: build, output: out.output })
-}
-
 /// Um achado da conferência depois da onda, da onda `wave`: a frase pronta e
 /// se ele recusa a volta ou só avisa.
 pub(super) struct Finding {
@@ -842,9 +827,9 @@ type AfterWaveChecks = (Vec<Value>, Vec<(u64, String)>);
 
 /// A conferência depois da onda, antes do commit da rodada, com o disco já
 /// juntado: as importações novas contra o padrão do projeto
-/// ([`super::imports_check`]), os restos do que as ondas tiraram
-/// ([`super::removed_check`]) e o tamanho de cada onda contra o que a tarefa
-/// pede ([`super::size_check`]). Tudo passou: nada, nem texto. Só avisos: os
+/// ([`super::imports_check`]) e os restos do que as ondas tiraram
+/// ([`super::removed_check`]). O tamanho da onda nunca a recusa. Tudo
+/// passou: nada, nem texto. Só avisos: os
 /// avisos, e a rodada segue. Algum achado que recusa: a rodada não comita,
 /// e a mensagem lista tudo de uma vez, por onda, com a rodada de conserto de
 /// cada uma — a volta que a onda grava de novo conta como uma, até
@@ -853,9 +838,8 @@ type AfterWaveChecks = (Vec<Value>, Vec<(u64, String)>);
 /// mapeador falhando, não há com que comparar e a rodada segue.
 ///
 /// Com a conferência sem recusa, junta aos avisos uma linha de tamanho por
-/// onda e a devolve também à parte, para o corpo do commit. A linha é dado
-/// da onda: o achado de tamanho é outro, e passa pela mesma resposta dos
-/// outros.
+/// onda ([`super::size_check`]) e a devolve também à parte, para o corpo do
+/// commit. A linha é só dado da onda.
 pub(super) fn ensure_after_wave(
     root: &Path,
     log: &SpecLog,
@@ -866,12 +850,10 @@ pub(super) fn ensure_after_wave(
     let changed: Vec<(u64, Vec<String>)> =
         waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
     let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Default::default()) };
-    let sizes = super::size_check::measure(root, &maps);
     let mut found = super::imports_check::findings(root, &maps, log, lang);
     found.extend(super::removed_check::findings(root, &maps, lang));
-    found.extend(super::size_check::findings(root, &sizes, log, lang));
     let mut warnings = after_wave_answer(waves, &found, lang)?;
-    let sizes = super::size_check::lines(&sizes, lang);
+    let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
     warnings.extend(sizes.iter().map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
     Ok((warnings, sizes))
 }
@@ -903,7 +885,7 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
         return Ok(Vec::new());
     }
     let max = super::stops::MAX_FIX_ROUNDS;
-    let done = |wave: u64| waves.iter().find(|w| w.wave == wave).map_or(0, |w| w.returns.len().saturating_sub(1));
+    let done = |wave: u64| super::stops::fix_rounds_done(waves, wave);
     let refusing: BTreeSet<u64> = found.iter().filter(|f| f.refuses).map(|f| f.wave).collect();
     let stuck: Vec<String> = refusing.iter().filter(|w| done(**w) >= max).map(u64::to_string).collect();
     let fill = |key: &str, wave: u64| {
@@ -919,19 +901,27 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
         (false, false) => "round.after_wave.limit",
     };
     let mut text = fill(head, 0);
+    // O trecho de cada onda recusada que volta ao agente também vai à parte:
+    // é ele, e só ele, que o agente recebe na rodada de conserto. A onda que
+    // já passou por todas vai ao usuário, e não ao agente.
+    let mut fixes: Vec<(u64, String)> = Vec::new();
     let listed: BTreeSet<u64> = found.iter().map(|f| f.wave).collect();
     for wave in listed {
         let key = if refusing.contains(&wave) { "round.after_wave.wave" } else { "round.after_wave.wave_warnings" };
-        text.push_str("\n\n");
-        text.push_str(&fill(key, wave));
+        let mut section = fill(key, wave);
         let lines = found.iter().filter(|f| f.wave == wave);
-        text.extend(lines.clone().filter(|f| f.refuses).chain(lines.filter(|f| !f.refuses)).map(|f| format!("\n- {}", f.text)));
+        section.extend(lines.clone().filter(|f| f.refuses).chain(lines.filter(|f| !f.refuses)).map(|f| format!("\n- {}", f.text)));
+        text.push_str("\n\n");
+        text.push_str(&section);
+        if refusing.contains(&wave) && done(wave) < max {
+            fixes.push((wave, section));
+        }
     }
     if refusing.is_empty() {
         return Ok(vec![json!({ "reason": "round-after-wave-warnings", "hint": text })]);
     }
     let question = (!stuck.is_empty()).then(|| fill("round.after_wave.question", 0));
-    Err(RoundRefusal::AfterWave { text, question })
+    Err(RoundRefusal::AfterWave { text, question, fixes })
 }
 
 /// A prova de cada critério que as ondas de `waves` cobrem roda, uma de cada
@@ -1056,7 +1046,7 @@ fn build_development_version_with(
 
 /// Os caminhos que o `status --porcelain -z` lista, inclusive o nome antigo
 /// de um arquivo renomeado.
-fn changed_paths(status: &str) -> Vec<String> {
+pub(super) fn changed_paths(status: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut entries = status.split('\0').filter(|entry| !entry.is_empty());
     while let Some(entry) = entries.next() {
@@ -1307,6 +1297,7 @@ mod tests {
                 fixes: Vec::new(),
                 replan: None,
                 undone: Vec::new(),
+                taken_elsewhere: false,
                 leftovers: Vec::new(),
                 agreed: Vec::new(),
                 returns: Vec::new(),
@@ -1340,6 +1331,7 @@ mod tests {
             fixes: Vec::new(),
             replan: None,
             undone: Vec::new(),
+            taken_elsewhere: false,
             leftovers: Vec::new(),
             agreed: Vec::new(),
             returns: Vec::new(),
@@ -1378,6 +1370,7 @@ mod tests {
             fixes: Vec::new(),
             replan: None,
             undone: Vec::new(),
+            taken_elsewhere: false,
             leftovers: Vec::new(),
             agreed: Vec::new(),
             returns: Vec::new(),
@@ -1411,6 +1404,7 @@ mod tests {
             fixes: Vec::new(),
             replan: None,
             undone: Vec::new(),
+            taken_elsewhere: false,
             leftovers: Vec::new(),
             agreed: Vec::new(),
             returns: Vec::new(),
@@ -1791,8 +1785,10 @@ mod tests {
             std::fs::read_to_string(spec).unwrap_or_default().lines().any(|l| l.contains("\"returned\":true"))
         };
 
-        // O agente lê o pedido antes de gravar: com o índice preso, nem a leitura entraria.
+        // O agente lê o pedido e grava o passo da tarefa antes de entregar: com
+        // o índice preso, nem a leitura nem o passo entrariam.
         crate::commands::flow::round::read_request(root, "x", 1);
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let index_lock = mustard_core::io::fs::lock::LockedFile::exclusive(&index).unwrap();
         std::thread::scope(|scope| {
             let writing = scope.spawn(|| returned(root, body));

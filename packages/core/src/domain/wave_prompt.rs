@@ -23,8 +23,8 @@
 //!
 //! "O que fazer" tem um passo por tarefa, na ordem de execução que a onda
 //! declara (sem ela, na ordem do arquivo), com o que a tarefa atende, os
-//! arquivos dela e o que ler antes embaixo; a suíte do projeto e a entrega
-//! fecham a lista. "O que obedecer" leva as regras e decisões que valem para a
+//! arquivos dela e o que ler antes embaixo; a entrega fecha a lista, e a
+//! suíte do projeto fica fora dela, porque quem a roda é a rodada. "O que obedecer" leva as regras e decisões que valem para a
 //! onda e as lições dos arquivos dela, cada skill como recomendação de uma
 //! linha. O item sai uma vez só, mesmo que a onda o cite de mais de um jeito.
 //! O pedido da revisão final tem o mesmo formato de item: uma linha por item,
@@ -73,30 +73,25 @@ pub fn language_line(language: &Language) -> String {
 
 /// O título do pedido de uma onda, a primeira linha dele: `# ` e a spec com o
 /// número da onda, no idioma do texto. É por ele que a medida acha, depois, o
-/// agente que recebeu a onda; só esta função o monta, e [`is_wave_title`] o
-/// reconhece pelo mesmo molde.
+/// agente que recebeu a onda; só esta função o monta, e [`wave_of_title`] o
+/// lê pelo mesmo molde.
 #[must_use]
 pub fn wave_title(spec: &str, wave: u64, lang: Locale) -> String {
     format!("# {}", translate("prompt.title", lang).replace("{spec}", spec).replace("{n}", &wave.to_string()))
 }
 
-/// Se `heading` é o título do pedido de uma onda — de qualquer spec e de
-/// qualquer onda —, no idioma do texto: o que [`wave_title`] monta, lido pelo
-/// mesmo molde da tradução, com a spec sem espaço e o número maior que zero.
+/// A spec e o número da onda cujo pedido abre com `heading`, no idioma do
+/// texto: o que [`wave_title`] monta, lido pelo mesmo molde da tradução, com
+/// a spec sem espaço e o número maior que zero. Nada para outro título.
 #[must_use]
-pub fn is_wave_title(heading: &str, lang: Locale) -> bool {
+pub fn wave_of_title(heading: &str, lang: Locale) -> Option<(String, u64)> {
     let template = translate("prompt.title", lang);
-    let Some((before, rest)) = template.split_once("{spec}") else { return false };
-    let Some((between, after)) = rest.split_once("{n}") else { return false };
-    let Some(inner) = heading.strip_prefix("# ").and_then(|text| text.strip_prefix(before)).and_then(|text| text.strip_suffix(after)) else {
-        return false;
-    };
-    inner.rsplit_once(between).is_some_and(|(spec, wave)| {
-        !spec.is_empty()
-            && !spec.contains(char::is_whitespace)
-            && wave.bytes().all(|byte| byte.is_ascii_digit())
-            && wave.parse::<u64>().is_ok_and(|wave| wave > 0)
-    })
+    let (before, rest) = template.split_once("{spec}")?;
+    let (between, after) = rest.split_once("{n}")?;
+    let inner = heading.strip_prefix("# ")?.strip_prefix(before)?.strip_suffix(after)?;
+    let (spec, wave) = inner.rsplit_once(between)?;
+    let wave = wave.bytes().all(|byte| byte.is_ascii_digit()).then(|| wave.parse::<u64>().ok()).flatten()?;
+    (!spec.is_empty() && !spec.contains(char::is_whitespace) && wave > 0).then(|| (spec.to_string(), wave))
 }
 
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
@@ -181,9 +176,6 @@ pub struct Execution {
     /// O esforço dos agentes que o `mustard.json` declara em `agents.effort`;
     /// vazio, o padrão da instalação ([`Execution::requested_effort`]).
     pub effort: String,
-    /// A mediana de linhas postas pelas entregas do projeto: o pedido da onda
-    /// a cita em "Como trabalhar". Sem ela, o pedido não fala de tamanho.
-    pub wave_median: Option<u64>,
 }
 
 impl Execution {
@@ -1666,12 +1658,13 @@ mod tests {
         }
     }
 
-    /// A suíte do projeto é um passo depois das tarefas e antes da entrega, e o
-    /// comando de compilar mora em "Como trabalhar": nenhum dos dois traz
-    /// texto de linguagem no molde, o comando vem da configuração do projeto.
-    /// Sem comando de testar, o passo da suíte não existe.
+    /// Depois das tarefas vem só a entrega: a suíte do projeto não é passo do
+    /// agente, nem com comando de testar declarado, porque quem a roda é a
+    /// rodada, antes do commit. O comando de compilar mora em "Como
+    /// trabalhar", vindo da configuração do projeto, sem texto de linguagem no
+    /// molde.
     #[test]
-    fn the_suite_is_a_step_after_the_tasks_and_the_build_is_in_how_to_work() {
+    fn the_request_leaves_the_suite_to_the_round_and_keeps_the_build_in_how_to_work() {
         let log = log(&[
             ("rule", json!({"title": "Uma regra", "text": "Texto.", "keys": ["r"], "example": "e", "waves": [1]})),
             ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
@@ -1694,18 +1687,12 @@ mod tests {
             [
                 "1. Leia o texto inteiro de cada item de \"O que obedecer\".",
                 "2. Faça a tarefa MSTD-TASK-0001 — Fazer",
-                "3. Rode a suíte do projeto com `make check`.",
-                "4. Grave a entrega, como diz \"O que devolver\".",
+                "3. Grave a entrega, como diz \"O que devolver\".",
             ],
             "{text}"
         );
         assert!(section(&text, "Como trabalhar").contains("- Compile com `make build`."), "{text}");
-        assert!(!section(&text, "Como trabalhar").contains("make check"), "{text}");
-        assert_eq!(text.matches("make check").count(), 1, "{text}");
-
-        m.execution = Execution { build: Some("make build".into()), ..Execution::default() };
-        let text = write(&m, Locale::PtBr);
-        assert!(!text.contains("Rode a suíte"), "{text}");
+        assert!(!text.contains("make check"), "{text}");
     }
 
     /// O molde do pedido e o do agente da onda não trazem comando de
@@ -1813,16 +1800,18 @@ mod tests {
             "Ache e leia o código pelo mapa, cada comando na sua hora",
             "Não releia o arquivo depois de editar",
             "Durante o trabalho, rode só os testes do que mudou.",
-            "A suíte inteira roda uma vez no fim, em primeiro plano",
+            "A suíte inteira e o lint são da rodada",
             "Nunca mande compilação ou teste para segundo plano",
         ] {
             assert!(!text.contains(phrase), "{phrase:?} devia ter saído do pedido: {text}");
         }
 
-        // O que sobra da execução é só o desta rodada e deste projeto.
-        for kept in ["/copia", "cargo build", "cargo test", "Onda 9", "`src/c.rs`"] {
+        // O que sobra da execução é só o desta rodada e deste projeto; a
+        // suíte inteira é da rodada, e não do pedido.
+        for kept in ["/copia", "cargo build", "Onda 9", "`src/c.rs`"] {
             assert!(text.contains(kept), "{kept:?} devia continuar no pedido: {text}");
         }
+        assert!(!text.contains("cargo test"), "{text}");
     }
 
     /// A linha do modelo do pedido da onda diz o modelo e o esforço que a
@@ -2893,10 +2882,10 @@ mod tests {
             assert!(rules.contains(&line), "{line}: {rules}");
         }
         assert!(!rules.contains("worktree") && !rules.contains("CARGO_TARGET_DIR"), "{rules}");
-        // O comando de testar é um passo de "O que fazer", e as duas linhas da
-        // entrega e o campo `commit` moram em "O que devolver".
-        assert!(!rules.contains("make test"), "{rules}");
-        assert!(wave.contains("Rode a suíte do projeto com `make test`."), "{wave}");
+        // O comando de testar não vai ao pedido da onda — a suíte é da
+        // rodada —, e as duas linhas da entrega e o campo `commit` moram em
+        // "O que devolver".
+        assert!(!wave.contains("make test"), "{wave}");
         let returns = section(&wave, t("prompt.part.return"));
         for line in [format!("- {}", t("prompt.execution.commit_field")), format!("- {}", t("prompt.execution.report_lines"))] {
             assert!(returns.contains(&line), "{line}: {returns}");
@@ -3197,9 +3186,9 @@ mod tests {
     }
 
     /// O título que o pedido da onda leva na primeira linha é o que
-    /// `wave_title` monta, e `is_wave_title` o reconhece nos dois idiomas, de
-    /// qualquer spec e de qualquer onda; o que não tem o molde do título não é
-    /// o título de uma onda.
+    /// `wave_title` monta, e `wave_of_title` o lê nos dois idiomas, de
+    /// qualquer spec e de qualquer onda, devolvendo a spec e o número dela; o
+    /// que não tem o molde do título não é o título de uma onda.
     #[test]
     fn the_title_of_a_wave_request_is_recognized_by_the_same_template_that_builds_it() {
         let log = log(&[("wave", json!({"n": 3, "text": "Onda", "criteria": [], "done_when": "a suíte passa"}))]);
@@ -3207,8 +3196,8 @@ mod tests {
             let request = write(&material(&log, 3), lang);
             let first = request.lines().next().unwrap_or_default();
             assert_eq!(first, wave_title("teste", 3, lang), "the request opens with the title");
-            assert!(is_wave_title(first, lang), "{first}");
-            assert!(is_wave_title(&wave_title("minha-obra", 128, lang), lang));
+            assert_eq!(wave_of_title(first, lang), Some(("teste".to_string(), 3)), "{first}");
+            assert_eq!(wave_of_title(&wave_title("minha-obra", 128, lang), lang), Some(("minha-obra".to_string(), 128)));
         }
         assert_eq!(wave_title("x", 7, Locale::PtBr), "# x — onda 7");
         assert_eq!(wave_title("x", 7, Locale::EnUs), "# x — wave 7");
@@ -3225,9 +3214,9 @@ mod tests {
             "# Conserte o teste da soma.",
             "## x — onda 7",
         ] {
-            assert!(!is_wave_title(not_a_title, Locale::PtBr), "{not_a_title:?}");
+            assert_eq!(wave_of_title(not_a_title, Locale::PtBr), None, "{not_a_title:?}");
         }
-        assert!(!is_wave_title("# x — wave 7", Locale::PtBr), "the title is read in the language of the text");
-        assert!(!is_wave_title("# x — onda 7", Locale::EnUs), "the title is read in the language of the text");
+        assert_eq!(wave_of_title("# x — wave 7", Locale::PtBr), None, "the title is read in the language of the text");
+        assert_eq!(wave_of_title("# x — onda 7", Locale::EnUs), None, "the title is read in the language of the text");
     }
 }
