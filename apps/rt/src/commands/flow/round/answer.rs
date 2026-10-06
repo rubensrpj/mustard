@@ -140,6 +140,10 @@ pub(crate) enum RoundRefusal {
     /// citando um teste que não existe no projeto, com o nome que faltou:
     /// nada foi comitado.
     CriterionMissingTest { code: String, name: String },
+    /// Uma das três recusas da prova de critério acima, com as ondas da
+    /// rodada que cobrem o critério: o conserto volta ao agente de cada uma
+    /// ([`super::fixes::CriterionFix`]).
+    CriterionFix(Box<super::fixes::CriterionFix>),
     /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
     /// gravar o envio, com o tamanho medido e o teto.
     TokenCap { wave: u64, tokens: u64 },
@@ -183,6 +187,7 @@ impl RoundRefusal {
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
             Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
             Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
+            Self::CriterionFix(fix) => fix.refused.reason(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
             Self::AfterWave { question, .. } => {
                 if question.is_some() { "round-after-wave-limit".into() } else { "round-after-wave".into() }
@@ -285,6 +290,7 @@ impl RoundRefusal {
             Self::CriterionMissingTest { code, name } => {
                 fill("round.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())])
             }
+            Self::CriterionFix(fix) => fix.message(lang),
             Self::TokenCap { wave, tokens } => {
                 token_cap_message(*wave, *tokens, lang).unwrap_or_default()
             }

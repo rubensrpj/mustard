@@ -30,8 +30,11 @@
 //! (`SendMessage`), depois de a conferência depois da onda recusar a volta
 //! dele, sai só com o trecho que a rodada devolveu para aquela onda; o agente
 //! de destino é reconhecido pelo título da primeira mensagem da conversa
-//! dele. A mensagem a outro agente, ou sem trecho gravado para a volta da
-//! onda, passa como veio.
+//! dele. A mensagem ao agente de uma onda cuja volta quem conduz a obra
+//! reprovou, quando a conversa dele começou antes da volta reprovada, é
+//! barrada, com o Claude Code do envio aberto ou fechado: a onda saiu dele, e
+//! o motivo vai só ao agente novo. A mensagem a outro agente, ou sem trecho
+//! gravado para a volta da onda, passa como veio.
 //!
 //! Um despacho sem bilhete a um agente do Mustard (`mustard-wave` ou
 //! `mustard-review`), num projeto com `mustard.json`, ganha no topo a linha
@@ -54,9 +57,11 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _, State};
-use mustard_core::domain::wave_prompt::{carries_project_rules, language_line, project_rules_section, wave_of_title};
+use mustard_core::domain::wave_prompt::{
+    carries_project_rules, language_line, project_rules_section, wave_of_title, wave_title,
+};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::transcript::{agent_heading, heading_of};
+use mustard_core::io::transcript::{agent_opening, heading_of};
 use mustard_core::io::wave_prompt::{project_rules, prompts, touched_files, Flight};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
@@ -184,26 +189,47 @@ fn new_agent_fix(root: &Path, spec: &str, wave: u64) -> Option<String> {
 
 /// A mensagem do condutor a um agente já aberto. Quando o destino é o agente
 /// de uma onda — a primeira mensagem da conversa dele abre com o título do
-/// pedido da onda — e a rodada gravou o trecho da conferência depois da onda
-/// para a volta dele ([`crate::commands::flow::round::fix_file`]), a mensagem
-/// sai só com esse trecho. O resto passa como veio.
+/// pedido da onda — que a reprovação de quem conduz tirou dela
+/// ([`crate::commands::flow::round::replaced_by_rejection`]), a mensagem é
+/// barrada ([`replaced_agent_reason`]): o motivo vai só ao agente novo, e a
+/// cópia nunca tem dois agentes. Quando a rodada gravou o trecho da
+/// conferência depois da onda para a volta do agente da onda
+/// ([`crate::commands::flow::round::fix_file`]), a mensagem sai só com esse
+/// trecho. O resto passa como veio.
 fn fix_message(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
     let project = crate::commands::spec_events::project(Path::new(&root));
     let lang = project.lang;
     let agent = input.tool_input.get("to").and_then(Value::as_str).unwrap_or_default();
-    let destination = input.transcript_path().and_then(|transcript| agent_heading(Path::new(transcript), agent));
-    let Some((spec, wave)) = destination.and_then(|heading| wave_of_title(&heading, lang)) else {
+    let destination = input.transcript_path().and_then(|transcript| agent_opening(Path::new(transcript), agent));
+    let Some(((spec, wave), started)) =
+        destination.and_then(|(heading, started)| Some((wave_of_title(&heading, lang)?, started)))
+    else {
         return Verdict::Allow;
     };
-    let fix = spec_log(&project.root, &spec, lang)
-        .ok()
-        .and_then(|log| crate::commands::flow::round::fix_file(&project.root, &spec, &log, wave))
+    let Ok(log) = spec_log(&project.root, &spec, lang) else { return Verdict::Allow };
+    if crate::commands::flow::round::replaced_by_rejection(&log, wave, started) {
+        return Verdict::Deny { reason: replaced_agent_reason(&project.root, &spec, &log, wave, lang) };
+    }
+    let fix = crate::commands::flow::round::fix_file(&project.root, &spec, &log, wave)
         .and_then(|file| std::fs::read_to_string(file).ok());
     match fix {
         Some(text) => replaced(input, "message", text, "subagent.fix_replaced", wave, lang),
         None => Verdict::Allow,
     }
+}
+
+/// O motivo de barrar a mensagem ao agente que a reprovação de quem conduz
+/// tirou da onda `wave` da spec `spec`: com a onda à espera do agente novo
+/// ([`crate::commands::flow::round::waves_awaiting_new_agent`]), o título que
+/// o despacha; com o agente novo já despachado, que ele recebeu o motivo.
+fn replaced_agent_reason(root: &Path, spec: &str, log: &SpecLog, wave: u64, lang: Locale) -> String {
+    let number = wave.to_string();
+    if crate::commands::flow::round::waves_awaiting_new_agent(root, spec, log).contains_key(&wave) {
+        let title = wave_title(spec, wave, lang);
+        return say("subagent.rejected_agent", lang, &[("{wave}", &number), ("{title}", &title)]);
+    }
+    say("subagent.rejected_agent_working", lang, &[("{wave}", &number)])
 }
 
 /// O campo `field` da ferramenta trocado por `text`, com o recado `note` da

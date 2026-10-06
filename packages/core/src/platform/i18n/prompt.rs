@@ -92,6 +92,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Wave {wave}'s delivery was refused, and the agent that did it has already finished. \
              The dispatch went to a new agent, with the title, the read command and the fix section."
         }
+        // A mensagem ao agente que a reprovação de quem conduz tirou da onda:
+        // ela é barrada, e o motivo vai só ao agente novo. Com a onda à espera
+        // dele, a frase diz o título que o despacha; com ele já despachado,
+        // que ele recebeu o motivo.
+        ("subagent.rejected_agent", Locale::PtBr) => {
+            "[Mustard] A mensagem foi barrada: você reprovou a volta da onda {wave}, e o agente que a \
+             fez saiu da onda. Uma mensagem a ele poria dois agentes na mesma cópia. Despache um agente \
+             novo com o título `{title}`: o Mustard junta o pedido e o seu motivo."
+        }
+        ("subagent.rejected_agent", Locale::EnUs) => {
+            "[Mustard] The message was blocked: you rejected wave {wave}'s return, and the agent that \
+             did it left the wave. A message to it would put two agents in the same copy. Dispatch a new \
+             agent with the title `{title}`: Mustard adds its request and your reason."
+        }
+        ("subagent.rejected_agent_working", Locale::PtBr) => {
+            "[Mustard] A mensagem foi barrada: você reprovou a volta da onda {wave}, e o agente que a \
+             fez saiu da onda. Uma mensagem a ele poria dois agentes na mesma cópia. O agente novo da \
+             onda já recebeu o seu motivo no despacho."
+        }
+        ("subagent.rejected_agent_working", Locale::EnUs) => {
+            "[Mustard] The message was blocked: you rejected wave {wave}'s return, and the agent that \
+             did it left the wave. A message to it would put two agents in the same copy. The wave's new \
+             agent already got your reason in its dispatch."
+        }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
@@ -592,8 +616,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            98,
-            0x5979_cc01_3e7b_ae3d,
+            100,
+            0x05ff_0779_ba6e_f212,
         );
     }
 

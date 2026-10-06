@@ -22,7 +22,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
-    build_development_version, commit_draft, commit_message, ensure_after_wave, ensure_criteria_proofs, format_round_files, git_lock,
+    build_development_version, commit_draft, commit_message, ensure_after_wave, format_round_files, git_lock,
     head, join_copies, make_commit, record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
@@ -32,7 +32,7 @@ use super::agreed::{covered_codes, join_unmet, request_agreed, settle_agreed, se
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{rehearse, Recording, Rehearsed};
-use super::{checks::ensure_checks_pass, fixes::keep_fixes, size_check::in_body};
+use super::{checks::ensure_checks_pass, fixes::keep_fixes, fixes::prove_criteria, size_check::in_body};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
@@ -347,9 +347,10 @@ fn take_returns(
     // comitado, com o disco de volta ao que era. Para o critério com prova
     // nova na entrega, roda a entregue, pela mesma referência já resolvida
     // que a gravação usa depois do commit. O critério que outra tarefa ainda
-    // por entregar também cobre espera a rodada em que ela entra.
-    let undone: Vec<u64> = report.waves.iter().flat_map(|wave| wave.undone.iter().map(|(id, _)| *id)).collect();
-    let proven = message.is_some().then(|| ensure_criteria_proofs(root, log, &waves, &undone, &checked.proofs));
+    // por entregar também cobre espera a rodada em que ela entra. A recusa
+    // grava o trecho de conserto de cada onda que cobre o critério: o
+    // conserto volta ao agente que a fez ([`prove_criteria`]).
+    let proven = message.is_some().then(|| prove_criteria(root, spec, log, &report.waves, &waves, &checked.proofs, lang));
     let proven = proven.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default();
     // A recusa do git volta o índice e o disco antes de sair, com a trava ainda
     // presa.
@@ -2611,7 +2612,8 @@ mod tests {
             .replace("{code}", "MSTD-CRIT-0001")
             .replace("{command}", &proof("soma"))
             .replace("{count}", "0");
-        assert_eq!(out["hint"], json!(expected), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.starts_with(&format!("{expected}\n\n")), "{out}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(
             current_criterion(root, "MSTD-CRIT-0001").str_field("proof"),
@@ -4279,7 +4281,8 @@ fn main() { sum_by_the_new_name(); }
         let expected = translate("round.criterion_missing_test", Locale::PtBr)
             .replace("{code}", &code)
             .replace("{name}", "teste_que_nao_existe_aqui");
-        assert_eq!(out["hint"], json!(expected), "a recusa diz o critério e o nome que faltou: {out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.starts_with(&format!("{expected}\n\n")), "a recusa diz o critério e o nome que faltou: {out}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
 
@@ -4292,7 +4295,8 @@ fn main() { sum_by_the_new_name(); }
             .replace("{code}", &code)
             .replace("{command}", zero)
             .replace("{count}", "0");
-        assert_eq!(out["hint"], json!(expected), "a recusa diz o critério e o comando: {out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.starts_with(&format!("{expected}\n\n")), "a recusa diz o critério e o comando: {out}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
     }

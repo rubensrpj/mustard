@@ -620,6 +620,8 @@ mod tests {
             ("subagent.fix_replaced", &["{wave}"][..]),
             ("subagent.new_agent_fix", &["{wave}"][..]),
             ("subagent.new_agent", &["{wave}"][..]),
+            ("subagent.rejected_agent", &["{wave}", "{title}"][..]),
+            ("subagent.rejected_agent_working", &["{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
             ("session.project_page", &["{template}", "{capabilities}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),

@@ -377,23 +377,25 @@ pub fn agent_pieces(file: &Path) -> Vec<PathBuf> {
 }
 
 /// O título da primeira mensagem do agente `agent`, despachado na sessão cuja
-/// conversa é `transcript`: a conversa dele é
-/// `<transcript sem .jsonl>/subagents/agent-<agent>.jsonl`, e a primeira
-/// mensagem mora no pedaço mais antigo ([`agent_pieces`]). Nada quando o nome
-/// do agente sairia da pasta ou a conversa dele não existe.
+/// conversa é `transcript`, e o instante em que a conversa dele começou: a
+/// conversa dele é `<transcript sem .jsonl>/subagents/agent-<agent>.jsonl`, e
+/// a primeira mensagem e o primeiro carimbo moram no pedaço mais antigo
+/// ([`agent_pieces`]). Nada quando o nome do agente sairia da pasta, a
+/// conversa dele não existe ou não traz carimbo.
 #[must_use]
-pub fn agent_heading(transcript: &Path, agent: &str) -> Option<String> {
+pub fn agent_opening(transcript: &Path, agent: &str) -> Option<(String, DateTime<Utc>)> {
     let name = format!("agent-{agent}.jsonl");
     if agent.is_empty() || Path::new(&name).file_name() != Some(std::ffi::OsStr::new(&name)) {
         return None;
     }
     let file = transcript.with_extension("").join("subagents").join(name);
-    agent_pieces(&file).first().and_then(|piece| opening(piece)).map(|(heading, _)| heading)
+    agent_pieces(&file).first().and_then(|piece| opening(piece))
 }
 
 /// O primeiro carimbo do arquivo em `path`. Lê só até achá-lo: ele vem na
 /// primeira linha da plataforma.
-fn first_stamp(path: &Path) -> Option<DateTime<Utc>> {
+#[must_use]
+pub fn first_stamp(path: &Path) -> Option<DateTime<Utc>> {
     let file = std::fs::File::open(path).ok()?;
     std::io::BufReader::new(file).lines().map_while(Result::ok).find_map(|text| {
         serde_json::from_str::<Line>(&text).ok()?.timestamp.as_deref().and_then(utc)

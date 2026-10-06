@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::wave_prompt::wave_title;
@@ -52,6 +53,18 @@ pub(super) fn rejection_of(log: &SpecLog, wave: u64) -> Option<(u64, String)> {
     let sent = log.get(*log.last_by_wave("send").get(&wave)?)?;
     let rejected = sent.fields.get("rejected")?;
     Some((rejected.get("delivered")?.as_u64()?, rejected.get("reason")?.as_str()?.to_string()))
+}
+
+/// Se o agente da onda `wave` cuja conversa começou em `started` é um que a
+/// reprovação de quem conduz a obra tirou dela: a conversa dele começou antes
+/// da volta reprovada, então foi ele, ou um agente ainda mais antigo, quem a
+/// fez. O agente novo nasce depois da reprovação e segue dono da onda, também
+/// quando a rodada recusar a volta dele. Nada sem reprovação gravada para a
+/// onda, nem quando a hora da volta reprovada não se lê.
+pub(crate) fn replaced_by_rejection(log: &SpecLog, wave: u64, started: DateTime<Utc>) -> bool {
+    let Some((back, _)) = rejection_of(log, wave) else { return false };
+    let returned = log.get(back).and_then(|event| DateTime::parse_from_rfc3339(event.at()).ok());
+    returned.is_some_and(|returned| started < returned.with_timezone(&Utc))
 }
 
 /// A volta da onda `wave` que espera a rodada: a última entrega que o agente

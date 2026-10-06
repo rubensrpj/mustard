@@ -5,10 +5,10 @@
 //! também pede o passo de término dela: é na resposta dele que o agente lê o
 //! tamanho da conversa e a ordem de seguir ou entregar.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{SpecEvent, SpecLog, COPY_STATE_FIELD};
+use mustard_core::domain::spec_events::{Hidden, SpecEvent, SpecLog, COPY_STATE_FIELD};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::tree_state::tree_state;
 use serde_json::{json, Map, Value};
@@ -60,13 +60,39 @@ pub(crate) fn mark_step_copy(root: &Path, spec: &str, draft: &mut Map<String, Va
     }
 }
 
+/// Os códigos que os campos `fields` de uma entrega citam em `undone`, como o
+/// agente os escreveu, sem as bordas.
+fn undone_cited(fields: &Map<String, Value>) -> Vec<String> {
+    let cited = fields.get("undone").and_then(Value::as_array).into_iter().flatten();
+    cited.map(|value| value.as_str().map_or_else(|| value.to_string(), |code| code.trim().to_string())).collect()
+}
+
+/// As tarefas que uma entrega anterior da onda `wave`, gravada depois da
+/// posição `since`, já devolveu sem mudar o plano: essa entrega passou pela
+/// conferência da cópia com elas devolvidas. A entrega com mudança de plano
+/// não conta, porque devolve a tarefa começada sem a conferência.
+fn given_back_before(log: &SpecLog, wave: u64, since: u64) -> BTreeSet<String> {
+    let hidden = log.hidden();
+    let replanned = |e: &SpecEvent| e.str_field("replan").is_some_and(|change| !change.trim().is_empty());
+    log.events
+        .iter()
+        .filter(|e| e.event_type == "delivered" && e.wave() == Some(wave) && e.id > since && e.returned())
+        .filter(|e| hidden.get(&e.id) == Some(&Hidden::Returned) && !replanned(e))
+        .flat_map(|e| undone_cited(&e.fields))
+        .collect()
+}
+
 /// Confere a entrega `report` da onda, com o pedido `sent` aberto e os campos
 /// `fields` que o agente gravou, contra o que ele começou. Com tarefa
 /// devolvida em `undone` e sem mudança de plano, a cópia de agora tem de ser
 /// a do último passo de término desde o pedido — sem passo nenhum, a cópia
-/// limpa —, e a recusa diz para concluir a tarefa começada. Depois, cada
-/// tarefa da onda que a entrega não devolve, e que nenhuma outra onda levou,
-/// tem de ter o passo de término dela. A cópia que não se lê não recusa nada.
+/// limpa —, e a recusa diz para concluir a tarefa começada. A entrega que
+/// conserta uma volta recusada não é conferida de novo pelas tarefas que uma
+/// entrega anterior desde o pedido já devolveu ([`given_back_before`]): a
+/// cópia mudou pelo conserto, que é parte da tarefa feita. A tarefa devolvida
+/// pela primeira vez é conferida como sempre. Depois, cada tarefa da onda que
+/// a entrega não devolve, e que nenhuma outra onda levou, tem de ter o passo
+/// de término dela. A cópia que não se lê não recusa nada.
 pub(super) fn unfinished_work(
     log: &SpecLog,
     sent: u64,
@@ -86,23 +112,19 @@ pub(super) fn unfinished_work(
         .collect();
     // A cópia mudada é conferida antes da tarefa sem passo: o passo gravado
     // de uma tarefa depois de começar outra não esconde o trabalho começado.
-    if !report.undone.is_empty()
+    let given_back = given_back_before(log, wave, since);
+    let fresh: Vec<String> =
+        report.undone.iter().map(|(_, code)| code.clone()).filter(|code| !given_back.contains(code)).collect();
+    if !fresh.is_empty()
         && report.replan.is_none()
         && let Some(now) = copy_state_now(log, wave)
     {
         let then = steps.last().and_then(|(_, step)| step.str_field(COPY_STATE_FIELD)).unwrap_or_default();
         if now != then {
-            let undone = report.undone.iter().map(|(_, code)| code.clone()).collect();
-            return Err(RoundRefusal::StartedWorkUndone { wave, tasks: undone });
+            return Err(RoundRefusal::StartedWorkUndone { wave, tasks: fresh });
         }
     }
-    let cited: Vec<String> = fields
-        .get("undone")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|value| value.as_str().map_or_else(|| value.to_string(), |code| code.trim().to_string()))
-        .collect();
+    let cited = undone_cited(fields);
     let missing: Vec<String> = tasks
         .iter()
         .filter(|(code, task)| task.wave() == Some(wave) && !cited.contains(code))
@@ -257,6 +279,66 @@ mod tests {
         restore(&copy, "src/a.rs");
         let wrote = returned_unread(root, body);
         assert_eq!(wrote["ok"], json!(true), "the clean copy gives both tasks back: {wrote}");
+    }
+
+    /// A onda entrega a primeira tarefa e devolve a segunda; a rodada recusa
+    /// a volta, e o agente conserta o arquivo da primeira e entrega de novo,
+    /// com a mesma tarefa devolvida e sem passo novo. O conserto é parte da
+    /// tarefa feita: a entrega grava, e um segundo conserto também.
+    #[test]
+    fn the_fix_of_a_refused_return_gives_back_the_same_task_without_a_new_step() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = two_task_wave(root);
+        edit(&copy, "src/a.rs", "a soma saiu");
+        step(root, "MSTD-TASK-0001", json!({}));
+        let body = json!({"wave": 1, "text": "A soma saiu; o total ficou.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "undone": ["MSTD-TASK-0002"]});
+        assert_eq!(returned_unread(root, body.clone())["ok"], json!(true));
+
+        for fix in ["a soma conserta o arredondamento", "a soma conserta o sinal"] {
+            edit(&copy, "src/a.rs", fix);
+            let fixed = returned_unread(root, body.clone());
+            assert_eq!(fixed["ok"], json!(true), "{fix}: {fixed}");
+        }
+    }
+
+    /// O conserto só dispensa a conferência das tarefas que uma entrega
+    /// anterior devolveu passando por ela. A tarefa dada como feita antes e
+    /// devolvida agora, com a cópia mudada, recusa citando só ela. E a
+    /// tarefa devolvida antes por uma mudança de plano, que pulou a
+    /// conferência, recusa na entrega seguinte sem a mudança, com o trabalho
+    /// começado na cópia.
+    #[test]
+    fn only_a_task_given_back_by_a_checked_delivery_skips_the_copy_check_of_the_fix() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = two_task_wave(root);
+        edit(&copy, "src/a.rs", "a soma saiu");
+        step(root, "MSTD-TASK-0001", json!({}));
+        let first = json!({"wave": 1, "text": "A soma saiu; o total ficou.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "undone": ["MSTD-TASK-0002"]});
+        assert_eq!(returned_unread(root, first)["ok"], json!(true));
+        edit(&copy, "src/a.rs", "a soma conserta o sinal");
+        let both = json!({"wave": 1, "text": "Nada saiu.", "undone": ["MSTD-TASK-0001", "MSTD-TASK-0002"]});
+        let refused = returned_unread(root, both);
+        assert_eq!(refused["reason"], json!("delivery-started-work-undone"), "{refused}");
+        let expected = translate("round.started_work_undone", Locale::PtBr).replace("{wave}", "1").replace("{tasks}", "MSTD-TASK-0001");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = two_task_wave(root);
+        edit(&copy, "src/a.rs", "a soma saiu");
+        step(root, "MSTD-TASK-0001", json!({}));
+        edit(&copy, "src/b.rs", "o total não fecha");
+        let replanned = json!({"wave": 1, "text": "O total não fecha com o plano.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "replan": "O total pede a tabela nova antes.", "undone": ["MSTD-TASK-0002"]});
+        assert_eq!(returned_unread(root, replanned)["ok"], json!(true));
+        let given_back = json!({"wave": 1, "text": "A soma saiu; o total ficou.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "undone": ["MSTD-TASK-0002"]});
+        let refused = returned_unread(root, given_back);
+        assert_eq!(refused["reason"], json!("delivery-started-work-undone"), "{refused}");
     }
 
     /// A mudança de plano devolve a tarefa começada sem a conferência da

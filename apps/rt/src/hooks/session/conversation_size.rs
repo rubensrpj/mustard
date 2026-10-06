@@ -30,8 +30,10 @@
 //!   comando de compilar do projeto, cada um sem outro comando na mesma
 //!   linha. Enquanto a rodada espera o conserto da volta que recusou — o
 //!   trecho de conserto dela está em disco —, a trava fica aberta, e a
-//!   entrega nova a fecha de novo. Antes da ordem nada é recusado por
-//!   tamanho, nem a conversa acima do limite no meio de uma tarefa. O resumo
+//!   entrega nova a fecha de novo. A trava do agente que a reprovação de quem
+//!   conduz tirou da onda segue fechada: o conserto é do agente novo. Antes
+//!   da ordem nada é recusado por tamanho, nem a conversa acima do limite no
+//!   meio de uma tarefa. O resumo
 //!   é o salto do tamanho entre a resposta que chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
 //!   o comando que o pedido da onda manda — e a resposta seguinte, somado
 //!   quando o agente lê mais de um; sem resumo lido, conta a conversa inteira.
@@ -58,7 +60,7 @@ use mustard_core::domain::mustard_id;
 use mustard_core::domain::spec_events::type_spec;
 use mustard_core::domain::wave_prompt::wave_of_title;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::transcript::{agent_pieces, heading_of};
+use mustard_core::io::transcript::{agent_pieces, first_stamp, heading_of};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{translate, ClaudePaths};
@@ -513,13 +515,22 @@ fn passes_after_the_order(input: &HookInput, build: Option<&str>) -> bool {
 /// pedido da onda no idioma `lang`, e o trecho de conserto da volta pendente
 /// dela ([`fix_file`](crate::commands::flow::round::fix_file)) está em disco,
 /// na spec de `root`. A entrega nova muda o nome do trecho, e a resposta
-/// volta a ser `false` sozinha, sem marca a apagar.
+/// volta a ser `false` sozinha, sem marca a apagar. O agente que a
+/// reprovação de quem conduz tirou da onda
+/// ([`replaced_by_rejection`](crate::commands::flow::round::replaced_by_rejection)),
+/// pelo primeiro carimbo da conversa dele, não espera conserto nenhum: o
+/// conserto é do agente novo.
 fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
     let pieces = agent_transcript(input).map(|transcript| agent_pieces(&transcript)).unwrap_or_default();
-    let Some((spec, wave)) = pieces.first().and_then(|first| wave_opened(first, lang)) else { return false };
+    let Some(first) = pieces.first() else { return false };
+    let Some((spec, wave)) = wave_opened(first, lang) else { return false };
     let root = store::spec_root(root);
-    let log = store::spec_file(&root, &spec).ok().and_then(|path| store::read(&path).ok().flatten());
-    log.and_then(|log| crate::commands::flow::round::fix_file(&root, &spec, &log, wave)).is_some_and(|file| file.is_file())
+    let Some(log) = store::spec_file(&root, &spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
+        return false;
+    };
+    let replaced =
+        first_stamp(first).is_some_and(|started| crate::commands::flow::round::replaced_by_rejection(&log, wave, started));
+    !replaced && crate::commands::flow::round::fix_file(&root, &spec, &log, wave).is_some_and(|file| file.is_file())
 }
 
 /// A recusa ao agente de onda depois da ordem de entregar: a trava fechada
@@ -528,7 +539,8 @@ fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
 /// fora de um agente de onda, antes da ordem — por maior que a conversa
 /// esteja —, para o que passa e enquanto a rodada espera o conserto da volta
 /// que recusou ([`awaits_its_fix`]): quem conserta é o agente que fez a onda,
-/// mesmo acima do limite, e a entrega nova fecha a trava de novo.
+/// mesmo acima do limite, e a entrega nova fecha a trava de novo. O agente
+/// que a reprovação de quem conduz tirou da onda segue travado.
 fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
     if !input.is_subagent() {
         return None;

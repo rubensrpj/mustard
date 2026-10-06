@@ -1360,20 +1360,152 @@ fn new_agent_line() -> String {
         .replace("{title}", &title)
 }
 
+/// O gancho de antes da ferramenta com `payload`, pelo binário: a resposta
+/// dele, como o harness a lê, ou `null` quando a chamada passa sem resposta.
+fn before_tool(project: &Project, payload: &Value) -> Value {
+    let out = project.command(&["on", "PreToolUse"], &payload.to_string());
+    assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    if out.stdout.trim_ascii().is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
 /// O despacho de um agente de onda pelo título do pedido da onda 1, pelo
 /// gancho de verdade: a resposta dele, como o harness a lê.
 fn dispatch_new_agent(project: &Project) -> Value {
     let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
-    let payload = json!({
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Agent",
-        "tool_input": {"subagent_type": "mustard-wave", "description": "onda 1", "prompt": title},
-        "session_id": SESSION,
-        "cwd": project.root.to_string_lossy(),
-    });
-    let out = project.command(&["on", "PreToolUse"], &payload.to_string());
-    assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+    before_tool(
+        project,
+        &json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {"subagent_type": "mustard-wave", "description": "onda 1", "prompt": title},
+            "session_id": SESSION,
+            "cwd": project.root.to_string_lossy(),
+        }),
+    )
+}
+
+/// O começo da conversa do agente que fez a volta reprovada nas provas: bem
+/// antes da volta que ele gravou.
+const OLD_AGENT_START: &str = "2026-01-10T21:54:28.200Z";
+
+/// O instante de agora, como o Claude Code o carimba na conversa.
+fn now_stamp() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// A conversa principal de quem conduz a obra nas provas do agente antigo:
+/// os agentes que ela despachou moram ao lado, em `sessao/subagents/`.
+fn conductor_transcript(project: &Project) -> PathBuf {
+    project.home.join("sessoes").join("-projeto").join("sessao.jsonl")
+}
+
+/// A conversa do agente `agent` da onda 1, despachado na sessão de
+/// [`conductor_transcript`]: abre com o título do pedido da onda e começa no
+/// instante `started`.
+fn wave_agent(project: &Project, agent: &str, started: &str) {
+    let dir = conductor_transcript(project).with_extension("").join("subagents");
+    std::fs::create_dir_all(&dir).expect("the agents' folder");
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+    let opening = format!("{title}\n\nmustard-rt run read request-1 --root {} --spec {SPEC}", project.root.display());
+    let line = json!({"type": "user", "timestamp": started, "message": {"role": "user", "content": opening}});
+    std::fs::write(dir.join(format!("agent-{agent}.jsonl")), format!("{line}\n")).expect("the agent's conversation");
+}
+
+/// A mensagem de quem conduz ao agente `agent`, pelo gancho de verdade: a
+/// resposta dele, como o harness a lê.
+fn message_to(project: &Project, agent: &str) -> Value {
+    before_tool(
+        project,
+        &json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "tool_input": {"to": agent, "summary": "conserto", "message": "Conserte a saudação, por favor."},
+            "session_id": SESSION,
+            "transcript_path": conductor_transcript(project).to_string_lossy(),
+            "cwd": project.root.to_string_lossy(),
+        }),
+    )
+}
+
+/// O agente `agent` recebeu a ordem de entregar: a marca que o fim de tarefa
+/// grava quando a conversa dele passa do limite, e que fecha a trava.
+fn ordered_to_deliver(project: &Project, agent: &str) {
+    let marks = project.root.join(".claude").join(".session");
+    std::fs::create_dir_all(&marks).expect("the marks' folder");
+    std::fs::write(marks.join(format!("size-deliver-agent-{agent}")), "200000").expect("the order to deliver");
+}
+
+/// O agente `agent` roda `command` no terminal, pelo gancho de verdade: a
+/// resposta dele, como o harness a lê.
+fn agent_runs(project: &Project, agent: &str, command: &str) -> Value {
+    before_tool(
+        project,
+        &json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "session_id": SESSION,
+            "agent_id": agent,
+            "transcript_path": conductor_transcript(project).to_string_lossy(),
+            "cwd": project.root.to_string_lossy(),
+        }),
+    )
+}
+
+/// O motivo da recusa na resposta `out` do gancho; a resposta que não recusa
+/// derruba o teste.
+fn denial(out: &Value) -> String {
+    assert_eq!(out.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{out}");
+    out.pointer("/hookSpecificOutput/permissionDecisionReason").and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// Com o Claude Code do envio aberto, a mensagem de quem conduz ao agente
+/// que fez a volta reprovada é barrada, antes do despacho do agente novo e
+/// depois dele: a onda saiu daquele agente, e a cópia nunca tem dois agentes.
+/// A mensagem ao agente novo passa, só com o motivo.
+#[test]
+fn a_message_to_the_agent_of_a_rejected_return_is_refused_and_the_new_agent_gets_it() {
+    let (project, _) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+
+    let waiting = translate("subagent.rejected_agent", Locale::PtBr).replace("{wave}", "1").replace("{title}", &title);
+    assert_eq!(denial(&message_to(&project, "antigo")), waiting, "before the new agent");
+
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    keep_sent(&project, &[1]);
+    wave_agent(&project, "novo", &now_stamp());
+    let working = translate("subagent.rejected_agent_working", Locale::PtBr).replace("{wave}", "1");
+    assert_eq!(denial(&message_to(&project, "antigo")), working, "after the new agent");
+
+    let fix = translate("round.rejected_fix", Locale::PtBr).replace("{wave}", "1").replace("{reason}", REJECTION);
+    let to_new = message_to(&project, "novo");
+    assert_eq!(to_new.pointer("/hookSpecificOutput/updatedInput/message"), Some(&json!(fix)), "{to_new}");
+}
+
+/// Com o Claude Code do envio aberto, o agente que fez a volta reprovada e
+/// recebeu a ordem de entregar segue travado depois da reprovação: o motivo
+/// em disco não reabre a trava dele. O agente novo, com a mesma ordem, tem a
+/// trava aberta para consertar.
+#[test]
+fn the_lock_of_the_agent_of_a_rejected_return_stays_closed() {
+    let (project, _) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    ordered_to_deliver(&project, "antigo");
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    keep_sent(&project, &[1]);
+    wave_agent(&project, "novo", &now_stamp());
+    ordered_to_deliver(&project, "novo");
+
+    let locked = translate("conversation_size.wave_locked", Locale::PtBr).replace("{build}", "");
+    assert_eq!(denial(&agent_runs(&project, "antigo", "ls src")), locked);
+    let new_agent = agent_runs(&project, "novo", "ls src");
+    assert_ne!(new_agent.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{new_agent}");
 }
 
 /// A rodada com a linha da reprovação deixa a volta fora do commit e a cópia
