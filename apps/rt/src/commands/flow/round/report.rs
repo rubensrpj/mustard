@@ -22,7 +22,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::{keep_fixes, RoundRefusal};
 use super::commit::{
-    build_development_version, commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
+    build_development_version, commit_draft, commit_message, ensure_after_wave, ensure_criteria_proofs, format_round_files, git_lock,
     head, join_copies, make_commit, record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
@@ -32,7 +32,7 @@ use super::agreed::{covered_codes, join_unmet, request_agreed, settle_agreed, se
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{rehearse, Recording, Rehearsed};
-use super::size_check::in_body;
+use super::{checks::ensure_checks_pass, size_check::in_body};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
@@ -326,11 +326,12 @@ fn take_returns(
         }));
     }
     // O repositório principal compila antes do commit, com o mesmo comando
-    // que o pedido de cada onda já ensina, e passa pela conferência depois da
-    // onda (importações contra a regra, restos e órfãos): a recusa de uma ou
-    // de outra volta o disco ao que era e nada é comitado; o que só avisa
-    // segue nos avisos.
-    let after = message.is_some().then(|| ensure_builds(root).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
+    // que o pedido de cada onda já ensina, passa pelo lint e pela suíte
+    // inteira que o projeto declara, e pela conferência depois da onda
+    // (importações contra a regra, restos e órfãos): a recusa de qualquer uma
+    // volta o disco ao que era e nada é comitado; o que só avisa segue nos
+    // avisos.
+    let after = message.is_some().then(|| ensure_checks_pass(root).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
     let (found, sizes) = after
         .transpose()
         .inspect_err(|refused| {
@@ -2369,6 +2370,58 @@ mod tests {
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "// principal\nfn one() {}\n// onda 1\n");
         assert_eq!(delivered_count(root), 1);
+    }
+
+    /// O lint e a suíte inteira que o projeto declara rodam no repositório
+    /// principal antes do commit. O que cai recusa com o comando e o fim da
+    /// saída — o começo dela fica de fora —, nada é comitado, o disco volta ao
+    /// que era e a entrega fica por assumir. Com os dois verdes, a mesma volta
+    /// entra no commit, cada um rodado uma vez. A resposta que despacha diz a
+    /// quem conduz que a suíte e o lint são da rodada.
+    #[test]
+    fn a_red_lint_or_suite_refuses_the_commit_with_the_end_of_its_output_until_both_pass() {
+        let red = "echo comeco-da-saida; i=0; while [ $i -lt 60 ]; do i=$((i+1)); echo passo $i; done; \
+                   echo 'o teste soma caiu'; exit 1";
+        let green = |mark: &str| format!("echo rodou >> {mark}");
+        let runs = |root: &Path, mark: &str| std::fs::read_to_string(root.join(mark)).unwrap_or_default().lines().count();
+        for (key, reason, text) in
+            [("lintCommand", "round-lint-failed", "round.lint_failed"), ("testCommand", "round-tests-failed", "round.tests_failed")]
+        {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+            let mut config = json!({"lintCommand": green("lint-ran"), "testCommand": green("suite-ran")});
+            config[key] = json!(red);
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            let sent = round(root, "x", None);
+            let checks = translate("round.report.checks", Locale::PtBr);
+            assert!(sent["next"].as_str().unwrap_or_default().ends_with(checks), "{key}: {sent}");
+
+            std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn one() {}\n// onda 1\n").unwrap();
+            let report = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a onda 1 sai"});
+            assert_eq!(returned(root, report)["ok"], json!(true));
+            let head_before = git_text(root, &["rev-parse", "HEAD"]);
+            let refused = round(root, "x", None);
+            assert_eq!(refused["reason"], json!(reason), "{key}: {refused}");
+            let filled = translate(text, Locale::PtBr).replace("{command}", red);
+            let (before, _) = filled.split_once("{output}").unwrap();
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            let output = hint.strip_prefix(before).unwrap_or_else(|| panic!("{key}: {hint}"));
+            assert!(output.ends_with("o teste soma caiu") && !output.contains("comeco-da-saida"), "só o fim da saída: {hint}");
+            assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {refused}");
+            assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n", "{refused}");
+            assert_eq!(delivered_count(root), 0, "{refused}");
+
+            config[key] = json!(green(if key == "lintCommand" { "lint-ran" } else { "suite-ran" }));
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            let (lint_before, suite_before) = (runs(root, "lint-ran"), runs(root, "suite-ran"));
+            let went = round(root, "x", None);
+            assert_eq!(went["ok"], json!(true), "{key}: {went}");
+            assert_ne!(git_text(root, &["rev-parse", "HEAD"]), head_before, "{went}");
+            assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n// onda 1\n");
+            assert_eq!(delivered_count(root), 1, "{went}");
+            assert_eq!((runs(root, "lint-ran") - lint_before, runs(root, "suite-ran") - suite_before), (1, 1), "{went}");
+        }
     }
 
     /// Duas ondas, cada uma na sua cópia e no seu arquivo, a primeira com um

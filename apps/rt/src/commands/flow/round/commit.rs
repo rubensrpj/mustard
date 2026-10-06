@@ -804,21 +804,6 @@ pub(super) fn real_changed_files(root: &Path, log: &SpecLog, wave: u64) -> Optio
     Some(copy_changed(&copy, &subs))
 }
 
-/// Compila o repositório principal com o comando de compilação do projeto, o
-/// mesmo que o pedido de cada onda já ensina; sem ele declarado, nada é
-/// rodado, porque não há como compilar sem saber o comando. A rodada não
-/// comita nada quando a compilação falha.
-pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
-    let Some(build) = mustard_core::ProjectConfig::load(root).commands().build else {
-        return Ok(());
-    };
-    let out = crate::commands::review::qa_run::run_command(&build, root);
-    if out.result == "pass" {
-        return Ok(());
-    }
-    Err(RoundRefusal::BuildFailed { command: build, output: out.output })
-}
-
 /// Um achado da conferência depois da onda, da onda `wave`: a frase pronta e
 /// se ele recusa a volta ou só avisa.
 pub(super) struct Finding {

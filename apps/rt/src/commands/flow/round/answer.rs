@@ -123,8 +123,11 @@ pub(crate) enum RoundRefusal {
     RejectedCommitted { wave: u64, sha: String },
     /// O git recusou o commit.
     Git { detail: String },
-    /// O repositório principal não compilou antes do commit da rodada.
-    BuildFailed { command: String, output: String },
+    /// Um comando que o projeto declara — a compilação, o lint ou a suíte
+    /// inteira ([`super::checks::Check`]) — caiu no repositório principal
+    /// antes do commit da rodada, com o comando e o fim da saída: nada foi
+    /// comitado.
+    CheckFailed { check: super::checks::Check, command: String, output: String },
     /// A prova de um critério que as ondas deste relatório cobrem não
     /// executou ou não passou: nada foi comitado.
     CriterionProofFailed { code: String, command: String, output: String },
@@ -175,7 +178,7 @@ impl RoundRefusal {
             Self::RejectedWithoutReturn { .. } => "round-rejected-without-return".into(),
             Self::RejectedCommitted { .. } => "round-rejected-committed".into(),
             Self::Git { .. } => "git-refused".into(),
-            Self::BuildFailed { .. } => "round-build-failed".into(),
+            Self::CheckFailed { check, .. } => check.reason().into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
             Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
             Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
@@ -269,8 +272,8 @@ impl RoundRefusal {
                 fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())])
             }
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
-            Self::BuildFailed { command, output } => {
-                fill("round.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
+            Self::CheckFailed { check, command, output } => {
+                fill(check.message_key(), &[("{command}", command.clone()), ("{output}", output.clone())])
             }
             Self::CriterionProofFailed { code, command, output } => fill(
                 "round.criterion_proof_failed",
@@ -990,7 +993,7 @@ pub(super) fn run_entered_round(
     // com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
     // quem confere o trabalho é o agente de teste dedicado que o fechamento
     // pede, uma vez por obra.
-    let report_back = translate("round.report", lang);
+    let report_back = super::checks::report_back(root, lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
         format!("{} {report_back}", translate("round.next", lang))
@@ -2501,8 +2504,9 @@ mod tests {
         assert_eq!(waves_in(&second, "dispatch"), vec![1], "a onda 2 não usa a vaga da órfã: {second}");
     }
 
-    /// O pedido da onda nova traz os comandos do projeto e a outra onda que
-    /// sai junto, com o arquivo dela. O do conserto traz também o veredito,
+    /// O pedido da onda nova traz o comando de compilar do projeto — o de
+    /// testar não, porque a suíte é da rodada — e a outra onda que sai junto,
+    /// com o arquivo dela. O do conserto traz também o veredito,
     /// a entrega anterior e a decisão gravada depois do envio. Entregue o
     /// conserto, a rodada não pede revisão nenhuma dele: a resposta não traz
     /// o campo `reviews`, e a onda 1 sai da fila sem veredito novo.
@@ -2512,15 +2516,15 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make","testCommand":"make test"}"#).unwrap();
-        // `make` é o comando de compilação de verdade agora: a rodada roda
-        // ele antes de comitar, e sem um Makefile de verdade o teste
-        // pegaria a recusa de build em vez do fluxo que ele testa.
-        std::fs::write(root.join("Makefile"), "default:\n\t@true\n").unwrap();
+        // `make` e `make test` rodam de verdade: a rodada compila e roda a
+        // suíte antes de comitar, e sem um Makefile de verdade o teste
+        // pegaria a recusa de uma delas em vez do fluxo que ele testa.
+        std::fs::write(root.join("Makefile"), "default:\n\t@true\ntest:\n\t@true\n").unwrap();
         let first = request_of(&round(root, "x", None), 1);
         for line in ["- Compile com `make`.", "  - Onda 2: `src/b.rs`"] {
             assert!(first.contains(line), "{line}: {first}");
         }
-        assert!(first.lines().any(|l| l == "2. Rode a suíte do projeto com `make test`."), "{first}");
+        assert!(!first.contains("make test"), "{first}");
         assert!(!first.contains(translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));

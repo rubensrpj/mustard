@@ -1388,9 +1388,9 @@ mod tests {
     /// A leitura obrigatória de uma tarefa que aponta uma função
     /// (`caminho#função`) faz a linha da tarefa dizer o que ler antes, e
     /// manda ler só aquela função, não o arquivo inteiro. As frases de achar
-    /// e ler o código pelo mapa, rodar só os testes do que mudou e a suíte
-    /// inteira uma vez no fim, em primeiro plano, saíram do catálogo —
-    /// moraram para o molde do agente — e não voltam a aparecer no pedido.
+    /// e ler o código pelo mapa, rodar só os testes do que mudou e deixar a
+    /// suíte inteira e o lint para a rodada saíram do catálogo — moraram para
+    /// o molde do agente — e não voltam a aparecer no pedido.
     #[test]
     fn the_wave_request_asks_to_read_by_excerpt() {
         let dir = tempdir().unwrap();
@@ -1405,7 +1405,7 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(built[0].text.contains("   - Leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
-        for phrase in ["Ache e leia o código pelo mapa", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
+        for phrase in ["Ache e leia o código pelo mapa", "só os testes do que mudou", "A suíte inteira e o lint são da rodada"] {
             assert!(!built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
         }
     }
@@ -2900,7 +2900,9 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let t = |key: &str| crate::platform::i18n::translate(key, lang);
             let since = t("prompt.part.since_verdict");
-            let whole_suite = t("prompt.step.suite").replace("{command}", "make test");
+            // O comando de testar aparece uma vez só, na linha que diz que a
+            // suíte passou no fechamento: nenhum outro trecho manda rodá-la.
+            let whole_suite_once = |text: &str| text.matches("make test").count() == 1;
             let build = format!("- {}", t("prompt.execution.build").replace("{command}", "make"));
 
             let last = final_review(root, "teste", &again, lang).text;
@@ -2918,13 +2920,13 @@ mod tests {
             assert!(last.contains(t("prompt.final.look_again")) && !last.contains(t("prompt.final.look")), "{last}");
             let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "bbb2222");
             assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
-            assert!(!last.contains(&whole_suite), "a revisão não roda a suíte inteira: {last}");
+            assert!(whole_suite_once(&last), "a revisão não roda a suíte inteira: {last}");
 
             for (what, log) in [("primeira", reviewed_again(root, None)), ("aprovada", reviewed_again(root, Some("approved")))] {
                 let first = final_review(root, "teste", &log, lang).text;
                 assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{what}: {first}");
                 assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{what}: {first}");
-                assert!(!first.contains(&whole_suite), "{what}: a revisão não roda a suíte inteira: {first}");
+                assert!(whole_suite_once(&first), "{what}: a revisão não roda a suíte inteira: {first}");
                 let sha = if log.max_id() > 7 { "bbb2222" } else { "aaa1111" };
                 let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
                 assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");

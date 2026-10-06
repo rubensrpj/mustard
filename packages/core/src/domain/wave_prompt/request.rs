@@ -158,12 +158,12 @@ impl Writer<'_> {
     }
 
     /// "O que fazer": o conserto, quando a onda volta por reprovação, e os
-    /// passos numerados — ler o que obedecer, cada tarefa, a suíte do projeto
-    /// e a entrega. Sob cada tarefa vêm, recuados, o que ela atende, a ordem
-    /// de ler a tarefa, os arquivos, o que ler antes, quem testa e o padrão
-    /// do projeto.
+    /// passos numerados — ler o que obedecer, cada tarefa e a entrega. Sob
+    /// cada tarefa vêm, recuados, o que ela atende, a ordem de ler a tarefa,
+    /// os arquivos, o que ler antes, quem testa e o padrão do projeto. A
+    /// suíte inteira do projeto não é passo do agente: quem a roda, com o
+    /// lint, é a rodada, antes do commit.
     fn to_do(&self, out: &mut String, listing: &Listing) {
-        let m = self.material;
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.do"));
         if !listing.fix.is_empty() {
             let _ = writeln!(out, "{}\n", self.t("prompt.fix.wave"));
@@ -185,9 +185,6 @@ impl Writer<'_> {
         for at in &listing.steps {
             let pad = step(out, &self.t("prompt.step.task").replace("{item}", &self.item_tail(at.task)));
             self.task_lines(out, at, &pad);
-        }
-        if let Some(command) = &m.execution.test {
-            step(out, &self.t("prompt.step.suite").replace("{command}", command));
         }
         step(out, &self.t("prompt.step.deliver").replace("{part}", self.t("prompt.part.return")));
         out.push('\n');

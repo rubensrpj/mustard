@@ -190,8 +190,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.step.files", Locale::EnUs) => "Files: {files}",
         ("prompt.step.read_before", Locale::PtBr) => "Leia antes: {hints}",
         ("prompt.step.read_before", Locale::EnUs) => "Read before: {hints}",
-        ("prompt.step.suite", Locale::PtBr) => "Rode a suíte do projeto com `{command}`.",
-        ("prompt.step.suite", Locale::EnUs) => "Run the project's suite with `{command}`.",
         ("prompt.step.deliver", Locale::PtBr) => "Grave a entrega, como diz \"{part}\".",
         ("prompt.step.deliver", Locale::EnUs) => "Record the delivery, as \"{part}\" says.",
         // Sem lição para os arquivos da onda, a seção diz isso em vez de
@@ -590,8 +588,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            99,
-            0x1fc9_2396_ab8a_4494,
+            98,
+            0x83e3_277a_81e5_d281,
         );
     }
 
@@ -656,7 +654,6 @@ mod tests {
                 "prompt.step.file",
                 "prompt.step.files",
                 "prompt.step.read_before",
-                "prompt.step.suite",
                 "prompt.step.deliver",
                 "prompt.obey.no_lessons",
                 "prompt.return.loose",

@@ -979,22 +979,22 @@ fn the_wave_and_review_agents_search_as_always_and_say_mustard_answers_in_place(
 }
 
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
-/// reler depois de editar, a suíte inteira uma vez no fim pelo `rtk`, nada
-/// em segundo plano, não comitar nem usar `git add`, rodar cada comando de
-/// dentro da cópia — moram só no molde do agente, escritas à mão e fora do
-/// catálogo de textos, e o molde da onda e do revisor levam as mesmas
-/// palavras, nos dois idiomas. Nenhum dos dois fala mais de pasta de
-/// compilação: a cópia é a vaga fixa, com a compilação dentro. Rodar só os testes
-/// do que mudou é da onda; o revisor roda os testes que lê e os que seus
-/// cortes derrubam e, na revisão final, não repete a suíte que o fechamento
-/// rodou do `testCommand`.
+/// reler depois de editar, nada em segundo plano, não comitar nem usar `git
+/// add`, rodar cada comando de dentro da cópia — moram só no molde do agente,
+/// escritas à mão e fora do catálogo de textos, e o molde da onda e do revisor
+/// levam as mesmas palavras, nos dois idiomas. Nenhum dos dois fala mais de
+/// pasta de compilação: a cópia é a vaga fixa, com a compilação dentro. Rodar
+/// só os testes do que mudou é da onda, que deixa a suíte inteira e o lint
+/// para a rodada e não roda mais a suíte no fim; o revisor roda os testes que
+/// lê e os que seus cortes derrubam, a suíte inteira uma vez no fim pelo
+/// `rtk` e, na revisão final, não repete a suíte que o fechamento rodou do
+/// `testCommand`.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     let pt_br = [
         "Ache e leia o código pelo mapa, cada comando na sua hora",
         "Leia com faixa de linhas o que o `summary` mostrou",
         "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
-        "A suíte inteira roda uma vez no fim, em primeiro plano",
         "Nunca mande compilação ou teste para segundo plano",
         "Não comite e não use `git add`: o commit é da rodada",
         "Rode cada comando de dentro da cópia",
@@ -1004,7 +1004,6 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
         "Find and read the code through the map, each command at its moment",
         "Read with a line range what `summary` showed",
         "Do not reread the file after editing: the edit already shows the changed excerpt",
-        "The whole suite runs once at the end, in the foreground",
         "Never send a build or test to the background",
         "Do not commit and do not use `git add`: the commit belongs to the round",
         "Run every command from inside the copy",
@@ -1024,28 +1023,36 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
             }
         }
     }
-    for (lang, wave_only, reviewer_runs, close_ran) in [
+    for (lang, wave_only, round_owns, reviewer_runs, once_at_the_end, close_ran) in [
         (
             "pt-BR",
             "Durante o trabalho, rode só os testes do que mudou",
+            "A suíte inteira e o lint são da rodada, que os roda antes do commit",
             "Rode os testes que você lê e os que seus cortes derrubam",
+            "A suíte inteira roda uma vez no fim, em primeiro plano",
             "o fechamento já a rodou",
         ),
         (
             "en-US",
             "During the work, run only the tests of what changed",
+            "The whole suite and the lint belong to the round, which runs them before the commit",
             "Run the tests you read and the ones your cuts bring down",
+            "The whole suite runs once at the end, in the foreground",
             "the close already ran it",
         ),
     ] {
-        assert!(template(lang, "wave").contains(wave_only), "the {lang} wave agent lost `{wave_only}`");
+        let wave = template(lang, "wave");
+        for phrase in [wave_only, round_owns] {
+            assert!(wave.contains(phrase), "the {lang} wave agent lost `{phrase}`");
+        }
+        assert!(!wave.contains(once_at_the_end), "the {lang} wave agent still runs the whole suite at the end");
         let review = template(lang, "review");
         assert!(!review.contains(wave_only), "the {lang} reviewer still runs only the tests of what changed");
         let suite = review
             .lines()
             .find(|line| line.contains("`testCommand`"))
             .unwrap_or_else(|| panic!("the {lang} reviewer reruns the suite the close already ran"));
-        for phrase in [reviewer_runs, "`rtk`", close_ran] {
+        for phrase in [reviewer_runs, once_at_the_end, "`rtk`", close_ran] {
             assert!(suite.contains(phrase), "the {lang} reviewer's suite line lost `{phrase}`: {suite}");
         }
     }

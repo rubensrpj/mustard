@@ -123,6 +123,7 @@
 mod agreed;
 mod answer;
 mod backlog;
+mod checks;
 mod commit;
 mod copy_check;
 mod finish_check;

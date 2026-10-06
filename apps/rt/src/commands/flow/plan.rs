@@ -918,7 +918,6 @@ mod tests {
             let text = &built[0].text;
             assert!(!text.contains(mustard_core::BUILD_COMMAND_FALLBACK), "{text}");
             assert_eq!(text.contains("Compile com"), missing != "buildCommand", "{text}");
-            assert_eq!(text.contains("Rode a suíte do projeto com"), missing != "testCommand", "{text}");
         }
     }
 

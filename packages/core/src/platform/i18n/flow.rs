@@ -650,6 +650,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.build_failed", Locale::EnUs) => {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
         }
+        // A suíte e o lint que o projeto declara, rodados pela rodada no
+        // repositório principal antes do commit, com o fim da saída.
+        ("round.tests_failed", Locale::PtBr) => {
+            "A suíte do projeto (`{command}`) não passou no repositório principal, e a rodada não \
+             comitou nada: {output}"
+        }
+        ("round.tests_failed", Locale::EnUs) => {
+            "The project suite (`{command}`) did not pass in the main repository, and the round \
+             committed nothing: {output}"
+        }
+        ("round.lint_failed", Locale::PtBr) => {
+            "O lint do projeto (`{command}`) não passou no repositório principal, e a rodada não \
+             comitou nada: {output}"
+        }
+        ("round.lint_failed", Locale::EnUs) => {
+            "The project lint (`{command}`) did not pass in the main repository, and the round \
+             committed nothing: {output}"
+        }
         // A conferência depois da onda, antes do commit: as importações novas
         // contra o padrão do projeto e os restos do que a onda tirou.
         ("round.after_wave", Locale::PtBr) => {
@@ -1143,6 +1161,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `commit`. When an \
              agent's return is not in the spec, have the agent record it again through the tool. \
              Never assemble it from its prose."
+        }
+        // No projeto que declara a suíte ou o lint, quem os roda é a rodada,
+        // antes do commit, e a rodada passa a demorar o que a suíte demora.
+        ("round.report.checks", Locale::PtBr) => {
+            "Antes do commit, a rodada roda a suíte e o lint que o projeto declara. Quando um deles \
+             cai, ela recusa o commit. Não rode teste nem lint por conta própria. Rode a rodada em \
+             segundo plano e espere o aviso de fim. A suíte inteira pode passar dos 10 minutos que \
+             o terminal espera por um comando."
+        }
+        ("round.report.checks", Locale::EnUs) => {
+            "Before the commit, the round runs the suite and the lint the project declares. When \
+             either fails, it refuses the commit. Do not run tests or lint on your own. Run the \
+             round in the background and wait for the notice that it ended. The whole suite can \
+             take longer than the 10 minutes the terminal waits for a command."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1919,8 +1951,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            228,
-            0x18db_b268_1a00_14c1,
+            231,
+            0x5bae_e7c3_f7f0_745f,
         );
     }
 
@@ -2105,6 +2137,8 @@ mod tests {
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.tests_failed", &["{command}", "{output}"][..]),
+            ("round.lint_failed", &["{command}", "{output}"][..]),
             ("round.after_wave.limit", &["{waves}", "{max}"][..]),
             ("round.after_wave.question", &["{waves}", "{max}"][..]),
             ("round.after_wave.wave", &["{wave}", "{round}", "{max}"][..]),
@@ -2169,6 +2203,7 @@ mod tests {
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),
             ("round.report", &[][..]),
+            ("round.report.checks", &[][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
             ("round.review_open", &[][..]),
@@ -2207,7 +2242,6 @@ mod tests {
             ("prompt.step.file", &["{files}"][..]),
             ("prompt.step.files", &["{files}"][..]),
             ("prompt.step.read_before", &["{hints}"][..]),
-            ("prompt.step.suite", &["{command}"][..]),
             ("prompt.step.deliver", &["{part}"][..]),
             ("prompt.obey.no_lessons", &[][..]),
             ("prompt.return.loose", &[][..]),

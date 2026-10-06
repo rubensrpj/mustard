@@ -23,8 +23,8 @@
 //!
 //! "O que fazer" tem um passo por tarefa, na ordem de execução que a onda
 //! declara (sem ela, na ordem do arquivo), com o que a tarefa atende, os
-//! arquivos dela e o que ler antes embaixo; a suíte do projeto e a entrega
-//! fecham a lista. "O que obedecer" leva as regras e decisões que valem para a
+//! arquivos dela e o que ler antes embaixo; a entrega fecha a lista, e a
+//! suíte do projeto fica fora dela, porque quem a roda é a rodada. "O que obedecer" leva as regras e decisões que valem para a
 //! onda e as lições dos arquivos dela, cada skill como recomendação de uma
 //! linha. O item sai uma vez só, mesmo que a onda o cite de mais de um jeito.
 //! O pedido da revisão final tem o mesmo formato de item: uma linha por item,
@@ -1665,12 +1665,13 @@ mod tests {
         }
     }
 
-    /// A suíte do projeto é um passo depois das tarefas e antes da entrega, e o
-    /// comando de compilar mora em "Como trabalhar": nenhum dos dois traz
-    /// texto de linguagem no molde, o comando vem da configuração do projeto.
-    /// Sem comando de testar, o passo da suíte não existe.
+    /// Depois das tarefas vem só a entrega: a suíte do projeto não é passo do
+    /// agente, nem com comando de testar declarado, porque quem a roda é a
+    /// rodada, antes do commit. O comando de compilar mora em "Como
+    /// trabalhar", vindo da configuração do projeto, sem texto de linguagem no
+    /// molde.
     #[test]
-    fn the_suite_is_a_step_after_the_tasks_and_the_build_is_in_how_to_work() {
+    fn the_request_leaves_the_suite_to_the_round_and_keeps_the_build_in_how_to_work() {
         let log = log(&[
             ("rule", json!({"title": "Uma regra", "text": "Texto.", "keys": ["r"], "example": "e", "waves": [1]})),
             ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
@@ -1693,18 +1694,12 @@ mod tests {
             [
                 "1. Leia o texto inteiro de cada item de \"O que obedecer\".",
                 "2. Faça a tarefa MSTD-TASK-0001 — Fazer",
-                "3. Rode a suíte do projeto com `make check`.",
-                "4. Grave a entrega, como diz \"O que devolver\".",
+                "3. Grave a entrega, como diz \"O que devolver\".",
             ],
             "{text}"
         );
         assert!(section(&text, "Como trabalhar").contains("- Compile com `make build`."), "{text}");
-        assert!(!section(&text, "Como trabalhar").contains("make check"), "{text}");
-        assert_eq!(text.matches("make check").count(), 1, "{text}");
-
-        m.execution = Execution { build: Some("make build".into()), ..Execution::default() };
-        let text = write(&m, Locale::PtBr);
-        assert!(!text.contains("Rode a suíte"), "{text}");
+        assert!(!text.contains("make check"), "{text}");
     }
 
     /// O molde do pedido e o do agente da onda não trazem comando de
@@ -1812,16 +1807,18 @@ mod tests {
             "Ache e leia o código pelo mapa, cada comando na sua hora",
             "Não releia o arquivo depois de editar",
             "Durante o trabalho, rode só os testes do que mudou.",
-            "A suíte inteira roda uma vez no fim, em primeiro plano",
+            "A suíte inteira e o lint são da rodada",
             "Nunca mande compilação ou teste para segundo plano",
         ] {
             assert!(!text.contains(phrase), "{phrase:?} devia ter saído do pedido: {text}");
         }
 
-        // O que sobra da execução é só o desta rodada e deste projeto.
-        for kept in ["/copia", "cargo build", "cargo test", "Onda 9", "`src/c.rs`"] {
+        // O que sobra da execução é só o desta rodada e deste projeto; a
+        // suíte inteira é da rodada, e não do pedido.
+        for kept in ["/copia", "cargo build", "Onda 9", "`src/c.rs`"] {
             assert!(text.contains(kept), "{kept:?} devia continuar no pedido: {text}");
         }
+        assert!(!text.contains("cargo test"), "{text}");
     }
 
     /// A linha do modelo do pedido da onda diz o modelo e o esforço que a
@@ -2892,10 +2889,10 @@ mod tests {
             assert!(rules.contains(&line), "{line}: {rules}");
         }
         assert!(!rules.contains("worktree") && !rules.contains("CARGO_TARGET_DIR"), "{rules}");
-        // O comando de testar é um passo de "O que fazer", e as duas linhas da
-        // entrega e o campo `commit` moram em "O que devolver".
-        assert!(!rules.contains("make test"), "{rules}");
-        assert!(wave.contains("Rode a suíte do projeto com `make test`."), "{wave}");
+        // O comando de testar não vai ao pedido da onda — a suíte é da
+        // rodada —, e as duas linhas da entrega e o campo `commit` moram em
+        // "O que devolver".
+        assert!(!wave.contains("make test"), "{wave}");
         let returns = section(&wave, t("prompt.part.return"));
         for line in [format!("- {}", t("prompt.execution.commit_field")), format!("- {}", t("prompt.execution.report_lines"))] {
             assert!(returns.contains(&line), "{line}: {returns}");
