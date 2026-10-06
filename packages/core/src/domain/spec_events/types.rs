@@ -770,6 +770,14 @@ pub const TYPES: &[TypeSpec] = &[
             // aberto.
             opt("claude_pid", Kind::Int),
             opt("claude_started", Kind::Int),
+            // A reprovação de quem conduz a obra: a volta da onda que ele
+            // reprovou, pelo número (`delivered`), e o motivo dele (`reason`).
+            // Enquanto essa volta for a última da onda, ela fica fora do
+            // commit e a onda espera um agente novo, que recebe o motivo. A
+            // versão que grava a reprovação sai sem o Claude Code do envio: a
+            // reprovação diz que o agente terminou. A volta nova da onda
+            // desfaz a reprovação.
+            opt("rejected", Kind::Object),
         ],
     ),
     ty(

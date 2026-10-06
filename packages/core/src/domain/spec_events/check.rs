@@ -202,6 +202,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
+    ("send", "rejected", &["delivered", "reason"]),
     // A sobra que a onda relata vira tarefa da spec: sem título ou sem
     // detalhe, não há o que abrir.
     ("delivered", "leftovers", &["title", "detail"]),

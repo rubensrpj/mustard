@@ -23,6 +23,7 @@ use super::queue::{
     backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
     sent_items, silent_minutes, waves_awaiting_new_agent, waves_in_progress, waves_returned,
 };
+use super::rejection::rejected_message;
 use super::report::Taken;
 use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{stopped_waves, waves_stuck};
@@ -108,6 +109,18 @@ pub(crate) enum RoundRefusal {
     /// A entrega dá como feitas as tarefas `tasks` sem o passo de término de
     /// cada uma: sem o passo, o agente não leu a medida da conversa.
     DoneWithoutStep { wave: u64, tasks: Vec<String> },
+    /// Quem conduz a obra reprovou a volta da onda, com o motivo dele: a
+    /// volta fica fora do commit, a cópia fica como está, e a onda espera um
+    /// agente novo, que recebe o motivo. Com `title`, o agente novo ainda não
+    /// saiu, e a resposta manda despachá-lo por esse título; sem ele, o agente
+    /// novo já saiu e trabalha na cópia.
+    Rejected { wave: u64, reason: String, title: Option<String> },
+    /// A linha `REJECTED` aponta uma onda sem volta gravada à espera da
+    /// rodada: não há entrega a reprovar.
+    RejectedWithoutReturn { wave: u64 },
+    /// A linha `REJECTED` aponta uma onda cuja volta já entrou no commit
+    /// `sha`: a rodada não desfaz commit.
+    RejectedCommitted { wave: u64, sha: String },
     /// O git recusou o commit.
     Git { detail: String },
     /// O repositório principal não compilou antes do commit da rodada.
@@ -158,6 +171,9 @@ impl RoundRefusal {
             Self::UndoneNotInWave { .. } => "undone-not-in-wave".into(),
             Self::StartedWorkUndone { .. } => "delivery-started-work-undone".into(),
             Self::DoneWithoutStep { .. } => "delivery-done-without-step".into(),
+            Self::Rejected { .. } => "round-wave-rejected".into(),
+            Self::RejectedWithoutReturn { .. } => "round-rejected-without-return".into(),
+            Self::RejectedCommitted { .. } => "round-rejected-committed".into(),
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
@@ -247,6 +263,11 @@ impl RoundRefusal {
                 "round.done_without_step",
                 &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
             ),
+            Self::Rejected { wave, reason, title } => rejected_message(*wave, reason, title.as_deref(), lang),
+            Self::RejectedWithoutReturn { wave } => fill("round.rejected_without_return", &[("{wave}", wave.to_string())]),
+            Self::RejectedCommitted { wave, sha } => {
+                fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())])
+            }
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
             Self::BuildFailed { command, output } => {
                 fill("round.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
@@ -1081,7 +1102,8 @@ pub(crate) fn wave_dispatch(root: &Path, spec: &str, wave: u64, lang: Locale) ->
 }
 
 /// O arquivo com o trecho que a conferência depois da onda devolveu para a
-/// onda `wave`, gravado pela volta que ela recusou: a última entrega da onda
+/// onda `wave`, gravado pela volta que ela recusou, ou com o motivo de quem
+/// conduz a obra, pela volta que ele reprovou: a última entrega da onda
 /// que nenhuma rodada assumiu. A entrega nova muda o arquivo, e o trecho de
 /// uma volta velha nunca chega ao agente. Nada sem volta pendente da onda.
 pub(crate) fn fix_file(root: &Path, spec: &str, log: &SpecLog, wave: u64) -> Option<PathBuf> {

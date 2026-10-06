@@ -115,7 +115,10 @@ pub enum FlowCmd {
         /// terminou, a linha `<USAGE>{"wave":1}</USAGE>`, só com a onda — o
         /// consumo a rodada mede nos arquivos de conversa que a plataforma
         /// grava, nunca digitado pelo agente nem por quem despacha — e a
-        /// `<PAUSED>`.
+        /// `<PAUSED>`. Para reprovar a volta de uma onda, no lugar da `USAGE`
+        /// dela vai a linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
+        /// com o motivo: a rodada segura a volta fora do commit, a onda espera
+        /// um agente novo, e o motivo vai a ele.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.

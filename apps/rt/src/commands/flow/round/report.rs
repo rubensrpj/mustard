@@ -3,9 +3,9 @@
 //! antes de qualquer gravação, a entrega juntada da cópia de cada onda, e os
 //! dois assumidos pela mesma porta das outras gravações, com o commit no
 //! meio. O relatório que o orquestrador passa traz só as linhas dele: a
-//! marca de que um agente de onda terminou, a pausa e a escolha antes do
-//! envio. O consumo de cada onda e o do orquestrador a rodada mede nos
-//! arquivos de conversa que a plataforma grava.
+//! marca de que um agente de onda terminou, a pausa e a reprovação de uma
+//! volta, com o motivo. O consumo de cada onda e o do orquestrador a rodada
+//! mede nos arquivos de conversa que a plataforma grava.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -34,8 +34,9 @@ use super::read_check::{request_name, unread_items};
 use super::rehearsal::{rehearse, Recording, Rehearsed};
 use super::size_check::in_body;
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
+use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
-use super::usage::{measure_usage, Caller, Usage};
+use super::usage::{measure_usage, usage_missing, Caller, Usage};
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::{record, RecordCheck};
 
@@ -121,6 +122,10 @@ pub(crate) struct Report {
     /// uma com o consumo que a rodada mede de novo: vira a versão nova do envio
     /// da onda.
     pub usage: Vec<(u64, Usage)>,
+    /// As linhas `REJECTED`, cada uma com a onda e o motivo de quem conduz a
+    /// obra: a rodada grava a reprovação, presa à volta pendente da onda, e a
+    /// segura fora do commit à espera de um agente novo.
+    pub rejected: Vec<(u64, String)>,
 }
 
 /// O que a rodada fez com um relatório.
@@ -159,7 +164,11 @@ pub(crate) struct Taken {
 /// novo plano sem o clique do usuário, a que uma conferência da própria volta
 /// recusa e a linha `USAGE` de uma onda ainda viva que não gravou a entrega
 /// também ficam de fora, cada uma com o aviso dela, e nunca viram a resposta
-/// da rodada: cada uma segura só a própria onda ([`HeldReturn`]). O consumo
+/// da rodada: cada uma segura só a própria onda ([`HeldReturn`]). A volta que
+/// quem conduz a obra reprova (`REJECTED`) entra pelo mesmo caminho: a
+/// reprovação é gravada antes de tudo, presa à volta pendente da onda, e o
+/// motivo vai ao arquivo do trecho de conserto que o agente novo recebe
+/// ([`keep_rejections`]). O consumo
 /// de cada onda assumida é medido nos arquivos de conversa da plataforma de
 /// quem chama (`caller`). A rodada e o fechamento assumem por aqui.
 pub(crate) fn take_report(
@@ -192,11 +201,12 @@ pub(crate) fn take_report_with_mine(
     let (waves, refused) = returned_waves(log);
     report.waves = waves;
     report.verdicts = returned_verdict(log);
-    // Sem volta, sem veredito e sem consumo, não há o que juntar nem comitar,
-    // e a rodada não espera a trava: a pausa reenvia essas ondas com o pedido
-    // de antes, mais adiante, em [`super::answer::run_round_with_mine`]. A
-    // volta recusada, mesmo sozinha, segue até o aviso dela.
-    if nothing(&report) && refused.is_empty() {
+    // Sem volta, sem veredito, sem consumo e sem reprovação, não há o que
+    // juntar nem comitar, e a rodada não espera a trava: a pausa reenvia essas
+    // ondas com o pedido de antes, mais adiante, em
+    // [`super::answer::run_round_with_mine`]. A volta recusada, mesmo
+    // sozinha, segue até o aviso dela.
+    if nothing(&report) && refused.is_empty() && report.rejected.is_empty() {
         return Ok(Taken::only_paused(report.paused));
     }
     // A volta mora na spec, e duas rodadas ao mesmo tempo leem a mesma: a
@@ -206,8 +216,13 @@ pub(crate) fn take_report_with_mine(
     // mesma entrega duas vezes.
     let held_lock = git_lock(root)?;
     let path = store::spec_file(root, spec).map_err(RoundRefusal::Refused)?;
-    let fresh = store::read(&path).map_err(RoundRefusal::Refused)?.unwrap_or_else(|| log.clone());
+    let mut fresh = store::read(&path).map_err(RoundRefusal::Refused)?.unwrap_or_else(|| log.clone());
+    // A reprovação de quem conduz a obra é gravada antes de tudo, presa à
+    // volta que ela reprova, e a spec é lida de novo: a volta reprovada passa
+    // a ser segurada pela mesma leitura que a segura nas rodadas seguintes.
+    let (rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
     let (waves, mut waiting) = returned_waves(&fresh);
+    keep_rejections(root, spec, &fresh, &mut waiting, lang);
     report.waves = waves;
     report.verdicts = returned_verdict(&fresh);
     let (cut, unreturned) = match_usage(&fresh, &mut report, &waiting)?;
@@ -219,8 +234,8 @@ pub(crate) fn take_report_with_mine(
         // A onda de lote cortada não entra no commit: as tarefas dela voltam
         // ao backlog soltas, sem a onda que as levou.
         let mut taken = Taken::only_paused(report.paused);
-        taken.recorded = return_cut_batches(start, spec, &fresh, &cut).map_err(RoundRefusal::Refused)?;
-        taken.warnings = waiting.iter().map(|one| one.warning(lang)).collect();
+        taken.recorded = rejections.into_iter().chain(return_cut_batches(start, spec, &fresh, &cut).map_err(RoundRefusal::Refused)?).collect();
+        taken.warnings = waiting.iter().map(|one| one.warning(lang)).chain(unmeasured).collect();
         taken.waiting = waiting;
         return Ok(taken);
     }
@@ -228,7 +243,8 @@ pub(crate) fn take_report_with_mine(
     measure_usage(&fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
     let mut taken = take_returns(start, root, spec, report, &fresh, lang, mine, held_lock, &cut)?;
     waiting.append(&mut taken.waiting);
-    taken.warnings.splice(0..0, waiting.iter().map(|one| one.warning(lang)));
+    taken.warnings.splice(0..0, waiting.iter().map(|one| one.warning(lang)).chain(unmeasured));
+    taken.recorded.splice(0..0, rejections);
     taken.waiting = waiting;
     Ok(taken)
 }
@@ -401,11 +417,7 @@ fn take_returns(
     let measured = report.waves.iter().map(|w| (w.wave, &w.usage)).chain(report.usage.iter().map(|(n, u)| (*n, u)));
     for (wave, usage) in measured {
         if usage.tokens.is_none() {
-            warnings.push(json!({
-                "reason": "usage-missing",
-                "wave": wave,
-                "hint": translate("round.usage_missing", lang).replace("{wave}", &wave.to_string()),
-            }));
+            warnings.push(usage_missing(wave, lang));
         }
     }
     // A prova nova roda uma vez: a que já passou antes do commit, como prova
@@ -441,7 +453,9 @@ pub(super) fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
 /// com todas as voltas dela desde esse envio. A volta de antes do envio —
 /// de um envio já superado por um reenvio — não conta. A volta que não se lê
 /// como a rodada a assume ([`wave_report_of`]) vem à parte, com a recusa
-/// dela: segura só a própria onda.
+/// dela: segura só a própria onda. A volta que quem conduz a obra reprovou
+/// ([`held_rejection`]) também vem à parte, a cada rodada, enquanto for a última
+/// da onda: só a volta nova a desfaz.
 fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>) {
     let hidden = log.hidden();
     let mut waves = Vec::new();
@@ -452,7 +466,7 @@ fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>) {
         if last.id <= since {
             continue;
         }
-        let mut report = match wave_report_of(log, &last.fields) {
+        let mut report = match held_rejection(log, wave, last.id).map_or_else(|| wave_report_of(log, &last.fields), Err) {
             Ok(report) => report,
             Err(refusal) => {
                 refused.push(HeldReturn { wave, refusal });
@@ -790,7 +804,7 @@ pub(super) fn tagged<'a>(raw: &'a str, tag: &str) -> Vec<&'a str> {
 }
 
 /// O objeto JSON de uma linha, com a onda dela, quando ela traz uma.
-fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<String, Value>), RoundRefusal> {
+pub(super) fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<String, Value>), RoundRefusal> {
     let parsed: Value =
         serde_json::from_str(body).map_err(|e| RoundRefusal::BadReport { detail: format!("{line}: {e}") })?;
     let Value::Object(fields) = parsed else {
@@ -800,7 +814,8 @@ fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<Strin
 }
 
 /// As linhas do relatório que o orquestrador passa: a marca de que a onda
-/// terminou (`USAGE`) e a pausa (`PAUSED`), como vieram. A entrega e o veredito não
+/// terminou (`USAGE`), a pausa (`PAUSED`) e a reprovação de uma volta, com o
+/// motivo (`REJECTED`), como vieram. A entrega e o veredito não
 /// vêm aqui: moram na spec, e a linha `DELIVERED` ou `VERDICT` colada no
 /// relatório é recusada. O texto sem nenhuma dessas linhas não se entende. O
 /// resto do texto não é lido.
@@ -810,7 +825,8 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     }
     let usage_bodies = tagged(raw, USAGE_LINE);
     let paused_bodies = tagged(raw, PAUSED_LINE);
-    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty();
+    let rejected = rejected_lines(raw)?;
+    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty() && rejected.is_empty();
     if unmarked && !raw.trim().is_empty() {
         let shown: String = raw.trim().chars().take(80).collect();
         return Err(RoundRefusal::BadReport { detail: shown });
@@ -830,7 +846,7 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         let wave = wave.ok_or(RoundRefusal::LineField { line: PAUSED_LINE, field: "wave" })?;
         paused.push(wave);
     }
-    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage })
+    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage, rejected })
 }
 
 /// O texto `summary` tem cara de código de commit: só dígito hexadecimal, do
@@ -1545,7 +1561,7 @@ mod tests {
             let first = round(root, "x", None);
             let taught = translate("round.report", lang);
             assert!(first["next"].as_str().unwrap_or_default().contains(taught), "{first}");
-            for said in ["run write delivered", "run write verdict", "<USAGE>", "`commit`"] {
+            for said in ["run write delivered", "run write verdict", "<USAGE>", "<REJECTED>", "`commit`"] {
                 assert!(taught.contains(said), "{said}: {taught}");
             }
             assert!(!taught.contains("<DELIVERED>") && !taught.contains("<VERDICT>"), "{taught}");
@@ -1633,6 +1649,28 @@ mod tests {
 
         let lines_after = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
         assert_eq!(lines_after, lines_before, "nothing was recorded");
+    }
+
+    /// A linha da reprovação sem a onda, sem o motivo ou com o motivo em
+    /// branco é recusada pelo campo que falta, e nada é gravado.
+    #[test]
+    fn a_rejection_line_without_the_wave_or_the_reason_is_refused_by_the_missing_field() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let before = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap();
+        for (line, field) in [
+            (r#"<REJECTED>{"reason":"faltou o teste"}</REJECTED>"#, "wave"),
+            (r#"<REJECTED>{"wave":1}</REJECTED>"#, "reason"),
+            (r#"<REJECTED>{"wave":1,"reason":"  "}</REJECTED>"#, "reason"),
+        ] {
+            let refused = round(root, "x", Some(line));
+            assert_eq!(refused["reason"], json!("round-line-field-missing"), "{line}: {refused}");
+            let hint = translate("round.line_field", Locale::PtBr).replace("{line}", "REJECTED").replace("{field}", field);
+            assert_eq!(refused["hint"], json!(hint), "{line}: {refused}");
+        }
+        assert_eq!(std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap(), before, "nothing was recorded");
     }
 
     /// A onda de lote — formada pelo binário a partir do backlog — cujo Claude
@@ -4504,7 +4542,7 @@ fn main() { sum_by_the_new_name(); }
         let verdict_line = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
         let usage = line("USAGE", json!({"wave": 1}));
         let expected = json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
-                              relatório leva só as linhas `USAGE` e `PAUSED`.");
+                              relatório leva só as linhas `USAGE`, `PAUSED` e `REJECTED`.");
         let delivery_line = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai"}));
         for pasted in [&delivery_line, &verdict_line] {

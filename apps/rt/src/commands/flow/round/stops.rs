@@ -1,6 +1,7 @@
 //! O que para sem travar a rodada: o limite de consertos de cada onda, com a
-//! pergunta ao usuário; a volta recusada por uma conferência dela, que segura
-//! só a própria onda; e o plano que muda — a onda replanejada depois do
+//! pergunta ao usuário; a volta recusada por uma conferência dela, ou
+//! reprovada por quem conduz a obra, que segura só a própria onda; e o plano
+//! que muda — a onda replanejada depois do
 //! pedido e a mudança de plano que um agente propõe. A mudança que não troca
 //! decisão do usuário segue e fica registrada; a que troca só segue com o
 //! clique do usuário e, enquanto espera, segura só a onda dela. As tarefas
@@ -114,7 +115,8 @@ pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
 /// segura: a que troca uma decisão do usuário e ainda espera o clique dele, ou a que
 /// uma conferência da própria volta recusou — sem o título do commit, com
 /// tarefa de outra onda em `undone`, com a mudança de plano sem `undone`, com
-/// arquivo que não existe. A recusa segura só a onda dela: a volta fica na
+/// arquivo que não existe —, ou a que quem conduz a obra reprovou, à espera
+/// de um agente novo. A recusa segura só a onda dela: a volta fica na
 /// spec sem ninguém a assumir, a cópia fica como está, e o envio aberto
 /// segura a vaga e os arquivos dela — o despacho não oferece onda que divida
 /// arquivo com ela nem a que dependa dela. O resto da rodada segue. A rodada

@@ -19,8 +19,10 @@
 //! despacho que já é esse texto passa como veio, e o título de uma onda que a
 //! spec não tem em andamento é barrado com o motivo. A exceção é a onda cuja
 //! volta a rodada recusou depois de o Claude Code que a mandou fechar, levando
-//! o agente dela: ela sai a um agente novo, com o mesmo texto seguido do
-//! trecho de conserto, e ele trabalha na mesma cópia. O despacho dele fica
+//! o agente dela, e a onda cuja volta quem conduz a obra reprovou: ela sai a
+//! um agente novo, com o mesmo texto seguido do trecho de conserto — na
+//! reprovação, o motivo de quem reprovou —, e ele trabalha na mesma cópia. O
+//! despacho dele fica
 //! gravado na spec, e outro agente novo é barrado enquanto o Claude Code que
 //! o abriu segue aberto: a cópia nunca tem dois agentes. O título segue na
 //! primeira linha: é por ele que a rodada acha a conversa do agente e soma o
@@ -157,7 +159,8 @@ fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64) -> Verd
 }
 
 /// O trecho de conserto da onda `wave` da spec `spec` que espera um agente
-/// novo ([`crate::commands::flow::round::waves_awaiting_new_agent`]), com o
+/// novo ([`crate::commands::flow::round::waves_awaiting_new_agent`]) — o da
+/// conferência que recusou a volta, ou o motivo de quem a reprovou —, com o
 /// despacho dele gravado: o envio da onda ganha uma versão com o Claude Code
 /// atual ([`crate::commands::flow::stuck::sender_process`]), e outro despacho
 /// é barrado enquanto esse Claude Code segue aberto; fechado também ele, a

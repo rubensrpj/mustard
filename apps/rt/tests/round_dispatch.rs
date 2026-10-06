@@ -381,7 +381,22 @@ fn test_process() -> (u32, u64) {
 /// ganha uma versão nova, como a volta da onda grava, com o par do processo
 /// do teste: a onda segue em andamento não importa quem lançou a suíte.
 fn keep_sent(project: &Project, waves: &[u64]) {
-    let (pid, started) = test_process();
+    sent_by(project, waves, test_process());
+}
+
+/// O par de um processo que já terminou, nascido numa hora que o número dele
+/// nunca teve: o Claude Code que mandou a onda e fechou, não importa quem
+/// lançou a suíte.
+fn closed_process() -> (u32, u64) {
+    let mut gone = Command::new("true").spawn().expect("the process runs");
+    let pid = gone.id();
+    gone.wait().expect("the process ends");
+    (pid, 1)
+}
+
+/// O envio mais recente de cada onda de `waves` ganha uma versão nova, como
+/// a volta da onda grava, com o par `(pid, started)` de quem o mandou.
+fn sent_by(project: &Project, waves: &[u64], (pid, started): (u32, u64)) {
     let log = project.log();
     let last = log.last_by_wave("send");
     for wave in waves {
@@ -1251,4 +1266,245 @@ fn once_the_month_is_spent_the_round_assembles_and_picks_the_items_without_the_j
     assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
     let reasons: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().map(|warning| &warning["reason"]).collect();
     assert_eq!(reasons, [&json!("jev-over-budget")], "{out}");
+}
+
+/// O arquivo que a tarefa das provas da reprovação cria.
+const GREETING: &str = "src/greeting.txt";
+/// O motivo com que quem conduz a obra reprova a volta, nas provas.
+const REJECTION: &str = "A saudação saiu em inglês, e o combinado pede português.";
+
+/// O envio mais novo da onda `wave`, com a cópia e a lista de leitura dela.
+fn last_send(project: &Project, wave: u64) -> mustard_core::domain::spec_events::SpecEvent {
+    let log = project.log();
+    let id = *log.last_by_wave("send").get(&wave).expect("a onda saiu");
+    log.get(id).expect("o envio").clone()
+}
+
+/// O agente da onda `wave` faz o trabalho dela: escreve `content` em
+/// [`GREETING`] dentro da cópia, lê de lá cada item que o pedido manda ler,
+/// grava o passo de término de cada tarefa e grava a entrega, que responde
+/// por todo o combinado. Devolve a cópia.
+fn deliver_in_copy(project: &Project, wave: u64, content: &str) -> PathBuf {
+    let sent = last_send(project, wave);
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join(GREETING), content).expect("the change");
+    let root = project.root.display().to_string();
+    let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+    for item in listed.iter().filter_map(Value::as_str) {
+        let block = format!("item-{item}");
+        let lesson = item.strip_prefix("lesson-");
+        let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+        args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+        args.extend(["--root", &root, "--spec", SPEC]);
+        let out = project.command_in(&copy, &args, "");
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+    }
+    let log = project.log();
+    let codes = log.codes();
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
+        let item = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+        project.write("step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
+    }
+    let agreed: Vec<Value> =
+        mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+    let delivered = json!({"wave": wave, "text": "A saudação saiu.", "files": [GREETING], "commit": "saudação nova",
+        "agreed": agreed});
+    project.write("delivered", &delivered);
+    copy
+}
+
+/// Uma spec aprovada com uma tarefa que cria [`GREETING`], despachada pela
+/// rodada e entregue pelo agente na cópia dela. Com `alive`, o envio fica com
+/// o processo do teste, como o Claude Code que mandou a onda ainda aberto;
+/// sem ele, com um processo que já terminou. Devolve o projeto e a cópia.
+fn delivered_wave(alive: bool) -> (Project, PathBuf) {
+    let (project, _, _, _) = backlog_project(&[&[GREETING]]);
+    let first = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    sent_by(&project, &[1], if alive { test_process() } else { closed_process() });
+    let copy = deliver_in_copy(&project, 1, "hello\n");
+    (project, copy)
+}
+
+/// A rodada com a linha que reprova a volta da onda `wave` pelo motivo
+/// `reason`, como veio.
+fn reject(project: &Project, wave: u64, reason: &str) -> Value {
+    let line = format!("<REJECTED>{}</REJECTED>", json!({"wave": wave, "reason": reason}));
+    project.answer(&["round", "--spec", SPEC, "--report", &line])
+}
+
+/// O commit em que o repositório principal está.
+fn head(project: &Project) -> String {
+    let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&project.root).output().expect("git");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// O aviso da onda reprovada na resposta `out`.
+fn rejected_warning(out: &Value) -> Value {
+    out["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|warning| warning["reason"] == json!("round-wave-rejected"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the warning of the rejected wave: {out}"))
+}
+
+/// A frase que manda despachar o agente novo da onda 1, reprovada por
+/// [`REJECTION`].
+fn new_agent_line() -> String {
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+    translate("round.rejected", Locale::PtBr)
+        .replace("{wave}", "1")
+        .replace("{reason}", REJECTION.trim_end_matches('.'))
+        .replace("{title}", &title)
+}
+
+/// O despacho de um agente de onda pelo título do pedido da onda 1, pelo
+/// gancho de verdade: a resposta dele, como o harness a lê.
+fn dispatch_new_agent(project: &Project) -> Value {
+    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "mustard-wave", "description": "onda 1", "prompt": title},
+        "session_id": SESSION,
+        "cwd": project.root.to_string_lossy(),
+    });
+    let out = project.command(&["on", "PreToolUse"], &payload.to_string());
+    assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+/// A rodada com a linha da reprovação deixa a volta fora do commit e a cópia
+/// como está, e manda despachar um agente novo pelo título da onda: com o
+/// Claude Code que mandou a onda aberto, e com ele fechado.
+#[test]
+fn a_rejected_return_stays_out_of_the_commit_and_waits_for_a_new_agent() {
+    for alive in [true, false] {
+        let (project, copy) = delivered_wave(alive);
+        let before = head(&project);
+
+        let out = reject(&project, 1, REJECTION);
+
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out.get("commit"), None, "nada comitado: {out}");
+        assert_eq!(head(&project), before, "o repositório principal fica no mesmo commit");
+        assert!(!project.root.join(GREETING).exists(), "a volta reprovada não chega ao repositório principal");
+        assert!(std::fs::read_to_string(copy.join(GREETING)).expect("a cópia").contains("hello"), "a cópia fica como está");
+        let warning = rejected_warning(&out);
+        assert_eq!(warning["wave"], json!(1), "{warning}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains(&new_agent_line()), "alive={alive}: {next}");
+        let sent = last_send(&project, 1);
+        let delivered = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta reprovada");
+        assert_eq!(sent.fields.get("rejected"), Some(&json!({"delivered": delivered, "reason": REJECTION})), "alive={alive}");
+    }
+}
+
+/// O despacho do agente novo da onda reprovada traz o motivo de quem
+/// reprovou, junto do pedido; com o Claude Code desse agente aberto, outro
+/// agente novo é barrado: a cópia nunca tem dois agentes.
+#[test]
+fn the_new_agent_of_a_rejected_wave_gets_the_reason_and_keeps_the_copy_alone() {
+    let (project, _) = delivered_wave(true);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+
+    let first = dispatch_new_agent(&project);
+    let prompt = first.pointer("/hookSpecificOutput/updatedInput/prompt").and_then(Value::as_str).unwrap_or_default();
+    let fix = translate("round.rejected_fix", Locale::PtBr).replace("{wave}", "1").replace("{reason}", REJECTION);
+    assert!(prompt.ends_with(&fix), "o motivo vai ao agente novo: {first}");
+    assert!(prompt.contains("run read request-1"), "com o pedido da onda: {prompt}");
+
+    keep_sent(&project, &[1]);
+    let second = dispatch_new_agent(&project);
+    assert_eq!(second.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{second}");
+}
+
+/// A rodada seguinte, sem a linha no relatório, segue segurando a volta
+/// reprovada fora do commit, com o mesmo motivo.
+#[test]
+fn the_round_after_a_rejection_keeps_holding_the_wave_without_the_line() {
+    let (project, _) = delivered_wave(false);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let before = head(&project);
+
+    let out = project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(out.get("commit"), None, "{out}");
+    assert_eq!(head(&project), before);
+    assert!(!project.root.join(GREETING).exists());
+    assert!(rejected_warning(&out)["hint"].as_str().unwrap_or_default().contains(REJECTION.trim_end_matches('.')), "{out}");
+    assert!(out["next"].as_str().unwrap_or_default().contains(&new_agent_line()), "{out}");
+}
+
+/// A volta nova da onda reprovada, gravada pelo agente novo, desfaz a
+/// reprovação: a rodada a assume e comita como qualquer outra, e a entrega
+/// oficial substitui as duas voltas.
+#[test]
+fn the_new_return_of_a_rejected_wave_is_taken_and_committed() {
+    let (project, _) = delivered_wave(false);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let rejected = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta reprovada");
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    let fixed = "olá\n";
+    deliver_in_copy(&project, 1, fixed);
+    let renewed = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta nova");
+
+    let out = project.run(&["round", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+
+    assert!(out.get("commit").is_some(), "{out}");
+    assert_eq!(std::fs::read_to_string(project.root.join(GREETING)).expect("o arquivo entrou"), fixed);
+    let log = project.log();
+    let official = log.visible().into_iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(1)).expect("a entrega oficial");
+    assert_eq!(official.fields.get("replaces"), Some(&json!([rejected, renewed])), "{:?}", official.fields);
+    assert!(out["warnings"].as_array().into_iter().flatten().all(|w| w["reason"] != json!("round-wave-rejected")), "{out}");
+}
+
+/// Os eventos da spec, fora as chamadas de comando que toda chamada grava:
+/// o que a rodada gravou de fato.
+fn recorded(project: &Project) -> Vec<u64> {
+    project.log().events.iter().filter(|e| e.event_type != "call").map(|e| e.id).collect()
+}
+
+/// O projeto passa a falar `lang`.
+fn speak(project: &Project, lang: Locale) {
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["language"]["text"] = json!(lang.as_str());
+    std::fs::write(&path, config.to_string()).expect("config");
+}
+
+/// Reprovar a onda que não tem volta gravada é recusado, nos dois idiomas,
+/// sem gravar nada.
+#[test]
+fn rejecting_a_wave_without_a_return_is_refused_in_both_languages() {
+    let (project, _, _, _) = backlog_project(&[&[GREETING]]);
+    project.run(&["round", "--spec", SPEC]);
+    let before = recorded(&project);
+    for lang in [Locale::PtBr, Locale::EnUs] {
+        speak(&project, lang);
+        let out = reject(&project, 1, REJECTION);
+        assert_eq!(out["reason"], json!("round-rejected-without-return"), "{out}");
+        assert_eq!(out["hint"], json!(translate("round.rejected_without_return", lang).replace("{wave}", "1")), "{out}");
+    }
+    assert_eq!(recorded(&project), before, "nada gravado");
+}
+
+/// Reprovar a onda cuja volta já entrou num commit é recusado, nos dois
+/// idiomas, com o commit, sem gravar nada.
+#[test]
+fn rejecting_a_committed_wave_is_refused_in_both_languages() {
+    let (project, _) = delivered_wave(false);
+    let taken = project.run(&["round", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+    let sha = taken["commit"]["sha"].as_str().unwrap_or_else(|| panic!("the commit: {taken}")).to_string();
+    let before = recorded(&project);
+    for lang in [Locale::PtBr, Locale::EnUs] {
+        speak(&project, lang);
+        let out = reject(&project, 1, REJECTION);
+        assert_eq!(out["reason"], json!("round-rejected-committed"), "{out}");
+        let hint = translate("round.rejected_committed", lang).replace("{wave}", "1").replace("{sha}", &sha[..7]);
+        assert_eq!(out["hint"], json!(hint), "{out}");
+    }
+    assert_eq!(recorded(&project), before, "nada gravado");
 }

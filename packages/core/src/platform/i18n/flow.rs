@@ -959,6 +959,53 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} gives tasks {tasks} as done without the task-end step of each. Record each \
              one's step with `mustard-rt run write step` and deliver again. Nothing was recorded."
         }
+        // A reprovação de quem conduz a obra (`<REJECTED>` no relatório): a
+        // volta fica fora do commit, e a onda espera um agente novo, que
+        // recebe o motivo.
+        ("round.rejected", Locale::PtBr) => {
+            "Você reprovou a volta da onda {wave} com o motivo \"{reason}\". A cópia ficou como \
+             estava, e a onda espera um agente novo. Despache um agente novo com o título `{title}`: \
+             o Mustard junta o pedido e o seu motivo."
+        }
+        ("round.rejected", Locale::EnUs) => {
+            "You rejected wave {wave}'s return with the reason \"{reason}\". The copy stayed as it \
+             was, and the wave waits for a new agent. Dispatch a new agent with the title `{title}`: \
+             Mustard adds its request and your reason."
+        }
+        ("round.rejected_working", Locale::PtBr) => {
+            "Você reprovou a volta da onda {wave} com o motivo \"{reason}\", e o agente novo dela já \
+             trabalha na cópia. A rodada assume a volta nova quando ele a gravar."
+        }
+        ("round.rejected_working", Locale::EnUs) => {
+            "You rejected wave {wave}'s return with the reason \"{reason}\", and its new agent is \
+             already working in the copy. The round takes the new return once it records it."
+        }
+        ("round.rejected_fix", Locale::PtBr) => {
+            "Quem conduz a obra reprovou a entrega da onda {wave}, com este motivo: {reason}"
+        }
+        ("round.rejected_fix", Locale::EnUs) => {
+            "Whoever runs the work rejected wave {wave}'s delivery, for this reason: {reason}"
+        }
+        ("round.rejected_without_return", Locale::PtBr) => {
+            "A linha `<REJECTED>` aponta a onda {wave}, que não tem volta gravada à espera da \
+             rodada. Só se reprova a entrega que o agente gravou e a rodada ainda não assumiu. Tire \
+             a linha e rode a rodada de novo. Nada foi gravado."
+        }
+        ("round.rejected_without_return", Locale::EnUs) => {
+            "The `<REJECTED>` line points at wave {wave}, which has no recorded return waiting for \
+             the round. Only a delivery the agent recorded and the round has not taken yet can be \
+             rejected. Drop the line and run the round again. Nothing was recorded."
+        }
+        ("round.rejected_committed", Locale::PtBr) => {
+            "A linha `<REJECTED>` aponta a onda {wave}, cuja volta já entrou no commit {sha}, e a \
+             rodada não desfaz commit. Tire a linha e grave o que falta como tarefa nova. Nada foi \
+             gravado."
+        }
+        ("round.rejected_committed", Locale::EnUs) => {
+            "The `<REJECTED>` line points at wave {wave}, whose return is already in commit {sha}, \
+             and the round does not undo a commit. Drop the line and record what is missing as a new \
+             task. Nothing was recorded."
+        }
         ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
         ("round.unmet_joined", Locale::PtBr) => "Item não cumprido na volta da onda {wave} — {code}: {text}",
@@ -1074,7 +1121,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              assume. O de onda grava com `mustard-rt run write delivered`, o revisor com \
              `mustard-rt run write verdict`. Quando cada agente de onda terminar, rode a rodada de \
              novo com uma linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, \
-             só com o número da onda. O consumo de cada onda e o seu a rodada mede nos arquivos de \
+             só com o número da onda. Quando você reprovar a volta de uma onda, mande a linha \
+             `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` no lugar da `USAGE` dela, com o seu \
+             motivo. A rodada segura a volta fora do commit e leva o motivo a um agente novo da \
+             onda. O consumo de cada onda e o seu a rodada mede nos arquivos de \
              conversa que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
              `commit` de cada entrega. Quando a volta de um agente não estiver na spec, mande o \
              agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele."
@@ -1084,9 +1134,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the round takes it over. The wave agent records with `mustard-rt run write delivered`, \
              the reviewer with `mustard-rt run write verdict`. When each wave agent finishes, run \
              the round again with one line per wave, all in the same `--report '…'`: \
-             `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. The round measures each \
-             wave's usage and yours from the conversation files the platform records, never from a \
-             typed number. The round builds the commit from each delivery's `commit`. When an \
+             `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. When you reject a wave's \
+             return, send the line `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` instead of \
+             its `USAGE`, with your reason. The round keeps the return out of the commit and takes \
+             the reason to a new agent of the wave. The \
+             round measures each wave's usage and yours from the conversation files the platform \
+             records, never from a typed number. The round builds the commit from each delivery's \
+             `commit`. When an \
              agent's return is not in the spec, have the agent record it again through the tool. \
              Never assemble it from its prose."
         }
@@ -1865,8 +1919,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            223,
-            0x3f12_6d52_c83c_9ebe,
+            228,
+            0x18db_b268_1a00_14c1,
         );
     }
 
@@ -2094,6 +2148,11 @@ mod tests {
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
             ("round.started_work_undone", &["{wave}", "{tasks}"][..]),
             ("round.done_without_step", &["{wave}", "{tasks}"][..]),
+            ("round.rejected", &["{wave}", "{reason}", "{title}"][..]),
+            ("round.rejected_working", &["{wave}", "{reason}"][..]),
+            ("round.rejected_fix", &["{wave}", "{reason}"][..]),
+            ("round.rejected_without_return", &["{wave}"][..]),
+            ("round.rejected_committed", &["{wave}", "{sha}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),

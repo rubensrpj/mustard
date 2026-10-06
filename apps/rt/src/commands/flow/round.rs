@@ -48,7 +48,8 @@
 //! mensagem montada do resumo e grava cada sobra como tarefa da spec, no
 //! backlog. O `--report` leva só o que o orquestrador
 //! escreve: a linha `<USAGE>{"wave":1}</USAGE>`, que marca que o agente da
-//! onda terminou e a `<PAUSED>`. O consumo de
+//! onda terminou, a `<PAUSED>` e a `<REJECTED>`, com que ele reprova a volta
+//! de uma onda e dá o motivo, que vai ao agente novo dela. O consumo de
 //! cada onda assumida — o modelo, os passos e os tokens do agente dela — e o
 //! da conversa principal no ramo da spec a rodada mede nos arquivos de
 //! conversa que a plataforma grava, na pasta de configuração dela e na sessão
@@ -133,6 +134,7 @@ mod lost_commit;
 mod queue;
 mod read_check;
 mod rehearsal;
+mod rejection;
 mod removed_check;
 mod report;
 mod sent_tasks;
