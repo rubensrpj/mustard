@@ -48,13 +48,15 @@ O item gravado na spec tem três partes, porque o agente o lê sem a conversa:
 
 Responda cada pergunta pelo número que ele usou, na ordem de explicar. Se errou, diga "errei" e o que é o certo. Feche com uma proposta só e uma pergunta de sim ou não.
 
+## Resposta de estado ou de avaliação
+
+- Abra pelo que deu errado, pelo que você errou e pelo que não foi conferido. Se nada deu errado, diga isso e mostre a prova.
+- Diga o tamanho da amostra.
+- Não escreva "bem" nem "funcionou" sem a prova ao lado.
+- Cite todo aviso ainda aberto, uma linha cada.
+- Diga quando um número e um texto discordam.
+
 ## Exemplos
-
-Antes: "A R8 fecha o conflito da P-19, e o C-13 cobre o resto."
-Depois: "A página da spec é publicada uma vez só. Depois, cada item novo aparece nela sozinho, e o link não enche a conversa."
-
-Antes: "Implementei o writer com lock advisory e id monotônico, resolvendo a race."
-Depois: "Agora duas sessões podem gravar a mesma spec. Uma espera a outra terminar, e nenhum número se repete."
 
 Antes: "Conforme mencionado anteriormente, a análise inicial indicava que o serviço de pagamentos utilizaria C#."
 Depois: "Errei: disse que o serviço de pagamentos usa C#. Ele usa Node.js com NestJS."

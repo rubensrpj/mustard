@@ -44,8 +44,9 @@
 //!   `rtk` e o gancho do rtk divergem, e quando a assinatura do Claude Code
 //!   está ligada.
 //! - **claude-md** — sobras do Mustard em arquivos que não são dele (as marcas
-//!   nos `CLAUDE.md`, as linhas do molde no `settings.json` da equipe), pela
-//!   mesma lista que o `upsert` mostra.
+//!   nos `CLAUDE.md`, as linhas do molde no `settings.json` da equipe) e as
+//!   regras de bloqueio desse arquivo escritas errado, que o `upsert` troca no
+//!   lugar, pela mesma lista que o `upsert` mostra.
 //!
 //! ## Onde cada conferência mora
 //!
