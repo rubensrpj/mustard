@@ -885,7 +885,7 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
         return Ok(Vec::new());
     }
     let max = super::stops::MAX_FIX_ROUNDS;
-    let done = |wave: u64| waves.iter().find(|w| w.wave == wave).map_or(0, |w| w.returns.len().saturating_sub(1));
+    let done = |wave: u64| super::stops::fix_rounds_done(waves, wave);
     let refusing: BTreeSet<u64> = found.iter().filter(|f| f.refuses).map(|f| f.wave).collect();
     let stuck: Vec<String> = refusing.iter().filter(|w| done(**w) >= max).map(u64::to_string).collect();
     let fill = |key: &str, wave: u64| {

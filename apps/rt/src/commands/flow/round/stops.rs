@@ -20,8 +20,18 @@ use super::sent_tasks::sent_tasks;
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
 /// última delas para a onda e as que dependem dela: o problema é de desenho,
-/// e vai ao usuário.
+/// e vai ao usuário. O mesmo teto vale para a conferência depois da onda e
+/// para a compilação, o lint e a suíte que caem antes do commit, contados
+/// por [`fix_rounds_done`]: passadas todas, a recusa seguinte vira a mesma
+/// pergunta ao usuário.
 pub(super) const MAX_FIX_ROUNDS: usize = 2;
+
+/// Por quantas rodadas de conserto a onda `wave` de `waves` já passou: cada
+/// volta que ela grava de novo desde o envio que a despachou conta uma; a
+/// primeira entrega não conta. A onda fora de `waves` não passou por nenhuma.
+pub(super) fn fix_rounds_done(waves: &[WaveReport], wave: u64) -> usize {
+    waves.iter().find(|w| w.wave == wave).map_or(0, |w| w.returns.len().saturating_sub(1))
+}
 
 /// As ondas paradas pelo limite de consertos, na resposta da rodada: cada uma
 /// com a pergunta ao usuário e os vereditos que a pararam, por inteiro — é com

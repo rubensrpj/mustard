@@ -4,7 +4,9 @@
 //! os testes do que mudou, nem quem conduz, que não roda teste nem lint por
 //! conta própria. O primeiro que cai recusa com o comando e o fim da saída, e
 //! nada é comitado; o que o projeto não declara não roda. A recusa volta às
-//! ondas da rodada que a saída cita, ou a todas, quando ela não cita nenhuma.
+//! ondas da rodada que a saída cita, ou a todas, quando ela não cita nenhuma,
+//! com o mesmo teto de rodadas de conserto da conferência depois da onda: a
+//! onda que já passou por todas vai ao usuário, com a mesma pergunta.
 
 use std::path::Path;
 
@@ -12,6 +14,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
+use super::stops::{fix_rounds_done, MAX_FIX_ROUNDS};
 use crate::commands::review::qa_run::{run_command, run_server_command, ProofRun};
 
 /// Qual dos comandos que o projeto declara caiu antes do commit.
@@ -67,11 +70,16 @@ pub(crate) struct CheckFailure {
 impl CheckFailure {
     /// A recusa a quem conduz: o que caiu, com o fim da saída, e o próximo
     /// passo — mandar cada onda abaixo de volta ao agente dela, ou despachar
-    /// um agente novo para a que perdeu o dela.
+    /// um agente novo para a que perdeu o dela. Sem onda a quem o conserto
+    /// volta, só o que caiu.
     pub(super) fn message(&self, lang: Locale) -> String {
         let failed = translate(self.check.message_key(), lang).replace("{command}", &self.command).replace("{output}", &self.output);
         let line = if self.cited { "round_checks.cited" } else { "round_checks.joined" };
-        let mut text = format!("{failed}\n\n{}", translate("round_checks.next", lang));
+        let mut text = failed;
+        if !self.waves.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(translate("round_checks.next", lang));
+        }
         for wave in &self.waves {
             text.push_str("\n- ");
             text.push_str(&translate(line, lang).replace("{wave}", &wave.to_string()));
@@ -102,13 +110,14 @@ type Runner = fn(&str, &Path) -> ProofRun;
 /// porque sem ela os outros dois nem rodam, e o lint e a suíte na ordem do
 /// fechamento. O primeiro que cai recusa com o comando e o fim da saída, e a
 /// rodada não comita nada; a recusa diz a que ondas de `waves` o conserto
-/// volta ([`culprits`]). O que o projeto não declara não roda, porque não há
-/// como rodá-lo sem saber o comando.
+/// volta ([`culprits`]), até o teto de rodadas de conserto de cada uma
+/// ([`capped`]). O que o projeto não declara não roda, porque não há como
+/// rodá-lo sem saber o comando.
 ///
 /// A compilação roda com o teto de uma prova que compila. O lint e a suíte
 /// rodam com o teto dos comandos do servidor, de uma hora: a suíte inteira
 /// leva o tempo que o projeto pede, e o teto de uma prova a cortaria no meio.
-pub(super) fn ensure_checks_pass(root: &Path, waves: &[WaveReport]) -> Result<(), RoundRefusal> {
+pub(super) fn ensure_checks_pass(root: &Path, waves: &[WaveReport], lang: Locale) -> Result<(), RoundRefusal> {
     let declared = mustard_core::ProjectConfig::load(root).commands();
     let checks: [(Check, Option<String>, Runner); 3] = [
         (Check::Build, declared.build, run_command),
@@ -119,12 +128,33 @@ pub(super) fn ensure_checks_pass(root: &Path, waves: &[WaveReport]) -> Result<()
         let Some(command) = command else { continue };
         let out = run(&command, root);
         if out.result != "pass" {
-            let (waves, cited) = culprits(&out.output, waves);
-            let failure = CheckFailure { check, command, output: out.output, waves, cited, new_agents: Vec::new() };
-            return Err(RoundRefusal::CheckFailed(Box::new(failure)));
+            let (culprit_waves, cited) = culprits(&out.output, waves);
+            let failure = CheckFailure { check, command, output: out.output, waves: culprit_waves, cited, new_agents: Vec::new() };
+            return Err(capped(failure, waves, lang));
         }
     }
     Ok(())
+}
+
+/// A recusa do comando que caiu, com o teto de rodadas de conserto que a
+/// conferência depois da onda também tem ([`MAX_FIX_ROUNDS`], contado por
+/// [`fix_rounds_done`] em `reports`). Nenhuma onda a quem o conserto volta
+/// passou por todas: a recusa sai como veio. Alguma passou: a rodada para e
+/// faz ao usuário a mesma pergunta da conferência depois da onda, com o que
+/// caiu e o fim da saída; a onda no teto vai ao usuário, e não ao agente, e
+/// só as outras ganham o trecho de conserto.
+fn capped(failure: CheckFailure, reports: &[WaveReport], lang: Locale) -> RoundRefusal {
+    let (stuck, back): (Vec<u64>, Vec<u64>) =
+        failure.waves.iter().partition(|wave| fix_rounds_done(reports, **wave) >= MAX_FIX_ROUNDS);
+    if stuck.is_empty() {
+        return RoundRefusal::CheckFailed(Box::new(failure));
+    }
+    let names: Vec<String> = stuck.iter().map(u64::to_string).collect();
+    let fill = |key: &str| translate(key, lang).replace("{waves}", &names.join(", ")).replace("{max}", &MAX_FIX_ROUNDS.to_string());
+    let rest = CheckFailure { waves: back, ..failure };
+    let text = format!("{}\n\n{}", fill("round.after_wave.limit"), rest.message(lang));
+    let fixes = rest.waves.iter().map(|wave| (*wave, rest.fix(*wave, lang))).collect();
+    RoundRefusal::AfterWave { text, question: Some(fill("round.after_wave.question")), fixes }
 }
 
 /// As ondas de `waves` a quem volta o conserto do comando que caiu com a
@@ -225,6 +255,46 @@ mod tests {
             assert!(fix.starts_with(&fix_head(&wave.to_string(), silent)) && fix.ends_with("o teste soma caiu"), "{fix}");
         }
         assert_eq!(delivered_count(root), 0, "nothing was taken: {joined}");
+    }
+
+    /// Duas ondas na mesma rodada e a suíte vermelha sem citar arquivo de
+    /// nenhuma: o conserto volta às duas. Só a onda 1 grava a entrega de
+    /// novo. Na primeira e na segunda rodada de conserto dela a suíte ainda
+    /// devolve o conserto; na volta que vem depois das duas, a rodada para e
+    /// faz ao usuário a pergunta da conferência depois da onda, com o fim da
+    /// saída, e não grava trecho para a onda 1. A onda 2, que não passou por
+    /// rodada de conserto nenhuma, ainda recebe o dela. Nada é comitado.
+    #[test]
+    fn a_red_suite_returns_the_fix_for_two_fix_rounds_and_then_asks_the_user() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        let silent = "echo 'o teste soma caiu'; exit 1";
+        let config = json!({"maxCompilingWaves": 2, "testCommand": silent}).to_string();
+        std::fs::write(root.join("mustard.json"), config).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        back_with(root, 2, "src/b.rs");
+        for fix_round in 1..=2 {
+            back_with(root, 1, "src/a.rs");
+            let fixed = round(root, "x", None);
+            assert_eq!(fixed["reason"], json!("round-tests-failed"), "fix round {fix_round}: {fixed}");
+            assert_eq!(fixed.get("question"), None, "fix round {fix_round}: {fixed}");
+            assert!(fix_kept(root, 1).is_some_and(|fix| fix.ends_with("o teste soma caiu")), "fix round {fix_round}: {fixed}");
+        }
+
+        back_with(root, 1, "src/a.rs");
+        let asked = round(root, "x", None);
+        assert_eq!(asked["reason"], json!("round-after-wave-limit"), "{asked}");
+        let question = translate("round.after_wave.question", Locale::PtBr).replace("{waves}", "1").replace("{max}", "2");
+        assert_eq!(asked["question"], json!(question), "{asked}");
+        let hint = asked["hint"].as_str().unwrap_or_default();
+        let limit = translate("round.after_wave.limit", Locale::PtBr).replace("{waves}", "1").replace("{max}", "2");
+        let joined = |wave: &str| format!("\n- {}", translate("round_checks.joined", Locale::PtBr).replace("{wave}", wave));
+        assert!(hint.starts_with(&limit) && hint.contains("o teste soma caiu"), "{hint}");
+        assert!(hint.ends_with(&joined("2")) && !hint.contains(&joined("1")), "{hint}");
+        assert_eq!(fix_kept(root, 1), None, "the wave past its fix rounds goes to the user: {asked}");
+        assert!(fix_kept(root, 2).is_some_and(|fix| fix.ends_with("o teste soma caiu")), "{asked}");
+        assert_eq!(delivered_count(root), 0, "nothing was taken: {asked}");
     }
 
     /// Com o Claude Code que mandou a onda aberto, a suíte vermelha manda o

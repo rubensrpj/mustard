@@ -331,7 +331,7 @@ fn take_returns(
     // (importações contra a regra, restos e órfãos): a recusa de qualquer uma
     // volta o disco ao que era e nada é comitado; o que só avisa segue nos
     // avisos.
-    let after = message.is_some().then(|| ensure_checks_pass(root, &report.waves).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
+    let after = message.is_some().then(|| ensure_checks_pass(root, &report.waves, lang).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
     let (found, sizes) = after
         .transpose()
         .inspect_err(|refused| {
