@@ -1526,6 +1526,27 @@ fn every_call_of_the_agent_of_a_rejected_return_is_refused() {
     passes("novo", "the new agent");
 }
 
+/// Com o Claude Code do envio aberto, o agente que fez a volta reprovada
+/// ainda devolve o relatório a quem conduz, sem a ordem de entregar e com
+/// ela: a devolução não grava na spec nem na cópia, e é o fim dele. No mesmo
+/// instante, o comando qualquer segue recusado pela reprovação.
+#[test]
+fn the_agent_of_a_rejected_return_still_hands_back_its_report() {
+    let (project, _) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let locked = translate("subagent.rejected_agent_locked", Locale::PtBr).replace("{wave}", "1");
+    let report = json!({"message": "A onda 1 saiu de mim."});
+    for ordered in [false, true] {
+        if ordered {
+            ordered_to_deliver(&project, "antigo");
+        }
+        assert_eq!(denial(&agent_calls(&project, "antigo", "Bash", &json!({"command": "ls src"}))), locked, "ordered: {ordered}");
+        let out = agent_calls(&project, "antigo", "SubagentHandback", &report);
+        assert_ne!(out.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "ordered: {ordered}: {out}");
+    }
+}
+
 /// A rodada com a linha da reprovação deixa a volta fora do commit e a cópia
 /// como está, e manda despachar um agente novo pelo título da onda: com o
 /// Claude Code que mandou a onda aberto, e com ele fechado.

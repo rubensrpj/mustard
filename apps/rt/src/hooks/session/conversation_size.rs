@@ -35,7 +35,9 @@
 //!   que a reprovação de quem conduz tirou da onda — a conversa dele começou
 //!   antes da volta reprovada — tem toda chamada recusada, com ou sem a
 //!   ordem, ler e gravar na spec inclusive: uma volta nova dele desfaria a
-//!   reprovação, e o conserto é do agente novo. O resumo
+//!   reprovação, e o conserto é do agente novo. Nas duas travas, a
+//!   devolução do relatório a quem conduz passa: ela não grava na spec nem
+//!   na cópia, e é o fim do agente. O resumo
 //!   é o salto do tamanho entre a resposta que chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
 //!   o comando que o pedido da onda manda — e a resposta seguinte, somado
 //!   quando o agente lê mais de um; sem resumo lido, conta a conversa inteira.
@@ -115,7 +117,7 @@ fn precompact_text(root: &Path, session: Option<&str>) -> Option<String> {
 /// quem conduz, o aviso de limpar ou compactar, e ao agente de onda que
 /// terminou uma tarefa, a ordem de seguir ou de entregar; antes dela, só o
 /// agente de onda que recebeu a ordem de entregar e o que a reprovação tirou
-/// da onda são recusados.
+/// da onda são recusados, fora a devolução do relatório a quem conduz.
 pub struct SizeNotice;
 
 impl Check for SizeNotice {
@@ -493,6 +495,18 @@ fn trims_the_output(segment: &Segment) -> bool {
         && segment.args.iter().all(|arg| arg.text.starts_with('-') || arg.text.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// A ferramenta com que o agente devolve o relatório a quem conduz e termina
+/// o trabalho.
+const REPORT_BACK_TOOL: &str = "SubagentHandback";
+
+/// Se a chamada `input` devolve o relatório a quem conduz
+/// ([`REPORT_BACK_TOOL`]). Ela não grava na spec nem na cópia, e é o fim do
+/// agente: nenhuma trava do agente de onda a recusa, porque sem ela o
+/// relatório não chega a quem conduz.
+fn hands_back_the_report(input: &HookInput) -> bool {
+    input.tool_name.as_deref() == Some(REPORT_BACK_TOOL)
+}
+
 /// Se o agente de onda ainda pode fazer a chamada `input` depois da ordem de
 /// entregar: só o terminal, com um comando só além dos `cd` — ler ou gravar
 /// na spec, ou compilar com `build`, cuja saída pode ir a um `tail` ou
@@ -556,9 +570,10 @@ fn left_by_rejection(input: &HookInput, root: &Path, lang: Locale) -> Option<u64
 /// ordem — por maior que a conversa esteja —, para o que passa e enquanto a
 /// rodada espera o conserto da volta que recusou ([`awaits_its_fix`]): quem
 /// conserta é o agente que fez a onda, mesmo acima do limite, e a entrega
-/// nova fecha a trava de novo.
+/// nova fecha a trava de novo. A devolução do relatório a quem conduz
+/// ([`hands_back_the_report`]) passa pelas duas travas.
 fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
-    if !input.is_subagent() {
+    if !input.is_subagent() || hands_back_the_report(input) {
         return None;
     }
     let lang = ctx.config.language().text_or_default();
@@ -1173,6 +1188,23 @@ mod tests {
             let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the order"));
             assert!(reason.starts_with("[Mustard]"), "{command}: {reason}");
         }
+    }
+
+    /// Depois da ordem de entregar, a devolução do relatório a quem conduz
+    /// passa: o agente que gravou a entrega termina com o relatório entregue.
+    /// No mesmo instante, a leitura de um arquivo segue recusada — a trava
+    /// está fechada.
+    #[test]
+    fn after_the_order_to_deliver_the_report_back_to_the_conductor_passes() {
+        use serde_json::json;
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
+        assert!(order.contains("Grave a entrega"), "the order to deliver: {order}");
+
+        assert!(refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()})).is_some(), "the lock is closed");
+        assert_eq!(refused(root, REPORT_BACK_TOOL, json!({"message": "Onda 1 entregue."})), None, "the report back passes");
     }
 
     /// A medida do fim de tarefa fica calada onde não é de uma onda: na

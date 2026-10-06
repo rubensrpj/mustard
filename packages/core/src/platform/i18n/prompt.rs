@@ -120,13 +120,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // da onda, ler e gravar na spec inclusive.
         ("subagent.rejected_agent_locked", Locale::PtBr) => {
             "[Mustard] A chamada foi barrada: quem conduz a obra reprovou a volta da onda {wave}, e a \
-             onda saiu de você. O conserto é de um agente novo. Nenhuma chamada sua passa, nem ler ou \
-             gravar na spec: uma entrega sua desfaria a reprovação. Pare aqui e termine a resposta."
+             onda saiu de você. O conserto é de um agente novo. Só passa a devolução do relatório a \
+             quem conduz. Nenhuma outra chamada sua passa, nem ler ou gravar na spec: uma entrega sua \
+             desfaria a reprovação. Pare aqui e termine a resposta."
         }
         ("subagent.rejected_agent_locked", Locale::EnUs) => {
             "[Mustard] The call was blocked: whoever leads the work rejected wave {wave}'s return, and \
-             the wave left you. A new agent does the fix. None of your calls pass, not even reading or \
-             writing the spec: a delivery from you would undo the rejection. Stop here and end your reply."
+             the wave left you. A new agent does the fix. Only handing the report back to whoever \
+             leads passes. No other call of yours does, not even reading or writing the spec: a \
+             delivery from you would undo the rejection. Stop here and end your reply."
         }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
@@ -629,7 +631,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             101,
-            0x0896_e7d9_3971_a5fa,
+            0xdde3_2c85_eb81_0ee3,
         );
     }
 

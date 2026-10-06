@@ -595,7 +595,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              descobriu e o próximo vai precisar, com a fonte e o comando que confere. Dúvidas: o que \
              você não sabe; sem nenhuma, escreva \"nenhuma\". Se você continuou outro resumo, o seu \
              o substitui: traga dele o que ainda vale. Daqui em diante, só passam ler e gravar na \
-             spec e o comando de compilar."
+             spec, o comando de compilar e a devolução do relatório a quem conduz."
         }
         ("conversation_size.wave_deliver", Locale::EnUs) => {
             "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
@@ -608,19 +608,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              reason, with no open alternative. Facts: what you found out and the next one will \
              need, with the source and the command that checks it. Doubts: what you do not know; \
              with none, write \"none\". If you continued another summary, yours replaces it: bring \
-             from it what still holds. From here on, only reading and writing the spec and the \
-             build command pass."
+             from it what still holds. From here on, only reading and writing the spec, the build \
+             command and handing the report back to whoever leads pass."
         }
         // A recusa ao agente de onda depois da ordem de entregar.
         ("conversation_size.wave_locked", Locale::PtBr) => {
             "[Mustard] A ordem de entregar já saiu. Só passam ler e gravar na spec (`mustard-rt run \
              read` e `run write`){build}, cada um sozinho na linha, sem `&&`, `;`, `|` nem `$(…)`. \
-             Grave a entrega, com as tarefas não começadas em `undone`, e pare."
+             A devolução do relatório a quem conduz também passa. Grave a entrega, com as tarefas \
+             não começadas em `undone`, e pare."
         }
         ("conversation_size.wave_locked", Locale::EnUs) => {
             "[Mustard] The order to deliver is out. Only reading and writing the spec (`mustard-rt \
              run read` and `run write`){build} pass, each alone on its line, with no `&&`, `;`, `|` \
-             or `$(…)`. Record the delivery, with the tasks not started in `undone`, and stop."
+             or `$(…)`. Handing the report back to whoever leads passes too. Record the delivery, \
+             with the tasks not started in `undone`, and stop."
         }
         // O que a recusa acrescenta quando o projeto declara o comando de
         // compilar.
@@ -680,9 +682,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              below back to its agent, in the same copy. The agent fixes them, records the delivery again, \
              and you run the round once more. Warnings do not hold the round."
         }
-        // O teto das rodadas de conserto abre tanto a recusa da conferência
-        // depois da onda quanto a da compilação, do lint ou da suíte que
-        // caem: a frase serve às duas, e o que vem abaixo diz o que caiu.
+        // O teto das rodadas de conserto abre a recusa da conferência depois
+        // da onda, a da compilação, do lint ou da suíte que caem e a da
+        // verificação de um critério que cai: a frase serve a todas, e o que
+        // vem abaixo diz o que caiu.
         ("round.after_wave.limit", Locale::PtBr) => {
             "A onda {waves} já passou por {max} rodadas de conserto, e a rodada ainda recusa a entrega. \
              Nada foi comitado. Mostre ao usuário o que vem abaixo e faça a pergunta de `question`."
@@ -1955,7 +1958,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             231,
-            0x587e_24f7_3793_445f,
+            0x2f76_9535_1dd0_df1d,
         );
     }
 
