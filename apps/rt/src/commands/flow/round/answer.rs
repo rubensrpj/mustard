@@ -2036,17 +2036,6 @@ mod tests {
         store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], at).unwrap();
     }
 
-    /// O processo e a hora de início de um Claude Code que já fechou: um
-    /// processo nascido e já colhido nunca mais aparece com a mesma hora de
-    /// início. Só os testes de onda órfã usam, e eles só valem no Linux.
-    #[cfg(target_os = "linux")]
-    fn closed_sender() -> (u32, u64) {
-        let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
-        let pid = dead.id();
-        dead.wait().expect("reap the fixture process");
-        (pid, 1)
-    }
-
     /// O passo que o agente grava pelo `run write step`; a onda pausada e a
     /// órfã, de um Claude Code que fechou, reenviam o pedido de antes,
     /// palavra por palavra, com os passos e o aviso, e o envio novo aponta o
@@ -2089,7 +2078,7 @@ mod tests {
 
         // A onda 2 é órfã: o Claude Code dela fechou — um processo nascido e
         // já colhido nunca mais aparece com a mesma hora de início.
-        let (dead_pid, dead_started) = closed_sender();
+        let (dead_pid, dead_started) = closed_process();
         // O envio dela é de antes da vaga fixa: ainda grava a pasta de
         // compilação, o campo antigo que o envio novo não grava mais.
         let mut draft2 = draft2;
@@ -2224,7 +2213,7 @@ mod tests {
         let mut draft = resend_draft(sent_of(1));
         draft["copy"] = json!(shared);
         let (claude_pid, claude_started) =
-            if alive { crate::commands::flow::stuck::sender_process() } else { closed_sender() };
+            if alive { crate::commands::flow::stuck::sender_process() } else { closed_process() };
         draft["claude_pid"] = json!(claude_pid);
         draft["claude_started"] = json!(claude_started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2329,7 +2318,7 @@ mod tests {
         let root = dir.path();
         let copy = wave_one_without_its_copy(root);
         let mut draft = resend_draft(&sends_of(root)[0]);
-        let (pid, started) = closed_sender();
+        let (pid, started) = closed_process();
         draft["claude_pid"] = json!(pid);
         draft["claude_started"] = json!(started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2426,7 +2415,7 @@ mod tests {
             let sent = log.visible().into_iter().find(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
             resend_draft(sent)
         };
-        let (dead_pid, dead_started) = closed_sender();
+        let (dead_pid, dead_started) = closed_process();
         let mut draft1 = draft1;
         draft1["claude_pid"] = json!(dead_pid);
         draft1["claude_started"] = json!(dead_started);

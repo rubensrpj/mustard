@@ -1732,11 +1732,9 @@ mod tests {
             draft.remove(key);
         }
         drop(log);
-        let mut dead = Command::new("true").spawn().expect("spawn the fixture process");
-        let dead_pid = dead.id();
-        dead.wait().expect("reap the fixture process");
+        let (dead_pid, dead_started) = closed_process();
         draft.insert("claude_pid".into(), json!(dead_pid));
-        draft.insert("claude_started".into(), json!(1));
+        draft.insert("claude_started".into(), json!(dead_started));
         store::write_at(&path, "send", draft, &[], &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string())
             .unwrap();
 
@@ -5717,21 +5715,6 @@ fn main() { sum_by_the_new_name(); }
             "fn main() {}\n",
             "o código que não pôde ser guardado segue na cópia: {out}"
         );
-    }
-
-    /// O envio da onda `wave` de um Claude Code que fechou: a versão nova
-    /// dele leva um processo que já acabou.
-    #[cfg(target_os = "linux")]
-    fn orphan_the_send(root: &Path, wave: u64) {
-        let mut gone = Command::new("true").spawn().expect("o processo de mentira");
-        let pid = gone.id();
-        gone.wait().expect("o processo acabou");
-        let path = store::spec_file(root, "x").unwrap();
-        let log = store::read(&path).unwrap().unwrap();
-        let extra = json!({"claude_pid": pid, "claude_started": 1}).as_object().cloned().unwrap();
-        let draft = super::super::queue::send_revision(&log, wave, extra).expect("o envio da onda");
-        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        store::write_at(&path, "send", draft, &[], &at).unwrap();
     }
 }
 

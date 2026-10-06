@@ -789,23 +789,8 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
 
-        // O Claude Code que mandou a onda 1 fechou: a versão nova do envio
-        // leva um processo que já acabou. O programa que nasce e acaba é o
-        // próprio executável do teste listando os testes, que toda máquina
-        // tem, no lugar de um `true` que o Windows não traz.
-        let mut gone = std::process::Command::new(std::env::current_exe().expect("o executável do teste"))
-            .arg("--list")
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("o processo de mentira");
-        let pid = gone.id();
-        gone.wait().expect("o processo acabou");
-        let path = store::spec_file(root, "x").unwrap();
-        let log = store::read(&path).unwrap().unwrap();
-        let extra = json!({"claude_pid": pid, "claude_started": 1}).as_object().cloned().unwrap();
-        let draft = super::super::queue::send_revision(&log, 1, extra).expect("o envio da onda 1");
-        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        store::write_at(&path, "send", draft, &[], &at).unwrap();
+        // O Claude Code que mandou a onda 1 fechou.
+        orphan_the_send(root, 1);
 
         let one = copy_of(root, 1);
         std::fs::write(one.join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();

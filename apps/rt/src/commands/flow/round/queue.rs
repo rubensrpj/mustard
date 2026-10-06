@@ -1034,11 +1034,9 @@ mod tests {
         });
         drop(log);
 
-        let mut dead = Command::new("true").spawn().expect("spawn the fixture process");
-        let dead_pid = dead.id();
-        dead.wait().expect("reap the fixture process");
+        let (dead_pid, dead_started) = closed_process();
         draft["claude_pid"] = json!(dead_pid);
-        draft["claude_started"] = json!(1);
+        draft["claude_started"] = json!(dead_started);
         store::write_at(
             &path,
             "send",

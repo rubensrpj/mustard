@@ -704,20 +704,6 @@ mod tests {
     /// O trecho que a rodada devolveu para a onda 1.
     const SECTION: &str = "Onda 1, rodada de conserto 1 de 2:\n- `src/a.rs` linha 1 importa o que a regra barra.";
 
-    /// O número de um processo que já fechou: o próprio executável do teste,
-    /// listando os testes, já esperado.
-    #[cfg(target_os = "linux")]
-    fn closed_pid() -> u32 {
-        let mut gone = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--list")
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = gone.id();
-        gone.wait().unwrap();
-        pid
-    }
-
     /// A onda recusada ganha um agente novo só: de dois despachos ao mesmo
     /// tempo, um passa com o trecho e o outro é barrado, e o despacho seguinte
     /// também, enquanto o Claude Code que abriu o agente novo segue aberto.
@@ -727,7 +713,8 @@ mod tests {
     fn a_second_new_agent_is_refused_while_the_first_ones_claude_code_is_open() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (fix, refused) = refused_wave(root, closed_pid(), 1);
+        let (pid, started) = crate::commands::flow::round::closed_process();
+        let (fix, refused) = refused_wave(root, pid, started);
         std::fs::write(&fix, format!("{SECTION}\n")).unwrap();
         let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
         let sent = format!("{title}\n\nConserte a onda.");
@@ -754,7 +741,8 @@ mod tests {
         assert_eq!(denied(dispatch_to(root, "mustard-wave", &sent)), refused, "the new agent's Claude Code is open");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let closed = json!({"claude_pid": closed_pid(), "claude_started": 1}).as_object().cloned().unwrap();
+        let (pid, started) = crate::commands::flow::round::closed_process();
+        let closed = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned().unwrap();
         let draft = crate::commands::flow::round::send_revision(&log, 1, closed).expect("the wave's send");
         crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(draft));
         assert_eq!(rewritten(dispatch_to(root, "mustard-wave", &sent)), new_agent, "its Claude Code closed too");
@@ -769,7 +757,8 @@ mod tests {
     fn a_refused_wave_whose_sender_closed_goes_to_a_new_agent_with_the_fix() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (fix, refused) = refused_wave(root, closed_pid(), 1);
+        let (pid, started) = crate::commands::flow::round::closed_process();
+        let (fix, refused) = refused_wave(root, pid, started);
         let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
         let sent = format!("{title}\n\nConserte a onda.");
         assert_eq!(denied(dispatch_to(root, "mustard-wave", &sent)), refused, "no section on disk");

@@ -32,6 +32,8 @@ use serde_json::{json, Value};
 
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/closed_process.rs"]
+mod closed_process;
 
 const SPEC: &str = "backlog-lotes";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -382,16 +384,6 @@ fn test_process() -> (u32, u64) {
 /// do teste: a onda segue em andamento não importa quem lançou a suíte.
 fn keep_sent(project: &Project, waves: &[u64]) {
     sent_by(project, waves, test_process());
-}
-
-/// O par de um processo que já terminou, nascido numa hora que o número dele
-/// nunca teve: o Claude Code que mandou a onda e fechou, não importa quem
-/// lançou a suíte.
-fn closed_process() -> (u32, u64) {
-    let mut gone = Command::new("true").spawn().expect("the process runs");
-    let pid = gone.id();
-    gone.wait().expect("the process ends");
-    (pid, 1)
 }
 
 /// O envio mais recente de cada onda de `waves` ganha uma versão nova, como
@@ -1321,7 +1313,7 @@ fn delivered_wave(alive: bool) -> (Project, PathBuf) {
     let (project, _, _, _) = backlog_project(&[&[GREETING]]);
     let first = project.run(&["round", "--spec", SPEC]);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-    sent_by(&project, &[1], if alive { test_process() } else { closed_process() });
+    sent_by(&project, &[1], if alive { test_process() } else { closed_process::closed_process() });
     let copy = deliver_in_copy(&project, 1, "hello\n");
     (project, copy)
 }

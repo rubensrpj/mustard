@@ -311,16 +311,7 @@ mod tests {
         assert_eq!(open["reason"], json!("round-tests-failed"), "{open}");
         assert!(!open["hint"].as_str().unwrap_or_default().contains(&new_agent), "{open}");
 
-        let mut gone = std::process::Command::new("true").spawn().unwrap();
-        let pid = gone.id();
-        gone.wait().unwrap();
-        let path = store::spec_file(root, "x").unwrap();
-        let log = store::read(&path).unwrap().unwrap();
-        let extra = json!({"claude_pid": pid, "claude_started": 1}).as_object().cloned().unwrap();
-        let draft = crate::commands::flow::round::send_revision(&log, 1, extra).expect("the send of wave 1");
-        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        store::write_at(&path, "send", draft, &[], &at).unwrap();
-
+        orphan_the_send(root, 1);
         let closed = round(root, "x", None);
         assert_eq!(closed["reason"], json!("round-tests-failed"), "{closed}");
         assert!(closed["hint"].as_str().unwrap_or_default().ends_with(&format!("\n\n{new_agent}")), "{closed}");

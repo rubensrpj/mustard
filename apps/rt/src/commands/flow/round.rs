@@ -146,6 +146,12 @@ mod stops;
 mod summary_wave;
 mod usage;
 
+// O processo que já fechou, que os testes da rodada, os do gancho do despacho
+// e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
+#[cfg(test)]
+#[path = "../../../tests/support/closed_process.rs"]
+mod closed_process;
+
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
 /// espera o clique e as ondas paradas no limite de consertos, o bloco de
@@ -177,7 +183,9 @@ pub(crate) use slots::{
 };
 pub(crate) use read_check::request_name;
 #[cfg(test)]
-pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+pub(crate) use tests::{
+    closed_process, deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent,
+};
 pub(crate) use finish_check::mark_step_copy;
 pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
@@ -239,6 +247,7 @@ mod tests {
     use mustard_core::io::spec_events as store;
     use serde_json::{json, Value};
 
+    pub(crate) use super::closed_process::closed_process;
     use super::read_check::unread_items;
     use super::*;
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
@@ -710,6 +719,18 @@ mod tests {
     pub(super) fn seed_send(root: &Path, n: u64) {
         crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": n, "role": "wave",
             "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary"}));
+    }
+
+    /// O envio da onda `wave` da spec `x` de um Claude Code que fechou: a
+    /// versão nova dele leva um processo que já acabou ([`closed_process`]).
+    pub(super) fn orphan_the_send(root: &Path, wave: u64) {
+        let (pid, started) = closed_process();
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let extra = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned().unwrap();
+        let draft = send_revision(&log, wave, extra).expect("the send of the wave");
+        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        store::write_at(&path, "send", draft, &[], &at).unwrap();
     }
 
     /// Nenhum arquivo da rodada passa do teto de linhas de código: a porta e

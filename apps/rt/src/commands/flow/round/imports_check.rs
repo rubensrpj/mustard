@@ -161,7 +161,7 @@ pub(super) mod tests {
     use serde_json::{json, Value};
     use tempfile::tempdir;
 
-    use super::super::tests::{approved_with, delivered, round, round_with_mine, write};
+    use super::super::tests::{approved_with, delivered, orphan_the_send, round, round_with_mine, write};
     use super::*;
 
     /// Um mapa com cinco controllers e cinco services em `src/`, os
@@ -388,20 +388,7 @@ pub(super) mod tests {
         assert_eq!(open["reason"], json!("round-after-wave"), "{open}");
         assert!(!open["hint"].as_str().unwrap_or_default().contains(&new_agent), "{open}");
 
-        let mut gone = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--list")
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = gone.id();
-        gone.wait().unwrap();
-        let path = mustard_core::io::spec_events::spec_file(root, "x").unwrap();
-        let log = mustard_core::io::spec_events::read(&path).unwrap().unwrap();
-        let extra = json!({"claude_pid": pid, "claude_started": 1}).as_object().cloned().unwrap();
-        let draft = super::super::queue::send_revision(&log, 1, extra).expect("the send of wave 1");
-        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        mustard_core::io::spec_events::write_at(&path, "send", draft, &[], &at).unwrap();
-
+        orphan_the_send(root, 1);
         let closed = round_with_mine(root, "x", None, &mine_giving(after));
         assert_eq!(closed["reason"], json!("round-after-wave"), "{closed}");
         assert!(closed["hint"].as_str().unwrap_or_default().ends_with(&format!("\n\n{new_agent}")), "{closed}");
