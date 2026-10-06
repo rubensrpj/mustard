@@ -337,6 +337,62 @@ mod tests {
         }
     }
 
+    /// O estilo de resposta de cada idioma traz, logo depois da parte sobre
+    /// as perguntas do usuário e antes dos exemplos, a seção da resposta de
+    /// estado ou de avaliação, com as cinco regras por extenso. Os dois
+    /// exemplos que saíram para ela caber, o do código interno e o da trava de
+    /// gravação, não voltam.
+    #[test]
+    fn the_answer_styles_open_a_status_answer_with_what_went_wrong() {
+        for (style, before, title, rules, after) in [
+            (
+                plugin_file("output-styles/mustard-pt-BR.md"),
+                "## Quando o usuário faz perguntas",
+                "## Resposta de estado ou de avaliação",
+                [
+                    "- Abra pelo que deu errado, pelo que você errou e pelo que não foi conferido. \
+                     Se nada deu errado, diga isso e mostre a prova.",
+                    "- Diga o tamanho da amostra.",
+                    "- Não escreva \"bem\" nem \"funcionou\" sem a prova ao lado.",
+                    "- Cite todo aviso ainda aberto, uma linha cada.",
+                    "- Diga quando um número e um texto discordam.",
+                ],
+                "## Exemplos",
+            ),
+            (
+                plugin_file("output-styles/mustard-en-US.md"),
+                "## When the user asks questions",
+                "## A status or assessment answer",
+                [
+                    "- Open with what went wrong, what you got wrong and what was not checked. \
+                     If nothing went wrong, say so and show the proof.",
+                    "- Say the sample size.",
+                    "- Do not write \"fine\" or \"it worked\" without the proof beside it.",
+                    "- Cite every warning still open, one line each.",
+                    "- Say when a number and a text disagree.",
+                ],
+                "## Examples",
+            ),
+        ] {
+            let section = format!("\n\n{title}\n\n{}\n\n", rules.join("\n"));
+            let at = style.find(&section).unwrap_or_else(|| panic!("the answer style lacks `{section}`: {style}"));
+            let questions = style.find(before).unwrap_or_else(|| panic!("the answer style lacks `{before}`"));
+            let examples = style.find(after).unwrap_or_else(|| panic!("the answer style lacks `{after}`"));
+            assert!(questions < at && at < examples, "`{title}` sits between `{before}` and `{after}`: {style}");
+            assert!(
+                !style[questions..at].contains("\n## "),
+                "`{title}` follows `{before}` with no other section between: {style}"
+            );
+            assert!(
+                style[at + section.len()..].starts_with(after),
+                "`{title}` comes right before `{after}`: {style}"
+            );
+            for gone in ["lock advisory", "advisory lock", "P-19"] {
+                assert!(!style.contains(gone), "the answer style still carries `{gone}`: {style}");
+            }
+        }
+    }
+
     /// O `Stop` tem 30 segundos no `hooks.json`, não mais 5.
     #[test]
     fn the_stop_hook_has_thirty_seconds() {

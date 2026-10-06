@@ -260,12 +260,18 @@ impl UpsertReport {
 /// `version` is supplied by the caller because the core does not own a
 /// product version.
 ///
-/// Under [`InstallMode::Private`] a step 0 runs first — [`footprint_rules`] is
-/// written into the clone-local exclude file, and whatever the host repository
-/// already tracks under [`footprint_pathspecs`] is recorded as residue — so no
-/// seed is ever momentarily visible to that repository's git. When that write
-/// cannot happen inside a repository that exists, step 0 REFUSES and no step
-/// after it runs. Step 2 then targets the local settings layer.
+/// No [`InstallMode::Private`], um passo 0 roda antes: [`footprint_rules`] é
+/// gravado no arquivo de exclusão local do clone, e o que o repositório
+/// hospedeiro já rastreia sob [`footprint_pathspecs`] fica registrado como
+/// resíduo. Assim, nenhum arquivo semeado fica visível ao git desse
+/// repositório, nem por um instante. Quando essa gravação não pode acontecer
+/// dentro de um repositório que existe, o passo 0 RECUSA, e nenhum passo
+/// depois dele roda. O passo 2 então mira a camada local das configurações, e
+/// o `.claude/settings.json` da equipe só é alcançado pelo passo 6: ele tira
+/// as linhas do molde e, como única exceção entre as regras de bloqueio dele,
+/// troca no lugar cada uma das três que um molde antigo escreveu com as duas
+/// formas de asterisco. Essas linhas mudadas ficam visíveis ao git, para a
+/// pessoa comitar.
 ///
 /// # Errors
 ///

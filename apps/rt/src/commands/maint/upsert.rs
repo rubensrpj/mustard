@@ -1,42 +1,48 @@
 //! `mustard-rt run upsert` — install or update Mustard in the current project.
 //!
-//! The plugin's bootstrap door: everything the harness needs in a project —
-//! `.claude/settings.local.json`, Mustard's own texts (the session map under
-//! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
-//! and the two agents under `.claude/agents/mustard/`),
-//! `.claude/.gitignore`, and the project-root `mustard.json` — is seeded by
-//! `mustard_core::upsert_project`, idempotently.
-//! The settings file is the LOCAL one because the install is always
-//! private-mode (see [`run`]); the shared `.claude/settings.json` is never
-//! written here. What the OPERATOR owns is merge-only: an existing
-//! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
-//! preserved, and only what is missing is created or backfilled. Mustard's
-//! own texts — `.claude/mustard/session-map.md`,
-//! `.claude/mustard/pages/{spec,project}.html` and
-//! `.claude/agents/mustard/{wave,review}.md` — are ALWAYS rewritten, in
-//! the language of `language.text`: they are the harness's own text, not
-//! project configuration, so a copy that diverged is replaced and reported as
-//! `Updated`, while a copy already byte-identical to the shipped text is
-//! reported as `Preserved` because there was nothing left to write.
-//! The local settings gain Mustard's own allow rules — its `mustard-rt run`
-//! commands and `ArtifactData`, the tool that writes the database of the pages
-//! it publishes — without touching the operator's rules.
-//! An older install's map under its former name, `mapa-inicio-sessao.md`,
-//! leaves the disk, and every declaration of it in `mustard.json#inject`, in
-//! any spelling of the old path, is pointed at the new name with the rest of
-//! the file untouched.
+//! A porta de entrada do plugin: tudo o que o harness precisa num projeto (o
+//! `.claude/settings.local.json`; os textos do próprio Mustard, que são o mapa
+//! da sessão em `.claude/mustard/`, os dois moldes de página em
+//! `.claude/mustard/pages/` e os dois agentes em `.claude/agents/mustard/`; o
+//! `.claude/.gitignore`; e o `mustard.json` da raiz do projeto) é semeado por
+//! `mustard_core::upsert_project`, de forma idempotente.
+//! O arquivo de configurações é o LOCAL porque a instalação é sempre no modo
+//! privado (veja [`run`]); o `.claude/settings.json` compartilhado nunca é
+//! semeado aqui, e só a limpeza mais abaixo grava nele: ela tira as linhas do
+//! molde e, como única exceção entre as regras de bloqueio dele, troca no
+//! lugar cada uma das três que um molde antigo escreveu com as duas formas de
+//! asterisco (a que não está lá nunca entra). O que é da PESSOA só ganha o que
+//! falta: um `.claude/settings.local.json`, um `.claude/.gitignore` ou um
+//! `mustard.json` que já existe fica como está, e só o que falta é criado ou
+//! acrescentado. Os textos do próprio Mustard (`.claude/mustard/session-map.md`,
+//! `.claude/mustard/pages/{spec,project}.html` e
+//! `.claude/agents/mustard/{wave,review}.md`) são SEMPRE regravados, no idioma
+//! de `language.text`: são texto do harness, não configuração do projeto,
+//! então a cópia que divergiu é trocada e relatada como `Updated`, e a cópia
+//! já igual, byte a byte, ao texto embarcado é relatada como `Preserved`,
+//! porque não havia nada a gravar.
+//! As configurações locais ganham as liberações do próprio Mustard (os
+//! comandos `mustard-rt run` dele e o `ArtifactData`, a ferramenta que grava o
+//! banco de dados das páginas que ele publica) sem mexer nas regras da pessoa.
+//! O mapa de uma instalação antiga com o nome de antes,
+//! `mapa-inicio-sessao.md`, sai do disco, e cada declaração dele em
+//! `mustard.json#inject`, em qualquer escrita do caminho antigo, passa a
+//! apontar para o nome novo, com o resto do arquivo intocado.
 //!
-//! What an older Mustard left in files that are not its own (the marks in the
-//! `CLAUDE.md` files, the seed's lines in the team's `.claude/settings.json`,
-//! a planted `.claude/CLAUDE.md`) is its own leftover, and leaves in this same
-//! call, with no question: the rules of the Guards go first to the project's
-//! pending list (`.claude/pending/ledger.json`), in one item with the text of
-//! each rule and the file it left, then the lines leave. They never go to the
-//! lesson bank, which stays on this machine and never goes to git: the person
-//! turns each rule into a test or drops it. When that item cannot be written,
-//! no file of the cleanup changes. `cleanup` lists what left and the files
-//! without a mark, which are never touched; `cleaned` says what was done, with
-//! the number of the pending item. Nothing is staged or committed.
+//! O que um Mustard antigo deixou em arquivos que não são dele (as marcas nos
+//! arquivos `CLAUDE.md`, as linhas do molde no `.claude/settings.json` da
+//! equipe, um `.claude/CLAUDE.md` plantado) é sobra dele mesmo, e sai nesta
+//! mesma chamada, sem pergunta: as regras dos Guards vão antes para a lista de
+//! pendências do projeto (`.claude/pending/ledger.json`), num item com o texto
+//! de cada regra e o arquivo de onde ela saiu, e depois as linhas saem. Elas
+//! nunca vão para o banco de lições, que fica nesta máquina e nunca vai para o
+//! git: a pessoa transforma cada regra num teste ou a descarta. Quando esse
+//! item não pode ser gravado, nenhum arquivo da limpeza muda. `cleanup` lista
+//! o que saiu, cada regra de bloqueio trocada no lugar (`swaps`, o texto
+//! antigo e o novo) e os arquivos sem marca, que nunca são tocados; `cleaned`
+//! diz o que foi feito, com o número do item de pendência e uma linha por
+//! regra trocada (`swapped`), no idioma do projeto. Nada vai para o stage nem
+//! é comitado.
 //!
 //! Once the files are written, the same code-tool step `mustard init` runs
 //! (`mustard_core::platform::code_tools::ensure_code_tools`) sets up the

@@ -48,13 +48,15 @@ An item recorded in the spec has three parts, because the agent reads it without
 
 Answer each question by the number the user used, in the order of explaining. If you were wrong, say "I was wrong" and what is right. Close with a single proposal and one yes-or-no question.
 
+## A status or assessment answer
+
+- Open with what went wrong, what you got wrong and what was not checked. If nothing went wrong, say so and show the proof.
+- Say the sample size.
+- Do not write "fine" or "it worked" without the proof beside it.
+- Cite every warning still open, one line each.
+- Say when a number and a text disagree.
+
 ## Examples
-
-Before: "R8 closes the P-19 conflict, and C-13 covers the rest."
-After: "The spec page is published only once. After that, each new item shows up on it by itself, and the link does not fill the conversation."
-
-Before: "I implemented the writer with an advisory lock and a monotonic id, fixing the race."
-After: "Two sessions can now write the same spec. One waits for the other to finish, and no number repeats."
 
 Before: "As previously mentioned, the initial analysis indicated that the payment service would use C#."
 After: "I was wrong: I said the payment service uses C#. It uses Node.js with NestJS."

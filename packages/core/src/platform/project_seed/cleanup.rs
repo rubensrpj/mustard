@@ -8,9 +8,13 @@
 //!   scan wrote the `@.claude/scan-map.md` import, the `> Parent: … |
 //!   Orchestrator: …` line and the `## Guards` block between
 //!   `<!-- mustard:guards -->` and `<!-- /mustard:guards -->`;
-//! - the team's `.claude/settings.json`, where an older install wrote the lines
-//!   of its seed (its deny rules stay: a protection rule never leaves the
-//!   team's file unless someone asks);
+//! - o `.claude/settings.json` da equipe, onde uma instalação antiga escreveu
+//!   as linhas do molde dela (as regras de bloqueio ficam: uma regra de
+//!   proteção nunca sai do arquivo da equipe sem alguém pedir). A única
+//!   exceção: cada uma das três regras de bloqueio que um molde antigo
+//!   escreveu com as duas formas de asterisco vira, no mesmo lugar, a escrita
+//!   que funciona, e assim a proteção vale e o Claude Code para de avisar; a
+//!   que não está lá nunca entra, e quem comita as linhas mudadas é a pessoa;
 //! - `.claude/CLAUDE.md`, the orchestrator an older install planted;
 //! - a spec's own `spec.md` and `spec.html`, left behind by an older binary
 //!   that rendered the page to disk beside `spec.ndjson`, which is the ONLY
@@ -43,7 +47,7 @@
 use std::path::Path;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::domain::config::ProjectConfig;
 use crate::domain::lessons as model;
@@ -53,7 +57,9 @@ use crate::io::spec_index::DISCARDED_DIR;
 use crate::platform::error::Result;
 use crate::platform::i18n::{translate, Locale};
 
-use super::settings::{parse_json_object, team_settings_path, without_seed_lines, TEAM_SETTINGS};
+use super::settings::{
+    parse_json_object, swap_mixed_wildcard_deny_rules, team_settings_path, without_seed_lines, TEAM_SETTINGS,
+};
 use super::{CLAUDE_LOCAL_MD, CLAUDE_MD};
 
 /// The import line an older scan wrote at the top of an instruction file.
@@ -102,6 +108,40 @@ pub struct FileChange {
     pub action: Action,
     /// What leaves the file, one entry per line or block, in file order.
     pub removes: Vec<String>,
+    /// As regras de bloqueio reescritas no lugar, na ordem do arquivo. Só o
+    /// arquivo de configurações da equipe as tem.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub swaps: Vec<RuleSwap>,
+}
+
+/// Uma regra de bloqueio do arquivo de configurações da equipe que muda no
+/// lugar: o texto que um molde antigo escreveu com as duas formas de
+/// asterisco, e o que o substitui.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleSwap {
+    pub from: String,
+    pub to: String,
+}
+
+/// A linha que diz à pessoa, em `lang`, que a regra de bloqueio `swap` do
+/// arquivo `path` mudou no lugar. Só é dita depois que o arquivo foi gravado:
+/// o plano diz o mesmo com [`planned_swap_line`].
+#[must_use]
+pub fn swap_line(path: &str, swap: &RuleSwap, lang: Locale) -> String {
+    filled_swap_line("cleanup.deny_rule_swapped", path, swap, lang)
+}
+
+/// A linha do plano, em `lang`: o `/mustard:upsert` vai trocar no lugar a
+/// regra de bloqueio `swap` do arquivo `path`, e a linha mudada é da pessoa
+/// para comitar. Quando ela é dita, nada foi gravado ainda.
+#[must_use]
+pub fn planned_swap_line(path: &str, swap: &RuleSwap, lang: Locale) -> String {
+    filled_swap_line("cleanup.deny_rule_to_swap", path, swap, lang)
+}
+
+fn filled_swap_line(key: &str, path: &str, swap: &RuleSwap, lang: Locale) -> String {
+    translate(key, lang).replace("{file}", path).replace("{from}", &swap.from).replace("{to}", &swap.to)
 }
 
 /// One rule of a guards block that leaves the instruction files and goes to
@@ -174,6 +214,10 @@ pub struct CleanupDone {
     pub edited: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deleted: Vec<String>,
+    /// Uma linha por regra de bloqueio mudada no lugar ([`swap_line`]), no
+    /// idioma do projeto, depois que o arquivo dela foi gravado.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub swapped: Vec<String>,
     /// The number of the pending item that holds the rules that left.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending: Option<String>,
@@ -197,6 +241,7 @@ pub fn plan(root: &Path) -> CleanupPlan {
             path: PLANTED_ORCHESTRATOR.to_string(),
             action: Action::Delete,
             removes: vec![ORCHESTRATOR_MARKER.to_string()],
+            swaps: Vec::new(),
         });
     }
 
@@ -212,6 +257,7 @@ pub fn plan(root: &Path) -> CleanupPlan {
                     path: rel,
                     action: if delete { Action::Delete } else { Action::Edit },
                     removes,
+                    swaps: Vec::new(),
                 });
             }
         }
@@ -254,6 +300,7 @@ fn stale_spec_pages(root: &Path) -> Vec<FileChange> {
                     path: format!(".claude/spec/{name}/{name_in_dir}"),
                     action: Action::Delete,
                     removes: vec!["an older Mustard rendered this to disk beside spec.ndjson".to_string()],
+                    swaps: Vec::new(),
                 });
             }
         }
@@ -261,19 +308,35 @@ fn stale_spec_pages(root: &Path) -> Vec<FileChange> {
     out
 }
 
-/// The team's settings file without the seed's lines, when it has any.
+/// O arquivo de configurações da equipe sem as linhas do molde e com as regras
+/// de bloqueio que misturam as duas formas de asterisco trocadas no lugar,
+/// quando ele tem uma coisa ou outra.
 fn team_settings_change(root: &Path) -> Option<FileChange> {
     let raw = fs::read_to_string(team_settings_path(root)).ok()?;
     let parsed = serde_json::from_str::<Value>(&raw).ok()?;
-    let (left, removes) = without_seed_lines(parsed.as_object()?);
-    if removes.is_empty() {
+    let (left, removes, swaps) = cleaned_team_settings(parsed.as_object()?);
+    if removes.is_empty() && swaps.is_empty() {
         return None;
     }
     Some(FileChange {
         path: TEAM_SETTINGS.to_string(),
         action: if left.is_empty() { Action::Delete } else { Action::Edit },
         removes,
+        swaps,
     })
+}
+
+/// As configurações da equipe como a limpeza as deixa: sem as linhas do molde
+/// ([`without_seed_lines`]) e com cada regra de bloqueio que mistura as duas
+/// formas de asterisco trocada no lugar ([`swap_mixed_wildcard_deny_rules`]).
+/// Responde as configurações, o que saiu e o que foi trocado. O plano e a
+/// regravação leem o arquivo por aqui, então o que se grava é o que foi
+/// listado.
+fn cleaned_team_settings(settings: &Map<String, Value>) -> (Map<String, Value>, Vec<String>, Vec<RuleSwap>) {
+    let (mut left, removes) = without_seed_lines(settings);
+    let swaps =
+        swap_mixed_wildcard_deny_rules(&mut left).into_iter().map(|(from, to)| RuleSwap { from, to }).collect();
+    (left, removes, swaps)
 }
 
 /// The rules that leave, each text once, with every file it leaves. The
@@ -484,9 +547,9 @@ fn guards_in(lines: &[String]) -> Vec<String> {
 /// None today; the signature keeps room for a failure that stops everything.
 pub fn apply(root: &Path, plan: &CleanupPlan, pending: &dyn PendingList) -> Result<CleanupDone> {
     let mut done = CleanupDone::default();
+    let lang = || ProjectConfig::load(root).language().text_or_default();
     if !plan.rules.is_empty() {
-        let lang = ProjectConfig::load(root).language().text_or_default();
-        let (title, detail) = pending_item(&plan.rules, lang);
+        let (title, detail) = pending_item(&plan.rules, lang());
         match pending.add(&title, &detail) {
             Ok(id) => done.pending = Some(id),
             Err(why) => {
@@ -501,8 +564,13 @@ pub fn apply(root: &Path, plan: &CleanupPlan, pending: &dyn PendingList) -> Resu
             Action::Delete => fs::remove_file(&path).map(|()| done.deleted.push(change.path.clone())),
             Action::Edit => rewrite(root, &change.path).map(|()| done.edited.push(change.path.clone())),
         };
-        if let Err(err) = result {
-            done.failed.push(format!("{}: {err}", change.path));
+        match result {
+            Ok(()) if !change.swaps.is_empty() => {
+                let lang = lang();
+                done.swapped.extend(change.swaps.iter().map(|swap| swap_line(&change.path, swap, lang)));
+            }
+            Ok(()) => {}
+            Err(err) => done.failed.push(format!("{}: {err}", change.path)),
         }
     }
     Ok(done)
@@ -548,7 +616,7 @@ fn rewrite(root: &Path, rel: &str) -> Result<()> {
     let path = root.join(rel);
     if rel == TEAM_SETTINGS {
         let raw = fs::read_to_string(&path)?;
-        let (left, _) = without_seed_lines(&parse_json_object(&raw));
+        let (left, _, _) = cleaned_team_settings(&parse_json_object(&raw));
         let mut body = serde_json::to_string_pretty(&Value::Object(left))?;
         body.push('\n');
         return fs::write_atomic(&path, body.as_bytes());
@@ -987,6 +1055,58 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         write(root, ".claude/settings.json", "{\n  \"respectGitignore\": true,\n  \"permissions\": { \"allow\": [\"Read\"] }\n}\n");
         let listed = plan(root);
         assert_eq!(listed.files[0].action, Action::Delete, "only the seed and no deny rule: {listed:?}");
+    }
+
+    /// No `settings.json` da equipe, a regra de bloqueio que mistura as duas
+    /// formas de asterisco vira a certa no mesmo lugar: com só uma das três lá,
+    /// só ela muda, as outras duas não entram, e o resto do arquivo fica como
+    /// estava. A segunda passada não acha mais nada, e o arquivo sem nenhuma
+    /// das três nem é listado.
+    #[test]
+    fn the_cleanup_swaps_the_mixed_wildcard_rules_in_the_team_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            ".claude/settings.json",
+            "{\n  \"permissions\": {\n    \"allow\": [\"Bash(npm test:*)\"],\n    \"deny\": [\"Bash(rm -rf:*)\", \"Bash(git checkout * -f:*)\", \"Bash(team-rule:*)\"]\n  }\n}\n",
+        );
+
+        let listed = plan(root);
+        assert_eq!(listed.files.len(), 1, "{listed:?}");
+        let change = &listed.files[0];
+        assert_eq!((change.path.as_str(), &change.action), (".claude/settings.json", &Action::Edit));
+        assert!(change.removes.is_empty(), "no line of the seed leaves: {change:?}");
+        assert_eq!(
+            change.swaps,
+            [RuleSwap { from: "Bash(git checkout * -f:*)".to_string(), to: "Bash(git checkout * -f*)".to_string() }],
+        );
+
+        let done = apply(root, &listed, &NoPendingList).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.edited, [".claude/settings.json"]);
+        assert_eq!(done.swapped.len(), 1, "{done:?}");
+        assert!(
+            done.swapped[0].contains("Bash(git checkout * -f:*)") && done.swapped[0].contains("Bash(git checkout * -f*)"),
+            "the report shows the changed line: {done:?}",
+        );
+        let left: Value =
+            serde_json::from_str(&std_fs::read_to_string(root.join(".claude/settings.json")).unwrap()).unwrap();
+        assert_eq!(
+            left,
+            serde_json::json!({ "permissions": {
+                "allow": ["Bash(npm test:*)"],
+                "deny": ["Bash(rm -rf:*)", "Bash(git checkout * -f*)", "Bash(team-rule:*)"],
+            } }),
+        );
+        assert!(plan(root).is_empty(), "the second pass changes nothing");
+
+        let none = tempdir().unwrap();
+        let root = none.path();
+        let team = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm -rf:*)\", \"Bash(team-rule:*)\"]\n  }\n}\n";
+        write(root, ".claude/settings.json", team);
+        assert!(plan(root).is_empty(), "with none of the three, nothing enters");
+        assert_eq!(std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(), team);
     }
 
     /// Aplicar tira o que o plano listou e grava as regras num item só da

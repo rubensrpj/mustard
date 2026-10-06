@@ -353,18 +353,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A máquina passou. Antes do pull request, despache o agente de teste dedicado, \
              `mustard-review`. Mande a ele o comando em `review.read`, e ele lê o próprio pedido. \
              Ele grava o veredito na spec com `mustard-rt run write verdict`. \
-             Quando ele voltar, feche de novo: `mustard-rt run close --spec {spec}`. \
-             Rode-o em segundo plano e espere o aviso de fim. A suíte inteira pode passar dos 10 \
-             minutos que o terminal espera por um comando. Se o veredito não estiver na spec, mande o \
-             agente gravá-lo de novo pela ferramenta."
+             Quando ele voltar, conclua o fechamento com o mesmo comando: \
+             `mustard-rt run close --spec {spec}`. Rode-o em segundo plano e espere o aviso de fim. \
+             Com o veredito aprovado e nada mudado desde a máquina, o comando só confere o veredito \
+             e fecha a spec. Se algo mudou, a máquina roda de novo. Aí a suíte inteira pode passar \
+             dos 10 minutos que o terminal espera por um comando. Se o veredito não estiver na spec, \
+             mande o agente gravá-lo de novo pela ferramenta."
         }
         ("close.final_review", Locale::EnUs) => {
             "The machine passed. Before the pull request, dispatch the dedicated test agent, \
              `mustard-review`. Send it the command in `review.read`, and it reads its own request. \
              It records its verdict in the spec with `mustard-rt run write verdict`. \
-             When it comes back, close again: \
+             When it comes back, finish the close with the same command: \
              `mustard-rt run close --spec {spec}`. Run it in the background and wait for the notice \
-             that it ended. The whole suite can take longer than the 10 minutes the terminal waits \
+             that it ended. With the verdict approved and nothing changed since the machine, the \
+             command only checks the verdict and closes the spec. If something changed, the machine \
+             runs again. Then the whole suite can take longer than the 10 minutes the terminal waits \
              for a command. If the verdict is not in the spec, have the agent record it again \
              through the tool."
         }
@@ -1958,7 +1962,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             231,
-            0x2f76_9535_1dd0_df1d,
+            0x8ee1_962f_2fe5_b99e,
         );
     }
 
@@ -2371,16 +2375,33 @@ mod tests {
 
     /// O passo do fechamento que despacha o revisor final manda o agente ler o
     /// próprio pedido pelo comando do campo `review.read`, e não fala mais do
-    /// pedido inteiro no campo `review.prompt`, nos dois idiomas. A frase que
-    /// manda o comando tem 13 palavras em português e 12 em inglês, e o passo
-    /// inteiro passa na conferência de escrita, com a lacuna trocada por uma
-    /// palavra.
+    /// pedido inteiro no campo `review.prompt`, nos dois idiomas. Diz também
+    /// o que a segunda chamada faz: com o veredito aprovado e nada mudado, só
+    /// confere o veredito e fecha a spec, e a máquina roda de novo só se algo
+    /// mudou. A frase que manda o comando tem 13 palavras em português e 12 em
+    /// inglês, e o passo inteiro passa na conferência de escrita, com a lacuna
+    /// trocada por uma palavra.
     #[test]
     fn the_final_review_step_sends_the_read_command_and_reads_clearly() {
-        for (lang, sentence_words) in [(Locale::PtBr, 13), (Locale::EnUs, 12)] {
+        for (lang, sentence_words, second_call, rerun) in [
+            (
+                Locale::PtBr,
+                13,
+                "o comando só confere o veredito e fecha a spec.",
+                "Se algo mudou, a máquina roda de novo.",
+            ),
+            (
+                Locale::EnUs,
+                12,
+                "the command only checks the verdict and closes the spec.",
+                "If something changed, the machine runs again.",
+            ),
+        ] {
             let text = translate("close.final_review", lang).replace("{spec}", "teste");
             assert!(text.contains("review.read"), "{lang:?}: não manda o comando do campo: {text}");
             assert!(!text.contains("review.prompt"), "{lang:?}: ainda fala do pedido inteiro: {text}");
+            assert!(text.contains(second_call), "{lang:?}: não diz o que a segunda chamada faz: {text}");
+            assert!(text.contains(rerun), "{lang:?}: não diz que a máquina só roda de novo se algo mudou: {text}");
             let sentence = text
                 .split(". ")
                 .find(|sentence| sentence.contains("review.read"))

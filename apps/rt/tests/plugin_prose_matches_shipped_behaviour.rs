@@ -1080,7 +1080,7 @@ const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
     ),
     (
         "apps/rt/src/commands/maint/upsert.rs",
-        &["ALWAYS rewritten", "`Updated`", "`Preserved`"],
+        &["SEMPRE regravados", "`Updated`", "`Preserved`"],
     ),
     (
         "packages/core/src/platform/project_seed/files.rs",
