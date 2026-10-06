@@ -265,7 +265,11 @@ impl UpsertReport {
 /// already tracks under [`footprint_pathspecs`] is recorded as residue — so no
 /// seed is ever momentarily visible to that repository's git. When that write
 /// cannot happen inside a repository that exists, step 0 REFUSES and no step
-/// after it runs. Step 2 then targets the local settings layer.
+/// after it runs. Step 2 then targets the local settings layer, and the team's
+/// `.claude/settings.json` is reached only by step 6: it takes the seed's lines
+/// out and, the one exception among its deny rules, swaps in place each of the
+/// three an older seed wrote with both wildcard forms. Those changed lines are
+/// visible to git, for the person to commit.
 ///
 /// # Errors
 ///

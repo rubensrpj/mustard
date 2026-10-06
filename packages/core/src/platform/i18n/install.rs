@@ -1,6 +1,8 @@
 //! O diagnóstico da instalação: o que o `doctor` acusa sobre a proteção da
 //! branch, as chaves do `mustard.json`, as sobras do Mustard e o que o scan
-//! escreve.
+//! escreve; e as duas linhas da limpeza sobre a regra de bloqueio trocada no
+//! lugar: a do plano, que diz o que o `/mustard:upsert` vai trocar, e a do
+//! relatório, que diz o que já foi trocado.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -10,7 +12,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["doctor"];
+pub(super) const PREFIXES: &[&str] = &["doctor", "cleanup"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -107,11 +109,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("doctor.claude_md.leftovers", Locale::PtBr) => {
             "Sobras do Mustard em arquivos que não são dele: {paths}. Rode `mustard-rt run upsert`: \
-             ele as tira."
+             ele as tira e troca no lugar as regras de bloqueio escritas errado."
         }
         ("doctor.claude_md.leftovers", Locale::EnUs) => {
             "Mustard leftovers in files that are not its own: {paths}. Run `mustard-rt run upsert`: \
-             it takes them out."
+             it takes them out and swaps in place the deny rules written wrong."
+        }
+        ("cleanup.deny_rule_to_swap", Locale::PtBr) => {
+            "{file}: o /mustard:upsert troca a regra de bloqueio `{from}` por `{to}`, no mesmo lugar. \
+             Ela segue bloqueando o mesmo comando, e o Claude Code para de avisar; a linha mudada é \
+             sua para comitar."
+        }
+        ("cleanup.deny_rule_to_swap", Locale::EnUs) => {
+            "{file}: /mustard:upsert swaps the deny rule `{from}` for `{to}`, in the same place. It \
+             still blocks the same command, and Claude Code stops warning; the changed line is yours \
+             to commit."
+        }
+        ("cleanup.deny_rule_swapped", Locale::PtBr) => {
+            "{file}: a regra de bloqueio `{from}` virou `{to}`, no mesmo lugar. Ela bloqueia o mesmo \
+             comando, e o Claude Code para de avisar; a linha mudada é sua para comitar."
+        }
+        ("cleanup.deny_rule_swapped", Locale::EnUs) => {
+            "{file}: the deny rule `{from}` became `{to}`, in the same place. It blocks the same \
+             command, and Claude Code stops warning; the changed line is yours to commit."
         }
         _ => return None,
     })
@@ -130,8 +150,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("install.rs"),
             super::PREFIXES,
-            12,
-            0xe463_9b76_dc84_1c2a,
+            14,
+            0xea98_e94c_67e0_5d3a,
         );
     }
 
@@ -146,6 +166,8 @@ mod tests {
             ("doctor.switches.signature_on", &[][..]),
             ("doctor.switches.language_unknown", &["{field}", "{value}"][..]),
             ("doctor.claude_md.leftovers", &["{paths}"][..]),
+            ("cleanup.deny_rule_to_swap", &["{file}", "{from}", "{to}"][..]),
+            ("cleanup.deny_rule_swapped", &["{file}", "{from}", "{to}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

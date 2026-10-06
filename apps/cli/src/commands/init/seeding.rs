@@ -8,7 +8,8 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
-use mustard_core::platform::project_seed::cleanup::CleanupPlan;
+use mustard_core::platform::i18n::Locale;
+use mustard_core::platform::project_seed::cleanup::{planned_swap_line, CleanupPlan};
 use mustard_core::SeedOutcome;
 
 
@@ -169,18 +170,26 @@ pub(super) fn report_migration(migrated: &[String]) {
 
 /// Say, in one line, how many files carry what an older Mustard left and who
 /// takes it out; a file with the traces of an older scan and no mark keeps its
-/// short note. Nothing is taken out here: the plugin's door takes it out.
+/// short note. Each deny rule of the team's settings that the cleanup will
+/// change in place gets its own line, in the project's language `lang`, saying
+/// that `/mustard:upsert` swaps it and that the changed line is the person's to
+/// commit. Nothing is taken out or swapped here: the plugin's door does it.
 ///
 /// Writes to `out` (the install passes stdout) so a test reads exactly what
 /// `mustard init` prints. A failed write is dropped: a notice never aborts the
 /// install.
-pub(super) fn report_cleanup(out: &mut impl Write, plan: &CleanupPlan) {
+pub(super) fn report_cleanup(out: &mut impl Write, plan: &CleanupPlan, lang: Locale) {
     // Uma linha só para todos os arquivos com sobras: a lista por arquivo,
     // com todos os trechos, repetia o mesmo texto e parecia uma lista de erros.
     let count = plan.files.len();
     if count > 0 {
         let (noun, verb) = if count == 1 { ("file", "carries") } else { ("files", "carry") };
         let _ = writeln!(out, "  {count} {noun} {verb} leftovers of an older Mustard; /mustard:upsert takes them out.");
+    }
+    for change in &plan.files {
+        for swap in &change.swaps {
+            let _ = writeln!(out, "  {}", planned_swap_line(&change.path, swap, lang));
+        }
     }
     for path in &plan.unmarked {
         let _ = writeln!(out, "  note: {path} carries traces of an older scan without its marks — left for you to decide");
@@ -288,7 +297,7 @@ mod tests {
     fn cleanup_notice(root: &Path) -> String {
         let plan = mustard_core::platform::project_seed::cleanup::plan(root);
         let mut out = Vec::new();
-        report_cleanup(&mut out, &plan);
+        report_cleanup(&mut out, &plan, Locale::EnUs);
         String::from_utf8(out).unwrap()
     }
 
@@ -336,5 +345,39 @@ mod tests {
         let clean = tempdir().unwrap();
         write_file(clean.path(), "CLAUDE.md", "# Team notes\n\nNothing else.\n");
         assert_eq!(cleanup_notice(clean.path()), "");
+    }
+
+    /// A regra de bloqueio do arquivo da equipe que vai mudar no lugar ganha
+    /// uma linha só dela, depois da contagem, com a antiga e a nova, no idioma
+    /// do projeto. A linha diz que o `/mustard:upsert` faz a troca, nunca que
+    /// ela já foi feita: o aviso sai antes de qualquer gravação, e o arquivo
+    /// continua como estava.
+    #[test]
+    fn a_swapped_deny_rule_gets_its_own_line_in_the_project_language() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let team = "{\"permissions\":{\"deny\":[\"Bash(git reset * --hard:*)\"]}}\n";
+        write_file(root, ".claude/settings.json", team);
+
+        assert_eq!(
+            cleanup_notice(root),
+            "  1 file carries leftovers of an older Mustard; /mustard:upsert takes them out.\n  \
+             .claude/settings.json: /mustard:upsert swaps the deny rule `Bash(git reset * --hard:*)` for \
+             `Bash(git reset * --hard*)`, in the same place. It still blocks the same command, and Claude Code \
+             stops warning; the changed line is yours to commit.\n",
+        );
+        let plan = mustard_core::platform::project_seed::cleanup::plan(root);
+        let mut out = Vec::new();
+        report_cleanup(&mut out, &plan, Locale::PtBr);
+        let notice = String::from_utf8(out).unwrap();
+        assert!(
+            notice.contains(
+                ".claude/settings.json: o /mustard:upsert troca a regra de bloqueio `Bash(git reset * --hard:*)` \
+                 por `Bash(git reset * --hard*)`, no mesmo lugar."
+            ) && notice.contains("a linha mudada é sua para comitar."),
+            "{notice}",
+        );
+        assert!(!notice.contains("virou"), "nothing was swapped yet: {notice}");
+        assert_eq!(std::fs::read_to_string(root.join(".claude/settings.json")).unwrap(), team);
     }
 }

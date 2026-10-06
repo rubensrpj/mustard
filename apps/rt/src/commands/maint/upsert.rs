@@ -8,7 +8,10 @@
 //! `mustard_core::upsert_project`, idempotently.
 //! The settings file is the LOCAL one because the install is always
 //! private-mode (see [`run`]); the shared `.claude/settings.json` is never
-//! written here. What the OPERATOR owns is merge-only: an existing
+//! seeded here, and only the cleanup below writes it: it takes the seed's lines
+//! out and, the one exception among its deny rules, swaps in place each of the
+//! three an older seed wrote with both wildcard forms (an absent one never
+//! enters). What the OPERATOR owns is merge-only: an existing
 //! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
 //! preserved, and only what is missing is created or backfilled. Mustard's
 //! own texts — `.claude/mustard/session-map.md`,
@@ -34,9 +37,11 @@
 //! each rule and the file it left, then the lines leave. They never go to the
 //! lesson bank, which stays on this machine and never goes to git: the person
 //! turns each rule into a test or drops it. When that item cannot be written,
-//! no file of the cleanup changes. `cleanup` lists what left and the files
-//! without a mark, which are never touched; `cleaned` says what was done, with
-//! the number of the pending item. Nothing is staged or committed.
+//! no file of the cleanup changes. `cleanup` lists what left, each deny rule
+//! swapped in place (`swaps`, the old text and the new) and the files without
+//! a mark, which are never touched; `cleaned` says what was done, with the
+//! number of the pending item and one line per swapped rule (`swapped`), in
+//! the project's language. Nothing is staged or committed.
 //!
 //! Once the files are written, the same code-tool step `mustard init` runs
 //! (`mustard_core::platform::code_tools::ensure_code_tools`) sets up the

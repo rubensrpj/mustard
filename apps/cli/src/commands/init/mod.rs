@@ -43,8 +43,11 @@
 //! 7. list what an older Mustard left in files that are not its own — the
 //!    marks in the `CLAUDE.md` files, the seed's lines in the team's
 //!    `.claude/settings.json`, a planted `.claude/CLAUDE.md` — and say how to
-//!    take it out. Nothing of it is removed here: that happens through
-//!    `/mustard:upsert`, after the person says yes to the list.
+//!    take it out, with one line, in the text language, for each deny rule of
+//!    the team's file that `/mustard:upsert` will swap in place and leave for
+//!    the person to commit. Nothing of it is removed or swapped here:
+//!    that happens through `/mustard:upsert`, after the person says yes to the
+//!    list.
 //!
 //! Nothing is staged or committed, and nothing is written outside the project:
 //! `~/.claude/` is never touched. A re-run re-stamps `mustard.json#version`,
@@ -54,7 +57,12 @@
 //! The install is always PRIVATE (`mustard_core::InstallMode::Private`): every
 //! file above lands on disk — the harness needs it there — but none of it is
 //! visible to the host repository's git, and nothing is written outside
-//! `.claude/` but `mustard.json`. There is no flag and no prompt for it.
+//! `.claude/` but `mustard.json`. There is no flag and no prompt for it. The
+//! team's `.claude/settings.json` is never written by `init`: only the cleanup
+//! of `/mustard:upsert` touches it, to take the seed's lines out and, the one
+//! exception among its deny rules, to swap in place each of the three an older
+//! seed wrote with both wildcard forms; those changed lines are the person's
+//! to commit.
 //!
 //! Everything laid down is compiled into the binary: `init` looks up no folder
 //! of molds, so it runs in an empty project with no extra setting.
@@ -279,6 +287,7 @@ fn init_with_scan(
     seeding::report_cleanup(
         &mut std::io::stdout(),
         &mustard_core::platform::project_seed::cleanup::plan(&project_path),
+        text,
     );
 
     print_next_steps();

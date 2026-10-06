@@ -66,9 +66,9 @@ fn is_own_allow_rule(rule: &str) -> bool {
 /// Lines older seeds wrote and the current seed no longer carries, spelled
 /// exactly as they were written.
 ///
-/// Two uses, both narrow. The local settings file is Mustard's own, so these
-/// rules leave it on the next install. In a team's `.claude/settings.json` they
-/// are still lines the seed wrote, so the cleanup lists them with the rest.
+/// One use, narrow: the local settings file is Mustard's own, so these rules
+/// leave it on the next install. The cleanup of a team's `.claude/settings.json`
+/// never reads them: a deny rule stays in the team's file.
 ///
 /// The four branch rules named the bases `main` and `master` by hand; the bases
 /// come from `mustard.json#git.flow`, and deleting a base is the command guard's
@@ -83,9 +83,9 @@ const RETIRED_DENY_RULES: &[&str] = &[
 /// As variáveis do `env` que um molde antigo escrevia e o de hoje não traz
 /// mais, cada uma com o valor que o molde escrevia, letra por letra.
 ///
-/// Os mesmos dois usos de [`RETIRED_DENY_RULES`]: a linha sai do arquivo de
-/// configurações que a instalação grava, e a limpeza do arquivo da equipe
-/// ainda a reconhece como do molde. O valor que a pessoa mudou é dela e fica.
+/// Dois usos: a linha sai do arquivo de configurações que a instalação grava,
+/// e a limpeza do arquivo da equipe ainda a reconhece como do molde. O valor
+/// que a pessoa mudou é dela e fica.
 ///
 /// São nove, e nenhuma conferência lê nenhuma delas: o modo de tamanho da spec
 /// e o das habilidades, o da conferência das habilidades (com o nome antigo
@@ -102,6 +102,18 @@ const RETIRED_ENV: &[(&str, &str)] = &[
     ("MUSTARD_MAIN_BUDGET_MODE", "warn"),
     ("MUSTARD_DELEGATION_WARN_MODE", "warn"),
     ("MUSTARD_HARNESS_DUAL_EMIT", "1"),
+];
+
+/// As três regras de bloqueio que um molde antigo escrevia com as duas formas
+/// de asterisco juntas (um no meio e o `:*` do fim), cada uma com a que a
+/// substitui, as duas letra por letra. O Claude Code não aceita a mistura e
+/// avisa a cada abertura; a nova bloqueia o mesmo comando, sem os dois-pontos e
+/// sem espaço antes do asterisco final, porque com o espaço o comando que
+/// termina na opção passaria.
+pub(super) const MIXED_WILDCARD_DENY_SWAPS: &[(&str, &str)] = &[
+    ("Bash(git reset * --hard:*)", "Bash(git reset * --hard*)"),
+    ("Bash(git checkout * -f:*)", "Bash(git checkout * -f*)"),
+    ("Bash(git checkout * --force:*)", "Bash(git checkout * --force*)"),
 ];
 
 /// A lista de `permissions` em que o Claude Code guarda as pastas de fora do
@@ -152,7 +164,7 @@ const DISABLE_AUTO_COMPACT_KEY: &str = "DISABLE_AUTO_COMPACT";
 ///   key it lacks is backfilled — user edits are never clobbered.
 ///
 /// Both paths pass through the point migrations —
-/// [`retire_planted_plugin_enablement`],
+/// [`retire_planted_plugin_enablement`], [`swap_mixed_wildcard_deny_rules`],
 /// [`backfill_own_permission_rules`] and [`retire_old_rules`] — and through the
 /// two switches this file holds: in the local layer, the rtk hook follows `rtk`
 /// ([`apply_rtk_hook`]), the response style follows `text`
@@ -221,6 +233,9 @@ fn seed_dest(
     };
 
     retire_planted_plugin_enablement(&mut settings);
+    // A troca vem antes da reposição: com a antiga já trocada no lugar dela,
+    // a nova não entra de novo no fim da lista.
+    swap_mixed_wildcard_deny_rules(&mut settings);
     backfill_own_permission_rules(&mut settings, &seed);
     retire_old_rules(&mut settings);
     // rtk's hook belongs to the local layer only: a shared install writes the
@@ -429,6 +444,42 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
             }
         }
     }
+}
+
+/// Troca, na lista `permissions.deny` de `settings`, cada regra antiga de
+/// [`MIXED_WILDCARD_DENY_SWAPS`] pela nova, no mesmo lugar; quando a nova já
+/// está na lista, a antiga só sai. A regra antiga ausente não faz a nova
+/// entrar, e nenhuma outra regra muda. Responde cada troca, (antiga, nova), na
+/// ordem do arquivo.
+///
+/// É a única escrita que a limpeza faz numa regra de bloqueio do arquivo da
+/// equipe: a regra passa a valer em vez de sair.
+pub(super) fn swap_mixed_wildcard_deny_rules(settings: &mut Map<String, Value>) -> Vec<(String, String)> {
+    let Some(deny) = settings
+        .get_mut("permissions")
+        .and_then(Value::as_object_mut)
+        .and_then(|p| p.get_mut("deny"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Vec::new();
+    };
+    let mut swapped = Vec::new();
+    let mut at = 0;
+    while at < deny.len() {
+        let pair = deny[at].as_str().and_then(|rule| MIXED_WILDCARD_DENY_SWAPS.iter().find(|(old, _)| *old == rule));
+        let Some(&(old, new)) = pair else {
+            at += 1;
+            continue;
+        };
+        if deny.iter().any(|rule| rule.as_str() == Some(new)) {
+            deny.remove(at);
+        } else {
+            deny[at] = Value::String(new.to_string());
+            at += 1;
+        }
+        swapped.push((old.to_string(), new.to_string()));
+    }
+    swapped
 }
 
 /// Tira das configurações locais as regras de bloqueio e as variáveis do
@@ -696,7 +747,10 @@ impl Switches {
 /// removal empties goes too.
 ///
 /// Deny rules always stay, even the seed's: a protection rule never leaves the
-/// team's file unless someone asks, so a file with one is never emptied.
+/// team's file unless someone asks, so a file with one is never emptied. The
+/// one exception is not made here but by the cleanup, after this: each of the
+/// three deny rules an older seed wrote with both wildcard forms becomes, in
+/// its place, the spelling that works ([`swap_mixed_wildcard_deny_rules`]).
 #[must_use]
 pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
     let seed = parse_json_object(SETTINGS_SEED);
@@ -769,7 +823,8 @@ fn is_retired_env(name: &str, value: &Value) -> bool {
 }
 
 /// The permission lists whose seed rules leave a team's file. `deny` is not
-/// one of them: its rules stay.
+/// one of them: its rules stay, and only the three of
+/// [`MIXED_WILDCARD_DENY_SWAPS`] change, swapped in place by the cleanup.
 const SEED_LINE_LISTS: [&str; 2] = ["allow", "ask"];
 
 /// The rules the seed lists under `permissions.<list>`.
@@ -1088,6 +1143,82 @@ mod tests {
             assert!(!rule.contains("main") && !rule.contains("master"), "a base name is written by hand: {rule}");
         }
         assert!(!signature_on(&seed), "a fresh install signs nothing");
+    }
+
+    /// Nenhuma regra das três listas do molde junta o asterisco no meio com o
+    /// `:*` do fim: o Claude Code não aceita a mistura e avisa a cada abertura.
+    #[test]
+    fn seed_rules_never_mix_the_two_wildcard_forms() {
+        let seed = parse_json_object(SETTINGS_SEED);
+        let mut read = 0;
+        for list in ["allow", "deny", "ask"] {
+            for rule in seed_rules(&seed, list) {
+                read += 1;
+                let mixed = rule.strip_suffix(":*)").is_some_and(|head| head.contains('*'));
+                assert!(!mixed, "permissions.{list} mixes the two wildcard forms: {rule}");
+            }
+        }
+        assert!(read > 0, "the seed lists rules");
+    }
+
+    /// Num projeto já instalado com as três regras antigas no arquivo local,
+    /// a atualização põe cada nova no lugar da antiga, e a regra que a pessoa
+    /// escreveu fica onde estava. A segunda atualização não muda nada. Quando a
+    /// nova já está na lista, a antiga só sai. As antigas estão escritas aqui
+    /// por extenso, como o molde antigo as gravava.
+    #[test]
+    fn the_update_swaps_the_mixed_wildcard_deny_rules() {
+        let deny_of = |root: &Path| -> Vec<String> {
+            local_settings(root)["permissions"]["deny"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        };
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        let local = claude.join("settings.local.json");
+        std_fs::write(
+            &local,
+            r#"{"permissions":{"deny":["Bash(git reset * --hard:*)","Bash(my-rule:*)","Bash(git checkout * -f:*)","Bash(git checkout * --force:*)"]}}"#,
+        )
+        .unwrap();
+
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+
+        let deny = deny_of(dir.path());
+        assert_eq!(
+            deny[..4],
+            ["Bash(git reset * --hard*)", "Bash(my-rule:*)", "Bash(git checkout * -f*)", "Bash(git checkout * --force*)"],
+            "each new rule takes the old one's place: {deny:?}",
+        );
+        for old in ["Bash(git reset * --hard:*)", "Bash(git checkout * -f:*)", "Bash(git checkout * --force:*)"] {
+            assert!(!deny.iter().any(|rule| rule == old), "{old} stayed: {deny:?}");
+        }
+        for new in ["Bash(git reset * --hard*)", "Bash(git checkout * -f*)", "Bash(git checkout * --force*)"] {
+            assert_eq!(deny.iter().filter(|rule| *rule == new).count(), 1, "{new} is not there once: {deny:?}");
+        }
+        let settled = std_fs::read_to_string(&local).unwrap();
+        let again = seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(again[0].1, SeedOutcome::Preserved, "the second update changes nothing");
+        assert_eq!(std_fs::read_to_string(&local).unwrap(), settled);
+
+        let both = tempdir().unwrap();
+        let claude = both.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        std_fs::write(
+            claude.join("settings.local.json"),
+            r#"{"permissions":{"deny":["Bash(git checkout * -f*)","Bash(git checkout * -f:*)"]}}"#,
+        )
+        .unwrap();
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        let deny = deny_of(both.path());
+        assert_eq!(deny[0], "Bash(git checkout * -f*)");
+        assert!(!deny.iter().any(|rule| rule == "Bash(git checkout * -f:*)"), "the old one only leaves: {deny:?}");
+        assert_eq!(deny.iter().filter(|rule| *rule == "Bash(git checkout * -f*)").count(), 1, "{deny:?}");
     }
 
     // --- a team's settings file ---------------------------------------------
