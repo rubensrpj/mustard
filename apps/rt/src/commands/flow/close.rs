@@ -1216,12 +1216,9 @@ mod tests {
                 json: body.to_string(),
             })
         };
-        let mut out = write(&body);
-        // O pedido não lido recusa a entrega: o agente lê e grava de novo.
-        if let Some(wave) = body["wave"].as_u64().filter(|_| out["reason"] == json!("delivery-read-missing")) {
-            crate::commands::flow::round::read_request(root, spec, wave);
-            out = write(&body);
-        }
+        // O pedido não lido e a tarefa sem passo de término recusam a entrega:
+        // o agente lê, grava o passo de cada tarefa e grava de novo.
+        let out = crate::commands::flow::round::deliver_after_refusals(root, spec, &body, &write);
         assert_eq!(out["ok"], json!(true), "a volta não gravou: {out}");
     }
 

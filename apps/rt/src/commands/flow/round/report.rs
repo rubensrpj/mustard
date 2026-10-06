@@ -27,6 +27,7 @@ use super::commit::{
     write_joined, UNMADE_SHA,
 };
 use super::copy_check::check_against_copies;
+use super::finish_check::unfinished_work;
 use super::agreed::{covered_codes, join_unmet, request_agreed, settle_agreed, settle_wave_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
@@ -560,7 +561,9 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
 /// do resumo cabe no teto e não traz o que nunca leva; cada arquivo entregue
 /// está no disco ou no git; cada prova aponta um critério da spec e é uma
 /// linha de comando; cada item combinado que o pedido da onda levou tem
-/// resposta em `agreed` ([`request_agreed`]). Passando, a volta ganha
+/// resposta em `agreed` ([`request_agreed`]); o agente leu o pedido; e a
+/// volta não devolve trabalho começado nem dá tarefa por feita sem o passo
+/// de término dela ([`unfinished_work`]). Passando, a volta ganha
 /// `returned` e o autor da onda, e os arquivos ficam relativos ao
 /// repositório. A conferência que depende de
 /// juntar a cópia fica na rodada. Sem o número da onda, nada aqui é
@@ -628,6 +631,10 @@ pub(crate) fn check_return(
     if !unread.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryReadMissing { wave, missing: unread }));
     }
+    // E de não devolver trabalho começado: a tarefa devolvida como não feita
+    // com a cópia mudada depois do último passo de término, e a tarefa dada
+    // como feita sem o passo dela, recusam.
+    unfinished_work(&log, sent, &report, draft)?;
     if draft.contains_key("files") {
         draft.insert("files".into(), json!(report.files));
     }
@@ -2870,6 +2877,7 @@ mod tests {
         assert!(hint.contains("MSTD-DEC-0001") && !hint.contains("MSTD-TASK-0001"), "{one_short}");
 
         read("MSTD-DEC-0001");
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let wrote = returned_unread(root, delivery_with_the_decision());
         assert_eq!(wrote["ok"], json!(true), "the same delivery passes after the reading: {wrote}");
     }
@@ -2905,6 +2913,7 @@ mod tests {
             .collect();
         draft.insert("replaces".into(), json!(older.id));
         store::write(&store::spec_file(root, "x").unwrap(), "send", draft, &[]).unwrap();
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
 
         let wrote = returned_unread(root, delivery_with_the_decision());
         assert_eq!(wrote["ok"], json!(true), "the wave sent before the list is not refused: {wrote}");
@@ -2957,6 +2966,7 @@ mod tests {
         }
         refused_all(&[&lesson]);
         crate::commands::flow::round::seed_read(root, "x", "request-1", &lesson);
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let wrote = returned_unread(root, body);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
     }
@@ -4559,6 +4569,7 @@ fn main() { sum_by_the_new_name(); }
 
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         crate::commands::flow::round::read_request(root, "x", 1);
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let before = spec_lines(root);
         let untitled = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [{"detail": "Sem título."}]}));

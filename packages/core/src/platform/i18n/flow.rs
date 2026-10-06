@@ -940,6 +940,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Task {code} is not in wave {wave}, and `undone` only takes tasks of the wave itself. \
              The wave's tasks: {tasks}. Nothing was recorded."
         }
+        ("round.started_work_undone", Locale::PtBr) => {
+            "A onda {wave} devolve {tasks} como não feitas, mas a cópia mudou depois do último passo \
+             de término. Conclua a tarefa começada, grave o passo dela com `mustard-rt run write step` \
+             e entregue de novo. Nada foi gravado."
+        }
+        ("round.started_work_undone", Locale::EnUs) => {
+            "Wave {wave} gives back {tasks} as not done, but the copy changed after the last task-end \
+             step. Finish the started task, record its step with `mustard-rt run write step`, and \
+             deliver again. Nothing was recorded."
+        }
+        ("round.done_without_step", Locale::PtBr) => {
+            "A onda {wave} dá como feitas as tarefas {tasks} sem o passo de término de cada uma. \
+             Grave o passo de cada uma com `mustard-rt run write step` e entregue de novo. Nada foi \
+             gravado."
+        }
+        ("round.done_without_step", Locale::EnUs) => {
+            "Wave {wave} gives tasks {tasks} as done without the task-end step of each. Record each \
+             one's step with `mustard-rt run write step` and deliver again. Nothing was recorded."
+        }
         ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
         ("round.unmet_joined", Locale::PtBr) => "Item não cumprido na volta da onda {wave} — {code}: {text}",
@@ -1846,8 +1865,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            221,
-            0x9042_f928_ac9d_2325,
+            223,
+            0x3f12_6d52_c83c_9ebe,
         );
     }
 
@@ -2073,6 +2092,8 @@ mod tests {
             ("round.no_tasks", &[][..]),
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
+            ("round.started_work_undone", &["{wave}", "{tasks}"][..]),
+            ("round.done_without_step", &["{wave}", "{tasks}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),

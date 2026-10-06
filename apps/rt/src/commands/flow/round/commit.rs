@@ -1800,8 +1800,10 @@ mod tests {
             std::fs::read_to_string(spec).unwrap_or_default().lines().any(|l| l.contains("\"returned\":true"))
         };
 
-        // O agente lê o pedido antes de gravar: com o índice preso, nem a leitura entraria.
+        // O agente lê o pedido e grava o passo da tarefa antes de entregar: com
+        // o índice preso, nem a leitura nem o passo entrariam.
         crate::commands::flow::round::read_request(root, "x", 1);
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let index_lock = mustard_core::io::fs::lock::LockedFile::exclusive(&index).unwrap();
         std::thread::scope(|scope| {
             let writing = scope.spawn(|| returned(root, body));

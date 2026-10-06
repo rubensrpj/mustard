@@ -348,6 +348,11 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
     }
+    // O passo de término de uma tarefa guarda a impressão da cópia da onda,
+    // que a entrega compara com a cópia dela na hora de entregar.
+    if event_type == "step" {
+        crate::commands::flow::round::mark_step_copy(&project.root, spec, &mut draft);
+    }
     // A volta da onda só entra com envio aberto para ela, e passa antes pelas
     // conferências que só leem a volta: a recusa vem antes de gravar, e o
     // agente grava de novo. A trava do passo do git que a conferência prende

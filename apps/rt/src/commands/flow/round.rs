@@ -124,6 +124,7 @@ mod answer;
 mod backlog;
 mod commit;
 mod copy_check;
+mod finish_check;
 mod imports_check;
 pub(crate) mod item_choice;
 mod keep;
@@ -170,7 +171,8 @@ pub(crate) use slots::{
 };
 pub(crate) use read_check::request_name;
 #[cfg(test)]
-pub(crate) use tests::{read_request, read_review, seed_read, shipped_agent};
+pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+pub(crate) use finish_check::mark_step_copy;
 pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
@@ -477,18 +479,51 @@ mod tests {
         format!("<{tag}>{body}</{tag}>")
     }
 
+    /// Os passos de término que o agente da onda `wave` da spec `spec` grava
+    /// antes de entregar: um por tarefa com que a onda saiu, pelo
+    /// `run write step`, como o agente o grava — a gravação põe a impressão
+    /// da cópia de agora em cada um.
+    pub(crate) fn finish_tasks(root: &Path, spec: &str, wave: u64) {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        for task in sent_tasks::sent_tasks(&log, wave) {
+            let item = codes.get(&task.id).map_or_else(|| json!(task.id), |code| json!(code));
+            let step = crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some(spec.to_string()),
+                event_type: "step".into(),
+                json: json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}).to_string(),
+            });
+            assert_eq!(step["ok"], json!(true), "o passo da onda {wave} não gravou: {step}");
+        }
+    }
+
+    /// A volta de uma onda da spec `spec`, gravada como o agente a grava, pela
+    /// gravação `write`. A recusa por item do pedido não lido leva o agente a
+    /// ler o pedido e gravar de novo; a recusa por tarefa sem passo de
+    /// término, ou por trabalho começado, leva-o a gravar o passo de cada
+    /// tarefa e entregar de novo. A resposta é a da última gravação; qualquer
+    /// outra recusa volta como veio, sem nada gravado.
+    pub(crate) fn deliver_after_refusals(root: &Path, spec: &str, body: &Value, write: &dyn Fn(&Value) -> Value) -> Value {
+        let mut out = write(body);
+        let Some(wave) = body["wave"].as_u64() else { return out };
+        for _ in 0..2 {
+            match out["reason"].as_str() {
+                Some("delivery-read-missing") => read_request(root, spec, wave),
+                Some("delivery-done-without-step" | "delivery-started-work-undone") => finish_tasks(root, spec, wave),
+                _ => return out,
+            }
+            out = write(body);
+        }
+        out
+    }
+
     /// A volta de uma onda da spec `x`, gravada como o agente a grava: pelo
-    /// `run write delivered`, com os campos de `body`. A recusa por item do
-    /// pedido não lido leva o agente a ler o pedido e gravar de novo, e a
-    /// resposta é a da segunda gravação; qualquer outra recusa volta como
-    /// veio, sem leitura nenhuma gravada.
+    /// `run write delivered`, com os campos de `body`, depois de ler o pedido
+    /// e de gravar o passo de cada tarefa quando a gravação os cobra
+    /// ([`deliver_after_refusals`]).
     pub(super) fn returned(root: &Path, body: Value) -> Value {
-        let first = returned_unread(root, body.clone());
-        let Some(wave) = body["wave"].as_u64().filter(|_| first["reason"] == json!("delivery-read-missing")) else {
-            return first;
-        };
-        read_request(root, "x", wave);
-        returned_unread(root, body)
+        deliver_after_refusals(root, "x", &body, &|body| returned_unread(root, body.clone()))
     }
 
     /// Como [`returned`], sem ler o pedido antes: a gravação do agente que

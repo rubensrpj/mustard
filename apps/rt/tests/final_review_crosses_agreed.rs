@@ -132,6 +132,18 @@ impl Project {
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
     }
 
+    /// O agente grava, pelo comando que o pedido ensina, o passo de término
+    /// de cada tarefa da onda `wave`: sem ele, a entrega que dá a tarefa como
+    /// feita é recusada.
+    fn finish_tasks(&self, wave: u64) {
+        let log = self.log();
+        let codes = log.codes();
+        for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
+            let item = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+            self.write("step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
+        }
+    }
+
     /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
     /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
     /// isso a entrega é recusada.
@@ -297,6 +309,7 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
     let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}"),
         "agreed": agreed});
     project.read_request(wave);
+    project.finish_tasks(wave);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC])
 }

@@ -238,6 +238,7 @@ mod tests {
         let copy = log.get(open).and_then(|send| send.str_field("copy")).expect("the copy of the wave").to_string();
         let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
         read_for(&opts, None, Path::new(&copy)).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        crate::commands::flow::round::finish_tasks(root, "x", 1);
         let wrote = returned_unread(root, delivery);
         assert_eq!(wrote["ok"], json!(true), "the same delivery passes once the summary is read: {wrote}");
     }

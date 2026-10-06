@@ -100,6 +100,14 @@ pub(crate) enum RoundRefusal {
     /// A entrega cita como não feita uma tarefa que não é da onda dela: o
     /// código citado e as tarefas da onda.
     UndoneNotInWave { wave: u64, code: String, tasks: Vec<String> },
+    /// A entrega devolve tarefas como não feitas (`tasks`), sem mudar o
+    /// plano, e a cópia da onda mudou depois do último passo de término — ou
+    /// mudou sem passo de término nenhum: há trabalho começado. O agente
+    /// conclui a tarefa, grava o passo e entrega de novo.
+    StartedWorkUndone { wave: u64, tasks: Vec<String> },
+    /// A entrega dá como feitas as tarefas `tasks` sem o passo de término de
+    /// cada uma: sem o passo, o agente não leu a medida da conversa.
+    DoneWithoutStep { wave: u64, tasks: Vec<String> },
     /// O git recusou o commit.
     Git { detail: String },
     /// O repositório principal não compilou antes do commit da rodada.
@@ -148,6 +156,8 @@ impl RoundRefusal {
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
             Self::ReplanNeedsUndone { .. } => "replan-needs-undone".into(),
             Self::UndoneNotInWave { .. } => "undone-not-in-wave".into(),
+            Self::StartedWorkUndone { .. } => "delivery-started-work-undone".into(),
+            Self::DoneWithoutStep { .. } => "delivery-done-without-step".into(),
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
@@ -228,6 +238,14 @@ impl RoundRefusal {
             Self::UndoneNotInWave { wave, code, tasks } => fill(
                 "round.undone_not_in_wave",
                 &[("{wave}", wave.to_string()), ("{code}", code.clone()), ("{tasks}", task_list(tasks, lang))],
+            ),
+            Self::StartedWorkUndone { wave, tasks } => fill(
+                "round.started_work_undone",
+                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
+            ),
+            Self::DoneWithoutStep { wave, tasks } => fill(
+                "round.done_without_step",
+                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
             ),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
             Self::BuildFailed { command, output } => {
@@ -321,7 +339,7 @@ fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
 
 /// O código ou o número de um campo que aponta outro evento (`item`, num
 /// passo): o código quando o mapa o conhece, senão o próprio número.
-fn ref_shown(value: Option<&Value>, codes: &BTreeMap<u64, String>) -> String {
+pub(super) fn ref_shown(value: Option<&Value>, codes: &BTreeMap<u64, String>) -> String {
     match value {
         Some(Value::String(code)) => code.clone(),
         Some(v) => v.as_u64().map_or_else(String::new, |n| codes.get(&n).cloned().unwrap_or_else(|| n.to_string())),
