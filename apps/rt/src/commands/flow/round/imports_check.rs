@@ -161,7 +161,10 @@ pub(super) mod tests {
     use serde_json::{json, Value};
     use tempfile::tempdir;
 
-    use super::super::tests::{approved_with, delivered, orphan_the_send, round, round_with_mine, write};
+    use super::super::tests::{approved_with, delivered, round, round_with_mine, write};
+    // Só o teste do envio fechado o usa, e ele roda só no Linux.
+    #[cfg(target_os = "linux")]
+    use super::super::tests::orphan_the_send;
     use super::*;
 
     /// Um mapa com cinco controllers e cinco services em `src/`, os

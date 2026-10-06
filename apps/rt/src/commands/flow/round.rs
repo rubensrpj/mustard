@@ -183,9 +183,11 @@ pub(crate) use slots::{
 };
 pub(crate) use read_check::request_name;
 #[cfg(test)]
-pub(crate) use tests::{
-    closed_process, deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent,
-};
+pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+// Fora da rodada, só os testes do gancho do despacho leem o processo fechado,
+// e eles rodam só no Linux.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use tests::closed_process;
 pub(crate) use finish_check::mark_step_copy;
 pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
