@@ -69,24 +69,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The message to the agent of wave {wave} went out with only what the round sent \
              back for it. The extra text was taken out. What the wave needs to know is recorded in the spec."
         }
-        // A onda recusada cujo agente se foi com o Claude Code que a mandou:
-        // a frase que abre o trecho de conserto ao agente novo e o recado ao
-        // condutor.
+        // A onda recusada que espera um agente novo: a frase que abre o
+        // trecho de conserto ao agente novo e o recado ao condutor. Elas valem
+        // para a volta que a rodada recusou, com o Claude Code que mandou a
+        // onda já fechado, e para a que o condutor reprovou, com esse Claude
+        // Code aberto ou fechado. Por isso nenhuma diz quem recusou, nem que o
+        // agente anterior sumiu: só que ele terminou. O motivo vem no trecho
+        // de conserto.
         ("subagent.new_agent_fix", Locale::PtBr) => {
-            "[Mustard] Um agente anterior já fez a onda {wave}, e o código dele está na cópia. A rodada \
-             recusou a entrega: conserte só o que vem abaixo, teste e entregue de novo."
+            "[Mustard] Um agente anterior já fez a onda {wave}, e o código dele está na cópia. A entrega \
+             dele foi recusada: conserte só o que vem abaixo, teste e entregue de novo."
         }
         ("subagent.new_agent_fix", Locale::EnUs) => {
-            "[Mustard] An earlier agent already did wave {wave}, and its code is in the copy. The round \
-             refused the delivery: fix only what follows, test, and deliver again."
+            "[Mustard] An earlier agent already did wave {wave}, and its code is in the copy. Its delivery \
+             was refused: fix only what follows, test, and deliver again."
         }
         ("subagent.new_agent", Locale::PtBr) => {
-            "[Mustard] O agente da onda {wave} não existe mais. O despacho saiu para um agente novo, com o \
-             título, o comando de leitura e o trecho de conserto."
+            "[Mustard] A entrega da onda {wave} foi recusada, e o agente que a fez já terminou. O despacho \
+             saiu para um agente novo, com o título, o comando de leitura e o trecho de conserto."
         }
         ("subagent.new_agent", Locale::EnUs) => {
-            "[Mustard] The agent of wave {wave} no longer exists. The dispatch went to a new agent, with \
-             the title, the read command and the fix section."
+            "[Mustard] Wave {wave}'s delivery was refused, and the agent that did it has already finished. \
+             The dispatch went to a new agent, with the title, the read command and the fix section."
         }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
@@ -589,7 +593,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             98,
-            0x83e3_277a_81e5_d281,
+            0x5979_cc01_3e7b_ae3d,
         );
     }
 
