@@ -680,14 +680,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              below back to its agent, in the same copy. The agent fixes them, records the delivery again, \
              and you run the round once more. Warnings do not hold the round."
         }
+        // O teto das rodadas de conserto abre tanto a recusa da conferência
+        // depois da onda quanto a da compilação, do lint ou da suíte que
+        // caem: a frase serve às duas, e o que vem abaixo diz o que caiu.
         ("round.after_wave.limit", Locale::PtBr) => {
-            "A onda {waves} já passou por {max} rodadas de conserto, e a conferência depois da onda ainda \
-             recusa. A rodada não comitou nada. Mostre ao usuário a lista abaixo e faça a pergunta de \
-             `question`."
+            "A onda {waves} já passou por {max} rodadas de conserto, e a rodada ainda recusa a entrega. \
+             Nada foi comitado. Mostre ao usuário o que vem abaixo e faça a pergunta de `question`."
         }
         ("round.after_wave.limit", Locale::EnUs) => {
-            "Wave {waves} has already gone through {max} fix rounds, and the after-wave check still \
-             refuses. The round committed nothing. Show the user the list below and ask the question in \
+            "Wave {waves} has already gone through {max} fix rounds, and the round still refuses the \
+             delivery. Nothing was committed. Show the user what follows and ask the question in \
              `question`."
         }
         ("round.after_wave.question", Locale::PtBr) => {
@@ -1954,7 +1956,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             231,
-            0x66c2_f19c_50d5_d0f3,
+            0xce3a_7244_3fd8_7ac5,
         );
     }
 

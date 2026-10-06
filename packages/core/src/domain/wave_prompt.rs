@@ -73,18 +73,11 @@ pub fn language_line(language: &Language) -> String {
 
 /// O título do pedido de uma onda, a primeira linha dele: `# ` e a spec com o
 /// número da onda, no idioma do texto. É por ele que a medida acha, depois, o
-/// agente que recebeu a onda; só esta função o monta, e [`is_wave_title`] o
-/// reconhece pelo mesmo molde.
+/// agente que recebeu a onda; só esta função o monta, e [`wave_of_title`] o
+/// lê pelo mesmo molde.
 #[must_use]
 pub fn wave_title(spec: &str, wave: u64, lang: Locale) -> String {
     format!("# {}", translate("prompt.title", lang).replace("{spec}", spec).replace("{n}", &wave.to_string()))
-}
-
-/// Se `heading` é o título do pedido de uma onda — de qualquer spec e de
-/// qualquer onda —, no idioma do texto ([`wave_of_title`]).
-#[must_use]
-pub fn is_wave_title(heading: &str, lang: Locale) -> bool {
-    wave_of_title(heading, lang).is_some()
 }
 
 /// A spec e o número da onda cujo pedido abre com `heading`, no idioma do
@@ -3193,7 +3186,7 @@ mod tests {
     }
 
     /// O título que o pedido da onda leva na primeira linha é o que
-    /// `wave_title` monta, e `is_wave_title` o reconhece nos dois idiomas, de
+    /// `wave_title` monta, e `wave_of_title` o lê nos dois idiomas, de
     /// qualquer spec e de qualquer onda, devolvendo a spec e o número dela; o
     /// que não tem o molde do título não é o título de uma onda.
     #[test]
@@ -3203,7 +3196,7 @@ mod tests {
             let request = write(&material(&log, 3), lang);
             let first = request.lines().next().unwrap_or_default();
             assert_eq!(first, wave_title("teste", 3, lang), "the request opens with the title");
-            assert!(is_wave_title(first, lang), "{first}");
+            assert_eq!(wave_of_title(first, lang), Some(("teste".to_string(), 3)), "{first}");
             assert_eq!(wave_of_title(&wave_title("minha-obra", 128, lang), lang), Some(("minha-obra".to_string(), 128)));
         }
         assert_eq!(wave_title("x", 7, Locale::PtBr), "# x — onda 7");
@@ -3221,9 +3214,9 @@ mod tests {
             "# Conserte o teste da soma.",
             "## x — onda 7",
         ] {
-            assert!(!is_wave_title(not_a_title, Locale::PtBr), "{not_a_title:?}");
+            assert_eq!(wave_of_title(not_a_title, Locale::PtBr), None, "{not_a_title:?}");
         }
-        assert!(!is_wave_title("# x — wave 7", Locale::PtBr), "the title is read in the language of the text");
-        assert!(!is_wave_title("# x — onda 7", Locale::EnUs), "the title is read in the language of the text");
+        assert_eq!(wave_of_title("# x — wave 7", Locale::PtBr), None, "the title is read in the language of the text");
+        assert_eq!(wave_of_title("# x — onda 7", Locale::EnUs), None, "the title is read in the language of the text");
     }
 }
