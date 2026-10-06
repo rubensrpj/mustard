@@ -1806,23 +1806,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              change into the base. Put it in draft on the provider if you can; Mustard's merge \
              refuses until the spec closes again."
         }
+        // O levantamento lembra o tipo de trabalho gravado: o comando sai sem
+        // o tipo e roda como veio.
         ("reopen.next", Locale::PtBr) => {
             "A spec {spec} voltou ao levantamento, e o motivo ficou gravado. Rode `mustard-rt run \
-             grill --spec {spec} --kinds <tipos>` para montar os pontos: os novos convivem com o \
-             que já foi decidido, e nada do que estava gravado foi apagado."
+             grill --spec {spec}` para montar os pontos: os novos convivem com o que já foi \
+             decidido, e nada do que estava gravado foi apagado."
         }
         ("reopen.next", Locale::EnUs) => {
             "The spec {spec} is back in the survey, and the reason is on the record. Run \
-             `mustard-rt run grill --spec {spec} --kinds <types>` to build the points: the new ones \
-             live alongside what was already decided, and nothing written was erased."
+             `mustard-rt run grill --spec {spec}` to build the points: the new ones live alongside \
+             what was already decided, and nothing written was erased."
         }
         ("reopen.already", Locale::PtBr) => {
             "A spec {spec} já está em levantamento, e nada foi gravado. Rode `mustard-rt run grill \
-             --spec {spec} --kinds <tipos>` para montar os pontos."
+             --spec {spec}` para montar os pontos."
         }
         ("reopen.already", Locale::EnUs) => {
             "The spec {spec} is already under survey, and nothing was written. Run `mustard-rt run \
-             grill --spec {spec} --kinds <types>` to build the points."
+             grill --spec {spec}` to build the points."
         }
         ("reopen.fix_opened", Locale::PtBr) => {
             "O servidor reprovou os testes do pull request {pr}, e a onda de conserto {wave} está \
@@ -1952,7 +1954,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             231,
-            0x5bae_e7c3_f7f0_745f,
+            0x66c2_f19c_50d5_d0f3,
         );
     }
 

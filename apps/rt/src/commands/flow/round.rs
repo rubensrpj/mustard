@@ -127,6 +127,7 @@ mod checks;
 mod commit;
 mod copy_check;
 mod finish_check;
+mod fixes;
 mod imports_check;
 pub(crate) mod item_choice;
 mod keep;
@@ -160,7 +161,8 @@ use serde_json::Value;
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::{agents_refreshed, fix_file, read_command, sweep_fixes, wave_dispatch, RoundRefusal};
+pub(crate) use answer::{agents_refreshed, read_command, wave_dispatch, RoundRefusal};
+pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use queue::{
     backlog_left, open_review, open_sends, send_revision, tasks_left, wave_states, waves_awaiting_new_agent, waves_in_progress,
     waves_pending_fix,

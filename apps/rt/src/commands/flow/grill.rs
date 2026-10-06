@@ -389,6 +389,26 @@ fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Optio
     record(start, spec, "point", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
 }
 
+/// Roda a linha do `grill` que uma resposta manda rodar (`line`, como ela
+/// vem, de `mustard-rt run grill …`) pelo parser do binário, na pasta `root`,
+/// e devolve a resposta dele: o comando mostrado roda como veio.
+#[cfg(test)]
+pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
+    use crate::commands::{flow::cli::FlowCmd, RunCmd};
+    #[derive(clap::Parser)]
+    struct Harness {
+        #[command(subcommand)]
+        cmd: RunCmd,
+    }
+    let root_arg = root.to_string_lossy().into_owned();
+    let argv = ["run"].into_iter().chain(line.split_whitespace().skip(2)).chain(["--root", &root_arg]);
+    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root }) }) =
+        clap::Parser::try_parse_from(argv)
+    else {
+        panic!("not the grill: {line}");
+    };
+    grill_for(&GrillOpts { root, spec, kinds, condensed }, None)
+}
 
 #[cfg(test)]
 mod tests {

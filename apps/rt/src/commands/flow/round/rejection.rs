@@ -16,7 +16,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use super::answer::{fix_file, without_final_period, RoundRefusal};
+use super::answer::{without_final_period, RoundRefusal};
+use super::fixes::fix_file;
 use super::queue::{send_revision, waves_awaiting_new_agent};
 use super::report::{line_object, tagged};
 use super::stops::HeldReturn;

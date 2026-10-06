@@ -20,7 +20,7 @@ use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::answer::{keep_fixes, RoundRefusal};
+use super::answer::RoundRefusal;
 use super::commit::{
     build_development_version, commit_draft, commit_message, ensure_after_wave, ensure_criteria_proofs, format_round_files, git_lock,
     head, join_copies, make_commit, record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file,
@@ -32,7 +32,7 @@ use super::agreed::{covered_codes, join_unmet, request_agreed, settle_agreed, se
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{rehearse, Recording, Rehearsed};
-use super::{checks::ensure_checks_pass, size_check::in_body};
+use super::{checks::ensure_checks_pass, fixes::keep_fixes, size_check::in_body};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
@@ -331,12 +331,12 @@ fn take_returns(
     // (importações contra a regra, restos e órfãos): a recusa de qualquer uma
     // volta o disco ao que era e nada é comitado; o que só avisa segue nos
     // avisos.
-    let after = message.is_some().then(|| ensure_checks_pass(root).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
+    let after = message.is_some().then(|| ensure_checks_pass(root, &report.waves).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
     let (found, sizes) = after
         .transpose()
         .inspect_err(|refused| {
             drop(write_joined(root, &joined, false));
-            keep_fixes(root, spec, log, refused);
+            keep_fixes(root, spec, log, refused, lang);
         })?
         .unwrap_or_default();
     warnings.extend(found);
@@ -2374,9 +2374,9 @@ mod tests {
 
     /// O lint e a suíte inteira que o projeto declara rodam no repositório
     /// principal antes do commit. O que cai recusa com o comando e o fim da
-    /// saída — o começo dela fica de fora —, nada é comitado, o disco volta ao
-    /// que era e a entrega fica por assumir. Com os dois verdes, a mesma volta
-    /// entra no commit, cada um rodado uma vez. A resposta que despacha diz a
+    /// saída — o começo dela fica de fora — e o próximo passo, nada é
+    /// comitado, o disco volta ao que era e a entrega fica por assumir. Com os
+    /// dois verdes, a mesma volta entra no commit, cada um rodado uma vez. A resposta que despacha diz a
     /// quem conduz que a suíte e o lint são da rodada.
     #[test]
     fn a_red_lint_or_suite_refuses_the_commit_with_the_end_of_its_output_until_both_pass() {
@@ -2406,7 +2406,14 @@ mod tests {
             let filled = translate(text, Locale::PtBr).replace("{command}", red);
             let (before, _) = filled.split_once("{output}").unwrap();
             let hint = refused["hint"].as_str().unwrap_or_default();
-            let output = hint.strip_prefix(before).unwrap_or_else(|| panic!("{key}: {hint}"));
+            // Depois do fim da saída, o próximo passo: a onda volta ao agente.
+            let next = format!(
+                "\n\n{}\n- {}",
+                translate("round_checks.next", Locale::PtBr),
+                translate("round_checks.joined", Locale::PtBr).replace("{wave}", "1")
+            );
+            let failed = hint.strip_suffix(&next).unwrap_or_else(|| panic!("{key}: {hint}"));
+            let output = failed.strip_prefix(before).unwrap_or_else(|| panic!("{key}: {hint}"));
             assert!(output.ends_with("o teste soma caiu") && !output.contains("comeco-da-saida"), "só o fim da saída: {hint}");
             assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {refused}");
             assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n", "{refused}");

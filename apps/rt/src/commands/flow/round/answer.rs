@@ -18,10 +18,11 @@ use serde_json::{json, Map, Value};
 
 use super::backlog::{dispatch_backlog, Judge};
 use super::commit::git_lock;
+use super::fixes::{new_agents_named, sweep_fixes};
 use super::item_choice::choose_items;
 use super::queue::{
     backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
-    sent_items, silent_minutes, waves_awaiting_new_agent, waves_in_progress, waves_returned,
+    sent_items, silent_minutes, waves_in_progress, waves_returned,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
@@ -125,9 +126,9 @@ pub(crate) enum RoundRefusal {
     Git { detail: String },
     /// Um comando que o projeto declara — a compilação, o lint ou a suíte
     /// inteira ([`super::checks::Check`]) — caiu no repositório principal
-    /// antes do commit da rodada, com o comando e o fim da saída: nada foi
-    /// comitado.
-    CheckFailed { check: super::checks::Check, command: String, output: String },
+    /// antes do commit da rodada, com o comando, o fim da saída e as ondas a
+    /// quem o conserto volta: nada foi comitado.
+    CheckFailed(Box<super::checks::CheckFailure>),
     /// A prova de um critério que as ondas deste relatório cobrem não
     /// executou ou não passou: nada foi comitado.
     CriterionProofFailed { code: String, command: String, output: String },
@@ -178,7 +179,7 @@ impl RoundRefusal {
             Self::RejectedWithoutReturn { .. } => "round-rejected-without-return".into(),
             Self::RejectedCommitted { .. } => "round-rejected-committed".into(),
             Self::Git { .. } => "git-refused".into(),
-            Self::CheckFailed { check, .. } => check.reason().into(),
+            Self::CheckFailed(failure) => failure.check.reason().into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
             Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
             Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
@@ -272,9 +273,7 @@ impl RoundRefusal {
                 fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())])
             }
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
-            Self::CheckFailed { check, command, output } => {
-                fill(check.message_key(), &[("{command}", command.clone()), ("{output}", output.clone())])
-            }
+            Self::CheckFailed(failure) => failure.message(lang),
             Self::CriterionProofFailed { code, command, output } => fill(
                 "round.criterion_proof_failed",
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())],
@@ -1102,79 +1101,6 @@ fn request_command(root: &Path, spec: &str, wave: u64) -> String {
 /// condutor escreveu.
 pub(crate) fn wave_dispatch(root: &Path, spec: &str, wave: u64, lang: Locale) -> String {
     format!("{}\n\n{}", wave_title(spec, wave, lang), request_command(root, spec, wave))
-}
-
-/// O arquivo com o trecho que a conferência depois da onda devolveu para a
-/// onda `wave`, gravado pela volta que ela recusou, ou com o motivo de quem
-/// conduz a obra, pela volta que ele reprovou: a última entrega da onda
-/// que nenhuma rodada assumiu. A entrega nova muda o arquivo, e o trecho de
-/// uma volta velha nunca chega ao agente. Nada sem volta pendente da onda.
-pub(crate) fn fix_file(root: &Path, spec: &str, log: &SpecLog, wave: u64) -> Option<PathBuf> {
-    let back = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered" && e.wave() == Some(wave)).map(|e| e.id).max()?;
-    Some(fixes_dir(root, spec)?.join(format!("fix-{wave}-{back}.md")))
-}
-
-/// A recusa da conferência depois da onda com, para cada onda recusada que
-/// espera um agente novo ([`waves_awaiting_new_agent`]), a frase que manda o
-/// condutor despachar um pelo título dela; a onda que não está ali segue com
-/// o conserto mandado ao agente que a fez. Outra recusa sai como veio.
-fn new_agents_named(refused: RoundRefusal, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> RoundRefusal {
-    let RoundRefusal::AfterWave { mut text, question, fixes } = refused else { return refused };
-    let awaiting = waves_awaiting_new_agent(root, spec, log);
-    for wave in fixes.iter().map(|(wave, _)| *wave).filter(|wave| awaiting.contains_key(wave)) {
-        let line = translate("round.after_wave.new_agent", lang)
-            .replace("{wave}", &wave.to_string())
-            .replace("{title}", &wave_title(spec, wave, lang));
-        text = format!("{text}\n\n{line}");
-    }
-    RoundRefusal::AfterWave { text, question, fixes }
-}
-
-/// A pasta de despacho da spec, onde moram os trechos de conserto.
-fn fixes_dir(root: &Path, spec: &str) -> Option<PathBuf> {
-    Some(store::spec_file(root, spec).ok()?.parent()?.join(".dispatch"))
-}
-
-/// A onda do trecho de conserto `path`, pelo nome que [`fix_file`] dá a ele;
-/// nada para outro arquivo da pasta.
-fn fix_wave(path: &Path) -> Option<u64> {
-    let name = path.file_name()?.to_str()?.strip_prefix("fix-")?.strip_suffix(".md")?;
-    let (wave, back) = name.split_once('-')?;
-    back.parse::<u64>().ok().and(wave.parse().ok())
-}
-
-/// Apaga da pasta de despacho da spec cada trecho de conserto que não é mais
-/// o da volta pendente da onda dele ([`fix_file`], pela leitura `log`): o da
-/// volta velha, que a entrega nova trocou, e o da onda que a rodada já
-/// comitou. Sem leitura, como no fechamento, todos saem. A pasta vazia sai
-/// junto; o arquivo que não sai fica para a próxima varredura. Quem chama
-/// segura a trava do passo do git e leu `log` sob ela: a rodada ao mesmo
-/// tempo nunca grava um trecho mais novo que esta leitura.
-pub(crate) fn sweep_fixes(root: &Path, spec: &str, log: Option<&SpecLog>) {
-    let Some(dir) = fixes_dir(root, spec) else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
-    for path in entries.flatten().map(|entry| entry.path()) {
-        let Some(wave) = fix_wave(&path) else { continue };
-        if log.and_then(|log| fix_file(root, spec, log, wave)).as_ref() != Some(&path) {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-    let _ = std::fs::remove_dir(&dir);
-}
-
-/// Grava, para cada onda que a conferência depois da onda recusou, o trecho
-/// dela no arquivo da volta recusada ([`fix_file`]), onde o gancho da
-/// mensagem ao agente da onda o lê. Antes, toda recusa varre os trechos que
-/// ficaram velhos ([`sweep_fixes`]); outra recusa não grava nada, e a falha
-/// de gravação deixa a mensagem do condutor passar como veio.
-pub(super) fn keep_fixes(root: &Path, spec: &str, log: &SpecLog, refused: &RoundRefusal) {
-    sweep_fixes(root, spec, Some(log));
-    let RoundRefusal::AfterWave { fixes, .. } = refused else { return };
-    for (wave, section) in fixes {
-        let Some(file) = fix_file(root, spec, log, *wave) else { continue };
-        let _ = file.parent().map(std::fs::create_dir_all);
-        let _ = std::fs::write(&file, section);
-    }
 }
 
 /// O comando `read` de uma leitura da spec (`block`), com o caminho do

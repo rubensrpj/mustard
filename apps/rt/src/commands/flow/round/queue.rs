@@ -295,7 +295,7 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 
 /// As ondas que esperam um agente novo, cada uma com o arquivo do trecho de
 /// conserto dela: a rodada recusou a volta e gravou o trecho em disco
-/// ([`super::answer::fix_file`]), e o Claude Code que mandou a onda já fechou,
+/// ([`super::fixes::fix_file`]), e o Claude Code que mandou a onda já fechou,
 /// levando o agente dela. Só nesse caso a onda aceita outro agente, que
 /// recebe o pedido e o trecho e trabalha na mesma cópia; com o Claude Code do
 /// envio aberto, o conserto vai ao agente que fez a onda. A volta que quem
@@ -310,7 +310,7 @@ pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -
     waves_returned(log)
         .into_iter()
         .filter(|n| sends.get(n).is_some_and(|sent| rejected_unclaimed(log, *n, *sent) || !claude_still_here(log, *sent)))
-        .filter_map(|n| super::answer::fix_file(root, spec, log, n).filter(|file| file.is_file()).map(|file| (n, file)))
+        .filter_map(|n| super::fixes::fix_file(root, spec, log, n).filter(|file| file.is_file()).map(|file| (n, file)))
         .collect()
 }
 
