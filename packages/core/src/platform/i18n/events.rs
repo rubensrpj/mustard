@@ -373,12 +373,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              reason. Nothing was written."
         }
         ("spec_events.open_point_removed", Locale::PtBr) => {
-            "O ponto {code} está aberto e não sai com `remove`: feche-o com um ponto que o aponte em \
-             `closes`, com a resposta ou o motivo. Nada foi gravado."
+            "O ponto {code} está aberto e não sai com `remove`. Se ele não se aplica, feche-o com \
+             `mustard-rt run answer --point {code} --not-applicable --reason \"<motivo>\"`. Se ele \
+             tem resposta, troque o `--not-applicable` e o `--reason` por `--type` e `--json`. Nada \
+             foi gravado."
         }
         ("spec_events.open_point_removed", Locale::EnUs) => {
-            "Point {code} is open and does not leave with `remove`: close it with a point that names \
-             it in `closes`, with the answer or the reason. Nothing was written."
+            "Point {code} is open and does not leave with `remove`. If it does not apply, close it \
+             with `mustard-rt run answer --point {code} --not-applicable --reason \"<reason>\"`. If \
+             it has an answer, swap `--not-applicable` and `--reason` for `--type` and `--json`. \
+             Nothing was written."
         }
         ("spec_events.purge_excerpt_not_found", Locale::PtBr) => {
             "O item {code} não traz o trecho a expurgar: nem o que o pedido indica em `excerpt`, nem \
@@ -956,7 +960,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             123,
-            0xdbab_7c00_bde5_024f,
+            0x569d_388b_343c_96ad,
         );
     }
 

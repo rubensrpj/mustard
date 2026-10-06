@@ -4808,20 +4808,39 @@ mod tests {
     }
 
     /// Um ponto aberto não sai com `remove`, nem pelo número nem pelo código:
-    /// ele só fecha. Nada é gravado.
+    /// ele só fecha, e nada é gravado. A recusa, nos dois idiomas, ensina o
+    /// comando que o fecha como "não se aplica", e o comando ensinado fecha o
+    /// ponto e devolve o próximo.
     #[test]
-    fn an_open_point_cannot_be_removed_only_closed() {
+    fn an_open_point_cannot_be_removed_and_the_refusal_teaches_how_to_close_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
+        let (_, points) = listed(root, &["fix"], false);
         let before = lines(root);
+        let taught = format!("`mustard-rt run answer --point {} --not-applicable --reason ", points[0].code);
         for target in [json!(points[0].id), json!(points[0].code)] {
             let removal = write(root, "remove", &json!({"targets": [target], "reason": "não vale"}).to_string());
             assert_eq!(removal["reason"], json!("open-point-removed"), "{removal}");
-            assert!(removal["hint"].as_str().unwrap().contains(&points[0].code), "{removal}");
+            assert!(removal["hint"].as_str().unwrap().contains(&taught), "{removal}");
         }
+        let english = Refusal::OpenPointRemoved { code: points[0].code.clone() }.message(Locale::EnUs);
+        assert!(english.contains(&taught), "{english}");
         assert_eq!(lines(root), before);
-        assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
+        let closed = crate::commands::flow::answer::answer_for(
+            &crate::commands::flow::answer::AnswerOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                point: Some(points[0].code.clone()),
+                event_type: None,
+                json: None,
+                result: None,
+                not_applicable: true,
+                reason: Some("Não vale para este pedido.".into()),
+            },
+            None,
+        );
+        assert_eq!(closed["closed"]["status"], json!("not_applicable"), "{closed}");
+        assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
     }
 
     /// Um ponto aberto é expurgado só no trecho, pelo número ou pelo código:
