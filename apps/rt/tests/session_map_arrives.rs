@@ -152,8 +152,8 @@ fn an_english_fresh_install_tracks_locally_and_exports_only_when_requested() {
     let dir = tempfile::tempdir().unwrap();
     let (root,home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
     let context = session_start(&root,&home,"startup");
-    assert!(context.contains("/mustard-panel") && context.contains("/mustard-publish"), "{context}");
-    assert!(context.contains("local export does not confirm remote publication"), "{context}");
+    assert!(context.contains("/mustard-panel") && context.contains("/mustard-pages"), "{context}");
+    assert!(context.contains("Local export does not confirm publishing"), "{context}");
     assert!(!root.join(".claude/mustard/pages/project.html").exists());
     assert!(!root.join(".claude/mustard/pages/spec.html").exists());
     assert!(!root.join(".claude/mustard/publications").exists());

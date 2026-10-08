@@ -36,12 +36,17 @@ pub(crate) struct Usage {
     pub tokens: Option<u64>,
     pub caller_steps: Option<u64>,
     pub caller_tokens: Option<u64>,
+    pub breakdown: Option<transcript::TokenBreakdown>,
+    pub caller_breakdown: Option<transcript::TokenBreakdown>,
 }
 
 impl Usage {
     /// Os campos medidos, com os nomes que o envio grava; vazio sem nenhum.
     pub(super) fn fields(&self) -> Map<String, Value> {
         let mut out = Map::new();
+        for (key,value) in [("usage_breakdown",&self.breakdown),("caller_usage_breakdown",&self.caller_breakdown)] {
+            if let Some(value)=value {out.insert(key.into(),json!(value));}
+        }
         if let Some(model) = &self.model_used {
             out.insert("model_used".into(), json!(model));
         }
@@ -72,6 +77,8 @@ pub(super) fn measure_usage<'u>(log: &SpecLog, caller: Caller<'_>, waves: impl I
             tokens: own.as_ref().map(|own| own.tokens),
             caller_steps: main.as_ref().map(|main| main.steps),
             caller_tokens: main.as_ref().map(|main| main.tokens),
+            breakdown: own.as_ref().map(|own|own.breakdown.clone()),
+            caller_breakdown: main.as_ref().map(|main|main.breakdown.clone()),
         };
     }
 }

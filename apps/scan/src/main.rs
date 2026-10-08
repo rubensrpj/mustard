@@ -484,6 +484,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 has_tests: testmap::has_inline_tests(&sf.content),
                 quality: Default::default(),
                 analysis: Some(serde_json::json!({"parse_complete":extracted.parse_complete,
+                    "content_sha256":({let mut hash=mustard_core::io::sha256::Sha256::new();hash.update(sf.content.as_bytes());hash.hex_digest()}),
                     "origin":if analyzer.is_some(){"tree-sitter"}else{"unsupported"},
                     "relations":"syntactic-candidates", "tests":"candidates-not-coverage"})),
                 signals: code_signals(&sf.content),

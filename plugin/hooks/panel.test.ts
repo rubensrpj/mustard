@@ -4,6 +4,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   const clock = mock.clock(on);
   mock.env(on, {});
   let reads = 0;
+  let measurements = 0;
   let turns = 0;
   let tools = 0;
   const snapshot = {
@@ -20,6 +21,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   on('session.usage', () => ({value:{context:{window:200000,tokens:12000,percentUsed:6},rateLimits:[],cost:{usd:0.12}}}));
   on('process.run', ($, e) => {
     reads++;
+    if(e.argv.includes('--refresh-consumption')) measurements++;
     expect(e.argv.slice(1,5)).toEqual(['run','panel','--root','/fixture']);
     return {value:{exitCode:0,stdout:JSON.stringify(snapshot),stderr:''}};
   });
@@ -35,11 +37,46 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   expect(await pane.find({type:'Text',text:'desconhecido'})).toBeDefined();
   await clock.advance(2000);
   expect(reads).toBe(2);
+  expect(measurements).toBe(1);
   await pane.press({key:'close'});
   await clock.advance(10000);
   expect(reads).toBe(2);
   expect(turns).toBe(0);
   expect(tools).toBe(0);
+});
+
+test('host measurements persist natively and official context percent renders without a model turn', async ($,on) => {
+  mock.env(on,{});mock.clock(on);
+  let turns=0;
+  const recorded:any[]=[];
+  const snapshot={ok:true,schema_version:1,project:{name:'fixture'},at:'2026-10-08T12:00:00Z',specs:[],jev:{},
+    consumption:{available:true,project_tokens:100,machine_tokens:1000,measured_at:'fixture-time'},
+    claude_cost:{known_micro_usd:500000,unattributed_micro_usd:200000}};
+  on('session.start',($,e)=>({cwd:e.cwd}));on('session.measure',($,e)=>({changed:e.changed}));
+  on('command.register',()=>({value:null}));on('session.cwd',()=>({value:'/fixture'}));
+  on('session.id',()=>({value:'actual-session'}));on('session.model',()=>({value:'test-model'}));
+  on('session.usage',()=>({value:{context:{percent:12,tokens:24000,window:200000},rateLimits:[]}}));
+  on('ui.open',()=>({value:null}));on('ui.close',()=>({value:null}));
+  on('prompt.submit',()=>{turns++;return {};});
+  on('process.run',($,e)=>{
+    if(e.argv[2]==='usage-record') {
+      expect(e.argv.slice(1)).toEqual(['run','usage-record','--root','/fixture','--session','actual-session']);
+      recorded.push(JSON.parse(e.init.stdin));
+      return {value:{exitCode:0,stdout:'{"ok":true}',stderr:''}};
+    }
+    expect(e.argv).toContain('--session');
+    return {value:{exitCode:0,stdout:JSON.stringify(snapshot),stderr:''}};
+  });
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  await $.session.measure({context:{percent:12,tokens:24000,window:200000},cost:{usd:0.5},rateLimits:[],changed:['cost']});
+  expect(recorded).toEqual([{cost:{usd:0.5},model:'test-model'}]);
+  await $.command.run({command:'mustard-panel',args:''});
+  const pane=await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await pane.press({key:'tab-Consumo'});
+  expect(await pane.find({type:'Text',text:'Contexto da sessão: 12% · 24.000/200.000 tokens'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Claude estimado nas sessões observadas: $0.5000'})).toBeDefined();
+  expect(turns).toBe(0);
+  await pane.press({key:'close'});
 });
 
 test('explicit export without host transport starts no model turn', async ($, on) => {

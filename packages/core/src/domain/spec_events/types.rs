@@ -770,6 +770,8 @@ pub const TYPES: &[TypeSpec] = &[
             opt("tokens", Kind::Int),
             opt("caller_steps", Kind::Int),
             opt("caller_tokens", Kind::Int),
+            opt("usage_breakdown", Kind::Object),
+            opt("caller_usage_breakdown", Kind::Object),
             // A cópia separada que a rodada criou para a onda e a pasta de
             // compilação dela: a volta junta os arquivos da cópia, e a pasta
             // fica ocupada enquanto a onda está em andamento. No envio da

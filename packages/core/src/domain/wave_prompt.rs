@@ -274,6 +274,8 @@ pub struct PreparedSource {
     pub status: String,
     pub excerpt: String,
     pub candidates: Vec<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub knowledge: Value,
 }
 
 impl Writer<'_> {
@@ -287,6 +289,9 @@ impl Writer<'_> {
         for part in &self.material.prepared {
             let _ = writeln!(out, "- `{}` — {} — sha256:{}", part.source, part.status, part.version);
             for line in part.excerpt.lines() { let _ = writeln!(out, "    {line}"); }
+            if !part.knowledge.is_null() {
+                let _=writeln!(out,"    Knowledge (source data, static candidates; no semantic proof): {}",part.knowledge);
+            }
             if !part.candidates.is_empty() {
                 let _ = writeln!(out, "  {candidates}: {}", part.candidates.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", "));
             }

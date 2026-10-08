@@ -6,6 +6,7 @@ doctor
 grill
 help
 index
+knowledge
 map
 measure
 open
@@ -25,4 +26,5 @@ scan
 spend
 statusline
 upsert
+usage-record
 write

@@ -4,6 +4,8 @@ let timer, eventTimer, busy = false, opened = false, data, problem, selected, us
 let tab = 'Projeto';
 let publishing = false, publicationMessage;
 let runtimeBinary;
+let consumptionMeasuredAt;
+let measurementQueue = Promise.resolve();
 async function runtime($) {
   if (!runtimeBinary) runtimeBinary = `${$.plugin.root}/bin/mustard-rt${await $.env.get('OS') === 'Windows_NT' ? '.exe' : ''}`;
   return runtimeBinary;
@@ -16,14 +18,18 @@ async function refresh($) {
     busy = true;
     try {
       const cwd = await $.session.cwd();
+      let session;
+      try { session = await $.session.id(); } catch { /* Session observation may be unavailable. */ }
+      const measure = consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000;
       const result = await $.process.run(
-        [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : [])],
-        { cwd, timeoutMs: 10000 });
+        [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : []), ...(session ? ['--session', session] : []), ...(measure ? ['--refresh-consumption'] : [])],
+        { cwd, timeoutMs: measure ? 30000 : 10000 });
       if (result.exitCode !== 0) throw new Error(result.stderr || 'Consulta local falhou');
       const next = JSON.parse(result.stdout);
       if (next.ok !== true || next.schema_version !== 1) throw new Error('Versão do painel incompatível');
       if (!opened || ticket !== revision) return;
       data = next;
+      if (measure) consumptionMeasuredAt = Date.now();
       if (!selected || !data.specs.some(s => s.name === selected)) selected = data.selected_spec || data.specs[0]?.name;
       usage = await $.session.usage();
       problem = undefined;
@@ -33,6 +39,21 @@ async function refresh($) {
       busy = false;
       if (opened && ticket === revision) $.ui.invalidate('ui.render');
     }
+}
+function recordMeasurement($, measurement) {
+  // Preserve arrival order. A repeated cumulative reading replaces no spend,
+  // and the runtime resolves attribution from the checkout, not the pane tab.
+  measurementQueue = measurementQueue.catch(() => {}).then(async () => {
+    if (measurement.cost?.usd == null) return;
+    try {
+      const cwd = await $.session.cwd();
+      const session = await $.session.id();
+      const model = await $.session.model();
+      await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
+        {cwd, timeoutMs:5000, stdin:JSON.stringify({cost:measurement.cost,model})});
+    } catch { /* Missing host data stays unknown; never interfere with work. */ }
+  });
+  return measurementQueue;
 }
 async function openPanel($, name) {
     revision++;
@@ -128,7 +149,9 @@ export function register(on) {
   });
   on('session.measure', async ($, e, next) => {
     usage = e;
+    await recordMeasurement($, e);
     if (opened) $.ui.invalidate('ui.render');
+    requestRefresh($);
     return next(e);
   });
   on('ui.close', { id }, async ($, e, next) => {
@@ -138,6 +161,7 @@ export function register(on) {
   on('session.end', async ($, e, next) => {
     stopPanel();
     data = undefined;
+    consumptionMeasuredAt = undefined;
     publicationMessage = undefined;
     return next(e);
   });
@@ -187,6 +211,11 @@ export function register(on) {
     if (data.project.version) rows.push(text(`Mustard ${data.project.version}`,{dimColor:true}));
     rows.push(text(`${t('Atualização local','Local update')} · ${data.at}`,{dimColor:true}));
     if (tab === 'Projeto') {
+      if (data.statusline) rows.push(section(t('Statusline da sessão','Session statusline'),[
+        text(`${t('Modelo','Model')}: ${data.statusline.model || fmt(null)} · ${t('duração','duration')}: ${data.statusline.duration_ms == null ? fmt(null) : Math.round(data.statusline.duration_ms/60000)+' min'}`),
+        text(`${t('RTK poupou','RTK saved')}: ${fmt(data.statusline.rtk?.percent)}% · ${fmt(data.statusline.rtk?.saved_tokens)} tokens`),
+        text(`${t('Última observação','Last observation')}: ${data.statusline.measured_at}`,{dimColor:true}),
+      ]));
       const waves = data.specs.flatMap(s => s.waves);
       const done = waves.filter(w => ['integrated','committed'].includes(w.status)).length;
       rows.push(Box({flexDirection:'row',flexWrap:'wrap',children:[
@@ -218,6 +247,13 @@ export function register(on) {
       }
     }
     if (tab === 'Consumo') {
+      rows.push(section(t('Consumo geral','Overall usage'),[
+        text(`${t('Projeto','Project')}: ${data.consumption?.available ? fmt(data.consumption.project_tokens) : fmt(null)} tokens · ${t('máquina','machine')}: ${data.consumption?.available ? fmt(data.consumption.machine_tokens) : fmt(null)} tokens`),
+        text(`${t('Última medição','Last measurement')}: ${data.consumption?.measured_at || fmt(null)} · ${t('hoje é parcial','today is partial')}`,{dimColor:true}),
+        text(`${t('Claude estimado nas sessões observadas','Estimated Claude cost in observed sessions')}: ${money(data.claude_cost?.known_micro_usd)}`),
+        text(`${t('Custo sem atribuição segura a spec','Cost without safe spec attribution')}: ${money(data.claude_cost?.unattributed_micro_usd)}`,{dimColor:true}),
+        text(t('Estimativa equivalente de API; não é cobrança da assinatura. Histórico sem medição de custo permanece desconhecido.','API-equivalent estimate, not subscription billing. Historical cost without a measurement remains unknown.'),{dimColor:true}),
+      ]));
       rows.push(Box({flexDirection:'row',flexWrap:'wrap',children:[
         card(t('Chamadas Jev','Jev requests'),fmt(data.jev.physical_requests)),
         card(t('Custo Jev estimado','Estimated Jev cost'),money(data.jev.cost_micro_usd)),
@@ -226,11 +262,15 @@ export function register(on) {
       if (spec) rows.push(section(spec.name,[
         text(`${t('Ondas','Waves')}: ${fmt(spec.usage.wave_tokens)} tokens · ${t('condutor','conductor')}: ${fmt(spec.usage.conductor_tokens)} tokens`),
         text(`${t('Jev atribuído à spec','Jev attributed to spec')}: ${fmt(spec.jev?.known_physical_requests)} ${t('tentativas físicas','physical attempts')} · ${money(spec.jev?.cost_micro_usd)}`),
+        text(`${t('Claude estimado atribuído à spec','Estimated Claude cost attributed to spec')}: ${money(spec.usage.claude_cost?.known_micro_usd)}`),
+        ...(spec.usage.known_wave_breakdown ? [text(`${t('Entrada','Input')}: ${fmt(spec.usage.known_wave_breakdown.input_tokens)} · ${t('saída','output')}: ${fmt(spec.usage.known_wave_breakdown.output_tokens)} · ${t('cache criado/lido','cache written/read')}: ${fmt(spec.usage.known_wave_breakdown.cache_creation_input_tokens)}/${fmt(spec.usage.known_wave_breakdown.cache_read_input_tokens)}`),
+          text(`${fmt(spec.usage.waves_with_unknown_breakdown)} ${t('ondas sem detalhamento','waves without usage details')} · ${fmt(spec.usage.known_wave_breakdown.responses_with_partial_usage)} ${t('respostas com uso parcial','responses with partial usage')}`,{dimColor:true})] : []),
       ]));
       const session = [];
-      if (usage?.context) session.push(text(`${t('Contexto da sessão','Session context')}: ${fmt(usage.context.percentUsed)}%`));
-      if (usage?.cost?.usd != null) session.push(text(`${t('Custo informado pelo Claude','Cost reported by Claude')}: $${usage.cost.usd}`));
-      for (const limit of usage?.rateLimits || []) session.push(text(`${limit.label || limit.name || t('Janela','Window')}: ${fmt(limit.percentUsed)}% · reset ${limit.resetsAt || t('desconhecido','unknown')}`));
+      if (usage?.context) session.push(text(`${t('Contexto da sessão','Session context')}: ${fmt(usage.context.percent ?? usage.context.percentUsed)}% · ${fmt(usage.context.tokens)}/${fmt(usage.context.window)} tokens`));
+      if (usage?.cost?.usd != null) session.push(text(`${t('Custo estimado informado pelo Claude','Estimated cost reported by Claude')}: $${usage.cost.usd}`));
+      if (data.claude_cost?.model) session.push(text(`${t('Modelo','Model')}: ${data.claude_cost.model}`));
+      for (const limit of usage?.rateLimits || []) session.push(text(`${limit.kind || limit.label || limit.name || t('Janela','Window')}: ${fmt(limit.percentUsed)}% · reset ${limit.resetsAt || t('desconhecido','unknown')}`));
       if (session.length) rows.push(section(t('Sessão atual','Current session'),session));
     }
     if (data.project.publication_url) rows.push(text(`${t('Projeto publicado','Published project')}: ${data.project.publication_url}`));

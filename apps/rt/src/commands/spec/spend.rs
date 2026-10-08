@@ -72,6 +72,11 @@ fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Re
     let config = machine.config.as_deref().ok_or(Refusal::NoMachineFolder)?;
     let counted = count_missing(dir, config, &machine.today)?;
     let open = store::count_open(config, Some(dir), &machine.today);
+    store::update(dir, |ledger| {
+        ledger.open_rows.clone_from(&open);
+        ledger.open_day=Some(machine.today.clone());
+        ledger.measured_at=Some(chrono::Utc::now().to_rfc3339());
+    })?;
     if !opts.publish && !opts.republish {
         let ledger = store::load(dir)?;
         return Ok(

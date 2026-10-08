@@ -29,6 +29,7 @@ mod incremental_read;
 mod inline_test_block;
 mod kinds_content;
 mod kinds_parity;
+mod knowledge;
 mod map_database;
 mod markup_page;
 mod member_read;

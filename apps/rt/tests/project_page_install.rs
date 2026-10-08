@@ -113,7 +113,7 @@ fn assert_installed(root: &Path, allow: &[&str], ask: &[&str], deny: &[&str], te
     let pages = root.join(".claude/mustard/pages");
     assert!(!pages.join("spec.html").exists() && !pages.join("project.html").exists(), "{case}: no automatic public resources");
     let map = std::fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap();
-    assert!(map.contains("/mustard-panel") && map.contains("/mustard-publish"), "{case}: local tracking and explicit export");
+    assert!(map.contains("/mustard-panel") && map.contains("/mustard-pages"), "{case}: local tracking and explicit export");
     assert!(map.contains(if text == Locale::PtBr { "Mustard neste projeto" } else { "Mustard in this project" }), "{case}: text language");
 
 }

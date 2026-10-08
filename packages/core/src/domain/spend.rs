@@ -81,6 +81,8 @@ pub struct DayRow {
     /// Entrada, criação e leitura de cache e saída, cada resposta uma vez.
     #[serde(default)]
     pub tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_breakdown: Option<TokenBreakdown>,
     /// Cada uso de ferramenta.
     #[serde(default)]
     pub actions: u64,
@@ -96,6 +98,25 @@ pub struct DayRow {
     /// A linha é do dia aberto (hoje): a página a marca como parcial.
     #[serde(default)]
     pub partial: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenBreakdown {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub responses_with_partial_usage: u64,
+}
+
+impl TokenBreakdown {
+    pub fn combine(&mut self, other:&Self) {
+        self.input_tokens=self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens=self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_creation_input_tokens=self.cache_creation_input_tokens.saturating_add(other.cache_creation_input_tokens);
+        self.cache_read_input_tokens=self.cache_read_input_tokens.saturating_add(other.cache_read_input_tokens);
+        self.responses_with_partial_usage=self.responses_with_partial_usage.saturating_add(other.responses_with_partial_usage);
+    }
 }
 
 impl DayRow {
@@ -298,6 +319,14 @@ impl Range {
 /// conta foi, e o que a página já recebeu. Recontar é apagá-lo.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ledger {
+    /// Latest explicit local measurement of the open day. Reading the panel
+    /// never retallies all transcripts. Old ledgers remain readable.
+    #[serde(default)]
+    pub open_rows: Vec<DayRow>,
+    #[serde(default)]
+    pub open_day: Option<String>,
+    #[serde(default)]
+    pub measured_at: Option<String>,
     /// O último dia fechado contado, o endereço da página publicada (um só por
     /// máquina) e o último dia fechado que a cópia mais recente levou a ela.
     #[serde(default)]

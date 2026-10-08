@@ -10,7 +10,7 @@
 #[cfg(test)]
 use mustard_core::view::document::RtkDay;
 use serde_json::Value;
-use std::process::{Command, Stdio};
+use mustard_core::platform::code_tools::{MachineRunner,RunOutcome,ToolRunner};
 
 /// Normalised `rtk gain` summary — the fields the statusline segment consumes.
 #[derive(Debug, Clone)]
@@ -46,12 +46,9 @@ fn num(obj: &Value, keys: &[&str]) -> f64 {
 /// `if (saved <= 0 && commands <= 0) return null`.
 #[must_use]
 pub fn get_rtk_gain() -> Option<RtkGain> {
-    let output =
-        Command::new("rtk").args(["gain", "--all", "--format", "json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw = String::from_utf8(output.stdout).ok()?;
+    let runner=MachineRunner::new(&std::env::var("PATH").unwrap_or_default());
+    let (outcome,raw)=runner.output("rtk",&["gain","--all","--format","json"],std::time::Duration::from_secs(1));
+    if outcome!=RunOutcome::Succeeded {return None;}
     let data: Value = serde_json::from_str(&raw).ok()?;
     // The JS reads `data.summary` when present, else `data` itself.
     let summary = data.get("summary").unwrap_or(&data);

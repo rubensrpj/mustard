@@ -425,6 +425,12 @@ pub const NOTES: MapBlock = written(block!("notes", version 1, {
     "notes" at list(&["notes"]) => ["file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text]
 }));
 
+/// Multi-source interpretations remain separate from extracted syntax and
+/// survive scans. Every source hash must match before retrieval can use one.
+pub const KNOWLEDGE_NOTES: MapBlock = written(block!("knowledge_notes", version 1, {
+    "knowledge_notes" at list(&["knowledge_notes"]) => ["id" Text, "payload" Text]
+}));
+
 /// O bloco declarado por [`block!`] como escrito: convertido na troca de
 /// versão, nunca apagado.
 const fn written(mut declared: MapBlock) -> MapBlock {
@@ -495,11 +501,11 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
 /// das specs, o do glossário e o das notas de sentido.
-const DECLARED: [&MapBlock; 11] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES];
+const DECLARED: [&MapBlock; 12] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 11] =
-    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block];
+const DB_BLOCKS: [Block; 12] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -2438,6 +2444,7 @@ mod tests {
                 "glossary_asks",
                 "glossary_marks",
                 "notes",
+                "knowledge_notes",
                 "blocks"
             ]
         );

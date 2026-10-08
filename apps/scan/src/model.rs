@@ -88,7 +88,9 @@ impl ProjectModel {
     /// refaz com os arquivos e as declarações prepara as palavras nas línguas
     /// `languages`.
     pub fn save(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
-        Ok(store::save_at(path, &serde_json::to_value(self)?, mark, languages)?)
+        let mut raw = serde_json::to_value(self)?;
+        mustard_core::domain::knowledge::enrich(&mut raw);
+        Ok(store::save_at(path, &raw, mark, languages)?)
     }
 
     /// Grava só o censo do modelo no mapa em `path`, com a marca `mark`; os

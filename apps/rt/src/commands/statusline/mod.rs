@@ -110,6 +110,7 @@ const fn is_place_row(kind: segment::SegmentKind) -> bool {
 /// no trailing newline. A row whose segments are all absent is dropped rather
 /// than printed blank — with a sparse payload the bar stays a single line, the
 /// shape it had before this split.
+#[cfg(test)]
 fn render(data: &Value) -> Vec<String> {
     let spend_dir = mustard_core::io::spend::machine_dir();
     rows(ThemeId::from_env().theme(), build_segments(data, get_rtk_gain().as_ref(), spend_dir.as_deref()))
@@ -139,7 +140,10 @@ pub fn run(preview: bool) {
     }
     match serde_json::from_str::<Value>(&buf) {
         Ok(data) => {
-            for line in render(&data) {
+            let gain=get_rtk_gain();
+            crate::commands::panel::observe_statusline(&data,gain.as_ref());
+            let spend_dir=mustard_core::io::spend::machine_dir();
+            for line in rows(ThemeId::from_env().theme(),build_segments(&data,gain.as_ref(),spend_dir.as_deref())) {
                 println!("{line}");
             }
         }

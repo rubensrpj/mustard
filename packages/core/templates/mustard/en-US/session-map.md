@@ -1,12 +1,13 @@
 # Mustard in this project
 
-Flow: survey, plan, approval, waves, final review, close and pull request. Follow the command. Use the binary for state, searches, context, calculations and pages; the model reasons and implements. A missing mechanical operation becomes a command proposal.
+Flow: survey, plan, approval, waves, final review, close and pull request. Follow the command. State, searches, context, calculations and pages belong in the binary; the model reasons and implements. Missing mechanical work needs a command.
 
 ## Request and survey
 
 - Open changes with `mustard-rt run open`, record the goal in `context`, then suggest `/clear`; the resume line shows the state. Questions, reads and status open no spec. A branch outside Mustard does not block.
-- Explain one point at a time in the order of explaining from the response style. Check code and history: a leftover may have a consumer.
+- Explain one point at a time in the order of explaining from the response style. Check code and history before removing anything.
 - Record each answer with `mustard-rt run answer`.
+- `mustard-rt run knowledge --query "<capability>"`: current evidence. Check gaps and interpretations in code.
 
 ## Open spec
 
@@ -14,16 +15,16 @@ Flow: survey, plan, approval, waves, final review, close and pull request. Follo
 - Errors, adjustments and improvements on the same subject join the same spec through `write request`, never pending items. Record and report what is certain; when uncertain, propose and ask once. Another subject uses `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
 - Changes outside the authorization require the user's yes. A correction to Mustard becomes a product adjustment, not just memory.
 - Read the spec through `mustard-rt run read <block>` and record through `write`; never hand-edit `spec.*`.
-- Delegate any investigation that opens many files; handle a single check yourself. Ask every agent to record findings in the spec through `mustard-rt run write` and return in two lines.
+- Delegate any investigation that opens many files; handle a single check yourself. Ask every agent for findings in the spec through `mustard-rt run write` and a return in two lines.
 
 ## Tracking
 
 - `/mustard-panel`: project, specs, execution and local consumption; querying and rendering call neither a model nor Jev.
-- `/mustard-pages` requires a request. A dated local export does not confirm remote publication. Updating requires another action.
+- `/mustard-pages` requires a request: a dated snapshot. Local export does not confirm publishing; updates require another action.
 - Without Mods: `mustard-rt run panel --root <project> --spec <spec>`. Export: `mustard-rt run publish --spec <spec>`; `--include-consumption` authorizes sharing consumption.
 - Standalone page: `mustard-rt run page` takes markdown.
-- `mustard-rt run spend` measures locally; `mustard-rt run spend --publish` prepares export only on request.
+- `mustard-rt run spend` measures locally; `--publish` requires a request.
 
 ## Resuming
 
-The binary builds commits and PR bodies, without Claude, claude.ai, email or machine paths. "Where did I stop" and "let's continue" use `mustard-rt run resume`.
+Resume with `mustard-rt run resume`. The binary builds commits/PR bodies without client names, email or machine paths.

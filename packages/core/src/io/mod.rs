@@ -17,6 +17,7 @@ pub mod map_meaning;
 pub mod map_glossary;
 mod map_index;
 pub mod map_notes;
+pub mod knowledge;
 mod map_notes_fresh;
 pub mod map_lineage;
 mod map_check;

@@ -258,6 +258,12 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "points": points,
         "reminders": reminders,
     });
+    // Discovery only: grounded flow evidence does not close survey points,
+    // introduce a requirement or substitute the required source read.
+    if let Ok((evidence,_))=mustard_core::io::knowledge::query(&opts.root,&goal_text,None,4,1,false)
+        && (evidence["cards"].as_array().is_some_and(|cards|!cards.is_empty()) || evidence["interpretations"].as_array().is_some_and(|notes|!notes.is_empty())) {
+        report["knowledge"]=evidence;
+    }
     // Numa spec que voltou ao levantamento, o motivo da volta é a consulta: o
     // levantamento traz os itens que ele toca, para o usuário dizer se cada um
     // fica, muda ou sai. O que o motivo não toca fica como está, e nada é

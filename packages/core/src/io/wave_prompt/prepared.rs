@@ -60,7 +60,10 @@ fn component(root: &Path, tree: &Path, location: &str) -> PreparedSource {
     let tests = read_for(root, Need::Tests(&path)).ok().and_then(|map| map.module(&path).cloned()).map(|module| module.tests).unwrap_or_default();
     let importers = read_for(root, Need::Importers(&path)).ok().map(|map| map.modules.into_iter()
         .filter(|module| module.deps.contains(&path)).map(|module| module.path).collect::<Vec<_>>()).unwrap_or_default();
-    let facts = json!({"declarations":selected,"tests":tests,"importers":importers});
+    part.knowledge=crate::io::knowledge::for_source(root,tree,&path,name);
+    // Optional evidence cannot crowd mandatory rules/items out of the prompt.
+    if part.knowledge.to_string().len()>3000 {part.knowledge=Value::Null;}
+    let facts = json!({"declarations":selected,"tests":tests,"importers":importers,"knowledge":part.knowledge});
     let fingerprint = digest(json!({"revision":1,"source":location,"version":part.version,"facts":facts}).to_string().as_bytes());
     let cache = root.join(".claude/mustard/prepared-context");
     let cache_file = cache.join(format!("{}.json", digest(location.as_bytes())));
@@ -114,4 +117,33 @@ pub(super) fn changed(root: &Path, tree: &Path, location: &str) -> bool {
     let Some(old) = old.filter(|blob| !blob.is_empty()) else { return false; };
     let current = crate::platform::git::run(tree, &["hash-object", "--", path]);
     !current.ok || old != current.stdout.trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_changed_secondary_source_invalidates_the_cached_interpretation() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        assert!(crate::platform::git::run(root,&["init","-q"]).ok);
+        let text="fn run() {}\n";
+        for file in ["a.rs","b.rs"] {std::fs::write(root.join(file),text).unwrap();}
+        let blob=crate::platform::git::run(root,&["hash-object","a.rs"]).stdout.trim().to_string();
+        let mut raw=json!({"modules":[{"path":"a.rs","blob":blob,
+            "analysis":{"content_sha256":digest(text.as_bytes()),"parse_complete":true},
+            "declarations":[{"name":"run","line":1,"end_line":1}]}]});
+        crate::domain::knowledge::enrich(&mut raw);
+        crate::io::project_map::write_text(root,&raw.to_string()).unwrap();
+        let source=|file:&str|crate::domain::knowledge::Source{file:file.into(),line:1,end_line:1,sha256:digest(text.as_bytes())};
+        let note=crate::io::knowledge::Interpretation{id:"multi-source".into(),title:"Process".into(),text:"A uses B.".into(),status:"hypothesis".into(),origin:"fixture".into(),sources:vec![source("a.rs"),source("b.rs")]};
+        crate::io::knowledge::record(root,&note).unwrap();
+        let first=component(root,root,"a.rs#run");
+        assert_eq!(first.knowledge["interpretations"][0]["id"],"multi-source");
+        assert_eq!(component(root,root,"a.rs#run"),first);
+        std::fs::write(root.join("b.rs"),"fn changed() {}\n").unwrap();
+        let after=component(root,root,"a.rs#run");
+        assert_eq!(after.version,first.version);
+        assert!(after.knowledge.is_null());
+        assert_eq!(after.excerpt,first.excerpt);
+    }
 }

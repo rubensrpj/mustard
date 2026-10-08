@@ -37,6 +37,7 @@ pub mod git_delete;
 pub mod git_settle;
 pub mod maint;
 pub mod map;
+pub mod knowledge;
 pub mod panel;
 pub mod retired;
 pub mod review;

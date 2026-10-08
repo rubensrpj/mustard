@@ -847,7 +847,7 @@ fn source_digest(crate_root: &Path) -> String {
     collect_files(&crate_root.join("src"), &mut files);
     collect_files(&crate_root.join("queries"), &mut files);
     collect_files(&crate_root.join("routes"), &mut files);
-    for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES] {
+    for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES, CORE_KNOWLEDGE] {
         let core_data = crate_root.join(core_data);
         println!("cargo:rerun-if-changed={}", relative_to(crate_root, &core_data));
         files.push(core_data);
@@ -889,6 +889,9 @@ const CORE_TEST_FILES: &str = "../../packages/core/src/domain/ast/test-files.tom
 /// The core's entry-file data, from the crate root: for each language of the
 /// registry, the names of the file that answers for its folder.
 const CORE_ENTRY_FILES: &str = "../../packages/core/src/domain/ast/entry-files.toml";
+
+// Evidence-pack rules change the durable product even without a parser edit.
+const CORE_KNOWLEDGE: &str = "../../packages/core/src/domain/knowledge.rs";
 
 /// `path` as cargo should record a watched file: relative to the crate root.
 ///

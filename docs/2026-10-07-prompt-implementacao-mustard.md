@@ -4,6 +4,8 @@ Preparado em 07/10/2026. Checkout analisado: branch `feature/validacao-leve-por-
 
 Atualização de execução em 08/10: o usuário autorizou o Codex a implementar o plano completo. O checkout de implementação é `codex/mustard-plano-completo`, isolado da branch original. Conferência pelo próprio executor não constitui revisão independente. O registro vigente de implementação, provas e pendências está em `2026-10-08-implementacao-plano-completo.md`.
 
+Extensão autorizada em 08/10: concluir as verificações locais sem depender de uma sessão real do Claude e aplicar a pesquisa de melhoria ao scan. O contrato complementar está em [Scan como oráculo](2026-10-08-scan-oraculo.md): evidência por conteúdo, interpretações com várias fontes, invalidação em worktrees, recuperação e exportação Markdown nativas. Esse complemento registra também o acerto insuficiente do piloto e as extensões ainda não implementadas; não amplia o suporte operacional ao Codex nem autoriza chamadas pagas ou publicação automática.
+
 Este é o documento de entrada para execução. Consolida o código dessa base, o plano de 05/10 e o resumo “Validação leve por trecho — o que definimos”. A aprovação do item 16 foi dada pelo usuário nesta conversa em 07/10: o revisor final pode partir dos resumos das ondas para orientar sua investigação, confirmando no código. O resumo dizia que a spec estava em levantamento, sem onda entregue; esse estado deve ser conferido no começo da execução.
 
 O documento de 05/10 fica como memória da análise e das medições históricas. Este documento prevalece sobre suas instruções divergentes, especialmente sobre validação por rodada. Não carregar toda a memória histórica em cada onda: preparar o contexto pertinente pelo fluxo vigente do Mustard.

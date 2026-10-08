@@ -19,6 +19,30 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
+    /// Retrieve current functions, static flows and versioned interpretations
+    /// without a model call. Export a report with `--markdown --out <file>`.
+    #[command(display_order = 28)]
+    Knowledge {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "")]
+        query: String,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        #[arg(long, conflicts_with = "record")]
+        all: bool,
+        #[arg(long, conflicts_with = "record")]
+        markdown: bool,
+        #[arg(long, conflicts_with = "record")]
+        out: Option<PathBuf>,
+        /// Explicit multi-source interpretation receipt, as a `.json` file.
+        #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "out"])]
+        record: Option<PathBuf>,
+    },
     /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
     /// tool; only the blocks that changed are written again.
     /// This is the one scan of the project, and the model is the single
@@ -130,6 +154,9 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
+        ScanCmd::Knowledge {root,query,file,limit,depth,all,markdown,out,record} => {
+            super::knowledge::run(&root,&query,file.as_deref(),limit,depth,all,markdown,out.as_deref(),record.as_deref());
+        }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),
     }

@@ -44,7 +44,10 @@ pub struct Usage {
     /// A soma, por resposta, de entrada, criação de cache, leitura de cache e
     /// saída, cada resposta contada uma vez, pela última linha dela.
     pub tokens: u64,
+    pub breakdown: TokenBreakdown,
 }
+
+pub use crate::domain::spend::TokenBreakdown;
 
 /// O texto que toda linha com uso carrega. Uma linha sem ele não tem o que
 /// somar, e é pulada sem ser lida como JSON: as linhas grandes da conversa são
@@ -80,7 +83,7 @@ struct Message {
 }
 
 /// Os quatro números que somam o que o modelo leu e escreveu numa resposta.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Tokens {
     #[serde(default, rename = "input_tokens")]
     input: Option<u64>,
@@ -93,6 +96,11 @@ struct Tokens {
 }
 
 impl Tokens {
+    fn breakdown(&self)->TokenBreakdown {
+        TokenBreakdown {input_tokens:self.input.unwrap_or(0),output_tokens:self.output.unwrap_or(0),
+            cache_creation_input_tokens:self.cache_creation.unwrap_or(0),cache_read_input_tokens:self.cache_read.unwrap_or(0),
+            responses_with_partial_usage:u64::from([self.input,self.output,self.cache_creation,self.cache_read].iter().any(Option::is_none))}
+    }
     fn total(&self) -> u64 {
         [self.input, self.cache_creation, self.cache_read, self.output].into_iter().flatten().fold(0, u64::saturating_add)
     }
@@ -138,8 +146,9 @@ impl Content {
 /// ferramenta, pelo próprio id, porque a plataforma grava cada bloco numa linha.
 #[derive(Default)]
 struct Tally {
-    responses: HashMap<String, u64>,
+    responses: HashMap<String, Tokens>,
     unnamed_tokens: u64,
+    unnamed_breakdown: TokenBreakdown,
     tools: HashSet<String>,
     unnamed_tools: u64,
     model: Option<String>,
@@ -152,9 +161,9 @@ impl Tally {
         let total = tokens.total();
         match message.id {
             Some(id) => {
-                self.responses.insert(id, total);
+                self.responses.insert(id, tokens);
             }
-            None => self.unnamed_tokens = self.unnamed_tokens.saturating_add(total),
+            None => {self.unnamed_tokens = self.unnamed_tokens.saturating_add(total);self.unnamed_breakdown.combine(&tokens.breakdown());},
         }
         // A plataforma grava como `<synthetic>` a resposta que ela mesma
         // escreveu, sem modelo nenhum por trás; o nome entre sinais não é modelo.
@@ -174,11 +183,14 @@ impl Tally {
     }
 
     fn usage(self) -> Usage {
-        let named = self.responses.values().fold(0u64, |sum, tokens| sum.saturating_add(*tokens));
+        let named = self.responses.values().fold(0u64, |sum, tokens| sum.saturating_add(tokens.total()));
+        let mut breakdown=self.unnamed_breakdown;
+        for tokens in self.responses.values(){breakdown.combine(&tokens.breakdown());}
         Usage {
             model: self.model,
             steps: u64::try_from(self.tools.len()).unwrap_or(u64::MAX).saturating_add(self.unnamed_tools),
             tokens: named.saturating_add(self.unnamed_tokens),
+            breakdown,
         }
     }
 }
@@ -197,7 +209,7 @@ type SpendKey = (String, String);
 /// cada linha.
 #[derive(Default)]
 pub struct SpendTally {
-    responses: HashMap<String, (SpendKey, u64)>,
+    responses: HashMap<String, (SpendKey, Tokens)>,
     tools: HashSet<String>,
     rows: BTreeMap<SpendKey, DayRow>,
 }
@@ -222,11 +234,12 @@ impl SpendTally {
         let total = tokens.total();
         match message.id {
             Some(id) => {
-                self.responses.insert(id, (key.clone(), total));
+                self.responses.insert(id, (key.clone(), tokens));
             }
             None => {
                 let row = self.row(&key);
                 row.tokens = row.tokens.saturating_add(total);
+                row.token_breakdown.get_or_insert_with(TokenBreakdown::default).combine(&tokens.breakdown());
             }
         }
         let Some(Content::Blocks(blocks)) = message.content else {
@@ -258,7 +271,8 @@ impl SpendTally {
     pub fn finish(mut self) -> BTreeMap<SpendKey, DayRow> {
         for (key, tokens) in std::mem::take(&mut self.responses).into_values() {
             let row = self.row(&key);
-            row.tokens = row.tokens.saturating_add(tokens);
+            row.tokens = row.tokens.saturating_add(tokens.total());
+            row.token_breakdown.get_or_insert_with(TokenBreakdown::default).combine(&tokens.breakdown());
         }
         self.rows.retain(|_, row| row.actions > 0 || row.tokens > 0);
         self.rows

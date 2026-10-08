@@ -19,6 +19,7 @@ pub mod spec_state;
 pub mod survey;
 pub mod mustard_id;
 pub mod project_map;
+pub mod knowledge;
 pub mod pattern;
 pub mod map_filter;
 pub mod map_select;
