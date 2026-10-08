@@ -6,12 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use crate::platform::i18n::{translate, Locale};
+use crate::platform::i18n::{Locale, translate};
 
 use super::check::GIVES_BACK_FIELD;
 use super::search::found_by;
+use super::{Block, BlockQuery, CUT_LINE_TYPE, FORMAT_VERSION, METRIC_TYPES, PURGED_FIELD, render_line, shown_line, type_spec};
 use crate::domain::normalize::Languages;
-use super::{render_line, shown_line, type_spec, Block, BlockQuery, CUT_LINE_TYPE, FORMAT_VERSION, METRIC_TYPES, PURGED_FIELD};
 
 /// Um evento lido do arquivo.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,10 +85,7 @@ impl SpecEvent {
 }
 
 pub(super) fn ints(value: Option<&Value>) -> Vec<u64> {
-    value
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_u64).collect())
-        .unwrap_or_default()
+    value.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default()
 }
 
 /// O número da onda a que uma linha pertence: `n` na onda, `wave` na tarefa,
@@ -96,7 +93,7 @@ pub(super) fn ints(value: Option<&Value>) -> Vec<u64> {
 pub(super) fn wave_of(event_type: &str, field: impl Fn(&str) -> Option<u64>) -> Option<u64> {
     match event_type {
         "wave" => field("n"),
-        "task" | "send" | "delivered" | "verdict" | "step" => field("wave"),
+        "task" | "send" | "delivered" | "verdict" | "step" | "validation_failure" => field("wave"),
         _ => None,
     }
 }
@@ -127,12 +124,10 @@ impl SkippedLine {
     #[must_use]
     pub fn message(&self, lang: Locale) -> String {
         match self.reason {
-            SkipReason::Unreadable => {
-                translate("spec_events.skipped_line", lang).replace("{line}", &self.line.to_string())
+            SkipReason::Unreadable => translate("spec_events.skipped_line", lang).replace("{line}", &self.line.to_string()),
+            SkipReason::DuplicateId(id) => {
+                translate("spec_events.duplicate_id", lang).replace("{line}", &self.line.to_string()).replace("{id}", &id.to_string())
             }
-            SkipReason::DuplicateId(id) => translate("spec_events.duplicate_id", lang)
-                .replace("{line}", &self.line.to_string())
-                .replace("{id}", &id.to_string()),
         }
     }
 }
@@ -241,17 +236,9 @@ pub fn parse_log(content: &str) -> SpecLog {
             Some(SpecEvent { id, event_type, line, fields })
         });
         match parsed {
-            Some(event) if !seen.insert(event.id) => log.skipped.push(SkippedLine {
-                line,
-                reason: SkipReason::DuplicateId(event.id),
-                id_hint: Some(event.id),
-            }),
+            Some(event) if !seen.insert(event.id) => log.skipped.push(SkippedLine { line, reason: SkipReason::DuplicateId(event.id), id_hint: Some(event.id) }),
             Some(event) => log.events.push(event),
-            None => log.skipped.push(SkippedLine {
-                line,
-                reason: SkipReason::Unreadable,
-                id_hint: id_hint(raw),
-            }),
+            None => log.skipped.push(SkippedLine { line, reason: SkipReason::Unreadable, id_hint: id_hint(raw) }),
         }
     }
     log
@@ -295,10 +282,14 @@ pub fn repair_cut_lines(content: &str, log: &SpecLog) -> Option<String> {
     let mut taken: BTreeSet<u64> = log.events.iter().map(|e| e.id).collect();
     let mut changed = false;
     for skipped in log.skipped.iter().filter(|s| s.reason == SkipReason::Unreadable) {
-        let Some(slot) = skipped.line.checked_sub(1).and_then(|i| lines.get_mut(i)) else { continue };
+        let Some(slot) = skipped.line.checked_sub(1).and_then(|i| lines.get_mut(i)) else {
+            continue;
+        };
         let carriage_return = slot.ends_with('\r');
         let piece = slot.trim_end_matches('\r');
-        let Some((id, record)) = cut_record(piece) else { continue };
+        let Some((id, record)) = cut_record(piece) else {
+            continue;
+        };
         if !taken.insert(id) {
             continue;
         }
@@ -402,11 +393,8 @@ impl SpecLog {
         // Cada motivo com o número do evento que o deu; a ordenação estável
         // deixa a remoção antes da substituição que viesse do mesmo evento,
         // como a leitura antiga fazia.
-        let mut in_order: Vec<(u64, u64, Hidden)> = removed
-            .iter()
-            .filter(|(_, r)| !r.gives_back)
-            .map(|(id, r)| (r.by, *id, Hidden::Removed { by: r.by }))
-            .collect();
+        let mut in_order: Vec<(u64, u64, Hidden)> =
+            removed.iter().filter(|(_, r)| !r.gives_back).map(|(id, r)| (r.by, *id, Hidden::Removed { by: r.by })).collect();
         in_order.extend(self.replacements(&removed).into_iter().map(|(old, by)| (by, old, Hidden::Replaced { by })));
         in_order.sort_by_key(|(by, _, _)| *by);
         for (_, id, why) in in_order {
@@ -454,10 +442,7 @@ impl SpecLog {
     /// rodada, e o evento de tipo sem código — a lição do banco, que só se
     /// retira pelo número e sai inteira, com as versões que ela juntou.
     fn replacements(&self, removed: &BTreeMap<u64, Removal>) -> Vec<(u64, u64)> {
-        let gives_back = |id: u64| {
-            removed.get(&id).is_some_and(|r| r.gives_back)
-                && self.get(id).is_some_and(|e| type_spec(&e.event_type).is_some())
-        };
+        let gives_back = |id: u64| removed.get(&id).is_some_and(|r| r.gives_back) && self.get(id).is_some_and(|e| type_spec(&e.event_type).is_some());
         let mut pairs = Vec::new();
         for event in &self.events {
             let mut pending = event.replaced();
@@ -511,11 +496,7 @@ impl SpecLog {
     /// volta que a rodada ainda não assumiu não conta: está fora da leitura.
     #[must_use]
     pub fn delivered_waves(&self) -> BTreeSet<u64> {
-        self.block(BlockQuery::Block(Block::Waves))
-            .into_iter()
-            .filter(|event| event.event_type == "delivered")
-            .filter_map(SpecEvent::wave)
-            .collect()
+        self.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|event| event.event_type == "delivered").filter_map(SpecEvent::wave).collect()
     }
 
     /// Os resumos que ainda valem, em ordem de número, cada um com as tarefas
@@ -532,12 +513,44 @@ impl SpecLog {
     pub fn live_summaries(&self) -> Vec<(&SpecEvent, BTreeSet<u64>)> {
         let codes = self.codes();
         let delivered = self.delivered_waves();
-        let summaries: Vec<&SpecEvent> = self
+        let mut summaries: Vec<&SpecEvent> = self
             .block(BlockQuery::Block(Block::Waves))
             .into_iter()
             .filter(|e| e.event_type == "delivered")
             .filter(|e| e.fields.get("undone").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty()))
             .collect();
+        // A retired wave cannot integrate or block the work. Its already
+        // authorized report can still guide the tasks it left, with its
+        // `returned` provenance intact and without becoming a delivery.
+        let planned = self.planned_waves();
+        for report in self.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered") {
+            let Some(wave) = report.wave().filter(|n| !planned.contains(n)) else {
+                continue;
+            };
+            let Some(send) = self.last_dispatch_by_wave().get(&wave).and_then(|id| self.get(*id)) else {
+                continue;
+            };
+            if send.id >= report.id || send.str_field("author") != Some("binary") {
+                continue;
+            }
+            let left = report.fields.get("undone").and_then(Value::as_array);
+            if left.is_some_and(|left| {
+                !left.is_empty()
+                    && left.iter().all(|value| {
+                        let task = super::against::current_task(self, &codes, value);
+                        task.is_some_and(|task| {
+                            send.ints("items")
+                                .into_iter()
+                                .filter_map(|id| self.get(id))
+                                .filter(|item| item.event_type == "task" && item.wave() == Some(wave))
+                                .any(|item| self.current(item.id).is_some_and(|now| now.id == task.id))
+                        })
+                    })
+            }) {
+                summaries.push(report);
+            }
+        }
+        summaries.sort_by_key(|event| event.id);
         let mut carried: BTreeMap<u64, (u64, Option<u64>)> = BTreeMap::new();
         for summary in &summaries {
             for value in summary.fields.get("undone").and_then(Value::as_array).into_iter().flatten() {
@@ -552,9 +565,7 @@ impl SpecLog {
                 let pending: BTreeSet<u64> = carried
                     .iter()
                     .filter(|(_, (by, _))| *by == summary.id)
-                    .filter(|(_, (_, wave))| {
-                        wave.is_none_or(|wave| !delivered.contains(&wave) || summary.wave() == Some(wave))
-                    })
+                    .filter(|(_, (_, wave))| wave.is_none_or(|wave| !delivered.contains(&wave) || summary.wave() == Some(wave)))
                     .map(|(task, _)| *task)
                     .collect();
                 (summary, pending)
@@ -581,17 +592,12 @@ impl SpecLog {
             if !event.returned() {
                 let newest = official.entry(key).or_insert(event.id);
                 *newest = (*newest).max(event.id);
-            } else if hidden.get(&event.id) == Some(&Hidden::Returned)
-                && last.get(&key).is_none_or(|kept| kept.id < event.id)
-            {
+            } else if hidden.get(&event.id) == Some(&Hidden::Returned) && last.get(&key).is_none_or(|kept| kept.id < event.id) {
                 last.insert(key, event);
             }
         }
-        let mut out: Vec<&SpecEvent> = last
-            .into_iter()
-            .filter(|(key, event)| official.get(key).is_none_or(|id| *id < event.id))
-            .map(|(_, event)| event)
-            .collect();
+        let mut out: Vec<&SpecEvent> =
+            last.into_iter().filter(|(key, event)| official.get(key).is_none_or(|id| *id < event.id)).map(|(_, event)| event).collect();
         out.sort_by_key(|event| event.id);
         out
     }
@@ -623,8 +629,7 @@ impl SpecLog {
     #[must_use]
     pub fn planned_waves(&self) -> BTreeSet<u64> {
         let waves = self.block(BlockQuery::Block(Block::Waves));
-        let with_task: BTreeSet<u64> =
-            waves.iter().filter(|e| e.event_type == "task").filter_map(|e| e.wave()).collect();
+        let with_task: BTreeSet<u64> = waves.iter().filter(|e| e.event_type == "task").filter_map(|e| e.wave()).collect();
         waves
             .into_iter()
             .filter(|e| e.event_type == "wave")
@@ -644,17 +649,8 @@ impl SpecLog {
     #[must_use]
     pub fn counted_waves(&self) -> BTreeSet<u64> {
         let waves = self.block(BlockQuery::Block(Block::Waves));
-        let alive: BTreeSet<u64> = waves
-            .iter()
-            .filter(|e| matches!(e.event_type.as_str(), "task" | "delivered"))
-            .filter_map(|e| e.wave())
-            .collect();
-        waves
-            .into_iter()
-            .filter(|e| e.event_type == "wave")
-            .filter_map(SpecEvent::wave)
-            .filter(|n| alive.contains(n))
-            .collect()
+        let alive: BTreeSet<u64> = waves.iter().filter(|e| matches!(e.event_type.as_str(), "task" | "delivered")).filter_map(|e| e.wave()).collect();
+        waves.into_iter().filter(|e| e.event_type == "wave").filter_map(SpecEvent::wave).filter(|n| alive.contains(n)).collect()
     }
 
     /// O maior número de onda gravado no arquivo, com a onda que saiu do
@@ -683,10 +679,7 @@ impl SpecLog {
             .filter(|n| !delivered.contains(n))
             .filter(|n| !waves.iter().any(|e| e.event_type == "wave" && e.wave() == Some(*n)))
             .collect();
-        self.visible()
-            .into_iter()
-            .filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| gone.contains(&n)))
-            .collect()
+        self.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| gone.contains(&n))).collect()
     }
 
     /// Os vereditos de cada onda do plano, do mais velho ao mais novo.
@@ -694,7 +687,7 @@ impl SpecLog {
     pub fn verdicts_by_wave(&self) -> BTreeMap<u64, Vec<&SpecEvent>> {
         let planned = self.planned_waves();
         let mut out: BTreeMap<u64, Vec<&SpecEvent>> = BTreeMap::new();
-        for verdict in self.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
+        for verdict in self.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| matches!(e.event_type.as_str(), "verdict" | "validation_failure")) {
             if let Some(n) = verdict.wave().filter(|n| planned.contains(n)) {
                 out.entry(n).or_default().push(verdict);
             }
@@ -764,8 +757,7 @@ impl SpecLog {
     /// Cada versão de envio que substitui outro envio, com o número do que ela
     /// substitui.
     fn send_versions(&self) -> BTreeMap<u64, u64> {
-        let sends: BTreeSet<u64> =
-            self.events.iter().filter(|e| e.event_type == "send").map(|e| e.id).collect();
+        let sends: BTreeSet<u64> = self.events.iter().filter(|e| e.event_type == "send").map(|e| e.id).collect();
         self.events
             .iter()
             .filter(|e| e.event_type == "send")
@@ -780,26 +772,16 @@ impl SpecLog {
     pub fn block(&self, query: BlockQuery) -> Vec<&SpecEvent> {
         let visible = self.visible();
         match query {
-            BlockQuery::Block(Block::Metrics) => visible
-                .into_iter()
-                .filter(|e| METRIC_TYPES.contains(&e.event_type.as_str()))
-                .collect(),
+            BlockQuery::Block(Block::Metrics) => visible.into_iter().filter(|e| METRIC_TYPES.contains(&e.event_type.as_str())).collect(),
             BlockQuery::Block(block) => visible.into_iter().filter(|e| e.block() == Some(block)).collect(),
             BlockQuery::Wave(n) => {
-                let skills: BTreeSet<&str> = visible
-                    .iter()
-                    .filter(|e| e.event_type == "task" && e.wave() == Some(n))
-                    .filter_map(|e| e.str_field("skill"))
-                    .collect();
+                let skills: BTreeSet<&str> =
+                    visible.iter().filter(|e| e.event_type == "task" && e.wave() == Some(n)).filter_map(|e| e.str_field("skill")).collect();
                 visible
                     .iter()
                     .copied()
-                    .filter(|e| e.block() == Some(Block::Waves))
-                    .filter(|e| {
-                        e.wave() == Some(n)
-                            || (e.event_type == "skill"
-                                && e.str_field("name").is_some_and(|s| skills.contains(s)))
-                    })
+                    .filter(|e| e.block() == Some(Block::Waves) || e.event_type == "validation_failure")
+                    .filter(|e| e.wave() == Some(n) || (e.event_type == "skill" && e.str_field("name").is_some_and(|s| skills.contains(s))))
                     .collect()
             }
         }
@@ -810,47 +792,36 @@ impl SpecLog {
     pub fn step(&self, step: &Step) -> Vec<&SpecEvent> {
         let mut picked: BTreeMap<u64, &SpecEvent> = BTreeMap::new();
         match step {
-            Step::Resume => pick(&mut picked,self.block(BlockQuery::Block(Block::State))),
+            Step::Resume => pick(&mut picked, self.block(BlockQuery::Block(Block::State))),
             Step::Close => {
-                pick(&mut picked,self.block(BlockQuery::Block(Block::State)));
-                pick(&mut picked,self.block(BlockQuery::Block(Block::Criteria)));
+                pick(&mut picked, self.block(BlockQuery::Block(Block::State)));
+                pick(&mut picked, self.block(BlockQuery::Block(Block::Criteria)));
             }
             Step::Question { term, languages } => {
                 let codes = self.codes();
-                pick(
-                    &mut picked,
-                    found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes, languages),
-                );
+                pick(&mut picked, found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes, languages));
             }
             Step::Review { wave } => {
-                pick(&mut picked,self.block(BlockQuery::Wave(*wave)));
-                pick(&mut picked,self.wave_criteria(*wave));
+                pick(&mut picked, self.block(BlockQuery::Wave(*wave)));
+                pick(&mut picked, self.wave_criteria(*wave));
                 pick(&mut picked, crate::domain::wave_prompt::fix_lines(self, *wave));
             }
             Step::Dispatch { wave } => {
                 let own = self.block(BlockQuery::Wave(*wave));
                 let owned = crate::domain::wave_prompt::agreed_for(self, *wave);
-                let depends: Vec<u64> = own
-                    .iter()
-                    .filter(|e| e.event_type == "wave")
-                    .flat_map(|e| e.ints("depends_on"))
-                    .collect();
-                let delivered: Vec<&SpecEvent> = depends
-                    .into_iter()
-                    .flat_map(|d| self.block(BlockQuery::Wave(d)))
-                    .filter(|e| e.event_type == "delivered")
-                    .collect();
-                pick(&mut picked,own);
-                pick(&mut picked,self.wave_criteria(*wave));
-                pick(&mut picked,self.block(BlockQuery::Block(Block::Specification)));
-                pick(&mut picked,owned);
-                pick(&mut picked,delivered);
+                let depends: Vec<u64> = own.iter().filter(|e| e.event_type == "wave").flat_map(|e| e.ints("depends_on")).collect();
+                let delivered: Vec<&SpecEvent> =
+                    depends.into_iter().flat_map(|d| self.block(BlockQuery::Wave(d))).filter(|e| e.event_type == "delivered").collect();
+                pick(&mut picked, own);
+                pick(&mut picked, self.wave_criteria(*wave));
+                pick(&mut picked, self.block(BlockQuery::Block(Block::Specification)));
+                pick(&mut picked, owned);
+                pick(&mut picked, delivered);
                 pick(&mut picked, crate::domain::wave_prompt::fix_lines(self, *wave));
             }
         }
         picked.into_values().collect()
     }
-
 }
 
 /// O envio original da cadeia de versões que começa em `id`: segue cada versão
@@ -1027,10 +998,7 @@ mod tests {
                        {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"commit\",\"sha\":\"a2\",\"title\":\"y\",\
                        \"waves\":[2],\"files\":[\"src/b.rs\",\"src/c.rs\"],\"repo\":\".\"}\n";
         let log = parse_log(content);
-        assert_eq!(
-            log.delivered_files(),
-            BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()])
-        );
+        assert_eq!(log.delivered_files(), BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()]));
     }
 
     fn log_of(lines: &[serde_json::Value]) -> SpecLog {
@@ -1162,9 +1130,7 @@ mod tests {
     fn repairing_replaces_each_cut_line_in_place_and_never_repeats_a_number() {
         let first = r#"{"v":1,"id":2,"code":"MSTD-RULE-0002","at":"2026-09-12T10:00:00-03:00","type":"ru"#;
         let again = r#"{"v":1,"id":2,"code":"MSTD-RULE-0002","at":"2026-09-12T10:00:00-03:00","type":"r"#;
-        let content = format!(
-            "{{\"v\":1,\"id\":1,\"type\":\"note\",\"text\":\"um\"}}\r\n{first}\r\n{again}\n{{\"v\":1,\"id\":9,\"type\":\"note\"}}"
-        );
+        let content = format!("{{\"v\":1,\"id\":1,\"type\":\"note\",\"text\":\"um\"}}\r\n{first}\r\n{again}\n{{\"v\":1,\"id\":9,\"type\":\"note\"}}");
         let log = parse_log(&content);
         assert_eq!(log.skipped.len(), 2, "{:?}", log.skipped);
 
@@ -1178,10 +1144,7 @@ mod tests {
 
         let again_log = parse_log(&repaired);
         let record = again_log.get(2).expect("the record has the number of the cut line");
-        assert_eq!(
-            (record.event_type.as_str(), record.line, record.str_field("piece")),
-            (CUT_LINE_TYPE, 2, Some(first)),
-        );
+        assert_eq!((record.event_type.as_str(), record.line, record.str_field("piece")), (CUT_LINE_TYPE, 2, Some(first)),);
         assert_eq!(again_log.skipped.len(), 1, "only the repeated number stays skipped");
         assert_eq!(repair_cut_lines(&repaired, &again_log), None, "nothing else to repair");
         assert_eq!(repair_cut_lines("", &parse_log("")), None);
@@ -1212,10 +1175,7 @@ mod tests {
     /// com B; a onda 3 leva B e entrega, e ele sai da lista.
     #[test]
     fn a_summary_holds_until_every_task_it_left_is_delivered() {
-        let back = [
-            r#"{"v":1,"id":5,"at":"t","type":"task","text":"A.","replaces":2}"#,
-            r#"{"v":1,"id":6,"at":"t","type":"task","text":"B.","replaces":3}"#,
-        ];
+        let back = [r#"{"v":1,"id":5,"at":"t","type":"task","text":"A.","replaces":2}"#, r#"{"v":1,"id":6,"at":"t","type":"task","text":"B.","replaces":3}"#];
         let first = [
             r#"{"v":1,"id":7,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":4}"#,
             r#"{"v":1,"id":8,"at":"t","type":"task","text":"A.","wave":2,"replaces":5}"#,

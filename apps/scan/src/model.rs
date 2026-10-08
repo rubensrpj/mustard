@@ -331,6 +331,8 @@ pub struct Module {
     /// passada ([`crate::quality`]). Written only when measured.
     #[serde(default, skip_serializing_if = "Quality::is_empty")]
     pub quality: Quality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<serde_json::Value>,
     /// The stack code signatures found in this file's content, kept so a pass
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -779,9 +781,7 @@ impl Serialize for CallSite {
 impl<'de> Deserialize<'de> for CallSite {
     fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
         let text = String::deserialize(input)?;
-        let (head, line) = text
-            .rsplit_once(':')
-            .ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
+        let (head, line) = text.rsplit_once(':').ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
         let line = line.parse().map_err(D::Error::custom)?;
         let (qualifier, name) = head.rsplit_once('.').unwrap_or(("", head));
         Ok(Self { name: name.to_string(), line, qualifier: qualifier.to_string() })

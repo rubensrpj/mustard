@@ -12,7 +12,7 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 
 ## Core principle
 
-> **Source code is never bulk-read.**
+> Search starts with local evidence; the model expands code reading when needed.
 
 ```mermaid
 flowchart LR
@@ -21,11 +21,11 @@ flowchart LR
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
-1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It is not a command: it runs on its own when a spec opens and after each round commit.
-2. The flow's commands query that model through the **map** (`mustard-rt run map`) and read only the files it points at.
+1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It runs at initialization, when a spec opens and after round commits; `mustard-rt run scan` refreshes it explicitly. Parsing limits and relation origins remain visible.
+2. The flow's commands query that model through the **map** (`mustard-rt run map`) and prepare current excerpts with references. Dependencies and candidate tests guide discovery; they do not prove behavior or coverage.
 3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
 
-> The harness's real weight is not the commands but the **re-injection of ceremony into the context on every turn**. Routing therefore always picks the **cheapest path that serves** — the full pipeline is the exception that must justify itself (≥2 layers/subprojects **or** a new entity), never the default.
+> The binary handles state, retrieval, context, orchestration, validation, calculations and page generation. The model reasons and implements. Jev only judges pertinent ambiguities after local recovery, behind a provider interface and a versioned cache. Literal Grep/rg preserve their arguments and do not call Jev routinely.
 
 ---
 
@@ -74,7 +74,7 @@ cd /path/to/your/project
 mustard init
 ```
 
-This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and **describe the work in your own words** — there is no command to "get started", and no mapping step to run. The router is injected on every prompt and classifies the request on its own; the census mines the repository when a spec opens and after each round commit.
+This creates `mustard.json`, local settings, the session map and wave/review agents, then builds the project map. Open Claude Code inside the project and describe the work. The native commands provide the next step; the hooks record and guard the flow. Personal rules, models and effort are preserved when updating.
 
 ### For developers of this repository
 
@@ -98,7 +98,7 @@ flowchart LR
     C --> PR["pr-open"]
 ```
 
-Every step is a single call, and every command ends by naming the next one. `open` starts the spec; `grill` surveys what is missing, one question at a time; `plan` builds the waves and puts them up for approval; the approval is the user's click, recorded by the conversation hook; `round` dispatches the waves that can go out together, each in its own copy, and records what they delivered and each review's verdict; `close` runs, in a clean environment, the lint and the suite `mustard.json` declares and every criterion once and, on a spec of two waves or more, asks for the final review of the whole; `pr-open` opens the pull request. The merge is the only step that happens only when the user asks.
+Every command names the next step. `open` starts the spec; `grill` surveys open points; `plan` checks the plan for user approval. `round` dispatches waves in separate copies, integrates authorized deliveries, runs build and targeted proofs, commits and releases dependent tasks. `close` runs the configured lint, general suite and criteria on integrated code, reusing only current validation. A final reviewer uses wave summaries to guide code/diff verification, including a single-wave spec. Failures open traceable repairs. `pr-open` opens the pull request; merge requires a user request.
 
 The close refuses while any criterion lacks an approved run in `spec.ndjson`, while the project lint or suite fails, or while the final review of the whole has not been approved.
 
@@ -106,12 +106,14 @@ The close refuses while any criterion lacks an approved run in `spec.ndjson`, wh
 
 ## Commands
 
-Installed as a plugin, every command lives in the `/mustard:` namespace. There is no entry command: a request that changes a file, said in the conversation, opens the spec, and every step of the flow answers what comes next.
+The plugin provides `/mustard:*` workflow commands and immediate Mods commands for local tracking. A request that changes files starts a spec; each native command reports the next step.
 
 | Command | Role |
 |---|---|
 | `/mustard:continue` | Picks the spec back up where it stopped. It is the reserve button: resuming already happens at the start of a session. |
 | `/mustard:pr` | Opens the pull request, reviews a colleague's, or merges one, only when asked. |
+| `/mustard-panel` | Project, specs, execution and local usage, updated without a model turn. Requires Mods support (CLI 2.1.287+). |
+| `/mustard-pages` | Explicit `project`, `spec [name]` or `report <file.md>` publication using the native Cloudflare Pages adapter. Unconfigured projects keep local files; no model turn. |
 | `/mustard:upsert` | Installs or updates Mustard in the project and diagnoses the installation. To turn Mustard off in a project, set `"enabled": false` in `mustard.json`. |
 
 The full reference — the flow, the hooks and every `mustard-rt run` command — is in [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
@@ -120,13 +122,9 @@ The full reference — the flow, the hooks and every `mustard-rt run` command �
 
 ## Spec-Driven Development
 
-Specs live in a **flat** layout under `.claude/spec/{name}/`:
+Specs live under `.claude/spec/{name}/`. `spec.ndjson` is the canonical event log: requirements, decisions, tasks, waves, reads, deliveries, validation and review. The binary creates and queries projections through `mustard-rt run write` and `mustard-rt run read`. Mid-flight requests join this same history.
 
-- **`spec.md`** — pure narrative (no lifecycle metadata).
-- **`meta.json`** — single source of truth for the lifecycle (`stage` + `outcome` + `flags`). There are no `active/`, `completed/`, or `superseded/` folders: archiving is semantic (a `pipeline.status` event), not a filesystem move.
-- **`wave-plan.md`** + `wave-N-{role}/spec.md` — for full scope (one sub-spec per wave).
-
-Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `change-log.md`) — nothing is lost, and the frozen narrative is never touched.
+The Mods panel combines project/spec tracking and statusline data. Completed tool/turn/compaction/agent events refresh local state; a 2-second poll covers external changes. Project publication requires no active spec; the default spec is resolved from the current branch. Requested Markdown analyses and management reports share the existing layout. External pages are generated only on explicit request, as dated snapshots. `run publish` generates HTML/JSON/manifest and uploads through the configured native Cloudflare Pages adapter. Only a ready deployment reports `published:true` and a confirmed URL; unconfigured projects keep local files. Starting a session or completing a wave does not synchronize remote pages. `run spend` measures locally; `--publish`/`--republish` explicitly generate/publish a complete static expense snapshot. Setup is documented in `MUSTARD-COMMANDS.md`; the API token stays in the environment.
 
 ---
 
@@ -136,7 +134,7 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 |---|---|---|---|
 | `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan, map, events, gates, hooks, pipeline commands. The engine. |
 | `apps/scan` | `scan` | Rust | Repository miner → `grain.db` (SQLite). |
-| `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
+| `apps/cli` | `mustard` | Rust | Installation, project configuration and optional fonts. |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
 | `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
 
@@ -147,9 +145,10 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 ## Build & tests
 
 ```bash
-cargo build --workspace
-cargo test  --workspace
-cargo clippy --workspace           # lint
+cargo build --workspace --locked
+cargo build --profile mustard-dev --locked  # incremental development
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 **Official release:** a `vX.Y.Z` tag triggers the workflow that builds one complete installer per OS + the `mustard-bins-*` packages (consumed by the plugin bootstrap) and publishes everything as a GitHub Release. The tag version **must** match `plugin/.claude-plugin/plugin.json` — the workflow refuses a desynchronized tag. Manual dispatch (Actions → Release → Run workflow) is a **rehearsal**: builds everything without publishing.

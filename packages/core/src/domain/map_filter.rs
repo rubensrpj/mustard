@@ -121,6 +121,8 @@ pub enum Verdict {
 /// O que o filtro gastou numa chamada, a soma de todos os pedidos dela.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilterUsage {
+    /// Missing or partial provider accounting; numeric subtotals are not a total.
+    pub incomplete: bool,
     /// Tokens de entrada cobrados.
     pub input_tokens: u64,
     /// Milissegundos da chamada inteira, do pedido à resposta.
@@ -233,12 +235,7 @@ pub fn cut(scores: &[Scored], rule: CutRule) -> Vec<Scored> {
         return Vec::new();
     };
     let threshold = best * rule.share;
-    ranked
-        .into_iter()
-        .enumerate()
-        .filter(|(at, s)| *at == 0 || (s.score > 0.0 && s.score >= threshold))
-        .map(|(_, s)| s)
-        .collect()
+    ranked.into_iter().enumerate().filter(|(at, s)| *at == 0 || (s.score > 0.0 && s.score >= threshold)).map(|(_, s)| s).collect()
 }
 
 /// A classificação inteira posta na resposta do filtro: com a chance de
@@ -246,11 +243,7 @@ pub fn cut(scores: &[Scored], rule: CutRule) -> Vec<Scored> {
 /// que passa do [`cut`].
 #[must_use]
 pub fn judged(scores: &[Scored], exists: f64, rule: CutRule) -> (Verdict, Vec<Scored>) {
-    if exists < rule.exists_from {
-        (Verdict::NotFound, Vec::new())
-    } else {
-        (Verdict::Found, cut(scores, rule))
-    }
+    if exists < rule.exists_from { (Verdict::NotFound, Vec::new()) } else { (Verdict::Found, cut(scores, rule)) }
 }
 
 /// A resposta de um dos pedidos em que a lista de candidatos foi dividida: a

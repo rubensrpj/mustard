@@ -13,10 +13,7 @@ use crate::io::fs;
 use crate::platform::git_exclude;
 
 use super::files::harness_text_paths;
-use super::{
-    CLAUDE_GITIGNORE_PATH, CLAUDE_LOCAL_MD, CLAUDE_MD, GITHUB_PR_TEMPLATE, MUSTARD_JSON,
-    MUSTARD_JSON_RULE, SETTINGS_JSON, SETTINGS_LOCAL_JSON,
-};
+use super::{CLAUDE_GITIGNORE_PATH, CLAUDE_LOCAL_MD, CLAUDE_MD, GITHUB_PR_TEMPLATE, MUSTARD_JSON, MUSTARD_JSON_RULE, SETTINGS_JSON, SETTINGS_LOCAL_JSON};
 
 // ---------------------------------------------------------------------------
 // Install mode + the footprint it hides
@@ -89,6 +86,11 @@ const HARNESS_CLAUDE_FILES: &[&str] = &[
     crate::io::project_map::LEGACY_MAP_FILE_NAME,
     "scan-declined.json",
     "scan-map.md",
+    "judgements/",
+    "mustard/publications/",
+    "mustard/prepared-context/",
+    "mustard/pages/spec.html",
+    "mustard/pages/project.html",
     // NOT `skills/`. The shelf is a directory a client may also author in; what
     // the scan writes there is the `{role}-pattern` mold, and every one of the
     // 30 in this repository carries that suffix. The rule is the mold, not the
@@ -104,8 +106,7 @@ const HARNESS_CLAUDE_FILES: &[&str] = &[
 /// ownership ratchet refuses it), while forgetting a directory in the derived
 /// half leaks something of ours. `skills` is here and its `*-pattern/` molds are
 /// covered by name in [`HARNESS_CLAUDE_FILES`].
-const CLIENT_AUTHORED_CLAUDE_DIRS: &[&str] =
-    &["commands", "skills", "refs", "agents", ".obsidian"];
+const CLIENT_AUTHORED_CLAUDE_DIRS: &[&str] = &["commands", "skills", "refs", "agents", ".obsidian"];
 
 /// Every `.claude/`-relative name the harness writes: the files above plus every
 /// documented directory that is not one a client authors in.
@@ -115,12 +116,7 @@ const CLIENT_AUTHORED_CLAUDE_DIRS: &[&str] =
 /// exclude file and the report must stay byte-stable.
 fn harness_claude_output() -> Vec<String> {
     let mut out: Vec<String> = HARNESS_CLAUDE_FILES.iter().map(|s| (*s).to_string()).collect();
-    out.extend(
-        ClaudePaths::documented_dirs()
-            .into_iter()
-            .filter(|dir| !CLIENT_AUTHORED_CLAUDE_DIRS.contains(dir))
-            .map(|dir| format!("{dir}/")),
-    );
+    out.extend(ClaudePaths::documented_dirs().into_iter().filter(|dir| !CLIENT_AUTHORED_CLAUDE_DIRS.contains(dir)).map(|dir| format!("{dir}/")));
     out.sort();
     out
 }
@@ -171,40 +167,24 @@ pub struct FootprintEntry {
 /// An entry Mustard writes whose rule and pathspec are the same string — the
 /// ordinary seed.
 fn seeded(path: &str) -> FootprintEntry {
-    FootprintEntry {
-        rule: Some(path.to_string()),
-        pathspec: Some(path.to_string()),
-        written: true,
-    }
+    FootprintEntry { rule: Some(path.to_string()), pathspec: Some(path.to_string()), written: true }
 }
 
 /// An entry Mustard writes whose ignore RULE is spelled differently from its
 /// pathspec (today: the root-anchored `mustard.json`).
 fn anchored(rule: &str, pathspec: &str) -> FootprintEntry {
-    FootprintEntry {
-        rule: Some(rule.to_string()),
-        pathspec: Some(pathspec.to_string()),
-        written: true,
-    }
+    FootprintEntry { rule: Some(rule.to_string()), pathspec: Some(pathspec.to_string()), written: true }
 }
 
 /// An entry Mustard only WATCHES — the host's own file, asked about but never
 /// hidden and never advised away.
 fn watched(pathspec: &str) -> FootprintEntry {
-    FootprintEntry {
-        rule: None,
-        pathspec: Some(pathspec.to_string()),
-        written: false,
-    }
+    FootprintEntry { rule: None, pathspec: Some(pathspec.to_string()), written: false }
 }
 
 /// A COVER: a rule by shape, with no path for `ls-files` to answer.
 fn cover(rule: &str) -> FootprintEntry {
-    FootprintEntry {
-        rule: Some(rule.to_string()),
-        pathspec: None,
-        written: true,
-    }
+    FootprintEntry { rule: Some(rule.to_string()), pathspec: None, written: true }
 }
 
 /// The same `.claude/` rule, lifted to reach a `.claude/` at ANY depth.
@@ -227,8 +207,7 @@ fn cover(rule: &str) -> FootprintEntry {
 /// residue report names. A pattern is not a path, and collapsing the two is the
 /// mistake [`FootprintEntry`] exists to prevent.
 fn at_any_depth(rule: &str) -> Option<FootprintEntry> {
-    rule.strip_prefix(".claude/")
-        .map(|rest| cover(&format!("**/.claude/{rest}")))
+    rule.strip_prefix(".claude/").map(|rest| cover(&format!("**/.claude/{rest}")))
 }
 
 /// The Mustard FOOTPRINT, declared in exactly one place.
@@ -271,16 +250,9 @@ pub fn footprint() -> Vec<FootprintEntry> {
     out.push(seeded(CLAUDE_LOCAL_MD));
     out.push(watched(CLAUDE_MD));
     out.push(watched(GITHUB_PR_TEMPLATE));
-    let lifted: Vec<FootprintEntry> = out
-        .iter()
-        .filter_map(|entry| entry.rule.as_deref().and_then(at_any_depth))
-        .collect();
+    let lifted: Vec<FootprintEntry> = out.iter().filter_map(|entry| entry.rule.as_deref().and_then(at_any_depth)).collect();
     out.extend(lifted);
-    out.extend(
-        harness_claude_output()
-            .iter()
-            .map(|name| cover(&format!("**/.claude/{name}"))),
-    );
+    out.extend(harness_claude_output().iter().map(|name| cover(&format!("**/.claude/{name}"))));
     out.push(cover(CLAUDE_BACKUP_DIRS));
     out
 }
@@ -306,9 +278,7 @@ pub fn footprint_pathspecs() -> Vec<String> {
 /// install put there, and would untrack the client's own work for anything else.
 #[must_use]
 pub fn is_written_footprint(path: &str) -> bool {
-    footprint()
-        .iter()
-        .any(|e| e.written && e.pathspec.as_deref() == Some(path))
+    footprint().iter().any(|e| e.written && e.pathspec.as_deref() == Some(path))
 }
 
 /// The footprint entries that exist for the PRIVATE mode ALONE — the two
@@ -390,14 +360,7 @@ mod tests {
             let expected = format!(".claude/{rel}");
             assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
-        for expected in [
-            SETTINGS_JSON,
-            SETTINGS_LOCAL_JSON,
-            CLAUDE_GITIGNORE_PATH,
-            MUSTARD_JSON_RULE,
-            CLAUDE_LOCAL_MD,
-            CLAUDE_BACKUP_DIRS,
-        ] {
+        for expected in [SETTINGS_JSON, SETTINGS_LOCAL_JSON, CLAUDE_GITIGNORE_PATH, MUSTARD_JSON_RULE, CLAUDE_LOCAL_MD, CLAUDE_BACKUP_DIRS] {
             assert!(rules.iter().any(|p| p == expected), "{expected} missing: {rules:?}");
         }
         // Every `.claude/` seed also reaches a `.claude/` at DEPTH — without the
@@ -421,10 +384,7 @@ mod tests {
                 continue;
             }
             let expected = format!("**/.claude/{dir}/");
-            assert!(
-                rules.contains(&expected),
-                "{expected} missing — a documented harness directory with no rule leaks: {rules:?}",
-            );
+            assert!(rules.contains(&expected), "{expected} missing — a documented harness directory with no rule leaks: {rules:?}");
         }
         // No duplicates and no backslashes — the list is written verbatim into a
         // git exclude file, which speaks forward slashes on every platform.
@@ -485,18 +445,9 @@ mod tests {
         }
 
         // The host's own instruction file is asked about and never hidden.
-        assert!(
-            !footprint_rules().iter().any(|r| r == CLAUDE_MD),
-            "a private install never writes a CLAUDE.md, so it must never hide one",
-        );
-        assert!(
-            footprint_pathspecs().iter().any(|p| p == CLAUDE_MD),
-            "…but it must still REPORT one the host repository already tracks",
-        );
-        assert!(
-            !is_written_footprint(CLAUDE_MD),
-            "the residue advice (`git rm --cached`) must never target the client's own file",
-        );
+        assert!(!footprint_rules().iter().any(|r| r == CLAUDE_MD), "a private install never writes a CLAUDE.md, so it must never hide one");
+        assert!(footprint_pathspecs().iter().any(|p| p == CLAUDE_MD), "…but it must still REPORT one the host repository already tracks");
+        assert!(!is_written_footprint(CLAUDE_MD), "the residue advice (`git rm --cached`) must never target the client's own file");
         assert!(is_written_footprint(MUSTARD_JSON), "a real seed IS removable residue");
     }
 
@@ -506,18 +457,12 @@ mod tests {
     fn the_private_marks_are_rules_an_install_writes() {
         let rules = footprint_rules();
         for mark in PRIVATE_MARKS {
-            assert!(
-                rules.iter().any(|r| r == mark),
-                "{mark} is written by no install, so nothing could ever detect it: {rules:?}",
-            );
+            assert!(rules.iter().any(|r| r == mark), "{mark} is written by no install, so nothing could ever detect it: {rules:?}");
         }
         let body = PRIVATE_MARKS.map(|m| format!("  {m}  \r\n")).concat();
         assert!(carries_private_marks(&format!("# theirs\nbuild/\n{body}")));
         assert!(!carries_private_marks(&format!("{}\n", PRIVATE_MARKS[0])), "one rule is not the mode");
-        assert!(
-            !carries_private_marks(&PRIVATE_MARKS.map(|m| format!("#{m}\n")).concat()),
-            "a commented-out rule is not in force",
-        );
+        assert!(!carries_private_marks(&PRIVATE_MARKS.map(|m| format!("#{m}\n")).concat()), "a commented-out rule is not in force");
         assert!(!carries_private_marks(""), "an empty exclude file is a shared install");
     }
 
@@ -571,11 +516,7 @@ mod tests {
     /// right here, the Mustard path it exists for.
     fn install_and_work(root: &Path) -> Vec<String> {
         std_fs::create_dir_all(root).unwrap();
-        for args in [
-            vec!["init"],
-            vec!["config", "user.email", "t@example.com"],
-            vec!["config", "user.name", "t"],
-        ] {
+        for args in [vec!["init"], vec!["config", "user.email", "t@example.com"], vec!["config", "user.name", "t"]] {
             assert!(git::run(root, &args).ok, "git {args:?} failed");
         }
 
@@ -589,6 +530,13 @@ mod tests {
         // down here.
         for (name, body) in [
             ("settings.json", "{}\n"),
+            // Historical resources remain owned during private upgrades,
+            // even though a new install no longer creates automatic pages.
+            ("mustard/pages/spec.html", "legacy spec template\n"),
+            ("mustard/pages/project.html", "legacy project template\n"),
+            ("judgements/attempts.ndjson", "{}\n"),
+            ("mustard/prepared-context/component.json", "{}\n"),
+            ("mustard/publications/demo/snapshot/snapshot.json", "{}\n"),
             ("scan-map.md", "Type: cargo\n"),
             (crate::io::project_map::MAP_FILE_NAME, "{}\n"),
             (crate::io::project_map::MAP_JOURNAL_FILE_NAME, "{}\n"),
@@ -639,11 +587,9 @@ mod tests {
         // its pattern molds, and the Guards on the untracked local layer beside
         // the client's own instruction file.
         let sub = root.join("packages/api");
-        for (name, body) in [
-            (".claude/scan-map.md", "Type: cargo\n"),
-            (".claude/skills/core-demo-pattern/SKILL.md", "# mold\n"),
-            ("CLAUDE.local.md", "## Guards\n"),
-        ] {
+        for (name, body) in
+            [(".claude/scan-map.md", "Type: cargo\n"), (".claude/skills/core-demo-pattern/SKILL.md", "# mold\n"), ("CLAUDE.local.md", "## Guards\n")]
+        {
             let dest = sub.join(name);
             std_fs::create_dir_all(dest.parent().unwrap()).unwrap();
             std_fs::write(dest, body).unwrap();
@@ -666,7 +612,9 @@ mod tests {
     /// slashes. `.git/` is skipped — it is git's own, not Mustard's, and
     /// `check-ignore` refuses to answer about it.
     fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
-        let Ok(entries) = std_fs::read_dir(dir) else { return };
+        let Ok(entries) = std_fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
@@ -706,12 +654,7 @@ mod tests {
     /// `core.excludesFile` is emptied on the command line. What remains is the
     /// clone-local exclude file carrying the one rule the caller wrote — which
     /// is what the doc above always claimed this measured.
-    fn check_ignore<S: AsRef<str>>(
-        probe: &Path,
-        exclude: &Path,
-        rule: &str,
-        paths: &[S],
-    ) -> Vec<String> {
+    fn check_ignore<S: AsRef<str>>(probe: &Path, exclude: &Path, rule: &str, paths: &[S]) -> Vec<String> {
         std_fs::write(exclude, format!("{rule}\n")).unwrap();
         let out = std::process::Command::new("git")
             .args(["-c", "core.excludesFile=", "check-ignore", "--no-index", "--"])
@@ -723,10 +666,6 @@ mod tests {
             .expect("git check-ignore ran");
         // Exit 1 means "nothing matched" and is not a failure; 128 is.
         assert_ne!(out.status.code(), Some(128), "git check-ignore refused {rule:?}");
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().replace('\\', "/"))
-            .filter(|l| !l.is_empty())
-            .collect()
+        String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().replace('\\', "/")).filter(|l| !l.is_empty()).collect()
     }
 }

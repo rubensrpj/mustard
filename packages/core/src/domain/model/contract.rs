@@ -170,9 +170,7 @@ impl HookInput {
     /// `None` when the field is missing or unrecognised — callers fail open.
     #[must_use]
     pub fn trigger(&self) -> Option<Trigger> {
-        self.hook_event_name
-            .as_deref()
-            .and_then(Trigger::from_event_name)
+        self.hook_event_name.as_deref().and_then(Trigger::from_event_name)
     }
 
     /// `true` when this hook fired inside a `Task` subagent, `false` when it
@@ -188,12 +186,7 @@ impl HookInput {
     #[must_use]
     pub fn is_subagent(&self) -> bool {
         let typed = self.agent_id.as_deref().as_ref().is_some_and(|s| !s.is_empty());
-        typed
-            || self
-                .raw
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
+        typed || self.raw.get("agent_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
     }
 
     /// The `file_path` a Write/Edit (or Read) invocation targets, accepting the
@@ -208,11 +201,7 @@ impl HookInput {
     #[must_use]
     pub fn file_path(&self) -> Option<String> {
         let ti = &self.tool_input;
-        ti.get("file_path")
-            .or_else(|| ti.get("path"))
-            .or_else(|| ti.get("notebook_path"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+        ti.get("file_path").or_else(|| ti.get("path")).or_else(|| ti.get("notebook_path")).and_then(Value::as_str).map(str::to_string)
     }
 
     /// The text the user typed (`prompt`, on `UserPromptSubmit`). `None` on
@@ -323,20 +312,8 @@ impl AskAnswers {
                     Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
                     _ => Vec::new(),
                 };
-                let notes = annotations
-                    .and_then(|a| a.get(question))
-                    .and_then(|n| n.get("notes"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                AskAnswer {
-                    question: question.clone(),
-                    labels: labels
-                        .into_iter()
-                        .filter(|l| !l.trim().is_empty())
-                        .map(str::to_string)
-                        .collect(),
-                    notes,
-                }
+                let notes = annotations.and_then(|a| a.get(question)).and_then(|n| n.get("notes")).and_then(Value::as_str).map(str::to_string);
+                AskAnswer { question: question.clone(), labels: labels.into_iter().filter(|l| !l.trim().is_empty()).map(str::to_string).collect(), notes }
             })
             .collect();
         Self { items }
@@ -390,6 +367,9 @@ pub enum Verdict {
         note: Option<String>,
     },
 
+    /// Replace a completed tool result, preserving the tool's output schema.
+    ToolOutput { tool_output: Value },
+
     /// Permit the action and inject extra context for the agent
     /// (`additionalContext` in the JS hook protocol).
     Inject {
@@ -405,8 +385,6 @@ impl Verdict {
         matches!(self, Self::Deny { .. })
     }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Outcome
@@ -467,8 +445,10 @@ impl Outcome {
             Verdict::Allow => {} // No opinion — preserve any prior decisive verdict.
             Verdict::Inject { context } => {
                 self.verdict = match std::mem::take(&mut self.verdict) {
-                    Verdict::Inject { context: earlier } if !earlier.is_empty() => {
-                        Verdict::Inject { context: format!("{earlier}\n\n{context}") }
+                    Verdict::Inject { context: earlier } if !earlier.is_empty() => Verdict::Inject { context: format!("{earlier}\n\n{context}") },
+                    output @ Verdict::ToolOutput { .. } => {
+                        self.warnings.push(context);
+                        output
                     }
                     _ => Verdict::Inject { context },
                 };
@@ -635,16 +615,14 @@ mod tests {
         }))
         .expect("valid hook input");
         assert_eq!((blank.transcript_path(), blank.tool_description()), (None, None));
-        let absent: HookInput = serde_json::from_value(serde_json::json!({ "tool_input": { "pattern": "x" } }))
-            .expect("valid hook input");
+        let absent: HookInput = serde_json::from_value(serde_json::json!({ "tool_input": { "pattern": "x" } })).expect("valid hook input");
         assert_eq!((absent.transcript_path(), absent.tool_description()), (None, None));
     }
 
     #[test]
     fn the_subagent_transcript_name_comes_from_the_agent_id_without_repeating_the_prefix() {
-        let name = |json: serde_json::Value| -> Option<String> {
-            serde_json::from_value::<HookInput>(json).expect("valid hook input").subagent_transcript_name()
-        };
+        let name =
+            |json: serde_json::Value| -> Option<String> { serde_json::from_value::<HookInput>(json).expect("valid hook input").subagent_transcript_name() };
         assert_eq!(name(serde_json::json!({"agent_id": "a3d2d3dc4c50296bf"})), Some("agent-a3d2d3dc4c50296bf.jsonl".into()));
         assert_eq!(name(serde_json::json!({"agent_id": " agent-a3d2 "})), Some("agent-a3d2.jsonl".into()));
         assert_eq!(name(serde_json::json!({"agent_id": ""})), None, "a blank id is the main conversation");
@@ -749,10 +727,7 @@ mod tests {
         // the Rewrite must survive — otherwise the tool input a module
         // handed back is silently swallowed by the dispatcher.
         let mut outcome = Outcome::allow();
-        let rewrite = Verdict::Rewrite {
-            tool_input: serde_json::json!({ "command": "rtk git status" }),
-            note: None,
-        };
+        let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "rtk git status" }), note: None };
         outcome.fold(rewrite.clone());
         outcome.fold(Verdict::Allow);
         assert_eq!(outcome.verdict, rewrite);
@@ -760,10 +735,7 @@ mod tests {
         let mut outcome = Outcome::allow();
         outcome.fold(Verdict::Inject { context: "hint".into() });
         outcome.fold(Verdict::Allow);
-        assert_eq!(
-            outcome.verdict,
-            Verdict::Inject { context: "hint".into() }
-        );
+        assert_eq!(outcome.verdict, Verdict::Inject { context: "hint".into() });
     }
 
     /// Dois `Inject` no mesmo evento chegam os dois, na ordem do registro; um
@@ -774,10 +746,7 @@ mod tests {
         outcome.fold(Verdict::Inject { context: "link do documento".into() });
         outcome.fold(Verdict::Allow);
         outcome.fold(Verdict::Inject { context: "nota de clareza".into() });
-        assert_eq!(
-            outcome.verdict,
-            Verdict::Inject { context: "link do documento\n\nnota de clareza".into() }
-        );
+        assert_eq!(outcome.verdict, Verdict::Inject { context: "link do documento\n\nnota de clareza".into() });
 
         let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "ls" }), note: None };
         outcome.fold(rewrite.clone());
@@ -790,10 +759,7 @@ mod tests {
 
     #[test]
     fn verdict_serializes_with_decision_tag() {
-        let json = serde_json::to_value(Verdict::Deny {
-            reason: "no".into(),
-        })
-        .expect("serialize verdict");
+        let json = serde_json::to_value(Verdict::Deny { reason: "no".into() }).expect("serialize verdict");
         assert_eq!(json["decision"], serde_json::json!("deny"));
         assert_eq!(json["reason"], serde_json::json!("no"));
     }

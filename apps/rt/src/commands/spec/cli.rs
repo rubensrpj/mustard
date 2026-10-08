@@ -51,22 +51,18 @@ pub enum SpecCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Conta o gasto de cada dia pelas conversas da máquina e prepara a cópia
-    /// dele para a página do gasto.
+    /// Conta o consumo local da máquina pelas conversas.
     ///
-    /// Sem argumento, conta os dias fechados que faltam (um dia fechado é
-    /// contado uma vez e guardado num arquivo da máquina, fora de qualquer
-    /// projeto), conta hoje de novo (o dia aberto vai à página como parcial e
-    /// nunca ao arquivo dos fechados) e prepara o template, os lotes, com o
-    /// resumo da máquina, e a ordem do que fazer: publicar a página, se ela
-    /// ainda não tem endereço, e copiar os lotes. A cópia preparada vale como
-    /// feita. Recontar é apagar o arquivo do gasto: o comando o refaz pelas
-    /// conversas. Com `--republish`, prepara a publicação nova e a cópia de
-    /// todos os dias, para quem perdeu o link da página. Com `--url`, grava o
-    /// endereço que a publicação devolveu. Funciona sem spec aberta.
+    /// Sem argumento, atualiza os dias fechados e mostra o resumo; não gera
+    /// páginas ou lotes externos. `--publish` prepara esses recursos quando
+    /// solicitados. `--republish` prepara uma nova publicação com todos os dias.
+    /// `--url` grava um endereço confirmado. Funciona sem spec aberta.
     #[command(name = "spend")]
     #[command(display_order = 23)]
     Spend {
+        /// Prepara a página e os lotes externos sob pedido explícito.
+        #[arg(long, conflicts_with = "url")]
+        publish: bool,
         /// Prepara a publicação nova da página e a cópia de todos os dias.
         #[arg(long, conflicts_with = "url")]
         republish: bool,
@@ -108,8 +104,8 @@ pub fn dispatch(cmd: SpecCmd) {
         SpecCmd::Page { body, out, title, subtitle, kind, root } => {
             spec::page::run(&spec::page::PageOpts { root, body, out, title, subtitle, kind });
         }
-        SpecCmd::Spend { republish, url, root } => {
-            spec::spend::run(&spec::spend::SpendOpts { root, republish, url });
+        SpecCmd::Spend { publish, republish, url, root } => {
+            spec::spend::run(&spec::spend::SpendOpts { root, publish, republish, url });
         }
         SpecCmd::Measure { since, lines, root } => {
             spec::measure::run(&spec::measure::MeasureOpts { root, since, lines });

@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use super::{code_of, Writer};
+use super::{Writer, code_of};
 use crate::domain::spec_events::{BlockQuery, SpecEvent, SpecLog};
 
 /// O resumo que a onda `wave` continua: a entrega que o envio mais novo dela
@@ -19,13 +19,10 @@ use crate::domain::spec_events::{BlockQuery, SpecEvent, SpecLog};
 #[must_use]
 pub fn summary_of(log: &SpecLog, wave: u64) -> Option<&SpecEvent> {
     let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|send| send.int("summary"));
-    let formed = || {
-        log.block(BlockQuery::Wave(wave))
-            .into_iter()
-            .find(|event| event.event_type == "wave")
-            .and_then(|event| event.int("summary"))
-    };
-    sent.or_else(formed).and_then(|id| log.current(id)).filter(|event| event.event_type == "delivered")
+    let formed = || log.block(BlockQuery::Wave(wave)).into_iter().find(|event| event.event_type == "wave").and_then(|event| event.int("summary"));
+    sent.or_else(formed)
+        .and_then(|id| log.current(id).or_else(|| log.live_summaries().into_iter().find(|(event, _)| event.id == id).map(|(event, _)| event)))
+        .filter(|event| event.event_type == "delivered")
 }
 
 impl Writer<'_> {
@@ -35,13 +32,9 @@ impl Writer<'_> {
     pub(super) fn started(&self, out: &mut String, summary: Option<&SpecEvent>) {
         let Some(summary) = summary else { return };
         let execution = &self.material.execution;
-        let root = if execution.copy.is_some() && !execution.root.is_empty() {
-            format!("--root {} ", execution.root)
-        } else {
-            String::new()
-        };
+        let root = if execution.copy.is_some() && !execution.root.is_empty() { format!("--root {} ", execution.root) } else { String::new() };
         let line = self
-            .t("wave_prompt.summary.read")
+            .t(if summary.returned() { "wave_prompt.summary.report_read" } else { "wave_prompt.summary.read" })
             .replace("{code}", &code_of(self.material, summary))
             .replace("{root}", &root)
             .replace("{spec}", &self.material.spec);
@@ -51,12 +44,12 @@ impl Writer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::domain::spec_events::{normalize, parse_log, render_line, stamp};
-    use crate::domain::wave_prompt::{language_line, listed, write, Material, WaveCopy};
-    use crate::platform::i18n::{translate, Locale};
+    use crate::domain::wave_prompt::{Material, WaveCopy, language_line, listed, write};
+    use crate::platform::i18n::{Locale, translate};
 
     /// O que a entrega que parou conta de si: o texto inteiro dela nunca vai
     /// no pedido da onda seguinte.
@@ -92,14 +85,7 @@ mod tests {
     }
 
     fn material_of<'a>(log: &'a SpecLog, wave: u64, summary: Option<&'a SpecEvent>) -> Material<'a> {
-        Material {
-            spec: "teste".into(),
-            wave,
-            block: log.block(BlockQuery::Wave(wave)),
-            codes: log.codes(),
-            summary,
-            ..Material::default()
-        }
+        Material { spec: "teste".into(), wave, block: log.block(BlockQuery::Wave(wave)), codes: log.codes(), summary, ..Material::default() }
     }
 
     /// O pedido da onda que continua um resumo abre, logo depois da linha dos

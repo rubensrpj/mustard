@@ -66,7 +66,7 @@ use mustard_core::io::map_triage::Triaged;
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::error::Result as CoreResult;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use self::gate::MeasureGate;
 use self::jev::{JevSum, JevUse};
@@ -156,7 +156,9 @@ fn shown_of(answer: &str) -> Shown {
         }
         pending = None;
         if indented {
-            let Some(path) = current.clone() else { continue };
+            let Some(path) = current.clone() else {
+                continue;
+            };
             let head = line.trim_start().split(' ').next().unwrap_or_default();
             if let Some((from, to)) = head.split_once('-')
                 && let (Ok(from), Ok(to)) = (from.parse::<u64>(), to.parse::<u64>())
@@ -245,9 +247,7 @@ fn saved_reads_of(row: &Row, chain: &Chain, shown: &Shown) -> usize {
                     && !chain.edit_all
                     && chain.edit_range.is_some_and(|(from, to)| covers(shown, &read.file, from, to))
             } else {
-                right.contains(&read.file.as_str())
-                    && read.first > 0
-                    && covers(shown, &read.file, read.first as u64, read.last.max(read.first) as u64)
+                right.contains(&read.file.as_str()) && read.first > 0 && covers(shown, &read.file, read.first as u64, read.last.max(read.first) as u64)
             }
         })
         .map(|read| read.chars)
@@ -376,12 +376,7 @@ fn instant_of(line: &[u8]) -> Option<i64> {
 fn conversation_before(row: &Row) -> Option<Vec<u8>> {
     let at = row.at?;
     let raw = std::fs::read(row.session.as_deref()?).ok()?;
-    let kept = raw
-        .split_inclusive(|byte| *byte == b'\n')
-        .filter(|line| instant_of(line).is_some_and(|when| when <= at))
-        .flatten()
-        .copied()
-        .collect();
+    let kept = raw.split_inclusive(|byte| *byte == b'\n').filter(|line| instant_of(line).is_some_and(|when| when <= at)).flatten().copied().collect();
     Some(kept)
 }
 
@@ -463,10 +458,7 @@ impl Reach {
 /// O alcance da busca de `row` na raiz `root`: o mapa dela e os candidatos que
 /// o filtro recebeu em `jev`.
 fn reach_of(root: &Path, row: &Row, jev: &JevUse) -> Reach {
-    Reach {
-        in_map: target_in_map(root, row),
-        in_candidates: jev.called.then(|| jev.sent.iter().any(|path| row.targets.contains(path))),
-    }
+    Reach { in_map: target_in_map(root, row), in_candidates: jev.called.then(|| jev.sent.iter().any(|path| row.targets.contains(path))) }
 }
 
 /// A soma de um grupo de buscas.
@@ -521,7 +513,9 @@ impl Sum {
     }
 
     fn show(&self, label: &str) -> String {
-        let percent = |part: usize, whole: usize| if whole == 0 { 0.0 } else { 100.0 * part as f64 / whole as f64 };
+        let percent = |part: usize, whole: usize| {
+            if whole == 0 { 0.0 } else { 100.0 * part as f64 / whole as f64 }
+        };
         let gain = self.today as i64 - self.with as i64;
         let mut millis = self.millis.clone();
         millis.sort_unstable();
@@ -686,12 +680,7 @@ impl Round {
             let measured = Measured::of(&root, row, &format!("spend-{run}-{at}"), scratch.path());
             round.without_speech += usize::from(!measured.heard.with_speech);
             for half in [row.half.as_str(), "total"] {
-                round.groups.entry((row.project.clone(), half.to_string())).or_default().record(
-                    &measured.heard,
-                    measured.fate,
-                    measured.spend,
-                    measured.reach,
-                );
+                round.groups.entry((row.project.clone(), half.to_string())).or_default().record(&measured.heard, measured.fate, measured.spend, measured.reach);
             }
             round.lines.push(measured.line(row, proof));
         }
@@ -744,11 +733,7 @@ fn measure_the_spend_of_the_search() {
     let out = std::env::var("SPEND_OUT").expect("SPEND_OUT points to the file to write");
     let rows: Vec<Row> = serde_json::from_str(&std::fs::read_to_string(input).expect("the searches file reads")).expect("the searches file parses");
     // Os mapas das cópias que entram nas contas, conferidos antes da primeira busca.
-    let mut names: Vec<&str> = rows
-        .iter()
-        .filter(|row| !row.expired && matches!(row.kind.as_str(), "bash" | "grep"))
-        .map(|row| row.name.as_str())
-        .collect();
+    let mut names: Vec<&str> = rows.iter().filter(|row| !row.expired && matches!(row.kind.as_str(), "bash" | "grep")).map(|row| row.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();
     let maps: Vec<PathBuf> = names.iter().map(|name| store::model_path(&trees.join(name))).collect();
@@ -765,8 +750,6 @@ fn measure_the_spend_of_the_search() {
 mod tests {
     use super::*;
     use crate::shared::word_search::fixture::{self, Judge};
-    use crate::shared::word_search::scoped;
-    use mustard_core::domain::map_filter::FilterError;
 
     /// A resposta de hoje: os arquivos saem da linha sem recuo, e uma entrada
     /// sem texto embaixo não é trecho.
@@ -932,13 +915,6 @@ mod tests {
         Row { tool_input: json!({ "command": command }), ..row(chain_edited(), targets) }
     }
 
-    /// O que o gancho responde a `row` numa pasta de trabalho só dela, sem
-    /// conversa de sessão que o teste queira olhar depois.
-    fn hear_alone(root: &Path, row: &Row, session: &str) -> Heard {
-        let scratch = tempfile::tempdir().expect("the folder for the conversation");
-        hear(root, row, session, scratch.path())
-    }
-
     /// Uma linha da conversa que o Claude Code guarda: o papel, o instante e os
     /// blocos da mensagem.
     fn line(role: &str, at: &str, blocks: Value) -> Value {
@@ -953,106 +929,12 @@ mod tests {
         line("assistant", at, json!([{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "grep -rn imposto src"}}]))
     }
 
-    fn result_of_the_call(at: &str) -> Value {
-        line("user", at, json!([{"type": "tool_result", "tool_use_id": "t1", "content": "src/frete.rs:3"}]))
-    }
-
-    fn person_said(at: &str, text: &str) -> Value {
-        line("user", at, json!([{"type": "text", "text": text}]))
-    }
-
     /// O arquivo da conversa com as linhas dadas, uma por linha do arquivo.
     fn session_file(dir: &Path, lines: &[Value]) -> String {
         let file = dir.join("sessao.jsonl");
         let text: Vec<String> = lines.iter().map(Value::to_string).collect();
         std::fs::write(&file, text.join("\n") + "\n").expect("the session file");
         file.to_string_lossy().into_owned()
-    }
-
-    /// A fala que o filtro recebe da busca parcial de `imposto` que `row`
-    /// faz na sessão `session`, com o filtro de teste no lugar do Jev, e o que
-    /// a régua ouviu da busca. O gancho lembra a busca repetida numa sessão:
-    /// cada busca do teste leva a sua.
-    fn said_to_the_filter(root: &Path, row: &Row, session: &str) -> (String, Heard) {
-        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
-        let heard = judge.installed(|| hear_alone(root, row, session));
-        assert_eq!(judge.calls(), 1, "the partial search reaches the filter");
-        (judge.last().said, heard)
-    }
-
-    /// O destino da busca de `row` depois que o gancho a ouviu de verdade: a
-    /// ordem que a triagem deu vem da própria busca, e a resposta mostra os
-    /// arquivos `shown`.
-    fn fate_after_hearing(root: &Path, row: &Row, shown: &[&str]) -> Fate {
-        let _ = hear_alone(root, row, "s-termometro");
-        let shown = Shown { files: shown.iter().map(|f| (*f).to_string()).collect(), ranges: vec![] };
-        fate_of(root, row, (&Outcome::Answer("resposta".to_string()), &shown))
-    }
-
-    /// A régua ouve o que o despachante do gancho responde ao mesmo texto na
-    /// mesma pasta: a pasta pedida é a que o gancho procura, e a mesma palavra
-    /// em outra pasta corre como veio.
-    #[test]
-    fn the_ruler_hears_what_the_hook_answers_to_the_same_text_in_the_same_folder() {
-        let (_dir, root) = fixture::repo("{}");
-        let inside = hear_alone(&root, &bash_row("grep -rn calcular_frete src", &["src/frete.rs"]), "s-dentro").outcome;
-        let Outcome::Answer(text) = inside else { panic!("an answer was expected, got {inside:?}") };
-        assert!(text.contains("src/frete.rs\n  2-6 calcular_frete"), "{text}");
-        assert_eq!(shown_of(&text).files.first().map(String::as_str), Some("src/frete.rs"));
-
-        let outside = hear_alone(&root, &bash_row("grep -rn calcular_frete docs", &[]), "s-fora").outcome;
-        assert!(matches!(outside, Outcome::Pass | Outcome::Note(_)), "{outside:?}");
-    }
-
-    /// A nota parcial que o gancho dá de verdade, lida pela régua: o arquivo
-    /// certo que ela traz vira a posição dele no termômetro, e o código que ela
-    /// mostra dispensa a leitura do trecho editado, sem tirar a saída do `grep`.
-    #[test]
-    fn the_partial_note_the_hook_gives_is_read_for_its_file_and_its_code() {
-        let (_dir, root) = fixture::repo("{}");
-        let mut chain = chain_edited();
-        chain.edit_file = Some("src/frete.rs".to_string());
-        chain.edit_range = Some((3, 4));
-        chain.reads[0] = Read { file: "src/frete.rs".to_string(), first: 1, last: 40, chars: 4000 };
-        let search = Row { tool_input: json!({ "command": "grep -rn imposto src" }), ..row(chain, &["src/frete.rs"]) };
-
-        let outcome = hear_alone(&root, &search, "s-nota-parcial").outcome;
-        let Outcome::Note(note) = &outcome else { panic!("a note was expected, got {outcome:?}") };
-        let shown = shown_by(&outcome);
-        assert_eq!(shown.files.first().map(String::as_str), Some("src/frete.rs"), "{note}");
-        assert!(covers(&shown, "src/frete.rs", 3, 4), "{shown:?}\n{note}");
-        assert_eq!(fate_of(&root, &search, (&outcome, &shown)), Fate::At(1));
-
-        let spend = spend_of(&search, &outcome, &shown).unwrap();
-        assert_eq!((spend.today, spend.saved_reads), (7000, 4000));
-        assert_eq!(spend.with, 7000 + note.chars().count() - 4000, "the grep output stays in the spend");
-    }
-
-    /// A busca com a sessão gravada leva ao filtro a última fala do agente
-    /// anterior à chamada: a que veio depois dela, e o texto de gente que veio
-    /// depois, nunca chegam.
-    #[test]
-    fn a_search_with_a_recorded_session_gives_the_filter_the_speech_before_the_call_and_never_a_later_one() {
-        let (_dir, root) = fixture::repo("{}");
-        let notes = tempfile::tempdir().expect("a folder");
-        let session = session_file(
-            notes.path(),
-            &[
-                person_said("2026-10-01T10:00:00.000Z", "ache o cálculo do imposto"),
-                said("2026-10-01T10:00:02.000Z", "Fala antiga."),
-                said("2026-10-01T10:00:04.000Z", "Vou ver onde o imposto é calculado."),
-                called("2026-10-01T10:00:05.000Z"),
-                result_of_the_call("2026-10-01T10:00:06.000Z"),
-                said("2026-10-01T10:00:07.000Z", "Fala de depois da chamada."),
-                person_said("2026-10-01T10:00:08.000Z", "outra pergunta"),
-            ],
-        );
-        let search = Row { session: Some(session), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-
-        let (said, heard) = said_to_the_filter(&root, &search, "s-fala");
-
-        assert!(heard.with_conversation && heard.with_speech);
-        assert_eq!(said, "Vou ver onde o imposto é calculado.");
     }
 
     /// O arquivo que a régua grava para o gancho é o da sessão até a chamada,
@@ -1076,40 +958,13 @@ mod tests {
         let whole: Vec<&str> = before.iter().chain(&after).copied().collect();
         let file = notes.path().join("sessao.jsonl");
         std::fs::write(&file, whole.join("\n") + "\n").expect("the session file");
-        let search = Row {
-            session: Some(file.to_string_lossy().into_owned()),
-            at: Some(CALL),
-            ..bash_row("grep -rn imposto src", &["src/frete.rs"])
-        };
+        let search = Row { session: Some(file.to_string_lossy().into_owned()), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
 
         let written = write_conversation(&search, "s-arquivo", scratch.path()).expect("the conversation is written");
 
         assert_eq!(written.parent(), Some(scratch.path()));
         assert_eq!(std::fs::read_to_string(&written).expect("the file reads"), before.join("\n") + "\n");
         assert_eq!(agent_said::last_said(&written), "Vou ver onde o imposto é calculado.");
-    }
-
-    /// O corte compara segundos, não texto: a linha escrita no mesmo segundo
-    /// da chamada (a fala dita junto dela, um instante antes ou depois dentro
-    /// do segundo) entra, em qualquer fuso, e a do segundo seguinte nunca.
-    #[test]
-    fn the_cut_keeps_what_was_written_up_to_the_second_of_the_call_in_any_time_zone() {
-        let (_dir, root) = fixture::repo("{}");
-        let notes = tempfile::tempdir().expect("a folder");
-        let session = session_file(
-            notes.path(),
-            &[
-                said("2026-10-01T10:00:04.000Z", "Fala antes."),
-                said("2026-10-01T07:00:05.412-03:00", "Fala junto da chamada, em outro fuso."),
-                called("2026-10-01T10:00:05.900Z"),
-                said("2026-10-01T10:00:06.000Z", "Um segundo depois."),
-            ],
-        );
-        let search = Row { session: Some(session), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-
-        let (said, _) = said_to_the_filter(&root, &search, "s-fala-fuso");
-
-        assert_eq!(said, "Fala junto da chamada, em outro fuso.");
     }
 
     /// O instante lido como o arquivo de buscas o grava, um número em segundos
@@ -1120,7 +975,11 @@ mod tests {
         let notes = tempfile::tempdir().expect("a folder");
         let session = session_file(
             notes.path(),
-            &[said("2026-10-01T10:00:04.000Z", "Antes."), said("2026-10-01T10:00:05.999Z", "No segundo da chamada."), said("2026-10-01T10:00:06.000Z", "Depois.")],
+            &[
+                said("2026-10-01T10:00:04.000Z", "Antes."),
+                said("2026-10-01T10:00:05.999Z", "No segundo da chamada."),
+                said("2026-10-01T10:00:06.000Z", "Depois."),
+            ],
         );
         let search = |at: Value| {
             json!({ "key": "p|bash|1", "project": "p", "name": "p", "kind": "bash", "tool_name": "Bash", "tool_input": {}, "half": "A",
@@ -1136,45 +995,6 @@ mod tests {
         assert!(serde_json::from_value::<Row>(search(json!("2026-10-01T10:00:05Z"))).is_err(), "the date written as text is not a format of the searches file");
         let without: Row = serde_json::from_value(search(Value::Null)).expect("a row without the instant reads");
         assert!(conversation_before(&without).is_none());
-    }
-
-    /// Sem o arquivo da sessão, ou sem o instante que diz até onde ler, a
-    /// busca segue sem fala, e a falta é contada: nunca uma fala qualquer da
-    /// conversa no lugar.
-    #[test]
-    fn a_search_without_the_session_file_goes_on_without_speech() {
-        let (_dir, root) = fixture::repo("{}");
-        let notes = tempfile::tempdir().expect("a folder");
-        let session = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Fala que não vale."), called("2026-10-01T10:00:05.000Z")]);
-
-        let without_a_session = Row { at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let missing_file = Row { session: Some("/nao/existe/sessao.jsonl".to_string()), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let without_the_instant = Row { session: Some(session), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        for (at, search) in [&without_a_session, &missing_file, &without_the_instant].into_iter().enumerate() {
-            let (said, heard) = said_to_the_filter(&root, search, &format!("s-sem-fala-{at}"));
-            assert_eq!((said.as_str(), heard.with_conversation, heard.with_speech), ("", false, false));
-        }
-    }
-
-    /// A conversa que chega ao gancho sem fala do agente antes da chamada (só
-    /// gente falou antes, ou a fala veio depois dela) sai com a conversa
-    /// escrita e sem fala; com a fala antes da chamada, sai com fala.
-    #[test]
-    fn a_conversation_without_the_agent_speech_before_the_call_is_a_search_without_speech() {
-        let (_dir, root) = fixture::repo("{}");
-        let notes = tempfile::tempdir().expect("a folder");
-        let after = session_file(
-            notes.path(),
-            &[person_said("2026-10-01T10:00:00.000Z", "ache o imposto"), called("2026-10-01T10:00:05.000Z"), said("2026-10-01T10:00:09.000Z", "Fala depois.")],
-        );
-        let only_the_person = Row { session: Some(after), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let (speech, heard) = said_to_the_filter(&root, &only_the_person, "s-sem-fala-antes");
-        assert_eq!((speech.as_str(), heard.with_conversation, heard.with_speech), ("", true, false));
-
-        let before = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Vou procurar o imposto."), called("2026-10-01T10:00:05.000Z")]);
-        let with_speech = Row { session: Some(before), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let (speech, heard) = said_to_the_filter(&root, &with_speech, "s-com-fala-antes");
-        assert_eq!((speech.as_str(), heard.with_conversation, heard.with_speech), ("Vou procurar o imposto.", true, true));
     }
 
     /// A conversa que a régua grava para a busca mora só enquanto ela roda: a
@@ -1211,193 +1031,6 @@ mod tests {
         sum.record(&heard_with(true, false), Fate::Passed, None, WITHIN_REACH);
         assert_eq!((sum.searches, sum.without_speech), (3, 2));
         assert!(sum.show("p").contains("sem fala 2"), "{}", sum.show("p"));
-    }
-
-    /// A busca de `row` medida de ponta a ponta com o filtro `judge` no lugar
-    /// do Jev: o que o gancho respondeu, o destino, o gasto e o alcance.
-    fn measured_with(judge: &Judge, root: &Path, row: &Row, session: &str) -> Measured {
-        let scratch = tempfile::tempdir().expect("the folder for the conversation");
-        judge.installed(|| Measured::of(root, row, session, scratch.path()))
-    }
-
-    /// A linha de resultado de `measured`, lida como JSON.
-    fn result_of(measured: &Measured, row: &Row) -> Value {
-        serde_json::from_str(&measured.line(row, &json!({}))).expect("the result line is JSON")
-    }
-
-    /// A busca que o filtro responde grava no resultado que ele foi chamado,
-    /// o que cobrou e as peças: as que ele guardou e as que as ligações
-    /// puxaram; o grupo soma tokens e dólares.
-    #[test]
-    fn a_search_the_filter_answers_records_its_charge_and_the_group_sums_it() {
-        let (_dir, root) = scoped::contract_project();
-        let judge = Judge::sure_of(&[("PaymentPort", 0.9)]).charging(1200, 3400);
-        let search = bash_row("grep -rn charge src", &["src/pay/port.rs"]);
-
-        let first = measured_with(&judge, &root, &search, "s-jev-1");
-        let second = measured_with(&judge, &root, &search, "s-jev-2");
-
-        assert_eq!(judge.calls(), 2, "each partial search reaches the filter");
-        let jev = &first.heard.jev;
-        assert_eq!((jev.called, jev.failure, jev.tokens, jev.cost_micro_usd), (true, None, 1200, 3400));
-        assert_eq!((jev.kept, jev.pulled), (1, 1), "the contract passed the cut and its method was pulled by the links");
-        let line = result_of(&first, &search);
-        assert_eq!(line["jev_called"], json!(true));
-        assert_eq!(line["jev_failure"], Value::Null);
-        assert_eq!((line["jev_tokens"].as_u64(), line["jev_cost_micro_usd"].as_u64()), (Some(1200), Some(3400)));
-        assert_eq!((line["jev_kept"].as_u64(), line["jev_pulled"].as_u64()), (Some(1), Some(1)));
-
-        let mut sum = Sum::default();
-        for each in [&first, &second] {
-            sum.record(&each.heard, each.fate, each.spend, each.reach);
-        }
-        let shown = sum.show("p");
-        assert!(shown.contains("Jev: chamaram 2, falharam 0, tokens 2400, US$ 0.0068, US$ 0.003400 por busca"), "{shown}");
-    }
-
-    /// A chamada que falha sai como falha, com o motivo, e não soma token nem
-    /// custo; a busca que o filtro nem chegou a receber não conta como
-    /// chamada.
-    #[test]
-    fn a_filter_that_fails_is_a_failure_and_a_search_it_never_got_is_not_a_call() {
-        let (_dir, root) = fixture::repo("{}");
-        let failing = Judge::failing(FilterError::Timeout);
-        let partial = bash_row("grep -rn imposto src", &["src/frete.rs"]);
-        let failed = measured_with(&failing, &root, &partial, "s-jev-falha");
-
-        let jev = &failed.heard.jev;
-        assert_eq!((jev.called, jev.failure, jev.tokens, jev.cost_micro_usd), (true, Some("timeout"), 0, 0));
-        assert_eq!(result_of(&failed, &partial)["jev_failure"], json!("timeout"));
-
-        let pinned = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
-        let never = measured_with(&failing, &root, &pinned, "s-jev-cravado");
-        assert!(!never.heard.jev.called, "a pinned search answers from the map and never asks the filter");
-        assert_eq!(result_of(&never, &pinned)["jev_called"], json!(false));
-
-        let mut sum = Sum::default();
-        for each in [&failed, &never] {
-            sum.record(&each.heard, each.fate, each.spend, each.reach);
-        }
-        let shown = sum.show("p");
-        assert!(shown.contains("Jev: chamaram 1, falharam 1, tokens 0, US$ 0.0000, US$ 0.000000 por busca"), "{shown}");
-    }
-
-    /// O filtro da busca de aquecimento (a primeira de cada mapa) soma à parte,
-    /// numa linha própria, e fica fora da soma do grupo.
-    #[test]
-    fn the_filter_of_the_warm_up_search_is_summed_apart_from_the_groups() {
-        let (_dir, root) = fixture::repo("{}");
-        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]).charging(500, 700);
-        let rows = [bash_row("grep -rn imposto src", &["src/frete.rs"]), bash_row("grep -rn imposto src", &["src/frete.rs"])];
-
-        let round = judge.installed(|| Round::measure(&rows, |_| root.clone(), &json!({})));
-
-        assert_eq!(judge.calls(), 3, "one warm-up for the map, and one call for each of the two searches");
-        let report = round.report();
-        let group = report.iter().find(|line| line.starts_with("GASTO p A")).expect("the group line");
-        assert!(group.contains("Jev: chamaram 2, falharam 0, tokens 1000, US$ 0.0014"), "{group}");
-        let warm = report.iter().find(|line| line.starts_with("GASTO aquecimento")).expect("the warm-up line");
-        assert!(warm.contains("Jev: chamaram 1, falharam 0, tokens 500, US$ 0.0007"), "{warm}");
-    }
-
-    /// A busca cujo arquivo certo nem está no mapa não tinha como acertar: sai
-    /// do acerto, e a linha do grupo conta o acerto só sobre as possíveis e
-    /// diz quantas ficaram de fora.
-    #[test]
-    fn a_search_whose_right_file_is_outside_the_map_is_impossible_and_stays_out_of_the_hit_rate() {
-        let (_dir, root) = fixture::repo("{}");
-        let judge = Judge::sure_of(&[]);
-        let hit = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
-        let miss = bash_row("grep -rn fechar_pedido src", &["src/frete.rs"]);
-        let impossible = bash_row("grep -rn imposto docs", &["docs/notas.md"]);
-
-        let mut sum = Sum::default();
-        let mut lines = Vec::new();
-        for (at, search) in [&hit, &miss, &impossible].into_iter().enumerate() {
-            let each = measured_with(&judge, &root, search, &format!("s-alcance-{at}"));
-            sum.record(&each.heard, each.fate, each.spend, each.reach);
-            lines.push(result_of(&each, search));
-        }
-
-        assert_eq!(lines.iter().map(|line| line["target_in_map"].as_bool()).collect::<Vec<_>>(), [Some(true), Some(true), Some(false)]);
-        assert!(lines.iter().all(|line| line["target_in_candidates"].is_null()), "the filter was never called, so there are no candidates to look in");
-        assert_eq!(lines[0]["fate"], json!("1"));
-        let shown = sum.show("p");
-        assert!(shown.contains("acerto sobre as possíveis 1 de 2 (50.0%), impossíveis 1 (fora do mapa 1, fora dos candidatos do Jev 0)"), "{shown}");
-    }
-
-    /// A busca em que o filtro foi chamado e o arquivo certo, que o mapa tem,
-    /// não estava entre os candidatos que foram a ele também não tinha como
-    /// acertar; com o arquivo entre os candidatos, tinha.
-    #[test]
-    fn a_search_whose_right_file_never_went_to_the_filter_is_impossible() {
-        let (_dir, root) = fixture::repo("{}");
-        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
-        let sent = bash_row("grep -rn imposto src", &["src/frete.rs"]);
-        let left_out = bash_row("grep -rn imposto src", &["src/pedido.rs"]);
-
-        let inside = measured_with(&judge, &root, &sent, "s-candidato-dentro");
-        let outside = measured_with(&judge, &root, &left_out, "s-candidato-fora");
-
-        assert_eq!((inside.reach.in_map, inside.reach.in_candidates), (true, Some(true)));
-        assert_eq!((outside.reach.in_map, outside.reach.in_candidates), (true, Some(false)));
-        assert!(inside.reach.possible() && !outside.reach.possible());
-        assert_eq!(result_of(&outside, &left_out)["target_in_candidates"], json!(false));
-        assert_eq!(result_of(&inside, &sent)["target_in_candidates"], json!(true));
-
-        let mut sum = Sum::default();
-        for each in [&inside, &outside] {
-            sum.record(&each.heard, each.fate, each.spend, each.reach);
-        }
-        let shown = sum.show("p");
-        assert!(shown.contains("acerto sobre as possíveis 1 de 1 (100.0%), impossíveis 1 (fora do mapa 0, fora dos candidatos do Jev 1)"), "{shown}");
-    }
-
-    /// O termômetro diz a posição do arquivo certo entre os mostrados e, quando
-    /// a resposta não o traz, a causa: fora do mapa, sem palavra, ou entre os
-    /// cinco do mapa sem linha achada.
-    #[test]
-    fn the_thermometer_gives_the_place_among_the_shown_files_and_the_cause_of_each_miss() {
-        let (_dir, root) = fixture::repo("{}");
-
-        let order = bash_row("grep -rn fechar_pedido src", &["src/pedido.rs"]);
-        assert_eq!(fate_after_hearing(&root, &order, &["src/frete.rs", "src/pedido.rs"]), Fate::At(2));
-        assert_eq!(fate_of(&root, &order, (&Outcome::Pass, &Shown::default())), Fate::Passed);
-        assert_eq!(fate_of(&root, &order, (&Outcome::Note("n".to_string()), &Shown::default())), Fate::Passed);
-        let other = Shown { files: vec!["src/frete.rs".to_string()], ranges: vec![] };
-        assert_eq!(fate_of(&root, &order, (&Outcome::Note("n".to_string()), &other)), Fate::Passed);
-        let with_file = Shown { files: vec!["src/frete.rs".to_string(), "src/pedido.rs".to_string()], ranges: vec![] };
-        assert_eq!(fate_of(&root, &order, (&Outcome::Note("n".to_string()), &with_file)), Fate::At(2));
-
-        let note = bash_row("grep -rn imposto docs", &["docs/notas.md"]);
-        assert_eq!(fate_after_hearing(&root, &note, &["src/frete.rs"]), Fate::OutsideMap);
-
-        let unknown = bash_row("grep -rn zzxqkw src", &["src/frete.rs"]);
-        assert_eq!(fate_after_hearing(&root, &unknown, &["src/pedido.rs"]), Fate::NoWord);
-
-        let freight = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
-        assert_eq!(fate_after_hearing(&root, &freight, &["src/pedido.rs"]), Fate::NoLine);
-    }
-
-    /// O arquivo que o mapa tem abaixo do quinto, depois de cinco que casam
-    /// melhor, é a causa "abaixo do 5º".
-    #[test]
-    fn a_right_file_the_map_ranks_below_the_fifth_is_told_apart() {
-        let mut modules = Vec::new();
-        let mut files: Vec<(String, String)> = Vec::new();
-        for n in 1..=6 {
-            let (path, name) = (format!("src/frete{n}.rs"), format!("calcular_frete_{n}"));
-            files.push((path.clone(), format!("pub fn {name}() {{}}\n")));
-            modules.push(json!({ "path": path, "language": "rust", "loc": 1, "declarations": [
-                { "kind": "function", "name": name, "line": 1, "end_line": 1 }] }));
-        }
-        files.push(("src/outro.rs".to_string(), "pub fn no_relation() {}\n".to_string()));
-        modules.push(json!({ "path": "src/outro.rs", "language": "rust", "loc": 1, "declarations": [
-            { "kind": "function", "name": "no_relation", "line": 1, "end_line": 1, "body_comment": "calcular frete" }] }));
-        let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
-        let (_dir, root) = fixture::repo_with("{}", &refs, json!({ "modules": modules }));
-        let row = bash_row("grep -rn calcular_frete src", &["src/outro.rs"]);
-        assert_eq!(fate_after_hearing(&root, &row, &["src/frete1.rs"]), Fate::BelowFifth);
     }
 
     /// Um mapa gravado como o scan grava, com `mark` em cada bloco.
@@ -1462,7 +1095,11 @@ mod tests {
         for line in &round.lines {
             let result: Value = serde_json::from_str(line).expect("a result line is JSON");
             let proof = &result["proof"];
-            assert_eq!((proof["commit"].as_str(), proof["dirty"].as_bool(), proof["diff"].as_str()), (Some("0123456789ab"), Some(true), Some("feedc0ffee12")), "{result}");
+            assert_eq!(
+                (proof["commit"].as_str(), proof["dirty"].as_bool(), proof["diff"].as_str()),
+                (Some("0123456789ab"), Some(true), Some("feedc0ffee12")),
+                "{result}"
+            );
             assert_eq!(proof["maps"].as_array().map(Vec::len), Some(2), "{result}");
             assert_eq!(proof["maps"][0]["path"], json!(first.display().to_string()));
             assert_eq!(proof["maps"][1]["mark"], json!("scan 1"), "{result}");

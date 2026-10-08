@@ -93,13 +93,18 @@ pub fn set_project_url(index_path: &Path, url: &str, template: bool) -> Result<(
 /// O endereço da página do projeto, lido da linha do projeto do índice das
 /// specs do checkout principal visto de `start`. É a leitura única de "a
 /// página do projeto já foi publicada": a barra de status mostra o link por
-/// ela, e o início da sessão manda publicar a página quando ela não acha
-/// endereço. Um caractere de controle no endereço quebraria o link da barra,
+/// ela. A ausência de endereço nunca dispara uma publicação. Um caractere de controle no endereço quebraria o link da barra,
 /// e aí não há endereço. `None` sem índice, sem linha do projeto ou sem
 /// endereço nela.
 #[must_use]
 pub fn project_page_url(start: &Path) -> Option<String> {
     let root = crate::io::spec_events::spec_root(start);
+    let native = std::fs::read(root.join(".claude/mustard/publications/project/latest.json")).ok()
+        .and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if let Some(receipt)=native.filter(|receipt|receipt["published"]==true)
+        && let Some(url)=receipt["url"].as_str().filter(|url|url.starts_with("https://") && !url.chars().any(char::is_control)) {
+        return Some(url.to_string());
+    }
     let index_path = ClaudePaths::for_project(&root).ok()?.spec_index_path();
     let content = crate::io::fs::read_to_string(&index_path).ok()?;
     index::project_url(&content).filter(|url| !url.chars().any(char::is_control))
@@ -483,6 +488,17 @@ mod tests {
 
     /// A gravação de um evento muda a linha da spec no índice na mesma
     /// gravação, e só a dela.
+    #[test]
+    fn a_confirmed_native_project_url_survives_historical_index_rebuilds() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let path=root.join(".claude/mustard/publications/project/latest.json");std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path,r#"{"published":true,"url":"https://abc.my-project.pages.dev"}"#).unwrap();
+        rebuild(root).unwrap();
+        assert_eq!(project_page_url(root).as_deref(),Some("https://abc.my-project.pages.dev"));
+        std::fs::write(&path,r#"{"published":false,"url":"https://abc.my-project.pages.dev"}"#).unwrap();
+        assert!(project_page_url(root).is_none());
+    }
+
     #[test]
     fn a_write_changes_the_spec_line_in_the_index_in_the_same_write() {
         let dir = tempfile::tempdir().unwrap();

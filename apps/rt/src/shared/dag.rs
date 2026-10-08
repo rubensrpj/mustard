@@ -86,10 +86,7 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
 
     // 1. Transitive closure: `reach[a]` is every node `a` depends on, directly
     //    or through others. In-graph edges only.
-    let mut reach: BTreeMap<&N, BTreeSet<&N>> = deps
-        .iter()
-        .map(|(n, d)| (n, d.iter().filter(|x| known.contains(x)).collect()))
-        .collect();
+    let mut reach: BTreeMap<&N, BTreeSet<&N>> = deps.iter().map(|(n, d)| (n, d.iter().filter(|x| known.contains(x)).collect())).collect();
     loop {
         let mut grew = false;
         for &node in &known {
@@ -119,11 +116,7 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
     let component: BTreeMap<&N, &N> = known
         .iter()
         .map(|&node| {
-            let id = known
-                .iter()
-                .copied()
-                .find(|&other| other == node || (reaches(node, other) && reaches(other, node)))
-                .unwrap_or(node);
+            let id = known.iter().copied().find(|&other| other == node || (reaches(node, other) && reaches(other, node))).unwrap_or(node);
             (node, id)
         })
         .collect();
@@ -152,11 +145,7 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
             if comp_level.contains_key(comp) || !comp_d.iter().all(|d| comp_level.contains_key(d)) {
                 continue;
             }
-            let lvl = comp_d
-                .iter()
-                .filter_map(|d| comp_level.get(d).map(|l| l + 1))
-                .max()
-                .unwrap_or(0);
+            let lvl = comp_d.iter().filter_map(|d| comp_level.get(d).map(|l| l + 1)).max().unwrap_or(0);
             comp_level.insert(comp, lvl);
             placed = true;
         }
@@ -165,15 +154,8 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
         }
     }
 
-    let level: BTreeMap<N, u32> = known
-        .iter()
-        .map(|&n| (n.clone(), comp_level.get(comp_of(&component, n)).copied().unwrap_or(0)))
-        .collect();
-    let cycle: Vec<N> = known
-        .iter()
-        .filter(|&&n| reaches(n, n))
-        .map(|&n| n.clone())
-        .collect();
+    let level: BTreeMap<N, u32> = known.iter().map(|&n| (n.clone(), comp_level.get(comp_of(&component, n)).copied().unwrap_or(0))).collect();
+    let cycle: Vec<N> = known.iter().filter(|&&n| reaches(n, n)).map(|&n| n.clone()).collect();
 
     Levels { level, cycle }
 }
@@ -237,8 +219,7 @@ pub(crate) fn ready_tasks<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> Vec<N> {
     let done: BTreeSet<&N> = tasks.iter().filter(|t| t.done).map(|t| &t.id).collect();
     let unlocks = |id: &N| -> usize { tasks.iter().filter(|t| t.depends_on.contains(id)).count() };
 
-    let mut ready: Vec<&BacklogTask<N>> =
-        tasks.iter().filter(|t| !t.done && t.depends_on.iter().all(|d| done.contains(d))).collect();
+    let mut ready: Vec<&BacklogTask<N>> = tasks.iter().filter(|t| !t.done && t.depends_on.iter().all(|d| done.contains(d))).collect();
     ready.sort_by(|a, b| unlocks(&b.id).cmp(&unlocks(&a.id)).then_with(|| a.id.cmp(&b.id)));
     ready.into_iter().map(|t| t.id.clone()).collect()
 }
@@ -297,10 +278,7 @@ pub(crate) fn files_cross(a: &str, b: &str) -> bool {
 
 /// `true` quando algum arquivo de `left` cruza com algum de `right`
 /// ([`files_cross`]).
-pub(crate) fn sets_cross<'a, 'b>(
-    left: impl IntoIterator<Item = &'a String>,
-    right: impl IntoIterator<Item = &'b String> + Clone,
-) -> bool {
+pub(crate) fn sets_cross<'a, 'b>(left: impl IntoIterator<Item = &'a String>, right: impl IntoIterator<Item = &'b String> + Clone) -> bool {
     left.into_iter().any(|a| right.clone().into_iter().any(|b| files_cross(a, b)))
 }
 
@@ -317,7 +295,9 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> V
     let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let mut groups: Vec<Batch<N>> = Vec::new();
     for id in order {
-        let Some(task) = by_id.get(id).copied() else { continue };
+        let Some(task) = by_id.get(id).copied() else {
+            continue;
+        };
         if task.files.is_empty() || touches_whole_tree(&task.files) {
             groups.push(Batch { tasks: vec![id.clone()], files: task.files.clone() });
             continue;
@@ -358,12 +338,7 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> V
 ///    marcados, vale a ordem de antes.
 /// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
 ///    ele ([`chain_dependents`]).
-pub(crate) fn pack_batches<N: Ord + Clone>(
-    tasks: &[BacklogTask<N>],
-    order: &[N],
-    waiting: &[N],
-    busy: &BTreeSet<String>,
-) -> Vec<Batch<N>> {
+pub(crate) fn pack_batches<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N], waiting: &[N], busy: &BTreeSet<String>) -> Vec<Batch<N>> {
     let marked = marked(tasks);
     let readiness = |id: &N| order.iter().position(|ready| ready == id).unwrap_or(usize::MAX);
     let (mut batches, mut groups): (Vec<Batch<N>>, Vec<Batch<N>>) = clustered_by_file(tasks, order)
@@ -376,7 +351,7 @@ pub(crate) fn pack_batches<N: Ord + Clone>(
     groups.sort_by_key(|g| g.tasks.iter().map(&readiness).min());
     batches.extend(groups);
     batches.sort_by_key(|batch| !batch.holds_any(&marked));
-    chain_dependents(tasks, &mut batches, waiting, busy);
+    chain_dependents(tasks, &mut batches, waiting, busy, None);
     batches
 }
 
@@ -428,8 +403,7 @@ pub(crate) enum TaskKind {
 
 impl TaskKind {
     /// Todos os tipos, na ordem em que as ondas saem.
-    pub(crate) const ALL: [Self; 5] =
-        [Self::Defect, Self::Feature, Self::TextFix, Self::RemoveUnused, Self::TestCleanup];
+    pub(crate) const ALL: [Self; 5] = [Self::Defect, Self::Feature, Self::TextFix, Self::RemoveUnused, Self::TestCleanup];
 
     /// O nome do tipo na conversa com o Jev.
     pub(crate) fn key(self) -> &'static str {
@@ -524,11 +498,30 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
     number: &dyn Fn(&N) -> u64,
     budget: u64,
 ) -> Vec<Batch<N>> {
+    pack_by_affinity(tasks, order, waiting, busy, judged, number, (budget, &BTreeMap::new()))
+}
+
+/// Pair → (explicit flow, shared read), independently recovered locally.
+pub(crate) type Affinities<N> = BTreeMap<(N, N), (bool, bool)>;
+
+/// Affinity is a local tie-break between fitting batches of the same type.
+/// Explicit priority, kind, size, reservations and dependencies still govern.
+pub(crate) fn pack_by_affinity<N: Ord + Clone>(
+    tasks: &[BacklogTask<N>],
+    order: &[N],
+    waiting: &[N],
+    busy: &BTreeSet<String>,
+    judged: &BTreeMap<N, Judgement>,
+    number: &dyn Fn(&N) -> u64,
+    (budget, affinity): (u64, &Affinities<N>),
+) -> Vec<Batch<N>> {
     let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let mut batches: Vec<Batch<N>> = Vec::new();
     let mut candidates: Vec<(&N, &BacklogTask<N>, Judgement)> = Vec::new();
     for id in order {
-        let Some(task) = by_id.get(id).copied() else { continue };
+        let Some(task) = by_id.get(id).copied() else {
+            continue;
+        };
         if touches_whole_tree(&task.files) {
             batches.push(Batch { tasks: vec![id.clone()], files: task.files.clone() });
             continue;
@@ -556,20 +549,25 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
         }
         let growth = verdict.growth_tokens();
         let of_kind = together.entry(verdict.kind).or_default();
-        match of_kind.last_mut() {
-            Some((batch, sum)) if *sum + growth <= budget => {
-                batch.tasks.push(id.clone());
-                batch.files.extend(task.files.iter().cloned());
-                *sum += growth;
-            }
-            _ => of_kind.push((single(), growth)),
+        let fits = |sum: u64| sum.saturating_add(growth) <= budget;
+        let preferred = of_kind.iter().enumerate().filter(|(_, (_, sum))| fits(*sum)).filter_map(|(at, (batch, _))| {
+            let score = batch.tasks.iter().filter_map(|other| affinity.get(&(id.clone(), other.clone()))
+                .or_else(|| affinity.get(&(other.clone(), id.clone())))).fold((0usize, 0usize), |(flow, read), &(f, r)|
+                    (flow + usize::from(f), read + usize::from(r)));
+            (score != (0, 0)).then_some((score, at))
+        }).max().map(|(_, at)| at);
+        let fit = preferred.or_else(|| of_kind.last().filter(|(_, sum)| fits(*sum)).map(|_| of_kind.len() - 1));
+        if let Some(at) = fit {
+            let (batch, sum) = &mut of_kind[at];
+            batch.tasks.push(id.clone());
+            batch.files.extend(task.files.iter().cloned());
+            *sum += growth;
+        } else {
+            of_kind.push((single(), growth));
         }
     }
-    let mut groups: Vec<(TaskKind, Batch<N>)> = together
-        .into_iter()
-        .flat_map(|(kind, of_kind)| of_kind.into_iter().map(move |(batch, _)| (kind, batch)))
-        .chain(alone)
-        .collect();
+    let mut groups: Vec<(TaskKind, Batch<N>)> =
+        together.into_iter().flat_map(|(kind, of_kind)| of_kind.into_iter().map(move |(batch, _)| (kind, batch))).chain(alone).collect();
     for (_, group) in &mut groups {
         group.tasks.sort_by_key(|id| (!marked.contains(id), number(id), id.clone()));
     }
@@ -577,7 +575,7 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
     batches.extend(groups.into_iter().map(|(_, group)| group));
     batches.sort_by_key(|batch| !batch.holds_any(&marked));
     let blocked: BTreeSet<String> = busy.union(reserved.files()).cloned().collect();
-    chain_dependents(tasks, &mut batches, waiting, &blocked);
+    chain_dependents(tasks, &mut batches, waiting, &blocked, Some((judged, budget)));
     batches
 }
 
@@ -596,6 +594,7 @@ fn chain_dependents<N: Ord + Clone>(
     batches: &mut [Batch<N>],
     waiting: &[N],
     busy: &BTreeSet<String>,
+    sizing: Option<(&BTreeMap<N, Judgement>, u64)>,
 ) {
     let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let done: BTreeSet<&N> = tasks.iter().filter(|t| t.done).map(|t| &t.id).collect();
@@ -605,17 +604,24 @@ fn chain_dependents<N: Ord + Clone>(
             if touches_whole_tree(&batch.files) {
                 break;
             }
-            let crosses_another = |files: &BTreeSet<String>| {
-                batches.iter().enumerate().any(|(other, b)| other != at && sets_cross(files, &b.files))
-            };
+            let crosses_another = |files: &BTreeSet<String>| batches.iter().enumerate().any(|(other, b)| other != at && sets_cross(files, &b.files));
             let entering = waiting.iter().filter_map(|id| by_id.get(id).copied()).find(|task| {
                 !task.done
                     && !placed.contains(&task.id)
                     && task.depends_on.iter().all(|d| done.contains(d) || batch.tasks.contains(d))
-                    && sets_cross(&task.files, &batch.files)
+                    && (sets_cross(&task.files, &batch.files) || (sizing.is_some() && task.depends_on.iter().any(|d| batch.tasks.contains(d))))
                     && !touches_whole_tree(&task.files)
                     && !sets_cross(&task.files, busy)
                     && !crosses_another(&task.files)
+                    && sizing.is_none_or(|(judged, budget)| {
+                        batch
+                            .tasks
+                            .iter()
+                            .chain(std::iter::once(&task.id))
+                            .map(|id| judged.get(id).copied().unwrap_or(UNJUDGED).growth_tokens())
+                            .fold(0u64, u64::saturating_add)
+                            <= budget
+                    })
             });
             let Some(task) = entering else { break };
             placed.insert(task.id.clone());
@@ -703,13 +709,7 @@ mod tests {
     /// Uma tarefa do backlog, para os testes: número, dependências, arquivos e
     /// se já está entregue ou aprovada.
     fn task(id: u32, depends_on: &[u32], files: &[&str], done: bool) -> BacklogTask<u32> {
-        BacklogTask {
-            id,
-            depends_on: depends_on.iter().copied().collect(),
-            files: files.iter().map(|f| f.to_string()).collect(),
-            done,
-            priority: false,
-        }
+        BacklogTask { id, depends_on: depends_on.iter().copied().collect(), files: files.iter().map(|f| f.to_string()).collect(), done, priority: false }
     }
 
     /// A tarefa `task` com a marca de prioridade.
@@ -723,18 +723,10 @@ mod tests {
     /// seguinte.
     #[test]
     fn a_task_is_ready_only_once_every_dependency_is_done() {
-        let five_open = [
-            task(3, &[], &["a.rs"], true),
-            task(5, &[], &["e.rs"], false),
-            task(7, &[3, 5], &["b.rs"], false),
-        ];
+        let five_open = [task(3, &[], &["a.rs"], true), task(5, &[], &["e.rs"], false), task(7, &[3, 5], &["b.rs"], false)];
         assert_eq!(ready_tasks(&five_open), vec![5], "3 entregue, mas a 5 ainda está aberta: a 7 espera");
 
-        let five_done = [
-            task(3, &[], &["a.rs"], true),
-            task(5, &[], &["e.rs"], true),
-            task(7, &[3, 5], &["b.rs"], false),
-        ];
+        let five_done = [task(3, &[], &["a.rs"], true), task(5, &[], &["e.rs"], true), task(7, &[3, 5], &["b.rs"], false)];
         assert_eq!(ready_tasks(&five_done), vec![7], "entregue a 5 também, a 7 entra na rodada seguinte");
     }
 
@@ -742,12 +734,7 @@ mod tests {
     /// o número menor primeiro.
     #[test]
     fn ready_tasks_break_ties_by_how_many_they_unlock_then_by_number() {
-        let tasks = [
-            task(4, &[], &[], false),
-            task(9, &[], &[], false),
-            task(1, &[4], &[], false),
-            task(2, &[9], &[], false),
-        ];
+        let tasks = [task(4, &[], &[], false), task(9, &[], &[], false), task(1, &[4], &[], false), task(2, &[9], &[], false)];
         assert_eq!(ready_tasks(&tasks), vec![4, 9], "a 4 e a 9 destravam uma cada; a 4 vem pelo número");
 
         let tied = [task(5, &[], &[], false), task(3, &[], &[], false)];
@@ -759,11 +746,7 @@ mod tests {
     /// relação, por maior que seja o espaço que ainda sobraria nele.
     #[test]
     fn groups_with_no_file_in_common_never_share_a_batch() {
-        let tasks = [
-            task(1, &[], &["a1.rs", "a2.rs", "a3.rs", "a4.rs"], false),
-            task(2, &[], &["b1.rs", "b2.rs"], false),
-            task(3, &[], &["c1.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a1.rs", "a2.rs", "a3.rs", "a4.rs"], false), task(2, &[], &["b1.rs", "b2.rs"], false), task(3, &[], &["c1.rs"], false)];
         let order = ready_tasks(&tasks);
         let batches = pack_batches(&tasks, &order, &[], &BTreeSet::new());
         assert_eq!(batch_tasks(&batches), vec![vec![1], vec![2], vec![3]], "{batches:?}");
@@ -822,12 +805,7 @@ mod tests {
     /// curinga não entra no lote dele: ele sai sozinho.
     #[test]
     fn task_with_a_wildcard_goes_out_alone_in_the_packing() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[], &["**"], false),
-            task(3, &[], &["b.rs"], false),
-            task(4, &[2], &["c.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["**"], false), task(3, &[], &["b.rs"], false), task(4, &[2], &["c.rs"], false)];
         let order = ready_tasks(&tasks);
         let batches = pack_batches(&tasks, &order, &[4], &BTreeSet::new());
         assert_eq!(batch_tasks(&batches), vec![vec![2], vec![1], vec![3]], "{batches:?}");
@@ -855,11 +833,7 @@ mod tests {
     /// depois da dependência, mesmo com a 3 chegando antes da 2 na espera.
     #[test]
     fn dependent_that_shares_a_file_joins_the_batch_after_its_dependency() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[1], &["a.rs", "b.rs"], false),
-            task(3, &[2], &["b.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[1], &["a.rs", "b.rs"], false), task(3, &[2], &["b.rs"], false)];
         let batches = pack_batches(&tasks, &[1], &[3, 2], &BTreeSet::new());
         assert_eq!(batch_tasks(&batches), vec![vec![1, 2, 3]], "{batches:?}");
         assert_eq!(batches[0].files, BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()]));
@@ -869,15 +843,14 @@ mod tests {
     /// com a 1, mas espera também a 7, ainda aberta e fora do lote. As duas
     /// ficam fora: o lote leva só a 1.
     #[test]
-    fn dependent_without_a_shared_file_or_with_an_open_dependency_stays_out() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[1], &["z.rs"], false),
-            task(3, &[1, 7], &["a.rs"], false),
-            task(7, &[], &["q.rs"], false),
-        ];
-        let batches = pack_batches(&tasks, &[1], &[2, 3], &BTreeSet::new());
-        assert_eq!(batch_tasks(&batches), vec![vec![1]], "{batches:?}");
+    fn a_consumer_joins_its_producer_but_an_external_dependency_stays_out() {
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[1], &["z.rs"], false), task(3, &[1, 7], &["a.rs"], false), task(7, &[], &["q.rs"], false)];
+        let mut judged = BTreeMap::new();
+        for id in [1, 2, 3, 7] {
+            judged.insert(id, Judgement { kind: TaskKind::Feature, confidence: 0.9, clash: 0.0, size: 0.0 });
+        }
+        let batches = pack_by_kind(&tasks, &[1], &[2, 3], &BTreeSet::new(), &judged, &|id| u64::from(*id), 140_000);
+        assert_eq!(batch_tasks(&batches), vec![vec![1, 2]], "{batches:?}");
     }
 
     /// A 1 e a 2 saem em dois lotes. As três dependentes da 1 dividem
@@ -931,8 +904,7 @@ mod tests {
     /// de prontidão, com os arquivos das dezessete.
     #[test]
     fn more_than_five_tasks_on_one_file_go_out_in_a_single_batch() {
-        let tasks: Vec<BacklogTask<u32>> =
-            (1..=17u32).map(|n| task_with(n, &[], &own_files(&format!("t{n}_"), 1))).collect();
+        let tasks: Vec<BacklogTask<u32>> = (1..=17u32).map(|n| task_with(n, &[], &own_files(&format!("t{n}_"), 1))).collect();
         let order: Vec<u32> = std::iter::once(17).chain(1..=16).collect();
 
         let batches = pack_batches(&tasks, &order, &[], &BTreeSet::new());
@@ -947,12 +919,7 @@ mod tests {
     /// ordem, não a ordem em que o arquivo as juntou.
     #[test]
     fn batches_and_their_tasks_follow_the_readiness_order() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[], &["b.rs"], false),
-            task(3, &[], &["a.rs"], false),
-            task(4, &[], &["b.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["b.rs"], false), task(3, &[], &["a.rs"], false), task(4, &[], &["b.rs"], false)];
         let batches = pack_batches(&tasks, &[2, 1, 4, 3], &[], &BTreeSet::new());
         assert_eq!(batch_tasks(&batches), vec![vec![2, 4], vec![1, 3]], "{batches:?}");
     }
@@ -981,19 +948,9 @@ mod tests {
     /// tipo dela: o assunto é o tipo, não o arquivo.
     #[test]
     fn tasks_of_one_kind_share_a_batch_without_a_file_in_common() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[], &["b.rs"], false),
-            task(3, &[], &["a.rs"], false),
-            task(4, &[], &["c.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["b.rs"], false), task(3, &[], &["a.rs"], false), task(4, &[], &["c.rs"], false)];
         let sure = |kind| judged_as(kind, 0.9, 0.0);
-        let judged = [
-            (1, sure(TaskKind::Feature)),
-            (2, sure(TaskKind::Feature)),
-            (3, sure(TaskKind::Defect)),
-            (4, sure(TaskKind::Feature)),
-        ];
+        let judged = [(1, sure(TaskKind::Feature)), (2, sure(TaskKind::Feature)), (3, sure(TaskKind::Defect)), (4, sure(TaskKind::Feature))];
         assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![3], vec![1, 2, 4]]);
     }
 
@@ -1024,11 +981,7 @@ mod tests {
     #[test]
     fn a_kind_the_jev_is_unsure_of_goes_alone() {
         let tasks = [task(1, &[], &[], false), task(2, &[], &[], false), task(3, &[], &[], false)];
-        let judged = [
-            (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
-            (2, judged_as(TaskKind::Feature, 0.49, 0.0)),
-            (3, judged_as(TaskKind::Feature, 0.5, 0.0)),
-        ];
+        let judged = [(1, judged_as(TaskKind::Feature, 0.9, 0.0)), (2, judged_as(TaskKind::Feature, 0.49, 0.0)), (3, judged_as(TaskKind::Feature, 0.5, 0.0))];
         assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![1, 3], vec![2]]);
     }
 
@@ -1039,11 +992,7 @@ mod tests {
     #[test]
     fn a_clash_with_an_open_wave_holds_a_task_that_declares_no_file() {
         let tasks = [task(1, &[], &[], false), task(2, &[], &[], false), task(3, &[], &["open.rs"], false)];
-        let judged = [
-            (1, judged_as(TaskKind::Feature, 0.9, 0.5)),
-            (2, judged_as(TaskKind::Feature, 0.9, 0.49)),
-            (3, judged_as(TaskKind::Feature, 0.9, 0.0)),
-        ];
+        let judged = [(1, judged_as(TaskKind::Feature, 0.9, 0.5)), (2, judged_as(TaskKind::Feature, 0.9, 0.49)), (3, judged_as(TaskKind::Feature, 0.9, 0.0))];
         let busy = BTreeSet::from(["open.rs".to_string()]);
         assert_eq!(packed_by_kind(&tasks, &judged, &busy), vec![vec![2]]);
     }
@@ -1053,15 +1002,10 @@ mod tests {
     /// depois dela — salvo com o curinga no meio, que cruza com tudo.
     #[test]
     fn the_wildcard_goes_first_alone_and_a_dependent_joins_after_its_dependency() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[], &["**"], false),
-            task(3, &[], &["b.rs"], false),
-            task(4, &[1], &["a.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["**"], false), task(3, &[], &["b.rs"], false), task(4, &[1], &["a.rs"], false)];
         let sure = |kind| judged_as(kind, 0.9, 0.0);
         let judged: BTreeMap<u32, Judgement> =
-            [(1, sure(TaskKind::Feature)), (2, sure(TaskKind::Defect)), (3, sure(TaskKind::Feature))].into_iter().collect();
+            [(1, sure(TaskKind::Feature)), (2, sure(TaskKind::Defect)), (3, sure(TaskKind::Feature)), (4, sure(TaskKind::TestCleanup))].into_iter().collect();
         let number = |id: &u32| u64::from(*id);
         let with_wildcard = pack_by_kind(&tasks, &[1, 2, 3], &[4], &BTreeSet::new(), &judged, &number, BUDGET);
         assert_eq!(batch_tasks(&with_wildcard), vec![vec![2], vec![1, 3]], "{with_wildcard:?}");
@@ -1075,11 +1019,7 @@ mod tests {
     /// sai. Sem a onda em andamento, A e B saem juntas, como antes.
     #[test]
     fn a_blocked_task_keeps_a_later_task_that_shares_its_file_from_taking_its_turn() {
-        let tasks = [
-            task(1, &[], &["a.rs", "open.rs"], false),
-            task(2, &[], &["a.rs"], false),
-            task(3, &[], &["c.rs"], false),
-        ];
+        let tasks = [task(1, &[], &["a.rs", "open.rs"], false), task(2, &[], &["a.rs"], false), task(3, &[], &["c.rs"], false)];
         let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
         let judged = [(1, sure), (2, sure), (3, sure)];
         let busy = BTreeSet::from(["open.rs".to_string()]);
@@ -1092,16 +1032,8 @@ mod tests {
     /// primeiro e sai; a de recurso com número maior que a bloqueada espera.
     #[test]
     fn the_reservation_follows_the_priority_of_the_kinds() {
-        let tasks = [
-            task(1, &[], &["a.rs", "open.rs"], false),
-            task(2, &[], &["a.rs"], false),
-            task(3, &[], &["a.rs"], false),
-        ];
-        let judged = [
-            (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
-            (2, judged_as(TaskKind::Defect, 0.9, 0.0)),
-            (3, judged_as(TaskKind::Feature, 0.9, 0.0)),
-        ];
+        let tasks = [task(1, &[], &["a.rs", "open.rs"], false), task(2, &[], &["a.rs"], false), task(3, &[], &["a.rs"], false)];
+        let judged = [(1, judged_as(TaskKind::Feature, 0.9, 0.0)), (2, judged_as(TaskKind::Defect, 0.9, 0.0)), (3, judged_as(TaskKind::Feature, 0.9, 0.0))];
         let busy = BTreeSet::from(["open.rs".to_string()]);
         assert_eq!(packed_by_kind(&tasks, &judged, &busy), vec![vec![2]]);
     }
@@ -1117,7 +1049,7 @@ mod tests {
             task(5, &[3], &["c.rs"], false),
         ];
         let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
-        let judged: BTreeMap<u32, Judgement> = [(1, sure), (3, sure)].into_iter().collect();
+        let judged: BTreeMap<u32, Judgement> = [(1, sure), (3, sure), (4, sure), (5, sure)].into_iter().collect();
         let busy = BTreeSet::from(["open.rs".to_string()]);
         let batches = pack_by_kind(&tasks, &[1, 3], &[4, 5], &busy, &judged, &|id| u64::from(*id), BUDGET);
         assert_eq!(batch_tasks(&batches), vec![vec![3, 5]], "a 4 cruza a reserva da 1 e a 5 entra: {batches:?}");
@@ -1147,11 +1079,7 @@ mod tests {
     /// Duas marcadas saem entre si pela ordem de sempre: o tipo e o número.
     #[test]
     fn two_marked_tasks_keep_the_usual_order_between_them() {
-        let tasks = [
-            task(1, &[], &["a.rs"], false),
-            marked_task(task(2, &[], &["b.rs"], false)),
-            marked_task(task(3, &[], &["c.rs"], false)),
-        ];
+        let tasks = [task(1, &[], &["a.rs"], false), marked_task(task(2, &[], &["b.rs"], false)), marked_task(task(3, &[], &["c.rs"], false))];
         let sure = |kind| judged_as(kind, 0.9, 0.0);
         let judged = [(1, sure(TaskKind::Defect)), (2, sure(TaskKind::TextFix)), (3, sure(TaskKind::Feature))];
         assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![3], vec![2], vec![1]]);
@@ -1175,11 +1103,7 @@ mod tests {
     /// número menor sai.
     #[test]
     fn a_marked_task_held_by_an_open_wave_waits_and_keeps_its_file_reserved() {
-        let plain = [
-            task(1, &[], &["a.rs"], false),
-            task(2, &[], &["a.rs", "open.rs"], false),
-            task(3, &[], &["c.rs"], false),
-        ];
+        let plain = [task(1, &[], &["a.rs"], false), task(2, &[], &["a.rs", "open.rs"], false), task(3, &[], &["c.rs"], false)];
         let [one, two, three] = plain.clone();
         let tasks = [one, marked_task(two), three];
         let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
@@ -1195,7 +1119,7 @@ mod tests {
     fn a_marked_task_waits_for_its_open_dependency() {
         let tasks = [task(1, &[], &["a.rs"], false), marked_task(task(2, &[1], &["b.rs"], false))];
         assert_eq!(ready_tasks(&tasks), vec![1]);
-        assert_eq!(batch_tasks(&pack_batches(&tasks, &[1], &[2], &BTreeSet::new())), vec![vec![1]]);
+        assert_eq!(batch_tasks(&pack_batches(&tasks, &[1], &[2], &BTreeSet::new())), vec![vec![1]], "without a size profile the consumer waits");
     }
 
     // O backlog inteiro, com dependência e arquivo compartilhado, despachada
@@ -1219,11 +1143,7 @@ mod tests {
     /// espera.
     #[test]
     fn two_tasks_of_one_kind_with_three_files_each_form_a_batch_that_does_not_wait() {
-        let tasks = [
-            task_with(1, &[], &own_files("a", 3)),
-            task_with(2, &[], &own_files("b", 3)),
-            task_with(3, &[], &own_files("c", 2)),
-        ];
+        let tasks = [task_with(1, &[], &own_files("a", 3)), task_with(2, &[], &own_files("b", 3)), task_with(3, &[], &own_files("c", 2))];
         let judged = BTreeMap::from([
             (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
             (2, judged_as(TaskKind::Feature, 0.9, 0.0)),
@@ -1306,4 +1226,21 @@ mod tests {
         let batches = packed_by_kind(&tasks, &judged, &BTreeSet::new());
         assert_eq!(batches, vec![vec![1], vec![2]]);
     }
+    #[test]
+    fn flow_and_shared_read_affinity_choose_a_fitting_batch_without_overriding_priority_or_conflict() {
+        let tasks: Vec<_> = (1..=3).map(|id| task(id, &[], &[&format!("{id}.rs")], false)).collect();
+        let judged: BTreeMap<_, _> = [
+            (1, Judgement { size: 1.0, ..judged_as(TaskKind::Feature, 0.9, 0.0) }),
+            (2, Judgement { size: 1.0, ..judged_as(TaskKind::Feature, 0.9, 0.0) }),
+            (3, Judgement { size: 0.0, ..judged_as(TaskKind::Feature, 0.9, 0.0) }),
+        ].into_iter().collect();
+        let budget = task_size::growth_tokens(1.0) + task_size::growth_tokens(0.0);
+        let affinity = [((1, 3), (true, false)), ((2, 3), (false, true))].into_iter().collect();
+        let batches = pack_by_affinity(&tasks, &[1, 2, 3], &[], &BTreeSet::new(), &judged, &|id| u64::from(*id), (budget, &affinity));
+        assert_eq!(batch_tasks(&batches), vec![vec![1, 3], vec![2]], "flow is distinct from a weaker shared read affinity");
+        let busy = ["1.rs".into()].into_iter().collect();
+        let batches = pack_by_affinity(&tasks, &[1, 2, 3], &[], &busy, &judged, &|id| u64::from(*id), (budget, &affinity));
+        assert_eq!(batch_tasks(&batches), vec![vec![2, 3]], "affinity cannot bypass an occupied file");
+    }
+
 }

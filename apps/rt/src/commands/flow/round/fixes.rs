@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::wave_prompt::wave_title;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 use super::answer::RoundRefusal;
 use super::commit::ensure_criteria_proofs;
@@ -93,7 +93,7 @@ pub(super) fn prove_criteria(
     lang: Locale,
 ) -> Result<Vec<String>, RoundRefusal> {
     let undone: Vec<u64> = reports.iter().flat_map(|wave| wave.undone.iter().map(|(id, _)| *id)).collect();
-    ensure_criteria_proofs(root, log, waves, &undone, delivered).map_err(|refused| {
+    ensure_criteria_proofs(root, spec, log, waves, &undone, delivered).map_err(|refused| {
         let refused = criterion_fix(refused, log, reports, lang);
         keep_fixes(root, spec, log, &refused, lang);
         refused
@@ -112,9 +112,9 @@ pub(super) fn prove_criteria(
 /// conserto. Outra recusa sai como veio.
 fn criterion_fix(refused: RoundRefusal, log: &SpecLog, reports: &[WaveReport], lang: Locale) -> RoundRefusal {
     let code = match &refused {
-        RoundRefusal::CriterionProofFailed { code, .. }
-        | RoundRefusal::CriterionRanNoTest { code, .. }
-        | RoundRefusal::CriterionMissingTest { code, .. } => code.clone(),
+        RoundRefusal::CriterionProofFailed { code, .. } | RoundRefusal::CriterionRanNoTest { code, .. } | RoundRefusal::CriterionMissingTest { code, .. } => {
+            code.clone()
+        }
         _ => return refused,
     };
     let codes = log.codes();
@@ -155,9 +155,7 @@ pub(super) fn new_agents_named(refused: RoundRefusal, root: &Path, spec: &str, l
         RoundRefusal::AfterWave { mut text, question, fixes } => {
             let awaiting = waves_awaiting_new_agent(root, spec, log);
             for wave in fixes.iter().map(|(wave, _)| *wave).filter(|wave| awaiting.contains_key(wave)) {
-                let line = translate("round.after_wave.new_agent", lang)
-                    .replace("{wave}", &wave.to_string())
-                    .replace("{title}", &wave_title(spec, wave, lang));
+                let line = translate("round.after_wave.new_agent", lang).replace("{wave}", &wave.to_string()).replace("{title}", &wave_title(spec, wave, lang));
                 text = format!("{text}\n\n{line}");
             }
             RoundRefusal::AfterWave { text, question, fixes }
@@ -199,10 +197,16 @@ fn fix_wave(path: &Path) -> Option<u64> {
 /// segura a trava do passo do git e leu `log` sob ela: a rodada ao mesmo
 /// tempo nunca grava um trecho mais novo que esta leitura.
 pub(crate) fn sweep_fixes(root: &Path, spec: &str, log: Option<&SpecLog>) {
-    let Some(dir) = fixes_dir(root, spec) else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let Some(dir) = fixes_dir(root, spec) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
     for path in entries.flatten().map(|entry| entry.path()) {
-        let Some(wave) = fix_wave(&path) else { continue };
+        let Some(wave) = fix_wave(&path) else {
+            continue;
+        };
         if log.and_then(|log| fix_file(root, spec, log, wave)).as_ref() != Some(&path) {
             let _ = std::fs::remove_file(&path);
         }
@@ -228,7 +232,9 @@ pub(super) fn keep_fixes(root: &Path, spec: &str, log: &SpecLog, refused: &Round
         _ => return,
     };
     for (wave, section) in fixes {
-        let Some(file) = fix_file(root, spec, log, wave) else { continue };
+        let Some(file) = fix_file(root, spec, log, wave) else {
+            continue;
+        };
         let _ = file.parent().map(std::fs::create_dir_all);
         let _ = std::fs::write(&file, section);
     }
@@ -239,7 +245,7 @@ mod tests {
     use std::path::Path;
 
     use mustard_core::io::spec_events as store;
-    use mustard_core::platform::i18n::{translate, Locale};
+    use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -282,8 +288,13 @@ mod tests {
     /// que sempre passa.
     fn two_waves_two_criteria(root: &Path, slots: u64) {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
-            let crit = write(root, "x", "criterion", json!({"when": "a dobra roda", "then": "a dobra passa",
-                "proof": "git --version", "form": "ubiquitous", "origin": said}));
+            let crit = write(
+                root,
+                "x",
+                "criterion",
+                json!({"when": "a dobra roda", "then": "a dobra passa",
+                "proof": "git --version", "form": "ubiquitous", "origin": said}),
+            );
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let old = log.visible().into_iter().find(|e| e.event_type == "wave" && e.int("n") == Some(2)).unwrap().id;
             let wave = json!({"n": 2, "text": "Onda 2.", "criteria": [id_of(&crit)], "done_when": "A suíte passa.",
@@ -407,9 +418,8 @@ mod tests {
         assert_eq!(asked["question"], json!(question), "{asked}");
         let hint = asked["hint"].as_str().unwrap_or_default();
         let limit = translate("round.after_wave.limit", Locale::PtBr).replace("{waves}", "1").replace("{max}", "2");
-        let refused = translate("round.criterion_missing_test", Locale::PtBr)
-            .replace("{code}", "MSTD-CRIT-0001")
-            .replace("{name}", "teste_que_nao_existe_aqui");
+        let refused =
+            translate("round.criterion_missing_test", Locale::PtBr).replace("{code}", "MSTD-CRIT-0001").replace("{name}", "teste_que_nao_existe_aqui");
         let line = |wave: &str| {
             let line = translate("round_checks.criterion_wave", Locale::PtBr).replace("{wave}", wave).replace("{code}", "MSTD-CRIT-0001");
             format!("\n- {line}")

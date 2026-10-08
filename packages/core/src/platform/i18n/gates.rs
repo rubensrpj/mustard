@@ -624,7 +624,6 @@ mod tests {
             ("subagent.rejected_agent_working", &["{wave}"][..]),
             ("subagent.rejected_agent_locked", &["{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
-            ("session.project_page", &["{template}", "{capabilities}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
             ("session.provider_silent", &["{spec}", "{reason}"][..]),
             ("session.submodules", &["{spec}", "{text}"][..]),

@@ -1,31 +1,20 @@
-//! Os comandos que o projeto declara e que a rodada roda no repositório
-//! principal antes de cada commit: a compilação, o lint e a suíte inteira.
-//! Quem é dono da suíte verde é a rodada — não o agente da onda, que roda só
-//! os testes do que mudou, nem quem conduz, que não roda teste nem lint por
-//! conta própria. O primeiro que cai recusa com o comando e o fim da saída, e
-//! nada é comitado; o que o projeto não declara não roda. A recusa volta às
-//! ondas da rodada que a saída cita, ou a todas, quando ela não cita nenhuma,
-//! com o mesmo teto de rodadas de conserto da conferência depois da onda: a
-//! onda que já passou por todas vai ao usuário, com a mesma pergunta.
+//! The integrated delivery runs the declared build. Lint and the full suite
+//! belong to final validation; targeted criterion proofs remain per delivery.
 
 use std::path::Path;
 
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
 use super::stops::{fix_limit_refusal, split_at_fix_limit};
-use crate::commands::review::qa_run::{run_command, run_server_command, ProofRun};
+use crate::commands::review::qa_run::run_build_command;
 
 /// Qual dos comandos que o projeto declara caiu antes do commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Check {
     /// A compilação (`buildCommand`).
     Build,
-    /// O lint (`lintCommand`).
-    Lint,
-    /// A suíte inteira (`testCommand`).
-    Suite,
 }
 
 impl Check {
@@ -33,8 +22,6 @@ impl Check {
     pub(super) fn reason(self) -> &'static str {
         match self {
             Self::Build => "round-build-failed",
-            Self::Lint => "round-lint-failed",
-            Self::Suite => "round-tests-failed",
         }
     }
 
@@ -43,8 +30,6 @@ impl Check {
     pub(super) fn message_key(self) -> &'static str {
         match self {
             Self::Build => "round.build_failed",
-            Self::Lint => "round.lint_failed",
-            Self::Suite => "round.tests_failed",
         }
     }
 }
@@ -95,43 +80,22 @@ impl CheckFailure {
     /// O trecho de conserto que volta ao agente da onda `wave`: o comando que
     /// caiu e o fim da saída, com o que fazer.
     pub(super) fn fix(&self, wave: u64, lang: Locale) -> String {
-        translate("round_checks.fix", lang)
-            .replace("{wave}", &wave.to_string())
-            .replace("{command}", &self.command)
-            .replace("{output}", &self.output)
+        translate("round_checks.fix", lang).replace("{wave}", &wave.to_string()).replace("{command}", &self.command).replace("{output}", &self.output)
     }
 }
 
-/// Quem roda um dos comandos declarados, na raiz, pelo executor do QA.
-type Runner = fn(&str, &Path) -> ProofRun;
-
-/// Roda no repositório principal, antes do commit, a compilação, o lint e a
-/// suíte inteira que o projeto declara, nessa ordem — a compilação primeiro,
-/// porque sem ela os outros dois nem rodam, e o lint e a suíte na ordem do
-/// fechamento. O primeiro que cai recusa com o comando e o fim da saída, e a
-/// rodada não comita nada; a recusa diz a que ondas de `waves` o conserto
-/// volta ([`culprits`]), até o teto de rodadas de conserto de cada uma
-/// ([`capped`]). O que o projeto não declara não roda, porque não há como
-/// rodá-lo sem saber o comando.
-///
-/// A compilação roda com o teto de uma prova que compila. O lint e a suíte
-/// rodam com o teto dos comandos do servidor, de uma hora: a suíte inteira
-/// leva o tempo que o projeto pede, e o teto de uma prova a cortaria no meio.
-pub(super) fn ensure_checks_pass(root: &Path, waves: &[WaveReport], lang: Locale) -> Result<(), RoundRefusal> {
-    let declared = mustard_core::ProjectConfig::load(root).commands();
-    let checks: [(Check, Option<String>, Runner); 3] = [
-        (Check::Build, declared.build, run_command),
-        (Check::Lint, declared.lint, run_server_command),
-        (Check::Suite, declared.test, run_server_command),
-    ];
-    for (check, command, run) in checks {
-        let Some(command) = command else { continue };
-        let out = run(&command, root);
-        if out.result != "pass" {
-            let (culprit_waves, cited) = culprits(&out.output, waves);
-            let failure = CheckFailure { check, command, output: out.output, waves: culprit_waves, cited, new_agents: Vec::new() };
-            return Err(capped(failure, waves, lang));
-        }
+/// Run the declared build once over the integrated delivery, preserving
+/// attribution and the existing repair limit on failure.
+pub(super) fn ensure_checks_pass(root: &Path, spec: &str, waves: &[WaveReport], lang: Locale) -> Result<(), RoundRefusal> {
+    let Some(command) = mustard_core::ProjectConfig::load(root).commands().build else {
+        return Ok(());
+    };
+    let out = run_build_command(&command, root);
+    super::super::validation::record_run(root, spec, "delivery", "build", &command, &out).map_err(RoundRefusal::Refused)?;
+    if out.result != "pass" {
+        let (culprit_waves, cited) = culprits(&out.output, waves);
+        let failure = CheckFailure { check: Check::Build, command, output: out.output, waves: culprit_waves, cited, new_agents: Vec::new() };
+        return Err(capped(failure, waves, lang));
     }
     Ok(())
 }
@@ -160,8 +124,7 @@ fn capped(failure: CheckFailure, reports: &[WaveReport], lang: Locale) -> RoundR
 /// rodada juntou as ondas antes de rodar, e não sabe dizer qual causou.
 fn culprits(output: &str, waves: &[WaveReport]) -> (Vec<u64>, bool) {
     let changed: Vec<&WaveReport> = waves.iter().filter(|wave| !wave.files.is_empty()).collect();
-    let cited: Vec<u64> =
-        changed.iter().filter(|wave| wave.files.iter().any(|file| output.contains(file.as_str()))).map(|wave| wave.wave).collect();
+    let cited: Vec<u64> = changed.iter().filter(|wave| wave.files.iter().any(|file| output.contains(file.as_str()))).map(|wave| wave.wave).collect();
     if cited.is_empty() {
         return (changed.iter().map(|wave| wave.wave).collect(), false);
     }
@@ -186,7 +149,7 @@ mod tests {
     use std::path::Path;
 
     use mustard_core::io::spec_events as store;
-    use mustard_core::platform::i18n::{translate, Locale};
+    use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -214,12 +177,12 @@ mod tests {
     /// da saída fica gravado para a volta dela, e não para a outra. A saída
     /// que não cita arquivo de onda nenhuma manda o conserto às duas.
     #[test]
-    fn a_red_suite_goes_back_to_the_wave_whose_file_the_output_cites_or_to_every_wave() {
+    fn a_red_build_goes_back_to_the_wave_whose_file_the_output_cites_or_to_every_wave() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         let cites = "echo 'thread panicked at src/b.rs:2:5'; exit 1";
-        let config = |test: &str| json!({"maxCompilingWaves": 2, "testCommand": test}).to_string();
+        let config = |test: &str| json!({"maxCompilingWaves": 2, "buildCommand": test}).to_string();
         std::fs::write(root.join("mustard.json"), config(cites)).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         back_with(root, 1, "src/a.rs");
@@ -231,7 +194,7 @@ mod tests {
         };
 
         let cited = round(root, "x", None);
-        assert_eq!(cited["reason"], json!("round-tests-failed"), "{cited}");
+        assert_eq!(cited["reason"], json!("round-build-failed"), "{cited}");
         let hint = cited["hint"].as_str().unwrap_or_default();
         let next = translate("round_checks.next", Locale::PtBr);
         assert!(hint.ends_with(&format!("\n\n{next}{}", line("round_checks.cited", "2"))), "{hint}");
@@ -242,7 +205,7 @@ mod tests {
         let silent = "echo 'o teste soma caiu'; exit 1";
         std::fs::write(root.join("mustard.json"), config(silent)).unwrap();
         let joined = round(root, "x", None);
-        assert_eq!(joined["reason"], json!("round-tests-failed"), "{joined}");
+        assert_eq!(joined["reason"], json!("round-build-failed"), "{joined}");
         let hint = joined["hint"].as_str().unwrap_or_default();
         let both = format!("\n\n{next}{}{}", line("round_checks.joined", "1"), line("round_checks.joined", "2"));
         assert!(hint.ends_with(&both), "{hint}");
@@ -261,19 +224,19 @@ mod tests {
     /// saída, e não grava trecho para a onda 1. A onda 2, que não passou por
     /// rodada de conserto nenhuma, ainda recebe o dela. Nada é comitado.
     #[test]
-    fn a_red_suite_returns_the_fix_for_two_fix_rounds_and_then_asks_the_user() {
+    fn a_red_build_returns_the_fix_for_two_fix_rounds_and_then_asks_the_user() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         let silent = "echo 'o teste soma caiu'; exit 1";
-        let config = json!({"maxCompilingWaves": 2, "testCommand": silent}).to_string();
+        let config = json!({"maxCompilingWaves": 2, "buildCommand": silent}).to_string();
         std::fs::write(root.join("mustard.json"), config).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         back_with(root, 2, "src/b.rs");
         for fix_round in 1..=2 {
             back_with(root, 1, "src/a.rs");
             let fixed = round(root, "x", None);
-            assert_eq!(fixed["reason"], json!("round-tests-failed"), "fix round {fix_round}: {fixed}");
+            assert_eq!(fixed["reason"], json!("round-build-failed"), "fix round {fix_round}: {fixed}");
             assert_eq!(fixed.get("question"), None, "fix round {fix_round}: {fixed}");
             assert!(fix_kept(root, 1).is_some_and(|fix| fix.ends_with("o teste soma caiu")), "fix round {fix_round}: {fixed}");
         }
@@ -298,22 +261,22 @@ mod tests {
     /// volta e manda despachar um agente novo pelo título da onda.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_red_suite_asks_for_a_new_agent_once_the_sender_of_the_wave_closed() {
+    fn a_red_build_asks_for_a_new_agent_once_the_sender_of_the_wave_closed() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        std::fs::write(root.join("mustard.json"), json!({"testCommand": "echo caiu; exit 1"}).to_string()).unwrap();
+        std::fs::write(root.join("mustard.json"), json!({"buildCommand": "echo caiu; exit 1"}).to_string()).unwrap();
         round(root, "x", None);
         back_with(root, 1, "src/a.rs");
         let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
         let new_agent = translate("round.after_wave.new_agent", Locale::PtBr).replace("{wave}", "1").replace("{title}", &title);
         let open = round(root, "x", None);
-        assert_eq!(open["reason"], json!("round-tests-failed"), "{open}");
+        assert_eq!(open["reason"], json!("round-build-failed"), "{open}");
         assert!(!open["hint"].as_str().unwrap_or_default().contains(&new_agent), "{open}");
 
         orphan_the_send(root, 1);
         let closed = round(root, "x", None);
-        assert_eq!(closed["reason"], json!("round-tests-failed"), "{closed}");
+        assert_eq!(closed["reason"], json!("round-build-failed"), "{closed}");
         assert!(closed["hint"].as_str().unwrap_or_default().ends_with(&format!("\n\n{new_agent}")), "{closed}");
     }
 }

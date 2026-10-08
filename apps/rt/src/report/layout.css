@@ -221,3 +221,20 @@ section[hidden],details[hidden],.overview[hidden]{display:none}
   dl.kv dd{margin-bottom:6px}
 }
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+
+/* Acompanhamento explícito: mesma moldura, com indicadores e ondas em cartões.
+   Cores vêm do tema comum; nada depende de uma página ou banco remoto ativo. */
+.snapshot-overview{padding-top:8px}
+.status-grid,.wave-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:14px;margin:16px 0 22px}
+.status-card,.wave-card{min-width:0;padding:20px 22px;background:var(--surface);border:1px solid var(--rule);border-radius:14px;box-shadow:0 3px 14px #00000005}
+.status-card{display:flex;flex-direction:column;gap:10px;border-top:3px solid var(--mustard-line)}
+.status-card>span,.wave-number{font:500 11px/1.5 var(--mono);color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+.status-card>strong{font-size:23px;line-height:1.25;font-weight:550;overflow-wrap:anywhere}
+.wave-card{display:flex;flex-direction:column;gap:12px;transition:border-color .15s ease,transform .15s ease}
+.wave-card:hover{border-color:var(--mustard-line);transform:translateY(-2px)}
+.wave-card>strong{font-size:15px;line-height:1.4}
+.wave-progress{padding:16px 20px;background:var(--mustard-soft);border:1px solid var(--mustard-line);border-radius:12px;font-size:13px}
+.wave-progress [role="progressbar"]{height:7px;background:var(--rule);border-radius:8px;overflow:hidden;margin-top:12px}
+.wave-progress [role="progressbar"]>span{display:block;height:100%;background:var(--mustard);border-radius:inherit}
+@media (max-width:620px){.status-card,.wave-card{padding:16px 18px}.status-card>strong{font-size:20px}}
+@media (prefers-reduced-motion:reduce){.wave-card{transition:none}.wave-card:hover{transform:none}}

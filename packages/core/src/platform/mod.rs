@@ -6,7 +6,7 @@ pub mod git_branches;
 pub mod git_exclude;
 pub mod git_provider;
 pub mod harness;
-pub mod page_templates;
+pub(crate) mod fingerprint;
 pub mod i18n;
 pub mod process;
 pub mod project_seed;

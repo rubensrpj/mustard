@@ -504,7 +504,6 @@ fn next_step_field_goes_through_the_same_gate() {
 const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
-    "copy_witness",
     "end_of_turn_check",
     "glossary_witness",
     "precompact_notice",
@@ -521,6 +520,7 @@ const KEPT_HOOKS: &[&str] = &[
 /// Os ganchos que saíram, pelo nome com que estavam registrados. Nenhum deles
 /// volta ao registro.
 const REMOVED_HOOKS: &[&str] = &[
+    "copy_witness",
     "active_spec_limit_gate",
     "amend_window_inject",
     "bash_command_gate",
@@ -1348,7 +1348,7 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
         Some("Read"),
         Some("Agent"),
         Some("AskUserQuestion"),
-        Some(mustard_core::platform::project_seed::PAGE_DATABASE_TOOL),
+        Some("unregistered-tool"),
     ];
     let with_hook: BTreeSet<String> = [
         "PreToolUse",

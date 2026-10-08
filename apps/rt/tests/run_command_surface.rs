@@ -714,12 +714,11 @@ fn hook_answer_to_grep(root: &Path, pattern: &str) -> Option<String> {
 /// padrão, em texto, e não em JSON; a pasta e as opções do `grep` entram
 /// como o gancho as lê. O padrão em branco é recusado pelo nome do que falta.
 #[test]
-fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
+fn the_original_grep_passes_and_explicit_map_search_recovers_the_same_pattern() {
     let project = installments_project();
     let root = project.path();
     let pattern = "splitInstallments|parcela";
-    let from_hook = hook_answer_to_grep(root, pattern).expect("the hook answers this search");
-    assert!(from_hook.contains("src/parcelas.ts") && from_hook.contains("splitInstallments"), "{from_hook}");
+    assert!(hook_answer_to_grep(root, pattern).is_none(), "literal Grep executes with its original options");
 
     let run = |args: &[&str]| {
         std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
@@ -734,7 +733,8 @@ fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
     };
     let out = run(&["search", pattern]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), from_hook.trim_end());
+    let answer = String::from_utf8_lossy(&out.stdout);
+    assert!(answer.contains("src/parcelas.ts") && answer.contains("splitInstallments"), "explicit map recovery: {answer}");
 
     for options in [&["src", "--glob", "*.ts", "-i"][..], &["src", "--type", "ts"][..]] {
         let out = run(&[&["search", pattern][..], options].concat());

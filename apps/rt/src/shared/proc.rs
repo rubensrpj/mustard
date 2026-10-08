@@ -48,13 +48,13 @@ fn toolchain_bin_dirs() -> Vec<PathBuf> {
     };
     // Each entry is the location that toolchain's own installer documents.
     let mut candidates: Vec<PathBuf> = vec![
-        home.join(".cargo").join("bin"),          // rustup
-        home.join(".local").join("bin"),          // pip / pipx / uv
-        home.join("go").join("bin"),              // go install
-        home.join(".bun").join("bin"),            // bun
-        home.join(".deno").join("bin"),           // deno
-        home.join(".volta").join("bin"),          // volta (node)
-        home.join(".dotnet").join("tools"),       // dotnet global tools
+        home.join(".cargo").join("bin"),    // rustup
+        home.join(".local").join("bin"),    // pip / pipx / uv
+        home.join("go").join("bin"),        // go install
+        home.join(".bun").join("bin"),      // bun
+        home.join(".deno").join("bin"),     // deno
+        home.join(".volta").join("bin"),    // volta (node)
+        home.join(".dotnet").join("tools"), // dotnet global tools
     ];
     if cfg!(windows) {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
@@ -91,8 +91,7 @@ mod toolchain_tests {
     #[test]
     fn augmentation_preserves_every_inherited_entry() {
         let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
-        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")])
-            .expect("something was missing, so there must be a result");
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")]).expect("something was missing, so there must be a result");
         let after = split(&out);
         for entry in &existing {
             assert!(after.contains(entry), "dropped {}", entry.display());
@@ -104,8 +103,7 @@ mod toolchain_tests {
     #[test]
     fn inherited_entries_keep_their_priority() {
         let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
-        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")])
-            .expect("something was missing, so there must be a result");
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")]).expect("something was missing, so there must be a result");
         let after = split(&out);
         assert_eq!(after[..existing.len()], existing[..], "inherited must lead");
         assert_eq!(after.last(), Some(&PathBuf::from("/opt/tool/bin")));
@@ -117,10 +115,7 @@ mod toolchain_tests {
     fn nothing_missing_means_the_environment_is_left_alone() {
         let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/opt/tool/bin")];
         assert!(append_missing(&existing, vec![]).is_none());
-        assert!(
-            append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")]).is_none(),
-            "a candidate already on PATH is not missing"
-        );
+        assert!(append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")]).is_none(), "a candidate already on PATH is not missing");
     }
 
     /// A candidate is never appended twice, however many times it is OFFERED.
@@ -131,24 +126,12 @@ mod toolchain_tests {
     #[test]
     fn a_candidate_is_appended_at_most_once() {
         let existing = vec![PathBuf::from("/usr/bin")];
-        let out = append_missing(
-            &existing,
-            vec![
-                PathBuf::from("/opt/a"),
-                PathBuf::from("/opt/b"),
-                PathBuf::from("/opt/a"),
-                PathBuf::from("/opt/a"),
-            ],
-        )
-        .expect("two distinct ones were missing");
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/a"), PathBuf::from("/opt/b"), PathBuf::from("/opt/a"), PathBuf::from("/opt/a")])
+            .expect("two distinct ones were missing");
         let after = split(&out);
         assert_eq!(
             after,
-            vec![
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/opt/a"),
-                PathBuf::from("/opt/b"),
-            ],
+            vec![PathBuf::from("/usr/bin"), PathBuf::from("/opt/a"), PathBuf::from("/opt/b"),],
             "a repeated candidate must appear once, in first-offered order"
         );
     }
@@ -181,18 +164,10 @@ mod toolchain_tests {
 pub fn resolves(program: &str) -> bool {
     // On Windows a bare name resolves through PATHEXT; check the spellings a
     // toolchain shim actually ships with rather than guessing one.
-    let names: Vec<String> = if cfg!(windows) {
-        [".exe", ".cmd", ".bat", ""]
-            .iter()
-            .map(|ext| format!("{program}{ext}"))
-            .collect()
-    } else {
-        vec![program.to_string()]
-    };
+    let names: Vec<String> =
+        if cfg!(windows) { [".exe", ".cmd", ".bat", ""].iter().map(|ext| format!("{program}{ext}")).collect() } else { vec![program.to_string()] };
     let inherited = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&inherited)
-        .chain(toolchain_bin_dirs())
-        .any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+    std::env::split_paths(&inherited).chain(toolchain_bin_dirs()).any(|dir| names.iter().any(|n| dir.join(n).is_file()))
 }
 
 /// `PATH` for a spawned criterion: the inherited one, plus any conventional
@@ -250,11 +225,7 @@ pub enum ShellOutcome {
     /// The child exited on its own. `stdout` / `stderr` are the FULL drained
     /// streams, lossily decoded and NOT trimmed — each caller applies its own
     /// trimming and excerpt policy.
-    Exited {
-        status: ExitStatus,
-        stdout: String,
-        stderr: String,
-    },
+    Exited { status: ExitStatus, stdout: String, stderr: String },
     /// The deadline elapsed first and the child was killed. Its partial output
     /// is dropped: a command that never finished proved nothing.
     TimedOut { after: Duration },
@@ -281,10 +252,7 @@ pub enum ShellOutcome {
 #[must_use]
 pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> ShellOutcome {
     let mut cmd = crate::util::platform::build_shell_command(command);
-    cmd.current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(path) = augmented_path() {
         cmd.env("PATH", path);
     }
@@ -304,7 +272,9 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return ShellOutcome::SpawnFailed { error: e.to_string() },
+        Err(e) => {
+            return ShellOutcome::SpawnFailed { error: e.to_string() };
+        }
     };
 
     let out_reader = drain(child.stdout.take());
@@ -400,11 +370,7 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
 /// group (see [`kill_tree`]) can still hold the pipes open, and waiting for it
 /// would hold this call past the deadline. A reader still running then is let
 /// go; its thread ends on its own when that process closes the pipe.
-fn reap(
-    child: &mut std::process::Child,
-    out_reader: std::thread::JoinHandle<Vec<u8>>,
-    err_reader: std::thread::JoinHandle<Vec<u8>>,
-) {
+fn reap(child: &mut std::process::Child, out_reader: std::thread::JoinHandle<Vec<u8>>, err_reader: std::thread::JoinHandle<Vec<u8>>) {
     kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
@@ -463,8 +429,7 @@ mod tests {
     const BIG_OUTPUT_EXIT_3_POSIX: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
          while [ $i -lt 12 ]; do s=\"$s$s\"; i=$((i+1)); done; echo \"$s\"; exit 3";
     #[cfg(windows)]
-    const BIG_OUTPUT_EXIT_3_CMD: &str =
-        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
+    const BIG_OUTPUT_EXIT_3_CMD: &str = "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
 
     /// The form matching the shell this process will actually spawn.
     fn big_output_exit_3() -> &'static str {
@@ -477,7 +442,7 @@ mod tests {
 
     /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
     #[cfg(windows)]
-    const SLEEPS_SECONDS: &str = "ping -n 4 127.0.0.1";
+    const SLEEPS_SECONDS: &str = "powershell -NoProfile -Command \"while (-not (Test-Path mustard-deadline-test.release)) { Start-Sleep -Milliseconds 25 }\"";
     #[cfg(not(windows))]
     const SLEEPS_SECONDS: &str = "sleep 3";
 
@@ -492,11 +457,7 @@ mod tests {
         match outcome {
             ShellOutcome::Exited { status, stdout, .. } => {
                 assert_eq!(status.code(), Some(3), "judged by its own exit code");
-                assert!(
-                    stdout.len() > 64 * 1024,
-                    "the whole stream is drained, not just a pipe buffer's worth ({} bytes)",
-                    stdout.len()
-                );
+                assert!(stdout.len() > 64 * 1024, "the whole stream is drained, not just a pipe buffer's worth ({} bytes)", stdout.len());
             }
             other => panic!("a completed command must report Exited, got {other:?}"),
         }
@@ -509,9 +470,9 @@ mod tests {
     /// process group.
     #[test]
     fn shell_reports_timed_out_when_the_deadline_fires_first() {
-        let dir = std::env::temp_dir();
+        let dir = tempfile::tempdir().expect("isolated deadline fixture");
         let started = Instant::now();
-        let outcome = run_shell_with_deadline(SLEEPS_SECONDS, &dir, Duration::from_secs(1));
+        let outcome = run_shell_with_deadline(SLEEPS_SECONDS, dir.path(), Duration::from_secs(1));
         match outcome {
             ShellOutcome::TimedOut { after } => assert_eq!(after, Duration::from_secs(1)),
             other => panic!("a command past its deadline must report TimedOut, got {other:?}"),
@@ -565,5 +526,4 @@ mod tests {
         assert!(matches!(outcome, ShellOutcome::TimedOut { .. }), "{outcome:?}");
         assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
     }
-
 }

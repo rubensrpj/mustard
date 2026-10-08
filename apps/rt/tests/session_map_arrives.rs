@@ -16,9 +16,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::platform::i18n::{translate, Locale};
-use mustard_core::platform::page_templates::PROJECT_CAPABILITIES;
-use mustard_core::platform::project_seed::project_page_template_path;
+use mustard_core::platform::i18n::Locale;
 use serde_json::{json, Value};
 
 /// Roda o binário no projeto, com uma pasta pessoal falsa e sem `claude` à mão.
@@ -108,24 +106,24 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
         (
             "pt-BR",
             [
-                "Erro, ponto crítico, melhoria e ajuste do mesmo assunto entram na mesma spec, pelo `write request`: nunca viram pendência.",
-                "Quem identifica é você:",
-                "com certeza, grave e avise;",
-                "na dúvida, sugira e pergunte uma vez.",
-                "Só assunto diferente vira pendência,",
+                "Erro, ajuste ou melhoria do mesmo assunto entra na mesma spec por `write request`, nunca como pendência.",
+                "Registre e informe o que for certo;",
+                "na dúvida, proponha e pergunte uma vez.",
+                "Outro assunto entra por",
+                "",
             ],
-            "- Outra mudança sua ou de um agente só segue com o \"sim\" do usuário.",
+            "- Mudança fora do autorizado exige o sim do usuário. Correção do funcionamento do Mustard vira ajuste no produto, não só memória.",
         ),
         (
             "en-US",
             [
-                "An error, a critical point, an improvement or an adjustment on the same subject joins the same spec through `write request`: it never becomes a pending item.",
-                "You are the one who tells:",
-                "when sure, record it and say so;",
-                "when in doubt, suggest it and ask once.",
-                "Only a different subject becomes a pending item,",
+                "Errors, adjustments and improvements on the same subject join the same spec through `write request`, never pending items.",
+                "Record and report what is certain;",
+                "when uncertain, propose and ask once.",
+                "Another subject uses",
+                "",
             ],
-            "- Any other change from you or an agent only goes ahead with the user's \"yes\".",
+            "- Changes outside the authorization require the user's yes. A correction to Mustard becomes a product adjustment, not just memory.",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -147,21 +145,18 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
     }
 }
 
-/// Numa instalação nova em inglês, o início da sessão traz, ao lado do mapa,
-/// a ordem de publicar a página do projeto: os dois cabem juntos no teto do
-/// início da sessão, e o aviso não sai para o mapa ficar. O par em português
-/// é conferido junto da instalação das páginas.
+/// Uma instalação nova em inglês acompanha localmente e só exporta sob pedido;
+/// iniciar a sessão não cria páginas ou recursos externos.
 #[test]
-fn an_english_fresh_install_asks_for_the_project_page_beside_the_map() {
+fn an_english_fresh_install_tracks_locally_and_exports_only_when_requested() {
     let dir = tempfile::tempdir().unwrap();
-    let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
-    let context = session_start(&root, &home, "startup");
-
-    assert!(context.contains(mustard_core::session_map(Locale::EnUs).trim()), "the en-US map did not reach the session: {context}");
-    let notice = translate("session.project_page", Locale::EnUs)
-        .replace("{template}", &project_page_template_path())
-        .replace("{capabilities}", PROJECT_CAPABILITIES);
-    assert!(context.contains(&notice), "the en-US session start dropped the order to publish the project page: {context}");
+    let (root,home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
+    let context = session_start(&root,&home,"startup");
+    assert!(context.contains("/mustard-panel") && context.contains("/mustard-publish"), "{context}");
+    assert!(context.contains("local export does not confirm remote publication"), "{context}");
+    assert!(!root.join(".claude/mustard/pages/project.html").exists());
+    assert!(!root.join(".claude/mustard/pages/spec.html").exists());
+    assert!(!root.join(".claude/mustard/publications").exists());
 }
 
 /// Uma instalação antiga, que declarava as três partes do roteador na
@@ -264,7 +259,7 @@ fn an_update_renames_the_session_map_and_its_declaration() {
             .collect();
         left.sort();
         // Ao lado do mapa, só a pasta dos templates das páginas.
-        assert_eq!(left, ["pages", "session-map.md"], "`{spelling}`: the old map is still on disk");
+        assert_eq!(left, ["session-map.md"], "`{spelling}`: the old map is still on disk");
         assert_eq!(
             std::fs::read_to_string(root.join(NEIGHBOUR)).unwrap(),
             "# a pagina da pessoa\n",

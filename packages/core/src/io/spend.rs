@@ -27,8 +27,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::config::ProjectConfig;
-use crate::domain::spend::{day_of, day_of_stamp, day_start, month_of, DayRow, Ledger, Range, Refusal};
-use crate::io::fs::lock::{read_shared, LockedFile};
+use crate::domain::spend::{DayRow, Ledger, Range, Refusal, day_of, day_of_stamp, day_start, month_of};
+use crate::io::fs::lock::{LockedFile, read_shared};
 use crate::io::transcript::SpendTally;
 use crate::io::workspace::linked_worktree_main;
 use crate::platform::error::Error;
@@ -52,7 +52,12 @@ const LOOSE_CALLS: &str = "jev-calls.ndjson";
 pub fn machine_dir() -> Option<PathBuf> {
     std::env::var_os(DIR_ENV)
         .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
+        .map(|dir| {
+            let path = PathBuf::from(dir);
+            #[cfg(test)]
+            let path = path.join(format!("process-{}", std::process::id()));
+            path
+        })
         .or_else(|| crate::platform::harness::home_dir().map(|home| home.join(".cache").join("mustard").join("spend")))
 }
 
@@ -95,8 +100,7 @@ fn parse(path: &Path, text: &str) -> Result<Ledger, Refusal> {
     if text.trim().is_empty() {
         return Ok(Ledger::default());
     }
-    serde_json::from_str(text)
-        .map_err(|e| Refusal::UnreadableLedger { path: path.display().to_string(), detail: e.to_string() })
+    serde_json::from_str(text).map_err(|e| Refusal::UnreadableLedger { path: path.display().to_string(), detail: e.to_string() })
 }
 
 /// Lê o arquivo do gasto, deixa `change` mexer nele e o grava de volta, tudo
@@ -228,7 +232,9 @@ fn owner_project(owner: &Path, projects: &mut Projects) -> Option<String> {
             return None;
         }
         let text = String::from_utf8_lossy(&buf);
-        let Some(at) = text.find("\"cwd\":\"") else { continue };
+        let Some(at) = text.find("\"cwd\":\"") else {
+            continue;
+        };
         let rest = &text[at + "\"cwd\":\"".len()..];
         let Some(end) = rest.find('"') else { continue };
         if let Some(name) = projects.name_of(&rest[..end].replace("\\\\", "\\")) {
@@ -240,7 +246,9 @@ fn owner_project(owner: &Path, projects: &mut Projects) -> Option<String> {
 
 /// Soma as linhas do arquivo de conversa `path` em `tally`.
 fn tally_file(path: &Path, range: &Range, tally: &mut SpendTally, projects: &mut Projects, fallback: Option<&str>) {
-    let Ok(file) = std::fs::File::open(path) else { return };
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
     let mut reader = std::io::BufReader::new(file);
     let mut buf = Vec::new();
     loop {
@@ -250,8 +258,7 @@ fn tally_file(path: &Path, range: &Range, tally: &mut SpendTally, projects: &mut
             Ok(_) => {}
         }
         let text = String::from_utf8_lossy(&buf);
-        let mut project_of =
-            |cwd: Option<&str>| cwd.and_then(|cwd| projects.name_of(cwd)).or_else(|| fallback.map(str::to_string));
+        let mut project_of = |cwd: Option<&str>| cwd.and_then(|cwd| projects.name_of(cwd)).or_else(|| fallback.map(str::to_string));
         tally.add_line(&text, range, &mut project_of);
     }
 }
@@ -331,7 +338,9 @@ fn jev_calls(root: &Path, range: &Range) -> Vec<JevCall> {
             if tokens.is_none() && cost_micro_usd.is_none() {
                 continue;
             }
-            let Some(day) = day_of_stamp(event.at()).filter(|day| range.contains(day)) else { continue };
+            let Some(day) = day_of_stamp(event.at()).filter(|day| range.contains(day)) else {
+                continue;
+            };
             found.push(JevCall { day, tokens: tokens.unwrap_or(0), cost_micro_usd: cost_micro_usd.unwrap_or(0) });
         }
     }
@@ -365,12 +374,7 @@ fn spec_month_micro_usd(root: &Path, month: &str) -> u64 {
             floor.is_none_or(|floor| changed.is_none_or(|at| at >= floor))
         })
         .filter_map(|(_, path)| read_shared(&path).ok())
-        .map(|text| {
-            text.lines()
-                .filter_map(call_cost)
-                .filter(|(day, _)| month_of(day) == month)
-                .fold(0, |sum: u64, (_, cost)| sum.saturating_add(cost))
-        })
+        .map(|text| text.lines().filter_map(call_cost).filter(|(day, _)| month_of(day) == month).fold(0, |sum: u64, (_, cost)| sum.saturating_add(cost)))
         .fold(0, u64::saturating_add)
 }
 
@@ -421,14 +425,12 @@ pub fn count_open(config_dir: &Path, ledger_dir: Option<&Path>, today: &str) -> 
 #[must_use]
 pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec<DayRow> {
     let (mut rows, mut projects) = conversations(config_dir, range, Projects::default());
-    let in_specs = std::mem::take(&mut projects.roots).into_iter().flat_map(|(name, roots)| {
-        roots.iter().flat_map(|root| jev_calls(root, range)).map(|call| (name.clone(), call)).collect::<Vec<_>>()
-    });
+    let in_specs = std::mem::take(&mut projects.roots)
+        .into_iter()
+        .flat_map(|(name, roots)| roots.iter().flat_map(|root| jev_calls(root, range)).map(|call| (name.clone(), call)).collect::<Vec<_>>());
     let loose = ledger_dir.map(loose_calls).unwrap_or_default().into_iter().filter(|(_, call)| range.contains(&call.day));
     for (name, call) in in_specs.chain(loose) {
-        let row = rows
-            .entry((call.day.clone(), name.clone()))
-            .or_insert_with(|| DayRow { day: call.day.clone(), project: name.clone(), ..DayRow::default() });
+        let row = rows.entry((call.day.clone(), name.clone())).or_insert_with(|| DayRow { day: call.day.clone(), project: name.clone(), ..DayRow::default() });
         row.jev_tokens = row.jev_tokens.saturating_add(call.tokens);
         row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(call.cost_micro_usd);
     }
@@ -439,11 +441,7 @@ pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec
 /// linha por dia e projeto, com o projeto chamado como `projects` o chama, e
 /// os projetos que elas citam. É a única soma das conversas: o gasto da
 /// máquina ([`count`]) e o de um projeto só ([`project_days`]) saem dela.
-fn conversations(
-    config_dir: &Path,
-    range: &Range,
-    mut projects: Projects,
-) -> (BTreeMap<(String, String), DayRow>, Projects) {
+fn conversations(config_dir: &Path, range: &Range, mut projects: Projects) -> (BTreeMap<(String, String), DayRow>, Projects) {
     let floor = range.first.as_deref().and_then(day_start).map(SystemTime::from);
     let mut tally = SpendTally::default();
     for (path, owner) in transcript_files(config_dir) {
@@ -464,7 +462,9 @@ fn conversations(
 /// cópia de laboratório, fica fora, ao contrário da página do gasto.
 #[must_use]
 pub fn project_days(config_dir: &Path, root: &Path, range: &Range) -> Vec<DayRow> {
-    let Some(place) = project_place(root) else { return Vec::new() };
+    let Some(place) = project_place(root) else {
+        return Vec::new();
+    };
     let (key, name) = (place.to_string_lossy(), place.file_name().map(|name| name.to_string_lossy().into_owned()));
     let projects = Projects { by_place: true, ..Projects::default() };
     let rows = conversations(config_dir, range, projects).0.into_values().filter(|row| row.project == key);
@@ -478,7 +478,9 @@ pub fn project_days(config_dir: &Path, root: &Path, range: &Range) -> Vec<DayRow
 /// nenhuma herda o da conversa que a chamou.
 #[must_use]
 pub fn project_conversations(config_dir: &Path, root: &Path, since: SystemTime) -> Vec<PathBuf> {
-    let Some(key) = project_place(root).map(|place| place.to_string_lossy().into_owned()) else { return Vec::new() };
+    let Some(key) = project_place(root).map(|place| place.to_string_lossy().into_owned()) else {
+        return Vec::new();
+    };
     let mut projects = Projects { by_place: true, ..Projects::default() };
     let changed = |path: &PathBuf| std::fs::metadata(path).and_then(|meta| meta.modified()).is_ok_and(|at| at >= since);
     let mut owned = |(path, owner): &(PathBuf, Option<PathBuf>)| {
@@ -492,7 +494,7 @@ pub fn project_conversations(config_dir: &Path, root: &Path, since: SystemTime) 
 mod tests {
     use std::fs;
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::*;
@@ -508,11 +510,8 @@ mod tests {
     /// Uma resposta do modelo com os tokens e os usos de ferramenta de
     /// `tools` (nome e argumentos), gravada em `cwd` no carimbo `at`.
     fn reply(id: &str, at: &str, cwd: &Path, tokens: u64, tools: &[(&str, Value)]) -> String {
-        let content: Vec<Value> = tools
-            .iter()
-            .enumerate()
-            .map(|(n, (name, input))| json!({"type": "tool_use", "id": format!("{id}-{n}"), "name": name, "input": input}))
-            .collect();
+        let content: Vec<Value> =
+            tools.iter().enumerate().map(|(n, (name, input))| json!({"type": "tool_use", "id": format!("{id}-{n}"), "name": name, "input": input})).collect();
         json!({"timestamp": at, "cwd": cwd.to_string_lossy(), "message": {
             "id": id, "model": "m", "usage": {"input_tokens": tokens, "output_tokens": 0}, "content": content}})
         .to_string()
@@ -718,12 +717,8 @@ mod tests {
         // Os outros projetos da máquina gastam do mesmo teto; o próprio
         // projeto no arquivo não conta duas vezes, e o mês passado, só no dele.
         let machine = dir.path().join("spend");
-        let row = |day: &str, project: &str, cost: u64| DayRow {
-            day: day.to_string(),
-            project: project.to_string(),
-            jev_cost_micro_usd: cost,
-            ..DayRow::default()
-        };
+        let row =
+            |day: &str, project: &str, cost: u64| DayRow { day: day.to_string(), project: project.to_string(), jev_cost_micro_usd: cost, ..DayRow::default() };
         update(&machine, |ledger| {
             ledger.rows = vec![
                 row("2026-10-01", "outro", 700),

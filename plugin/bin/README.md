@@ -1,20 +1,11 @@
-# bin/
+# Native binaries
 
-Per-platform native binaries for the Mustard harness. **Populated by the release
-workflow, not committed** — this directory ships only `.gitkeep` + this README in
-source control.
+The release workflow supplies `mustard`, `mustard-rt` and `scan` (with `.exe`
+on Windows). Executables are not committed. The plugin's POSIX and Windows
+bootstrap scripts download the matching release when these files are missing;
+hooks and Mods then call the native runtime directly. The runtime lives at
+`${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt` (with `.exe` on Windows).
 
-When the plugin is enabled, `bin/` is prepended to the Bash tool `PATH`, and
-Claude Code auto-resolves the correct binary for the host OS. The release stamps:
-
-- `mustard-rt` / `mustard-rt.exe` — the enforcement runtime (hooks call it as
-  `"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt" on <Event>`).
-- `scan` / `scan.exe` — the deterministic grain miner.
-
-## Version stamping
-
-At author time `plugin.json` `version` mirrors `CARGO_PKG_VERSION` from
-`apps/rt/Cargo.toml` (currently `0.1.0`, a dev placeholder). The cross-platform
-release workflow that stamps the real release version into the binaries MUST stamp
-the same value into `plugin.json` `version`, so plugin update semantics track the
-shipped binary.
+The workspace and plugin manifest currently declare version `0.2.7`. A release
+must stamp the same version in the binaries and manifest. A development build
+stays in the isolated checkout; it never overwrites a personal installation.

@@ -103,20 +103,22 @@ fn nothing_outside_and_no_silencer(root: &Path, home: &Path) {
 /// seguinte o troca pelo texto do binário de hoje, mesmo sem mudar nenhuma
 /// chave — os dois modelos de página são texto do Mustard, nunca do projeto.
 #[test]
-fn upsert_replaces_a_stale_page_template_with_no_switch_touched() {
+fn upsert_preserves_a_historical_page_template_without_automatic_publication() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (root, home) = installed(dir.path());
     let page = root.join(".claude/mustard/pages/spec.html");
     let stale = "<html><!-- installed 12/09, never touched since --></html>";
-    std::fs::write(&page, stale).expect("plant a stale template");
+    assert!(!page.exists(), "fresh installs create no automatic public page");
+    std::fs::create_dir_all(page.parent().expect("page parent")).expect("legacy page directory");
+    std::fs::write(&page, stale).expect("plant a historical template");
 
     let report = upsert(&root, &home);
 
     let updated = report["updated"].as_array().expect("updated is a list");
     let names: Vec<&str> = updated.iter().filter_map(Value::as_str).collect();
-    assert!(names.contains(&".claude/mustard/pages/spec.html"), "{names:?}");
+    assert!(!names.contains(&".claude/mustard/pages/spec.html"), "historical export resources are preserved: {names:?}");
     let rewritten = std::fs::read_to_string(&page).expect("the page still exists");
-    assert_ne!(rewritten, stale, "the stale copy from 12/09 survived the upsert");
+    assert_eq!(rewritten, stale, "updating local tracking does not rewrite historical published resources");
 }
 
 /// A opção `rtk` do `mustard.json` desligada e religada: o gancho

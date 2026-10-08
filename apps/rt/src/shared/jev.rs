@@ -1,78 +1,30 @@
-//! `jev` — o filtro da busca por assunto do mapa pelo Jev, um serviço pago
-//! de fora que não escreve texto: lê um estado e perguntas e devolve a chance
-//! de cada opção.
-//!
-//! Implementa a tomada [`MapFilter`] do núcleo. A lista inteira do banco vai
-//! ao Jev, sem corte: cada candidato leva a declaração do início ao fim, a
-//! documentação inteira, os títulos de todos os commits que a mudaram, todos
-//! os comentários de revisão presos a ela e os nomes do que ela chama. O
-//! estado é um texto, um bloco por candidato, na ordem do banco.
-//!
-//! A lista que não cabe num pedido vai em vários, todos ao mesmo tempo: os
-//! candidatos, em ordem, enchem cada pedido até [`REQUEST_TOKENS`] de estado
-//! mais a maior pergunta, e até [`MAX_CHOICES`] opções na escolha, que é o que
-//! o serviço aceita. O candidato que sozinho passa disso vai sozinho, o código
-//! em partes seguidas com o mesmo id, cada parte num pedido.
-//!
-//! Cada pedido faz duas perguntas ao seu estado: `where`, uma escolha entre
-//! os ids dos candidatos dele (qual é o código que o agente pediu), e
-//! `exists`, um sim ou não (algum candidato dele é). Cada pergunta leva a
-//! frase de quem procura e, quando existem, a descrição que o agente deu à
-//! busca e a última fala dele antes dela. As respostas dos pedidos se juntam
-//! ([`joined`]): a nota de cada candidato é a chance de existir do pedido dele
-//! vezes a nota dele na escolha, e é não achei quando nenhum pedido chega à
-//! linha de existência. O veredito e o corte do núcleo ([`judged`]), os
-//! mesmos de toda implementação, valem sobre a nota juntada. Um pedido que
-//! falha derruba o filtro inteiro: sem a resposta de todos, a lista não foi
-//! lida.
-//!
-//! O código do projeto vai ao Jev, e por isso todo texto que sai passa antes
-//! pela procura de segredo, o estado e o contexto inclusive: o trecho com cara
-//! de chave, senha ou token vai como "…". O arquivo lido nunca sai do projeto
-//! (caminho absoluto ou com `..` não se lê), não é um arquivo sensível
-//! (credenciais, chaves) e não passa de [`MAX_FILE_BYTES`].
-//!
-//! O modelo pedido é uma versão fixa, e o uso guarda o nome do modelo que a
-//! resposta diz ter respondido.
-//!
-//! A chave vem de [`jev_gate::KEY_ENV`] no ambiente ou, sem ela, de `jev.key` no
-//! `mustard.json` do projeto ([`key_in`]). O git não pode guardar esse
-//! arquivo: guardado, a chave dele não se usa, e a busca e a rodada avisam.
-//! Nenhum comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo
-//! da resposta do serviço.
-//!
-//! O mesmo serviço também julga o backlog da obra para a rodada montar a onda
-//! ([`JevFilter::judge_backlog`]): uma chamada só, com o backlog inteiro num
-//! estado e todas as perguntas juntas — o tipo de trabalho de cada tarefa, o
-//! tamanho dela e, para cada tarefa e cada onda em andamento, se as duas mudam
-//! a mesma coisa. O código da rodada decide o que fazer com o julgamento; sem
-//! chave ([`for_waves`]) ou com a chamada falhando, ela monta a onda como
-//! sempre.
-//!
-//! O gasto do mês tem teto (`jev.monthly_budget_usd`), e toda chamada passa por
-//! ele antes de sair ([`JevFilter::send_all`], via [`Budget::reserve`]): a que
-//! passaria do que sobra não sai e volta [`FilterError::OverBudget`], e quem
-//! chamou segue como seguiria sem chave — a busca só com o mapa, a montagem
-//! pelos arquivos e o pedido com o padrão. A busca e a rodada avisam do teto
-//! uma vez por sessão; a rodada sabe dele por [`WavesJev::held_by_budget`].
-//!
-//! O endereço do serviço é o de [`JEV_URL`], e só a variável [`URL_ENV`] no
-//! ambiente de quem roda o programa o troca: o teste do programa inteiro
-//! aponta para um serviço de mentira.
+//! Typed Jev adapter for optional semantic recovery and wave planning.
+//! Local rules recover plausible candidates first. Mandatory instructions,
+//! exact searches, native authorization and final validation bypass Jev.
+//! Candidate relevance uses independent Nouls with one rubric across batches;
+//! Choice/Score remain suitable for task kind and ordinal size.
+//! Full relevant evidence is partitioned to the provider's documented request
+//! size, never silently clipped. Intrinsic task profiles and plausible running
+//! relations are separate requests. A provider-independent service validates
+//! responses, caches by actual inputs/revision and locks independent processes.
+//! Cache hits do not create new usage. Physical attempts include retries;
+//! missing usage remains unknown. No secret or response body enters metrics.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+mod attempts;
+
+use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
+use crate::shared::judgement::{Board, BoardTask, ItemsBoard, ItemsJudged, Judged, WaveJudge};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write as _};
 use std::io::ErrorKind;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use mustard_core::domain::map_filter::{
-    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined,
-    judged,
-};
-use mustard_core::domain::spec_events::SpecEvent;
-use mustard_core::io::jev_gate;
 use mustard_core::ProjectConfig;
+use mustard_core::domain::map_filter::{
+    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined, judged,
+};
+use mustard_core::io::jev_gate;
 use serde_json::{Map, Value, json};
 
 use crate::shared::dag::{Judgement, TaskKind};
@@ -232,6 +184,8 @@ pub struct JevFilter {
     /// O que sobra do teto do mês; sem ele, só nos testes, nada segura a
     /// chamada.
     budget: Option<Budget>,
+    cache: Option<PathBuf>,
+    spec: Option<String>,
 }
 
 impl JevFilter {
@@ -239,9 +193,13 @@ impl JevFilter {
     /// [`JEV_URL`], ou o que [`URL_ENV`] diz. Toda chamada dele desconta de
     /// `budget`.
     #[must_use]
-    pub fn new(key: JevKey, budget: Budget) -> Self {
+    pub fn new(root: &Path, key: JevKey, budget: Budget) -> Self {
         let url = std::env::var(URL_ENV).ok().map(|url| url.trim().to_string()).filter(|url| !url.is_empty());
-        Self { budget: Some(budget), ..Self::at(key, url.as_deref().unwrap_or(JEV_URL)) }
+        Self {
+            budget: Some(budget),
+            cache: Some(mustard_core::io::spec_events::spec_root(root).join(".claude/judgements")),
+            ..Self::at(key, url.as_deref().unwrap_or(JEV_URL))
+        }
     }
 
     /// Se o teto do mês já recusou uma chamada deste filtro, ou de uma cópia
@@ -257,48 +215,56 @@ impl JevFilter {
             endpoint: endpoint.to_string(),
             timeouts: Timeouts { connect: CONNECT_TIMEOUT, response: RESPONSE_TIMEOUT },
             budget: None,
+            cache: None,
+            spec: None,
         }
     }
 
     /// Um pedido, com as repetições, até `deadline`. Devolve o documento da
     /// resposta. Cada tentativa leva só o tempo que falta até o prazo, e a
     /// repetição cuja espera passaria do prazo não se faz.
-    fn send(&self, payload: &str, deadline: Instant) -> Result<Value, FilterError> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(self.timeouts.connect))
-            .http_status_as_error(false)
-            .build()
-            .new_agent();
+    fn send(&self, request: &JudgementRequest<'_>, deadline: Instant) -> Result<Value, FilterError> {
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(Some(self.timeouts.connect)).http_status_as_error(false).build().new_agent();
         let auth = format!("Bearer {}", self.key.0);
-        let mut retries = 0;
+        let mut retries = 0u32;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(FilterError::Timeout);
             }
-            let mut response = agent
-                .post(&self.endpoint)
-                .config()
-                .timeout_global(Some(left))
-                .build()
-                .header("Authorization", &auth)
-                .header("Content-Type", "application/json")
-                .send(payload.as_bytes())
-                .map_err(transport_error)?;
-            let status = response.status().as_u16();
-            if (200..300).contains(&status) {
-                let text = response.body_mut().read_to_string().map_err(transport_error)?;
-                return serde_json::from_str(&text)
-                    .map_err(|_| FilterError::Unreadable("the body is not JSON".to_string()));
-            }
-            let asked = response.headers().get("retry-after").and_then(|value| value.to_str().ok());
-            let wait = retry_wait(asked);
-            if retryable(status) && retries < MAX_RETRIES && Instant::now() + wait < deadline {
+            let started = Instant::now();
+            let mut status = None;
+            let mut wait = Duration::ZERO;
+            let result = (|| {
+                let mut response = agent
+                    .post(&self.endpoint)
+                    .config()
+                    .timeout_global(Some(left))
+                    .build()
+                    .header("Authorization", &auth)
+                    .header("Content-Type", "application/json")
+                    .send(request.payload.as_bytes())
+                    .map_err(transport_error)?;
+                let code = response.status().as_u16();
+                status = Some(code);
+                if (200..300).contains(&code) {
+                    let text = response.body_mut().read_to_string().map_err(transport_error)?;
+                    let mut doc: Value = serde_json::from_str(&text).map_err(|_| FilterError::Unreadable("the body is not JSON".into()))?;
+                    let object = doc.as_object_mut().ok_or_else(|| FilterError::Unreadable("the body is not a judgement object".into()))?;
+                    object.insert("_attempts".into(), json!(retries + 1));
+                    Ok(doc)
+                } else {
+                    wait = retry_wait(response.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+                    Err(FilterError::Refused { status: code })
+                }
+            })();
+            self.record_attempt(request, u64::from(retries) + 1, status, &result, started.elapsed());
+            if status.is_some_and(retryable) && retries < MAX_RETRIES && Instant::now() + wait < deadline {
                 retries += 1;
                 std::thread::sleep(wait);
                 continue;
             }
-            return Err(FilterError::Refused { status });
+            return result;
         }
     }
 
@@ -309,20 +275,71 @@ impl JevFilter {
     /// todos os pedidos juntos se reserva no teto do mês antes de o primeiro
     /// sair, e, passando do que sobra, nenhum sai.
     fn send_all(&self, payloads: &[String], deadline: Instant) -> Result<Vec<Value>, FilterError> {
+        self.send_all_for(payloads, deadline, Purpose::Search)
+    }
+
+    fn send_all_for(&self, payloads: &[String], deadline: Instant, purpose: Purpose) -> Result<Vec<Value>, FilterError> {
+        let service = JudgementService::new(self, self.cache.as_deref());
+        let cached: Vec<_> = payloads.iter().map(|payload| service.cached(&JudgementRequest { purpose, payload })).collect();
         if let Some(budget) = &self.budget {
-            let estimate = payloads.iter().map(|payload| cost_micro_usd(estimated_tokens(payload))).sum();
+            let estimate =
+                payloads.iter().zip(&cached).filter(|(_, cached)| cached.is_none()).map(|(payload, _)| cost_micro_usd(estimated_tokens(payload))).sum();
             budget.reserve(estimate)?;
         }
+        let initially_cached = cached.iter().map(Option::is_some).collect::<Vec<_>>();
+        // Join every job before returning an error: successful physical
+        // requests have already been recorded by the service, including
+        // when a different batch fails.
         std::thread::scope(|scope| {
-            let running: Vec<_> =
-                payloads.iter().map(|payload| scope.spawn(move || self.send(payload, deadline))).collect();
-            running
-                .into_iter()
-                .map(|handle| {
-                    handle.join().unwrap_or_else(|_| Err(FilterError::Network("a request thread failed".to_string())))
+            let running: Vec<_> = payloads
+                .iter()
+                .zip(cached)
+                .map(|(payload, cached)| {
+                    let service = &service;
+                    scope.spawn(move || match cached {
+                        Some(doc) => Ok(doc),
+                        None => service.evaluate(&JudgementRequest { purpose, payload }, deadline),
+                    })
                 })
-                .collect()
+                .collect();
+            let results: Vec<_> =
+                running.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err(FilterError::Network("a request thread failed".into())))).collect();
+            if let Some(budget) = &self.budget {
+                let unused = results
+                    .iter()
+                    .zip(&initially_cached)
+                    .zip(payloads)
+                    .filter(|((result, initial), _)| !**initial && result.as_ref().is_ok_and(|doc| doc.pointer("/_mustard/cached") == Some(&Value::Bool(true))))
+                    .map(|(_, payload)| cost_micro_usd(estimated_tokens(payload)))
+                    .sum();
+                budget.release_cached(unused);
+            }
+            results.into_iter().collect()
         })
+    }
+}
+
+impl WaveJudge for JevFilter {
+    fn judge_backlog(&self, board: &Board) -> Result<Judged, FilterError> {
+        JevFilter::judge_backlog(self, board)
+    }
+    fn judge_items(&self, board: &ItemsBoard) -> Result<ItemsJudged, FilterError> {
+        JevFilter::judge_items(self, board)
+    }
+    fn held_by_budget(&self) -> bool {
+        JevFilter::held_by_budget(self)
+    }
+}
+
+impl JudgementProvider for JevFilter {
+    fn identity(&self) -> String {
+        format!("jev-v1:{}:{JEV_MODEL}", self.endpoint)
+    }
+    fn records_physical_attempts(&self) -> bool {
+        self.cache.is_some()
+    }
+    fn evaluate(&self, request: &JudgementRequest<'_>, deadline: Instant) -> Result<Value, FilterError> {
+        self.send(request, deadline)
     }
 }
 
@@ -332,16 +349,25 @@ impl MapFilter for JevFilter {
         // Um prazo só para a busca inteira: o agente espera.
         let deadline = started + self.timeouts.response;
         if request.candidates.is_empty() {
-            return Ok(Filtered {
-                verdict: Verdict::NotFound,
-                kept: Vec::new(),
-                usage: FilterUsage { model: String::new(), ..FilterUsage::default() },
-            });
+            return Ok(Filtered { verdict: Verdict::NotFound, kept: Vec::new(), usage: FilterUsage { model: String::new(), ..FilterUsage::default() } });
         }
         let context = Context::of(request);
         let batches = divide(request, &context)?;
-        let payloads: Vec<String> =
-            batches.iter().map(|batch| payload(batch, &context)).collect::<Result<_, _>>()?;
+        let independent = batches.len() > 1;
+        let payloads: Vec<String> = batches
+            .iter()
+            .map(|batch| {
+                if independent {
+                    serde_json::to_string(&independent_body(&batch.state, &context, &batch.at))
+                        .map_err(|_| FilterError::Unreadable("request did not serialize".into()))
+                } else {
+                    payload(batch, &context)
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        for payload in &payloads {
+            validate_wire_size(payload)?;
+        }
         let docs = self.send_all(&payloads, deadline)?;
         let mut partials = Vec::with_capacity(batches.len());
         let mut input_tokens = 0;
@@ -354,20 +380,43 @@ impl MapFilter for JevFilter {
                 model = model_of(doc);
             }
         }
-        let (exists, notes) = joined(&partials);
+        let (exists, notes) = if independent {
+            // Binary relevance is absolute per candidate. Independent batches
+            // never undergo Choice normalization across different universes.
+            let mut scores = std::collections::BTreeMap::<i64, f64>::new();
+            for part in &partials {
+                for scored in &part.scores {
+                    scores.entry(scored.id).and_modify(|n| *n = n.max(scored.score)).or_insert(scored.score);
+                }
+            }
+            let mut notes: Vec<Scored> = scores.into_iter().map(|(id, score)| Scored { id, score }).collect();
+            notes.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
+            (partials.iter().map(|p| p.exists).fold(0.0, f64::max), notes)
+        } else {
+            joined(&partials)
+        };
         let (verdict, kept) = judged(&notes, exists, request.cut);
         Ok(Filtered {
             verdict,
             kept,
             usage: FilterUsage {
+                incomplete: docs.iter().any(unknown_usage),
                 input_tokens,
                 millis: started.elapsed().as_millis() as u64,
                 cost_micro_usd: cost_micro_usd(input_tokens),
-                requests: batches.len() as u64,
+                requests: docs.iter().map(request_count).sum(),
                 model,
             },
         })
     }
+}
+
+fn request_count(doc: &Value) -> u64 {
+    if doc.pointer("/_mustard/cached") == Some(&Value::Bool(true)) { 0 } else { doc.get("_attempts").and_then(Value::as_u64).unwrap_or(1) }
+}
+
+fn unknown_usage(doc: &Value) -> bool {
+    doc.pointer("/usage/input_tokens").and_then(Value::as_u64).is_none() || request_count(doc) > 1
 }
 
 /// O nome do modelo que a resposta `doc` diz ter respondido; vazio quando ela
@@ -398,21 +447,15 @@ struct Answer {
 /// candidato dele, de `candidates`, na escolha `where` e a de `exists`. Falta
 /// de `answers`, de uma chance ou do `exists` é resposta ilegível.
 fn read_answer(doc: &Value, batch: &Batch, candidates: &[FilterCandidate]) -> Result<Answer, FilterError> {
-    let answers = doc
-        .get("answers")
-        .and_then(Value::as_object)
-        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
-    let chances = answers
-        .get(WHERE_KEY)
-        .and_then(|answer| answer.get("probabilities"))
-        .and_then(Value::as_object)
-        .ok_or_else(|| FilterError::Unreadable("no chances".to_string()))?;
+    let answers = doc.get("answers").and_then(Value::as_object).ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
+    let chances = answers.get(WHERE_KEY).and_then(|answer| answer.get("probabilities")).and_then(Value::as_object);
     let mut scores = Vec::with_capacity(batch.at.len());
     for &at in &batch.at {
         let id = candidate_id(at);
         let score = chances
-            .get(&id)
+            .and_then(|chances| chances.get(&id))
             .and_then(Value::as_f64)
+            .or_else(|| answers.get(&id).and_then(|answer| answer.get("noul")).and_then(Value::as_f64))
             .ok_or_else(|| FilterError::Unreadable(format!("no chance for {id}")))?;
         scores.push(Scored { id: candidates[at].id, score });
     }
@@ -421,11 +464,7 @@ fn read_answer(doc: &Value, batch: &Batch, candidates: &[FilterCandidate]) -> Re
         .and_then(|answer| answer.get("noul"))
         .and_then(Value::as_f64)
         .ok_or_else(|| FilterError::Unreadable("no answer to the existence".to_string()))?;
-    Ok(Answer {
-        scores,
-        exists,
-        input_tokens: doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0),
-    })
+    Ok(Answer { scores, exists, input_tokens: doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0) })
 }
 
 /// O erro de transporte, sem nada do pedido: o tempo esgotado à parte, o
@@ -503,20 +542,12 @@ impl Context {
 
     /// A instrução da pergunta de escolha.
     fn where_instructions(&self) -> String {
-        format!(
-            "Which candidate is the code that answers this request from a coding agent: \"{}\"?{}",
-            self.request,
-            self.suffix()
-        )
+        format!("Which candidate is the code that answers this request from a coding agent: \"{}\"?{}", self.request, self.suffix())
     }
 
     /// A instrução da pergunta de existência.
     fn exists_instructions(&self) -> String {
-        format!(
-            "Does any candidate contain the code that answers this request from a coding agent: \"{}\"?{}",
-            self.request,
-            self.suffix()
-        )
+        format!("Does any candidate contain the code that answers this request from a coding agent: \"{}\"?{}", self.request, self.suffix())
     }
 
     /// Os caracteres da maior pergunta de um pedido com `choices` opções na
@@ -548,6 +579,24 @@ struct Batch {
     at: Vec<usize>,
     /// Os caracteres do estado.
     chars: usize,
+}
+
+/// Check the actual serialized request, including repeated binary questions.
+/// Packing estimates are insufficient when a different primitive is used.
+fn validate_wire_size(payload: &str) -> Result<(), FilterError> {
+    let document: Value = serde_json::from_str(payload).map_err(|_| FilterError::Unreadable("invalid request".into()))?;
+    let state = document["state"].as_str().map_or_else(|| document["state"].to_string().chars().count(), |s| s.chars().count());
+    let longest = document["questions"]
+        .as_object()
+        .into_iter()
+        .flat_map(|questions| questions.values())
+        .map(|question| question.to_string().chars().count())
+        .max()
+        .unwrap_or_default();
+    if tokens_of(payload.chars().count()) > MAX_REQUEST_TOKENS || tokens_of(state + longest) > REQUEST_TOKENS {
+        return Err(FilterError::TooLarge { estimated_tokens: tokens_of(payload.chars().count()) });
+    }
+    Ok(())
 }
 
 impl Batch {
@@ -630,11 +679,7 @@ fn parts(head: &str, lines: &[String], context: &Context) -> Result<Vec<String>,
         }
     }
     let total = chunks.len();
-    Ok(chunks
-        .into_iter()
-        .enumerate()
-        .map(|(at, chunk)| format!("{head} (part {} of {total})\n{}", at + 1, chunk.join("\n")))
-        .collect())
+    Ok(chunks.into_iter().enumerate().map(|(at, chunk)| format!("{head} (part {} of {total})\n{}", at + 1, chunk.join("\n"))).collect())
 }
 
 /// `line` em pedaços de até `size` caracteres; a linha vazia é um pedaço só.
@@ -648,13 +693,26 @@ fn char_chunks(line: &str, size: usize) -> Vec<String> {
 
 /// O texto de um pedido: o modelo, o estado e as duas perguntas.
 fn payload(batch: &Batch, context: &Context) -> Result<String, FilterError> {
-    let text = serde_json::to_string(&body(&batch.state, context, &batch.at))
-        .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
+    let text =
+        serde_json::to_string(&body(&batch.state, context, &batch.at)).map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
     let estimated = estimated_tokens(&text);
     if estimated > MAX_REQUEST_TOKENS {
         return Err(FilterError::TooLarge { estimated_tokens: estimated });
     }
     Ok(text)
+}
+
+/// Independent relevance questions retain the same query/rubric across
+/// partitions; each id refers only to evidence present in this state.
+fn independent_body(state: &str, context: &Context, at: &[usize]) -> Value {
+    let mut questions = Map::new();
+    for &position in at {
+        let id = candidate_id(position);
+        questions.insert(id.clone(), json!({"type":"noul", "instructions":format!(
+            "Does the evidence shown for `{id}` answer this search? Judge this candidate independently of the other candidates. {}", context.where_instructions())}));
+    }
+    questions.insert(EXISTS_KEY.into(), json!({"type":"noul","instructions":context.exists_instructions()}));
+    json!({"model":JEV_MODEL,"state":state,"questions":questions})
 }
 
 /// O corpo de um pedido: o modelo, o estado e as duas perguntas, cada uma com
@@ -753,10 +811,7 @@ impl Sources<'_> {
 /// não é texto vira o caractere de troca.
 fn read_source(root: &Path, path: &str) -> Option<String> {
     let relative = Path::new(path);
-    if relative.is_absolute()
-        || relative.components().any(|part| matches!(part, Component::ParentDir))
-        || sensitive_pattern(path).is_some()
-    {
+    if relative.is_absolute() || relative.components().any(|part| matches!(part, Component::ParentDir)) || sensitive_pattern(path).is_some() {
         return None;
     }
     let file = root.join(relative);
@@ -777,20 +832,11 @@ fn squash(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// O que é uma onda, para o Jev.
-const WAVE_DEFINITION: &str = "A wave is the package of tasks that one agent receives, and one wave holds a single kind of work. Two waves that change the same file never run at the same time.";
+const WAVE_DEFINITION: &str = "A wave is the complete package of tasks one agent receives. Eligible producers and consumers may belong to different kinds when their dependencies and the complete package budget permit it. Two concurrent waves must not change the same file.";
 
 /// Quando duas obras mudam a mesma coisa, para a pergunta de bloqueio.
 const SAME_CHANGE: &str = "Two works change the same thing when both change the same feature, behavior or text, so that doing them at the same time would conflict in meaning, even in different files.";
 
-/// Quantos caracteres da parte do agente de uma tarefa do backlog vão.
-const BACKLOG_AGENT_CHARS: usize = 600;
-
-/// Quantos caracteres da parte do agente de uma tarefa de onda em andamento
-/// vão.
-const RUNNING_AGENT_CHARS: usize = 300;
-
-/// O que cada tipo de trabalho quer dizer, na escolha de tipo e na definição
-/// do estado.
 fn kind_meaning(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::Defect => "Fixes behavior that is wrong for the user or breaks something",
@@ -801,209 +847,124 @@ fn kind_meaning(kind: TaskKind) -> &'static str {
     }
 }
 
-/// Uma tarefa como o Jev a vê: o que a tarefa diz de si, sem o que a rodada
-/// já decide em código.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BoardTask {
-    /// O número da tarefa na spec, que identifica as respostas dela.
-    pub(crate) id: u64,
-    pub(crate) title: String,
-    pub(crate) text: String,
-    /// A parte da tarefa que é do agente.
-    pub(crate) agent: String,
-    pub(crate) files: Vec<String>,
-    /// Os títulos das tarefas de que ela depende.
-    pub(crate) depends_on: Vec<String>,
-}
-
-impl BoardTask {
-    /// A tarefa `task` como o Jev a vê: o que ela diz de si, os arquivos que
-    /// declara — cada item de `files`, como texto solto ou como `{"path": …}`,
-    /// com barras normais — e os títulos das tarefas de que depende
-    /// (`depends_on`).
-    pub(crate) fn of(task: &SpecEvent, depends_on: Vec<String>) -> Self {
-        let files: BTreeSet<String> = task
-            .fields
-            .get("files")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
-            .map(|path| path.trim().replace('\\', "/"))
-            .filter(|path| !path.is_empty())
-            .collect();
-        Self {
-            id: task.id,
-            title: task.str_field("title").unwrap_or_default().to_string(),
-            text: task.str_field("text").unwrap_or_default().to_string(),
-            agent: task.str_field("agent").unwrap_or_default().to_string(),
-            files: files.into_iter().collect(),
-            depends_on,
-        }
-    }
-}
-
-/// Uma onda em andamento, com as tarefas dela.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BoardWave {
-    pub(crate) n: u64,
-    pub(crate) tasks: Vec<BoardTask>,
-}
-
-/// O quadro de uma montagem: as ondas em andamento e o backlog pronto, na
-/// ordem em que a rodada o lê.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Board {
-    pub(crate) running: Vec<BoardWave>,
-    pub(crate) backlog: Vec<BoardTask>,
-}
-
-/// O que o Jev julgou do backlog de um quadro, com o que a chamada gastou.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Judged {
-    /// O julgamento de cada tarefa do backlog, pelo número dela.
-    pub(crate) tasks: BTreeMap<u64, Judgement>,
-    pub(crate) usage: FilterUsage,
-}
-
-/// A chave de uma tarefa no estado e nas perguntas.
 fn task_key(id: u64) -> String {
     format!("t{id}")
 }
-
-/// A chave de uma onda em andamento no estado e nas perguntas.
 fn wave_key(n: u64) -> String {
     format!("w{n}")
 }
 
-/// O Jev da montagem das ondas e o que a rodada deve avisar sobre a chave dele.
 #[derive(Debug, Clone, Default)]
-pub struct WavesJev {
-    /// O filtro, quando o `mustard.json` não desliga o Jev e o projeto tem
-    /// chave. Sem ele, a rodada monta a onda como sempre.
-    pub filter: Option<JevFilter>,
-    /// A única chave do projeto está no `mustard.json` que o git guarda: ela
-    /// não vale, o Jev não entra e a rodada monta a onda pelos arquivos. Com
-    /// a chave do ambiente, o Jev entra e não há o que avisar aqui.
-    pub key_in_git: bool,
-    /// O teto de gasto do mês já estava gasto na montagem: o projeto tem
-    /// chave, mas o Jev não entra, e a rodada monta a onda como sempre.
-    pub over_budget: bool,
+pub(crate) struct WavesJev {
+    pub(crate) filter: Option<std::sync::Arc<dyn WaveJudge>>,
+    pub(crate) key_in_git: bool,
+    pub(crate) over_budget: bool,
 }
-
 impl WavesJev {
-    /// Se o teto de gasto do mês segurou o Jev na rodada: já gasto na
-    /// montagem, ou a recusa de uma chamada do filtro que passaria do que
-    /// sobra. Nos dois casos a rodada seguiu sem ele.
-    #[must_use]
-    pub fn held_by_budget(&self) -> bool {
-        self.over_budget || self.filter.as_ref().is_some_and(JevFilter::held_by_budget)
+    pub(crate) fn held_by_budget(&self) -> bool {
+        self.over_budget || self.filter.as_ref().is_some_and(|filter| filter.held_by_budget())
     }
 }
-
-/// O Jev que julga o backlog para a montagem das ondas do projeto em `root`:
-/// o filtro, quando o `mustard.json` não desliga o Jev e o projeto tem chave
-/// (a mesma regra da busca, [`jev_gate`]). Sem um dos dois, sem filtro, e a
-/// rodada monta a onda como sempre; quando a chave que faltou é a do
-/// `mustard.json` guardado pelo git, [`WavesJev::key_in_git`] diz, para a
-/// rodada avisar. Os testes da biblioteca nunca chamam o serviço: o ambiente
-/// de quem os roda pode ter chave, então o teste lê só o `mustard.json`, sem
-/// a chave do ambiente, e nunca devolve o filtro.
-#[must_use]
-pub fn for_waves(root: &Path) -> WavesJev {
+pub(crate) fn for_waves(root: &Path, spec: &str) -> WavesJev {
+    for_purpose(root, "wave-planning", Some(spec))
+}
+pub(crate) fn for_context(root: &Path, spec: &str) -> WavesJev {
+    for_purpose(root, "context", Some(spec))
+}
+fn for_purpose(root: &Path, purpose: &str, spec: Option<&str>) -> WavesJev {
     let config = ProjectConfig::load(root);
     if cfg!(test) {
-        return WavesJev { filter: None, ..waves_filter(root, &config, None, None) };
+        return WavesJev { filter: None, ..purpose_filter(root, &config, None, None, purpose, spec) };
     }
     let ledger = mustard_core::io::spend::machine_dir();
-    waves_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok(), ledger.as_deref())
+    purpose_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok(), ledger.as_deref(), purpose, spec)
 }
-
-/// [`for_waves`] com `config`, com `env` no lugar do valor de
-/// [`jev_gate::KEY_ENV`] e com o arquivo do gasto em `ledger_dir`: o teste não
-/// depende do ambiente de quem o roda. O teto do mês já gasto vale como sem
-/// chave: sem filtro, e a rodada monta a onda como sempre, com o aviso de
-/// [`WavesJev::over_budget`].
-fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger_dir: Option<&Path>) -> WavesJev {
-    if !jev_gate::setting_allows(config.search_filter()) {
+#[cfg(test)]
+fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger: Option<&Path>) -> WavesJev {
+    purpose_filter(root, config, env, ledger, "wave-planning", None)
+}
+fn purpose_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger: Option<&Path>, purpose: &str, spec: Option<&str>) -> WavesJev {
+    if !jev_gate::setting_allows(config.judgement_filter(purpose)) {
         return WavesJev::default();
     }
     match key_in(root, config, env) {
         Ok(loaded) => {
-            let budget = Budget::open(root, config, ledger_dir);
-            if budget.is_spent() {
-                return WavesJev { over_budget: true, ..WavesJev::default() };
-            }
-            WavesJev { filter: Some(JevFilter::new(loaded.key, budget)), ..WavesJev::default() }
+            let budget = Budget::open(root, config, ledger);
+            // Even a spent budget can reuse a valid cached answer. Missing
+            // answers still pass through the existing reservation gate.
+            let mut filter = JevFilter::new(root, loaded.key, budget);
+            filter.spec = spec.map(str::to_string);
+            WavesJev { over_budget: filter.budget.as_ref().is_some_and(Budget::is_spent), filter: Some(std::sync::Arc::new(filter)), ..WavesJev::default() }
         }
         Err(error) => WavesJev { key_in_git: error == FilterError::KeyInGit, ..WavesJev::default() },
     }
 }
-
 impl JevFilter {
-    /// Julga o backlog de `board` numa chamada só: o estado leva a definição, as
-    /// ondas em andamento e o backlog inteiro, e todas as perguntas vão
-    /// juntas — `tipo_<t>`, uma escolha de tipo de trabalho por tarefa,
-    /// `tam_<t>`, uma nota de 0 a 3 por tarefa: quanto código o agente lê e
-    /// muda para fazê-la? — e `blk_<w>_<t>`, um sim ou não por tarefa e onda
-    /// em andamento: as duas mudam a mesma coisa? Cada tipo vem com a
-    /// confiança do Jev nele, cada tarefa com a nota de tamanho
-    /// ([`task_size`]) e com a maior chance de bloqueio entre as ondas. Falta
-    /// de uma resposta é resposta ilegível.
-    ///
-    /// # Errors
-    /// O quadro que passa do que o serviço aceita, a falha do serviço e a
-    /// resposta ilegível. Quem chama monta a onda como sempre.
-    pub(crate) fn judge_backlog(&self, board: &Board) -> Result<Judged, FilterError> {
+    fn judge_backlog(&self, board: &Board) -> Result<Judged, FilterError> {
         let started = Instant::now();
-        let payload = board_payload(board)?;
-        let doc = self
-            .send_all(std::slice::from_ref(&payload), started + self.timeouts.response)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| FilterError::Unreadable("no answer".to_string()))?;
-        let tasks = read_judgements(&doc, board)?;
-        let input_tokens = doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let payloads = backlog_payloads(board)?;
+        let docs = self.send_all_for(&payloads, started + self.timeouts.response, Purpose::WavePlanning)?;
+        let mut answers = Map::new();
+        for doc in &docs {
+            if let Some(part) = doc["answers"].as_object() {
+                answers.extend(part.clone());
+            }
+        }
+        let input_tokens = docs.iter().filter_map(|d| d.pointer("/usage/input_tokens").and_then(Value::as_u64)).sum();
         Ok(Judged {
-            tasks,
+            tasks: read_judgements(&json!({"answers":answers}), board)?,
             usage: FilterUsage {
                 input_tokens,
-                millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                incomplete: docs.iter().any(unknown_usage),
+                millis: started.elapsed().as_millis() as u64,
                 cost_micro_usd: cost_micro_usd(input_tokens),
-                requests: 1,
-                model: model_of(&doc),
+                requests: docs.iter().map(request_count).sum(),
+                model: docs.first().map(model_of).unwrap_or_default(),
             },
         })
     }
 }
-
-/// O texto do pedido de um quadro: o modelo, o estado e as perguntas. O
-/// pedido que passa do que o serviço aceita não sai
-/// ([`FilterError::TooLarge`]): o estado e a maior pergunta têm o tamanho de
-/// um pedido da busca, e o pedido inteiro, o do serviço.
-fn board_payload(board: &Board) -> Result<String, FilterError> {
-    let (state, questions) = board_parts(board);
-    let state_chars = state.to_string().chars().count();
-    let longest = questions.values().map(|question| question.to_string().chars().count()).max().unwrap_or(0);
-    let body = json!({ "model": JEV_MODEL, "state": state, "questions": Value::Object(questions) });
-    let text = serde_json::to_string(&body)
-        .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
-    let estimated = estimated_tokens(&text);
-    if tokens_of(state_chars + longest) > REQUEST_TOKENS || estimated > MAX_REQUEST_TOKENS {
-        return Err(FilterError::TooLarge { estimated_tokens: estimated });
-    }
-    Ok(text)
+fn encode_board(state: Value, questions: Map<String, Value>) -> Result<String, FilterError> {
+    let payload = json!({"model":JEV_MODEL,"state":state,"questions":questions}).to_string();
+    validate_wire_size(&payload)?;
+    Ok(payload)
 }
-
-/// O estado e as perguntas de um quadro. Todo texto sai sem os segredos.
+fn backlog_payloads(board: &Board) -> Result<Vec<String>, FilterError> {
+    let mut payloads = Vec::new();
+    for task in &board.backlog {
+        let intrinsic = Board { running: Vec::new(), backlog: vec![task.clone()] };
+        let (state, questions) = board_parts(&intrinsic);
+        payloads.push(encode_board(state, questions)?);
+    }
+    for wave in &board.running {
+        let plausible = board.backlog.iter().filter(|task| wave.tasks.iter().any(|other| related_tasks(task, other))).cloned().collect::<Vec<_>>();
+        if plausible.is_empty() {
+            continue;
+        }
+        let running = wave.tasks.iter().filter(|other| plausible.iter().any(|task| related_tasks(task, other))).cloned().collect();
+        let pair = Board { backlog: plausible, running: vec![crate::shared::judgement::BoardWave { n: wave.n, tasks: running }] };
+        let (mut state, mut questions) = board_parts(&pair);
+        questions.retain(|key, _| key.starts_with("blk_"));
+        if let Some(definition) = state["definition"].as_object_mut() {
+            definition.remove("kinds");
+        }
+        payloads.push(encode_board(state, questions)?);
+    }
+    Ok(payloads)
+}
+/// Only shared files, a known directory, or explicit dependencies justify a
+/// semantic interference question. Two absent parents are not a relation.
+fn related_tasks(a: &BoardTask, b: &BoardTask) -> bool {
+    a.relation(b).semantic_interference()
+}
 fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
-    let clip = |text: &str, chars: usize| -> String { without_secrets(text).chars().take(chars).collect() };
-    let view = |task: &BoardTask, agent_chars: usize| {
+    let view = |task: &BoardTask| {
         json!({
             "title": without_secrets(&task.title),
             "text": without_secrets(&task.text),
-            "agent": clip(&task.agent, agent_chars),
+            "agent": without_secrets(&task.agent),
             "files": task.files,
+            "reads": task.reads,
         })
     };
     let mut kinds = Map::new();
@@ -1012,17 +973,20 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
     }
     let mut running = Map::new();
     for wave in &board.running {
-        let tasks: Map<String, Value> =
-            wave.tasks.iter().map(|task| (task_key(task.id), view(task, RUNNING_AGENT_CHARS))).collect();
+        let tasks: Map<String, Value> = wave.tasks.iter().map(|task| (task_key(task.id), view(task))).collect();
         running.insert(wave_key(wave.n), Value::Object(tasks));
     }
     let mut backlog = Map::new();
     for task in &board.backlog {
-        let mut shown = view(task, BACKLOG_AGENT_CHARS);
+        let mut shown = view(task);
         shown["depends_on"] = json!(task.depends_on.iter().map(|title| without_secrets(title)).collect::<Vec<_>>());
         backlog.insert(task_key(task.id), shown);
     }
+    let relations: Map<String, Value> = board.backlog.iter().flat_map(|task| board.running.iter().flat_map(move |wave|
+        wave.tasks.iter().filter(move |other| related_tasks(task, other)).map(move |other|
+            (format!("{}:{}:{}", wave_key(wave.n), task_key(task.id), task_key(other.id)), json!(task.relation(other)))))).collect();
     let state = json!({
+        "relations": relations,
         "definition": { "wave": WAVE_DEFINITION, "same_change": SAME_CHANGE, "kinds": kinds.clone() },
         "running": running,
         "backlog": backlog,
@@ -1040,6 +1004,9 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
         );
         questions.insert(format!("tam_{key}"), task_size::question(&key));
         for wave in &board.running {
+            if !wave.tasks.iter().any(|running| related_tasks(task, running)) {
+                continue;
+            }
             let wave = wave_key(wave.n);
             questions.insert(
                 format!("blk_{wave}_{key}"),
@@ -1055,15 +1022,8 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
     (state, questions)
 }
 
-/// O julgamento de cada tarefa do backlog de `board`, lido do documento
-/// `doc`: o tipo e a confiança nele, a nota de tamanho e a maior chance de
-/// bloqueio entre as ondas em andamento. Falta de uma resposta, tipo que não
-/// existe ou número que não é número é resposta ilegível.
 fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement>, FilterError> {
-    let answers = doc
-        .get("answers")
-        .and_then(Value::as_object)
-        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
+    let answers = doc.get("answers").and_then(Value::as_object).ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
     let missing = |what: String| FilterError::Unreadable(format!("no answer for {what}"));
     let mut judged = BTreeMap::new();
     for task in &board.backlog {
@@ -1071,42 +1031,23 @@ fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement
         let asked = format!("tipo_{key}");
         let kind = answers.get(&asked).ok_or_else(|| missing(asked.clone()))?;
         let name = kind.get("choice").and_then(Value::as_str).unwrap_or_default();
-        let kind_of = TaskKind::from_key(name)
-            .ok_or_else(|| FilterError::Unreadable(format!("{asked} is not a kind of work")))?;
-        let confidence = kind
-            .get("confidence")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| FilterError::Unreadable(format!("no confidence for {asked}")))?;
+        let kind_of = TaskKind::from_key(name).ok_or_else(|| FilterError::Unreadable(format!("{asked} is not a kind of work")))?;
+        let confidence = kind.get("confidence").and_then(Value::as_f64).ok_or_else(|| FilterError::Unreadable(format!("no confidence for {asked}")))?;
         let asked_size = format!("tam_{key}");
-        let size = answers
-            .get(&asked_size)
-            .and_then(task_size::level_in)
-            .ok_or_else(|| missing(asked_size.clone()))?;
+        let size = answers.get(&asked_size).and_then(task_size::level_in).ok_or_else(|| missing(asked_size.clone()))?;
         let mut clash = 0.0_f64;
         for wave in &board.running {
+            if !wave.tasks.iter().any(|running| related_tasks(task, running)) {
+                continue;
+            }
             let asked = format!("blk_{}_{key}", wave_key(wave.n));
-            let chance = answers
-                .get(&asked)
-                .and_then(|answer| answer.get("noul"))
-                .and_then(Value::as_f64)
-                .ok_or_else(|| missing(asked.clone()))?;
+            let chance = answers.get(&asked).and_then(|answer| answer.get("noul")).and_then(Value::as_f64).ok_or_else(|| missing(asked.clone()))?;
             clash = clash.max(chance);
         }
         judged.insert(task.id, Judgement { kind: kind_of, confidence, clash, size });
     }
     Ok(judged)
 }
-
-// ---------------------------------------------------------------------------
-// Os itens do pedido julgados para uma onda
-// ---------------------------------------------------------------------------
-
-/// Quantos caracteres da parte do agente de cada tarefa da onda vão ao julgar
-/// os itens do pedido.
-const ITEMS_AGENT_CHARS: usize = 1_400;
-
-/// Quantos caracteres do texto de cada item vão ao julgar os itens do pedido.
-const ITEM_TEXT_CHARS: usize = 300;
 
 /// Os caracteres que cada entrada do estado e de cada pergunta pesa além do
 /// que ela diz: os dois pontos, as aspas e a vírgula, com folga.
@@ -1115,29 +1056,6 @@ const ENTRY_OVERHEAD_CHARS: usize = 8;
 /// Um item combinado como o Jev o vê: o número, o título e o começo do texto.
 /// Nenhum arquivo, onda ou tarefa que o liga: a estrutura que a rodada já usa
 /// fica fora do estado.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BoardItem {
-    pub(crate) id: u64,
-    pub(crate) title: String,
-    pub(crate) text: String,
-}
-
-/// O quadro dos itens de uma onda: as tarefas dela e os itens a julgar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ItemsBoard {
-    pub(crate) tasks: Vec<BoardTask>,
-    pub(crate) items: Vec<BoardItem>,
-}
-
-/// O que o Jev julgou dos itens de uma onda, com o que a chamada gastou.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ItemsJudged {
-    /// A chance de sim que o Jev deu a cada item, pelo número dele: o item
-    /// governa algo que as tarefas da onda mudam ou testam.
-    pub(crate) chances: BTreeMap<u64, f64>,
-    pub(crate) usage: FilterUsage,
-}
-
 /// A chave de um item no estado e nas perguntas.
 fn item_key(id: u64) -> String {
     format!("i{id}")
@@ -1159,7 +1077,7 @@ impl JevFilter {
         let started = Instant::now();
         let parts = items_payloads(board)?;
         let payloads: Vec<String> = parts.iter().map(|(payload, _)| payload.clone()).collect();
-        let docs = self.send_all(&payloads, started + self.timeouts.response)?;
+        let docs = self.send_all_for(&payloads, started + self.timeouts.response, Purpose::Context)?;
         let mut chances = BTreeMap::new();
         let mut input_tokens = 0;
         let mut model = String::new();
@@ -1173,10 +1091,11 @@ impl JevFilter {
         Ok(ItemsJudged {
             chances,
             usage: FilterUsage {
+                incomplete: docs.iter().any(unknown_usage),
                 input_tokens,
                 millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 cost_micro_usd: cost_micro_usd(input_tokens),
-                requests: parts.len() as u64,
+                requests: docs.iter().map(request_count).sum(),
                 model,
             },
         })
@@ -1188,7 +1107,6 @@ impl JevFilter {
 /// maior pergunta cabem num pedido e o pedido inteiro cabe no que o serviço
 /// aceita; as tarefas vão em todas as partes. Quadro sem item não pede nada.
 fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterError> {
-    let clip = |text: &str, chars: usize| -> String { without_secrets(text).chars().take(chars).collect() };
     let task: Map<String, Value> = board
         .tasks
         .iter()
@@ -1196,7 +1114,7 @@ fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterE
             let view = json!({
                 "title": without_secrets(&task.title),
                 "text": without_secrets(&task.text),
-                "agent": clip(&task.agent, ITEMS_AGENT_CHARS),
+                "agent": without_secrets(&task.agent),
                 "files": task.files,
             });
             (task_key(task.id), view)
@@ -1212,7 +1130,7 @@ fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterE
         .iter()
         .map(|item| {
             let key = item_key(item.id);
-            let shown = json!({ "title": without_secrets(&item.title), "text": clip(&item.text, ITEM_TEXT_CHARS) });
+            let shown = json!({ "title": without_secrets(&item.title), "text": without_secrets(&item.text) });
             let question = json!({
                 "type": "noul",
                 "instructions": {
@@ -1230,8 +1148,7 @@ fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterE
         // Cada entrada leva também a chave e as vírgulas, e o pedido inteiro
         // ainda tem o modelo e as chaves de fora: a conta deixa uma folga.
         let overhead = item_key(entries[at].0).chars().count() + ENTRY_OVERHEAD_CHARS;
-        let (shown_chars, question_chars) =
-            (shown.to_string().chars().count() + overhead, question.to_string().chars().count() + overhead);
+        let (shown_chars, question_chars) = (shown.to_string().chars().count() + overhead, question.to_string().chars().count() + overhead);
         let too_big = |state: usize, questions: usize, longest: usize| {
             tokens_of(state + longest) > REQUEST_TOKENS || tokens_of(state + questions) > MAX_REQUEST_TOKENS / 10 * 9
         };
@@ -1252,15 +1169,13 @@ fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterE
     let mut out = Vec::with_capacity(parts.len());
     for part in parts {
         let items: Map<String, Value> = part.iter().map(|at| (item_key(entries[*at].0), entries[*at].1.clone())).collect();
-        let questions: Map<String, Value> =
-            part.iter().map(|at| (item_key(entries[*at].0), entries[*at].2.clone())).collect();
+        let questions: Map<String, Value> = part.iter().map(|at| (item_key(entries[*at].0), entries[*at].2.clone())).collect();
         let body = json!({
             "model": JEV_MODEL,
             "state": { "task": task.clone(), "items": items },
             "questions": questions,
         });
-        let text = serde_json::to_string(&body)
-            .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
+        let text = serde_json::to_string(&body).map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
         let estimated = estimated_tokens(&text);
         if estimated > MAX_REQUEST_TOKENS || tokens_of(task_chars) > REQUEST_TOKENS {
             return Err(FilterError::TooLarge { estimated_tokens: estimated });
@@ -1274,10 +1189,7 @@ fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterE
 /// `into`. Falta de `answers`, de uma resposta ou uma chance que não é número
 /// entre 0 e 1 é resposta ilegível.
 fn read_item_chances(doc: &Value, ids: &[u64], into: &mut BTreeMap<u64, f64>) -> Result<(), FilterError> {
-    let answers = doc
-        .get("answers")
-        .and_then(Value::as_object)
-        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
+    let answers = doc.get("answers").and_then(Value::as_object).ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
     for id in ids {
         let key = item_key(*id);
         let chance = answers
@@ -1294,11 +1206,12 @@ fn read_item_chances(doc: &Value, ids: &[u64], into: &mut BTreeMap<u64, f64>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::judgement::{BoardItem, BoardWave};
     use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
 
     const SECRET: &str = "sk-test-0123456789abcdef";
@@ -1387,7 +1300,9 @@ mod tests {
     }
 
     fn serve_one(mut stream: TcpStream, log: &Mutex<Vec<Received>>, respond: &Responder) {
-        let Some(received) = read_request(&stream) else { return };
+        let Some(received) = read_request(&stream) else {
+            return;
+        };
         let number = {
             let mut log = log.lock().unwrap();
             log.push(received.clone());
@@ -1430,12 +1345,15 @@ mod tests {
         Some(Received { authorization, body: serde_json::from_slice(&body).ok()? })
     }
 
-
     // -- os ajudantes do pedido e da resposta -------------------------------------
 
     /// Os ids dos candidatos de um pedido, na ordem: as opções da escolha.
     fn ids_of(body: &Value) -> Vec<String> {
-        body["questions"][WHERE_KEY]["criteria"].as_object().unwrap().keys().cloned().collect()
+        if let Some(criteria) = body["questions"][WHERE_KEY]["criteria"].as_object() {
+            criteria.keys().cloned().collect()
+        } else {
+            body["questions"].as_object().unwrap().keys().filter(|id| id.starts_with('c')).cloned().collect()
+        }
     }
 
     /// A posição na lista de um id do pedido (`c012` é a 12).
@@ -1450,6 +1368,11 @@ mod tests {
         for id in ids_of(body) {
             let at = position_of(&id);
             chances.insert(id, json!(chance_of(at)));
+        }
+        if body["questions"].get(WHERE_KEY).is_none() {
+            let mut answers: Map<String, Value> = chances.into_iter().map(|(id, chance)| (id, json!({"type":"noul","noul":chance}))).collect();
+            answers.insert(EXISTS_KEY.into(), json!({"type":"noul","noul":exists}));
+            return json!({"answers":answers,"usage":{"input_tokens":1000,"output_tokens":0}});
         }
         json!({
             "answers": {
@@ -1542,10 +1465,8 @@ mod tests {
         let state = state_of(&sent_for(&asked));
 
         let first_block: Vec<String> = (3..=62).map(|n| format!("    line {n}")).collect();
-        let expected = format!(
-            "c000| src/pay.rs:3-62\n    // Cobra o cartão. Sem juros.\n{}\n\nc001| src/pay.rs:1-2\n    line 1\n    line 2",
-            first_block.join("\n")
-        );
+        let expected =
+            format!("c000| src/pay.rs:3-62\n    // Cobra o cartão. Sem juros.\n{}\n\nc001| src/pay.rs:1-2\n    line 1\n    line 2", first_block.join("\n"));
         assert_eq!(state, expected, "the 60 lines of the declaration go, the second block after a blank line");
     }
 
@@ -1692,11 +1613,7 @@ mod tests {
         // num pedido.
         let code: Vec<String> = (1..=4_000).map(|n| format!("{n:04}{}", "x".repeat(24))).collect();
         let project = project_with(&[("src/huge.rs", code.join("\n")), ("src/small.rs", "small body\n".to_string())]);
-        let mut asked = request(vec![
-            candidate_at(1, "src/small.rs", 1, 1),
-            candidate_at(2, "src/huge.rs", 1, 4_000),
-            candidate_at(3, "src/small.rs", 1, 1),
-        ]);
+        let mut asked = request(vec![candidate_at(1, "src/small.rs", 1, 1), candidate_at(2, "src/huge.rs", 1, 4_000), candidate_at(3, "src/small.rs", 1, 1)]);
         asked.root = project.path().to_path_buf();
         // O pedido da parte do meio existe com chance alta; os outros, baixa.
         let service = FakeService::start(|_, body| {
@@ -1727,7 +1644,7 @@ mod tests {
         // O candidato que se repete fica com a maior nota.
         let huge = got.kept.iter().filter(|scored| scored.id == 2).collect::<Vec<_>>();
         assert_eq!(huge.len(), 1, "the candidate comes back once");
-        assert!((huge[0].score - 0.9).abs() < 1e-9, "the best of its parts: {}", huge[0].score);
+        assert!((huge[0].score - 1.0).abs() < 1e-9, "the best of its parts: {}", huge[0].score);
     }
 
     #[test]
@@ -1769,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn the_note_joins_the_existence_of_the_request_with_the_choice_inside_it() {
+    fn independent_partition_scores_are_not_globally_normalized() {
         let (_project, asked) = big_request(150, 40);
         let service = FakeService::start(answer_with_the_third(0.9, 0.2));
 
@@ -1778,8 +1695,8 @@ mod tests {
         assert_eq!(got.verdict, Verdict::Found);
         let best = got.kept.first().unwrap();
         assert_eq!(best.id, 4, "the candidate in position 3 is the c003");
-        assert!((best.score - 0.72).abs() < 1e-9, "0,9 of existence times 0,8 of choice: {}", best.score);
-        assert_eq!(got.kept.len(), 1 + got.kept.iter().skip(1).filter(|scored| scored.score >= 0.072).count());
+        assert!((best.score - 0.8).abs() < 1e-9, "absolute candidate relevance is preserved: {}", best.score);
+        assert_eq!(got.kept.len(), 1 + got.kept.iter().skip(1).filter(|scored| scored.score >= 0.08).count());
         assert!(got.kept.iter().skip(1).all(|scored| scored.score < best.score));
     }
 
@@ -1823,11 +1740,7 @@ mod tests {
     fn a_request_that_fails_fails_the_whole_filter() {
         let (_project, asked) = big_request(150, 40);
         let service = FakeService::start(|_, body| {
-            if ids_of(body).iter().any(|id| id == "c149") {
-                Reply::json(401, &json!({"error": "no"}))
-            } else {
-                Reply::json(200, &sure_answer(body))
-            }
+            if ids_of(body).iter().any(|id| id == "c149") { Reply::json(401, &json!({"error": "no"})) } else { Reply::json(200, &sure_answer(body)) }
         });
 
         let error = service.filter().filter(&asked).unwrap_err();
@@ -1839,8 +1752,7 @@ mod tests {
     fn a_secret_in_the_code_the_documentation_the_history_the_calls_the_phrase_or_the_context_does_not_leave_the_machine() {
         let key = format!("ghp_{}", "a1B2c3D4".repeat(5));
         let secret = format!("DB_PASSWORD=S3nh4F0rte2024 {key}");
-        let project =
-            project_with(&[("src/pay.rs", format!("fn pay() {{\n    let token = \"{key}\";\n}}\n"))]);
+        let project = project_with(&[("src/pay.rs", format!("fn pay() {{\n    let token = \"{key}\";\n}}\n"))]);
         let mut leaky = candidate_at(1, "src/pay.rs", 1, 3);
         leaky.documentation = format!("Cobra o cartão. {secret}");
         leaky.commits = vec![format!("troca a senha {secret}")];
@@ -1924,10 +1836,7 @@ mod tests {
         let (choice, exists) = instructions_of(&sent_for(&asked));
         let suffix = " The agent described this search as: \"Procura o cálculo do frete\". \
                       Just before it, the agent wrote: \"Vou ver onde o frete é calculado.\".";
-        assert_eq!(
-            choice,
-            format!("Which candidate is the code that answers this request from a coding agent: \"the candidate that answers\"?{suffix}")
-        );
+        assert_eq!(choice, format!("Which candidate is the code that answers this request from a coding agent: \"the candidate that answers\"?{suffix}"));
         assert_eq!(
             exists,
             format!("Does any candidate contain the code that answers this request from a coding agent: \"the candidate that answers\"?{suffix}")
@@ -2044,9 +1953,7 @@ mod tests {
     #[test]
     fn a_refused_key_or_missing_credit_fails_without_repeating() {
         for status in [401, 402] {
-            let service = FakeService::start(move |_, _| {
-                Reply::json(status, &json!({"error": format!("bad key {SECRET}")}))
-            });
+            let service = FakeService::start(move |_, _| Reply::json(status, &json!({"error": format!("bad key {SECRET}")})));
             let error = service.filter().filter(&request(vec![candidate(1)])).unwrap_err();
             assert_eq!(error, FilterError::Refused { status });
             assert_eq!(service.received().len(), 1, "HTTP {status} was repeated");
@@ -2055,11 +1962,7 @@ mod tests {
 
     #[test]
     fn too_many_requests_repeats_twice_and_gives_up() {
-        let service = FakeService::start(|_, _| Reply {
-            status: 429,
-            headers: vec![("Retry-After", "0".to_string())],
-            body: "{}".to_string(),
-        });
+        let service = FakeService::start(|_, _| Reply { status: 429, headers: vec![("Retry-After", "0".to_string())], body: "{}".to_string() });
         let error = service.filter().filter(&request(vec![candidate(1)])).unwrap_err();
         assert_eq!(error, FilterError::Refused { status: 429 });
         assert_eq!(service.received().len(), 3);
@@ -2148,11 +2051,7 @@ mod tests {
     fn a_repeat_whose_wait_passes_the_deadline_is_not_made() {
         // O serviço pede 2 s antes de repetir; com o prazo de 500 ms, a
         // recusa volta na hora, sem esperar nem repetir.
-        let service = FakeService::start(|_, _| Reply {
-            status: 429,
-            headers: vec![("Retry-After", "2".to_string())],
-            body: "{}".to_string(),
-        });
+        let service = FakeService::start(|_, _| Reply { status: 429, headers: vec![("Retry-After", "2".to_string())], body: "{}".to_string() });
         let mut filter = service.filter();
         filter.timeouts.response = Duration::from_millis(500);
         let started = Instant::now();
@@ -2240,11 +2139,7 @@ mod tests {
             move |_, _| Reply::json(401, &echo)
         });
         let unreadable = FakeService::start(move |_, _| Reply::json(200, &echo));
-        let garbled = FakeService::start(|_, _| Reply {
-            status: 200,
-            headers: Vec::new(),
-            body: format!("not json {SECRET}"),
-        });
+        let garbled = FakeService::start(|_, _| Reply { status: 200, headers: Vec::new(), body: format!("not json {SECRET}") });
         let asked = request(vec![candidate(1)]);
         let mut errors = vec![
             refused.filter().filter(&asked).unwrap_err(),
@@ -2252,12 +2147,7 @@ mod tests {
             garbled.filter().filter(&asked).unwrap_err(),
             JevFilter::at(test_key(), &closed_url()).filter(&asked).unwrap_err(),
         ];
-        errors.extend([
-            FilterError::MissingKey,
-            FilterError::Timeout,
-            FilterError::TooLarge { estimated_tokens: 70_000 },
-            FilterError::KeyInGit,
-        ]);
+        errors.extend([FilterError::MissingKey, FilterError::Timeout, FilterError::TooLarge { estimated_tokens: 70_000 }, FilterError::KeyInGit]);
         for error in errors {
             assert!(!error.to_string().contains(SECRET), "{error}");
             assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
@@ -2289,9 +2179,7 @@ mod tests {
         let project = project_with_key(SECRET, false);
         let loaded = project_key(project.path(), None).unwrap();
         assert!(loaded.warning.is_none());
-        let service = FakeService::start(|_, body| {
-            Reply::json(200, &answer_by_position(body, |at| if at == 0 { 0.9 } else { 0.05 }, 0.9))
-        });
+        let service = FakeService::start(|_, body| Reply::json(200, &answer_by_position(body, |at| if at == 0 { 0.9 } else { 0.05 }, 0.9)));
         let got = JevFilter::at(loaded.key, &service.url).filter(&request(vec![candidate(1), candidate(2)])).unwrap();
         assert_eq!(service.received()[0].authorization, format!("Bearer {SECRET}"));
         assert_eq!(got.kept.first().map(|scored| scored.id), Some(1));
@@ -2406,17 +2294,16 @@ mod tests {
             agent: format!("- do {id}"),
             files: files.iter().map(|file| file.to_string()).collect(),
             depends_on: Vec::new(),
+            reads: Vec::new(),
+            criteria: std::collections::BTreeSet::new(),
         }
     }
 
     /// Duas tarefas no backlog e uma onda em andamento, com uma tarefa.
     fn board() -> Board {
-        let mut second = board_task(12, &["b.rs"]);
+        let mut second = board_task(12, &["module/b.rs"]);
         second.depends_on = vec!["Task 5".to_string()];
-        Board {
-            running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["open.rs"])] }],
-            backlog: vec![board_task(11, &["a.rs"]), second],
-        }
+        Board { running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.rs"])] }], backlog: vec![board_task(11, &["module/a.rs"]), second] }
     }
 
     /// A resposta do serviço ao quadro `board()`: a tarefa 11 é um defeito
@@ -2426,10 +2313,10 @@ mod tests {
         json!({
             "model": "jev-1.13.0",
             "answers": {
-                "tipo_t11": {"type": "choice", "choice": "defect", "confidence": 0.9},
-                "tipo_t12": {"type": "choice", "choice": "feature", "confidence": 0.41},
-                "tam_t11": {"type": "score", "score": 2.4, "confidence": 0.8},
-                "tam_t12": {"type": "score", "score": 0.6, "confidence": 0.7},
+                "tipo_t11": {"type": "choice", "choice": "defect", "probabilities":{"defect":0.9,"feature":0.04,"text_fix":0.02,"remove_unused":0.02,"test_cleanup":0.02}, "confidence": 0.9},
+                "tipo_t12": {"type": "choice", "choice": "feature", "probabilities":{"defect":0.2,"feature":0.41,"text_fix":0.13,"remove_unused":0.13,"test_cleanup":0.13}, "confidence": 0.41},
+                "tam_t11": {"type": "score", "score": 2.4, "probabilities":{"0":0.01,"1":0.09,"2":0.4,"3":0.5}, "confidence": 0.8},
+                "tam_t12": {"type": "score", "score": 0.6, "probabilities":{"0":0.4,"1":0.6,"2":0.0,"3":0.0}, "confidence": 0.7},
                 "blk_w7_t11": {"type": "noul", "noul": 0.1},
                 "blk_w7_t12": {"type": "noul", "noul": 0.68},
             },
@@ -2442,30 +2329,30 @@ mod tests {
     /// tipo, de tamanho e de bloqueio juntas; a resposta vira o julgamento de
     /// cada tarefa, com os tokens, o custo e o modelo.
     #[test]
-    fn the_whole_backlog_is_judged_in_one_request_with_every_question() {
+    fn profiles_and_plausible_interference_are_separate_requests() {
         let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));
         let judged = service.filter().judge_backlog(&board()).unwrap();
 
         let received = service.received();
-        assert_eq!(received.len(), 1, "one request for the whole backlog");
-        let body = &received[0].body;
+        assert_eq!(received.len(), 3, "two intrinsic profiles and one interference batch");
+        let mut body = received.iter().find(|r| r.body["questions"].get("blk_w7_t11").is_some()).unwrap().body.clone();
+        for reply in &received {
+            body["questions"].as_object_mut().unwrap().extend(reply.body["questions"].as_object().unwrap().clone());
+        }
         assert_eq!(body["model"], json!(JEV_MODEL));
         let mut asked: Vec<&str> = body["questions"].as_object().unwrap().keys().map(String::as_str).collect();
         asked.sort_unstable();
-        assert_eq!(
-            asked,
-            vec!["blk_w7_t11", "blk_w7_t12", "tam_t11", "tam_t12", "tipo_t11", "tipo_t12"]
-        );
+        assert_eq!(asked, vec!["blk_w7_t11", "blk_w7_t12", "tam_t11", "tam_t12", "tipo_t11", "tipo_t12"]);
         let size = &body["questions"]["tam_t11"];
         assert_eq!(size["type"], json!("score"));
         assert!(size["instructions"]["question"].as_str().unwrap().contains("`backlog.t11`"), "{size}");
-        assert_eq!(
-            size["criteria"],
-            json!(["One small place", "Two or three files", "Many files in one area", "Many files across several areas"])
-        );
+        assert_eq!(size["criteria"], json!(["One small place", "Two or three files", "Many files in one area", "Many files across several areas"]));
         let state = &body["state"];
-        assert!(state["definition"]["wave"].is_string() && state["definition"]["kinds"]["defect"].is_string());
-        assert_eq!(state["running"]["w7"]["t5"]["files"], json!(["open.rs"]));
+        assert!(state["definition"]["wave"].is_string());
+        let profile = received.iter().find(|r| r.body["questions"].get("tipo_t11").is_some()).unwrap();
+        assert!(profile.body["state"]["definition"]["kinds"]["defect"].is_string());
+        assert!(profile.body["state"]["running"].as_object().unwrap().is_empty());
+        assert_eq!(state["running"]["w7"]["t5"]["files"], json!(["module/open.rs"]));
         assert_eq!(state["backlog"]["t12"]["depends_on"], json!(["Task 5"]));
         assert_eq!(state["backlog"]["t11"]["text"], json!("Text of task 11."));
         assert_eq!(body["questions"]["tipo_t11"]["criteria"].as_object().unwrap().len(), 5);
@@ -2473,10 +2360,7 @@ mod tests {
         assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1, size: 2.4 });
         assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68, size: 0.6 });
         assert_eq!((judged.tasks[&11].growth_tokens(), judged.tasks[&12].growth_tokens()), (107_000, 53_000));
-        assert_eq!(
-            (judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()),
-            (2000, 84, 1, "jev-1.13.0")
-        );
+        assert_eq!((judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()), (6000, 252, 3, "jev-1.13.0"));
     }
 
     /// Sem onda em andamento não há pergunta de bloqueio, e a tarefa fica sem
@@ -2487,21 +2371,37 @@ mod tests {
     fn an_answer_that_misses_a_question_or_a_kind_is_unreadable_and_a_refusal_is_a_failure() {
         let no_wave = Board { running: Vec::new(), backlog: vec![board_task(11, &["a.rs"])] };
         let service = FakeService::start(|_, _| {
-            Reply::json(
-                200,
-                &json!({"answers": {"tipo_t11": {"choice": "defect", "confidence": 0.8}, "tam_t11": {"score": 1.0}}, "usage": {"input_tokens": 10}}),
-            )
+            Reply::json(200, &{
+                let mut answer = judged_answer();
+                answer["answers"].as_object_mut().unwrap().retain(|key, _| key.ends_with("t11"));
+                answer
+            })
         });
         let judged = service.filter().judge_backlog(&no_wave).unwrap();
         assert_eq!(judged.tasks[&11].clash, 0.0);
         assert_eq!(service.received()[0].body["questions"].as_object().unwrap().len(), 2);
 
         for (name, answer) in [
-            ("a missing blk", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}})),
-            ("an unknown kind", json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
-            ("no confidence", json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
-            ("a missing tam", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
-            ("a tam that is not a score", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"noul": 0.4}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            (
+                "a missing blk",
+                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}}),
+            ),
+            (
+                "an unknown kind",
+                json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
+            ),
+            (
+                "no confidence",
+                json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
+            ),
+            (
+                "a missing tam",
+                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
+            ),
+            (
+                "a tam that is not a score",
+                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"noul": 0.4}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
+            ),
         ] {
             let service = FakeService::start(move |_, _| Reply::json(200, &json!({"answers": answer.clone()})));
             let error = service.filter().judge_backlog(&board()).unwrap_err();
@@ -2528,7 +2428,7 @@ mod tests {
         secret.backlog[0].text = format!("Fix the login. DB_PASSWORD=S3nh4F0rte2024 {key}");
         secret.backlog[1].title = format!("rotate {key}");
         service.filter().judge_backlog(&secret).unwrap();
-        let sent = service.received()[0].body.to_string();
+        let sent = service.received().iter().map(|request| request.body.to_string()).collect::<Vec<_>>().join("\n");
         assert!(!sent.contains("S3nh4F0rte2024") && !sent.contains(&key[..12]), "secrets never leave: {sent}");
         assert!(sent.contains("Fix the login."), "the rest of the text still goes");
     }
@@ -2576,10 +2476,7 @@ mod tests {
         assert_eq!(state["task"]["t6"]["text"], json!("Text of task 6."));
         assert_eq!(state["items"]["i12"], json!({"title": "Item 12", "text": "Text of item 12."}));
         assert_eq!(judged.chances, BTreeMap::from([(11, 0.11), (12, 0.12)]));
-        assert_eq!(
-            (judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()),
-            (700, 29, 1, "jev-1.13.0")
-        );
+        assert_eq!((judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()), (700, 29, 1, "jev-1.13.0"));
     }
 
     /// O estado que passa do tamanho de um pedido sai em partes, todas com as
@@ -2601,7 +2498,11 @@ mod tests {
             assert_eq!(request.body["state"]["task"], received[0].body["state"]["task"], "the same task in every part");
             let keys: Vec<String> = request.body["questions"].as_object().unwrap().keys().cloned().collect();
             let state_keys: Vec<String> = request.body["state"]["items"].as_object().unwrap().keys().cloned().collect();
-            assert_eq!(keys.iter().collect::<std::collections::BTreeSet<_>>(), state_keys.iter().collect::<std::collections::BTreeSet<_>>(), "a part asks about what it shows");
+            assert_eq!(
+                keys.iter().collect::<std::collections::BTreeSet<_>>(),
+                state_keys.iter().collect::<std::collections::BTreeSet<_>>(),
+                "a part asks about what it shows"
+            );
             seen.extend(keys);
         }
         assert_eq!(seen.len(), 700, "every item asked once");
@@ -2640,7 +2541,7 @@ mod tests {
         secret.tasks[0].text = format!("Fix the login. DB_PASSWORD=S3nh4F0rte2024 {key}");
         secret.items[0].text = format!("Rotate {key}");
         service.filter().judge_items(&secret).unwrap();
-        let sent = service.received()[0].body.to_string();
+        let sent = service.received().iter().map(|request| request.body.to_string()).collect::<Vec<_>>().join("\n");
         assert!(!sent.contains("S3nh4F0rte2024") && !sent.contains(&key[..12]), "secrets never leave: {sent}");
         assert!(sent.contains("Fix the login."), "the rest of the text still goes");
     }
@@ -2658,7 +2559,7 @@ mod tests {
             let service = FakeService::start(|_, body| {
                 if body["questions"].get("i11").is_some() {
                     chances_answer(body, |_| 0.5)
-                } else if body["questions"].get("tipo_t11").is_some() {
+                } else if body["questions"].as_object().is_some_and(|q| q.keys().any(|key| key.starts_with("tipo_") || key.starts_with("blk_"))) {
                     Reply::json(200, &judged_answer())
                 } else {
                     Reply::json(200, &sure_answer(body))
@@ -2670,11 +2571,11 @@ mod tests {
         let items = ItemsBoard { tasks: vec![board_task(5, &["a.rs"])], items: vec![board_item(11)] };
         let search = request(vec![candidate(1), candidate(2)]);
 
-        let held = |filter: &JevFilter| WavesJev { filter: Some(filter.clone()), ..WavesJev::default() }.held_by_budget();
+        let held = |filter: &JevFilter| WavesJev { filter: Some(std::sync::Arc::new(filter.clone())), ..WavesJev::default() }.held_by_budget();
 
         let (service, filter) = start(10_000_000);
         assert!(filter.filter(&search).is_ok() && filter.judge_backlog(&board()).is_ok() && filter.judge_items(&items).is_ok());
-        assert_eq!(service.received().len(), 3, "below the budget each call reached the service");
+        assert_eq!(service.received().len(), 5, "search, two profiles, interference and context reached the service");
         assert!(!held(&filter), "no call was refused");
 
         let (service, filter) = start(1);
@@ -2685,11 +2586,11 @@ mod tests {
         assert_eq!(filter.judge_items(&items).unwrap_err(), FilterError::OverBudget);
         assert!(service.received().is_empty(), "nothing went to the service: {:?}", service.received());
 
-        let one = cost_micro_usd(estimated_tokens(&board_payload(&board()).unwrap()));
+        let one: u64 = backlog_payloads(&board()).unwrap().iter().map(|p| cost_micro_usd(estimated_tokens(p))).sum();
         let (service, filter) = start(one + one / 2);
         assert!(filter.judge_backlog(&board()).is_ok());
         assert_eq!(filter.judge_backlog(&board()).unwrap_err(), FilterError::OverBudget, "the first call took its estimate");
-        assert_eq!(service.received().len(), 1, "only the first call went out");
+        assert_eq!(service.received().len(), 3, "only the first planning operation went out");
     }
 
     /// A busca dividida em vários pedidos reserva a estimativa de todos antes
@@ -2701,8 +2602,7 @@ mod tests {
         let context = Context::of(&asked);
         let batches = divide(&asked, &context).unwrap();
         assert!(batches.len() >= 2, "the search is divided: {}", batches.len());
-        let all: u64 =
-            batches.iter().map(|batch| cost_micro_usd(estimated_tokens(&payload(batch, &context).unwrap()))).sum();
+        let all: u64 = batches.iter().map(|batch| cost_micro_usd(estimated_tokens(&independent_body(&batch.state, &context, &batch.at).to_string()))).sum();
         let start = |left: u64| {
             let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
             let budget = Budget::of(left);
@@ -2723,14 +2623,95 @@ mod tests {
     /// O teto já gasto vale como sem chave na montagem das ondas: sem filtro e
     /// sem aviso de chave. Com sobra, o filtro entra.
     #[test]
-    fn the_wave_assembly_has_no_filter_once_the_month_is_spent() {
+    fn spent_budget_preserves_the_adapter_for_cached_judgements() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 0}}"#).unwrap();
         let spent = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
-        assert!(spent.filter.is_none() && !spent.key_in_git);
+        assert!(spent.filter.is_some() && spent.over_budget && !spent.key_in_git);
 
         std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 5}}"#).unwrap();
         let open = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
         assert!(open.filter.is_some());
     }
+    #[test]
+    fn intrinsic_profiles_survive_reassignment_but_change_when_the_full_task_changes() {
+        let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));
+        let dir = tempfile::tempdir().unwrap();
+        let mut filter = service.filter();
+        filter.cache = Some(dir.path().into());
+        let mut board = board();
+        board.running.clear();
+        let first = filter.judge_backlog(&board).unwrap();
+        assert_eq!(first.usage.requests, 2);
+        let mut reassigned = board.clone();
+        for task in &mut reassigned.backlog {
+            task.id += 100;
+        }
+        let cached = filter.judge_backlog(&reassigned).unwrap();
+        assert_eq!(cached.usage.requests, 0, "reassignment is not a new semantic profile");
+        assert_eq!(cached.usage.input_tokens, 0);
+        assert_eq!(cached.tasks[&111], first.tasks[&11]);
+        assert_eq!(cached.tasks[&112], first.tasks[&12]);
+        assert_eq!(service.received().len(), 2);
+        board.backlog[0].agent.push_str("\n- preserve the full mandatory new contract");
+        let changed = filter.judge_backlog(&board).unwrap();
+        assert_eq!(changed.usage.requests, 1, "only the changed complete profile is rejudged");
+        assert_eq!(service.received().len(), 3);
+    }
+    #[test]
+    fn physical_attempts_include_retries_and_the_cache_adds_no_http_or_charge() {
+        let service = FakeService::start(|number, _| {
+            if number == 0 {
+                Reply { status: 429, headers: vec![("retry-after", "0".into())], body: "ignored".into() }
+            } else {
+                Reply::json(200, &json!({"model":JEV_MODEL,"answers":{"q":{"type":"noul","noul":0.8}},"usage":{"input_tokens":123,"output_tokens":0}}))
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let mut filter = service.filter();
+        filter.cache = Some(dir.path().into());
+        filter.spec = Some("demo".into());
+        let payload = json!({"model":JEV_MODEL,"state":"current evidence","questions":{"q":{"type":"noul","instructions":"Is it relevant?"}}}).to_string();
+        let first = filter.send_all_for(std::slice::from_ref(&payload), Instant::now() + Duration::from_secs(2), Purpose::Context).unwrap();
+        assert_eq!(first[0]["_attempts"], 2);
+        let before = std::fs::read_to_string(dir.path().join("attempts.ndjson")).unwrap();
+        let attempts = before.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0]["status"], 429);
+        assert!(attempts[0]["input_tokens"].is_null());
+        assert_eq!(attempts[1]["input_tokens"], 123);
+        assert_eq!(attempts[1]["spec"], "demo");
+        assert!(!before.contains(SECRET) && !before.contains("current evidence"));
+        let cached = filter.send_all_for(&[payload], Instant::now() + Duration::from_secs(2), Purpose::Context).unwrap();
+        assert_eq!(cached[0]["usage"]["input_tokens"], 0);
+        assert_eq!(request_count(&cached[0]), 0);
+        assert_eq!(service.received().len(), 2);
+        assert_eq!(std::fs::read_to_string(dir.path().join("attempts.ndjson")).unwrap(), before);
+    }
+    #[test]
+    fn shared_reading_never_becomes_a_conflict_but_flow_and_read_write_get_separate_evidence() {
+        let mut first = board_task(11, &["writer.rs"]);
+        let mut other = board_task(5, &["reader.rs"]);
+        first.reads.push("contract.rs".into());
+        other.reads.push("contract.rs".into());
+        let board = Board { backlog: vec![first.clone()], running: vec![BoardWave { n: 7, tasks: vec![other.clone()] }] };
+        assert_eq!(backlog_payloads(&board).unwrap().len(), 1, "common reading alone needs no Jev interference call");
+        other.reads.push("writer.rs".into());
+        let mut board = Board { backlog: vec![first], running: vec![BoardWave { n: 7, tasks: vec![other] }] };
+        let parts = backlog_payloads(&board).unwrap();
+        assert_eq!(parts.len(), 2);
+        let pair: Value = serde_json::from_str(&parts[1]).unwrap();
+        let relation = &pair["state"]["relations"]["w7:t11:t5"];
+        assert_eq!(relation["shared_read"], true);
+        assert_eq!(relation["read_write"], true);
+        assert_eq!(relation["flow"], false);
+        board.backlog[0].criteria.insert(90);
+        board.running[0].tasks[0].criteria.insert(90);
+        let parts = backlog_payloads(&board).unwrap();
+        let pair: Value = serde_json::from_str(&parts[1]).unwrap();
+        assert_eq!(pair["state"]["relations"]["w7:t11:t5"]["flow"], true);
+        board.running[0].tasks[0].files = vec!["writer.rs".into()];
+        assert_eq!(backlog_payloads(&board).unwrap().len(), 1, "exact write overlap is already locally reserved");
+    }
+
 }

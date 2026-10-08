@@ -49,18 +49,10 @@ pub const RTK_HOOK_COMMAND: &str = "rtk hook claude";
 /// The tool the rtk hook rewrites: only shell commands pass through it.
 const RTK_HOOK_MATCHER: &str = "Bash";
 
-/// A ferramenta do Claude Code que grava no banco de dados de uma página
-/// publicada no claude.ai. O Mustard copia para esse banco o que muda na spec
-/// a cada marco; liberada nas configurações, a cópia não para esperando o sim
-/// da pessoa. A regra mora na semente, e [`backfill_own_permission_rules`] a
-/// leva também ao projeto já instalado.
-pub const PAGE_DATABASE_TOOL: &str = "ArtifactData";
-
-/// Se `rule` é uma liberação do próprio Mustard: um comando `mustard-rt run`
-/// ou a ferramenta do banco de dados das páginas ([`PAGE_DATABASE_TOOL`]).
+/// Se `rule` é uma liberação do próprio Mustard: um comando `mustard-rt run`.
 /// Nenhuma outra liberação da semente chega a um projeto já instalado.
 fn is_own_allow_rule(rule: &str) -> bool {
-    rule.starts_with("Bash(mustard-rt run ") || rule == PAGE_DATABASE_TOOL
+    rule.starts_with("Bash(mustard-rt run ")
 }
 
 /// As linhas que um molde antigo escrevia e o de hoje não traz mais, letra por
@@ -384,9 +376,9 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
 }
 
 /// Backfill the seed's own permission rules into an installed settings file:
-/// the `Bash(mustard-rt run …)` allow rules, the page database tool
-/// ([`PAGE_DATABASE_TOOL`]) and every deny rule the seed carries, the machine
-/// rules among them.
+/// the `Bash(mustard-rt run …)` allow rules and every deny rule the seed
+/// carries, the machine rules among them. Publication-tool permissions are
+/// user decisions and are never added by the native export path.
 ///
 /// **Why a default that only reaches a fresh install is not a default.** The
 /// seed merge is top-level only: a project that already has a `permissions`
@@ -401,8 +393,7 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
 ///
 /// - only rules the SEED declares; on the allow side, only those naming
 ///   `mustard-rt run` — the harness's own commands, never anything the
-///   operator's project runs — and the tool that writes the database of the
-///   pages Mustard publishes ([`is_own_allow_rule`]);
+///   operator's project runs ([`is_own_allow_rule`]);
 /// - only ADDS. Nothing is removed, nothing is reordered, and a rule the
 ///   operator already has (in any spelling that matches exactly) is left alone;
 /// - a rule the operator put in another list WINS, because that is a decision

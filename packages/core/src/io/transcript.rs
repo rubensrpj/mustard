@@ -32,7 +32,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::domain::spend::{day_of_stamp, is_code_search, DayRow, Range};
+use crate::domain::spend::{DayRow, Range, day_of_stamp, is_code_search};
 
 /// O consumo medido num conjunto de linhas de conversa.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -94,10 +94,7 @@ struct Tokens {
 
 impl Tokens {
     fn total(&self) -> u64 {
-        [self.input, self.cache_creation, self.cache_read, self.output]
-        .into_iter()
-        .flatten()
-        .fold(0, u64::saturating_add)
+        [self.input, self.cache_creation, self.cache_read, self.output].into_iter().flatten().fold(0, u64::saturating_add)
     }
 }
 
@@ -131,10 +128,7 @@ impl Content {
     fn text(&self) -> Option<&str> {
         match self {
             Content::Text(text) => Some(text),
-            Content::Blocks(blocks) => blocks
-                .iter()
-                .find(|block| block.kind.as_deref() == Some("text"))
-                .and_then(|block| block.text.as_deref()),
+            Content::Blocks(blocks) => blocks.iter().find(|block| block.kind.as_deref() == Some("text")).and_then(|block| block.text.as_deref()),
         }
     }
 }
@@ -183,9 +177,7 @@ impl Tally {
         let named = self.responses.values().fold(0u64, |sum, tokens| sum.saturating_add(*tokens));
         Usage {
             model: self.model,
-            steps: u64::try_from(self.tools.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(self.unnamed_tools),
+            steps: u64::try_from(self.tools.len()).unwrap_or(u64::MAX).saturating_add(self.unnamed_tools),
             tokens: named.saturating_add(self.unnamed_tokens),
         }
     }
@@ -223,7 +215,9 @@ impl SpendTally {
         let Some(day) = line.timestamp.as_deref().and_then(day_of_stamp).filter(|day| range.contains(day)) else {
             return;
         };
-        let Some(project) = project_of(line.cwd.as_deref()) else { return };
+        let Some(project) = project_of(line.cwd.as_deref()) else {
+            return;
+        };
         let key = (day, project);
         let total = tokens.total();
         match message.id {
@@ -235,7 +229,9 @@ impl SpendTally {
                 row.tokens = row.tokens.saturating_add(total);
             }
         }
-        let Some(Content::Blocks(blocks)) = message.content else { return };
+        let Some(Content::Blocks(blocks)) = message.content else {
+            return;
+        };
         for block in blocks.into_iter().filter(|block| block.kind.as_deref() == Some("tool_use")) {
             if block.id.is_some_and(|id| !self.tools.insert(id)) {
                 continue;
@@ -252,9 +248,7 @@ impl SpendTally {
 
     /// A linha do dia e do projeto de `key`, criada vazia quando falta.
     fn row(&mut self, key: &SpendKey) -> &mut DayRow {
-        self.rows
-            .entry(key.clone())
-            .or_insert_with(|| DayRow { day: key.0.clone(), project: key.1.clone(), ..DayRow::default() })
+        self.rows.entry(key.clone()).or_insert_with(|| DayRow { day: key.0.clone(), project: key.1.clone(), ..DayRow::default() })
     }
 
     /// As linhas, uma por dia e projeto, com os tokens de cada resposta já
@@ -339,13 +333,29 @@ pub fn wave_agent_file(session_dir: &Path, title: &str, sent: &str) -> Option<Pa
     let sent = utc(sent)?;
     let title = title.trim_end();
     closest_agent(agent_openings(session_dir, sent), title, sent).or_else(|| {
-        let others = std::fs::read_dir(session_dir.parent()?)
-            .ok()?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|dir| dir.as_path() != session_dir);
+        let others = std::fs::read_dir(session_dir.parent()?).ok()?.filter_map(Result::ok).map(|entry| entry.path()).filter(|dir| dir.as_path() != session_dir);
         closest_agent(others.flat_map(|dir| agent_openings(&dir, sent)), title, sent)
     })
+}
+
+#[must_use]
+pub fn wave_agent_files(session: &Path, title: &str, sent: &str, until: Option<&str>) -> Vec<PathBuf> {
+    let Some(since) = utc(sent) else {
+        return Vec::new();
+    };
+    let end = until.and_then(utc);
+    let mut files: Vec<_> = std::fs::read_dir(session.parent().unwrap_or(session))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .flat_map(|entry| agent_openings(&entry.path(), since))
+        .filter(|(_, heading, at)| heading == title.trim_end() && *at >= since && end.is_none_or(|end| *at < end))
+        .collect();
+    // One native send owns one dispatch. A different agent with the same
+    // heading is not evidence of another authorized attempt. Retries have
+    // separate send timestamps and are accumulated by the caller.
+    files.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+    files.into_iter().next().map(|(path, _, _)| path).into_iter().collect()
 }
 
 /// Todos os pedaços da conversa do agente cujo arquivo é `file`
@@ -358,12 +368,15 @@ pub fn wave_agent_file(session_dir: &Path, title: &str, sent: &str) -> Option<Pa
 /// numa pasta `subagents/` ou nenhum pedaço existe.
 #[must_use]
 pub fn agent_pieces(file: &Path) -> Vec<PathBuf> {
-    let Some(name) = file.file_name() else { return Vec::new() };
-    let Some(session) = file.parent().filter(|dir| dir.file_name().is_some_and(|dir| dir == "subagents")).and_then(Path::parent)
-    else {
+    let Some(name) = file.file_name() else {
         return Vec::new();
     };
-    let Some(project) = session.parent() else { return Vec::new() };
+    let Some(session) = file.parent().filter(|dir| dir.file_name().is_some_and(|dir| dir == "subagents")).and_then(Path::parent) else {
+        return Vec::new();
+    };
+    let Some(project) = session.parent() else {
+        return Vec::new();
+    };
     let mut pieces: Vec<(Option<DateTime<Utc>>, PathBuf)> = std::fs::read_dir(project)
         .into_iter()
         .flatten()
@@ -397,9 +410,7 @@ pub fn agent_opening(transcript: &Path, agent: &str) -> Option<(String, DateTime
 #[must_use]
 pub fn first_stamp(path: &Path) -> Option<DateTime<Utc>> {
     let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file).lines().map_while(Result::ok).find_map(|text| {
-        serde_json::from_str::<Line>(&text).ok()?.timestamp.as_deref().and_then(utc)
-    })
+    std::io::BufReader::new(file).lines().map_while(Result::ok).find_map(|text| serde_json::from_str::<Line>(&text).ok()?.timestamp.as_deref().and_then(utc))
 }
 
 /// Entre os agentes `openings` — cada um com o caminho do arquivo, a primeira
@@ -422,10 +433,7 @@ where
 /// lê dele; nenhum quando a pasta não tem `subagents/`. O arquivo que não
 /// mudou desde `sent` fica de fora sem ser aberto: ele não tem linha depois do
 /// envio.
-fn agent_openings(
-    session_dir: &Path,
-    sent: DateTime<Utc>,
-) -> impl Iterator<Item = (PathBuf, String, DateTime<Utc>)> + use<> {
+fn agent_openings(session_dir: &Path, sent: DateTime<Utc>) -> impl Iterator<Item = (PathBuf, String, DateTime<Utc>)> + use<> {
     let floor = SystemTime::from(sent);
     std::fs::read_dir(session_dir.join("subagents"))
         .into_iter()
@@ -443,10 +451,7 @@ fn agent_openings(
 /// `agent-<id>.jsonl`: o `.meta.json` ao lado não é conversa.
 fn is_agent_file(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "jsonl")
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("agent-"))
+        && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("agent-"))
         && path.is_file()
 }
 
@@ -467,7 +472,9 @@ fn opening(path: &Path) -> Option<(String, DateTime<Utc>)> {
     let mut started: Option<DateTime<Utc>> = None;
     for text in std::io::BufReader::new(file).lines() {
         let Ok(text) = text else { break };
-        let Ok(line) = serde_json::from_str::<Line>(&text) else { continue };
+        let Ok(line) = serde_json::from_str::<Line>(&text) else {
+            continue;
+        };
         if started.is_none() {
             started = line.timestamp.as_deref().and_then(utc);
         }
@@ -506,7 +513,9 @@ pub fn orchestrator_usage(project_dir: &Path, branch: &str, since: &str) -> Opti
     files.sort();
     let mut tally = Tally::default();
     for path in files {
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
         for line in String::from_utf8_lossy(&bytes).lines().filter_map(usage_line) {
             let main = line.is_sidechain == Some(false);
             let on_branch = line.git_branch.as_deref() == Some(branch);
@@ -611,10 +620,7 @@ mod tests {
             ],
         );
         // Depois de um `/clear`, a conversa segue noutro arquivo.
-        write(
-            &project.join("depois-do-clear.jsonl"),
-            &[response("m5", "2026-01-10T22:00:00.000Z", branch, false, [1, 2, 3, 4], &thinking())],
-        );
+        write(&project.join("depois-do-clear.jsonl"), &[response("m5", "2026-01-10T22:00:00.000Z", branch, false, [1, 2, 3, 4], &thinking())]);
 
         let agents = project.join("sessao").join("subagents");
         let body = "\n\nModelo desta onda: Opus.\n";
@@ -759,10 +765,7 @@ mod tests {
         let session = config.path().join("projects").join("-obra").join("sessao");
         let agents = session.join("subagents");
         let title = "# obra — onda 3";
-        write(
-            &agents.join("agent-direto.jsonl"),
-            &[request("2026-01-10T21:54:28.200Z", &format!("{title}\n\nLeia o pedido."))],
-        );
+        write(&agents.join("agent-direto.jsonl"), &[request("2026-01-10T21:54:28.200Z", &format!("{title}\n\nLeia o pedido."))]);
         write(
             &agents.join("agent-com-linha-antes.jsonl"),
             &[request("2026-01-10T21:54:28.300Z", &format!("Idiomas deste projeto.\n\n{title}\n\nLeia o pedido."))],

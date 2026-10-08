@@ -9,16 +9,14 @@ use std::process::Stdio;
 
 use mustard_core::domain::project_map::ProjectMap;
 use mustard_core::domain::scan::ScanReport;
-use mustard_core::domain::spec_events::{
-    check_message, MessageRefusal, Refusal, SpecLog, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
-};
+use mustard_core::domain::spec_events::{MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX, MessageRefusal, Refusal, SpecLog, check_message};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::recorded_copy;
 use mustard_core::platform::git as git_exec;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 use mustard_core::platform::process;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
@@ -69,14 +67,13 @@ const SUMMARY_ROOM_MIN: usize = 20;
 /// cita as primeiras ondas que deixam espaço e conta as outras (`ondas-1-2+9`). O tipo é `fix` quando a rodada traz um conserto, e `feat` nos outros casos.
 /// `None` quando nenhuma entrega traz arquivo.
 pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Option<(String, String)>, RoundRefusal> {
-    let committed: Vec<(&WaveReport, &str)> = waves
-        .iter()
-        .filter(|w| needs_commit(&w.files))
-        .filter_map(|w| w.commit.as_deref().map(|summary| (w, summary)))
-        .collect();
-    let Some((_, first)) = committed.first() else {
+    let committed: Vec<(&WaveReport, &str)> =
+        waves.iter().filter(|w| needs_commit(&w.files)).filter_map(|w| w.commit.as_deref().map(|summary| (w, summary))).collect();
+    let summary_all = committed.iter().map(|(_, summary)| *summary).collect::<Vec<_>>().join("; ");
+    let Some((_, _)) = committed.first() else {
         return Ok(None);
     };
+    let first = &summary_all;
     let numbers: Vec<String> = committed.iter().map(|(w, _)| w.wave.to_string()).collect();
     let kind = if committed.iter().any(|(w, _)| !w.fixes.is_empty()) { "fix" } else { "feat" };
     let prefix = |kept: usize| {
@@ -109,9 +106,7 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
     let body: Vec<String> = committed
         .iter()
         .map(|(w, summary)| {
-            let mut line = translate("round.commit.line", lang)
-                .replace("{wave}", &w.wave.to_string())
-                .replace("{summary}", summary);
+            let mut line = translate("round.commit.line", lang).replace("{wave}", &w.wave.to_string()).replace("{summary}", summary);
             if !w.fixes.is_empty() {
                 let fixed: Vec<String> = w.fixes.iter().map(u64::to_string).collect();
                 line.push(' ');
@@ -147,11 +142,8 @@ fn shorten_to(text: &str, room: usize) -> String {
 /// A conferência mora no núcleo; aqui fica só a tradução para a recusa da
 /// rodada, que é o que muda entre as duas portas.
 pub(super) fn check_commit_text(title: &str, body: &str) -> Result<(), RoundRefusal> {
-    check_message(title, body, MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX).map_err(|refusal| match refusal
-    {
-        MessageRefusal::TooLong { part, chars, max } => {
-            RoundRefusal::CommitTooLong { part: part.to_string(), chars, max }
-        }
+    check_message(title, body, MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX).map_err(|refusal| match refusal {
+        MessageRefusal::TooLong { part, chars, max } => RoundRefusal::CommitTooLong { part: part.to_string(), chars, max },
         MessageRefusal::Forbidden { found, .. } => RoundRefusal::CommitForbidden { found },
         // O commit não tira o título da spec: o relatório o traz. Uma spec sem
         // objetivo não é recusa desta porta.
@@ -160,17 +152,10 @@ pub(super) fn check_commit_text(title: &str, body: &str) -> Result<(), RoundRefu
 }
 
 /// As extensões que o Prettier trata.
-const PRETTIER_EXTS: &[&str] =
-    &[".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".md", ".html", ".scss"];
+const PRETTIER_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".md", ".html", ".scss"];
 
 /// Os sinais de que o projeto tem Prettier configurado.
-const PRETTIER_SIGNS: &[&str] = &[
-    "node_modules/.bin/prettier",
-    ".prettierrc",
-    ".prettierrc.js",
-    ".prettierrc.json",
-    "prettier.config.js",
-];
+const PRETTIER_SIGNS: &[&str] = &["node_modules/.bin/prettier", ".prettierrc", ".prettierrc.js", ".prettierrc.json", "prettier.config.js"];
 
 /// O que a formatação da rodada fez: os arquivos formatados e os formatadores
 /// que o projeto declara e que não foram achados.
@@ -210,13 +195,10 @@ pub(super) fn format_with(root: &Path, files: &[String], exec: &dyn Fn(&str, &[&
         }
     }
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let sharp: Vec<&String> = files
-        .iter()
-        .filter(|f| seen.insert(f.as_str()))
-        .filter(|f| extension(f) == ".cs")
-        .filter(|f| root.join(f).is_file())
-        .collect();
-    if !sharp.is_empty() && let Some(project) = dotnet_project(root) {
+    let sharp: Vec<&String> = files.iter().filter(|f| seen.insert(f.as_str())).filter(|f| extension(f) == ".cs").filter(|f| root.join(f).is_file()).collect();
+    if !sharp.is_empty()
+        && let Some(project) = dotnet_project(root)
+    {
         let mut ok = true;
         for file in &sharp {
             ok &= exec("dotnet", &["format", &project, "--include", file, "--no-restore"]);
@@ -278,8 +260,7 @@ pub(super) const UNMADE_SHA: &str = "0000000000000000000000000000000000000000";
 /// mora num lugar só ([`crate::commands::git_settle::git_step_lock`]), porque
 /// o commit da rodada e o ponteiro dos submódulos disputam o mesmo índice.
 pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
-    crate::commands::git_settle::git_step_lock(root)
-        .map_err(|detail| RoundRefusal::Refused(Refusal::Io { detail }))
+    crate::commands::git_settle::git_step_lock(root).map_err(|detail| RoundRefusal::Refused(Refusal::Io { detail }))
 }
 
 /// O commit atual do checkout `root`; vazio quando o git não responde.
@@ -308,9 +289,33 @@ fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
 /// cita e ainda não tem. Nunca trava a rodada nem avisa: sem o mapa, sem a
 /// ferramenta ou sem o provedor, a sugestão e a história seguem com o que já
 /// tinham.
-pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
-    let _ = mine(root, &mustard_core::io::project_map::model_path(root));
+pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) -> bool {
+    let refreshed = mine(root, &mustard_core::io::project_map::model_path(root)).is_ok();
     crate::shared::pr_history::refresh(root);
+    refreshed
+}
+
+pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(u64, bool, String)> {
+    let base = mustard_core::io::spec_events::spec_file(root, spec)
+        .ok()
+        .and_then(|p| std::fs::read(p.parent()?.join("validation-base-map.json")).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let after = mustard_core::io::project_map::read(root).ok();
+    let (Some(base), Some(after)) = (base, after) else {
+        return vec![(0, false, translate("round.after_wave.analysis_unknown", lang).to_string())];
+    };
+    let changed = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "commit")
+        .flat_map(|e| {
+            e.ints("waves")
+                .into_iter()
+                .map(|w| (w, e.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.wave, f.refuses, f.text)).collect()
 }
 
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta
@@ -345,11 +350,7 @@ fn installed_scan_format() -> Option<String> {
 
 /// [`refresh_map_if_stale`] com a marca de formato do scan dada por `format`,
 /// em vez da do scan achado ao lado deste programa.
-fn refresh_map_if_behind(
-    root: &Path,
-    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
-    format: &dyn Fn() -> Option<String>,
-) {
+fn refresh_map_if_behind(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>, format: &dyn Fn() -> Option<String>) {
     if mustard_core::io::project_map::is_behind(root, format) {
         refresh_map(root, mine);
     }
@@ -432,19 +433,12 @@ struct SubCommit {
 
 /// Os commits de [`make_commit`], primeiro os dos submódulos, em `done`, e
 /// por último o do principal, que leva o ponteiro de cada um.
-fn commit_repos(
-    root: &Path,
-    unit: &str,
-    (title, body): (&str, &str),
-    repos: &RoundRepos,
-    done: &mut Vec<SubCommit>,
-) -> Result<String, RoundRefusal> {
+fn commit_repos(root: &Path, unit: &str, (title, body): (&str, &str), repos: &RoundRepos, done: &mut Vec<SubCommit>) -> Result<String, RoundRefusal> {
     let mut own = repos.own.clone();
     for (sub, files) in &repos.subs {
         let dir = root.join(sub);
         enter_unit_branch(&dir, unit).map_err(|detail| RoundRefusal::Git { detail })?;
-        let inner: Vec<String> =
-            files.iter().filter_map(|file| file.strip_prefix(&format!("{sub}/")).map(str::to_string)).collect();
+        let inner: Vec<String> = files.iter().filter_map(|file| file.strip_prefix(&format!("{sub}/")).map(str::to_string)).collect();
         let before = head(&dir);
         let sha = committed(&dir, title, body, &inner)?;
         done.push(SubCommit { sub: sub.clone(), before, inner, sha });
@@ -471,16 +465,9 @@ fn committed(dir: &Path, title: &str, body: &str, files: &[String]) -> Result<St
 /// sem conteúdo, e vai para `registered`, que é o que o desfazer tira. O
 /// apagado que o git nunca conheceu fica de fora, porque não há o que levar
 /// dele; o que só saiu do disco, ou já saiu do índice, vai como remoção.
-fn commit_paths(
-    root: &Path,
-    title: &str,
-    body: &str,
-    files: &[String],
-    registered: &mut Vec<String>,
-) -> Result<String, RoundRefusal> {
+fn commit_paths(root: &Path, title: &str, body: &str, files: &[String], registered: &mut Vec<String>) -> Result<String, RoundRefusal> {
     let refused = |detail: String| RoundRefusal::Git { detail };
-    let (present, gone): (Vec<&str>, Vec<&str>) =
-        files.iter().map(String::as_str).partition(|file| root.join(file).exists());
+    let (present, gone): (Vec<&str>, Vec<&str>) = files.iter().map(String::as_str).partition(|file| root.join(file).exists());
     if !present.is_empty() {
         let mut others: Vec<&str> = vec!["ls-files", "-z", "--others", "--"];
         others.extend(&present);
@@ -492,9 +479,7 @@ fn commit_paths(
         add.extend(registered.iter().map(String::as_str));
         git(root, &add).map_err(refused)?;
     }
-    let known_gone = gone
-        .into_iter()
-        .filter(|file| git(root, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok());
+    let known_gone = gone.into_iter().filter(|file| git(root, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok());
     let mut args: Vec<&str> = vec!["commit", "--only", "-m", title];
     if !body.is_empty() {
         args.push("-m");
@@ -522,15 +507,7 @@ pub(super) fn commit_draft(root: &Path, sha: &str, title: &str, waves: &[u64], f
 }
 
 /// Grava no arquivo de eventos o commit `sha` feito pela rodada.
-pub(super) fn record_commit(
-    start: &Path,
-    root: &Path,
-    spec: &str,
-    sha: &str,
-    title: &str,
-    waves: &[u64],
-    files: &[String],
-) -> Result<Value, RoundRefusal> {
+pub(super) fn record_commit(start: &Path, root: &Path, spec: &str, sha: &str, title: &str, waves: &[u64], files: &[String]) -> Result<Value, RoundRefusal> {
     let draft = commit_draft(root, sha, title, waves, files);
     record(start, spec, "commit", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
     Ok(json!({ "sha": sha, "title": title }))
@@ -548,8 +525,7 @@ pub(super) fn unknown_file(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> 
         for file in &wave.files {
             let known = std::iter::once(root).chain(copy.as_deref()).any(|dir| {
                 let (repo, inner) = repo_of(dir, &subs, file);
-                dir.join(file).exists()
-                    || git(&repo, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", &inner]).is_ok()
+                dir.join(file).exists() || git(&repo, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", &inner]).is_ok()
             });
             if !known {
                 return Err(RoundRefusal::FileUnknown { file: file.clone(), wave: wave.wave });
@@ -609,16 +585,14 @@ impl Held {
 /// arquivo de dentro de um submódulo é comparado no submódulo, com o commit
 /// da cópia dele como base. O caminho que sai do repositório não é tocado: o
 /// git o recusa no commit.
-pub(super) fn join_copies(
-    root: &Path,
-    log: &SpecLog,
-    waves: &[WaveReport],
-) -> Result<(Vec<Joined>, Vec<Held>), RoundRefusal> {
+pub(super) fn join_copies(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> Result<(Vec<Joined>, Vec<Held>), RoundRefusal> {
     let subs = submodules_of(root);
     let mut joined: BTreeMap<String, Joined> = BTreeMap::new();
     let mut held: Vec<Held> = Vec::new();
     for wave in waves {
-        let Some(copy) = copy_of(log, wave.wave) else { continue };
+        let Some(copy) = copy_of(log, wave.wave) else {
+            continue;
+        };
         let mut bases: BTreeMap<PathBuf, String> = BTreeMap::new();
         let mut conflicts: Vec<String> = Vec::new();
         // O que esta onda muda só entra na junção quando nenhum arquivo dela
@@ -633,9 +607,7 @@ pub(super) fn join_copies(
             }
             let base = bases.get(&copy_repo).cloned().unwrap_or_default();
             let theirs = std::fs::read(copy.join(file)).ok();
-            let base_id = git(&copy_repo, &["rev-parse", "--verify", "-q", &format!("{base}:{inner}")])
-                .ok()
-                .map(|id| id.trim().to_string());
+            let base_id = git(&copy_repo, &["rev-parse", "--verify", "-q", &format!("{base}:{inner}")]).ok().map(|id| id.trim().to_string());
             if blob_id(&copy_repo, &inner, theirs.as_deref()) == base_id {
                 continue;
             }
@@ -674,10 +646,7 @@ pub(super) fn join_copies(
         }
         for (file, after) in staged {
             let before = std::fs::read(root.join(&file)).ok();
-            joined
-                .entry(file.clone())
-                .and_modify(|done| done.after.clone_from(&after))
-                .or_insert(Joined { file, before, after });
+            joined.entry(file.clone()).and_modify(|done| done.after.clone_from(&after)).or_insert(Joined { file, before, after });
         }
     }
     Ok((joined.into_values().collect(), held))
@@ -787,7 +756,9 @@ pub(super) fn reset_committed_copies(root: &Path, log: &SpecLog, waves: &[u64], 
     let subs = submodules_of(root);
     let committed: BTreeSet<&str> = files.iter().map(String::as_str).collect();
     for wave in waves.iter().filter(|wave| !shared.contains(wave)) {
-        let Some(copy) = copy_of(log, *wave) else { continue };
+        let Some(copy) = copy_of(log, *wave) else {
+            continue;
+        };
         if copy_changed(&copy, &subs).iter().any(|file| !committed.contains(file.as_str())) {
             continue;
         }
@@ -842,17 +813,33 @@ type AfterWaveChecks = (Vec<Value>, Vec<(u64, String)>);
 /// commit. A linha é só dado da onda.
 pub(super) fn ensure_after_wave(
     root: &Path,
+    spec: &str,
     log: &SpecLog,
     waves: &[WaveReport],
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
     lang: Locale,
 ) -> Result<AfterWaveChecks, RoundRefusal> {
-    let changed: Vec<(u64, Vec<String>)> =
-        waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
-    let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Default::default()) };
+    let changed: Vec<(u64, Vec<String>)> = waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
+    let Some(maps) = after_wave_maps(root, changed, mine) else {
+        return Ok(Default::default());
+    };
+    {
+        if let Ok(path) = mustard_core::io::spec_events::spec_file(root, spec)
+            && let Some(dir) = path.parent() {
+                // The git-step lock serializes delivery. Atomic replacement
+                // cannot leave a torn base when the process dies mid-write.
+                let base = dir.join("validation-base-map.json");
+                if !base.is_file()
+                    && let Ok(bytes) = serde_json::to_vec(&maps.base) {
+                        let _ = mustard_core::io::fs::write_atomic(&base, &bytes);
+                    }
+            }
+    }
     let mut found = super::imports_check::findings(root, &maps, log, lang);
     found.extend(super::removed_check::findings(root, &maps, lang));
     let mut warnings = after_wave_answer(waves, &found, lang)?;
+    let files = maps.changed.iter().flat_map(|(_, files)| files.iter().cloned()).collect::<Vec<_>>();
+    warnings.extend(super::test_warnings::candidates(root, log, &maps.base, &maps.after, &files, lang));
     let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
     warnings.extend(sizes.iter().map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
     Ok((warnings, sizes))
@@ -955,6 +942,7 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
 /// aqui não roda de novo depois do commit.
 pub(super) fn ensure_criteria_proofs(
     root: &Path,
+    spec: &str,
     log: &SpecLog,
     waves: &[u64],
     undone: &[u64],
@@ -963,13 +951,7 @@ pub(super) fn ensure_criteria_proofs(
     let codes = log.codes();
     let returning: BTreeSet<u64> = waves.iter().copied().collect();
     let mut waiting = super::agreed::covered_codes(log, &returning);
-    waiting.extend(
-        undone
-            .iter()
-            .filter_map(|id| log.get(*id))
-            .flat_map(|task| task.ints("covers"))
-            .filter_map(|id| codes.get(&id).cloned()),
-    );
+    waiting.extend(undone.iter().filter_map(|id| log.get(*id)).flat_map(|task| task.ints("covers")).filter_map(|id| codes.get(&id).cloned()));
     let criteria: Vec<(u64, String, String)> = log
         .criteria_for_waves(waves)
         .into_iter()
@@ -985,16 +967,18 @@ pub(super) fn ensure_criteria_proofs(
             Some((e.id, code, proof))
         })
         .collect();
-    let (_, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
-    let Some(failed) = failed else { return Ok(criteria.into_iter().map(|(_, _, proof)| proof).collect()) };
+    let (outcomes, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
+    for (_, code, out) in &outcomes {
+        let command = criteria.iter().find(|(_, c, _)| c == code).map(|(_, _, p)| p.as_str()).unwrap_or_default();
+        super::super::validation::record_run(root, spec, "delivery", "criterion-proof", command, out).map_err(RoundRefusal::Refused)?;
+    }
+    let Some(failed) = failed else {
+        return Ok(criteria.into_iter().map(|(_, _, proof)| proof).collect());
+    };
     Err(match failed.fault {
-        ProofFault::RanNoTest(tests) => {
-            RoundRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }
-        }
+        ProofFault::RanNoTest(tests) => RoundRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests },
         ProofFault::MissingTest(name) => RoundRefusal::CriterionMissingTest { code: failed.code, name },
-        ProofFault::Failed(output) => {
-            RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output }
-        }
+        ProofFault::Failed(output) => RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output },
     })
 }
 
@@ -1002,7 +986,9 @@ pub(super) fn ensure_criteria_proofs(
 /// `packages/`. Um documento, uma spec ou um texto do plugin não pedem
 /// compilação nenhuma.
 fn changes_the_program(files: &[String]) -> bool {
-    files.iter().any(|file| file.starts_with("apps/") || file.starts_with("packages/"))
+    files.iter().any(|file| {
+        file.starts_with("apps/") || file.starts_with("packages/") || file.starts_with(".cargo/") || matches!(file.as_str(), "Cargo.toml" | "Cargo.lock")
+    })
 }
 
 /// Compila a versão em construção do Mustard depois do commit de uma onda que
@@ -1018,9 +1004,7 @@ fn changes_the_program(files: &[String]) -> bool {
 /// programa compilado anterior, e o aviso traz o fim da saída — é ela que diz o
 /// que consertar —; a rodada nunca recusa por isso, porque o commit já saiu.
 pub(super) fn build_development_version(root: &Path, files: &[String], lang: Locale) -> Option<Value> {
-    build_development_version_with(root, files, lang, &|command, cwd| {
-        crate::commands::review::qa_run::run_server_command(command, cwd)
-    })
+    build_development_version_with(root, files, lang, &|command, cwd| crate::commands::review::qa_run::run_server_command(command, cwd))
 }
 
 /// [`build_development_version`] com o executor recebido, que é como um teste
@@ -1036,7 +1020,7 @@ fn build_development_version_with(
     }
     let main = mustard_core::mustard_checkout(root)?;
     let target = mustard_core::io::wave_prompt::development_build_dir(&main);
-    let built = exec(&crate::shared::development_build::build_command(&target), &main);
+    let built = exec(&crate::shared::development_build::build_changed_command(&target, files), &main);
     if built.result == "pass" {
         return None;
     }
@@ -1125,10 +1109,7 @@ mod tests {
         // listagem que ela leu.
         let map_at = |head: &str, listing: &str| {
             let base = project_map::base_of(root);
-            let state = format!(
-                r#"{{"state": {{"head": "{head}", "listing": "{listing}", "base": "{}", "base_tip": "{}"}}}}"#,
-                base.name, base.tip
-            );
+            let state = format!(r#"{{"state": {{"head": "{head}", "listing": "{listing}", "base": "{}", "base_tip": "{}"}}}}"#, base.name, base.tip);
             project_map::write_text(root, &state).unwrap();
         };
 
@@ -1303,9 +1284,8 @@ mod tests {
                 returns: Vec::new(),
                 usage: Default::default(),
             };
-            let (title, _) = commit_message(&[report("a".repeat(limit))], lang)
-                .unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits"))
-                .expect("a message");
+            let (title, _) =
+                commit_message(&[report("a".repeat(limit))], lang).unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits")).expect("a message");
             assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{lang:?}: {title}");
             let Err(over) = commit_message(&[report("a".repeat(limit + 1))], lang) else {
                 panic!("{lang:?}: a summary over {limit} characters is refused");
@@ -1339,9 +1319,8 @@ mod tests {
         };
 
         let waves = [report(1, "a".repeat(43)), report(2, "a".repeat(43))];
-        let (title, body) = commit_message(&waves, Locale::PtBr)
-            .unwrap_or_else(|_| panic!("a 43-character summary fits the joint scope of two waves"))
-            .expect("a message");
+        let (title, body) =
+            commit_message(&waves, Locale::PtBr).unwrap_or_else(|_| panic!("a 43-character summary fits the joint scope of two waves")).expect("a message");
         assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{title}");
         assert!(title.starts_with("feat(ondas-1-2): "), "{title}");
         assert_eq!(body.lines().count(), 2, "{body}");
@@ -1376,17 +1355,11 @@ mod tests {
             returns: Vec::new(),
             usage: Default::default(),
         };
-        let waves = [
-            report(101, "Cadastro lido só nos itens da tabela de loja"),
-            report(107, "Aviso da rodada e envio do resumo"),
-        ];
+        let waves = [report(101, "Cadastro lido só nos itens da tabela de loja"), report(107, "Aviso da rodada e envio do resumo")];
         let (title, body) = commit_message(&waves, Locale::PtBr).unwrap_or_else(|_| panic!("fits")).expect("a message");
         assert_eq!(title, "feat(ondas-101-107): Cadastro lido só nos itens da tabela de", "{title}");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
-        assert_eq!(
-            body,
-            "- onda 101: Cadastro lido só nos itens da tabela de loja\n- onda 107: Aviso da rodada e envio do resumo"
-        );
+        assert_eq!(body, "- onda 101: Cadastro lido só nos itens da tabela de loja\n- onda 107: Aviso da rodada e envio do resumo");
     }
 
     /// Com tantas ondas no mesmo commit que o escopo sozinho passa do teto do
@@ -1411,9 +1384,8 @@ mod tests {
             usage: Default::default(),
         };
         let waves: Vec<WaveReport> = (101..113).map(report).collect();
-        let (title, body) = commit_message(&waves, Locale::PtBr)
-            .unwrap_or_else(|_| panic!("twelve waves in one commit must not refuse the round"))
-            .expect("a message");
+        let (title, body) =
+            commit_message(&waves, Locale::PtBr).unwrap_or_else(|_| panic!("twelve waves in one commit must not refuse the round")).expect("a message");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
         assert_eq!(title, "feat(ondas-101-102-103-104-105-106+6): Relatório do mês", "{title}");
         assert_eq!(body.lines().count(), 12, "o corpo traz uma linha por onda: {body}");
@@ -1468,8 +1440,7 @@ mod tests {
         round(root, "x", None);
 
         std::fs::write(root.join("src/a.rs"), "fn one() { dois(); }\nfn dois() {}\n").unwrap();
-        let delivered =
-            |summary: &str| json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": summary});
+        let delivered = |summary: &str| json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": summary});
         let refused = returned(root, delivered("pedido de fulano@empresa.com.br"));
         assert_eq!(refused["reason"], json!("commit-forbidden-text"), "{refused}");
         assert_eq!(written_deliveries(root), 0, "nada foi gravado");
@@ -1522,11 +1493,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
 
-        let shown = Command::new("git")
-            .args(["show", "--name-status", "--format=", "HEAD"])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        let shown = Command::new("git").args(["show", "--name-status", "--format=", "HEAD"]).current_dir(root).output().unwrap();
         let shown = String::from_utf8_lossy(&shown.stdout).to_string();
         let changes: Vec<&str> = shown.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(changes, ["D\tsrc/a.rs", "D\tsrc/b.rs", "M\tsrc/c.rs"], "{out}");
@@ -1560,15 +1527,10 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(!root.join("src/a.rs").exists());
         assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn one() { third(); }\nfn third() {}\n");
-        assert_eq!(std::fs::read_to_string(root.join("src/esquecido.rs")).unwrap(), "fn main() {}\n",
-            "o arquivo fora da lista entra no commit mesmo assim");
+        assert_eq!(std::fs::read_to_string(root.join("src/esquecido.rs")).unwrap(), "fn main() {}\n", "o arquivo fora da lista entra no commit mesmo assim");
         let shown = Command::new("git").args(["show", "--name-status", "--format=", "HEAD"]).current_dir(root).output();
         let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
-        assert_eq!(
-            shown.lines().collect::<Vec<_>>(),
-            ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs", "A\tsrc/esquecido.rs"],
-            "{out}"
-        );
+        assert_eq!(shown.lines().collect::<Vec<_>>(), ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs", "A\tsrc/esquecido.rs"], "{out}");
 
         assert!(copy(1).join(".git").is_file(), "the copy stays after the commit of the wave");
         assert!(copy(2).join(".git").is_file(), "the other copy stays too");
@@ -1586,7 +1548,11 @@ mod tests {
             .into_iter()
             .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
             .collect();
-        assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
+        assert_eq!(warned.len(), 2, "{out}");
+        assert_eq!(warned[0], json!({"reason":"files-diverged","wave":2,"hint":hint}));
+        assert_eq!(warned[1]["reason"], "scope-expanded");
+        assert_eq!(warned[1]["files"], json!(["src/esquecido.rs"]));
+        assert_eq!(warned[1]["classification"], "necessity-unverified");
     }
 
     /// A volta da onda 1 com os arquivos `files`, gravada sem mexer neles.
@@ -1598,7 +1564,7 @@ mod tests {
     /// rodada, com o motivo que o git deu, e a rodada não deixa nada gravado;
     /// depois de `fix`, a volta que entrega `fixed` é assumida uma vez só.
     fn refused_by_git_records_nothing(root: &Path, wrong: &[Value], fix: impl FnOnce(), fixed: &[&str]) {
-        let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+        let spec_lines = || super::super::tests::without_measurements(&std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap()).lines().count();
         for body in wrong {
             assert_eq!(returned(root, body.clone())["ok"], json!(true), "{body}");
             let before = spec_lines();
@@ -1632,10 +1598,8 @@ mod tests {
         let absolute = outside.path().join("fora.rs").to_string_lossy().to_string();
         std::fs::write(root.join(".gitignore"), "src/gerado.rs\n").unwrap();
         std::fs::write(root.join("src/gerado.rs"), "fn gerado() {}\n").unwrap();
-        let wrong: Vec<Value> = [absolute, format!("../{name}/fora.rs"), "src/gerado.rs".to_string()]
-            .iter()
-            .map(|path| listing(&["src/a.rs", path.as_str()]))
-            .collect();
+        let wrong: Vec<Value> =
+            [absolute, format!("../{name}/fora.rs"), "src/gerado.rs".to_string()].iter().map(|path| listing(&["src/a.rs", path.as_str()])).collect();
         std::fs::write(root.join("src/novo.rs"), "fn main() {}\n").unwrap();
         refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs", "src/novo.rs"]);
         let shown = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output();
@@ -1781,9 +1745,7 @@ mod tests {
         let spec = store::spec_file(root, "x").unwrap();
         let (index, _) = mustard_core::io::spec_index::index_for(&spec).expect("the spec index");
         let body = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
-        let in_the_file = |spec: &Path| {
-            std::fs::read_to_string(spec).unwrap_or_default().lines().any(|l| l.contains("\"returned\":true"))
-        };
+        let in_the_file = |spec: &Path| std::fs::read_to_string(spec).unwrap_or_default().lines().any(|l| l.contains("\"returned\":true"));
 
         // O agente lê o pedido e grava o passo da tarefa antes de entregar: com
         // o índice preso, nem a leitura nem o passo entrariam.
@@ -1831,17 +1793,9 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
-        let official: Vec<(Option<u64>, String)> = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "delivered")
-            .map(|e| (e.wave(), codes[&e.id].clone()))
-            .collect();
-        assert_eq!(
-            official,
-            vec![(Some(1), "MSTD-DELIV-0001".to_string()), (Some(2), "MSTD-DELIV-0002".to_string())],
-            "{out}"
-        );
+        let official: Vec<(Option<u64>, String)> =
+            log.visible().into_iter().filter(|e| e.event_type == "delivered").map(|e| (e.wave(), codes[&e.id].clone())).collect();
+        assert_eq!(official, vec![(Some(1), "MSTD-DELIV-0001".to_string()), (Some(2), "MSTD-DELIV-0002".to_string())], "{out}");
     }
 
     /// Com nada a comitar, o git recusa e dá o motivo na saída normal: a
@@ -1921,11 +1875,7 @@ mod tests {
         let out = format_with(root, &files, &never);
         assert!(out.formatted.is_empty(), "{out:?}");
         assert_eq!(out.missing, vec!["Prettier".to_string()], "o formatador some pelo nome");
-        assert_eq!(
-            std::fs::read_to_string(root.join("src/fora.ts")).unwrap(),
-            "const x=1\n",
-            "o arquivo fora da rodada fica byte a byte"
-        );
+        assert_eq!(std::fs::read_to_string(root.join("src/fora.ts")).unwrap(), "const x=1\n", "o arquivo fora da rodada fica byte a byte");
     }
 
     /// O ramo do projeto .NET: o formatador roda uma vez por arquivo da
@@ -1962,11 +1912,7 @@ mod tests {
         let out = format_with(root, &files, &never);
         assert!(out.formatted.is_empty(), "{out:?}");
         assert_eq!(out.missing, vec!["dotnet format".to_string()], "o formatador some pelo nome");
-        assert_eq!(
-            std::fs::read_to_string(root.join("src/fora.cs")).unwrap(),
-            "class A {}\n",
-            "o arquivo fora da rodada fica byte a byte"
-        );
+        assert_eq!(std::fs::read_to_string(root.join("src/fora.cs")).unwrap(), "class A {}\n", "o arquivo fora da rodada fica byte a byte");
     }
 
     /// A raiz de um repositório que constrói o próprio `mustard-rt`, com o git
@@ -2014,7 +1960,7 @@ mod tests {
         assert_eq!(commands.len(), 2, "uma compilação por rodada que tocou o programa: {commands:?}");
         let (command, cwd) = &commands[0];
         let target = mustard_core::io::wave_prompt::development_build_dir(root);
-        assert_eq!(command, &crate::shared::development_build::build_command(&target));
+        assert_eq!(command, &crate::shared::development_build::build_changed_command(&target, &files(&["apps/rt/src/main.rs"])));
         assert_eq!(std::fs::canonicalize(cwd).unwrap(), std::fs::canonicalize(root).unwrap(), "no checkout principal");
 
         let other = tempdir().unwrap();

@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::{code_of, language_line, lowered, pattern_block_in_step, wave_title, Material, Writer, STEP_INDENT};
+use super::{Material, STEP_INDENT, Writer, code_of, language_line, lowered, pattern_block_in_step, wave_title};
 use crate::domain::spec_events::SpecEvent;
 
 /// Uma tarefa da onda, com o que ela atende.
@@ -82,8 +82,7 @@ pub fn listed(material: &Material) -> Vec<String> {
 /// a onda lista, na ordem em que ela as lista, depois o que sobrou, na ordem
 /// do arquivo. A onda que não declara ordem sai como está no arquivo.
 fn ordered_tasks<'a>(material: &Material<'a>) -> Vec<&'a SpecEvent> {
-    let order: Vec<u64> =
-        material.block.iter().find(|e| e.event_type == "wave").map(|wave| wave.ints("order")).unwrap_or_default();
+    let order: Vec<u64> = material.block.iter().find(|e| e.event_type == "wave").map(|wave| wave.ints("order")).unwrap_or_default();
     let mut out: Vec<&SpecEvent> = Vec::new();
     for id in &order {
         if let Some(event) = material.block.iter().copied().find(|e| e.id == *id) {
@@ -125,9 +124,7 @@ impl Writer<'_> {
         let _ = writeln!(
             out,
             "{}\n",
-            self.t("prompt.model.wave")
-                .replace("{model}", m.execution.requested_model())
-                .replace("{effort}", m.execution.requested_effort())
+            self.t("prompt.model.wave").replace("{model}", m.execution.requested_model()).replace("{effort}", m.execution.requested_effort())
         );
         let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
         self.started(&mut out, listing.summary);
@@ -138,6 +135,10 @@ impl Writer<'_> {
         self.to_obey(&mut out, &listing);
         self.to_return(&mut out);
         self.to_work(&mut out);
+        self.prepared_sources(&mut out);
+        if let Some(section) = super::project_rules_section(&m.project_rules, self.lang) {
+            let _ = writeln!(out, "\n{section}\n");
+        }
         while out.ends_with("\n\n") {
             out.pop();
         }
@@ -149,7 +150,9 @@ impl Writer<'_> {
     /// tarefas —, porque é o que abre o trabalho. Sem onda no material ou
     /// sem a frase, a seção não aparece.
     fn delivers(&self, out: &mut String) {
-        let Some(wave) = self.material.block.iter().copied().find(|e| e.event_type == "wave") else { return };
+        let Some(wave) = self.material.block.iter().copied().find(|e| e.event_type == "wave") else {
+            return;
+        };
         let done_when = wave.str_field("done_when").unwrap_or_default().trim();
         if done_when.is_empty() {
             return;
@@ -232,7 +235,9 @@ impl Writer<'_> {
             let _ = writeln!(out, "{pad}- {}", self.t("prompt.step.read_before").replace("{hints}", &hints.join(", ")));
         }
         for path in paths {
-            let Some(tests) = m.file_tests.get(path) else { continue };
+            let Some(tests) = m.file_tests.get(path) else {
+                continue;
+            };
             let list = tests.iter().map(|test| format!("`{test}`")).collect::<Vec<_>>().join(", ");
             let line = self.t("prompt.task.tested_by").replace("{file}", path).replace("{tests}", &list);
             let _ = writeln!(out, "{pad}- {line}");

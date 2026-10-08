@@ -47,29 +47,33 @@
 //! Nunca falha: sem mapa, sem sessão, com regex que esta leitura não entende
 //! ou passando do tempo, a resposta é passar, e a busca comum segue.
 
-use std::fmt::Write as _;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::fmt::Write as _;
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use mustard_core::ClaudePaths;
+use mustard_core::ProjectConfig;
 use mustard_core::domain::map_filter::{FilterError, Verdict};
 use mustard_core::domain::model::contract::{Ctx, HookInput};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, FilePart, FileParts};
-use mustard_core::domain::triage::{not_found, Mark};
+use mustard_core::domain::triage::{Mark, not_found};
 use mustard_core::io::fs;
 use mustard_core::io::map_search;
 use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{ClaudePaths, ProjectConfig};
 use regex::{Regex, RegexBuilder};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::shared::agent_said;
-use crate::shared::code_route::{admitted, holds_code, parts_in_copy, ProjectPath};
-use crate::shared::config_key::{NameFilter, Walk, CONFIG_FILE};
+use crate::shared::code_route::{ProjectPath, admitted, holds_code, parts_in_copy};
+use crate::shared::config_key::{CONFIG_FILE, NameFilter, Walk};
 use crate::shared::paths::{is_artifact, sensitive_pattern};
 use crate::shared::say::say;
 use crate::shared::search_door::{self as door, Ask, Assemble, Assembled, Numbers, Outcome, Piece};
@@ -112,6 +116,7 @@ const MAX_FILE_BYTES: u64 = 1_000_000;
 const REMEMBERED: usize = 200;
 
 /// O nome do estado da sessão que guarda as buscas já respondidas.
+#[cfg(test)]
 const STATE_FILE: &str = "word-searches";
 
 /// O que o gancho diz da busca.
@@ -204,10 +209,9 @@ impl Said<'_> {
         match self {
             Said::Given(text) => (*text).to_string(),
             Said::Transcript(path) => path.map(agent_said::last_said).unwrap_or_default(),
-            Said::Subagent(main, name) => main
-                .and_then(|main| agent_said::subagent_transcript(main, name))
-                .map(|file| agent_said::last_said(&file))
-                .unwrap_or_default(),
+            Said::Subagent(main, name) => {
+                main.and_then(|main| agent_said::subagent_transcript(main, name)).map(|file| agent_said::last_said(&file)).unwrap_or_default()
+            }
         }
     }
 }
@@ -216,19 +220,10 @@ impl Said<'_> {
 /// nomeada, a sessão, o instante em que a chamada começou, o relatório dela e
 /// os campos da medida. Devolve o número do evento gravado, ou `None` quando
 /// nada foi gravado.
-pub(crate) type Record<'a> =
-    dyn Fn(&Path, &str, Option<&str>, Option<&str>, Instant, &Value, Map<String, Value>) -> Option<u64> + 'a;
+pub(crate) type Record<'a> = dyn Fn(&Path, &str, Option<&str>, Option<&str>, Instant, &Value, Map<String, Value>) -> Option<u64> + 'a;
 
 /// A gravação de quem não chama o filtro: nada é gravado.
-pub(crate) fn unrecorded(
-    _: &Path,
-    _: &str,
-    _: Option<&str>,
-    _: Option<&str>,
-    _: Instant,
-    _: &Value,
-    _: Map<String, Value>,
-) -> Option<u64> {
+pub(crate) fn unrecorded(_: &Path, _: &str, _: Option<&str>, _: Option<&str>, _: Instant, _: &Value, _: Map<String, Value>) -> Option<u64> {
     None
 }
 
@@ -242,6 +237,7 @@ pub(crate) fn reply(scene: &Scene<'_>, search: &Search<'_>) -> Reply {
 /// com a chave `search.answer` desligada e sem sessão de verdade, que não tem
 /// onde guardar a busca respondida. A chamada medida da busca parcial vai a
 /// `record`.
+#[cfg(test)]
 pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Search<'_>, record: &Record<'_>) -> Reply {
     if !ctx.config.search_answer() {
         return Reply::Pass;
@@ -255,13 +251,7 @@ pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Sear
 
 /// Roda `run` na cena do gancho: a raiz `root`, o mapa dela, o estado da
 /// sessão `memory`, a gravação da chamada `record` e a configuração de `ctx`.
-fn with_scene<T>(
-    root: &Path,
-    input: &HookInput,
-    ctx: &Ctx,
-    (memory, record): (Option<&Path>, &Record<'_>),
-    run: impl FnOnce(&Scene<'_>) -> T,
-) -> T {
+fn with_scene<T>(root: &Path, input: &HookInput, ctx: &Ctx, (memory, record): (Option<&Path>, &Record<'_>), run: impl FnOnce(&Scene<'_>) -> T) -> T {
     let transcript = input.transcript_path().map(Path::new);
     // Dentro de um subagente o `transcript_path` é a conversa principal: a fala
     // dele está no arquivo do próprio subagente.
@@ -300,6 +290,7 @@ fn hook_assemble(root: &Path, config: &ProjectConfig) -> Result<Assembled, Filte
 /// O arquivo do estado da sessão `session` do projeto `root`, e o do
 /// subagente `agent` dentro dela: cada um repete a busca por conta própria,
 /// pois cada um tem a conversa dele. `None` sem sessão de verdade.
+#[cfg(test)]
 pub(crate) fn memory_path(root: &Path, session: Option<&str>, agent: Option<&str>) -> Option<PathBuf> {
     let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     let session = session.map(str::trim).filter(|session| plain(session) && *session != "unknown")?;
@@ -406,11 +397,7 @@ fn without_extension(name: &str) -> String {
 
 /// A busca por nome de arquivo (`Glob`, `find -name`) como o gancho a lê: as
 /// palavras do nome são o padrão, e ela só lista nomes, sem resposta no lugar.
-pub(crate) fn names_search<'a>(
-    words: &'a [String],
-    folders: &'a [ProjectPath],
-    filters: &'a [NameFilter],
-) -> Search<'a> {
+pub(crate) fn names_search<'a>(words: &'a [String], folders: &'a [ProjectPath], filters: &'a [NameFilter]) -> Search<'a> {
     Search {
         patterns: words,
         dialect: Dialect::Fixed,
@@ -679,7 +666,9 @@ fn judge(
         filters: search.filters,
         walk: search.walk,
     };
-    let Ok(classified) = door::classify(&ask, &assembled) else { return Judged::Triage };
+    let Ok(classified) = door::classify(&ask, &assembled) else {
+        return Judged::Triage;
+    };
     #[cfg(test)]
     ruler::jev::remember_call(&classified);
     let judged = match classified.outcome {
@@ -700,7 +689,7 @@ fn judge(
 // As palavras e o padrão
 // ---------------------------------------------------------------------------
 
-pub(crate) use words::{words_of, MAX_WORDS};
+pub(crate) use words::{MAX_WORDS, words_of};
 
 /// A expressão básica do `grep` escrita como a do `regex`: os operadores
 /// escapados viram operadores, e os sem escape viram texto.
@@ -771,13 +760,7 @@ fn pattern_of(search: &Search<'_>) -> Option<Regex> {
     if search.whole_word {
         source = format!(r"\b(?:{source})\b");
     }
-    RegexBuilder::new(&source)
-        .multi_line(true)
-        .case_insensitive(search.ignore_case)
-        .size_limit(1 << 20)
-        .dfa_size_limit(4 << 20)
-        .build()
-        .ok()
+    RegexBuilder::new(&source).multi_line(true).case_insensitive(search.ignore_case).size_limit(1 << 20).dfa_size_limit(4 << 20).build().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -816,10 +799,10 @@ fn remembers(memory: &Path, key: &str) -> bool {
 /// gravação falha: sem ela a busca repetida seria recusada de novo, e quem
 /// chama deixa a busca comum passar. Sem estado (`None`), nada se grava.
 fn remember(memory: Option<&Path>, key: &str) -> Option<()> {
-    let Some(memory) = memory else { return Some(()) };
-    let mut kept: Vec<String> = std::fs::read_to_string(memory)
-        .map(|text| text.lines().map(str::to_string).collect())
-        .unwrap_or_default();
+    let Some(memory) = memory else {
+        return Some(());
+    };
+    let mut kept: Vec<String> = std::fs::read_to_string(memory).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default();
     kept.push(key.to_string());
     let from = kept.len().saturating_sub(REMEMBERED);
     if let Some(parent) = memory.parent() {
@@ -873,7 +856,9 @@ fn scan(tree: &Path, rels: &[String], search: &Search<'_>, regex: &Regex) -> Opt
         if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_FILE_BYTES) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
         if bytes.iter().take(8000).any(|byte| *byte == 0) {
             continue;
         }
@@ -881,12 +866,7 @@ fn scan(tree: &Path, rels: &[String], search: &Search<'_>, regex: &Regex) -> Opt
         if !regex.is_match(&text) {
             continue;
         }
-        let lines: Vec<u64> = text
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| regex.is_match(line))
-            .map(|(at, _)| at as u64 + 1)
-            .collect();
+        let lines: Vec<u64> = text.lines().enumerate().filter(|(_, line)| regex.is_match(line)).map(|(at, _)| at as u64 + 1).collect();
         if !lines.is_empty() {
             found.push(FileHits { path: rel.to_string(), lines });
         }
@@ -912,10 +892,10 @@ struct View {
 /// fica sem partes.
 fn view_of(scene: &Scene<'_>, tree: &Path, rel: &str) -> Option<View> {
     let text = String::from_utf8_lossy(&std::fs::read(tree.join(rel)).ok()?).into_owned();
-    let known = store::read_for_at(scene.model, Need::Parts(rel))
-        .ok()
-        .and_then(|map| project_map::parts(&map, rel).ok());
-    let Some(parts) = known else { return Some(View { text, parts: None, changed: false }) };
+    let known = store::read_for_at(scene.model, Need::Parts(rel)).ok().and_then(|map| project_map::parts(&map, rel).ok());
+    let Some(parts) = known else {
+        return Some(View { text, parts: None, changed: false });
+    };
     let read = store::blobs_of(scene.model, &[rel]).ok().and_then(|blobs| blobs.get(rel).cloned()).unwrap_or_default();
     let now = git::run(tree, &["hash-object", "--", rel]).out().unwrap_or_default();
     if read.is_empty() || now.is_empty() || read == now {
@@ -1024,14 +1004,11 @@ fn header(mark: Mark, triaged: &Triaged, lang: Locale) -> String {
             // Cravado não exige todas as palavras: o texto cita as que o
             // primeiro achado traz em campo forte, e só sem nenhuma delas cita
             // as da pergunta inteira.
-            let found: Vec<String> =
-                triaged.words.iter().filter(|word| !triaged.missing.contains(word)).cloned().collect();
+            let found: Vec<String> = triaged.words.iter().filter(|word| !triaged.missing.contains(word)).cloned().collect();
             let shown = if found.is_empty() { &triaged.words } else { &found };
             say("map.answer.pinned", lang, &[("{words}", &quoted(shown))])
         }
-        Mark::Partial if !triaged.missing.is_empty() => {
-            say("map.answer.partial", lang, &[("{missing}", &quoted(&triaged.missing))])
-        }
+        Mark::Partial if !triaged.missing.is_empty() => say("map.answer.partial", lang, &[("{missing}", &quoted(&triaged.missing))]),
         _ => say("map.answer.partial_unsure", lang, &[]),
     }
 }
@@ -1074,13 +1051,8 @@ fn compose_delivered(scene: &Scene<'_>, tree: &Path, (mark, head): (Mark, &str),
         }
         let mut covered: HashSet<u64> = HashSet::new();
         for piece in delivered.iter().filter(|piece| piece.path == path) {
-            let (line, end_line) = view
-                .as_ref()
-                .and_then(|view| moved(view, piece))
-                .unwrap_or((u64::from(piece.line), u64::from(piece.end_line)));
-            let inside: Vec<u64> = found
-                .map(|file| file.lines.iter().copied().filter(|at| (line..=end_line).contains(at)).collect())
-                .unwrap_or_default();
+            let (line, end_line) = view.as_ref().and_then(|view| moved(view, piece)).unwrap_or((u64::from(piece.line), u64::from(piece.end_line)));
+            let inside: Vec<u64> = found.map(|file| file.lines.iter().copied().filter(|at| (line..=end_line).contains(at)).collect()).unwrap_or_default();
             covered.extend(&inside);
             let _ = write!(out, "\n  {line}-{end_line} {}", piece.name);
             if !inside.is_empty() {
@@ -1133,14 +1105,7 @@ fn moved(view: &View, piece: &Piece) -> Option<(u64, u64)> {
 /// achadas. O código da primeira entra até [`SNIPPET_BUDGET`] caracteres, e a
 /// resposta inteira fica abaixo de [`ANSWER_LIMIT`]. `None` quando a busca não
 /// achou linha e o mapa não aponta arquivo.
-fn compose(
-    scene: &Scene<'_>,
-    tree: &Path,
-    (triaged, mark): (&Triaged, Mark),
-    hits: &[FileHits],
-    delivered: &[Piece],
-    warnings: &[String],
-) -> Option<String> {
+fn compose(scene: &Scene<'_>, tree: &Path, (triaged, mark): (&Triaged, Mark), hits: &[FileHits], delivered: &[Piece], warnings: &[String]) -> Option<String> {
     let mut head = header(mark, triaged, scene.lang);
     if mark == Mark::Pinned {
         head.push(' ');
@@ -1164,13 +1129,7 @@ fn compose(
 /// arquivo mostrado, as entradas dele; só a primeira função traz o código. O
 /// código ocupa o que sobra do teto da resposta depois do resto do texto e dos
 /// `tail_chars` caracteres dos avisos que vão no fim.
-fn compose_found(
-    scene: &Scene<'_>,
-    tree: &Path,
-    (triaged, mark, head): (&Triaged, Mark, &str),
-    hits: &[FileHits],
-    tail_chars: usize,
-) -> Option<String> {
+fn compose_found(scene: &Scene<'_>, tree: &Path, (triaged, mark, head): (&Triaged, Mark, &str), hits: &[FileHits], tail_chars: usize) -> Option<String> {
     let rank: HashMap<&str, usize> = triaged.files.iter().enumerate().map(|(at, file)| (file.path.as_str(), at)).collect();
     let mut ordered: Vec<&FileHits> = hits.iter().collect();
     ordered.sort_by(|a, b| {
@@ -1253,11 +1212,13 @@ pub(crate) mod scoped;
 /// arquivo tinha ao ser lido.
 #[cfg(test)]
 pub(crate) mod fixture {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    #[cfg(test)]
+    use std::path::PathBuf;
     use std::process::Command;
 
-    use mustard_core::domain::map_filter::{judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored};
     use mustard_core::ProjectConfig;
+    use mustard_core::domain::map_filter::{FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, judged};
 
     use crate::shared::search_door::Assembled;
 
@@ -1291,7 +1252,7 @@ pub(crate) mod fixture {
     pub(crate) fn repo_with(config: &str, files: &[(&str, &str)], mut map: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = PathBuf::from(crate::shared::paths::on_disk(dir.path()));
-        let key =format!("word_search.repo_with:{config}:{files:?}");
+        let key = format!("word_search.repo_with:{config}:{files:?}");
         crate::shared::test_fixture::repo_from_template(&root, &key, |root| {
             std::fs::write(root.join("mustard.json"), config).expect("config");
             for (rel, text) in files {
@@ -1392,12 +1353,6 @@ pub(crate) mod fixture {
             Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), exists: 0.99, error: None, usage: FilterUsage::default() }
         }
 
-        /// O mesmo filtro, cobrando `input_tokens` e `cost_micro_usd` por
-        /// chamada que responde.
-        pub(crate) fn charging(self, input_tokens: u64, cost_micro_usd: u64) -> Self {
-            Self { usage: FilterUsage { input_tokens, cost_micro_usd, ..FilterUsage::default() }, ..self }
-        }
-
         /// O filtro que acha que nenhum candidato serve.
         pub(crate) fn finding_none() -> Self {
             Self { exists: 0.1, ..Self::sure_of(&[]) }
@@ -1416,12 +1371,7 @@ pub(crate) mod fixture {
         /// desta linha de execução: o gancho inteiro, sem rede e sem chave.
         pub(crate) fn installed<T>(&self, run: impl FnOnce() -> T) -> T {
             let judge = self.clone();
-            with_filter(
-                std::rc::Rc::new(move |_: &Path, _: &ProjectConfig| {
-                    Ok(Assembled { name: "jev", filter: Box::new(judge.clone()), warning: None })
-                }),
-                run,
-            )
+            with_filter(std::rc::Rc::new(move |_: &Path, _: &ProjectConfig| Ok(Assembled { name: "jev", filter: Box::new(judge.clone()), warning: None })), run)
         }
 
         pub(crate) fn calls(&self) -> usize {
@@ -1436,7 +1386,7 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
-    use super::fixture::{self, git, Judge};
+    use super::fixture::{self, Judge, git};
     use super::*;
     use crate::shared::code_route::project_path;
     use mustard_core::domain::triage::{Lead, Signals};
@@ -1462,14 +1412,7 @@ mod tests {
     }
 
     /// A mesma busca, com o filtro que `assemble` monta.
-    fn search_through(
-        root: &Path,
-        tree: &Path,
-        patterns: &[&str],
-        folders: &[&str],
-        shows_lines: bool,
-        assemble: &Assemble<'_>,
-    ) -> Reply {
+    fn search_through(root: &Path, tree: &Path, patterns: &[&str], folders: &[&str], shows_lines: bool, assemble: &Assemble<'_>) -> Reply {
         let both = Languages::new(["pt-BR", "en-US"]);
         let rg = (Dialect::Rust, Walk::Rg { unignored: false });
         search_as(root, tree, (patterns, folders, shows_lines), (&both, rg), assemble)
@@ -1484,20 +1427,9 @@ mod tests {
         assemble: &Assemble<'_>,
     ) -> Reply {
         let patterns = owned(patterns);
-        let folders: Vec<ProjectPath> = folders
-            .iter()
-            .map(|folder| project_path(&root.to_string_lossy(), &tree.to_string_lossy(), folder).expect("a project folder"))
-            .collect();
-        let search = Search {
-            patterns: &patterns,
-            dialect,
-            ignore_case: false,
-            whole_word: false,
-            folders: &folders,
-            filters: &[],
-            walk,
-            shows_lines,
-        };
+        let folders: Vec<ProjectPath> =
+            folders.iter().map(|folder| project_path(&root.to_string_lossy(), &tree.to_string_lossy(), folder).expect("a project folder")).collect();
+        let search = Search { patterns: &patterns, dialect, ignore_case: false, whole_word: false, folders: &folders, filters: &[], walk, shows_lines };
         let memory = root.join(".claude/.session/teste/word-searches");
         let config = ProjectConfig::load(root);
         let scene = Scene {
@@ -2010,7 +1942,10 @@ mod tests {
         let (_partial_dir, partial) = fixture::repo("{}");
         let partial = note(search_in(&partial, &partial, &["imposto"], &["."]));
         assert!(partial.starts_with("Parcial."), "{partial}");
-        assert!(partial.contains("src/frete.rs\n  2-6 calcular_frete (3)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n"), "{partial}");
+        assert!(
+            partial.contains("src/frete.rs\n  2-6 calcular_frete (3)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n"),
+            "{partial}"
+        );
         assert_eq!(partial.lines().filter(|line| line.starts_with("    ")).count(), 5, "{partial}");
     }
 
@@ -2029,7 +1964,10 @@ mod tests {
             let first = "\n  1-5 compute_stage_one (";
             let at = text.find(first).unwrap_or_else(|| panic!("{kind}: {text}"));
             let after = &text[at..];
-            assert!(after.contains("\n    1 | pub fn compute_stage_one() {\n    2 |     let a = compute_step(1);\n"), "{kind}: the first function carries its code: {text}");
+            assert!(
+                after.contains("\n    1 | pub fn compute_stage_one() {\n    2 |     let a = compute_step(1);\n"),
+                "{kind}: the first function carries its code: {text}"
+            );
             assert!(after.contains("\n    5 | }\n  6-10 compute_stage_two ("), "{kind}: the second comes with its line only: {text}");
             assert!(after.contains("\n  11-15 compute_stage_three ("), "{kind}: {text}");
             assert!(!text.contains("    6 |") && !text.contains("    11 |"), "{kind}: no code after the first function: {text}");
@@ -2124,7 +2062,11 @@ mod tests {
         let text = text_of(search_in(&root, &root, &["calcular_o_frete_do_pedido"], &["src"]));
         let first = numbered_body(Locale::PtBr, &files[0].1, (1, 40)).chars().count();
         assert!(first < SNIPPET_BUDGET, "the code budget alone would let the first function in: {first}");
-        assert!(text.chars().count() + first > ANSWER_LIMIT, "with its code the answer would pass the limit, so the limit is what holds: {}", text.chars().count());
+        assert!(
+            text.chars().count() + first > ANSWER_LIMIT,
+            "with its code the answer would pass the limit, so the limit is what holds: {}",
+            text.chars().count()
+        );
         assert!(text.chars().count() < ANSWER_LIMIT, "{} characters: {text}", text.chars().count());
         assert!(text.lines().all(|line| !line.starts_with("    ")), "no function carries code: {text}");
         assert!(text.contains("chave"), "the warning of the missing key is inside the count: {text}");
@@ -2172,9 +2114,8 @@ mod tests {
         let (_dir, root) = fixture::repo("{}");
         let config = ProjectConfig::load(&root);
         let judge = Judge::sure_of(&[]);
-        let stub: fixture::TestAssemble = std::rc::Rc::new(move |_: &Path, _: &ProjectConfig| {
-            Ok(Assembled { name: "de-mentira", filter: Box::new(judge.clone()), warning: None })
-        });
+        let stub: fixture::TestAssemble =
+            std::rc::Rc::new(move |_: &Path, _: &ProjectConfig| Ok(Assembled { name: "de-mentira", filter: Box::new(judge.clone()), warning: None }));
         let named = |root: &Path| hook_assemble(root, &config).map(|assembled| assembled.name);
 
         assert_eq!(fixture::with_filter(stub.clone(), || named(&root)), Ok("de-mentira"));
@@ -2290,12 +2231,7 @@ mod tests {
         let notes = tempfile::tempdir().expect("a folder");
         let transcript = transcript_with(
             notes.path(),
-            &[
-                person_said("calcule o imposto"),
-                assistant_said("Fala antiga."),
-                assistant_said("Vou ver onde o imposto é calculado."),
-                assistant_called(),
-            ],
+            &[person_said("calcule o imposto"), assistant_said("Fala antiga."), assistant_said("Vou ver onde o imposto é calculado."), assistant_called()],
         );
         let asked = request_from_the_hook(
             &root,
@@ -2401,10 +2337,7 @@ mod tests {
     fn a_message_of_the_user_after_the_last_speech_of_the_agent_leaves_the_speech_empty() {
         let (_dir, root) = fixture::repo("{}");
         let notes = tempfile::tempdir().expect("a folder");
-        let transcript = transcript_with(
-            notes.path(),
-            &[assistant_said("Fala de antes."), person_said("agora procure o imposto"), assistant_called()],
-        );
+        let transcript = transcript_with(notes.path(), &[assistant_said("Fala de antes."), person_said("agora procure o imposto"), assistant_called()]);
         let asked = request_from_the_hook(
             &root,
             &json!({
@@ -2424,10 +2357,7 @@ mod tests {
     #[test]
     fn without_a_description_or_a_transcript_the_request_carries_both_empty() {
         let (_dir, root) = fixture::repo("{}");
-        let asked = request_from_the_hook(
-            &root,
-            &json!({"session_id": "s-gancho", "tool_name": "Grep", "tool_input": {"pattern": "imposto"}}),
-        );
+        let asked = request_from_the_hook(&root, &json!({"session_id": "s-gancho", "tool_name": "Grep", "tool_input": {"pattern": "imposto"}}));
         assert_eq!((asked.described.as_str(), asked.said.as_str()), ("", ""));
         let missing = request_from_the_hook(
             &root,
@@ -2460,8 +2390,9 @@ mod tests {
         let text = note(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
         assert_eq!(judge.calls(), 1);
         let asked = judge.last();
-        let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), mustard_core::io::map_search::any_path)
-            .expect("the bank candidates");
+        let bank =
+            mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), mustard_core::io::map_search::any_path)
+                .expect("the bank candidates");
         assert_eq!(bank.candidates.len(), 2, "the bank lists the two functions of the file");
         assert_eq!(asked.candidates, bank.candidates, "every candidate of the bank goes in one request");
         assert_eq!(asked.words, ["imposto"]);
@@ -2584,8 +2515,7 @@ mod tests {
         let needle = ["crate::", "commands::"].concat();
         let here = include_str!("word_search.rs");
         let code = here.split("\n#[cfg(test)]").next().expect("the code comes before the tests");
-        let reached: Vec<&str> =
-            code.lines().filter(|line| !line.trim_start().starts_with("//") && line.contains(&needle)).collect();
+        let reached: Vec<&str> = code.lines().filter(|line| !line.trim_start().starts_with("//") && line.contains(&needle)).collect();
         assert!(reached.is_empty(), "the shared search reached a command module: {reached:?}");
         let command = include_str!("../commands/map.rs");
         assert!(command.contains(&needle), "the command must still name its own module, or this asserts nothing");
@@ -2718,10 +2648,8 @@ mod tests {
                 { "kind": "struct", "name": "OrderService", "line": 1, "end_line": 3 }
             ] }
         ] });
-        let files = [
-            ("src/users.rs", "// people\npub struct UserRepository {\n    id: u32,\n}\n"),
-            ("src/orders.rs", "pub struct OrderService {\n    id: u32,\n}\n"),
-        ];
+        let files =
+            [("src/users.rs", "// people\npub struct UserRepository {\n    id: u32,\n}\n"), ("src/orders.rs", "pub struct OrderService {\n    id: u32,\n}\n")];
         let config = r#"{"language": {"text": "en-US", "code": "en-US"}}"#;
         let judge = Judge::sure_of(&[("UserRepository", 0.9)]);
         let english = Languages::new(["en-US"]);
@@ -2773,7 +2701,8 @@ mod tests {
                 .filter_map(|folder| project_path(&root, &root, folder))
                 .filter(|folder| folder.abs.is_dir())
                 .collect();
-            let wanted = entry["folders"].as_array().map_or(0, |all| all.iter().filter_map(|f| f.as_str()).filter(|f| !f.contains('>') && !f.starts_with('&')).count());
+            let wanted =
+                entry["folders"].as_array().map_or(0, |all| all.iter().filter_map(|f| f.as_str()).filter(|f| !f.contains('>') && !f.starts_with('&')).count());
             let program = entry["program"].as_str().unwrap_or("grep");
             let dialect = match entry["dialect"].as_str() {
                 Some("basic") => Dialect::Basic,

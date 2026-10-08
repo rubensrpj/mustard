@@ -12,7 +12,7 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 
 ## Princípio central
 
-> **O código-fonte nunca é lido em massa.**
+> A busca começa na evidência local; o modelo expande a leitura do código quando necessário.
 
 ```mermaid
 flowchart LR
@@ -21,11 +21,11 @@ flowchart LR
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
-1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Não é comando: ela roda sozinha ao abrir a spec e depois de cada commit de rodada.
-2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e leem apenas os arquivos que ele aponta.
+1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Roda na instalação, ao abrir a spec e depois de commits da rodada; `mustard-rt run scan` atualiza explicitamente. Limites de parse e origem das relações ficam visíveis.
+2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e preparam trechos atuais com referências. Dependências e testes candidatos orientam a descoberta; não provam comportamento ou cobertura.
 3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 
-> O peso real do harness não são os comandos, e sim a **reinjeção da cerimônia no contexto a cada turno**. Por isso o roteamento escolhe sempre o **caminho mais barato que serve** — o pipeline completo é a exceção que precisa se justificar (≥2 camadas/subprojetos **ou** entidade nova), não o default.
+> O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. Jev só julga ambiguidades pertinentes depois da recuperação local, por uma interface de provedor e cache versionado. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
 
 ---
 
@@ -74,7 +74,7 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e **descreva o trabalho em palavras suas** — não há comando para "começar", nem passo de mapeamento para rodar. O roteador é injetado em todo prompt e classifica o pedido sozinho; a varredura minera o repositório ao abrir a spec e depois de cada commit de rodada.
+Isso cria `mustard.json`, configurações locais, mapa de início da sessão e agentes de onda/revisão, e monta o mapa do projeto. Abra o Claude Code no projeto e descreva o trabalho. Os comandos nativos indicam o próximo passo; os ganchos registram e protegem o fluxo. A atualização preserva regras, modelos e esforço pessoais.
 
 ### Para desenvolvedores deste repositório
 
@@ -98,7 +98,7 @@ flowchart LR
     C --> PR["pr-open"]
 ```
 
-Cada passo é uma chamada só, e cada comando termina dizendo qual é o próximo. O `open` abre a spec; o `grill` levanta o que falta, pergunta por pergunta; o `plan` monta as ondas e as põe para aprovação; a aprovação é o clique do usuário, que o gancho da conversa registra; o `round` despacha as ondas que podem sair juntas, cada uma na sua cópia, e grava o que elas entregaram e o veredito de cada revisão; o `close` roda em ambiente limpo o lint e a suíte que o `mustard.json` declara e cada critério uma vez e, numa spec de duas ondas ou mais, pede a revisão final do conjunto; o `pr-open` abre o pull request. O merge é o único passo que só acontece quando o usuário pede.
+Cada comando indica o próximo passo. `open` abre a spec; `grill` levanta pontos abertos; `plan` confere o plano para aprovação do usuário. `round` despacha ondas em cópias separadas, integra entregas autorizadas, executa build e provas pertinentes, comita e libera dependentes. `close` executa lint, suíte geral e critérios sobre o código integrado, reaproveitando apenas validação vigente. Um revisor final usa resumos para orientar a conferência no código/diff, inclusive com uma única onda. Falhas abrem consertos rastreáveis. `pr-open` abre o pull request; merge exige pedido do usuário.
 
 O fechamento não fecha enquanto algum critério não tiver a última execução aprovada no `spec.ndjson`, enquanto o lint ou a suíte do projeto falharem, ou enquanto a revisão final do conjunto não tiver sido aprovada.
 
@@ -106,12 +106,14 @@ O fechamento não fecha enquanto algum critério não tiver a última execução
 
 ## Comandos
 
-Instalado como plugin, todo comando vive no namespace `/mustard:`. Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre a spec, e cada passo do fluxo responde qual é o próximo.
+O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods para acompanhamento local. Um pedido que muda arquivos abre uma spec; cada comando nativo indica o próximo passo.
 
 | Comando | Papel |
 |---|---|
 | `/mustard:continue` | Retoma a spec de onde parou. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
+| `/mustard-panel` | Projeto, specs, execução e consumo local, atualizados sem turno do modelo. Requer suporte a Mods (CLI 2.1.287+). |
+| `/mustard-pages` | Publicação explícita de `project`, `spec [nome]` ou `report <arquivo.md>` pelo adaptador nativo Cloudflare Pages. Sem configuração, entrega arquivos locais; sem turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto e diagnostica a instalação. Para desligar o Mustard num projeto, ponha `"enabled": false` no `mustard.json`. |
 
 A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
@@ -120,13 +122,9 @@ A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` �
 
 ## Spec-Driven Development
 
-As specs vivem num layout **plano** em `.claude/spec/{name}/`:
+As specs vivem em `.claude/spec/{name}/`. `spec.ndjson` é o registro canônico de eventos: requisitos, decisões, tarefas, ondas, leituras, entregas, validação e revisão. O binário grava e consulta projeções por `mustard-rt run write` e `mustard-rt run read`. Pedidos no meio da obra entram nesse mesmo histórico.
 
-- **`spec.md`** — pura narrativa (sem metadata de lifecycle).
-- **`meta.json`** — fonte única de verdade do ciclo de vida (`stage` + `outcome` + `flags`). Não há pastas `active/`, `completed/` ou `superseded/`: arquivamento é semântico (um evento `pipeline.status`), não um *move* de filesystem.
-- **`wave-plan.md`** + `wave-N-{role}/spec.md` — para o escopo full (uma sub-spec por onda).
-
-Mudanças no meio do caminho são auto-registradas (`change-requests.ndjson` + `change-log.md` legível) — nada se perde, e a narrativa congelada não é tocada.
+O painel Mods reúne projeto/specs e dados da statusline. Eventos de ferramentas, turnos, compactação e agentes atualizam o estado; a consulta a cada 2 s cobre mudanças externas. A publicação do projeto não exige spec aberta; a spec padrão vem da branch atual. Análises e resumos para gestores em Markdown solicitado usam o mesmo layout existente. Páginas externas são geradas só sob pedido explícito, como snapshots datados. `run publish` gera HTML/JSON/manifesto e envia pelo adaptador nativo Cloudflare Pages configurado. Só uma publicação pronta informa `published:true` e URL confirmada; sem configuração, os arquivos ficam locais. Início de sessão e término de onda não sincronizam páginas remotas. `run spend` mede localmente; `--publish`/`--republish` geram/publicam o snapshot estático completo de gasto por pedido explícito. A configuração está em `MUSTARD-COMMANDS.md`; o token fica no ambiente.
 
 ---
 
@@ -136,7 +134,7 @@ Mudanças no meio do caminho são auto-registradas (`change-requests.ndjson` + `
 |---|---|---|---|
 | `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan, mapa, eventos, gates, hooks, comandos do pipeline. É o motor. |
 | `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.db` (SQLite). |
-| `apps/cli` | `mustard` | Rust | Instalação e *scaffold* — `init`, gramáticas, git-flow, fontes. |
+| `apps/cli` | `mustard` | Rust | Instalação, configuração do projeto e fontes opcionais. |
 | `packages/core` | `core` | Rust | Tipos e lógica compartilhados (ex.: `ProjectConfig`). |
 | `plugin/` | — | — | O plugin do Claude Code: comandos, hooks, agentes e o bootstrap `mustard-boot` (baixa os binários do Release na primeira sessão). |
 
@@ -147,9 +145,10 @@ O `cargo build --workspace` cobre todos os crates Rust.
 ## Build & testes
 
 ```bash
-cargo build --workspace
-cargo test  --workspace
-cargo clippy --workspace           # lint
+cargo build --workspace --locked
+cargo build --profile mustard-dev --locked  # desenvolvimento incremental
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 **Release oficial:** uma tag `vX.Y.Z` dispara o workflow que gera um instalador completo por sistema + os pacotes `mustard-bins-*` (consumidos pelo bootstrap do plugin) e publica tudo num GitHub Release. A versão da tag **deve** bater com `plugin/.claude-plugin/plugin.json` — o workflow recusa tag dessincronizada. O disparo manual (Actions → Release → Run workflow) faz um **ensaio**: builda tudo sem publicar.

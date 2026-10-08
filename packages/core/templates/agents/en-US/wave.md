@@ -19,17 +19,18 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, undo it. Several tests? Cut them all at once, build and run once, watch them all fail, undo all; a cut that touches the same spot as another goes alone.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both, covering read, merge, write, commit and undo.
 - Run every command from inside the copy.
-- Find and read the code through the map, each command at its moment:
-  - `mustard-rt run map search "<pattern>"`: at the start, to find where to change, with the `Grep` text.
-  - `mustard-rt run map summary --file <file>`: before opening a file, to see its declarations and lines.
+- Start with current request evidence: goal, complete items, rules, excerpts and candidate tests. Mandatory rules always apply, including with `omitClaudeMd`.
+- Use map commands when location or current evidence is missing, without repeating discovery already delivered:
+  - `mustard-rt run map search "<pattern>"`: to find where to work, with the text you would put in `Grep`.
+  - `mustard-rt run map summary --file <file>`: before opening a file, to see declarations and their lines.
   - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration.
   - `mustard-rt run map users --name <name>`: before changing a declaration, to see who uses it.
-  - `mustard-rt run map tests --file <file>`: to find the tests that cover the file.
-  - `mustard-rt run map history --name <name>`: to see why it is so.
-  - `mustard-rt run map note "<sentence>" --file <file> --name <name>`: to record what it does in business words.
-- Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. Pinned: the map found it by name. Partial: it found part. Found nothing: the plain search runs. Read with a line range what `summary` showed; the whole file only to change much of it. Do not reread the file after editing: the edit already shows the changed excerpt.
+  - `mustard-rt run map tests --file <file>`: to find candidate tests, without claiming coverage.
+  - `mustard-rt run map history --name <name>`: when you need to know why a declaration became this way.
+  - `mustard-rt run map note "<phrase>" --file <file> --name <name>`: after reading the excerpt, to record what it does in business words.
+- `Grep`/`rg` run with the original options, without Jev for literal searches. The scan suggests relations and tests; it does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
-- During the work, run only the tests of what changed. The whole suite and the lint belong to the round, which runs them before the commit and refuses it when they fail.
+- During the work, run only the tests of what changed. The round runs the build and pertinent criterion proofs before the commit. The full suite and lint run during final spec validation.
 - Never send a build or test to the background or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or stash, or edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.
 - Comments and test names describe behavior, citing no item code, wave, spec, pending item or Mustard; test names follow the code language.

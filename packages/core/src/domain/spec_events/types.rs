@@ -1,5 +1,5 @@
 //! Os tipos de evento da spec: os blocos em que cada tipo cai, a forma de
-//! cada campo e os 36 tipos, com os campos próprios de cada um.
+//! cada campo e os 38 tipos, com os campos próprios de cada um.
 
 use serde_json::Value;
 
@@ -66,7 +66,7 @@ impl Block {
 /// bloqueios dos ganchos, as chamadas dos comandos, o tempo de cada fase, o
 /// retrabalho, os lembretes do levantamento, o tamanho de cada pedido e a
 /// entrega que responde a ele.
-pub const METRIC_TYPES: &[&str] = &["injection", "hook", "call", "state", "verdict", "point", "send", "delivered"];
+pub const METRIC_TYPES: &[&str] = &["injection", "hook", "call", "state", "verdict", "point", "send", "delivered", "stage_run", "validation_failure"];
 
 /// O tipo do registro que toma o lugar da linha cortada pelo disco cheio
 /// ([`repair_cut_lines`](super::repair_cut_lines)). Fica fora de [`TYPES`] de
@@ -383,7 +383,7 @@ pub const DELIVERED_MAX_CHARS: usize = 8_000;
 pub const PHASES: &[&str] =
     &["survey", "plan", "approved", "running", "closed", "pr_open", "delivered", "discarded"];
 const PAGES: &[&str] = &["spec", "project"];
-const MILESTONES: &[&str] = &["approval", "round", "close"];
+const MILESTONES: &[&str] = &["approval", "round", "close", "explicit"];
 /// Os tipos de trabalho, na ordem em que o levantamento junta as lacunas.
 pub const WORK_KINDS: &[&str] = &["feature", "fix", "refactor"];
 const POINT_FROM: &[&str] = &["gap", "lesson", "prior_spec", "code_conflict", "outside_review"];
@@ -402,7 +402,7 @@ const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 
-/// Os 36 tipos. Os campos marcados com `opt` podem faltar; os outros são
+/// Os 38 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
@@ -478,18 +478,8 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reason", Kind::Text),
         ],
     ),
-    // A publicação de uma página. A do template do Mustard, que lê o banco de
-    // dados guardado junto da página, traz `template: true`; a que não traz é
-    // a página inteira de uma versão antiga, que fica parada como está. O
-    // `stamp` é o carimbo do molde publicado, a versão do layout dele e a
-    // impressão do conteúdo: só a versão do layout conta. O molde que o
-    // programa rodando monta com outra versão de layout, ou a publicação com o
-    // carimbo de antes dela (a versão do Mustard) ou sem carimbo, não manda
-    // publicar de novo: o marco avisa o usuário, uma vez por versão, e grava o
-    // aviso como uma publicação que não aconteceu (`ok` falso e o motivo
-    // `layout-changed`). A página só se publica de novo, no mesmo endereço,
-    // quando o usuário pede. A mesma versão de layout com outra impressão não
-    // muda nada.
+    // Native explicit publication receipts. Previous milestone/template
+    // fields remain readable for already published historical pages.
     ty(
         "publish",
         "PUB",
@@ -503,6 +493,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reason", Kind::Text),
             opt("template", Kind::Bool),
             opt("stamp", Kind::Text),
+            opt("provider", Kind::Text),
+            opt("deployment_id", Kind::Text),
+            opt("snapshot_id", Kind::Text),
         ],
     ),
     // A cópia dos itens para o banco de dados de uma página publicada, gravada
@@ -610,6 +603,42 @@ pub const TYPES: &[TypeSpec] = &[
             req("exit", Kind::Int),
             req("ms", Kind::Int),
             opt("output", Kind::Text),
+        ],
+    ),
+    // Measured leaf stages. An enclosing call's duration is inclusive and
+    // must not be added to these measurements.
+    ty(
+        "stage_run",
+        "STAGE",
+        Block::Progress,
+        false,
+        &[
+            req("phase", Kind::Text),
+            req("stage", Kind::Text),
+            req("result", Kind::OneOf(&["pass", "fail", "skipped"])),
+            req("ms", Kind::Int),
+            opt("command", Kind::Text),
+            opt("exit", Kind::Int),
+            opt("output", Kind::Text),
+            opt("fingerprint", Kind::Text),
+            opt("scope", Kind::Text),
+            opt("version", Kind::Text),
+            opt("attempt", Kind::Int),
+        ],
+    ),
+    ty(
+        "validation_failure",
+        "FAIL",
+        Block::Review,
+        false,
+        &[
+            req("wave", Kind::Int),
+            req("result", Kind::OneOf(VERDICTS)),
+            TEXT,
+            req("final", Kind::Bool),
+            req("fingerprint", Kind::Text),
+            opt("files", Kind::Texts),
+            opt("reason", Kind::Text),
         ],
     ),
     // Ondas.
@@ -931,10 +960,10 @@ mod tests {
     use crate::domain::spec_events::Refusal;
 
     #[test]
-    fn there_are_thirty_six_types_each_with_one_block() {
-        assert_eq!(TYPES.len(), 36);
+    fn there_are_thirty_eight_types_each_with_one_block() {
+        assert_eq!(TYPES.len(), 38);
         let names: BTreeSet<&str> = TYPES.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 36, "a type name repeats");
+        assert_eq!(names.len(), 38, "a type name repeats");
         for block in Block::ALL {
             if block == Block::Metrics {
                 assert!(TYPES.iter().all(|t| t.block != block), "nobody writes to the panel");

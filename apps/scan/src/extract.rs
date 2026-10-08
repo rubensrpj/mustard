@@ -29,7 +29,7 @@
 //! the generated table here. Nothing language-specific lives in this file.
 
 use crate::markup::Markup;
-use crate::model::{CallSite, Decl, Route, RouteCall, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
+use crate::model::{CallSite, Decl, RECEIVER, Route, RouteCall, RouteLinks, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN, Text};
 use crate::routes::{self, RouteRule};
 use mustard_core::domain::ast::is_test_path;
 use mustard_core::domain::project_map::outer_declarations;
@@ -44,6 +44,7 @@ mod typed;
 
 #[derive(Default)]
 pub(crate) struct Extracted {
+    pub parse_complete: Option<bool>,
     pub imports: Vec<String>,
     /// The imports the language puts in sight of more files than the one that
     /// writes them (`@import.global`).
@@ -149,10 +150,7 @@ include!(concat!(env!("OUT_DIR"), "/langs_generated.rs"));
 /// `languages.toml` extends detection automatically.
 pub fn detect_language(path: &Path) -> Option<String> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    LANG_EXTENSIONS
-        .iter()
-        .find(|(_, exts)| exts.iter().any(|e| *e == ext))
-        .map(|(name, _)| (*name).to_string())
+    LANG_EXTENSIONS.iter().find(|(_, exts)| exts.iter().any(|e| *e == ext)).map(|(name, _)| (*name).to_string())
 }
 
 /// Root-alias segments a language uses to alias the package root in qualified
@@ -160,11 +158,7 @@ pub fn detect_language(path: &Path) -> Option<String> {
 /// language that declares none gets an empty slice, which disables the graph's
 /// root-alias resolution branch for its modules.
 pub fn root_aliases(lang: &str) -> &'static [&'static str] {
-    LANG_ROOT_ALIASES
-        .iter()
-        .find(|(name, _)| *name == lang)
-        .map(|(_, aliases)| *aliases)
-        .unwrap_or(&[])
+    LANG_ROOT_ALIASES.iter().find(|(name, _)| *name == lang).map(|(_, aliases)| *aliases).unwrap_or(&[])
 }
 
 /// How a language's declared namespace is seen by its other files — pure
@@ -212,10 +206,7 @@ impl RelativeImport {
 /// O import relativo por separador da língua — dado do registro. `None`
 /// quando a língua não o declara: o import dela nunca é lido assim.
 pub fn relative_import(lang: &str) -> Option<RelativeImport> {
-    LANG_RELATIVE_IMPORT
-        .iter()
-        .find(|(name, separator)| *name == lang && !separator.is_empty())
-        .map(|(_, separator)| RelativeImport { separator })
+    LANG_RELATIVE_IMPORT.iter().find(|(name, separator)| *name == lang && !separator.is_empty()).map(|(_, separator)| RelativeImport { separator })
 }
 
 /// Os textos que juntam as partes de um nome qualificado na língua
@@ -223,10 +214,7 @@ pub fn relative_import(lang: &str) -> Option<RelativeImport> {
 /// escreve. `None` quando a língua não os declara: para quem lê, ela não tem
 /// separador.
 pub fn qualified_separators(lang: &str) -> Option<&'static [&'static str]> {
-    LANG_QUALIFIED_SEPARATORS
-        .iter()
-        .find(|(name, separators)| *name == lang && !separators.is_empty())
-        .map(|(_, separators)| *separators)
+    LANG_QUALIFIED_SEPARATORS.iter().find(|(name, separators)| *name == lang && !separators.is_empty()).map(|(_, separators)| *separators)
 }
 
 /// O nome que, no começo de um caminho qualificado, sobe um módulo
@@ -300,10 +288,7 @@ pub fn imports_whole_folder(lang: &str, path: &str) -> bool {
 /// do `markup` em languages.toml), cada uma como um arquivo de imports da
 /// pasta: o caminho do manifesto, a língua e o texto.
 pub(crate) fn project_imports(manifests: &[crate::model::Manifest]) -> Vec<(String, String, String)> {
-    LANG_MARKUP
-        .iter()
-        .flat_map(|(lang, rule)| rule.project_lines(manifests).into_iter().map(|(path, text)| (path, (*lang).to_string(), text)))
-        .collect()
+    LANG_MARKUP.iter().flat_map(|(lang, rule)| rule.project_lines(manifests).into_iter().map(|(path, text)| (path, (*lang).to_string(), text))).collect()
 }
 
 /// O import não relativo de uma parte só pode nomear um arquivo do projeto
@@ -516,7 +501,9 @@ enum CapKind {
     /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
     /// solto de uma tela): ele se guarda como está escrito, sem o corte das
     /// aspas.
-    Text { plain: bool },
+    Text {
+        plain: bool,
+    },
     Def(String),
     Ignore,
 }
@@ -607,16 +594,7 @@ impl Analyzer {
         let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
         let routes = if with_routes { routes::rules_for(raw.name, &language) } else { Vec::new() };
         let markup = LANG_MARKUP.iter().find(|(name, _)| *name == raw.name).map(|(_, rule)| rule);
-        Some(Analyzer {
-            name: raw.name.to_string(),
-            language,
-            query,
-            cap_kinds,
-            doc_tags: raw.doc_tags,
-            routes,
-            markup,
-            declarations_only: false,
-        })
+        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes, markup, declarations_only: false })
     }
 
     /// As regras de rota da língua que algum arquivo ligou até aqui, e que
@@ -664,6 +642,7 @@ impl Analyzer {
         };
         let bytes = src.as_bytes();
         let root = tree.root_node();
+        out.parse_complete = Some(!root.has_error());
         let mut cursor = QueryCursor::new();
 
         // Declarations keyed by node start byte (so they emerge in document
@@ -868,20 +847,18 @@ impl Analyzer {
                     }
                     CapKind::Supertype => {
                         if let Ok(t) = node.utf8_text(bytes)
-                            && let Some(n) = simple_type_name(t) {
-                                here_supers.push(n);
-                            }
+                            && let Some(n) = simple_type_name(t)
+                        {
+                            here_supers.push(n);
+                        }
                     }
                     CapKind::Owner | CapKind::Contract => {
                         if let Ok(t) = node.utf8_text(bytes)
-                            && let Some(n) = simple_type_name(t) {
-                                let into = if matches!(self.cap_kinds[cap.index as usize], CapKind::Owner) {
-                                    &mut here_owner
-                                } else {
-                                    &mut here_contract
-                                };
-                                into.push(n);
-                            }
+                            && let Some(n) = simple_type_name(t)
+                        {
+                            let into = if matches!(self.cap_kinds[cap.index as usize], CapKind::Owner) { &mut here_owner } else { &mut here_contract };
+                            into.push(n);
+                        }
                     }
                     CapKind::TestBlock | CapKind::TestUnit => {
                         // A unidade de teste solta no arquivo de teste não é
@@ -926,12 +903,9 @@ impl Analyzer {
                 original_of.insert(at, original);
             }
             for import in here_imports {
-                let folder_only =
-                    relative.is_some_and(|rule| matches!(rule.leading(&import.text), (count, "") if count > 0));
+                let folder_only = relative.is_some_and(|rule| matches!(rule.leading(&import.text), (count, "") if count > 0));
                 if folder_only && !brought.is_empty() {
-                    written.extend(
-                        brought.iter().map(|name| Written { text: format!("{}{name}", import.text), ..import.clone() }),
-                    );
+                    written.extend(brought.iter().map(|name| Written { text: format!("{}{name}", import.text), ..import.clone() }));
                 } else {
                     written.push(import);
                 }
@@ -977,13 +951,14 @@ impl Analyzer {
                 };
             }
             if let Some(name) = &name_text
-                && !here_supers.is_empty() {
-                    let key = simple_type_name(name).unwrap_or_else(|| name.clone());
-                    let bucket = supers_by_name.entry(key).or_default();
-                    for s in here_supers {
-                        bucket.insert(s);
-                    }
+                && !here_supers.is_empty()
+            {
+                let key = simple_type_name(name).unwrap_or_else(|| name.clone());
+                let bucket = supers_by_name.entry(key).or_default();
+                for s in here_supers {
+                    bucket.insert(s);
                 }
+            }
         }
 
         // Where each declaration's own name is written: that name followed by
@@ -1009,10 +984,7 @@ impl Analyzer {
                     next_name: shared.iter().copied().find(|&b| b > h.name_byte),
                 });
                 let key = simple_type_name(&h.name).unwrap_or_else(|| h.name.clone());
-                let supertypes = supers_by_name
-                    .get(&key)
-                    .map(|s| s.iter().cloned().collect())
-                    .unwrap_or_default();
+                let supertypes = supers_by_name.get(&key).map(|s| s.iter().cloned().collect()).unwrap_or_default();
                 let above = doc_above(h.node, bytes, &decorations, self.doc_tags);
                 let top = above.doc_row.min(above.first_row) + 1;
                 let whole = match h.doc_inside {
@@ -1055,9 +1027,7 @@ impl Analyzer {
         // escrita como literal não são código: os nomes e os comentários
         // escritos neles ficam de fora.
         if keep.written_text {
-            let not_code = Pruned::of(
-                literals.iter().map(|(node, _)| (node.start_byte(), node.end_byte())).chain(doc_spans.iter().copied()),
-            );
+            let not_code = Pruned::of(literals.iter().map(|(node, _)| (node.start_byte(), node.end_byte())).chain(doc_spans.iter().copied()));
             let written_text = WrittenText::of(root, &walked, bytes, self.doc_tags, &not_code);
             for decl in &mut out.declarations {
                 (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
@@ -1065,8 +1035,7 @@ impl Analyzer {
             (out.file_doc, out.file_comment, out.file_doc_in_body) = written_text.of_file(&out.declarations);
         }
         if keep.texts_and_routes {
-            out.texts =
-                fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
+            out.texts = fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
         }
 
         // The call sites and the citations of the file, minus the
@@ -1076,19 +1045,11 @@ impl Analyzer {
         let quiet = Pruned::of(decorations.union(&import_spans).copied());
         let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
-        let owners = typed::Owners::new(
-            member_of,
-            typed::Bindings::of(&out.declarations, &locals, &local_types, &names_at),
-        );
+        let owners = typed::Owners::new(member_of, typed::Bindings::of(&out.declarations, &locals, &local_types, &names_at));
         let marks = Marks { value_at: &value_at, member_at: &member_at, owners: &owners };
         let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
         (out.calls, out.cites, out.value_uses, out.member_reads, heads) = found;
-        drop_local_uses(
-            &out.declarations,
-            &locals,
-            &names_at,
-            [&mut out.calls, &mut out.cites, &mut out.value_uses, &mut out.member_reads],
-        );
+        drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites, &mut out.value_uses, &mut out.member_reads]);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
         // dentro do nó mais próximo, subindo a partir do nome, que contém
@@ -1198,12 +1159,7 @@ impl Analyzer {
         out.namespaces.dedup();
         if keep.texts_and_routes {
             let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
-            let source = routes::Source {
-                imports: &imports,
-                brought: &out.brought,
-                declarations: &out.declarations,
-                skip: &test_blocks,
-            };
+            let source = routes::Source { imports: &imports, brought: &out.brought, declarations: &out.declarations, skip: &test_blocks };
             let found = routes::find(&self.routes, root, bytes, &source, project);
             (out.routes, out.route_links, out.route_calls) = (found.routes, found.links, found.calls);
         }
@@ -1229,15 +1185,7 @@ struct Written {
 
 impl Written {
     fn at(text: String, global: bool, node: Node) -> Written {
-        Written {
-            text,
-            global,
-            byte: node.start_byte(),
-            end: node.end_byte(),
-            line: node.start_position().row + 1,
-            call: None,
-            reexport: false,
-        }
+        Written { text, global, byte: node.start_byte(), end: node.end_byte(), line: node.start_position().row + 1, call: None, reexport: false }
     }
 }
 
@@ -1262,12 +1210,7 @@ fn name_before_list(node: Node, bytes: &[u8]) -> Option<String> {
 /// mesma chamada numa declaração vizinha, sem o nome ligado, fica. O nome
 /// ligado que é o nome de uma declaração (`names_at`) não conta: é a própria
 /// declaração.
-fn drop_local_uses(
-    decls: &[Decl],
-    locals: &[(usize, usize, String)],
-    names_at: &BTreeSet<usize>,
-    sites: [&mut Vec<CallSite>; 4],
-) {
+fn drop_local_uses(decls: &[Decl], locals: &[(usize, usize, String)], names_at: &BTreeSet<usize>, sites: [&mut Vec<CallSite>; 4]) {
     // Cada nome ligado, com a linha em que foi ligado e a última da
     // declaração em volta (sem fim conhecido, até o fim do arquivo).
     let mut bound: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
@@ -1275,7 +1218,9 @@ fn drop_local_uses(
         if names_at.contains(byte) {
             continue;
         }
-        let Some(di) = crate::graph::enclosing(decls, *line) else { continue };
+        let Some(di) = crate::graph::enclosing(decls, *line) else {
+            continue;
+        };
         let last = match decls[di].end_line {
             0 => usize::MAX,
             end => end,
@@ -1288,9 +1233,7 @@ fn drop_local_uses(
     for list in sites {
         list.retain(|site| {
             let local = site.qualifier.is_empty()
-                && bound
-                    .get(site.name.as_str())
-                    .is_some_and(|spans| spans.iter().any(|&(first, last)| first < site.line && site.line <= last));
+                && bound.get(site.name.as_str()).is_some_and(|spans| spans.iter().any(|&(first, last)| first < site.line && site.line <= last));
             !local
         });
     }
@@ -1301,11 +1244,7 @@ fn drop_local_uses(
 /// o nó não é um nome.
 fn called_site(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option<CallSite> {
     let name = node.utf8_text(bytes).ok().filter(|text| is_identifier(text))?;
-    Some(CallSite {
-        name: name.to_string(),
-        line: node.start_position().row + 1,
-        qualifier: qualifier_before(node, bytes, comments, lang),
-    })
+    Some(CallSite { name: name.to_string(), line: node.start_position().row + 1, qualifier: qualifier_before(node, bytes, comments, lang) })
 }
 
 /// A declaration as the query gave it, before the supertypes captured
@@ -1434,7 +1373,9 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
                 if line_end::closes_a_line(prev) {
                     break 'climb;
                 }
-                let Ok(text) = prev.utf8_text(bytes) else { break 'climb };
+                let Ok(text) = prev.utf8_text(bytes) else {
+                    break 'climb;
+                };
                 parts.push(clean_comment(text, tags));
                 doc_row = doc_row.min(prev.start_position().row);
             } else if is_decoration(&prev, decorations) {
@@ -1529,11 +1470,7 @@ impl WrittenText {
         let rows = rows_of(first, last);
         let comment: Vec<&str> = Self::within(&self.comments, &rows).iter().map(|piece| piece.text.as_str()).collect();
         let mut seen: HashSet<&str> = HashSet::new();
-        let names: Vec<&str> = Self::within(&self.names, &rows)
-            .iter()
-            .map(|piece| piece.text.as_str())
-            .filter(|name| seen.insert(name))
-            .collect();
+        let names: Vec<&str> = Self::within(&self.names, &rows).iter().map(|piece| piece.text.as_str()).filter(|name| seen.insert(name)).collect();
         (comment.join(" "), names.join(" "))
     }
 
@@ -1687,13 +1624,7 @@ fn quoted_value(text: &str) -> Option<String> {
 /// what comes before the first name, followed by its own name up to its own
 /// value or up to the next name: `export const a = 1, b = 2;` gives
 /// `export const a` and `export const b`.
-fn signature_of(
-    node: Node,
-    bytes: &[u8],
-    decorations: &Spans,
-    value_start: Option<usize>,
-    split: Option<Split>,
-) -> String {
+fn signature_of(node: Node, bytes: &[u8], decorations: &Spans, value_start: Option<usize>, split: Option<Split>) -> String {
     let mut start = node.start_byte();
     let mut walker = node.walk();
     for child in node.children(&mut walker) {
@@ -1722,7 +1653,9 @@ fn signature_of(
         }
         None => bytes[start..until].to_vec(),
     };
-    let Ok(text) = std::str::from_utf8(&own) else { return String::new() };
+    let Ok(text) = std::str::from_utf8(&own) else {
+        return String::new();
+    };
     let mut depth: i32 = 0;
     let mut end = text.len();
     for (i, ch) in text.char_indices() {
@@ -1749,7 +1682,9 @@ fn signature_of(
 /// boundary when there is one, so what is kept still reads.
 fn one_line(text: &str, max: usize) -> String {
     let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let Some((cut, _)) = joined.char_indices().nth(max) else { return joined };
+    let Some((cut, _)) = joined.char_indices().nth(max) else {
+        return joined;
+    };
     let cut = joined[..cut].rfind(' ').unwrap_or(cut);
     joined[..cut].trim_end().to_string()
 }
@@ -1779,9 +1714,7 @@ const QUOTE_PREFIX_MAX: usize = 3;
 /// outro perde as aspas ([`literal_value`]).
 fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declarations: &[Decl], lang: &str) -> Vec<Text> {
     let (logs, errors) = (log_calls(lang), error_forms(lang));
-    let overlaps = |node: &Node| {
-        skip.iter().flat_map(|spans| spans.iter()).any(|&(start, end)| start < node.end_byte() && node.start_byte() < end)
-    };
+    let overlaps = |node: &Node| skip.iter().flat_map(|spans| spans.iter()).any(|&(start, end)| start < node.end_byte() && node.start_byte() < end);
     let mut texts: Vec<Text> = literals
         .iter()
         .filter(|(node, _)| !overlaps(node))
@@ -1805,8 +1738,12 @@ fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declara
 /// (`r#"…"#`, `f'…'`, `@"…"`, `"""…"""`). O literal sem aspas perto do
 /// começo fica como foi escrito.
 pub(crate) fn literal_value(written: &str) -> &str {
-    let Some(open) = written.find(['"', '\'', '`']).filter(|&at| at <= QUOTE_PREFIX_MAX) else { return written };
-    let Some(quote) = written[open..].chars().next() else { return written };
+    let Some(open) = written.find(['"', '\'', '`']).filter(|&at| at <= QUOTE_PREFIX_MAX) else {
+        return written;
+    };
+    let Some(quote) = written[open..].chars().next() else {
+        return written;
+    };
     let run = written[open..].chars().take_while(|&c| c == quote).count();
     // Duas aspas seguidas só abrem o literal vazio; três ou mais abrem o de
     // várias linhas, que fecha com as mesmas.
@@ -1965,12 +1902,13 @@ fn use_sites(
         // A letra sozinha, que fora disso é valor, é nome quando um import do
         // arquivo a trouxe (`L` de `import { Leitor as L }`). O traço baixo
         // não é letra: o import que traz o nome como `_` não traz nome.
-        let Ok(text) = node.utf8_text(bytes) else { continue };
+        let Ok(text) = node.utf8_text(bytes) else {
+            continue;
+        };
         if !(is_identifier(text) || (brought.contains(text) && text.chars().all(char::is_alphabetic))) {
             continue;
         }
-        let site =
-            (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
         if followed_by_open_paren(node, bytes) {
             if opens_chain(node, bytes, comments, lang, &site.2) {
                 heads.insert(site.2.clone());
@@ -2000,9 +1938,7 @@ fn use_sites(
             cites.insert(site);
         }
     }
-    let sites = |found: BTreeSet<(usize, String, String)>| {
-        found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
-    };
+    let sites = |found: BTreeSet<(usize, String, String)>| found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect();
     (sites(calls), sites(cites), sites(values), sites(members), heads)
 }
 
@@ -2025,7 +1961,9 @@ fn opens_chain(node: Node, bytes: &[u8], comments: &Spans, lang: &str, qualifier
     }
     let separators = || qualifier_separators(lang).iter().chain(member_separators(lang));
     let before = code_before(bytes, comments, node.start_byte());
-    let Some(before) = separators().find_map(|sep| before.strip_suffix(sep.as_bytes())) else { return false };
+    let Some(before) = separators().find_map(|sep| before.strip_suffix(sep.as_bytes())) else {
+        return false;
+    };
     let Some(before) = before_separator(bytes, comments, before.len()).strip_suffix(qualifier.as_bytes()) else {
         return false;
     };
@@ -2118,7 +2056,9 @@ fn code_before<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
     let mut end = at;
     loop {
         let before = bytes[..end].trim_ascii_end();
-        let Some(last) = before.len().checked_sub(1) else { return before };
+        let Some(last) = before.len().checked_sub(1) else {
+            return before;
+        };
         match comments.range(..=(last, usize::MAX)).next_back() {
             Some(&(start, stop)) if last < stop && start < end => end = start,
             _ => return before,
@@ -2146,10 +2086,7 @@ fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> S
         (None, None) => return String::new(),
     };
     let before = before_separator(bytes, comments, before.len());
-    let start = before
-        .iter()
-        .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
-        .map_or(0, |i| i + 1);
+    let start = before.iter().rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80)).map_or(0, |i| i + 1);
     match std::str::from_utf8(&before[start..]) {
         Ok(q) if is_name(q) && (!only_member || self_receivers(lang).contains(&q)) => q.to_string(),
         _ => RECEIVER.to_string(),
@@ -2214,10 +2151,7 @@ fn against_a_quote(node: Node, bytes: &[u8]) -> bool {
 
 /// The next character after the node, whitespace apart, opens a parameter list.
 fn followed_by_open_paren(node: Node, bytes: &[u8]) -> bool {
-    bytes
-        .get(node.end_byte()..)
-        .and_then(|rest| rest.iter().find(|b| !b.is_ascii_whitespace()))
-        .is_some_and(|b| *b == b'(')
+    bytes.get(node.end_byte()..).and_then(|rest| rest.iter().find(|b| !b.is_ascii_whitespace())).is_some_and(|b| *b == b'(')
 }
 
 /// The text reads as a name: letters, digits and underscores, starting with a
@@ -2339,16 +2273,25 @@ fn simple_type_name(txt: &str) -> Option<String> {
     // Take the last qualified segment.
     let tail = head.rsplit(['.', ' ', ':']).next().unwrap_or(head).trim();
     let name: String = tail.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect();
-    if name.len() >= 2 {
-        Some(name)
-    } else {
-        None
-    }
+    if name.len() >= 2 { Some(name) } else { None }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_partial_and_unknown_parse_coverage_are_distinct_from_semantic_coverage() {
+        let analyzer = Analyzer::new(&raw_langs().into_iter().find(|raw| raw.name == "rust").unwrap()).unwrap();
+        let keep = Keep { written_text: true, texts_and_routes: true };
+        let project = routes::Project::default();
+        let complete = analyzer.extract("pub fn total() -> u32 { 1 }", keep, &project);
+        assert_eq!(complete.parse_complete, Some(true));
+        let partial = analyzer.extract("pub fn total( { let broken =", keep, &project);
+        assert_eq!(partial.parse_complete, Some(false));
+        assert!(Analyzer::declarations_only("unknown-language").is_none());
+        assert_eq!(Extracted::default().parse_complete, None);
+    }
 
     /// A gramática de qualquer língua do registro: o curinga `(_)` vale em
     /// todas, e o nó inventado, em nenhuma.

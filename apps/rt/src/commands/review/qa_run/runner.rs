@@ -3,10 +3,10 @@
 //! contagem de testes que a saída diz e o trecho da saída que explica uma
 //! falha.
 
-use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
+use super::AcResult;
+use crate::shared::proc::{ShellOutcome, run_shell_with_deadline};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use super::AcResult;
 
 /// O prazo comum de uma prova (2 minutos) para o comando que não compila.
 const AC_TIMEOUT_SECS: u64 = 120;
@@ -40,6 +40,8 @@ pub(crate) enum Ceiling {
     /// A prova de um critério: 2 minutos, 10 para o que compila, ou o valor
     /// da variável `MUSTARD_QA_AC_TIMEOUT_SECS`.
     Criterion,
+    /// Declared build, irrespective of language/tool.
+    Build,
     /// O lint ou a suíte que o servidor roda: [`SERVER_COMMAND_TIMEOUT_SECS`],
     /// sempre.
     ServerCommand,
@@ -81,7 +83,9 @@ const TEST_COUNTS: &[(&str, &str, &str)] = &[
 ///
 /// A linha já chega aqui aparada e em minúsculas.
 fn vitest_said_no_test(line: &str) -> bool {
-    let Some(rest) = line.strip_prefix("tests") else { return false };
+    let Some(rest) = line.strip_prefix("tests") else {
+        return false;
+    };
     let rest = rest.strip_prefix(':').unwrap_or(rest);
     rest.starts_with(char::is_whitespace) && rest.trim_start().starts_with("no tests")
 }
@@ -101,8 +105,7 @@ const GO_NO_TESTS_TO_RUN: &str = "[no tests to run]";
 /// corrida rodou zero.
 fn go_package_ran_tests(line: &str) -> Option<bool> {
     let rest = line.strip_prefix("ok")?;
-    rest.starts_with(char::is_whitespace)
-        .then(|| !(rest.contains(GO_NO_TESTS_TO_RUN) || rest.contains("[no test files]")))
+    rest.starts_with(char::is_whitespace).then(|| !(rest.contains(GO_NO_TESTS_TO_RUN) || rest.contains("[no test files]")))
 }
 
 /// O número que uma linha de saída, já em minúsculas, diz ter rodado, pelo
@@ -119,7 +122,9 @@ fn counted_in_line(line: &str) -> Option<u64> {
         };
         let words: Vec<&str> = rest.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
         for (i, word) in words.iter().enumerate() {
-            let Ok(count) = word.parse::<u64>() else { continue };
+            let Ok(count) = word.parse::<u64>() else {
+                continue;
+            };
             let next = words.get(i + 1).copied().unwrap_or_default();
             if after.is_empty() || next.starts_with(after) {
                 return Some(count);
@@ -168,19 +173,13 @@ fn tests_run(output: &str) -> Option<u64> {
 /// when set to a parseable value; an invalid value is ignored. Without the
 /// override, commands containing `cargo ` get [`AC_TIMEOUT_CARGO_SECS`]
 /// (compilation-bound) and everything else keeps [`AC_TIMEOUT_SECS`].
-fn ac_timeout_secs(command: &str, ceiling: Ceiling) -> u64 {
+fn ac_timeout_secs(command: &str, ceiling: Ceiling, cwd: &Path) -> u64 {
     let env = timeout_variable();
     // The project's OWN build and type-check commands, so the compile-bound
     // ceiling is not a list of tool names this file happens to know. Both are
     // already declared in `mustard.json`; fail-open to none.
-    let declared = mustard_core::ProjectConfig::load(Path::new(
-        &crate::shared::context::env::project_dir(),
-    ))
-    .commands();
-    let compiling: Vec<String> = [declared.build, declared.type_check]
-        .into_iter()
-        .flatten()
-        .collect();
+    let declared = mustard_core::ProjectConfig::load(cwd).commands();
+    let compiling: Vec<String> = [declared.build, declared.type_check].into_iter().flatten().collect();
     ceiling_secs(ceiling, command, env.as_deref(), &compiling)
 }
 
@@ -216,14 +215,10 @@ pub(crate) fn with_timeout_variable<T>(value: &str, f: impl FnOnce() -> T) -> T 
 /// A escolha do teto, função pura das entradas: sem relógio e sem ambiente
 /// lidos aqui dentro. O comando do servidor tem sempre o teto dele, com ou
 /// sem a variável; a prova de critério segue o teto de sempre.
-pub(crate) fn ceiling_secs(
-    ceiling: Ceiling,
-    command: &str,
-    env_override: Option<&str>,
-    compiling: &[String],
-) -> u64 {
+pub(crate) fn ceiling_secs(ceiling: Ceiling, command: &str, env_override: Option<&str>, compiling: &[String]) -> u64 {
     match ceiling {
         Ceiling::ServerCommand => SERVER_COMMAND_TIMEOUT_SECS,
+        Ceiling::Build => env_override.and_then(|s| s.trim().parse().ok()).unwrap_or(AC_TIMEOUT_CARGO_SECS),
         Ceiling::Criterion => ac_timeout_secs_with_override(command, env_override, compiling),
     }
 }
@@ -232,19 +227,11 @@ pub(crate) fn ceiling_secs(
 /// parameter so the decision is a pure function of its inputs (no wall-clock,
 /// no globals) and unit-testable without mutating process env (which would
 /// need `unsafe` under Rust 2024 — forbidden in this crate).
-fn ac_timeout_secs_with_override(
-    command: &str,
-    env_override: Option<&str>,
-    compiling: &[String],
-) -> u64 {
+fn ac_timeout_secs_with_override(command: &str, env_override: Option<&str>, compiling: &[String]) -> u64 {
     if let Some(secs) = env_override.and_then(|s| s.trim().parse::<u64>().ok()) {
         return secs;
     }
-    if is_compile_bound(command, compiling) {
-        AC_TIMEOUT_CARGO_SECS
-    } else {
-        AC_TIMEOUT_SECS
-    }
+    if is_compile_bound(command, compiling) { AC_TIMEOUT_CARGO_SECS } else { AC_TIMEOUT_SECS }
 }
 
 /// `true` when `command` has to COMPILE before it can answer.
@@ -269,12 +256,7 @@ fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
     if lower.contains("cargo ") {
         return true;
     }
-    if compiling
-        .iter()
-        .map(|c| c.trim().to_ascii_lowercase())
-        .filter(|c| !c.is_empty())
-        .any(|c| lower.contains(&c))
-    {
+    if compiling.iter().map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty()).any(|c| lower.contains(&c)) {
         return true;
     }
     ["type-check", "typecheck", "tsc "].iter().any(|t| lower.contains(t))
@@ -358,9 +340,13 @@ pub(super) fn run_server_command(command: &str, cwd: &Path) -> AcResult {
     run_with_ceiling(command, None, cwd, Ceiling::ServerCommand)
 }
 
+pub(super) fn run_build_command(command: &str, cwd: &Path) -> AcResult {
+    run_with_ceiling(command, None, cwd, Ceiling::Build)
+}
+
 /// O executor com o teto que `ceiling` escolhe.
 fn run_with_ceiling(command: &str, expect: Option<&str>, cwd: &Path, ceiling: Ceiling) -> AcResult {
-    let timeout = Duration::from_secs(ac_timeout_secs(command, ceiling));
+    let timeout = Duration::from_secs(ac_timeout_secs(command, ceiling, cwd));
     run_ac_command_with_timeout(command, expect, cwd, timeout)
 }
 
@@ -369,12 +355,7 @@ fn run_with_ceiling(command: &str, expect: Option<&str>, cwd: &Path, ceiling: Ce
 /// estourado seja testável sem mexer no ambiente do processo (mexer nele pede
 /// `unsafe` no Rust 2024, proibido neste crate). É a mesma costura de prazo
 /// injetado que [`ac_timeout_secs_with_override`] já usa.
-fn run_ac_command_with_timeout(
-    command: &str,
-    expect: Option<&str>,
-    cwd: &Path,
-    timeout: Duration,
-) -> AcResult {
+fn run_ac_command_with_timeout(command: &str, expect: Option<&str>, cwd: &Path, timeout: Duration) -> AcResult {
     run_ac_command_inner(command, expect, cwd, timeout, false)
 }
 
@@ -411,10 +392,7 @@ fn first_program_is_on_path(command: &str) -> bool {
         // "not on PATH" for EVERY program there, so the retry this module
         // exists for could never fire on Windows — a product defect, found by
         // CI when a test finally asked the question on that platform.
-        cfg!(windows)
-            && executable_extensions()
-                .iter()
-                .any(|ext| dir.join(format!("{word}{ext}")).is_file())
+        cfg!(windows) && executable_extensions().iter().any(|ext| dir.join(format!("{word}{ext}")).is_file())
     })
 }
 
@@ -443,13 +421,7 @@ fn executable_extensions() -> Vec<String> {
 /// `is_retry` exists to bound the recursion at exactly one extra attempt: a
 /// flaky environment gets a second chance, a genuinely missing program does not
 /// spin.
-fn run_ac_command_inner(
-    command: &str,
-    expect: Option<&str>,
-    cwd: &Path,
-    timeout: Duration,
-    is_retry: bool,
-) -> AcResult {
+fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout: Duration, is_retry: bool) -> AcResult {
     let t0 = Instant::now();
     // O comando roda como veio, num shell POSIX: no Windows o executor
     // compartilhado acha o que vem ao lado do `git`, e as aspas simples de
@@ -494,11 +466,7 @@ fn run_ac_command_inner(
     // Full combined output (stderr first, then stdout): the haystack the
     // optional `Expect:` regex matches against AND the source of the bounded
     // excerpt shown on failure.
-    let combined_full = [stderr.trim(), stdout.trim()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let combined_full = [stderr.trim(), stdout.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
     // O que o executor disse sobre quantos testes rodaram viaja no resultado,
     // como número. O julgamento não mora aqui: este executor responde ao lint
     // do projeto e à prova de um critério, e só a segunda promete rodar teste
@@ -530,19 +498,14 @@ fn run_ac_command_inner(
                 status: "fail".to_string(),
                 exit: Some(0),
                 duration_ms,
-                stderr_excerpt: format!(
-                    "Expect `{pattern}` not found in command output: {}",
-                    tail_excerpt(&combined_full)
-                ),
+                stderr_excerpt: format!("Expect `{pattern}` not found in command output: {}", tail_excerpt(&combined_full)),
                 tests_run: counted,
             },
             ExpectVerdict::InvalidPattern => AcResult {
                 status: "skip".to_string(),
                 exit: Some(0),
                 duration_ms,
-                stderr_excerpt: format!(
-                    "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
-                ),
+                stderr_excerpt: format!("Expect `{pattern}` is not a valid regex; skipped (fail-open)"),
                 tests_run: counted,
             },
         };
@@ -571,10 +534,7 @@ fn run_ac_command_inner(
     // Se a nova tentativa também falha, o veredito segue `fail`. Uma tentativa
     // separa um ambiente instável de um defeito real sem enfraquecer o que o
     // registro afirma.
-    if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND)
-        && !is_retry
-        && first_program_is_on_path(command)
-    {
+    if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND) && !is_retry && first_program_is_on_path(command) {
         return run_ac_command_inner(command, expect, cwd, timeout, true);
     }
     if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND) {
@@ -582,10 +542,7 @@ fn run_ac_command_inner(
             status: "fail".to_string(),
             exit: Some(EXIT_COMMAND_NOT_FOUND),
             duration_ms,
-            stderr_excerpt: format!(
-                "the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}",
-                tail_excerpt(&combined_full)
-            ),
+            stderr_excerpt: format!("the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}", tail_excerpt(&combined_full)),
             tests_run: counted,
         };
     }
@@ -597,7 +554,6 @@ fn run_ac_command_inner(
         tests_run: counted,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -617,12 +573,7 @@ mod tests {
         // regression documented above — it once let a spec CLOSE on a criterion
         // nobody had run.
         assert!(!first_program_is_on_path("programa-que-nao-existe-xyz --flag"));
-        let res = run_ac_command_with_timeout(
-            "programa-que-nao-existe-xyz",
-            None,
-            dir.path(),
-            Duration::from_secs(10),
-        );
+        let res = run_ac_command_with_timeout("programa-que-nao-existe-xyz", None, dir.path(), Duration::from_secs(10));
         assert_eq!(res.status, "fail", "a missing program must stay a failure");
         assert_eq!(res.exit, Some(EXIT_COMMAND_NOT_FOUND));
 
@@ -642,11 +593,7 @@ mod tests {
         // platform. `current_exe` is this very test binary, and on Windows its
         // path uses `\`, which the lookup must accept as a separator too.
         if let Ok(me) = std::env::current_exe() {
-            assert!(
-                first_program_is_on_path(&me.to_string_lossy()),
-                "an absolute path must be answered by the filesystem: {}",
-                me.display(),
-            );
+            assert!(first_program_is_on_path(&me.to_string_lossy()), "an absolute path must be answered by the filesystem: {}", me.display());
         }
         assert!(!first_program_is_on_path("/nao/existe/em/lugar/nenhum"));
         assert!(!first_program_is_on_path("programa-que-nao-existe-xyz"));
@@ -698,19 +645,11 @@ mod tests {
             None,
             "um pacote sem teste ao lado de um que rodou não é corrida sem teste"
         );
-        assert_eq!(
-            tests_run("ok  \tx/pkg\t0.002s [no tests to run]\n?   \tx/vazio\t[no test files]\n"),
-            Some(0),
-            "nenhum pacote rodou"
-        );
+        assert_eq!(tests_run("ok  \tx/pkg\t0.002s [no tests to run]\n?   \tx/vazio\t[no test files]\n"), Some(0), "nenhum pacote rodou");
         assert_eq!(tests_run("cargo test: 6 passed (1 suite)"), None, "sem contagem, sem veredito");
         assert_eq!(tests_run("lint ok: no tests to skip\n"), None, "frase num lint verde não é contagem");
         assert_eq!(tests_run("src/msg.rs: no tests found here\n"), None, "nem numa prova que não é teste");
-        assert_eq!(
-            tests_run(" Test Files  1 passed (1)\n      Tests  no tests\n"),
-            Some(0),
-            "a linha de resumo do vitest é contagem, mesmo sem número"
-        );
+        assert_eq!(tests_run(" Test Files  1 passed (1)\n      Tests  no tests\n"), Some(0), "a linha de resumo do vitest é contagem, mesmo sem número");
         assert_eq!(tests_run("testing: no tests here\n"), None, "prosa que começa parecido não é resumo");
 
         // O número lido chega no resultado, e o verde sem teste sai daqui
@@ -739,11 +678,7 @@ mod tests {
         // node one-liner: a regex test inside parentheses, double-quoted -e arg.
         let cmd = r#"node -e "process.exit(/^(foo|bar)$/.test('bar') ? 0 : 1)""#;
         let res = run_ac_command(cmd, None, dir.path());
-        assert_eq!(
-            res.status, "pass",
-            "quoted+parenthesized AC command must run verbatim (exit {:?}, stderr: {})",
-            res.exit, res.stderr_excerpt
-        );
+        assert_eq!(res.status, "pass", "quoted+parenthesized AC command must run verbatim (exit {:?}, stderr: {})", res.exit, res.stderr_excerpt);
         assert_eq!(res.exit, Some(0));
     }
 
@@ -771,17 +706,9 @@ mod tests {
     fn an_ac_written_with_single_quotes_can_go_both_ways() {
         let dir = tempdir().unwrap();
         let green = run_ac_command("echo 'a b'", Some("^a b$"), dir.path());
-        assert_eq!(
-            green.status, "pass",
-            "single-quoted AC must be able to pass, stderr: {}",
-            green.stderr_excerpt
-        );
+        assert_eq!(green.status, "pass", "single-quoted AC must be able to pass, stderr: {}", green.stderr_excerpt);
         let red = run_ac_command("echo 'a b'", Some("^zzz$"), dir.path());
-        assert_eq!(
-            red.status, "fail",
-            "and must still fail on absent evidence, stderr: {}",
-            red.stderr_excerpt
-        );
+        assert_eq!(red.status, "fail", "and must still fail on absent evidence, stderr: {}", red.stderr_excerpt);
     }
 
     /// Um comando que o shell não acha é graduado `fail`, e NOMEADO.
@@ -795,17 +722,9 @@ mod tests {
     fn a_command_the_shell_cannot_find_fails_and_names_the_cause() {
         let dir = tempdir().unwrap();
         let res = run_ac_command("mustard-no-such-program-9f3c --version", None, dir.path());
-        assert_eq!(
-            res.status, "fail",
-            "an unrunnable criterion must still block QA, stderr: {}",
-            res.stderr_excerpt
-        );
+        assert_eq!(res.status, "fail", "an unrunnable criterion must still block QA, stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, Some(EXIT_COMMAND_NOT_FOUND), "the shell's own not-found code");
-        assert!(
-            res.stderr_excerpt.contains("could not find the command"),
-            "the cause is named, not left to the raw output: {}",
-            res.stderr_excerpt
-        );
+        assert!(res.stderr_excerpt.contains("could not find the command"), "the cause is named, not left to the raw output: {}", res.stderr_excerpt);
     }
 
     /// Commands invoking `cargo ` get the compile-aware ceiling (600 s): a
@@ -813,32 +732,17 @@ mod tests {
     /// such ACs into silent skips (the regression behind this fix).
     #[test]
     fn qa_timeout_cargo_command_gets_big_ceiling() {
-        assert_eq!(
-            ac_timeout_secs_with_override("cargo test -p mustard-rt", None, &[]),
-            AC_TIMEOUT_CARGO_SECS
-        );
-        assert_eq!(
-            ac_timeout_secs_with_override("cargo build --workspace", None, &[]),
-            AC_TIMEOUT_CARGO_SECS
-        );
+        assert_eq!(ac_timeout_secs_with_override("cargo test -p mustard-rt", None, &[]), AC_TIMEOUT_CARGO_SECS);
+        assert_eq!(ac_timeout_secs_with_override("cargo build --workspace", None, &[]), AC_TIMEOUT_CARGO_SECS);
         // Wrapped/chained invocations still contain `cargo ` → big ceiling.
-        assert_eq!(
-            ac_timeout_secs_with_override("rtk cargo test && echo ok", None, &[]),
-            AC_TIMEOUT_CARGO_SECS
-        );
+        assert_eq!(ac_timeout_secs_with_override("rtk cargo test && echo ok", None, &[]), AC_TIMEOUT_CARGO_SECS);
     }
 
     /// Non-cargo commands keep the historical 120 s default.
     #[test]
     fn qa_timeout_non_cargo_keeps_default() {
-        assert_eq!(
-            ac_timeout_secs_with_override(r#"node -e "process.exit(0)""#, None, &[]),
-            AC_TIMEOUT_SECS
-        );
-        assert_eq!(
-            ac_timeout_secs_with_override("grep -q Modelo SKILL.md", None, &[]),
-            AC_TIMEOUT_SECS
-        );
+        assert_eq!(ac_timeout_secs_with_override(r#"node -e "process.exit(0)""#, None, &[]), AC_TIMEOUT_SECS);
+        assert_eq!(ac_timeout_secs_with_override("grep -q Modelo SKILL.md", None, &[]), AC_TIMEOUT_SECS);
     }
 
     /// `MUSTARD_QA_AC_TIMEOUT_SECS` overrides BOTH defaults when it parses as
@@ -847,18 +751,12 @@ mod tests {
     /// needs `unsafe` under Rust 2024, forbidden in this crate).
     #[test]
     fn qa_timeout_env_override_wins() {
-        assert_eq!(
-            ac_timeout_secs_with_override("cargo test -p mustard-rt", Some("300"), &[]),
-            300
-        );
+        assert_eq!(ac_timeout_secs_with_override("cargo test -p mustard-rt", Some("300"), &[]), 300);
         assert_eq!(ac_timeout_secs_with_override("echo ok", Some("300"), &[]), 300);
         // Surrounding whitespace is tolerated.
         assert_eq!(ac_timeout_secs_with_override("cargo build", Some(" 42 "), &[]), 42);
         // Invalid values fall back to the command-sensitive defaults.
-        assert_eq!(
-            ac_timeout_secs_with_override("cargo build", Some("not-a-number"), &[]),
-            AC_TIMEOUT_CARGO_SECS
-        );
+        assert_eq!(ac_timeout_secs_with_override("cargo build", Some("not-a-number"), &[]), AC_TIMEOUT_CARGO_SECS);
         assert_eq!(ac_timeout_secs_with_override("echo ok", Some(""), &[]), AC_TIMEOUT_SECS);
     }
 
@@ -869,14 +767,8 @@ mod tests {
     #[test]
     fn expect_regex_matcher_verdicts() {
         assert!(matches!(evaluate_expect(None, "anything"), ExpectVerdict::NoExpectation));
-        assert!(matches!(
-            evaluate_expect(Some("test result: ok"), "running 3 tests\ntest result: ok. 3 passed"),
-            ExpectVerdict::Matched
-        ));
-        assert!(matches!(
-            evaluate_expect(Some("0 passed"), "test result: ok. 3 passed"),
-            ExpectVerdict::Missed
-        ));
+        assert!(matches!(evaluate_expect(Some("test result: ok"), "running 3 tests\ntest result: ok. 3 passed"), ExpectVerdict::Matched));
+        assert!(matches!(evaluate_expect(Some("0 passed"), "test result: ok. 3 passed"), ExpectVerdict::Missed));
         // Unclosed character class ⇒ not a valid regex ⇒ fail-open, no panic.
         assert!(matches!(evaluate_expect(Some("[unterminated"), "x"), ExpectVerdict::InvalidPattern));
     }
@@ -926,8 +818,7 @@ mod tests {
     const BIG_OUTPUT_EXIT_3_POSIX: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
          while [ $i -lt 12 ]; do s=\"$s$s\"; i=$((i+1)); done; echo \"$s\"; exit 3";
     #[cfg(windows)]
-    const BIG_OUTPUT_EXIT_3_CMD: &str =
-        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
+    const BIG_OUTPUT_EXIT_3_CMD: &str = "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
 
     /// The form matching the shell this process will actually spawn.
     fn big_output_exit_3() -> &'static str {
@@ -940,7 +831,7 @@ mod tests {
 
     /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
     #[cfg(windows)]
-    const SLEEPS_SECONDS: &str = "ping -n 4 127.0.0.1";
+    const SLEEPS_SECONDS: &str = "powershell -NoProfile -Command \"while (-not (Test-Path mustard-deadline-test.release)) { Start-Sleep -Milliseconds 25 }\"";
     #[cfg(not(windows))]
     const SLEEPS_SECONDS: &str = "sleep 3";
 
@@ -953,18 +844,13 @@ mod tests {
     fn ac_command_past_the_pipe_buffer_is_judged_by_exit_code() {
         let dir = tempdir().unwrap();
         let res = run_ac_command(big_output_exit_3(), None, dir.path());
-        assert_eq!(
-            res.status, "fail",
-            "verdict comes from the exit code, stderr: {}",
-            res.stderr_excerpt
-        );
+        assert_eq!(res.status, "fail", "verdict comes from the exit code, stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, Some(3), "the command's own code, not a timeout");
     }
 
     /// Um comando que escreve 200 linhas numeradas, `linha 1` a `linha 200`, e
     /// sai com o código 3: a falha aparece na última.
-    const PRINTS_LINES_THEN_FAILS: &str =
-        "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
+    const PRINTS_LINES_THEN_FAILS: &str = "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
 
     /// A falha mostra o FIM da saída, onde o motivo aparece: numa saída de 200
     /// linhas que falha na última, o trecho tem a última linha, guarda só as
@@ -981,11 +867,7 @@ mod tests {
         assert!(!res.stderr_excerpt.contains("linha 1\n"), "o começo fica de fora: {}", res.stderr_excerpt);
 
         // A evidência que falhou por não achar o que esperava também mostra o fim.
-        let missed = run_ac_command(
-            "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done",
-            Some("nunca-escrito"),
-            dir.path(),
-        );
+        let missed = run_ac_command("i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done", Some("nunca-escrito"), dir.path());
         assert_eq!(missed.status, "fail", "{}", missed.stderr_excerpt);
         assert!(missed.stderr_excerpt.ends_with("linha 200"), "{}", missed.stderr_excerpt);
 
@@ -1032,10 +914,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let res = run_ac_command("echo whatever", Some("[unterminated"), dir.path());
         assert_eq!(res.status, "skip", "stderr: {}", res.stderr_excerpt);
-        assert!(
-            res.stderr_excerpt.contains("not a valid regex"),
-            "skip reason states the invalid pattern: {}",
-            res.stderr_excerpt
-        );
+        assert!(res.stderr_excerpt.contains("not a valid regex"), "skip reason states the invalid pattern: {}", res.stderr_excerpt);
     }
 }

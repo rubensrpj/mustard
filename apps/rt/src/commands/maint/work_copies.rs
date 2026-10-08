@@ -33,8 +33,8 @@ use mustard_core::io::wave_prompt::{copies_dir, shown};
 use serde::Serialize;
 
 use super::scratch_gc::ErrorRecord;
-use crate::commands::flow::discard::{sweep_old_discard_copies, DISCARD_COPIES};
-use crate::commands::flow::round::{remove_single_copy, remove_spec_copies, Removal};
+use crate::commands::flow::discard::{DISCARD_COPIES, sweep_old_discard_copies};
+use crate::commands::flow::round::{Removal, remove_single_copy, remove_spec_copies};
 
 /// O prefixo das cópias antigas dentro do projeto.
 const OLD_PREFIX: &str = "mustard-";
@@ -105,14 +105,7 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
         return None;
     }
     let (candidates, kept): (Vec<CopyRecord>, Vec<CopyRecord>) = found(&root).into_iter().partition(|record| record.leaves);
-    let mut report = CopiesReport {
-        root: shown(&root),
-        candidates,
-        kept,
-        removed: Vec::new(),
-        errors: Vec::new(),
-        code_kept: Vec::new(),
-    };
+    let mut report = CopiesReport { root: shown(&root), candidates, kept, removed: Vec::new(), errors: Vec::new(), code_kept: Vec::new() };
     if apply {
         remove(&root, &mut report);
     }
@@ -146,10 +139,9 @@ fn remove(root: &Path, report: &mut CopiesReport) {
         if outcome.left.is_empty() && outcome.unkept.is_empty() {
             removed.push(record.path.clone());
         }
-        errors.extend(outcome.left.into_iter().chain(outcome.unkept).map(|(path, error)| ErrorRecord {
-            path: if only_path { record.path.clone() } else { path },
-            error,
-        }));
+        errors.extend(
+            outcome.left.into_iter().chain(outcome.unkept).map(|(path, error)| ErrorRecord { path: if only_path { record.path.clone() } else { path }, error }),
+        );
         code_kept.extend(outcome.kept.iter().map(|kept| KeptRecord {
             copy: kept.copy.clone(),
             refname: kept.refname.clone(),
@@ -194,7 +186,9 @@ fn found(root: &Path) -> Vec<CopyRecord> {
     }
     for dir in folders(&root.join(".claude").join("worktrees")) {
         let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let Some(rest) = name.strip_prefix(OLD_PREFIX) else { continue };
+        let Some(rest) = name.strip_prefix(OLD_PREFIX) else {
+            continue;
+        };
         if dir.join(".git").is_file() {
             let spec = old_spec(rest);
             records.push(record(root, dir, spec, false));
@@ -216,13 +210,7 @@ fn record(root: &Path, dir: PathBuf, spec: Option<String>, whole: bool) -> CopyR
 /// As pastas de dentro de `place`, sem seguir link.
 fn folders(place: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(place)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                .map(|entry| entry.path())
-                .collect()
-        })
+        .map(|entries| entries.flatten().filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir())).map(|entry| entry.path()).collect())
         .unwrap_or_default()
 }
 
@@ -245,19 +233,11 @@ fn fate(root: &Path, spec: &str) -> (bool, String) {
     match store::read(&file) {
         Ok(Some(log)) => {
             let phase = State::from_log(&log).phase.unwrap_or("unknown");
-            if FINISHED.contains(&phase) {
-                (true, format!("spec {phase}"))
-            } else {
-                (false, format!("spec still open: {phase}"))
-            }
+            if FINISHED.contains(&phase) { (true, format!("spec {phase}")) } else { (false, format!("spec still open: {phase}")) }
         }
         Ok(None) => {
             let specs = file.parent().and_then(Path::parent).unwrap_or(root);
-            if specs.join(DISCARDED_DIR).join(spec).is_dir() {
-                (true, "spec discarded".to_string())
-            } else {
-                (true, "spec missing".to_string())
-            }
+            if specs.join(DISCARDED_DIR).join(spec).is_dir() { (true, "spec discarded".to_string()) } else { (true, "spec missing".to_string()) }
         }
         Err(_) => (false, "spec unreadable".to_string()),
     }
@@ -323,11 +303,7 @@ mod tests {
     }
 
     fn registered(root: &Path) -> String {
-        let out = std::process::Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
-            .current_dir(root)
-            .output()
-            .expect("git");
+        let out = std::process::Command::new("git").args(["worktree", "list", "--porcelain"]).current_dir(root).output().expect("git");
         String::from_utf8_lossy(&out.stdout).to_string()
     }
 
@@ -451,21 +427,19 @@ mod tests {
     /// quem usa: a prévia e o sim com o código. Devolve a pasta da cópia da
     /// página que o descarte deixou na pasta das cópias do projeto.
     fn deleted(root: &Path, spec: &str) -> PathBuf {
-        use crate::commands::flow::discard::{discard_for, DiscardOpts};
+        use crate::commands::flow::discard::{DiscardOpts, discard_for};
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         assert!(mustard_core::io::spec_index::rebuild(root).is_ok());
-        let opts = |confirm: Option<String>| DiscardOpts {
-            root: root.to_path_buf(),
-            spec: Some(spec.to_string()),
-            remote: false,
-            delete: true,
-            confirm,
-        };
+        let opts = |confirm: Option<String>| DiscardOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), remote: false, delete: true, confirm };
         let code = discard_for(&opts(None), None)["token"].as_str().unwrap_or_default().to_string();
         let done = discard_for(&opts(Some(code)), None);
         assert_eq!(done["ok"], json!(true), "{done}");
-        let folder = root.join(done["copy"]["folder"].as_str().unwrap_or_default());
-        assert!(folder.is_dir() && folder.starts_with(copies_dir(root).join(DISCARD_COPIES)), "{done}");
+        assert!(done.get("copy").is_none(), "new discards do not generate a database");
+        // Seed a historical cache explicitly: cleanup compatibility must
+        // not rely on restoring the retired automatic publication path.
+        let folder = copies_dir(root).join(DISCARD_COPIES).join(spec);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("old-snapshot.json"), "{}").unwrap();
         folder
     }
 
@@ -504,10 +478,7 @@ mod tests {
         let place = shown(&copies_dir(root).join(DISCARD_COPIES));
 
         let listed = clean(root, false).expect("um projeto git");
-        assert!(
-            every_record(&listed).all(|record| record.spec != DISCARD_COPIES && record.path != place),
-            "{listed:?}"
-        );
+        assert!(every_record(&listed).all(|record| record.spec != DISCARD_COPIES && record.path != place), "{listed:?}");
         assert!(listed.candidates.is_empty() && listed.kept.is_empty(), "{listed:?}");
     }
 
@@ -529,8 +500,7 @@ mod tests {
         set_mtime(&recent, now - DISCARD_COPY_KEPT + Duration::from_secs(60));
 
         let listed = clean(root, false).expect("um projeto git");
-        let lines: Vec<(&str, &str, &str)> =
-            listed.candidates.iter().map(|r| (r.path.as_str(), r.spec.as_str(), r.reason.as_str())).collect();
+        let lines: Vec<(&str, &str, &str)> = listed.candidates.iter().map(|r| (r.path.as_str(), r.spec.as_str(), r.reason.as_str())).collect();
         assert_eq!(lines, vec![(shown(&old).as_str(), "", OLD_DISCARD_COPY)], "{listed:?}");
         assert!(listed.kept.is_empty() && listed.removed.is_empty(), "{listed:?}");
         assert!(old.is_dir(), "{old:?}: without the option to remove, nothing leaves");
@@ -557,8 +527,7 @@ mod tests {
         let old = root.join(".claude").join("worktrees").join("mustard-velha-7");
         for path in [&slot, &old] {
             copy(root, path);
-            std::fs::write(path.join("depois.txt"), format!("código de {}", crate::shared::paths::canonical(&path.to_string_lossy())))
-                .unwrap();
+            std::fs::write(path.join("depois.txt"), format!("código de {}", crate::shared::paths::canonical(&path.to_string_lossy()))).unwrap();
         }
 
         let applied = clean(root, true).expect("um projeto git");
@@ -569,11 +538,7 @@ mod tests {
             assert_eq!(kept.files, vec!["depois.txt".to_string()], "{kept:?}");
             assert_eq!(kept.restore, format!("git cherry-pick --no-commit {}", kept.refname), "{kept:?}");
             let shown_copy = crate::shared::paths::canonical(&kept.copy);
-            let out = std::process::Command::new("git")
-                .args(["show", &format!("{}:depois.txt", kept.refname)])
-                .current_dir(root)
-                .output()
-                .expect("git");
+            let out = std::process::Command::new("git").args(["show", &format!("{}:depois.txt", kept.refname)]).current_dir(root).output().expect("git");
             assert_eq!(String::from_utf8_lossy(&out.stdout), format!("código de {shown_copy}"), "{kept:?}");
         }
 

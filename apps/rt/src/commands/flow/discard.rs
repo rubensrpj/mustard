@@ -27,10 +27,10 @@ use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::translate;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::commands::spec_events::{self, write::record};
-use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// A pasta em que as specs descartadas ficam guardadas, dentro da pasta das
 /// specs: a mesma de onde o índice as lê.
@@ -127,8 +127,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
 
     // O pull request e as branches, pela mesma porta que descarta uma unidade
     // abandonada. A do servidor só com a opção.
-    let git = (!branch.is_empty())
-        .then(|| crate::commands::git_delete::delete_with(&opts.root, &branch, opts.remote));
+    let git = (!branch.is_empty()).then(|| crate::commands::git_delete::delete_with(&opts.root, &branch, opts.remote));
 
     // As cópias da obra saem com ela, com o que compilaram, antes de a pasta
     // da spec sair do lugar. A cópia que não sai vira aviso, sem derrubar o
@@ -140,8 +139,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     };
     // Depois das cópias, a pasta de compilação que o projeto declarou
     // descartável sai da pasta principal, como no fechamento.
-    let build_output =
-        phase_written.then(|| crate::commands::flow::close::remove_build_output(&project.root, lang));
+    let build_output = phase_written.then(|| crate::commands::flow::close::remove_build_output(&project.root, lang));
 
     // O descarte é um marco, como o fechamento: a cópia para o banco da
     // página sai aqui, com a fase descartada na linha da spec da página do
@@ -150,35 +148,10 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     // descarte, fora do projeto ([`discard_copy_folder`]); ao arquivar, ela
     // sobrevive, então a cópia nasce depois de mover, lendo o arquivo de
     // eventos já na pasta arquivada — os caminhos da resposta apontam para lá.
-    let ndjson = folder.join("spec.ndjson");
-    let (moved, index_done, prepared) = if opts.delete {
-        let prepared = phase_written.then(|| {
-            discard_copy_folder(&project.root, &spec)
-                .map_err(|e| Refusal::Io { detail: e.to_string() })
-                .and_then(|copy| {
-                    crate::commands::spec_events::pages::copy::prepare_milestone_at(
-                        &project.root,
-                        &spec,
-                        &ndjson,
-                        copy,
-                        lang,
-                    )
-                })
-        });
-        let removed = std::fs::remove_dir_all(&folder).is_ok();
-        (removed, mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok(), prepared)
+    let (moved, index_done) = if opts.delete {
+        (std::fs::remove_dir_all(&folder).is_ok(), mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok())
     } else {
-        let archived = phase_written.then(|| archive(&spec, &folder)).flatten();
-        let prepared = archived.as_ref().map(|target| {
-            crate::commands::spec_events::pages::copy::prepare_milestone_at(
-                &project.root,
-                &spec,
-                &target.join("spec.ndjson"),
-                target.join(crate::commands::spec_events::pages::copy::FOLDER),
-                lang,
-            )
-        });
-        (archived.is_some(), phase_written, prepared)
+        (phase_written && archive(&spec, &folder).is_some(), phase_written)
     };
     if let Some(sid) = session {
         crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
@@ -203,10 +176,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     if let Some(swept) = &build_output {
         swept.tell(&mut out);
     }
-    if let Some(prepared) = &prepared {
-        let then = translate("discard.done", lang).to_string();
-        crate::commands::spec_events::pages::end_milestone(&mut out, prepared.as_ref(), &spec, "discard", &then, lang);
-    }
+    out["next"] = json!(translate("discard.done", lang));
     out
 }
 
@@ -235,20 +205,6 @@ pub(crate) const DISCARD_COPIES: &str = ".discard-copy";
 /// do mesmo projeto feito antes de os lotes do primeiro saírem.
 pub(crate) const DISCARD_COPY_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// A pasta só deste descarte para a cópia da página da spec `spec`, que vai
-/// ser apagada: fora do projeto, na pasta das cópias dele, com o nome da
-/// spec e uma marca única da chamada. Dois descartes nunca dividem a pasta,
-/// nem em dois projetos com uma spec de mesmo nome, nem na mesma spec
-/// apagada duas vezes. Ela fica depois do comando, porque os lotes saem
-/// depois da resposta; antes de criá-la, sai a de cada descarte anterior do
-/// projeto que não muda há mais de [`DISCARD_COPY_KEPT`].
-fn discard_copy_folder(root: &Path, spec: &str) -> std::io::Result<PathBuf> {
-    sweep_old_discard_copies(root, true);
-    let place = discard_copies_place(root);
-    std::fs::create_dir_all(&place)?;
-    tempfile::Builder::new().prefix(&format!("{spec}-")).tempdir_in(&place).map(tempfile::TempDir::keep)
-}
-
 /// A pasta das cópias de página dos descartes do projeto `root`.
 fn discard_copies_place(root: &Path) -> PathBuf {
     mustard_core::io::wave_prompt::copies_dir(root).join(DISCARD_COPIES)
@@ -262,19 +218,16 @@ fn discard_copies_place(root: &Path) -> PathBuf {
 /// descarte que apaga a spec varre antes de criar a pasta dele; a limpeza
 /// varre com a escolha dela de apagar ou só listar.
 pub(crate) fn sweep_old_discard_copies(root: &Path, apply: bool) -> Vec<(PathBuf, Option<String>)> {
-    let Ok(entries) = std::fs::read_dir(discard_copies_place(root)) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(discard_copies_place(root)) else {
+        return Vec::new();
+    };
     let now = SystemTime::now();
     let mut old: Vec<PathBuf> = entries
         .flatten()
         .filter(|entry| {
-            entry.metadata().is_ok_and(|meta| {
-                meta.is_dir()
-                    && meta
-                        .modified()
-                        .ok()
-                        .and_then(|at| now.duration_since(at).ok())
-                        .is_some_and(|age| age > DISCARD_COPY_KEPT)
-            })
+            entry
+                .metadata()
+                .is_ok_and(|meta| meta.is_dir() && meta.modified().ok().and_then(|at| now.duration_since(at).ok()).is_some_and(|age| age > DISCARD_COPY_KEPT))
         })
         .map(|entry| entry.path())
         .collect();
@@ -300,19 +253,13 @@ fn token(spec: &str, branch: &str, remote: bool, delete: bool) -> String {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value {
-        "discard.yes"
-    } else {
-        "discard.no"
-    }
+    if value { "discard.yes" } else { "discard.no" }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{record_open, write_at, WriteOpts};
-    use clap::{Command, Subcommand};
+    use crate::commands::spec_events::write::record_open;
     use tempfile::tempdir;
 
     fn project(root: &Path, spec: &str) {
@@ -323,16 +270,7 @@ mod tests {
     }
 
     fn discard(root: &Path, spec: &str, confirm: Option<&str>, delete: bool, remote: bool) -> Value {
-        discard_for(
-            &DiscardOpts {
-                root: root.to_path_buf(),
-                spec: Some(spec.to_string()),
-                remote,
-                delete,
-                confirm: confirm.map(str::to_string),
-            },
-            None,
-        )
+        discard_for(&DiscardOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), remote, delete, confirm: confirm.map(str::to_string) }, None)
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -414,11 +352,7 @@ mod tests {
         assert!(warnings.iter().all(|w| w["reason"] != json!("copies-kept")), "{done}");
         assert!(slots.iter().all(|slot| !slot.exists()), "o descarte tirou as vagas: {done}");
         assert!(!spec_copies_dir(root, "x").exists(), "o descarte tirou a pasta das cópias da obra: {done}");
-        let out = std::process::Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
-            .current_dir(root)
-            .output()
-            .expect("git");
+        let out = std::process::Command::new("git").args(["worktree", "list", "--porcelain"]).current_dir(root).output().expect("git");
         let registered = String::from_utf8_lossy(&out.stdout).to_string();
         assert!(listed.iter().all(|slot| !registered.contains(slot.as_str())), "{registered}");
         let built = root.join("target").join("debug").join("mustard");
@@ -441,22 +375,14 @@ mod tests {
         let done = discard(root, "x", Some(&code), false, false);
         assert_eq!(done["ok"], json!(true), "{done}");
         assert!(slots.iter().all(|slot| !slot.exists()), "{done}");
-        let listed = std::process::Command::new("git")
-            .args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept"])
-            .current_dir(root)
-            .output()
-            .expect("git");
+        let listed =
+            std::process::Command::new("git").args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept"]).current_dir(root).output().expect("git");
         let refs: Vec<String> = String::from_utf8_lossy(&listed.stdout).lines().map(str::to_string).collect();
         assert_eq!(refs.len(), 1, "{refs:?}");
-        let shown = std::process::Command::new("git")
-            .args(["show", &format!("{}:depois.txt", refs[0])])
-            .current_dir(root)
-            .output()
-            .expect("git");
+        let shown = std::process::Command::new("git").args(["show", &format!("{}:depois.txt", refs[0])]).current_dir(root).output().expect("git");
         assert_eq!(String::from_utf8_lossy(&shown.stdout), "código de última hora", "{refs:?}");
         let warnings = done["warnings"].as_array().cloned().unwrap_or_default();
-        let hints: Vec<&str> =
-            warnings.iter().filter(|w| w["reason"] == json!("code-kept")).filter_map(|w| w["hint"].as_str()).collect();
+        let hints: Vec<&str> = warnings.iter().filter(|w| w["reason"] == json!("code-kept")).filter_map(|w| w["hint"].as_str()).collect();
         assert_eq!(hints.len(), 1, "{done}");
         assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
     }
@@ -479,8 +405,9 @@ mod tests {
         let code = preview["token"].as_str().unwrap_or_default().to_string();
         let done = discard(root, "x", Some(&code), false, false);
         assert_eq!(done["ok"], json!(true), "{done}");
-        assert_eq!(done["build_output_removed"], json!(["target"]), "{done}");
-        assert!(!root.join("target").exists(), "the declared folder is gone: {done}");
+        assert!(done["build_output_removed"].as_array().is_none_or(Vec::is_empty), "{done}");
+        assert!(built.is_file(), "a cache below 15 GB stays: {done}");
+        assert!(done["warnings"].as_array().unwrap().iter().any(|w| w["reason"] == "build-output-kept"));
         assert!(root.join(".gitignore").is_file() && root.join(".git").is_dir(), "the main folder stays");
     }
 
@@ -518,10 +445,7 @@ mod tests {
         let done = discard(root, "x", Some(&code), false, false);
         assert_eq!(done["ok"], json!(true), "{done}");
         assert!(!folder.exists(), "a pasta saiu do lugar");
-        assert!(
-            root.join(".claude/spec").join(ARCHIVE_DIR).join("x").join("spec.ndjson").is_file(),
-            "a spec ficou guardada"
-        );
+        assert!(root.join(".claude/spec").join(ARCHIVE_DIR).join("x").join("spec.ndjson").is_file(), "a spec ficou guardada");
         let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap_or_default();
         let line = index.lines().find(|l| l.contains("\"name\":\"x\"")).unwrap_or_else(|| panic!("{index}"));
         assert!(line.contains("\"phase\":\"discarded\""), "a linha fica, com a fase descartada: {line}");
@@ -598,86 +522,20 @@ mod tests {
     /// recusa.
     #[test]
     fn the_copy_record_and_the_discard_keep_the_pages_right() {
-        // O descarte arquivado.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        project(root, "x");
-        let code = discard(root, "x", None, false, false)["token"].as_str().unwrap_or_default().to_string();
-        let done = discard(root, "x", Some(&code), false, false);
-        assert_eq!(done["ok"], json!(true), "{done}");
-        assert_eq!(done["copy"]["project"]["record"]["phase"], json!("discarded"), "{done}");
-        let archived_batches = batches_of(&done);
-        assert!(!archived_batches.is_empty(), "{done}");
-        for batch in &archived_batches {
-            assert!(batch.starts_with(".claude/spec/.descartadas/x/copy/"), "{batch}: not archived");
-            assert_files_exist_and_parse(root, batch);
+        for deleting in [false, true] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            project(root, "x");
+            let snapshot = crate::commands::panel::prepare_publication(root, "x", false);
+            let file = snapshot["database"].as_str().unwrap();
+            let original = std::fs::read(file).unwrap();
+            let code = discard(root, "x", None, deleting, false)["token"].as_str().unwrap().to_string();
+            let out = discard(root, "x", Some(&code), deleting, false);
+            assert_eq!(out["ok"], true, "{out}");
+            assert!(out.get("copy").is_none() && out.get("publish").is_none());
+            assert_eq!(std::fs::read(file).unwrap(), original, "an already shared snapshot remains immutable");
+            assert!(!out["next"].as_str().unwrap_or_default().contains("ArtifactData"));
         }
-        let next = done["next"].as_str().unwrap_or_default();
-        assert!(!next.contains("run write copy"), "the discard still asks to record the copy: {next}");
-
-        // O descarte apagado.
-        project(root, "y");
-        crate::commands::flow::round::copies_leave_with_the_test(root);
-        let code = discard(root, "y", None, true, false)["token"].as_str().unwrap_or_default().to_string();
-        let done = discard(root, "y", Some(&code), true, false);
-        assert_eq!(done["ok"], json!(true), "{done}");
-        assert_eq!(done["copy"]["project"]["record"]["phase"], json!("discarded"), "{done}");
-        assert!(!root.join(".claude/spec/y").exists(), "the folder is gone");
-        let copy = copy_folder_of(root, &done);
-        assert!(!copy.starts_with(root), "{copy:?}: the copy is outside the project");
-        let deleted_batches = batches_of(&done);
-        assert!(!deleted_batches.is_empty(), "{done}");
-        for batch in &deleted_batches {
-            let path = absolute(root, batch);
-            assert!(path.starts_with(&copy), "{path:?}: not in the copy folder of the answer");
-            assert_files_exist_and_parse(root, batch);
-        }
-        std::fs::remove_dir_all(&copy).ok();
-
-        // A ajuda do comando de revisão de pull request.
-        let tree = crate::commands::RunCmd::augment_subcommands(Command::new("run"));
-        let pr_review = tree.find_subcommand("pr-review").expect("pr-review is registered");
-        let help = pr_review.clone().render_long_help().to_string();
-        assert!(!help.contains("## Files"), "the help still cites the old format's section: {help}");
-
-        // O último item acima do que o arquivo tem.
-        project(root, "z");
-        let log_path = root.join(".claude/spec/z/spec.ndjson");
-        let before = store::read(&log_path).unwrap().unwrap();
-        let max = before.max_id();
-        let report = write_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some("z".to_string()),
-            event_type: "copy".to_string(),
-            json: json!({"page": "spec", "last": max + 50}).to_string(),
-        });
-        assert_eq!(report["ok"], json!(true), "the copy record was refused: {report}");
-        let after = store::read(&log_path).unwrap().unwrap();
-        let recorded = after.events.iter().rev().find(|e| e.event_type == "copy").expect("the copy is in the file");
-        assert_eq!(recorded.int("last"), Some(max), "{recorded:?}");
-    }
-
-    /// Abre a spec `spec` no projeto `root` e a descarta apagando a pasta, pelo
-    /// caminho de quem usa: a prévia e o sim com o código dela. Devolve a
-    /// pasta da cópia da página que a resposta diz e cada lote dela, com o
-    /// conteúdo de agora. A pasta das cópias do projeto sai no fim do teste.
-    fn deleted(root: &Path, spec: &str) -> (PathBuf, Vec<(PathBuf, String)>) {
-        project(root, spec);
-        crate::commands::flow::round::copies_leave_with_the_test(root);
-        let code = discard(root, spec, None, true, false)["token"].as_str().unwrap_or_default().to_string();
-        let done = discard(root, spec, Some(&code), true, false);
-        assert_eq!(done["ok"], json!(true), "{done}");
-        let copy = copy_folder_of(root, &done);
-        let batches: Vec<(PathBuf, String)> = batches_of(&done)
-            .iter()
-            .map(|batch| {
-                let path = absolute(root, batch);
-                let content = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-                (path, content)
-            })
-            .collect();
-        assert!(!batches.is_empty(), "{done}");
-        (copy, batches)
     }
 
     /// Cada descarte que apaga a spec prepara a cópia da página numa pasta só
@@ -688,24 +546,15 @@ mod tests {
     /// trocou os lotes de outro.
     #[test]
     fn each_deleting_discard_prepares_the_page_copy_in_a_folder_of_its_own() {
-        let first = tempdir().unwrap();
-        let second = tempdir().unwrap();
-        let runs = [deleted(first.path(), "x"), deleted(second.path(), "x"), deleted(first.path(), "x")];
-        let folders: Vec<&PathBuf> = runs.iter().map(|(copy, _)| copy).collect();
-        assert_ne!(folders[0], folders[1], "two projects share the copy folder");
-        assert_ne!(folders[0], folders[2], "two discards of the same spec share the copy folder");
-        assert_ne!(folders[1], folders[2], "two projects share the copy folder");
-        for (copy, batches) in &runs {
-            assert!(!copy.starts_with(first.path()) && !copy.starts_with(second.path()), "{copy:?}: inside a project");
-            for (path, content) in batches {
-                assert!(path.starts_with(copy), "{path:?}: not in {copy:?}");
-                let now = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-                assert_eq!(&now, content, "{path:?}: another discard changed the batch");
-            }
-        }
-        for (copy, _) in &runs {
-            std::fs::remove_dir_all(copy).ok();
-        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, "x");
+        let code = discard(root, "x", None, true, false)["token"].as_str().unwrap().to_string();
+        let out = discard(root, "x", Some(&code), true, false);
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out.get("copy").is_none() && out.get("publish").is_none());
+        assert!(!root.join(".claude/spec/x").exists());
+        assert!(!root.join(".claude/mustard/publications").exists());
     }
 
     /// A cópia da página de um descarte fica depois dele, e sai no próximo
@@ -714,65 +563,14 @@ mod tests {
     /// fica, e a do descarte novo nasce.
     #[test]
     fn a_page_copy_older_than_a_day_leaves_at_the_next_deleting_discard() {
-        use crate::commands::maint::scratch_gc::set_mtime;
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (old, _) = deleted(root, "a");
-        let (recent, _) = deleted(root, "b");
-        let now = SystemTime::now();
-        set_mtime(&old, now - DISCARD_COPY_KEPT - Duration::from_secs(60));
-        set_mtime(&recent, now - DISCARD_COPY_KEPT + Duration::from_secs(60));
-
-        let (new, _) = deleted(root, "c");
-        assert!(!old.exists(), "{old:?}: the copy older than a day stayed");
-        assert!(recent.is_dir(), "{recent:?}: the copy younger than a day left");
-        assert!(new.is_dir(), "{new:?}: the new copy is missing");
-        for copy in [&recent, &new] {
-            std::fs::remove_dir_all(copy).ok();
-        }
-    }
-
-    /// A pasta da cópia da página que a resposta `report` de um descarte diz.
-    fn copy_folder_of(root: &Path, report: &Value) -> PathBuf {
-        let folder = report["copy"]["folder"].as_str().unwrap_or_default();
-        assert!(!folder.is_empty(), "{report}");
-        absolute(root, folder)
-    }
-
-    /// Os lotes que a cópia da spec e a do projeto da resposta `report` de um
-    /// descarte citam, das duas páginas juntas.
-    fn batches_of(report: &Value) -> Vec<String> {
-        report["copy"]["spec"]["batches"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .chain(report["copy"]["project"]["batches"].as_array().into_iter().flatten())
-            .map(|v| v.as_str().unwrap_or_default().to_string())
-            .collect()
-    }
-
-    /// O caminho de `batch`, relativo a `root` quando ele é relativo, ou o
-    /// caminho absoluto que a cópia deu, quando `root` não é o dono dele.
-    fn absolute(root: &Path, batch: &str) -> PathBuf {
-        let path = PathBuf::from(batch);
-        if path.is_absolute() {
-            path
-        } else {
-            root.join(path)
-        }
-    }
-
-    /// O lote `batch` existe, é JSON válido, e cada documento que ele cita
-    /// pelo `file_path` também existe e é JSON válido.
-    fn assert_files_exist_and_parse(root: &Path, batch: &str) {
-        let path = absolute(root, batch);
-        let content = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let writes: Value = serde_json::from_str(&content).unwrap_or_else(|e| panic!("{path:?} is not JSON: {e}"));
-        for write in writes.as_array().unwrap_or(&Vec::new()) {
-            let Some(file) = write["file_path"].as_str() else { continue };
-            let doc = absolute(root, file);
-            let doc_content = std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("{doc:?}: {e}"));
-            serde_json::from_str::<Value>(&doc_content).unwrap_or_else(|e| panic!("{doc:?} is not JSON: {e}"));
-        }
+        project(root, "x");
+        let code = discard(root, "x", None, true, false)["token"].as_str().unwrap().to_string();
+        let out = discard(root, "x", Some(&code), true, false);
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out.get("copy").is_none() && out.get("publish").is_none());
+        assert!(!root.join(".claude/spec/x").exists());
+        assert!(!root.join(".claude/mustard/publications").exists());
     }
 }

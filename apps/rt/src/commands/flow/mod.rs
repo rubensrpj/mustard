@@ -21,6 +21,7 @@ pub mod resume;
 pub mod round;
 pub(crate) mod skill_search;
 pub(crate) mod stuck;
+pub(crate) mod validation;
 
 use std::path::Path;
 use std::time::Instant;

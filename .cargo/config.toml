@@ -20,6 +20,7 @@
 [env]
 MUSTARD_COPIES_DIR = { value = "target/testes-copias", relative = true }
 MUSTARD_BUILD_DIR = { value = "target/testes-build", relative = true }
+MUSTARD_SPEND_DIR = { value = "target/testes-gasto", relative = true, force = true }
 GIT_CONFIG_NOSYSTEM = "1"
 MUSTARD_DISK_SYNC = "off"
 GIT_CONFIG_COUNT = "2"

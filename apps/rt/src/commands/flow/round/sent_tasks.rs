@@ -34,15 +34,14 @@ pub(super) fn sent_tasks(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
 #[cfg(test)]
 mod tests {
     use mustard_core::io::spec_events as store;
-    use mustard_core::platform::i18n::{translate, Locale};
-    use serde_json::{json, Value};
+    use mustard_core::platform::i18n::{Locale, translate};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::super::report::backlog_return;
     use super::super::stops::replan_code;
     use super::super::tests::{
-        approved, approved_with, change_asked, click, delivered, id_of, request_at, returned, round, waves_in, write,
-        DECISION, QUESTION,
+        DECISION, QUESTION, approved, approved_with, change_asked, click, delivered, id_of, request_at, returned, round, waves_in, write,
     };
 
     /// A tarefa que a volta deixou por fazer e que quem conduz regravou sem a
@@ -76,14 +75,15 @@ mod tests {
         let refused = took["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("undone-not-in-wave"));
         assert!(!refused, "the return is taken, not held: {took}");
         let log = spec();
-        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).cloned();
-        let official = official.unwrap_or_else(|| panic!("the round took the return: {took}"));
-        assert_eq!(official.fields["undone"], json!([&code]), "{:?}", official.fields);
-        let summary = log.codes()[&official.id].clone();
+        assert!(!log.visible().iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "retired wave must not integrate: {took}");
+        assert!(took.get("commit").is_none(), "no retired commit: {took}");
+        let report = log.unassumed_returns().into_iter().find(|e| e.wave() == Some(1)).unwrap();
+        assert_eq!(report.fields["undone"], json!([&code]));
+        let summary = log.codes()[&report.id].clone();
 
         assert_eq!(waves_in(&took, "dispatch"), vec![2], "{took}");
         let prompt = request_at(&took, 0);
-        let read = translate("wave_prompt.summary.read", Locale::PtBr).replace("{code}", &summary);
+        let read = translate("wave_prompt.summary.report_read", Locale::PtBr).replace("{code}", &summary);
         let opening = read.split("{root}").next().unwrap_or_default();
         assert!(prompt.contains(opening), "the request opens with the summary line: {prompt}");
         assert!(prompt.contains(&code), "the request carries the rewritten task: {prompt}");
@@ -140,7 +140,9 @@ mod tests {
         let warned: Vec<&str> = warned.filter(|r| ["undone-not-in-wave", "tasks-returned"].contains(r)).collect();
         assert!(warned.is_empty(), "the return is taken without a warning: {took}");
         let log = spec();
-        assert!(log.visible().iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "{took}");
+        assert!(!log.visible().iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "retired report must not integrate: {took}");
+        assert!(log.unassumed_returns().iter().any(|e| e.wave() == Some(1)), "history remains");
+        assert!(!log.planned_waves().contains(&1));
         let now = log.current(task.id).unwrap();
         assert_eq!((now.id, now.wave()), (moved, Some(2)), "the task stays with wave 2, same version: {took}");
         assert_eq!(waves_in(&took, "dispatch"), Vec::<u64>::new(), "no new wave: {took}");

@@ -68,18 +68,14 @@ pub mod settings;
 
 pub use cleanup::{CleanupDone, CleanupPlan, PendingList};
 pub use files::{
-    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations,
-    project_page_template_path, refresh_agent_texts, same_declared_path, seed_gitignore,
-    seed_harness_texts, session_map_declared_path,
+    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations, refresh_agent_texts,
+    same_declared_path, seed_gitignore, seed_harness_texts, session_map_declared_path,
 };
 pub use footprint::{
-    carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
-    is_written_footprint, FootprintEntry, InstallMode, PRIVATE_MARKS,
+    FootprintEntry, InstallMode, PRIVATE_MARKS, carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
+    is_written_footprint,
 };
-pub use settings::{
-    output_style_for, retire_planted_plugin_enablement, seed_settings, Switches, PAGE_DATABASE_TOOL,
-    RTK_HOOK_COMMAND,
-};
+pub use settings::{RTK_HOOK_COMMAND, Switches, output_style_for, retire_planted_plugin_enablement, seed_settings};
 
 /// `.claude/settings.json` — the shared-mode settings seed, and the team's file.
 const SETTINGS_JSON: &str = ".claude/settings.json";
@@ -279,11 +275,7 @@ impl UpsertReport {
 /// fail-open and never error. The private step errors — [`Error::NotHidden`] —
 /// only when a REAL repository refused the exclude write, and it does so before
 /// anything at all has been written.
-pub fn upsert_project(
-    root: &Path,
-    version: Option<&str>,
-    mode: InstallMode,
-) -> Result<UpsertReport> {
+pub fn upsert_project(root: &Path, version: Option<&str>, mode: InstallMode) -> Result<UpsertReport> {
     upsert_project_with(root, version, mode, &cleanup::NoPendingList)
 }
 
@@ -297,18 +289,9 @@ pub fn upsert_project(
 /// # Errors
 ///
 /// The same as [`upsert_project`].
-pub fn upsert_project_with(
-    root: &Path,
-    version: Option<&str>,
-    mode: InstallMode,
-    pending: &dyn PendingList,
-) -> Result<UpsertReport> {
+pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode, pending: &dyn PendingList) -> Result<UpsertReport> {
     let installed_before = ProjectConfig::exists(root);
-    let mut report = UpsertReport {
-        installed_before,
-        version: version.map(str::to_string),
-        ..UpsertReport::default()
-    };
+    let mut report = UpsertReport { installed_before, version: version.map(str::to_string), ..UpsertReport::default() };
 
     // 0. Private mode: hide the footprint BEFORE any of it is written — before
     //    even `.claude/` is created. The two halves read two different
@@ -381,7 +364,7 @@ mod tests {
     use super::*;
     use crate::platform::i18n::Locale;
     use crate::platform::seeds::session_map;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::fs as std_fs;
     use tempfile::tempdir;
 
@@ -402,8 +385,6 @@ mod tests {
                 ".claude/settings.json",
                 ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
-                ".claude/mustard/pages/spec.html",
-                ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
                 ".claude/.gitignore",
@@ -417,21 +398,14 @@ mod tests {
         assert_eq!(report.cleanup, None, "a fresh project has nothing to clean");
 
         // The seeds landed with the compiled-in content.
-        let settings: Value = serde_json::from_str(
-            &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
-        )
-        .unwrap();
+        let settings: Value = serde_json::from_str(&std_fs::read_to_string(root.join(".claude/settings.json")).unwrap()).unwrap();
         assert!(settings.get("statusLine").is_some(), "real seed content laid down");
         assert_eq!(
             std_fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap(),
             session_map(Locale::PtBr),
             "a project that declares no language gets the pt-BR text",
         );
-        assert!(
-            std_fs::read_to_string(root.join(".claude/.gitignore"))
-                .unwrap()
-                .contains(".events/")
-        );
+        assert!(std_fs::read_to_string(root.join(".claude/.gitignore")).unwrap().contains(".events/"));
 
         // mustard.json: empty git.flow, default inject, runtime, version.
         let config = ProjectConfig::load(root);
@@ -489,8 +463,7 @@ mod tests {
         assert_eq!(written_config(root)["agents"]["model"], json!("sonnet"));
         assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
 
-        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#)
-            .unwrap();
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
         assert_eq!(installed_agent_models(root), ["opus", "opus"]);
         let config = written_config(root);
@@ -524,11 +497,7 @@ mod tests {
         assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
 
         for effort in ["low", "medium", "high", "max"] {
-            std_fs::write(
-                root.join("mustard.json"),
-                format!(r#"{{"version":"9.9.9","acronyms":["PI"],"agents":{{"effort":"{effort}"}}}}"#),
-            )
-            .unwrap();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"version":"9.9.9","acronyms":["PI"],"agents":{{"effort":"{effort}"}}}}"#)).unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_efforts(root), [effort, effort], "the agents did not take `{effort}`");
             let config = written_config(root);
@@ -538,11 +507,7 @@ mod tests {
         }
 
         for invalid in ["ultra", "", "high\nmodel: opus", "high max"] {
-            std_fs::write(
-                root.join("mustard.json"),
-                serde_json::to_string(&json!({"version": "9.9.9", "agents": {"effort": invalid}})).unwrap(),
-            )
-            .unwrap();
+            std_fs::write(root.join("mustard.json"), serde_json::to_string(&json!({"version": "9.9.9", "agents": {"effort": invalid}})).unwrap()).unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"], "`{invalid}` reached the agents");
             assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "`{invalid}` wrote the model line");
@@ -566,19 +531,12 @@ mod tests {
         for text in [Locale::PtBr, Locale::EnUs] {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str()))
-                .unwrap();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str())).unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} install");
 
-            std_fs::write(
-                root.join("mustard.json"),
-                format!(
-                    r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low"}}}}"#,
-                    text.as_str()
-                ),
-            )
-            .unwrap();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low"}}}}"#, text.as_str()))
+                .unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_models(root), ["opus", "opus"], "the {text} model change");
             assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} reinstall");
@@ -592,11 +550,7 @@ mod tests {
     fn an_older_config_gains_the_agent_model_and_effort_and_keeps_the_rest() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std_fs::write(
-            root.join("mustard.json"),
-            r#"{"version":"1.0.0","acronyms":["PI"],"language":{"text":"en-US"},"agents":{"note":"mine"}}"#,
-        )
-        .unwrap();
+        std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","acronyms":["PI"],"language":{"text":"en-US"},"agents":{"note":"mine"}}"#).unwrap();
 
         let report = upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
 
@@ -634,8 +588,6 @@ mod tests {
                 ".claude/settings.json",
                 ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
-                ".claude/mustard/pages/spec.html",
-                ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
                 ".claude/.gitignore",
@@ -657,11 +609,7 @@ mod tests {
     fn an_update_removes_the_retired_single_task_wave_agent() {
         let today = ["review.md", "wave.md"];
         let files_in = |dir: &Path| -> Vec<String> {
-            let mut names: Vec<String> = std_fs::read_dir(dir)
-                .unwrap()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
+            let mut names: Vec<String> = std_fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
             names.sort();
             names
         };
@@ -669,8 +617,7 @@ mod tests {
         for text in [Locale::PtBr, Locale::EnUs] {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str()))
-                .unwrap();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str())).unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             let agents = root.join(".claude/agents/mustard");
             assert_eq!(files_in(&agents), today, "the {text} install seeds another set of agents");
@@ -680,8 +627,7 @@ mod tests {
             // projeto com o mesmo nome de cada um.
             let mut own = Vec::new();
             for retired in ["wave-solo", "skill"] {
-                std_fs::write(agents.join(format!("{retired}.md")), format!("---\nname: mustard-{retired}\n---\n\nO molde antigo.\n"))
-                    .unwrap();
+                std_fs::write(agents.join(format!("{retired}.md")), format!("---\nname: mustard-{retired}\n---\n\nO molde antigo.\n")).unwrap();
                 let body = format!("---\nname: {retired}\n---\n\nO agente do projeto.\n");
                 std_fs::write(root.join(format!(".claude/agents/{retired}.md")), &body).unwrap();
                 own.push((retired, body));
@@ -694,10 +640,7 @@ mod tests {
             }
             assert_eq!(
                 report.migrated,
-                vec![
-                    ".claude/agents/mustard/wave-solo.md (retired agent)".to_string(),
-                    ".claude/agents/mustard/skill.md (retired agent)".to_string(),
-                ],
+                vec![".claude/agents/mustard/wave-solo.md (retired agent)".to_string(), ".claude/agents/mustard/skill.md (retired agent)".to_string(),],
                 "the {text} update does not say what it took out",
             );
             for (retired, body) in &own {
@@ -729,11 +672,7 @@ mod tests {
         // mustard.json (own inject list, own version, English text).
         std_fs::create_dir_all(root.join(".claude/mustard")).unwrap();
         std_fs::write(root.join(".claude/mustard/session-map.md"), "USER EDIT").unwrap();
-        std_fs::write(
-            root.join(".claude/settings.json"),
-            "{\n  \"userKey\": true\n}\n",
-        )
-        .unwrap();
+        std_fs::write(root.join(".claude/settings.json"), "{\n  \"userKey\": true\n}\n").unwrap();
         std_fs::write(
             root.join("mustard.json"),
             r#"{"version":"1.0.0","buildCommand":"make","language":{"text":"en-US"},"inject":[{"on":"sessionStart","file":"docs/my-rules.md","once":false}]}"#,
@@ -746,17 +685,11 @@ mod tests {
         // The session map is NOT a user file: it goes back to the seed, in the
         // declared language, and the report says `Updated` so the overwrite is
         // never silent.
-        assert_eq!(
-            std_fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap(),
-            session_map(Locale::EnUs),
-        );
+        assert_eq!(std_fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap(), session_map(Locale::EnUs),);
         assert!(report.created.contains(&".claude/.gitignore".to_string()));
         assert!(report.updated.contains(&".claude/mustard/session-map.md".to_string()));
         // settings.json: user key kept, missing seed keys backfilled.
-        let settings: Value = serde_json::from_str(
-            &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
-        )
-        .unwrap();
+        let settings: Value = serde_json::from_str(&std_fs::read_to_string(root.join(".claude/settings.json")).unwrap()).unwrap();
         assert_eq!(settings.get("userKey"), Some(&json!(true)));
         assert!(settings.get("permissions").is_some(), "seed keys backfilled");
         assert!(report.updated.contains(&".claude/settings.json".to_string()));
@@ -779,11 +712,7 @@ mod tests {
         upsert_project(root, None, InstallMode::Shared).unwrap();
 
         let config = ProjectConfig::load(root);
-        assert_eq!(
-            config.version.as_deref(),
-            Some("1.0.0"),
-            "a None version must never clobber the existing stamp"
-        );
+        assert_eq!(config.version.as_deref(), Some("1.0.0"), "a None version must never clobber the existing stamp");
     }
 
     #[test]
@@ -812,10 +741,7 @@ mod tests {
         assert!(json.contains("\"version\": \"9.9.9\""));
         assert!(!json.contains("timestamp"), "no timestamps in the report");
         let root_str = dir.path().to_string_lossy().into_owned();
-        assert!(
-            !json.contains(&root_str.replace('\\', "\\\\")),
-            "no absolute paths in the report: {json}"
-        );
+        assert!(!json.contains(&root_str.replace('\\', "\\\\")), "no absolute paths in the report: {json}");
         // The private half is ABSENT, not false/empty: a shared install's JSON
         // is byte-identical to what it was before the mode existed.
         for key in ["private", "excluded", "alreadyTracked", "excludeUnavailable"] {
@@ -833,11 +759,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| crate::platform::git::run(root, args);
-        for args in [
-            &["init", "-q"][..],
-            &["config", "user.email", "t@example.com"],
-            &["config", "user.name", "t"],
-        ] {
+        for args in [&["init", "-q"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "t"]] {
             assert!(git(args).ok, "git {args:?}");
         }
         std_fs::write(root.join("mustard.json"), "{\n  \"version\": \"0.0.0-old\"\n}\n").unwrap();
@@ -913,11 +835,7 @@ mod tests {
         let listed: Vec<(&str, &cleanup::Action)> = plan.files.iter().map(|f| (f.path.as_str(), &f.action)).collect();
         assert_eq!(
             listed,
-            [
-                ("apps/api/CLAUDE.md", &cleanup::Action::Edit),
-                ("apps/web/CLAUDE.md", &cleanup::Action::Delete),
-                (SETTINGS_JSON, &cleanup::Action::Edit),
-            ],
+            [("apps/api/CLAUDE.md", &cleanup::Action::Edit), ("apps/web/CLAUDE.md", &cleanup::Action::Delete), (SETTINGS_JSON, &cleanup::Action::Edit),],
         );
         assert_eq!(plan.unmarked, ["apps/cli/CLAUDE.md"], "the file without a mark is only listed");
         let rules: Vec<&str> = plan.rules.iter().map(|r| r.text.as_str()).collect();
@@ -929,8 +847,7 @@ mod tests {
         assert_eq!(done.pending.as_deref(), Some("P-1"), "{done:?}");
         let detail = list.0.borrow()[0].1.clone();
         assert!(
-            detail.contains("Reuse the shared client. (saiu de apps/api/CLAUDE.md)")
-                && detail.contains("Never block the render. (saiu de apps/web/CLAUDE.md)"),
+            detail.contains("Reuse the shared client. (saiu de apps/api/CLAUDE.md)") && detail.contains("Never block the render. (saiu de apps/web/CLAUDE.md)"),
             "{detail}"
         );
         let json = serde_json::to_value(&report).unwrap();
@@ -985,16 +902,10 @@ mod tests {
 
         let done = report.cleaned.expect("the report says what the cleanup did");
         assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(
-            done.deleted,
-            [".claude/spec/arestas-da-suzano/spec.md", ".claude/spec/arestas-da-suzano/spec.html"],
-        );
+        assert_eq!(done.deleted, [".claude/spec/arestas-da-suzano/spec.md", ".claude/spec/arestas-da-suzano/spec.html"],);
         assert!(!root.join(".claude/spec/arestas-da-suzano/spec.md").exists());
         assert!(!root.join(".claude/spec/arestas-da-suzano/spec.html").exists());
-        assert!(
-            root.join(".claude/spec/arestas-da-suzano/spec.ndjson").exists(),
-            "the event file is the one that stays"
-        );
+        assert!(root.join(".claude/spec/arestas-da-suzano/spec.ndjson").exists(), "the event file is the one that stays");
 
         // A segunda rodada não acha mais nada: a limpeza converge.
         let again = upsert_project(root, None, InstallMode::Shared).unwrap();

@@ -9,31 +9,31 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
-use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_message, wave_files, wave_title, WaveCopy};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, not_closed_yet, returns_to_running};
+use mustard_core::domain::wave_prompt::{WaveCopy, estimate_tokens, summary_of, token_cap_message, wave_files, wave_title};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Map, Value};
+use mustard_core::io::wave_prompt::{Flight, prompts, recorded_copy};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Map, Value, json};
 
-use super::backlog::{dispatch_backlog, Judge};
+use super::backlog::{Judge, dispatch_backlog};
 use super::commit::git_lock;
 use super::fixes::{new_agents_named, sweep_fixes};
 use super::item_choice::choose_items;
 use super::queue::{
-    backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
-    sent_items, silent_minutes, waves_in_progress, waves_returned,
+    backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves, sent_items,
+    silent_minutes, waves_in_progress, waves_returned,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
 use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
-use super::{can_run, RoundOpts, DONE_STEP};
+use super::{DONE_STEP, RoundOpts, can_run};
 use crate::commands::spec_events::write::record;
-use crate::shared::jev::Board;
+use crate::shared::judgement::Board;
 use crate::shared::search_door::first_warning;
-use crate::shared::spec_state::{checkout, DiskSpecState};
+use crate::shared::spec_state::{DiskSpecState, checkout};
 
 /// Por que a rodada não correu.
 pub(crate) enum RoundRefusal {
@@ -190,15 +190,17 @@ impl RoundRefusal {
             Self::CriterionFix(fix) => fix.refused.reason(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
             Self::AfterWave { question, .. } => {
-                if question.is_some() { "round-after-wave-limit".into() } else { "round-after-wave".into() }
+                if question.is_some() {
+                    "round-after-wave-limit".into()
+                } else {
+                    "round-after-wave".into()
+                }
             }
         }
     }
 
     pub(crate) fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, String)]| {
-            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
-        };
+        let fill = |key: &str, slots: &[(&str, String)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
         match self {
             Self::Refused(refusal) => refusal.message(lang),
             // A mesma chave da recusa que já trava a aprovação do plano
@@ -207,45 +209,25 @@ impl RoundRefusal {
             // duas contas que pudessem discordar entre si.
             Self::WaveLoop { cycle, .. } => wave_loop_message(cycle, lang),
             Self::BadReport { detail } => fill("round.bad_report", &[("{detail}", detail.clone())]),
-            Self::LineField { line, field } => {
-                fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())])
-            }
+            Self::LineField { line, field } => fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())]),
             Self::MergeConflict { wave, copy, conflicts, head } => fill(
                 "round.merge_conflict",
-                &[
-                    ("{wave}", wave.to_string()),
-                    ("{conflicts}", conflicts.join(", ")),
-                    ("{copy}", copy.clone()),
-                    ("{head}", head.clone()),
-                ],
+                &[("{wave}", wave.to_string()), ("{conflicts}", conflicts.join(", ")), ("{copy}", copy.clone()), ("{head}", head.clone())],
             ),
-            Self::FileUnknown { file, wave } => {
-                fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())])
-            }
+            Self::FileUnknown { file, wave } => fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())]),
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
-            Self::SpecClosed { spec, phase } => {
-                fill("round.closed", &[("{spec}", spec.clone()), ("{phase}", phase.clone())])
-            }
-            Self::SpecFinished { spec, phase } => {
-                fill("round.finished", &[("{spec}", spec.clone()), ("{phase}", phase.clone())])
-            }
+            Self::SpecClosed { spec, phase } => fill("round.closed", &[("{spec}", spec.clone()), ("{phase}", phase.clone())]),
+            Self::SpecFinished { spec, phase } => fill("round.finished", &[("{spec}", spec.clone()), ("{phase}", phase.clone())]),
             Self::ReturnLine => fill("spec_events.report_carries_return_line", &[]),
             Self::ReturnMissing { wave } => fill("spec_events.return_missing", &[("{wave}", wave.to_string())]),
-            Self::ReturnNeedsCommit { wave } => {
-                fill("spec_events.return_needs_commit", &[("{wave}", wave.to_string())])
-            }
+            Self::ReturnNeedsCommit { wave } => fill("spec_events.return_needs_commit", &[("{wave}", wave.to_string())]),
             Self::NoOpenReview => fill("spec_events.no_open_review", &[]),
             Self::VerdictMissing => fill("spec_events.verdict_missing", &[]),
-            Self::CommitTooLong { part, chars, max } => fill(
-                "round.commit_too_long",
-                &[("{part}", part.clone()), ("{chars}", chars.to_string()), ("{max}", max.to_string())],
-            ),
-            Self::CommitForbidden { found } => {
-                fill("round.commit_forbidden", &[("{found}", found.clone())])
+            Self::CommitTooLong { part, chars, max } => {
+                fill("round.commit_too_long", &[("{part}", part.clone()), ("{chars}", chars.to_string()), ("{max}", max.to_string())])
             }
-            Self::CommitLooksLikeSha { found } => {
-                fill("round.commit_looks_like_sha", &[("{found}", found.clone())])
-            }
+            Self::CommitForbidden { found } => fill("round.commit_forbidden", &[("{found}", found.clone())]),
+            Self::CommitLooksLikeSha { found } => fill("round.commit_looks_like_sha", &[("{found}", found.clone())]),
             Self::Replan { wave, code, tasks } => fill(
                 "round.replan",
                 &[
@@ -256,44 +238,26 @@ impl RoundRefusal {
                     ("{tasks}", task_list(tasks, lang)),
                 ],
             ),
-            Self::ReplanNeedsUndone { wave, tasks } => fill(
-                "round.replan_needs_undone",
-                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
-            ),
-            Self::UndoneNotInWave { wave, code, tasks } => fill(
-                "round.undone_not_in_wave",
-                &[("{wave}", wave.to_string()), ("{code}", code.clone()), ("{tasks}", task_list(tasks, lang))],
-            ),
-            Self::StartedWorkUndone { wave, tasks } => fill(
-                "round.started_work_undone",
-                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
-            ),
-            Self::DoneWithoutStep { wave, tasks } => fill(
-                "round.done_without_step",
-                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
-            ),
+            Self::ReplanNeedsUndone { wave, tasks } => fill("round.replan_needs_undone", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))]),
+            Self::UndoneNotInWave { wave, code, tasks } => {
+                fill("round.undone_not_in_wave", &[("{wave}", wave.to_string()), ("{code}", code.clone()), ("{tasks}", task_list(tasks, lang))])
+            }
+            Self::StartedWorkUndone { wave, tasks } => fill("round.started_work_undone", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))]),
+            Self::DoneWithoutStep { wave, tasks } => fill("round.done_without_step", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))]),
             Self::Rejected { wave, reason, title } => rejected_message(*wave, reason, title.as_deref(), lang),
             Self::RejectedWithoutReturn { wave } => fill("round.rejected_without_return", &[("{wave}", wave.to_string())]),
-            Self::RejectedCommitted { wave, sha } => {
-                fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())])
-            }
+            Self::RejectedCommitted { wave, sha } => fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())]),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
             Self::CheckFailed(failure) => failure.message(lang),
-            Self::CriterionProofFailed { code, command, output } => fill(
-                "round.criterion_proof_failed",
-                &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())],
-            ),
-            Self::CriterionRanNoTest { code, command, tests } => fill(
-                "round.criterion_ran_no_test",
-                &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
-            ),
-            Self::CriterionMissingTest { code, name } => {
-                fill("round.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())])
+            Self::CriterionProofFailed { code, command, output } => {
+                fill("round.criterion_proof_failed", &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())])
             }
+            Self::CriterionRanNoTest { code, command, tests } => {
+                fill("round.criterion_ran_no_test", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
+            }
+            Self::CriterionMissingTest { code, name } => fill("round.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())]),
             Self::CriterionFix(fix) => fix.message(lang),
-            Self::TokenCap { wave, tokens } => {
-                token_cap_message(*wave, *tokens, lang).unwrap_or_default()
-            }
+            Self::TokenCap { wave, tokens } => token_cap_message(*wave, *tokens, lang).unwrap_or_default(),
             Self::AfterWave { text, .. } => text.clone(),
         }
     }
@@ -418,8 +382,7 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
 /// novo.
 fn copy_files_changed(log: &SpecLog, wave: u64) -> Option<Vec<String>> {
     let copy = recorded_copy(log, wave)?;
-    let out = mustard_core::platform::git::run(Path::new(&copy.path), &["status", "--porcelain", "--untracked-files=all"])
-        .out()?;
+    let out = mustard_core::platform::git::run(Path::new(&copy.path), &["status", "--porcelain", "--untracked-files=all"]).out()?;
     Some(
         out.lines()
             .enumerate()
@@ -483,15 +446,15 @@ fn refresh_running(previous: &str, running: &[(u64, Vec<String>)], lang: Locale)
     let header = format!("## {}", translate("prompt.part.work", lang));
     let label = format!("- {}", translate("prompt.execution.running", lang));
     let lines: Vec<&str> = previous.lines().collect();
-    let Some(head) = lines.iter().position(|line| *line == header) else { return previous.to_string() };
+    let Some(head) = lines.iter().position(|line| *line == header) else {
+        return previous.to_string();
+    };
     // A linha em branco logo depois do título abre a seção; o fim dela é a
     // próxima linha em branco, ou o fim do texto, quando é a última seção.
     let content_at = head + 2;
     let stop = lines[content_at..].iter().position(|line| line.is_empty()).map_or(lines.len(), |n| content_at + n);
     let old_at = lines[content_at..stop].iter().position(|line| *line == label).map(|n| content_at + n);
-    let old_end = old_at.map_or(stop, |at| {
-        lines[at + 1..stop].iter().position(|line| !line.starts_with("  - ")).map_or(stop, |n| at + 1 + n)
-    });
+    let old_end = old_at.map_or(stop, |at| lines[at + 1..stop].iter().position(|line| !line.starts_with("  - ")).map_or(stop, |n| at + 1 + n));
     let fresh: Vec<String> = running
         .iter()
         .map(|(wave, files)| {
@@ -510,12 +473,7 @@ fn refresh_running(previous: &str, running: &[(u64, Vec<String>)], lang: Locale)
     out.join("\n")
 }
 
-pub(super) fn run_round(
-    opts: &RoundOpts,
-    root: &Path,
-    lang: Locale,
-    caller: Caller<'_>,
-) -> Result<Value, RoundRefusal> {
+pub(super) fn run_round(opts: &RoundOpts, root: &Path, lang: Locale, caller: Caller<'_>) -> Result<Value, RoundRefusal> {
     run_round_with_mine(opts, root, lang, caller, &scan_mine)
 }
 
@@ -528,11 +486,7 @@ pub(super) fn run_round(
 /// programa inteiro, com o scan ao lado, é provado pelo fluxo de ponta a ponta.
 pub(super) fn scan_mine(root: &Path, out: &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
     let scan = mustard_core::Scan::locate();
-    if !cfg!(test) && out == mustard_core::io::project_map::model_path(root) {
-        scan.scan_then_read_history(root, out)
-    } else {
-        scan.scan(root, out)
-    }
+    if !cfg!(test) && out == mustard_core::io::project_map::model_path(root) { scan.scan_then_read_history(root, out) } else { scan.scan(root, out) }
 }
 
 /// [`run_round`] com quem relê o mapa depois do commit da rodada (`mine`),
@@ -565,13 +519,8 @@ pub(super) fn run_round_with_mine(
 pub(crate) fn agents_refreshed(root: &Path, lang: Locale) -> Option<(&'static str, String)> {
     match mustard_core::refresh_agent_texts(root) {
         Ok(files) if files.is_empty() => None,
-        Ok(files) => {
-            Some(("agents-refreshed", translate("round.agents_refreshed", lang).replace("{files}", &files.join(", "))))
-        }
-        Err(error) => Some((
-            "agents-not-refreshed",
-            translate("round.agents_not_refreshed", lang).replace("{detail}", &error.to_string()),
-        )),
+        Ok(files) => Some(("agents-refreshed", translate("round.agents_refreshed", lang).replace("{files}", &files.join(", ")))),
+        Err(error) => Some(("agents-not-refreshed", translate("round.agents_not_refreshed", lang).replace("{detail}", &error.to_string()))),
     }
 }
 
@@ -594,14 +543,10 @@ pub(super) fn enter_round(opts: &RoundOpts, root: &Path, session: Option<&str>) 
     let refuse = RoundRefusal::Refused;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
-        None => DiskSpecState::new(&checkout(&opts.root))
-            .active(session)
-            .ok_or_else(|| refuse(Refusal::NoCurrentSpec))?,
+        None => DiskSpecState::new(&checkout(&opts.root)).active(session).ok_or_else(|| refuse(Refusal::NoCurrentSpec))?,
     };
     let path = store::spec_file(root, &spec).map_err(RoundRefusal::Refused)?;
-    let log = store::read(&path)
-        .map_err(RoundRefusal::Refused)?
-        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    let log = store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
 
     // Só uma spec aprovada roda. Antes disso a rodada não tem o que despachar.
     //
@@ -698,9 +643,7 @@ pub(super) fn run_entered_round(
     // rodada, chegada ao mesmo tempo, empacotou enquanto esta esperava a
     // trava já tem onda na leitura de agora, e não sai de novo; o número da
     // onda nova também sai dela.
-    let locked = store::read(&path)
-        .map_err(RoundRefusal::Refused)?
-        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    let locked = store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
     // Com a trava presa e a spec relida, sai da pasta de despacho o trecho de
     // conserto da onda que a rodada comitou ou que voltou de novo.
     sweep_fixes(root, &spec, Some(&locked));
@@ -708,28 +651,21 @@ pub(super) fn run_entered_round(
     // logo depois dele, é anotado agora, antes de qualquer despacho: sem ele
     // o fechamento recusa a obra.
     recorded.extend(super::lost_commit::record_lost_commits(&opts.root, root, &spec, &locked, lang, &held_lock)?);
-    let waves_jev = crate::shared::jev::for_waves(root);
+    let mut dispatch_timing = super::super::validation::Stage::new(root, &spec, "delivery", "dispatch-preparation", true);
+    let waves_jev = crate::shared::jev::for_waves(root, &spec);
     if waves_jev.key_in_git && first_warning(root, session, "round.key_in_git") {
         warnings.push(json!({ "reason": "key-in-git", "hint": translate("map.round.key_in_git", lang) }));
     }
-    let jev = waves_jev.filter.as_ref();
+    let jev = waves_jev.filter.as_deref();
     let judge = jev.map(|jev| move |board: &Board| jev.judge_backlog(board));
-    dispatch_backlog(
-        &opts.root,
-        &spec,
-        &log_on_entry,
-        &locked,
-        max_parallel(root),
-        judge.as_ref().map(|judge| judge as &Judge<'_>),
-    )
-    .map_err(RoundRefusal::Refused)?;
+    dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), judge.as_ref().map(|judge| judge as &Judge<'_>))
+        .map_err(RoundRefusal::Refused)?;
     // A tarefa do backlog que não cobre item nenhum não forma onda: a rodada
     // a nomeia, porque ela fica no backlog e segura o fechamento.
     let uncovered = backlog_uncovered(&locked);
     if !uncovered.is_empty() {
         let codes = locked.codes();
-        let tasks: Vec<String> =
-            uncovered.iter().map(|id| codes.get(id).cloned().unwrap_or_else(|| id.to_string())).collect();
+        let tasks: Vec<String> = uncovered.iter().map(|id| codes.get(id).cloned().unwrap_or_else(|| id.to_string())).collect();
         let hint = translate("round.task_without_covers", lang).replace("{tasks}", &tasks.join(", "));
         warnings.push(json!({ "reason": "task-without-covers", "hint": hint }));
     }
@@ -737,11 +673,8 @@ pub(super) fn run_entered_round(
     // passar, ainda com a trava do git presa: o lote recusado deixa a spec
     // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A
     // leitura logo abaixo já vê a fase nova.
-    let entering = phase == "approved"
-        && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
-    let log = store::read(&path)
-        .map_err(RoundRefusal::Refused)?
-        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    let entering = phase == "approved" && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
+    let log = store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
     let codes = log.codes();
 
     // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
@@ -789,13 +722,16 @@ pub(super) fn run_entered_round(
     // por onda, o item do projeto todo, o dos arquivos dela e o sem ligação
     // com ela, e a onda sai nesta mesma rodada, sem esperar quem conduz. Sem
     // Jev, ou com a chamada falhando, o pedido leva o padrão.
-    let choices = choose_items(&opts.root, &spec, &log, &ready, jev);
+    let context_jev = crate::shared::jev::for_context(root, &spec);
+    let choices = choose_items(&opts.root, &spec, &log, &ready, context_jev.filter.as_deref());
     // Depois da última chamada ao Jev: o teto de gasto do mês que o segurou,
     // já gasto na montagem ou recusando uma chamada, sai num aviso, uma vez
     // por sessão, como na busca.
-    if waves_jev.held_by_budget() && first_warning(root, session, "round.jev_over_budget") {
+    if (waves_jev.held_by_budget() || context_jev.held_by_budget()) && first_warning(root, session, "round.jev_over_budget") {
         warnings.push(json!({ "reason": "jev-over-budget", "hint": translate("round.jev_over_budget", lang) }));
     }
+    dispatch_timing.passed();
+    drop(dispatch_timing);
     let go = ready;
     // A onda a reenviar cuja cópia gravada outra onda também segura não volta
     // a ela: sai numa vaga livre, como a onda nova, e antes dela, porque já
@@ -817,8 +753,7 @@ pub(super) fn run_entered_round(
         .filter_map(|warning| warning["hint"].as_str().map(str::to_string))
         .collect();
     warnings.extend(not_copied);
-    let mut renewed_copies: BTreeMap<u64, WaveCopy> =
-        renewed.iter().filter_map(|w| copies.remove(w).map(|c| (*w, c))).collect();
+    let mut renewed_copies: BTreeMap<u64, WaveCopy> = renewed.iter().filter_map(|w| copies.remove(w).map(|c| (*w, c))).collect();
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as órfãs,
     // que saem de novo nesta rodada, e as que saem junto com ela, e traz a
@@ -831,16 +766,16 @@ pub(super) fn run_entered_round(
     let mut dispatched: Vec<Value> = Vec::new();
     // O código e o número do envio de cada onda em andamento — o número é o
     // que a resposta usa para achar o último passo dela e a hora do envio.
-    let mut in_flight: BTreeMap<u64, (String, u64)> = running
-        .iter()
-        .map(|(wave, sent)| (*wave, (codes.get(sent).cloned().unwrap_or_else(|| sent.to_string()), *sent)))
-        .collect();
+    let mut in_flight: BTreeMap<u64, (String, u64)> =
+        running.iter().map(|(wave, sent)| (*wave, (codes.get(sent).cloned().unwrap_or_else(|| sent.to_string()), *sent))).collect();
     // O processo por trás desta rodada — o Claude Code que a chamou ou, sem
     // um por cima, ela mesma: gravado em todo envio, novo ou reenviado, para
     // a rodada seguinte saber se aquele ainda está aberto.
     let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
     for wave in &next {
-        let Some(prompt) = built.iter().find(|p| p.wave == *wave) else { continue };
+        let Some(prompt) = built.iter().find(|p| p.wave == *wave) else {
+            continue;
+        };
         // O pedido acima do teto de tokens recusa a rodada antes de gravar o
         // envio: sem isso o agente recebia um pedido grande demais sem
         // ninguém ter decidido dividir o lote.
@@ -884,8 +819,7 @@ pub(super) fn run_entered_round(
         draft.insert("claude_pid".into(), json!(claude_pid));
         draft.insert("claude_started".into(), json!(claude_started));
         draft.insert("author".into(), json!("binary"));
-        let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
-            .map_err(RoundRefusal::Refused)?;
+        let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
@@ -897,8 +831,12 @@ pub(super) fn run_entered_round(
     // montar o pedido de novo —, mais os passos já gravados e o aviso de
     // começar vendo o que mudou na cópia. O envio novo aponta o anterior.
     for (wave, previous) in resends {
-        let Some(prior) = log.get(previous) else { continue };
-        let Some(own) = recorded_copy(&log, wave) else { continue };
+        let Some(prior) = log.get(previous) else {
+            continue;
+        };
+        let Some(own) = recorded_copy(&log, wave) else {
+            continue;
+        };
         let copy = if renewed.contains(&wave) {
             // A cópia que outra onda também segura tem a frase dela; a que
             // sumiu, a sua. Quando nenhuma cópia nova saiu, o aviso da
@@ -924,8 +862,7 @@ pub(super) fn run_entered_round(
         draft.insert("role".into(), json!("wave"));
         // As ondas em andamento de agora, e não as do envio anterior: a
         // rodada que reenvia já sabe quem está em curso ([`flight`]).
-        let running: Vec<(u64, Vec<String>)> =
-            flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(&log, *n))).collect();
+        let running: Vec<(u64, Vec<String>)> = flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(&log, *n))).collect();
         let text = resend_text(prior.str_field("text").unwrap_or_default(), &running, &steps, lang);
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
@@ -954,8 +891,7 @@ pub(super) fn run_entered_round(
         draft.insert("claude_pid".into(), json!(claude_pid));
         draft.insert("claude_started".into(), json!(claude_started));
         draft.insert("author".into(), json!("binary"));
-        let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
-            .map_err(RoundRefusal::Refused)?;
+        let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
@@ -1062,10 +998,7 @@ pub(super) fn run_entered_round(
         .collect::<Vec<_>>()
         .join(" ");
 
-    let running: Vec<Value> = in_flight
-        .iter()
-        .map(|(wave, (send, sent))| running_state(root, &spec, &log, &codes, *wave, send, *sent))
-        .collect();
+    let running: Vec<Value> = in_flight.iter().map(|(wave, (send, sent))| running_state(root, &spec, &log, &codes, *wave, send, *sent)).collect();
     let mut out = json!({
         "ok": true,
         "spec": spec,
@@ -1131,52 +1064,16 @@ pub(crate) fn read_command(root: &Path, spec: &str, block: &str) -> String {
 /// preparação dela apagando essa pasta, e acharia ali o arquivo sendo
 /// gravado.
 fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
-    use crate::commands::spec_events::pages::{copy, end_milestone};
-    let prepared = copy::prepare_then(root, spec, lang, |prepared| {
-        end_milestone(out, Ok(prepared), spec, "round", then, lang);
-        shorten_publish_order(root, spec, out, then, lang);
-    });
-    if let Err(refusal) = prepared {
-        end_milestone(out, Err(&refusal), spec, "round", then, lang);
-    }
+    out["next"] = json!(then);
+    out["panel"] = json!("/mustard-panel");
+    if let Ok(Some(path)) = mustard_core::io::spec_events::spec_file(root, spec).map(Some)
+        && let Ok(Some(log)) = mustard_core::io::spec_events::read(&path) {
+            let withheld = crate::commands::spec_events::pages::secrets::withheld(&log);
+            crate::commands::spec_events::pages::note_withheld(out, spec, &withheld, lang);
+        }
     if let Some(number) = rewrite_open_pr(root, spec) {
         out["pr"] = json!({ "number": number, "body": "rewritten" });
     }
-}
-
-/// A instrução de publicar e copiar a página, que [`crate::commands::spec_events::pages::end_milestone`]
-/// monta por extenso em `out["next"]` — numerada quando há mais de uma
-/// ordem —, sai dali quando há página a publicar (`out["publish"]`): o texto
-/// vai para `.claude/spec/<spec>/copy/next.md`, sob a pasta da spec, e
-/// `out["next"]` fica só com uma linha curta que manda ler o arquivo, seguida
-/// do `then`, que já era curto. O que o orquestrador copia não muda, ele
-/// mesmo e sem agente: só onde a ordem mora. Sem página a publicar, a ordem
-/// é só a da cópia, curta, e fica em `next`: ler um arquivo custaria uma
-/// resposta a mais à cópia. Sem instrução de página — `next` já é só o
-/// `then` —, nada muda; falha de disco também deixa `next` como estava.
-fn shorten_publish_order(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
-    if out.get("publish").is_none() {
-        return;
-    }
-    let Some(next) = out.get("next").and_then(Value::as_str).map(str::to_string) else { return };
-    if next == then {
-        return;
-    }
-    let order = next.strip_suffix(then).map(str::trim_end).unwrap_or(next.as_str());
-    if order.is_empty() {
-        return;
-    }
-    let Ok(paths) = mustard_core::ClaudePaths::for_project(root) else { return };
-    let Ok(spec_paths) = paths.for_spec(spec) else { return };
-    // A mesma pasta dos lotes que a cópia já grava (`pages::copy::FOLDER`):
-    // um arquivo a mais ali não muda o que a pasta da spec mostra por fora.
-    let path = spec_paths.dir().join(crate::commands::spec_events::pages::copy::FOLDER).join("next.md");
-    if mustard_core::io::fs::write_atomic(&path, order.as_bytes()).is_err() {
-        return;
-    }
-    let shown = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-    let short = translate("round.next.copy_file", lang).replace("{path}", &shown);
-    out["next"] = json!([short, then.to_string()].into_iter().filter(|s: &String| !s.is_empty()).collect::<Vec<_>>().join(" "));
 }
 
 /// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
@@ -1211,7 +1108,7 @@ mod tests {
     /// rodada — a fresta é só essa.
     #[test]
     fn rejected_pull_request_has_a_fix_door_dispatched_by_the_round() {
-        use crate::commands::flow::reopen::{reopen_with, ReopenOpts};
+        use crate::commands::flow::reopen::{ReopenOpts, reopen_with};
         use crate::commands::spec_events::write::{record, record_phase, record_pr_open};
         use mustard_core::domain::spec_state::PhaseWriter;
 
@@ -1220,8 +1117,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         let delivered = json!({"author": "binary", "wave": 1, "text": "A onda 1 entregou.",
             "files": ["src/a.rs"]});
-        record(root, "x", "delivered", delivered.as_object().cloned().expect("an object"), PhaseWriter::Binary)
-            .expect("the delivery of wave 1");
+        record(root, "x", "delivered", delivered.as_object().cloned().expect("an object"), PhaseWriter::Binary).expect("the delivery of wave 1");
         assert!(record_phase(root, "x", "closed", None), "the work closes");
         assert!(record_pr_open(root, "x", 9, None), "the pull request opens");
 
@@ -1231,12 +1127,7 @@ mod tests {
 
         // O vermelho do servidor abre a onda de conserto pela porta.
         let opened = reopen_with(
-            &ReopenOpts {
-                root: root.to_path_buf(),
-                spec: Some("x".into()),
-                reason: "o teste do servidor caiu".into(),
-                fix: true,
-            },
+            &ReopenOpts { root: root.to_path_buf(), spec: Some("x".into()), reason: "o teste do servidor caiu".into(), fix: true },
             None,
             &|_, number| {
                 assert_eq!(number, 9);
@@ -1252,11 +1143,7 @@ mod tests {
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "só a onda de conserto sai: {out}");
         assert_eq!(dispatched[0]["wave"], json!(wave), "{out}");
-        assert_eq!(
-            State::from_log(&store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()).phase,
-            Some("pr_open"),
-            "a obra não foi reaberta"
-        );
+        assert_eq!(State::from_log(&store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()).phase, Some("pr_open"), "a obra não foi reaberta");
     }
 
     /// A pasta dos agentes do Mustard no projeto em `root`, já criada, com o
@@ -1342,8 +1229,7 @@ mod tests {
         use crate::commands::spec_events::write::{record_phase, record_pr_open};
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         let delivered = json!({"author": "binary", "wave": 1, "text": "A onda 1 entregou.", "files": ["src/a.rs"]});
-        record(root, "x", "delivered", delivered.as_object().cloned().expect("an object"), PhaseWriter::Binary)
-            .expect("the delivery of wave 1");
+        record(root, "x", "delivered", delivered.as_object().cloned().expect("an object"), PhaseWriter::Binary).expect("the delivery of wave 1");
         assert!(record_phase(root, "x", "closed", None), "the work closes");
         if pr {
             assert!(record_pr_open(root, "x", 9, None), "the pull request opens");
@@ -1366,8 +1252,7 @@ mod tests {
                 let dir = tempdir().unwrap();
                 let root = dir.path();
                 closed_work(root, phase == "pr_open");
-                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
-                    .unwrap();
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#)).unwrap();
                 let before = std::fs::read(store::spec_file(root, "x").unwrap()).unwrap();
 
                 let refused = round(root, "x", None);
@@ -1413,17 +1298,10 @@ mod tests {
                 } else {
                     approved(root, "x", &[(1, &["src/a.rs"], &[])]);
                     let gone = json!({"phase": "discarded", "author": "binary", "reason": "Descartada."});
-                    store::write(
-                        &store::spec_file(root, "x").unwrap(),
-                        "state",
-                        gone.as_object().cloned().expect("an object"),
-                        &[],
-                    )
-                    .expect("the discard");
+                    store::write(&store::spec_file(root, "x").unwrap(), "state", gone.as_object().cloned().expect("an object"), &[]).expect("the discard");
                 }
                 assert_eq!(State::from_log(&log_of(root)).phase, Some(phase), "{language} {phase}");
-                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
-                    .unwrap();
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#)).unwrap();
                 let before = std::fs::read(store::spec_file(root, "x").unwrap()).unwrap();
 
                 let refused = round(root, "x", None);
@@ -1452,15 +1330,10 @@ mod tests {
     /// numa spec fechada ou com o pull request aberto.
     #[test]
     fn only_a_fix_keyed_wave_of_a_closed_spec_is_a_fix_wave() {
-        use crate::commands::flow::reopen::{open_fix_wave_of, reopen_with, ReopenOpts, FIX_KEYS};
+        use crate::commands::flow::reopen::{FIX_KEYS, ReopenOpts, open_fix_wave_of, reopen_with};
         let reopened = |root: &Path| {
             reopen_with(
-                &ReopenOpts {
-                    root: root.to_path_buf(),
-                    spec: Some("x".into()),
-                    reason: "Ajustar o pedido.".into(),
-                    fix: false,
-                },
+                &ReopenOpts { root: root.to_path_buf(), spec: Some("x".into()), reason: "Ajustar o pedido.".into(), fix: false },
                 None,
                 &|_, _| panic!("the reopen without --fix never asks the provider"),
                 &|_, branch| panic!("nothing pushes {branch}"),
@@ -1475,10 +1348,7 @@ mod tests {
             if keyed {
                 fields["keys"] = json!(FIX_KEYS);
             }
-            record(root, "x", "wave", fields.as_object().cloned().expect("an object"), PhaseWriter::Binary)
-                .expect("the wave")
-                .written
-                .id
+            record(root, "x", "wave", fields.as_object().cloned().expect("an object"), PhaseWriter::Binary).expect("the wave").written.id
         };
 
         // A spec reaberta recebe um pedido novo, e a rodada despacha a onda
@@ -1494,8 +1364,13 @@ mod tests {
         git_at(root, &["commit", "-q", "-m", "b"]);
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "Ajustar o pedido."})));
         let crit = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
-        write(root, "x", "task", json!({"text": "Ajustar o pedido.", "files": [{"path": "src/b.rs"}],
-            "depends_on": [], "covers": [crit], "origin": said}));
+        write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Ajustar o pedido.", "files": [{"path": "src/b.rs"}],
+            "depends_on": [], "covers": [crit], "origin": said}),
+        );
 
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -1560,8 +1435,7 @@ mod tests {
         // O envio gravado guarda o pedido exato, letra por letra.
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
-        let sent: Vec<&SpecEvent> =
-            log.visible().into_iter().filter(|e| e.event_type == "send").collect();
+        let sent: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
         assert_eq!(sent.len(), 1, "um envio por onda despachada");
         assert_eq!(sent[0].str_field("text"), Some(prompt.as_str()));
         assert_eq!(sent[0].wave(), Some(1));
@@ -1574,9 +1448,8 @@ mod tests {
     fn work_reading_the_history_moves(root: &Path, config: &str) {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), config).unwrap();
-        let commits: Vec<Value> = (0..mustard_core::domain::project_map::MAX_COMMITS)
-            .map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]}))
-            .collect();
+        let commits: Vec<Value> =
+            (0..mustard_core::domain::project_map::MAX_COMMITS).map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]})).collect();
         let model = json!({
             "modules": [{"path": "src/a.rs", "language": "rust", "loc": 30}],
             "history": {"base": "main", "paths": ["src/busy.rs"], "commits": commits},
@@ -1772,8 +1645,13 @@ mod tests {
         let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
         let (said, crit) = (first("message"), first("criterion"));
         let task = |text: &str, file: &str| {
-            id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}],
-                "depends_on": [], "covers": [crit], "origin": said})))
+            id_of(&write(
+                root,
+                "x",
+                "task",
+                json!({"text": text, "files": [{"path": file}],
+                "depends_on": [], "covers": [crit], "origin": said}),
+            ))
         };
         task("Mexer no código de um.", "src/a.rs");
         task("Mexer no código de dois.", "src/b.rs")
@@ -1813,7 +1691,11 @@ mod tests {
         assert_eq!(out["ok"], json!(false), "{out}");
         assert_eq!(out["reason"], json!("unknown-field"), "{out}");
         assert_eq!(phase_of(root), "approved", "a spec segue aprovada: {out}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited, "a spec fica igual byte a byte");
+        assert_eq!(
+            super::super::tests::without_measurements(&std::fs::read_to_string(&path).unwrap()),
+            super::super::tests::without_measurements(&edited),
+            "a spec fica igual byte a byte"
+        );
         assert!(log_of(root).visible().iter().all(|e| e.event_type != "wave"), "nenhuma onda gravada");
     }
 
@@ -1838,8 +1720,7 @@ mod tests {
         assert!(waves.iter().all(|wave| wave.str_field("author") == Some("binary")), "{out}");
         for wave in &waves {
             let n = wave.fields.get("n").cloned();
-            let in_wave =
-                log.visible().into_iter().filter(|e| e.event_type == "task" && e.fields.get("wave").cloned() == n).count();
+            let in_wave = log.visible().into_iter().filter(|e| e.event_type == "task" && e.fields.get("wave").cloned() == n).count();
             assert_eq!(in_wave, 1, "cada onda leva a tarefa do seu assunto: {out}");
         }
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
@@ -1855,14 +1736,7 @@ mod tests {
     #[test]
     fn a_single_task_wave_is_sent_to_the_wave_agent() {
         let agent_of = |out: &Value| -> String {
-            out["dispatch"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|d| d["wave"].as_u64() == Some(1))
-                .and_then(|d| d["agent"].as_str())
-                .unwrap_or_default()
-                .to_string()
+            out["dispatch"].as_array().unwrap().iter().find(|d| d["wave"].as_u64() == Some(1)).and_then(|d| d["agent"].as_str()).unwrap_or_default().to_string()
         };
         let last_send = |root: &Path| -> SpecEvent {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1920,7 +1794,7 @@ mod tests {
     /// traz inteiro.
     #[test]
     fn reading_the_waves_repeats_neither_the_template_nor_the_request() {
-        use crate::commands::spec_events::read::{read_for, ReadOpts};
+        use crate::commands::spec_events::read::{ReadOpts, read_for};
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1939,9 +1813,7 @@ mod tests {
             let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: block.into(), term: None };
             serde_json::from_str(&read_for(&opts, None, root).expect("the block reads")).expect("the output is JSON")
         };
-        let send_of = |shown: &Value| -> Value {
-            shown["events"].as_array().unwrap().iter().find(|e| e["type"] == json!("send")).cloned().expect("send")
-        };
+        let send_of = |shown: &Value| -> Value { shown["events"].as_array().unwrap().iter().find(|e| e["type"] == json!("send")).cloned().expect("send") };
         for block in ["waves", "metrics"] {
             let shown = send_of(&read(block));
             assert!(shown.get("text").is_none(), "{block} shows the request: {shown}");
@@ -1960,26 +1832,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-
         let out = round(root, "x", None);
-        let next = out["next"].as_str().unwrap_or_default().to_string();
-        assert!(next.contains("Leia `.claude/spec/x/copy/next.md`"), "{next}");
-        assert!(!next.contains("ArtifactData"), "o texto por extenso não fica na resposta: {next}");
-
-        let file_path = root.join(".claude").join("spec").join("x").join("copy").join("next.md");
-        let file_text = std::fs::read_to_string(&file_path).expect("o arquivo com a ordem por extenso");
-        assert!(file_text.contains("ArtifactData"), "{file_text}");
-
-        // O que `next` seria sem o desvio para o arquivo (a ordem por
-        // extenso mais o "depois" que já era curto) contra o que ele é
-        // agora: a resposta da rodada fica bem menor.
-        let before = format!("{file_text} …");
-        assert!(
-            next.len() < before.len(),
-            "antes: {} bytes; depois: {} bytes — a resposta devia ficar menor",
-            before.len(),
-            next.len()
-        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out.get("copy").is_none() && out.get("publish").is_none());
+        assert_eq!(out["panel"], "/mustard-panel");
+        assert!(!out["next"].as_str().unwrap().contains("copy/next.md"));
+        assert!(!root.join(".claude/spec/x/copy").exists());
+        assert!(!root.join(".claude/mustard/publications").exists());
     }
 
     /// Sem página a publicar, a ordem da cópia é curta e fica na própria
@@ -1987,26 +1846,16 @@ mod tests {
     /// o `copy/next.md` nem nasce.
     #[test]
     fn without_a_page_to_publish_the_copy_order_stays_in_the_response() {
-        use mustard_core::platform::page_templates::{project_page_template, spec_page_template, template_stamp};
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        for page in ["spec", "project"] {
-            let template =
-                if page == "spec" { spec_page_template(Locale::PtBr) } else { project_page_template(Locale::PtBr) };
-            let stamp = template_stamp(&template).expect("the stamp");
-            let url = format!("https://claude.ai/code/artifact/{page}");
-            let published = write(root, "x", "publish",
-                json!({"page": page, "milestone": "approval", "ok": true, "template": true, "stamp": stamp, "url": url}));
-            assert_eq!(published["ok"], json!(true), "{published}");
-        }
-
         let out = round(root, "x", None);
-        assert!(out.get("publish").is_none(), "both pages are published: {out}");
-        let next = out["next"].as_str().unwrap_or_default();
-        assert!(next.contains("ArtifactData") && next.contains("`copy.spec.writes`"), "the order stays: {next}");
-        assert!(!next.contains("copy/next.md"), "{next}");
-        assert!(!root.join(".claude/spec/x/copy/next.md").exists(), "no file to read");
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out.get("copy").is_none() && out.get("publish").is_none());
+        assert_eq!(out["panel"], "/mustard-panel");
+        assert!(!out["next"].as_str().unwrap().contains("copy/next.md"));
+        assert!(!root.join(".claude/spec/x/copy").exists());
+        assert!(!root.join(".claude/mustard/publications").exists());
     }
 
     /// Os campos de um envio já gravado, prontos para virar a base de um novo
@@ -2050,11 +1899,7 @@ mod tests {
     fn the_wave_resumes_from_its_steps_in_a_new_agent() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(
-            root,
-            "x",
-            &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[])],
-        );
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":10}"#).unwrap();
 
         let first = round(root, "x", None);
@@ -2067,9 +1912,7 @@ mod tests {
         let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
         let (draft2, draft3, draft4) = {
             let log = store::read(&path).unwrap().unwrap();
-            let sent_of = |wave: u64| -> Value {
-                resend_draft(log.visible().into_iter().find(|e| e.wave() == Some(wave) && e.event_type == "send").unwrap())
-            };
+            let sent_of = |wave: u64| -> Value { resend_draft(log.visible().into_iter().find(|e| e.wave() == Some(wave) && e.event_type == "send").unwrap()) };
             (sent_of(2), sent_of(3), sent_of(4))
         };
 
@@ -2110,18 +1953,14 @@ mod tests {
         let notice = translate("round.resume.notice", Locale::PtBr);
         let wave1_prompt = prompt_of(1);
         assert!(wave1_prompt.starts_with(&first_prompt), "o pedido de antes volta palavra por palavra: {wave1_prompt}");
-        assert!(
-            wave1_prompt.contains("MSTD-TASK-0001") && wave1_prompt.contains("A tarefa 1 ficou pronta."),
-            "{wave1_prompt}"
-        );
+        assert!(wave1_prompt.contains("MSTD-TASK-0001") && wave1_prompt.contains("A tarefa 1 ficou pronta."), "{wave1_prompt}");
         assert!(wave1_prompt.contains(notice), "{wave1_prompt}");
         let wave2_prompt = prompt_of(2);
         assert!(wave2_prompt.contains(notice) && !wave2_prompt.contains("Passos já gravados"), "{wave2_prompt}");
 
         // O envio novo da onda 1 aponta o anterior.
         let log = store::read(&path).unwrap().unwrap();
-        let sends_of_1: Vec<&SpecEvent> =
-            log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
+        let sends_of_1: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
         let (previous, resent_send) = (sends_of_1[sends_of_1.len() - 2], sends_of_1[sends_of_1.len() - 1]);
         assert_eq!(resent_send.int("resends"), Some(previous.id), "{out}");
         // O reenvio leva o modelo e o esforço do envio original, sem remontar.
@@ -2142,8 +1981,7 @@ mod tests {
 
         // Só a onda 4 (40 minutos) sai como aviso.
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
-        let stale: Vec<u64> =
-            warnings.iter().filter(|w| w["reason"] == json!("wave-silent")).filter_map(|w| w["wave"].as_u64()).collect();
+        let stale: Vec<u64> = warnings.iter().filter(|w| w["reason"] == json!("wave-silent")).filter_map(|w| w["wave"].as_u64()).collect();
         assert_eq!(stale, vec![4], "{warnings:?}");
         let hint = warnings.iter().find(|w| w["wave"].as_u64() == Some(4)).unwrap()["hint"].as_str().unwrap_or_default();
         assert!(hint.contains('4') && hint.contains("PAUSED"), "{hint}");
@@ -2164,11 +2002,7 @@ mod tests {
     fn a_resend_shows_the_waves_in_flight_now_not_the_ones_from_the_first_send() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(
-            root,
-            "x",
-            &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[])],
-        );
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
 
         let first = round(root, "x", None);
@@ -2212,8 +2046,7 @@ mod tests {
         let shared = recorded_copy(&log, 2).map(|copy| copy.path).expect("a cópia da onda 2");
         let mut draft = resend_draft(sent_of(1));
         draft["copy"] = json!(shared);
-        let (claude_pid, claude_started) =
-            if alive { crate::commands::flow::stuck::sender_process() } else { closed_process() };
+        let (claude_pid, claude_started) = if alive { crate::commands::flow::stuck::sender_process() } else { closed_process() };
         draft["claude_pid"] = json!(claude_pid);
         draft["claude_started"] = json!(claude_started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2352,9 +2185,7 @@ mod tests {
         assert_eq!(sends_of(root).len(), before, "nenhum envio foi gravado: {out}");
         assert_eq!(warning_of(&out, "copy-not-created")["wave"], json!(1), "{out}");
         let held = warning_of(&out, "resend-no-copy");
-        let said = translate("round.resend_gone_no_copy", Locale::PtBr)
-            .replace("{wave}", "1")
-            .replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy));
+        let said = translate("round.resend_gone_no_copy", Locale::PtBr).replace("{wave}", "1").replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy));
         assert_eq!(held["hint"].as_str().unwrap_or_default(), said, "{out}");
         assert!(held["hint"].as_str().unwrap_or_default().contains("não é mais uma cópia"), "{out}");
 
@@ -2449,19 +2280,26 @@ mod tests {
         assert!(!first.contains(translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        write(root, "x", "decision", json!({"author": "user", "title": "A soma aceita negativos", "text": "A soma aceita negativos.", "keys": ["soma"],
-            "why": "o usuário pediu", "waves": [1]}));
+        write(
+            root,
+            "x",
+            "decision",
+            json!({"author": "user", "title": "A soma aceita negativos", "text": "A soma aceita negativos.", "keys": ["soma"],
+            "why": "o usuário pediu", "waves": [1]}),
+        );
         // O veredito final, com o item combinado vigente atendido: sem a
         // lista `agreed`, a revisão final seria recusada por faltar item,
         // antes de a rodada montar o pedido do conserto que este teste prova.
         seed_review(root);
-        let rejected_with_agreed = judged(root, json!({"wave": 1, "result": "rejected", "final": true,
+        let rejected_with_agreed = judged(
+            root,
+            json!({"wave": 1, "result": "rejected", "final": true,
             "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
-            "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
+            "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}),
+        );
         assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");
         let fix = request_of(&round(root, "x", None), 1);
-        let heading =
-            format!("## {}\n\n{}", translate("prompt.part.do", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
+        let heading = format!("## {}\n\n{}", translate("prompt.part.do", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
         let fix_lines = |text: &str| -> Vec<String> {
             let part = text.split("\n## ").find(|part| part.starts_with(translate("prompt.part.do", Locale::PtBr))).unwrap_or_default();
@@ -2470,11 +2308,7 @@ mod tests {
         let lines = fix_lines(&fix);
         assert_eq!(
             lines,
-            [
-                "- Veredito MSTD-VERD-0001 — faltou o teste",
-                "- Entrega MSTD-DELIV-0001 — A soma saiu.",
-                "- Decisão MSTD-DEC-0001 — A soma aceita negativos",
-            ],
+            ["- Veredito MSTD-VERD-0001 — faltou o teste", "- Entrega MSTD-DELIV-0001 — A soma saiu.", "- Decisão MSTD-DEC-0001 — A soma aceita negativos",],
             "{fix}"
         );
 
@@ -2506,11 +2340,7 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let recorded = log.visible().into_iter().find(|e| e.event_type == "verdict").expect("o veredito gravado");
-        assert_eq!(
-            recorded.str_field("text"),
-            Some(findings),
-            "os quatro achados chegam inteiros, sem cortar nenhum: {fix}"
-        );
+        assert_eq!(recorded.str_field("text"), Some(findings), "os quatro achados chegam inteiros, sem cortar nenhum: {fix}");
     }
 
     /// A rodada diz o próximo passo de cada situação: despachar o que saiu;
@@ -2615,8 +2445,13 @@ mod tests {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let first = log.visible().into_iter().find(|e| e.event_type == "task").map(|e| e.id).unwrap();
             let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
-            write(root, "x", "task", json!({"text": "Tarefa que espera a da onda 1.",
-                "files": [{"path": "src/b.rs"}], "depends_on": [first], "covers": [crit], "origin": said}));
+            write(
+                root,
+                "x",
+                "task",
+                json!({"text": "Tarefa que espera a da onda 1.",
+                "files": [{"path": "src/b.rs"}], "depends_on": [first], "covers": [crit], "origin": said}),
+            );
         });
         std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
 
@@ -2625,23 +2460,11 @@ mod tests {
 
         let delivered_now = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(delivered_now["ok"], json!(true), "{delivered_now}");
-        assert_eq!(waves_in(&delivered_now, "dispatch"), Vec::<u64>::new(), "{delivered_now}");
-        let command = delivered_now["command"].as_str().unwrap_or_default();
-        assert_eq!(command, "mustard-rt run round --spec x", "com tarefa no backlog, a rodada manda rodar de novo: {delivered_now}");
-        crate::commands::flow::resume::assert_parses(command);
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let codes = log.codes();
-        let loose = log
-            .visible()
-            .into_iter()
-            .find(|e| e.event_type == "task" && e.wave().is_none())
-            .map(|e| codes.get(&e.id).cloned().unwrap())
-            .expect("a tarefa solta segue no backlog");
-        let expected = translate("round.backlog_left", Locale::PtBr).replace("{tasks}", &loose).replace("{command}", command);
-        assert!(delivered_now["next"].as_str().unwrap_or_default().ends_with(&expected), "{delivered_now}");
-
+        assert_eq!(waves_in(&delivered_now, "dispatch"), vec![2], "the existing dependent leaves in this call: {delivered_now}");
+        assert!(delivered_now.get("command").is_none(), "dispatch must not instruct close: {delivered_now}");
         let again = round(root, "x", None);
-        assert_eq!(waves_in(&again, "dispatch"), vec![2], "a rodada de novo despacha o lote: {again}");
+        assert!(waves_in(&again, "dispatch").is_empty(), "the dependent is not sent twice: {again}");
+        assert_eq!(waves_in(&again, "running"), vec![2], "{again}");
 
         let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
         assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "backlog vazio, a rodada manda fechar: {done}");
@@ -2654,15 +2477,30 @@ mod tests {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
-            let one = id_of(&write(root, "x", "task", json!({"text": "Tarefa presa um.",
-                "files": [{"path": "src/c.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
-            let two = id_of(&write(root, "x", "task", json!({"text": "Tarefa presa dois.",
-                "files": [{"path": "src/d.rs"}], "depends_on": [one], "covers": [crit], "origin": said})));
+            let one = id_of(&write(
+                root,
+                "x",
+                "task",
+                json!({"text": "Tarefa presa um.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [], "covers": [crit], "origin": said}),
+            ));
+            let two = id_of(&write(
+                root,
+                "x",
+                "task",
+                json!({"text": "Tarefa presa dois.",
+                "files": [{"path": "src/d.rs"}], "depends_on": [one], "covers": [crit], "origin": said}),
+            ));
             // A gravação recusa o círculo; ele chega pela spec gravada antes
             // dessa trava, direto no arquivo de eventos.
-            crate::shared::spec_state::seed_event(root, "x", "task", json!({"text": "Tarefa presa um.",
+            crate::shared::spec_state::seed_event(
+                root,
+                "x",
+                "task",
+                json!({"text": "Tarefa presa um.",
                 "files": [{"path": "src/c.rs"}], "depends_on": [two], "covers": [crit], "origin": said,
-                "replaces": one}));
+                "replaces": one}),
+            );
         });
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "as tarefas presas não viram lote: {first}");
@@ -2672,12 +2510,8 @@ mod tests {
         assert!(stuck.get("command").is_none(), "tarefa presa não tem linha de fechamento: {stuck}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
-        let held: Vec<String> = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "task" && e.wave().is_none())
-            .map(|e| codes.get(&e.id).cloned().unwrap())
-            .collect();
+        let held: Vec<String> =
+            log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).map(|e| codes.get(&e.id).cloned().unwrap()).collect();
         assert_eq!(held.len(), 2, "{held:?}");
         let expected = translate("round.backlog_stuck", Locale::PtBr).replace("{tasks}", &held.join(", "));
         assert!(stuck["next"].as_str().unwrap_or_default().ends_with(&expected), "{stuck}");
@@ -2745,23 +2579,12 @@ mod tests {
         git_at(copy_path, &["mv", "src/e.rs", "src/f.rs"]);
 
         let running = round(root, "x", None);
-        let files: Vec<String> = running["running"][0]["files"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|f| f.as_str().map(str::to_string))
-            .collect();
+        let files: Vec<String> =
+            running["running"][0]["files"].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f.as_str().map(str::to_string)).collect();
 
         assert_eq!(
             files,
-            vec![
-                "src/a.rs".to_string(),
-                "src/b.rs".to_string(),
-                "src/c.rs".to_string(),
-                "src/f.rs".to_string(),
-                "src/d.rs".to_string(),
-            ],
+            vec!["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string(), "src/f.rs".to_string(), "src/d.rs".to_string(),],
             "{running}"
         );
     }
@@ -2902,8 +2725,13 @@ mod tests {
         let mut written = None;
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let rule = "Vale sempre: a saudação é curta.";
-            id_of(&write(root, "x", "rule", json!({"title": rule, "text": rule, "example": "e", "keys": ["k"],
-                "applies_to": {"files": ["**"]}, "origin": said})));
+            id_of(&write(
+                root,
+                "x",
+                "rule",
+                json!({"title": rule, "text": rule, "example": "e", "keys": ["k"],
+                "applies_to": {"files": ["**"]}, "origin": said}),
+            ));
             // O lote que a rodada forma leva os critérios que as tarefas dele
             // cobrem: a tarefa cobre o critério da obra.
             let criterion = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id);
@@ -2958,9 +2786,7 @@ mod tests {
         assert_eq!(returned(root, bare)["ok"], json!(true));
         let out = round(root, "x", None);
         let warnings: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("plan-changed")).collect();
-        let hint_of = |wave: u64| {
-            warnings.iter().find(|w| w["wave"] == json!(wave)).and_then(|w| w["hint"].as_str()).unwrap_or_default().to_string()
-        };
+        let hint_of = |wave: u64| warnings.iter().find(|w| w["wave"] == json!(wave)).and_then(|w| w["hint"].as_str()).unwrap_or_default().to_string();
         assert!(hint_of(1).contains("A mudança: Dividir a onda em duas. Conte-a"), "{out}");
         assert!(hint_of(2).contains("A mudança: Dividir a onda em três. Conte-a"), "{out}");
         assert!(!hint_of(1).contains(".."), "{out}");

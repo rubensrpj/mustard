@@ -62,39 +62,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The work of {count} branch(es) already went into the base through a merge, and \
              the branch(es) are still alive: {branches}."
         }
-        // A página do projeto que ainda não nasceu: o início da sessão manda o
-        // assistente publicar o template dela, uma vez só, e gravar o
-        // endereço. `{template}` é o caminho do template instalado e
-        // `{capabilities}` a declaração do banco de dados da página.
-        ("session.project_page", Locale::PtBr) => {
-            "[Mustard] A página do projeto ainda não foi publicada. Ela é a página do claude.ai que \
-             lista as specs deste projeto, com a fase e o link de cada uma. Publique agora o \
-             template dela, o arquivo `{template}`, lido uma vez só \
-             e publicado como está, declarando o banco de dados da página: `{capabilities}`. Depois \
-             grave o endereço com `mustard-rt run write publish --json \
-             '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Não escreva o endereço na \
-             resposta: ele fica na barra de status."
-        }
-        ("session.project_page", Locale::EnUs) => {
-            "[Mustard] The project page has not been published yet. It is the claude.ai page that \
-             lists this project's specs, with the phase and the link of each one. Publish its \
-             template now, the file `{template}`, read only once and \
-             published as it is, declaring the page's database: `{capabilities}`. Then record the \
-             address with `mustard-rt run write publish --json \
-             '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Never write the address in the \
-             reply: it lives in the status line."
-        }
-        // O gasto: o início de toda sessão manda contar o que falta, contar
-        // hoje de novo e copiar as linhas para a página do gasto, que o
-        // comando `spend` prepara.
-        ("session.spend", Locale::PtBr) => {
-            "[Mustard] O gasto de hoje e dos dias fechados vai para a página do gasto a cada início de sessão. \
-             Rode `mustard-rt run spend` e siga a resposta dele. Não escreva o endereço da página na resposta."
-        }
-        ("session.spend", Locale::EnUs) => {
-            "[Mustard] The spend of today and of the closed days goes to the spend page at the start of each \
-             session. Run `mustard-rt run spend` and follow its answer. Never write the page address in the reply."
-        }
         // O merge feito por outra pessoa: o pull request da spec atual entrou,
         // e o início da sessão rodou o mesmo caminho do merge do Mustard.
         ("session.landed", Locale::PtBr) => {
@@ -240,8 +207,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            27,
-            0x1a82_217f_3204_229f,
+            25,
+            0xeaec_9c6f_6b0e_fafa,
         );
     }
 

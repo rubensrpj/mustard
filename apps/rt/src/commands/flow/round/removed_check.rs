@@ -84,7 +84,7 @@ use std::path::Path;
 use mustard_core::domain::ast::{is_entry_file, is_test_path};
 use mustard_core::domain::project_map::{MapDecl, MapModule, ProjectMap, UseSite};
 use mustard_core::platform::git as git_exec;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 use super::commit::{AfterWave, Finding};
 
@@ -102,15 +102,16 @@ const MOLD_FOLDER: &str = "templates";
 /// Os achados dos restos, dos órfãos e do código novo sem uso de cada onda de
 /// `maps`, procurando o texto em `root`, já com a junção no disco.
 pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Finding> {
-    let declared: BTreeSet<&str> =
-        maps.after.modules.iter().flat_map(|m| &m.declarations).map(|d| d.name.as_str()).collect();
+    let declared: BTreeSet<&str> = maps.after.modules.iter().flat_map(|m| &m.declarations).map(|d| d.name.as_str()).collect();
     let file_names: BTreeSet<&str> = maps.after.modules.iter().map(|m| file_name(&m.path)).collect();
     let created = created(root, maps);
     let mut searched: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
     for (wave, files) in &maps.changed {
         for file in files {
-            let Some(before) = maps.base.module(file) else { continue };
+            let Some(before) = maps.base.module(file) else {
+                continue;
+            };
             let now = maps.after.module(file);
             let mut gone: Vec<&str> = before
                 .declarations
@@ -138,7 +139,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
             }
         }
     }
-    out.extend(dead_code(root, maps, &created, lang));
+    out.extend(dead_code(root, maps, &created, lang, false, &[]));
     out
 }
 
@@ -147,7 +148,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
 /// onda pôs e nada usa (posta, com a onda dona do arquivo). A que ainda tem
 /// o nome escrito fora de teste ([`cited_outside_tests`]) vai só como aviso:
 /// o texto pode ser um uso que o mapa não ligou.
-fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> Vec<Finding> {
+fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale, final_phase: bool, outputs: &[String]) -> Vec<Finding> {
     let called = LazyCell::new(|| called_names(maps));
     let mut out = Vec::new();
     for module in maps.after.modules.iter().filter(|m| !is_test_path(&m.path) && !is_entry_file(&m.path, &m.language)) {
@@ -158,11 +159,17 @@ fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) ->
             }
             match before.and_then(|b| b.declarations.iter().find(|d| same_piece(d, decl))) {
                 Some(old) => out.extend(lost_last_use(root, maps, created, lang, (module, decl, old))),
-                None => out.extend(never_used(root, maps, created, lang, (module, decl), &called)),
+                None if final_phase => out.extend(never_used(root, maps, created, lang, (module, decl), &called, outputs)),
+                None => {}
             }
         }
     }
     out
+}
+
+pub(super) fn final_findings(root: &Path, maps: &AfterWave, lang: Locale, outputs: &[String]) -> Vec<Finding> {
+    let created = created(root, maps);
+    dead_code(root, maps, &created, lang, true, outputs)
 }
 
 /// O ponto de entrada nunca é código sem uso: a função principal, a que
@@ -170,37 +177,27 @@ fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) ->
 /// traço ou de uma interface, chamada por quem registra o tipo) e o tipo que
 /// tem um método de rota, que o servidor instancia sozinho.
 fn entry_point(module: &MapModule, before: Option<&MapModule>, decl: &MapDecl) -> bool {
-    let routed = |d: &MapDecl| {
-        module.routes.iter().chain(before.into_iter().flat_map(|b| &b.routes)).any(|route| route.handler == d.name)
-    };
-    let owns_route = decl.members.iter().filter(|at| at.file == module.path).any(|at| {
-        module.declarations.iter().any(|d| d.name == at.name && u64::try_from(at.line) == Ok(d.line) && routed(d))
-    });
+    let routed = |d: &MapDecl| module.routes.iter().chain(before.into_iter().flat_map(|b| &b.routes)).any(|route| route.handler == d.name);
+    let owns_route = decl
+        .members
+        .iter()
+        .filter(|at| at.file == module.path)
+        .any(|at| module.declarations.iter().any(|d| d.name == at.name && u64::try_from(at.line) == Ok(d.line) && routed(d)));
     decl.name == "main" || routed(decl) || !decl.implements.is_empty() || !decl.contract.is_empty() || owns_route
 }
 
 /// O achado da declaração `decl` de `module` (a de antes é `old`) que perdeu
 /// o último uso fora de teste, com a onda que o tirou: a dona de um arquivo
 /// que a usava na base.
-fn lost_last_use(
-    root: &Path,
-    maps: &AfterWave,
-    created: &[String],
-    lang: Locale,
-    (module, decl, old): (&MapModule, &MapDecl, &MapDecl),
-) -> Option<Finding> {
-    let callers: Vec<&str> =
-        old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
+fn lost_last_use(root: &Path, maps: &AfterWave, _created: &[String], lang: Locale, (module, decl, old): (&MapModule, &MapDecl, &MapDecl)) -> Option<Finding> {
+    let callers: Vec<&str> = old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
     let wave = maps.changed.iter().find(|(_, files)| files.iter().any(|f| callers.contains(&f.as_str())))?.0;
     if member_read_remains(root, maps, module, decl, &callers) {
         return None;
     }
-    let text = translate("round.after_wave.orphan", lang)
-        .replace("{name}", &decl.name)
-        .replace("{file}", &module.path)
-        .replace("{line}", &decl.line.to_string());
-    let refuses = !cited_outside_tests(maps, module, decl, &cited(root, &decl.name, created));
-    Some(Finding { wave, refuses, text })
+    let text =
+        translate("round.after_wave.orphan", lang).replace("{name}", &decl.name).replace("{file}", &module.path).replace("{line}", &decl.line.to_string());
+    Some(Finding { wave, refuses: false, text })
 }
 
 /// Os achados da declaração `decl` de `module` que a onda pôs e nenhum
@@ -215,23 +212,24 @@ fn never_used(
     lang: Locale,
     (module, decl): (&MapModule, &MapDecl),
     called: &BTreeSet<&str>,
+    outputs: &[String],
 ) -> Vec<Finding> {
-    let Some((wave, _)) = maps.changed.iter().find(|(_, files)| files.contains(&module.path)) else { return Vec::new() };
+    let Some((wave, _)) = maps.changed.iter().find(|(_, files)| files.contains(&module.path)) else {
+        return Vec::new();
+    };
     if member_read_remains(root, maps, module, decl, &[]) {
         return Vec::new();
     }
     let cites = cited(root, &decl.name, created);
-    let refuses = !cited_outside_tests(maps, module, decl, &cites);
+    let exported = decl.signature.contains("pub ") || decl.signature.contains("export ") || decl.signature.contains("public ");
+    let refuses = super::unused_evidence::proves(root, module, decl, outputs) && !exported && !cited_outside_tests(maps, module, decl, &cites);
     let says = |key: &str, file: &str, line: u64| Finding {
         wave: *wave,
         refuses,
-        text: translate(key, lang)
-            .replace("{name}", &decl.name)
-            .replace("{file}", file)
-            .replace("{line}", &line.to_string()),
+        text: translate(key, lang).replace("{name}", &decl.name).replace("{file}", file).replace("{line}", &line.to_string()),
     };
     let tests = if refuses { tests_only_for(root, maps, decl, &cites, called) } else { BTreeSet::new() };
-    let mut out = vec![says("round.after_wave.unused", &module.path, decl.line)];
+    let mut out = vec![says(if refuses { "round.after_wave.unused" } else { "round.after_wave.unused_candidate" }, &module.path, decl.line)];
     out.extend(tests.iter().map(|(file, line)| says("round.after_wave.unused_test", file, *line)));
     out
 }
@@ -257,13 +255,7 @@ fn called_names(maps: &AfterWave) -> BTreeSet<&str> {
 /// com o arquivo e a linha em que começa. O mapa não guarda a chamada escrita
 /// em trecho de teste, e por isso a leitura é pelo texto da função. O teste
 /// que também chama outra peça do programa não é só dela e fica de fora.
-fn tests_only_for(
-    root: &Path,
-    maps: &AfterWave,
-    decl: &MapDecl,
-    cites: &[(String, usize, String)],
-    called: &BTreeSet<&str>,
-) -> BTreeSet<(String, u64)> {
+fn tests_only_for(root: &Path, maps: &AfterWave, decl: &MapDecl, cites: &[(String, usize, String)], called: &BTreeSet<&str>) -> BTreeSet<(String, u64)> {
     let mut tests = BTreeSet::new();
     for (file, line, _) in cites {
         let line = u64::try_from(*line).unwrap_or(u64::MAX);
@@ -271,13 +263,19 @@ fn tests_only_for(
         if !in_test {
             continue;
         }
-        let Some((first, last)) = span_around(maps, file, line) else { continue };
-        let Ok(text) = std::fs::read_to_string(root.join(file)) else { continue };
+        let Some((first, last)) = span_around(maps, file, line) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            continue;
+        };
         let skip = usize::try_from(first.saturating_sub(1)).unwrap_or(usize::MAX);
         let take = usize::try_from(last - first + 1).unwrap_or(usize::MAX);
-        let others = text.lines().skip(skip).take(take).any(|text| {
-            text.split(|c: char| !is_word_char(c)).any(|word| !word.is_empty() && word != decl.name && called.contains(word))
-        });
+        let others = text
+            .lines()
+            .skip(skip)
+            .take(take)
+            .any(|text| text.split(|c: char| !is_word_char(c)).any(|word| !word.is_empty() && word != decl.name && called.contains(word)));
         if !others {
             tests.insert((file.clone(), first));
         }
@@ -315,10 +313,11 @@ fn member_read_remains(root: &Path, maps: &AfterWave, module: &MapModule, decl: 
         return false;
     }
     let own = decl.line..=decl.end_line.max(decl.line);
-    let files: BTreeSet<&str> =
-        maps.changed.iter().flat_map(|(_, files)| files).map(String::as_str).chain(callers.iter().copied()).collect();
+    let files: BTreeSet<&str> = maps.changed.iter().flat_map(|(_, files)| files).map(String::as_str).chain(callers.iter().copied()).collect();
     files.into_iter().filter(|file| !is_test_path(file)).any(|file| {
-        let Ok(text) = std::fs::read_to_string(root.join(file)) else { return false };
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            return false;
+        };
         let tests = maps.after.module(file).or_else(|| maps.base.module(file));
         text.lines().enumerate().any(|(at, line)| {
             let number = u64::try_from(at + 1).unwrap_or(u64::MAX);
@@ -523,8 +522,7 @@ fn prose_comment(name: &str, text: &str) -> bool {
 fn prose_document(name: &str, text: &str) -> bool {
     !word_starts(text, name).any(|at| {
         let (before, after) = (&text[..at], &text[at + name.len()..]);
-        !in_marker(before, after)
-            && (in_ticks(before) || (!shout_word(name) && (identifier_spelling(name) || path_linked(before, after))))
+        !in_marker(before, after) && (in_ticks(before) || (!shout_word(name) && (identifier_spelling(name) || path_linked(before, after))))
     })
 }
 
@@ -548,11 +546,8 @@ fn in_marker(before: &str, after: &str) -> bool {
 /// nome que o caminho segue depois dele (`nome.campo`, `nome::novo`,
 /// `a.nome.campo`) é dono de um campo ou de um módulo, e não a peça tirada.
 fn path_linked(before: &str, after: &str) -> bool {
-    let reached = before.ends_with("::")
-        || before
-            .strip_suffix('.')
-            .and_then(|head| head.chars().next_back())
-            .is_some_and(|c| is_word_char(c) || c == ')' || c == ']');
+    let reached =
+        before.ends_with("::") || before.strip_suffix('.').and_then(|head| head.chars().next_back()).is_some_and(|c| is_word_char(c) || c == ')' || c == ']');
     let goes_on = after.starts_with("::") || after.strip_prefix('.').is_some_and(|rest| rest.starts_with(is_word_char));
     reached && !goes_on
 }
@@ -583,7 +578,9 @@ fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize, Str
     for args in searches {
         for line in git_exec::run(root, &args).stdout.lines() {
             let mut parts = line.splitn(3, '\0');
-            let (Some(file), Some(Ok(at))) = (parts.next(), parts.next().map(str::parse)) else { continue };
+            let (Some(file), Some(Ok(at))) = (parts.next(), parts.next().map(str::parse)) else {
+                continue;
+            };
             if !is_change_log(file) {
                 found.insert((file.to_string(), at, parts.next().unwrap_or_default().to_string()));
             }
@@ -601,7 +598,7 @@ fn is_change_log(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::super::imports_check::tests::mine_giving;
@@ -611,10 +608,8 @@ mod tests {
     /// Um arquivo do mapa, com as declarações `decls` (nome, linha e quem a
     /// usa, como o scan grava: `arquivo:linha:quem`).
     fn module(path: &str, decls: &[(&str, u64, &[&str])]) -> Value {
-        let declarations: Vec<Value> = decls
-            .iter()
-            .map(|(name, line, used)| json!({"kind": "function", "name": name, "line": line, "end_line": line + 2, "used_by": used}))
-            .collect();
+        let declarations: Vec<Value> =
+            decls.iter().map(|(name, line, used)| json!({"kind": "function", "name": name, "line": line, "end_line": line + 2, "used_by": used})).collect();
         json!({"path": path, "language": "rust", "declarations": declarations})
     }
 
@@ -623,9 +618,7 @@ mod tests {
     fn fields_module(path: &str, fields: &[(&str, &str, u64, &[&str])]) -> Value {
         let declarations: Vec<Value> = fields
             .iter()
-            .map(|(owner, name, line, used)| {
-                json!({"kind": "field", "name": name, "line": line, "end_line": line, "used_by": used, "owner": [owner]})
-            })
+            .map(|(owner, name, line, used)| json!({"kind": "field", "name": name, "line": line, "end_line": line, "used_by": used, "owner": [owner]}))
             .collect();
         json!({"path": path, "language": "rust", "declarations": declarations})
     }
@@ -662,6 +655,29 @@ mod tests {
     fn back_at(root: &Path, changed: &str, after: Value) -> Value {
         let report = delivered(root, 1, "A soma mudou.", &[changed]);
         round_with_mine(root, "x", Some(&report), &mine_giving(after))
+    }
+
+    /// Exercise delivery before the final candidate analysis. Syntax-only
+    /// findings cannot reject code or condemn tests in any language.
+    fn final_after_delivery(root: &Path, changed: &str, after: Value) -> String {
+        let base = mustard_core::io::project_map::read(root).unwrap();
+        let mapped = serde_json::from_value(after.clone()).unwrap();
+        let delivery = back_at(root, changed, after);
+        assert_eq!(delivery["ok"], true, "{delivery}");
+        let findings = final_findings(root, &AfterWave { base, after: mapped, changed: vec![(1, vec![changed.into()])] }, Locale::PtBr, &[]);
+        assert!(findings.iter().all(|finding| !finding.refuses), "syntax cannot prove runtime absence");
+        findings.into_iter().map(|finding| finding.text).collect::<Vec<_>>().join("\n")
+    }
+    fn orphan_hint(out: &Value) -> String {
+        assert_eq!(out["ok"], true, "loss of the last syntax relation only warns: {out}");
+        out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == "round-after-wave-warnings")
+            .map(|w| w["hint"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// A resposta não traz texto nenhum da conferência depois da onda.
@@ -826,10 +842,7 @@ mod tests {
 
     #[test]
     fn a_comment_of_a_file_that_used_the_removed_name_still_counts_between_backticks() {
-        let files = [
-            ("src/b.rs", "fn outra() {}\n// the example of the test builds `remove_dir` by hand\n"),
-            ("src/c.rs", "fn caller() {}\n"),
-        ];
+        let files = [("src/b.rs", "fn outra() {}\n// the example of the test builds `remove_dir` by hand\n"), ("src/c.rs", "fn caller() {}\n")];
         let hint = leftovers_after_removing("remove_dir", &["src/b.rs:1:outra"], &files);
         assert!(hint.contains("`src/b.rs` linha 2 ainda cita `remove_dir`, que a onda tirou de `src/a.rs`"), "{hint}");
     }
@@ -887,10 +900,7 @@ mod tests {
                 "src/b.rs",
                 "fn outra() {}\n// the origin of a lesson is `found_in.spec` when the branch is empty\n// and `found_in::spec` reads the same\n// a.found_in.spec chains one more field\n",
             ),
-            (
-                "src/c.rs",
-                "fn caller() {}\n// the example of the test calls map_search::found_in by hand\n// and x.found_in gives the same answer.\n",
-            ),
+            ("src/c.rs", "fn caller() {}\n// the example of the test calls map_search::found_in by hand\n// and x.found_in gives the same answer.\n"),
         ];
         let hint = leftovers_after_removing("found_in", &[], &files);
         assert!(hint.contains("`src/c.rs` linha 2 ainda cita `found_in`, que a onda tirou de `src/a.rs`"), "{hint}");
@@ -1024,10 +1034,7 @@ mod tests {
         let root = dir.path();
         // O código de `src/c.rs` usava `OFF` na base; o comentário de
         // `src/b.rs` é só a palavra inglesa.
-        let files = [
-            ("src/b.rs", "fn outra() {}\n// the plugin is switched OFF when idle\n"),
-            ("src/c.rs", "fn caller() {\n    let mode = OFF;\n}\n"),
-        ];
+        let files = [("src/b.rs", "fn outra() {}\n// the plugin is switched OFF when idle\n"), ("src/c.rs", "fn caller() {\n    let mode = OFF;\n}\n")];
         project(root, &files, &base_with("OFF", &["src/c.rs:2:caller"]));
         let head = git_text(root, &["rev-parse", "HEAD"]);
         let out = back_without_old_total(root);
@@ -1087,8 +1094,8 @@ mod tests {
             module("src/lib_sum.rs", &[("compute_total", 5, &["tests/lib_sum_test.rs:3:checks"])]),
         ]});
         let out = back(root, after);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let hint = orphan_hint(&out);
         assert!(hint.contains("`compute_total` em `src/lib_sum.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
     }
 
@@ -1123,14 +1130,9 @@ mod tests {
                 ("LeftTask", "files", 15, &[]),
             ],
         )]});
-        let out = back(root, after);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        for line in ["`wave` em `src/a.rs` linha 3", "`copy` em `src/a.rs` linha 4", "`files` em `src/a.rs` linha 15"] {
-            assert!(hint.contains(&format!("{line} é código novo sem uso fora de teste")), "{line}: {hint}");
-        }
-        assert!(!hint.contains("quem a chamava"), "no field is an orphan: {hint}");
-        assert!(!hint.contains("linha 5 ") && !hint.contains("linha 12 "), "the fields that kept their readers stay out: {hint}");
+        let hint = final_after_delivery(root, "src/a.rs", after);
+        assert!(hint.contains("`wave`") && hint.contains("`copy`") && hint.contains("`files`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     #[test]
@@ -1169,8 +1171,8 @@ mod tests {
         };
         project(root, &[("src/a.rs", "struct Kept {}\n")], &map(&["src/a.rs:40:read"]));
         let out = back(root, map(&[]));
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let hint = orphan_hint(&out);
         assert!(hint.contains("`wave` em `src/a.rs` linha 3 ficou sem uso fora de teste"), "{hint}");
         assert!(!hint.contains("linha 5"), "the field of the other type keeps its reader: {hint}");
     }
@@ -1228,12 +1230,7 @@ mod tests {
     /// função `compute_total`, do programa, na linha 5, e a ajudante
     /// `sample_rows`, do teste, na linha 12, cada uma com quem a usa.
     fn with_test_block(total_used: &[&str], rows_used: &[&str]) -> Value {
-        let mut file = module("src/a.rs", &[
-            ("run_sum", 1, &[]),
-            ("compute_total", 5, total_used),
-            ("sample_rows", 12, rows_used),
-            ("checks_total", 15, &[]),
-        ]);
+        let mut file = module("src/a.rs", &[("run_sum", 1, &[]), ("compute_total", 5, total_used), ("sample_rows", 12, rows_used), ("checks_total", 15, &[])]);
         file["test_lines"] = json!([[10, 30]]);
         json!({"modules": [file]})
     }
@@ -1254,8 +1251,8 @@ mod tests {
         let base = with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]);
         project(root, &[("src/a.rs", "fn run_sum() {}\n")], &base);
         let out = back(root, with_test_block(&[], &[]));
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let hint = orphan_hint(&out);
         assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
         assert!(!hint.contains("sample_rows"), "the test helper is not listed: {hint}");
     }
@@ -1267,8 +1264,8 @@ mod tests {
         let base = with_test_block(&["src/a.rs:2:run_sum", "src/a.rs:16:checks_total"], &[]);
         project(root, &[("src/a.rs", "fn run_sum() {}\n")], &base);
         let out = back(root, with_test_block(&["src/a.rs:16:checks_total"], &[]));
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let hint = orphan_hint(&out);
         assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
     }
 
@@ -1317,8 +1314,8 @@ mod tests {
         let files = [("src/a.rs", text.as_str()), ("tests/total_test.rs", "fn checks() { compute_total(); }\n")];
         project(root, &files, &with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]));
         let out = back(root, with_test_block(&[], &[]));
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let hint = orphan_hint(&out);
         assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
     }
 
@@ -1346,9 +1343,7 @@ mod tests {
         for (language, file, _, kind, name) in MEMBERS {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            let text = format!(
-                "struct Walked {{}}\n\nfn walk() {{\n    let walked = Walked::of(root);\n    let n = walked.{name}.len();\n}}\n"
-            );
+            let text = format!("struct Walked {{}}\n\nfn walk() {{\n    let walked = Walked::of(root);\n    let n = walked.{name}.len();\n}}\n");
             let read = [format!("{file}:5:walk")];
             project_at(root, file, &[(file, text.as_str())], &member_map(language, kind, file, name, &read));
             silent(&back_at(root, file, member_map(language, kind, file, name, &[])));
@@ -1381,8 +1376,8 @@ mod tests {
             let read = [format!("{file}:5:walk")];
             project_at(root, file, &[(file, text.as_str())], &member_map(language, kind, file, name, &read));
             let out = back_at(root, file, member_map(language, kind, file, name, &[]));
-            assert_eq!(out["reason"], json!("round-after-wave"), "{language}: {out}");
-            let hint = out["hint"].as_str().unwrap_or_default();
+            assert_eq!(out["ok"], json!(true), "{language}: {out}");
+            let hint = orphan_hint(&out);
             assert!(hint.contains(&format!("`{name}` em `{file}` linha 1 ficou sem uso fora de teste")), "{language}: {hint}");
         }
     }
@@ -1395,8 +1390,7 @@ mod tests {
         for (language, file, _, kind, name) in MEMBERS {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            let text =
-                format!("struct Walked {{}}\n\n// lê o walked.{name} depois\nfn walk() {{\n    for i in 0..{name} {{}}\n}}\n");
+            let text = format!("struct Walked {{}}\n\n// lê o walked.{name} depois\nfn walk() {{\n    for i in 0..{name} {{}}\n}}\n");
             let tested = format!("fn checks() {{ walked.{name}; }}\n");
             let files = [(file, text.as_str()), ("tests/walked_test.rs", tested.as_str())];
             let read = [format!("{file}:5:walk")];
@@ -1431,12 +1425,7 @@ mod tests {
     /// só tem `run_sum`) e o trecho de teste nas linhas 10 a 30; `used` são
     /// os usos de `compute_total` no mapa.
     fn with_new_total(used: &[&str]) -> Value {
-        let mut file = module("src/a.rs", &[
-            ("run_sum", 1, &[]),
-            ("compute_total", 5, used),
-            ("checks_total", 15, &[]),
-            ("checks_both", 19, &[]),
-        ]);
+        let mut file = module("src/a.rs", &[("run_sum", 1, &[]), ("compute_total", 5, used), ("checks_total", 15, &[]), ("checks_both", 19, &[])]);
         file["test_lines"] = json!([[10, 30]]);
         json!({"modules": [file]})
     }
@@ -1451,15 +1440,9 @@ mod tests {
         let root = dir.path();
         let text = new_total_text();
         project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
-        let head = git_text(root, &["rev-parse", "HEAD"]);
-        let out = back(root, with_new_total(&[]));
-        assert_eq!(out["ok"], json!(false), "{out}");
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
-        assert!(!hint.contains("quem a chamava"), "it is new code, not an orphan: {hint}");
-        assert!(!hint.contains("`run_sum` em"), "the function that was already there stays out: {hint}");
-        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
+        let hint = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
+        assert!(hint.contains("`compute_total`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     #[test]
@@ -1468,10 +1451,9 @@ mod tests {
         let root = dir.path();
         let text = new_total_text();
         project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
-        let out = back(root, with_new_total(&[]));
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`src/a.rs` linha 15 é um teste que só chama `compute_total`"), "{hint}");
-        assert!(!hint.contains("linha 19"), "the test that also calls `run_sum` is not only for it: {hint}");
+        let hint = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
+        assert!(hint.contains("`compute_total`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     #[test]
@@ -1482,11 +1464,9 @@ mod tests {
         let tested = module("tests/total_test.rs", &[("checks", 1, &[])]);
         let after = |used: &[&str]| json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("compute_total", 5, used)]), tested]});
         project(root, &files, &base_with_run_sum_only());
-        let out = back(root, after(&["tests/total_test.rs:1:checks"]));
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
-        assert!(hint.contains("`tests/total_test.rs` linha 1 é um teste que só chama `compute_total`"), "{hint}");
+        let hint = final_after_delivery(root, "src/a.rs", after(&["tests/total_test.rs:1:checks"]));
+        assert!(hint.contains("`compute_total`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     #[test]
@@ -1509,10 +1489,9 @@ mod tests {
             module("src/a.rs", &[("run_sum", 1, &[])]),
             module("src/lib_sum.rs", &[("compute_total", 5, &["tests/lib_sum_test.rs:3:checks"])]),
         ]});
-        let out = back_at(root, "src/lib_sum.rs", after);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`compute_total` em `src/lib_sum.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
+        let hint = final_after_delivery(root, "src/lib_sum.rs", after);
+        assert!(hint.contains("`compute_total`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     #[test]
@@ -1524,13 +1503,9 @@ mod tests {
         let go = "use crate::a as calc;\n\nfn go() -> Vec<u32> {\n    [1, 2].into_iter().map(calc::compute_total).collect()\n}\n";
         let text = new_total_text();
         project(root, &[("src/a.rs", text.as_str()), ("src/b.rs", go)], &base_with_run_sum_only());
-        let out = back(root, with_new_total(&[]));
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
-        let hint = warned.iter().find(|w| w["reason"] == json!("round-after-wave-warnings")).map(|w| w["hint"].to_string());
-        let hint = hint.unwrap_or_else(|| panic!("the warning: {out}"));
-        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "the name may be a use, so no test is called useless: {hint}");
+        let hint = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
+        assert!(hint.contains("`compute_total`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     /// O arquivo de `src/a.rs` com a função de apoio solta marcada com
@@ -1571,10 +1546,9 @@ mod tests {
         // novo sem uso, e o texto do arquivo não a livra.
         let after = json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 3, &[])])]});
         project(root, &[("src/a.rs", LOOSE_TEST_ITEMS)], &base_with_run_sum_only());
-        let out = back(root, after);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`seed_value` em `src/a.rs` linha 3 é código novo sem uso fora de teste"), "{hint}");
+        let hint = final_after_delivery(root, "src/a.rs", after);
+        assert!(hint.contains("`seed_value`"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
     }
 
     #[test]
@@ -1608,9 +1582,7 @@ mod tests {
         for (language, file, _, kind, name) in MEMBERS {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            let text = format!(
-                "struct Walked {{}}\n\nfn walk() {{\n    let walked = Walked::of(root);\n    let n = walked.{name}.len();\n}}\n"
-            );
+            let text = format!("struct Walked {{}}\n\nfn walk() {{\n    let walked = Walked::of(root);\n    let n = walked.{name}.len();\n}}\n");
             let walked = json!({"kind": "struct", "name": "Walked", "line": 1, "end_line": 1});
             let before = json!({"modules": [{"path": file, "language": language, "declarations": [walked.clone()]}]});
             project_at(root, file, &[(file, text.as_str())], &before);
@@ -1631,10 +1603,9 @@ mod tests {
             project_at(root, file, &[(file, text.as_str())], &before);
             let member = json!({"kind": kind, "name": name, "line": 2, "end_line": 2, "owner": ["Walked"]});
             let after = json!({"modules": [{"path": file, "language": language, "declarations": [walked, member]}]});
-            let out = back_at(root, file, after);
-            assert_eq!(out["reason"], json!("round-after-wave"), "{language}: {out}");
-            let hint = out["hint"].as_str().unwrap_or_default();
-            assert!(hint.contains(&format!("`{name}` em `{file}` linha 2 é código novo sem uso fora de teste")), "{language}: {hint}");
+            let hint = final_after_delivery(root, file, after);
+            assert!(hint.contains(&format!("`{name}`")), "{language}: {hint}");
+            assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
         }
     }
 }

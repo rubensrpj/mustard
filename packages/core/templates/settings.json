@@ -23,7 +23,6 @@
       "Task",
       "WebFetch",
       "WebSearch",
-      "ArtifactData",
       "Bash",
       "Bash(mustard-rt run read:*)",
       "Bash(mustard-rt run close:*)",

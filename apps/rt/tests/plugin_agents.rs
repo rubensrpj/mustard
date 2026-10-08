@@ -951,28 +951,20 @@ fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
 /// achei têm o sentido dito. A linha do comando da busca traz o texto entre
 /// aspas, como o `Grep` o recebe, e nenhuma das opções de palavras e de frase.
 #[test]
-fn the_wave_and_review_agents_search_as_always_and_say_mustard_answers_in_place() {
-    for (lang, sentence, marks, command) in [
-        (
-            "pt-BR",
-            "Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca.",
-            "Cravado: o mapa achou pelo nome. Parcial: achou parte. Não achei: a busca comum roda.",
-            "`mustard-rt run map search \"<padrão>\"`: ",
-        ),
-        (
-            "en-US",
-            "Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search.",
-            "Pinned: the map found it by name. Partial: it found part. Found nothing: the plain search runs.",
-            "`mustard-rt run map search \"<pattern>\"`: ",
-        ),
+fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_recovery() {
+    for (lang, literal, command, uncertain) in [
+        ("pt-BR", "`Grep`/`rg` executam com as opções originais, sem Jev por busca literal.",
+         r#"`mustard-rt run map search "<padrão>"`"#, "não comprova cobertura nem ausência de uso"),
+        ("en-US", "`Grep`/`rg` run with the original options, without Jev for literal searches.",
+         r#"`mustard-rt run map search "<pattern>"`"#, "does not prove coverage or absence of use"),
     ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
-            assert!(agent.contains(sentence), "the {lang} `{name}` agent does not say the usual search goes through Mustard: {agent}");
-            assert!(agent.contains(marks), "the {lang} `{name}` agent does not say what each mark means: {agent}");
-            assert!(agent.contains(command), "the {lang} `{name}` agent does not cite the search with the text of Grep: {agent}");
-            for gone in ["--query", "--intent"] {
-                assert!(!agent.contains(gone), "the {lang} `{name}` agent still cites `{gone}`: {agent}");
+            assert!(agent.contains(literal), "{lang} {name}: original tool behavior must stay explicit");
+            assert!(agent.contains(command), "{lang} {name}: map recovery is available");
+            assert!(agent.contains(uncertain), "{lang} {name}: graph uncertainty must stay explicit");
+            for obsolete in ["answers in place of the search", "responde no lugar da busca", "--query", "--intent"] {
+                assert!(!agent.contains(obsolete), "{lang} {name}: obsolete search instruction {obsolete}");
             }
         }
     }
@@ -991,70 +983,31 @@ fn the_wave_and_review_agents_search_as_always_and_say_mustard_answers_in_place(
 /// `testCommand`.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
-    let pt_br = [
-        "Ache e leia o código pelo mapa, cada comando na sua hora",
-        "Leia com faixa de linhas o que o `summary` mostrou",
-        "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
-        "Nunca mande compilação ou teste para segundo plano",
-        "Não comite e não use `git add`: o commit é da rodada",
-        "Rode cada comando de dentro da cópia",
-        "o corte que mexe no mesmo trecho de outro vai sozinho",
-    ];
-    let en_us = [
-        "Find and read the code through the map, each command at its moment",
-        "Read with a line range what `summary` showed",
-        "Do not reread the file after editing: the edit already shows the changed excerpt",
-        "Never send a build or test to the background",
-        "Do not commit and do not use `git add`: the commit belongs to the round",
-        "Run every command from inside the copy",
-        "a cut that touches the same spot as another goes alone",
-    ];
-    for (lang, phrases, gone) in [
-        ("pt-BR", pt_br, ["pasta de compilação", "passa de uma cópia para a seguinte"]),
-        ("en-US", en_us, ["build folder", "passes from one copy to the next"]),
+    for (lang, phrases, gone, wave_phase, final_phase) in [
+        ("pt-BR", ["Use os comandos do mapa quando a localização ou evidência atual faltar",
+          "Leia a faixa pertinente e expanda se faltar contexto", "Releia quando o conteúdo mudou ou a prova exigir",
+          "Nunca mande compilação ou teste para segundo plano", "Não comite e não use `git add`: o commit é da rodada",
+          "Rode cada comando de dentro da cópia", "o corte que mexe no mesmo trecho de outro vai sozinho"],
+          ["pasta de compilação", "passa de uma cópia para a seguinte"],
+          "A rodada executa o build e as provas pertinentes antes do commit", "A suíte inteira e o lint ficam na validação final da spec"),
+        ("en-US", ["Use map commands when location or current evidence is missing",
+          "Read the relevant range and expand when context is missing", "Reread when content changed or a proof requires it",
+          "Never send a build or test to the background", "Do not commit and do not use `git add`: the commit belongs to the round",
+          "Run every command from inside the copy", "a cut that touches the same spot as another goes alone"],
+          ["build folder", "passes from one copy to the next"],
+          "The round runs the build and pertinent criterion proofs before the commit", "The full suite and lint run during final spec validation"),
     ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
-            for phrase in phrases {
-                assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{phrase}`");
-            }
-            for phrase in gone {
-                assert!(!agent.contains(phrase), "the {lang} `{name}` agent still speaks of a build folder: `{phrase}`");
-            }
+            for phrase in phrases { assert!(agent.contains(phrase), "{lang} {name}: {phrase}"); }
+            for phrase in gone { assert!(!agent.contains(phrase), "{lang} {name}: obsolete {phrase}"); }
         }
-    }
-    for (lang, wave_only, round_owns, reviewer_runs, once_at_the_end, close_ran) in [
-        (
-            "pt-BR",
-            "Durante o trabalho, rode só os testes do que mudou",
-            "A suíte inteira e o lint são da rodada, que os roda antes do commit",
-            "Rode os testes que você lê e os que seus cortes derrubam",
-            "A suíte inteira roda uma vez no fim, em primeiro plano",
-            "o fechamento já a rodou",
-        ),
-        (
-            "en-US",
-            "During the work, run only the tests of what changed",
-            "The whole suite and the lint belong to the round, which runs them before the commit",
-            "Run the tests you read and the ones your cuts bring down",
-            "The whole suite runs once at the end, in the foreground",
-            "the close already ran it",
-        ),
-    ] {
         let wave = template(lang, "wave");
-        for phrase in [wave_only, round_owns] {
-            assert!(wave.contains(phrase), "the {lang} wave agent lost `{phrase}`");
-        }
-        assert!(!wave.contains(once_at_the_end), "the {lang} wave agent still runs the whole suite at the end");
+        assert!(wave.contains(wave_phase) && wave.contains(final_phase), "{lang}: validation phases");
         let review = template(lang, "review");
-        assert!(!review.contains(wave_only), "the {lang} reviewer still runs only the tests of what changed");
-        let suite = review
-            .lines()
-            .find(|line| line.contains("`testCommand`"))
-            .unwrap_or_else(|| panic!("the {lang} reviewer reruns the suite the close already ran"));
-        for phrase in [reviewer_runs, once_at_the_end, "`rtk`", close_ran] {
-            assert!(suite.contains(phrase), "the {lang} reviewer's suite line lost `{phrase}`: {suite}");
-        }
+        assert!(review.contains("`testCommand`") && review.contains("lint") && review.contains("`rtk`"));
+        assert!(review.contains(if lang=="pt-BR" { "conteúdo, comando ou execução ficarem incertos" } else { "content, command or execution is uncertain" }));
+        assert!(!review.contains("the close already ran it") && !review.contains("o fechamento já a rodou"));
     }
 }
 

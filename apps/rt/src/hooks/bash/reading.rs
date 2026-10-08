@@ -53,37 +53,78 @@ use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 use super::lex::{Segment, Word};
 use crate::hooks::write::write_gate::{say, search_reply};
 use crate::shared::code_route;
-use crate::shared::config_key::{self, NameFilter, Walk, CONFIG_FILE};
+use crate::shared::config_key::{self, CONFIG_FILE, NameFilter, Walk};
 use crate::shared::word_search::{self, Dialect, Reply};
 
 /// Os programas que mostram o texto de um arquivo.
 pub(crate) const READERS: &[&str] = &[
-    "cat", "tac", "nl", "head", "tail", "less", "more", "bat", "grep", "egrep", "fgrep", "rg", "jq", "sed", "awk",
-    "cut", "sort", "strings", "xxd", "od", "base64",
+    "cat", "tac", "nl", "head", "tail", "less", "more", "bat", "grep", "egrep", "fgrep", "rg", "jq", "sed", "awk", "cut", "sort", "strings", "xxd", "od",
+    "base64",
 ];
 
 /// As opções do `grep` que levam um valor: as curtas, e as longas quando o
 /// valor vem na palavra seguinte.
 const GREP_SHORT_VALUE: &[char] = &['e', 'f', 'm', 'A', 'B', 'C', 'd', 'D'];
 const GREP_LONG_VALUE: &[&str] = &[
-    "regexp", "file", "max-count", "after-context", "before-context", "context", "include", "exclude",
-    "exclude-from", "exclude-dir", "label", "binary-files", "devices", "directories", "group-separator",
+    "regexp",
+    "file",
+    "max-count",
+    "after-context",
+    "before-context",
+    "context",
+    "include",
+    "exclude",
+    "exclude-from",
+    "exclude-dir",
+    "label",
+    "binary-files",
+    "devices",
+    "directories",
+    "group-separator",
 ];
 
 /// As opções do `rg` que levam um valor, do mesmo jeito.
 const RG_SHORT_VALUE: &[char] = &['e', 'f', 'g', 't', 'T', 'm', 'A', 'B', 'C', 'M', 'j', 'r', 'E'];
 const RG_LONG_VALUE: &[&str] = &[
-    "regexp", "file", "glob", "iglob", "type", "type-not", "type-add", "type-clear", "max-count", "after-context",
-    "before-context", "context", "max-columns", "threads", "replace", "encoding", "max-depth", "max-filesize",
-    "sort", "sortr", "color", "colors", "context-separator", "field-context-separator", "field-match-separator",
-    "path-separator", "pre", "pre-glob", "engine", "dfa-size-limit", "regex-size-limit", "ignore-file",
-    "hostname-bin", "hyperlink-format",
+    "regexp",
+    "file",
+    "glob",
+    "iglob",
+    "type",
+    "type-not",
+    "type-add",
+    "type-clear",
+    "max-count",
+    "after-context",
+    "before-context",
+    "context",
+    "max-columns",
+    "threads",
+    "replace",
+    "encoding",
+    "max-depth",
+    "max-filesize",
+    "sort",
+    "sortr",
+    "color",
+    "colors",
+    "context-separator",
+    "field-context-separator",
+    "field-match-separator",
+    "path-separator",
+    "pre",
+    "pre-glob",
+    "engine",
+    "dfa-size-limit",
+    "regex-size-limit",
+    "ignore-file",
+    "hostname-bin",
+    "hyperlink-format",
 ];
 
 /// As opções do `git grep` que levam um valor, do mesmo jeito.
 const GIT_GREP_SHORT_VALUE: &[char] = &['e', 'f', 'm', 'A', 'B', 'C'];
-const GIT_GREP_LONG_VALUE: &[&str] =
-    &["max-depth", "threads", "max-count", "after-context", "before-context", "context"];
+const GIT_GREP_LONG_VALUE: &[&str] = &["max-depth", "threads", "max-count", "after-context", "before-context", "context"];
 
 /// A conferência inteira: a primeira recusa da linha, na ordem dos comandos.
 pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
@@ -118,11 +159,8 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
         };
         let base = cwd.to_string_lossy();
         let searched = if search.paths.is_empty() { vec![".".to_string()] } else { search.paths.clone() };
-        let folders: Vec<code_route::ProjectPath> = searched
-            .iter()
-            .filter_map(|path| code_route::project_path(&root, &base, path))
-            .filter(|path| path.abs.is_dir())
-            .collect();
+        let folders: Vec<code_route::ProjectPath> =
+            searched.iter().filter_map(|path| code_route::project_path(&root, &base, path)).filter(|path| path.abs.is_dir()).collect();
         // A busca só se responde quando todo caminho dela é pasta do projeto.
         if !search.unsupported && !search.patterns.is_empty() && folders.len() == searched.len() {
             let wanted = word_search::Search {
@@ -277,11 +315,8 @@ fn find_note(find: &FindRead, cwd: &Path, root: &str, input: &HookInput, ctx: &C
     }
     let base = cwd.to_string_lossy();
     let searched = if find.paths.is_empty() { vec![".".to_string()] } else { find.paths.clone() };
-    let folders: Vec<code_route::ProjectPath> = searched
-        .iter()
-        .filter_map(|path| code_route::project_path(root, &base, path))
-        .filter(|path| path.abs.is_dir())
-        .collect();
+    let folders: Vec<code_route::ProjectPath> =
+        searched.iter().filter_map(|path| code_route::project_path(root, &base, path)).filter(|path| path.abs.is_dir()).collect();
     if folders.len() != searched.len() {
         return None;
     }
@@ -450,11 +485,9 @@ pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
             ("basic-regexp", _) if !rg => dialect = Dialect::Basic,
             ("extended-regexp", _) if !rg => dialect = Dialect::Extended,
             ("perl-regexp", _) if !rg => dialect = Dialect::Rust,
-            (
-                "invert-match" | "line-regexp" | "null-data" | "multiline" | "type-not" | "T" | "pre" | "exclude-dir"
-                | "exclude-from" | "include-from",
-                _,
-            ) => unsupported = true,
+            ("invert-match" | "line-regexp" | "null-data" | "multiline" | "type-not" | "T" | "pre" | "exclude-dir" | "exclude-from" | "include-from", _) => {
+                unsupported = true;
+            }
             _ => {}
         }
     }
@@ -498,16 +531,9 @@ fn git_exclusion(path: &str) -> Option<&str> {
 /// pasta cada nome vale. Cada `(caminho, sem_aspas)` traz se a palavra foi
 /// escrita sem aspas. Chamado depois de tirar os filtros de caminho do git.
 fn search_paths(positionals: Vec<(String, bool)>, git: bool, filters: &mut Vec<NameFilter>) -> Vec<String> {
-    let split: Option<Vec<(String, String)>> = positionals
-        .iter()
-        .map(|(path, plain)| if *plain || git { wildcard_path(path) } else { None })
-        .collect();
+    let split: Option<Vec<(String, String)>> = positionals.iter().map(|(path, plain)| if *plain || git { wildcard_path(path) } else { None }).collect();
     match split {
-        Some(split)
-            if !split.is_empty()
-                && split.iter().all(|(_, name)| *name == split[0].1)
-                && filters.iter().all(|filter| filter.exclude) =>
-        {
+        Some(split) if !split.is_empty() && split.iter().all(|(_, name)| *name == split[0].1) && filters.iter().all(|filter| filter.exclude) => {
             if split[0].1 != "*" {
                 filters.insert(0, NameFilter { exclude: false, glob: split[0].1.clone() });
             }
@@ -548,16 +574,17 @@ fn wildcard_path(path: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::lex::segments;
-    use crate::hooks::write::write_gate::conversation_fixture::{converse, word_searches};
+    use super::*;
     use crate::shared::code_route::fixture;
     use mustard_core::domain::model::contract::Trigger;
 
     /// Os padrões, os caminhos e os filtros de nome de arquivo que a busca de
     /// uma linha lê, na ordem; o de saída leva o `!` do começo.
     fn read(cmd: &str) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
-        let shown = |filter: &NameFilter| if filter.exclude { format!("!{}", filter.glob) } else { filter.glob.clone() };
+        let shown = |filter: &NameFilter| {
+            if filter.exclude { format!("!{}", filter.glob) } else { filter.glob.clone() }
+        };
         segments(cmd).iter().find_map(text_search).map(|s| (s.patterns, s.paths, s.filters.iter().map(shown).collect()))
     }
 
@@ -582,11 +609,7 @@ mod tests {
         assert_eq!(read("rg --glob='!*.md' -g '*.rs' --iglob '!*.txt' Alpha"), one("Alpha", &[], &["!*.md", "*.rs", "!*.txt"]));
         assert_eq!(read("grep -r --exclude=*.rs --include=*.md Alpha"), one("Alpha", &[], &["!*.rs", "*.md"]));
         assert_eq!(read("rg -- -Alpha src"), one("-Alpha", &["src"], &[]));
-        assert_eq!(
-            read("rg -e Alpha -e Beta src"),
-            Some((owned(&["Alpha", "Beta"]), owned(&["src"]), vec![])),
-            "each -e is a pattern of the same search"
-        );
+        assert_eq!(read("rg -e Alpha -e Beta src"), Some((owned(&["Alpha", "Beta"]), owned(&["src"]), vec![])), "each -e is a pattern of the same search");
         assert_eq!(read("grep -rf patterns.txt src"), Some((vec![], owned(&["src"]), vec![])), "patterns from a file are unknown");
         assert_eq!(read("cat x | grep Alpha"), None);
     }
@@ -654,7 +677,15 @@ mod tests {
         assert!(of("git grep -nw a").whole_word && !of("git grep -n a").whole_word);
         assert!(of("git grep -n a").shows_lines && of("git grep -e a").shows_lines);
         assert!(!of("git grep -l a").shows_lines && !of("git grep -c a").shows_lines && !of("git grep --name-only a").shows_lines);
-        for command in ["git grep -nv a", "git grep -e a --and -e b", "git grep --not -e a", "git grep --cached a", "git grep --untracked a", "git grep --no-index a", "git grep --max-depth 1 a"] {
+        for command in [
+            "git grep -nv a",
+            "git grep -e a --and -e b",
+            "git grep --not -e a",
+            "git grep --cached a",
+            "git grep --untracked a",
+            "git grep --no-index a",
+            "git grep --max-depth 1 a",
+        ] {
             assert!(of(command).unsupported, "{command}");
         }
         for command in ["git grep -n a", "git grep -inw -E a", "git grep -e a -e b -- src", "git grep -h a"] {
@@ -755,176 +786,6 @@ mod tests {
         }
     }
 
-    /// A nota que vai junto do comando, que roda como veio; qualquer outra
-    /// resposta derruba o teste.
-    fn noted(verdict: Verdict, command: &str) -> String {
-        match verdict {
-            Verdict::Inject { context } => context,
-            other => panic!("`{command}` runs with a note, got {other:?}"),
-        }
-    }
-
-    /// O texto do mapa, na recusa que toma o lugar da busca ou na nota que vai
-    /// junto dela, para o teste em que a marca não é o assunto.
-    fn said(verdict: Verdict, command: &str) -> String {
-        match verdict {
-            Verdict::Deny { reason: text } | Verdict::Inject { context: text } => text,
-            other => panic!("`{command}` is answered, got {other:?}"),
-        }
-    }
-
-    /// A busca recursiva de um nome do mapa numa pasta de código, pelo `grep`
-    /// ou pelo `rg`, é respondida no lugar dela, agrupada por função com a
-    /// linha de começo e a de fim, também depois de um `cd`, atrás de um
-    /// envoltório, com a opção de caixa e com um filtro do `rg` que só deixa
-    /// documentos de fora.
-    #[test]
-    fn a_recursive_search_for_a_mapped_name_is_answered_by_function() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            "grep -rn calcular_frete src/",
-            "rtk rg calcular_frete",
-            "cd src && grep -R calcular_frete .",
-            "rg -g '*.rs' calcular_frete",
-            "rg -g '!*.md' calcular_frete",
-            "rg --glob='!*.md' calcular_frete src",
-            "rg -g '*.rs' -g '!*.md' calcular_frete",
-            "grep -rniE 'CALCULAR_FRETE' .",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = refused(run_in(&root, command, Some(&format!("s{n}"))), command);
-            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
-            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
-            assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{command}: {reason}");
-            assert!(reason.contains("\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n"), "the first function carries its code: {command}: {reason}");
-            assert!(!reason.contains("| pub fn fechar_pedido"), "the second comes with its line only: {command}: {reason}");
-        }
-    }
-
-    /// A busca que só lista nomes de arquivo ou conta (`-l`, `-c`, `-q`,
-    /// `--files-with-matches`, `--count`) roda como veio, com uma linha só da
-    /// marca, cravada ou parcial. Ela não vale como respondida: a busca que
-    /// mostra as linhas, logo depois, recebe a resposta por função.
-    #[test]
-    fn a_search_that_only_lists_names_or_counts_runs_plain_with_one_line_of_the_mark() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for command in [
-            "grep -rl calcular_frete src/",
-            "grep -rc calcular_frete .",
-            "rg -l calcular_frete",
-            "rg --count calcular_frete src",
-            "grep -r --files-with-matches calcular_frete .",
-        ] {
-            match run_in(&root, command, Some("nomes")) {
-                Verdict::Inject { context } => {
-                    assert_eq!(context.lines().count(), 1, "{command}: {context}");
-                    assert!(context.starts_with("Cravado."), "{command}: {context}");
-                    assert!(!context.contains("src/frete.rs"), "{command}: no answer goes with it: {context}");
-                }
-                other => panic!("{command}: the plain search runs with a line, got {other:?}"),
-            }
-        }
-        match run_in(&root, "grep -rlE 'calcular_frete|desconto_frete|imposto' .", Some("nomes")) {
-            Verdict::Inject { context } => {
-                assert!(context.starts_with("Cravado.") && !context.contains("imposto"), "{context}");
-            }
-            other => panic!("the pinned search runs with a line, got {other:?}"),
-        }
-        let reason = refused(run_in(&root, "grep -rn calcular_frete src/", Some("nomes")), "the search that shows lines");
-        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{reason}");
-    }
-
-    /// O mesmo nome buscado por quem escreve o padrão em inglês recebe a
-    /// resposta na língua do texto do projeto.
-    #[test]
-    fn the_answer_speaks_the_text_language_of_the_project() {
-        let (_dir, root) = word_search::fixture::repo(r#"{"language":{"text":"en-US"}}"#);
-        let reason = refused(run_in(&root, "grep -rn calcular_frete src", Some("en")), "an english project");
-        assert!(reason.starts_with("Pinned."), "{reason}");
-        assert!(reason.contains("Each function comes with its first and last line"), "{reason}");
-    }
-
-    /// Com o texto do projeto em português e os nomes do código em inglês, a
-    /// palavra `frete` acha `getFrete` e `users` acha `UserRepository`: as
-    /// palavras da busca passam pela mesma normalização das duas línguas.
-    #[test]
-    fn a_word_in_the_text_language_finds_the_names_in_the_code_language() {
-        let config = r#"{"language":{"text":"pt-BR","code":"en-US"}}"#;
-        let files = [
-            ("src/frete.ts", "export function getFrete(peso: number): number {\n  return peso * 2;\n}\n"),
-            ("src/user.ts", "export class UserRepository {\n  find(id: string) { return id; }\n}\n"),
-        ];
-        let map = serde_json::json!({ "modules": [
-            { "path": "src/frete.ts", "language": "typescript", "declarations": [
-                { "kind": "function", "name": "getFrete", "line": 1, "end_line": 3 }] },
-            { "path": "src/user.ts", "language": "typescript", "declarations": [
-                { "kind": "class", "name": "UserRepository", "line": 1, "end_line": 3 }] }
-        ] });
-        let (_dir, root) = word_search::fixture::repo_with(config, &files, map);
-        let freight = refused(run_in(&root, "grep -rni frete src", Some("frete")), "frete finds getFrete");
-        assert!(freight.contains("src/frete.ts\n  1-3 getFrete (1)"), "{freight}");
-        let users = refused(run_in(&root, "grep -rn users src", Some("users")), "users finds UserRepository");
-        assert!(users.contains("`src/user.ts`"), "{users}");
-    }
-
-    /// A busca com palavra que o primeiro arquivo do mapa não traz em campo
-    /// forte continua cravada e não pede nova busca, no `grep` básico (`\|`),
-    /// no estendido e no `rg`.
-    #[test]
-    fn a_search_with_a_word_the_map_lacks_is_answered_as_pinned() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            r"grep -r 'calcular_frete\|desconto_frete\|imposto' .",
-            "grep -rE 'calcular_frete|desconto_frete|imposto' .",
-            "rg 'calcular_frete|desconto_frete|imposto'",
-            "rg -e calcular_frete -e desconto_frete -e imposto",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = refused(run_in(&root, command, Some(&format!("p{n}"))), command);
-            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
-            assert!(!reason.contains("Falta"), "{command}: {reason}");
-            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "{command}: {reason}");
-            assert!(reason.contains("docs/notas.md\n  1: O calcular_frete soma o imposto."), "{command}: {reason}");
-        }
-    }
-
-    /// Sem achado no mapa a busca comum roda, com uma linha do que o mapa não
-    /// achou; repetida, roda sem a linha.
-    #[test]
-    fn a_search_the_map_finds_nothing_for_runs_plain_with_one_line() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        let command = "grep -rn zzznada src";
-        match run_in(&root, command, Some("nada")) {
-            Verdict::Inject { context } => {
-                assert_eq!(context.lines().count(), 1, "{context}");
-                assert!(context.starts_with("Não achei"), "{context}");
-                assert!(context.contains(r#"grep -rniE "zzznada" ."#), "{context}");
-            }
-            other => panic!("the plain search runs with a line, got {other:?}"),
-        }
-        assert_eq!(run_in(&root, command, Some("nada")), Verdict::Allow);
-    }
-
-    /// A mesma busca repetida na sessão passa, com outro programa, outra
-    /// forma de mostrar ou outro filtro; outra pasta, outro padrão ou outra
-    /// sessão é outra busca e recebe a resposta.
-    #[test]
-    fn the_same_search_repeated_in_the_session_passes() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        refused(run_in(&root, "grep -rn calcular_frete src", Some("rep")), "the first search");
-        for command in ["grep -rn calcular_frete src", "rg -n calcular_frete src", "grep -rl calcular_frete src", "rg -i calcular_frete src"] {
-            assert_eq!(run_in(&root, command, Some("rep")), Verdict::Allow, "{command}");
-        }
-        for command in ["grep -rn calcular_frete .", "grep -rn fechar_pedido src"] {
-            refused(run_in(&root, command, Some("rep")), command);
-        }
-        refused(run_in(&root, "grep -rn calcular_frete src", Some("outra")), "another session");
-    }
-
     /// A busca cujos filtros de saída deixam de fora todo o código do mapa nas
     /// pastas buscadas passa: o `rg` com `-g '!*.rs'` num projeto só de Rust,
     /// com chaves, com `**/`, com outro filtro de saída depois e com um de
@@ -947,62 +808,6 @@ mod tests {
         {
             assert_eq!(run_in(&root, command, Some(&format!("x{n}"))), Verdict::Allow, "{command}");
         }
-    }
-
-    /// O projeto do frete com o mesmo nome também numa pasta antiga: o filtro
-    /// de saída que traz a pasta decide quais arquivos entram na resposta.
-    fn repo_with_a_legacy_folder() -> (tempfile::TempDir, PathBuf) {
-        let function = |line: u64, end: u64| serde_json::json!([{ "kind": "function", "name": "calcular_frete", "line": line, "end_line": end }]);
-        let map = serde_json::json!({ "modules": [
-            { "path": "src/frete.rs", "language": "rust", "loc": 10, "declarations": function(2, 6) },
-            { "path": "legacy/frete.rs", "language": "rust", "loc": 10, "declarations": function(2, 6) }
-        ] });
-        word_search::fixture::repo_with(
-            "{}",
-            &[("src/frete.rs", word_search::fixture::FREIGHT), ("legacy/frete.rs", word_search::fixture::FREIGHT)],
-            map,
-        )
-    }
-
-    /// O filtro de saída com pasta (`':!legacy'`, `-g '!legacy/**'`) tira da
-    /// resposta os arquivos de dentro dela, e a busca é respondida como a
-    /// sem filtro, com os de fora: antes ela passava sem resposta. O filtro
-    /// que tira todo o código do mapa, ou só um arquivo, segue o mesmo caminho.
-    #[test]
-    fn an_output_filter_with_a_folder_answers_with_the_files_outside_it() {
-        let (_dir, root) = repo_with_a_legacy_folder();
-        let both = said(run_in(&root, "git grep -n calcular_frete", Some("sem-filtro")), "no filter");
-        assert!(both.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{both}");
-        assert!(both.contains("legacy/frete.rs\n  2-6 calcular_frete (2)"), "{both}");
-        for (n, command) in [
-            "git grep -n calcular_frete -- ':!legacy'",
-            "git grep -n calcular_frete -- . ':!legacy/'",
-            "git grep -n calcular_frete -- . ':!legacy/**'",
-            "git grep -n calcular_frete -- ':(exclude)legacy'",
-            "rg -g '!legacy/**' calcular_frete",
-            "rg -g '!legacy' calcular_frete",
-            "rg --glob='!**/legacy/**' calcular_frete .",
-            "rg -g '!legacy/frete.rs' calcular_frete",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = said(run_in(&root, command, Some(&format!("pasta{n}"))), command);
-            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
-            assert!(!reason.contains("legacy/frete.rs"), "{command}: the folder is left out: {reason}");
-        }
-        for (n, command) in [
-            "git grep -n calcular_frete -- . ':!src' ':!legacy'",
-            "rg -g '!src/**' -g '!legacy/**' calcular_frete",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert_eq!(run_in(&root, command, Some(&format!("tudo{n}"))), Verdict::Allow, "{command}: no mapped code is left");
-        }
-        let (_dir, plain) = word_search::fixture::repo("{}");
-        let reason = said(run_in(&plain, "git grep -n calcular_frete -- . ':!src/pedido.rs'", Some("arquivo")), "one file left out");
-        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)") && !reason.contains("src/pedido.rs"), "{reason}");
     }
 
     /// O `find` como a leitura o vê: as pastas, o teste de nome (`-name`,
@@ -1032,173 +837,6 @@ mod tests {
         assert!(segments("ls src").iter().find_map(find_read).is_none(), "another program is not a find");
     }
 
-    /// O `find` que busca por nome, com o nome que o mapa conhece e uma pasta
-    /// de código, roda como veio com uma linha da marca; o `-iname` e o
-    /// `-path` também. O padrão sem palavra, a expressão que não é
-    /// conjunção, o nome que o mapa não acha (que traz a linha do que falta),
-    /// a pasta sem código, a linha sem sessão e a chave `search.answer`
-    /// desligada passam calados.
-    #[test]
-    fn a_find_by_name_runs_with_one_line_of_the_mark() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            "find src -name '*frete*.rs'",
-            "find . -name '*frete*'",
-            "find src -iname '*Frete*'",
-            "find . -path '*/frete*'",
-            "find src -type f -name '*frete*.rs' -print",
-            "cd src && find . -name '*frete*'",
-            "find src -name '*frete*.rs' | head -5",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            match run_in(&root, command, Some(&format!("f{n}"))) {
-                Verdict::Inject { context } => {
-                    assert_eq!(context.lines().count(), 1, "{command}: {context}");
-                    assert!(context.starts_with("Cravado."), "{command}: {context}");
-                }
-                other => panic!("{command}: the find runs with a line, got {other:?}"),
-            }
-        }
-        match run_in(&root, "find src -name '*zzyzx*.rs'", Some("nada")) {
-            Verdict::Inject { context } => assert!(context.starts_with("Não achei"), "{context}"),
-            other => panic!("the find runs with the line of what the map lacks, got {other:?}"),
-        }
-        for command in [
-            "find . -name '*.rs'",
-            "find src -name '*frete*' -o -name '*pedido*'",
-            "find src \\( -name '*frete*' \\)",
-            "find src -not -name '*frete*'",
-            "find docs -name '*frete*'",
-            "find src -name '*frete*.md'",
-            "find src -name '*frete*.rs' | wc -l",
-        ] {
-            let verdict = run_in(&root, command, Some("calado"));
-            assert!(matches!(verdict, Verdict::Allow | Verdict::Inject { .. }) && !matches!(verdict, Verdict::Deny { .. }), "{command}: {verdict:?}");
-        }
-        for command in ["find . -name '*.rs'", "find src -name '*frete*' -o -name '*pedido*'", "find src \\( -name '*frete*' \\)", "find src -not -name '*frete*'", "find docs -name '*frete*'", "find src -name '*frete*.md'"] {
-            assert_eq!(run_in(&root, command, Some("calado")), Verdict::Allow, "{command}");
-        }
-        assert_eq!(run(&root, "find src -name '*frete*.rs'"), Verdict::Allow, "no session");
-        let (_off, off) = word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
-        assert_eq!(run_in(&off, "find src -name '*frete*.rs'", Some("off")), Verdict::Allow);
-    }
-
-    /// O `find` que dispara uma busca de texto (`-exec grep`, `| xargs grep`)
-    /// é lido como o `grep` recursivo nas pastas dele, com o `-name` como
-    /// filtro de nome, e responde por função no lugar dele; o `-l` só lista
-    /// nomes e roda como veio, com uma linha. O nome que deixa o código de
-    /// fora, a expressão que não é só nome e tipo e o `-iname` passam.
-    #[test]
-    fn a_find_that_starts_a_text_search_is_answered_like_the_recursive_grep() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            "find src -name '*.rs' -exec grep -n calcular_frete {} +",
-            "find src -name '*.rs' -exec grep -n calcular_frete {} \\;",
-            "find . -type f -name '*.rs' -exec grep -n calcular_frete {} /dev/null \\;",
-            "find src -name '*.rs' | xargs grep -n calcular_frete",
-            "find src -name '*.rs' -print0 | xargs -0 grep -n calcular_frete",
-            "find . -name '*.rs' -exec rg calcular_frete {} +",
-            "cd src && find . -name '*.rs' | xargs grep -n calcular_frete",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = refused(run_in(&root, command, Some(&format!("e{n}"))), command);
-            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
-            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
-            assert!(!reason.contains("docs/notas.md"), "{command}: the name leaves the notes out: {reason}");
-        }
-        match run_in(&root, "find src -name '*.rs' -exec grep -l calcular_frete {} +", Some("lista")) {
-            Verdict::Inject { context } => assert!(context.starts_with("Cravado.") && context.lines().count() == 1, "{context}"),
-            other => panic!("the plain search runs with a line, got {other:?}"),
-        }
-        for (n, command) in [
-            "find src -name '*.md' -exec grep -n calcular_frete {} +",
-            "find src -name '*.rs' -not -name 'pedido.rs' -exec grep -n calcular_frete {} +",
-            "find src -name '*.rs' -mtime -1 | xargs grep -n calcular_frete",
-            "find src -iname '*.rs' -exec grep -n calcular_frete {} +",
-            "find src -name '*.rs' -o -name '*.md' | xargs grep -n calcular_frete",
-            "find src -name '*.rs' -exec grep -nv calcular_frete {} +",
-            "find src -name '*.rs' | grep calcular_frete",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let verdict = run_in(&root, command, Some(&format!("d{n}")));
-            assert!(!matches!(verdict, Verdict::Deny { .. }), "{command}: {verdict:?}");
-        }
-        assert_eq!(run(&root, "find src -name '*.rs' -exec grep -n calcular_frete {} +"), Verdict::Allow, "no session, no answer");
-    }
-
-    /// A busca cujos filtros de saída não deixam o código do mapa de fora é
-    /// respondida: o filtro de outro tipo de arquivo, o de um arquivo só, o de
-    /// entrada que vem depois do de saída e traz o código de volta, as chaves
-    /// no `grep` (que as lê como texto) e, num projeto de duas linguagens, o
-    /// filtro que tira só uma delas. O filtro com pasta que tira todo o código
-    /// deixa a busca comum passar.
-    #[test]
-    fn a_search_whose_exclusions_leave_mapped_code_in_is_answered() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            "rg -g '!*.md' calcular_frete",
-            "rg -g '!frete.rs' calcular_frete",
-            "rg -g '!*.rs' -g '*.rs' calcular_frete",
-            "rg -g '!*.rs' -g '*.md' -g '*.rs' calcular_frete",
-            "grep -rn --exclude='*.{rs,md}' calcular_frete src",
-            "grep -rn --exclude=*.md calcular_frete",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = refused(run_in(&root, command, Some(&format!("y{n}"))), command);
-            assert!(reason.contains("calcular_frete"), "{command}: {reason}");
-        }
-        assert_eq!(run_in(&root, "rg -g '!src/*.rs' calcular_frete", Some("pasta")), Verdict::Allow);
-        std::fs::create_dir_all(root.join("web")).expect("web");
-        std::fs::write(root.join("web/app.ts"), "export function renderizar_tela() {}\n").expect("app");
-        let two = serde_json::json!({ "modules": [
-            { "path": "src/frete.rs", "declarations": [{ "kind": "function", "name": "calcular_frete", "line": 2, "end_line": 6 }] },
-            { "path": "web/app.ts", "declarations": [{ "kind": "function", "name": "renderizar_tela", "line": 1, "end_line": 1 }] }
-        ] });
-        mustard_core::io::project_map::write_text(&root, &two.to_string()).expect("map");
-        let reason = refused(run_in(&root, "rg -g '!*.rs' renderizar_tela", Some("dois")), "the filter that leaves the ts");
-        assert!(reason.contains("web/app.ts\n  1-1 renderizar_tela (1)"), "{reason}");
-        assert_eq!(run_in(&root, "rg -g '!*.rs' -g '!*.ts' renderizar_tela", Some("dois-b")), Verdict::Allow);
-        refused(run_in(&root, "rg -g '!*.rs' -g '!*.ts' -g '*.ts' renderizar_tela", Some("dois-c")), "an input filter after the output ones");
-    }
-
-    /// A chave `search.answer` desligada, o projeto sem mapa, a linha sem
-    /// sessão, um regex de referência de volta, uma opção que muda o que a
-    /// busca acha (`-v`), o `-u` do `rg` e um `-f` de arquivo deixam a busca
-    /// comum passar, sem erro.
-    #[test]
-    fn a_search_the_answer_cannot_stand_for_passes_without_error() {
-        let (_off, off) = word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
-        assert_eq!(run_in(&off, "grep -rn calcular_frete src", Some("off")), Verdict::Allow);
-        let (_on, on) = word_search::fixture::repo(r#"{"search":{"answer":true}}"#);
-        refused(run_in(&on, "grep -rn calcular_frete src", Some("on")), "the key on");
-
-        let (_bare, bare) = word_search::fixture::repo("{}");
-        std::fs::remove_file(mustard_core::io::project_map::model_path(&bare)).expect("no map");
-        assert_eq!(run_in(&bare, "grep -rn calcular_frete src", Some("bare")), Verdict::Allow);
-
-        let (_dir, root) = word_search::fixture::repo("{}");
-        assert_eq!(run(&root, "grep -rn calcular_frete src"), Verdict::Allow, "no session, no answer");
-        for (n, command) in [
-            r"grep -rn '\(calcular\)\1' src",
-            "grep -rnv calcular_frete src",
-            "rg -u calcular_frete",
-            "grep -rf patterns.txt src",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert_eq!(run_in(&root, command, Some(&format!("z{n}"))), Verdict::Allow, "{command}");
-        }
-    }
-
     /// A busca num arquivo só, sem recursão, só em documentos ou fora do
     /// projeto passa.
     #[test]
@@ -1218,114 +856,6 @@ mod tests {
         {
             assert_eq!(run_in(&root, command, Some(&format!("u{n}"))), Verdict::Allow, "{command}");
         }
-    }
-
-    /// O `git grep` de um nome do mapa numa pasta de código é respondido no
-    /// lugar dele, agrupado por função, com o caminho depois do `--` ou solto,
-    /// sem caminho, depois de um `cd`, atrás de um envoltório, com o caminho
-    /// de curinga entre aspas que o git abre, com a caixa e com um pipe depois.
-    #[test]
-    fn a_git_grep_for_a_mapped_name_is_answered_by_function() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            "git grep -n calcular_frete -- src",
-            "git grep -n calcular_frete",
-            "git grep calcular_frete src",
-            "rtk git grep -ni CALCULAR_FRETE",
-            "cd src && git grep -n calcular_frete",
-            "git --no-pager grep -n -e calcular_frete -- src",
-            "git grep -n calcular_frete -- 'src/*.rs'",
-            "git grep -n calcular_frete -- . ':!*.md'",
-            "git grep -n calcular_frete | head -20",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = refused(run_in(&root, command, Some(&format!("g{n}"))), command);
-            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
-            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
-            assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{command}: {reason}");
-        }
-        let words = refused(run_in(&root, "git grep -nE 'calcular_frete|desconto_frete|imposto'", Some("palavras")), "an alternation");
-        assert!(words.starts_with("Cravado.") && words.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "{words}");
-        let with_notes = refused(run_in(&root, "git grep -n calcular_frete", Some("notas")), "the notes are searched");
-        assert!(with_notes.contains("docs/notas.md"), "{with_notes}");
-        let without = refused(run_in(&root, "git grep -n calcular_frete -- . ':!*.md'", Some("sem-notas")), "the notes are left out");
-        assert!(!without.contains("docs/notas.md"), "the exclusion leaves the notes out: {without}");
-    }
-
-    /// O `git grep` que só lista nomes ou conta (`-l`, `-c`) roda como veio,
-    /// com uma linha da marca; o que muda o que a busca acha, a revisão, o
-    /// índice, a pasta sem código e o arquivo só passam, e sem sessão não há
-    /// resposta.
-    #[test]
-    fn a_git_grep_the_answer_cannot_stand_for_passes() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in ["git grep -l calcular_frete", "git grep -c calcular_frete -- src", "git grep --name-only calcular_frete"].into_iter().enumerate() {
-            match run_in(&root, command, Some(&format!("n{n}"))) {
-                Verdict::Inject { context } => {
-                    assert!(context.starts_with("Cravado.") && context.lines().count() == 1, "{command}: {context}");
-                }
-                other => panic!("{command}: the plain search runs with a line, got {other:?}"),
-            }
-        }
-        for (n, command) in [
-            "git grep -nv calcular_frete -- src",
-            "git grep -n -e calcular_frete --and -e imposto",
-            "git grep --cached -n calcular_frete",
-            "git grep -n calcular_frete HEAD -- src",
-            "git grep -n calcular_frete -- docs",
-            "git grep -n calcular_frete -- src/frete.rs",
-            "git -C src grep -n calcular_frete",
-            "git grep -n zzznada -- src",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let verdict = run_in(&root, command, Some(&format!("p{n}")));
-            assert!(!matches!(verdict, Verdict::Deny { .. }), "{command}: {verdict:?}");
-        }
-        assert_eq!(run(&root, "git grep -n calcular_frete -- src"), Verdict::Allow, "no session, no answer");
-    }
-
-    /// O caminho com curinga que o terminal abre é respondido como a pasta
-    /// dele, filtrada pelo nome: `src/*.rs`, `src/**/*.rs`, o curinga solto na
-    /// pasta em que roda, com o `rg` e depois de um `cd`. O nome do curinga
-    /// vale: `src/*.md` deixa o código de fora e a busca passa.
-    #[test]
-    fn a_path_with_a_wildcard_is_answered_as_its_folder_with_the_name_filter() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        for (n, command) in [
-            "grep -rn calcular_frete src/*.rs",
-            "rg calcular_frete src/*.rs",
-            "grep -rn calcular_frete src/**/*.rs",
-            "grep -rn calcular_frete src/*",
-            "grep -rn calcular_frete *",
-            "cd src && grep -rn calcular_frete *.rs",
-            "grep -rn calcular_frete src/*.r?",
-            "grep -rn calcular_frete src/*.rs | head",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = refused(run_in(&root, command, Some(&format!("w{n}"))), command);
-            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
-            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
-        }
-        for (n, command) in ["grep -rn calcular_frete src/*.md", "grep -rn calcular_frete docs/*.md", "rg calcular_frete docs/*"].into_iter().enumerate() {
-            assert_eq!(run_in(&root, command, Some(&format!("f{n}"))), Verdict::Allow, "{command}: the name leaves the code out");
-        }
-        std::fs::create_dir_all(root.join("web")).expect("web");
-        std::fs::write(root.join("web/app.ts"), "export function renderizar_tela() {}\n").expect("app");
-        let two = serde_json::json!({ "modules": [
-            { "path": "src/frete.rs", "declarations": [{ "kind": "function", "name": "calcular_frete", "line": 2, "end_line": 6 }] },
-            { "path": "web/app.ts", "declarations": [{ "kind": "function", "name": "renderizar_tela", "line": 1, "end_line": 1 }] }
-        ] });
-        mustard_core::io::project_map::write_text(&root, &two.to_string()).expect("map");
-        let reason = refused(run_in(&root, "grep -rn renderizar_tela web/*.ts", Some("dois")), "the folder with the ts");
-        assert!(reason.contains("web/app.ts\n  1-1 renderizar_tela (1)"), "{reason}");
-        assert_eq!(run_in(&root, "grep -rn renderizar_tela src/*.ts", Some("dois-b")), Verdict::Allow, "the folder has no ts");
-        assert_eq!(run_in(&root, "grep -rn renderizar_tela web/*.rs", Some("dois-c")), Verdict::Allow, "the name leaves the ts out");
     }
 
     /// O curinga que a busca não sabe pôr numa pasta deixa a busca passar como
@@ -1349,35 +879,6 @@ mod tests {
         {
             assert_eq!(run_in(&root, command, Some(&format!("k{n}"))), Verdict::Allow, "{command}");
         }
-    }
-
-    /// Numa cópia de trabalho do projeto, a busca lê a árvore da cópia: o
-    /// arquivo que a onda mudou vem relido, marcado como mudado e com as
-    /// linhas da cópia; o que ela não mexeu vem sem marca.
-    #[test]
-    fn a_search_inside_a_working_copy_rereads_the_files_the_wave_changed() {
-        let (dir, root) = word_search::fixture::repo("{}");
-        let copy = dir.path().parent().expect("parent").join(format!("copia-bash-{}", std::process::id()));
-        word_search::fixture::git(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda"]);
-        let copy = std::fs::canonicalize(&copy).expect("copy");
-        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", word_search::fixture::FREIGHT)).expect("edit");
-        let reason = refused(run_in(&copy, "grep -rn calcular_frete src", Some("copia")), "a search in the working copy");
-        assert!(reason.contains("src/frete.rs (mudado depois do mapa)\n  4-8 calcular_frete (4)"), "{reason}");
-        assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{reason}");
-        word_search::fixture::git(&root, &["worktree", "remove", "--force", &copy.to_string_lossy()]);
-    }
-
-    /// A busca que passa pelo `mustard.json` com a chave: com a resposta do
-    /// mapa no lugar da busca, o arquivo fica fora e a chave nunca aparece;
-    /// quando a busca comum roda, a trava da chave recusa como antes.
-    #[test]
-    fn the_answer_never_carries_the_key_and_the_plain_search_still_hides_it() {
-        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
-        let (_dir, root) = word_search::fixture::repo(&config);
-        let answered = refused(run_in(&root, "grep -r calcular_frete .", Some("chave")), "the answer");
-        assert!(answered.starts_with("Cravado.") && !answered.contains(fixture::FAKE_KEY), "{answered}");
-        let swept = refused(run_in(&root, "grep -r zzznada .", Some("chave")), "the plain search through the key file");
-        assert!(swept.contains("--exclude=mustard.json") && !swept.contains(fixture::FAKE_KEY), "{swept}");
     }
 
     /// O comando que mostraria o `mustard.json` com a chave é recusado, e o
@@ -1408,10 +909,7 @@ mod tests {
         let (_dir, root) = fixture::project(&config, true);
         // O terminal come a barra invertida de uma palavra sem aspas: a pasta
         // de cima entra na linha com barras normais, como a pessoa a escreve.
-        let above = format!(
-            "grep -rn jev {}",
-            crate::shared::paths::canonical(&root.parent().expect("a folder above the project").to_string_lossy()),
-        );
+        let above = format!("grep -rn jev {}", crate::shared::paths::canonical(&root.parent().expect("a folder above the project").to_string_lossy()));
         let (grep, rg) = ("`--exclude=mustard.json`", "`-g '!mustard.json'`");
         for (command, fix) in [
             ("grep -r jev .", grep),
@@ -1480,7 +978,8 @@ mod tests {
     fn a_git_grep_that_reads_what_git_ignores_is_refused_before_it_shows_the_key() {
         let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
         let (_dir, root) = fixture::project(&config, true);
-        for command in ["git grep -n jev", "git grep -n key -- '*.json'", "git grep -n jev -- src", "git grep --no-index -l jev", "git grep --no-index -c jev"] {
+        for command in ["git grep -n jev", "git grep -n key -- '*.json'", "git grep -n jev -- src", "git grep --no-index -l jev", "git grep --no-index -c jev"]
+        {
             assert_eq!(run(&root, command), Verdict::Allow, "{command}");
         }
         for command in ["git grep --no-index -n jev", "git grep -n --no-exclude-standard --untracked jev", "git grep --no-index -n jev -- '*.json'"] {
@@ -1496,188 +995,5 @@ mod tests {
             assert_eq!(run(&root, command), Verdict::Allow, "{command}: the pathspec that leaves the file out passes");
         }
         refused(run(&root, "git grep --no-index -n jev -- . ':!other.json'"), "an exclusion of another file");
-    }
-
-    /// A busca parcial do terminal, pelo gancho de verdade, vai ao filtro que
-    /// a sessão tem, e a chamada medida dela fica gravada na spec da conversa,
-    /// como a da ferramenta de busca; a resposta dela vai como nota e não
-    /// bloqueia o comando, e a cravada, que toma o lugar da busca, não chega
-    /// ao filtro e não grava nada.
-    #[test]
-    fn a_partial_terminal_search_records_its_measured_call_in_the_conversation_spec() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        converse(&root, "conversa", "s-terminal");
-        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
-
-        let reason = noted(judge.installed(|| run_in(&root, "grep -rn imposto .", Some("s-terminal"))), "grep -rn imposto .");
-
-        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{reason}");
-        assert!(!reason.contains("desconto_frete"), "only what the filter delivered: {reason}");
-        assert_eq!(judge.calls(), 1);
-        let calls = word_searches(&root, "conversa");
-        assert_eq!(calls.len(), 1, "{calls:?}");
-        assert_eq!(
-            [&calls[0]["filter"], &calls[0]["candidates"], &calls[0]["returned"]],
-            [&serde_json::json!("jev"), &serde_json::json!(2), &serde_json::json!(1)],
-            "{:?}",
-            calls[0]
-        );
-
-        refused(judge.installed(|| run_in(&root, "grep -rn fechar_pedido .", Some("s-terminal"))), "the pinned search");
-        assert_eq!(judge.calls(), 1, "the pinned search never reaches the filter");
-        assert_eq!(word_searches(&root, "conversa").len(), 1, "and records no call");
-    }
-
-    /// A busca parcial do terminal, pelo gancho de verdade, entrega ao filtro
-    /// a descrição que o agente deu ao comando e a última fala dele, lida do
-    /// fim da conversa que o gancho aponta: a mensagem mais nova do agente com
-    /// texto, sem o uso de ferramenta que veio depois dela.
-    #[test]
-    fn a_partial_terminal_search_gives_the_filter_the_description_and_the_last_speech_of_the_agent() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
-        let notes = tempfile::tempdir().unwrap();
-        let transcript = write_transcript(
-            notes.path(),
-            &[
-                ("user", "text", "calcule o imposto"),
-                ("assistant", "text", "Vou ver onde o imposto é calculado."),
-                ("assistant", "tool_use", ""),
-            ],
-        );
-
-        let verdict = judge.installed(|| {
-            run_described(&root, "grep -rn imposto .", Some("Procura o cálculo do imposto"), (&transcript, None), "s-descrito")
-        });
-
-        noted(verdict, "grep -rn imposto .");
-        assert_eq!(judge.calls(), 1);
-        let asked = judge.last();
-        assert_eq!(asked.described, "Procura o cálculo do imposto");
-        assert_eq!(asked.said, "Vou ver onde o imposto é calculado.");
-    }
-
-    /// Texto de gente depois da última fala do agente corta a leitura: a fala
-    /// do pedido fica vazia, e o texto do usuário nunca vai ao filtro.
-    #[test]
-    fn a_message_of_the_user_after_the_last_speech_leaves_the_speech_of_the_terminal_search_empty() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
-        let notes = tempfile::tempdir().unwrap();
-        let transcript = write_transcript(
-            notes.path(),
-            &[
-                ("assistant", "text", "Fala de antes."),
-                ("user", "text", "agora procure o imposto"),
-                ("assistant", "tool_use", ""),
-            ],
-        );
-
-        let verdict = judge.installed(|| run_described(&root, "grep -rn imposto .", None, (&transcript, None), "s-sem-fala"));
-
-        noted(verdict, "grep -rn imposto .");
-        let asked = judge.last();
-        assert_eq!((asked.described.as_str(), asked.said.as_str()), ("", ""));
-        assert!(!format!("{asked:?}").contains("agora procure"), "{asked:?}");
-    }
-
-    /// A busca parcial que um subagente faz, pelo gancho de verdade: o
-    /// `transcript_path` é a conversa principal, e a fala que o filtro recebe
-    /// é a do arquivo do subagente, numa pasta `subagents/` ao lado, nunca a
-    /// da conversa principal. Sem o arquivo do subagente, a fala é vazia.
-    #[test]
-    fn a_partial_terminal_search_of_a_subagent_gives_the_filter_the_speech_of_the_subagent_and_never_the_main_one() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
-        let notes = tempfile::tempdir().unwrap();
-        let main = write_transcript(notes.path(), &[("assistant", "text", "Fala do condutor."), ("assistant", "tool_use", "")]);
-        let folder = notes.path().join("outra-sessao").join("subagents");
-        std::fs::create_dir_all(&folder).unwrap();
-        let own = write_transcript(&folder, &[("assistant", "text", "Fala do subagente."), ("assistant", "tool_use", "")]);
-        std::fs::rename(own, folder.join("agent-ab12cd.jsonl")).unwrap();
-
-        let found = judge.installed(|| {
-            run_described(&root, "grep -rn imposto .", None, (&main, Some("ab12cd")), "s-subagente")
-        });
-        noted(found, "grep -rn imposto .");
-        assert_eq!(judge.last().said, "Fala do subagente.");
-
-        let missing = judge.installed(|| {
-            run_described(&root, "grep -rn imposto .", None, (&main, Some("ffffff")), "s-sem-arquivo")
-        });
-        noted(missing, "grep -rn imposto .");
-        assert_eq!(judge.last().said, "", "no subagent file, no speech: the main conversation is never read");
-    }
-
-    /// Uma conversa guardada pelo Claude Code, uma mensagem em JSON por linha:
-    /// o papel, o tipo do bloco e o texto dele.
-    fn write_transcript(dir: &Path, lines: &[(&str, &str, &str)]) -> PathBuf {
-        let file = dir.join("conversa.jsonl");
-        let text: Vec<String> = lines
-            .iter()
-            .map(|(role, kind, text)| {
-                let block = match *kind {
-                    "text" => serde_json::json!({"type": "text", "text": text}),
-                    _ => serde_json::json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "grep"}}),
-                };
-                serde_json::json!({"type": role, "message": {"role": role, "content": [block]}}).to_string()
-            })
-            .collect();
-        std::fs::write(&file, text.join("\n") + "\n").unwrap();
-        file
-    }
-
-    /// O mesmo gancho do terminal, com a descrição da chamada e o caminho da
-    /// conversa que o Claude Code manda.
-    fn run_described(
-        cwd: &Path,
-        command: &str,
-        description: Option<&str>,
-        (transcript, agent_id): (&Path, Option<&str>),
-        session: &str,
-    ) -> Verdict {
-        let mut tool_input = serde_json::json!({ "command": command });
-        if let Some(description) = description {
-            tool_input["description"] = serde_json::json!(description);
-        }
-        let mut raw = serde_json::json!({
-            "tool_name": "Bash",
-            "tool_input": tool_input,
-            "hook_event_name": "PreToolUse",
-            "cwd": cwd,
-            "session_id": session,
-            "transcript_path": transcript,
-        });
-        if let Some(agent_id) = agent_id {
-            raw["agent_id"] = serde_json::json!(agent_id);
-            raw["agent_type"] = serde_json::json!("general-purpose");
-        }
-        let input: HookInput = serde_json::from_value(raw).expect("a hook input");
-        crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict
-    }
-
-    /// A busca parcial não bloqueia o comando: a leitura e a busca na mesma
-    /// linha rodam inteiras, com a nota do mapa junto, e a nota não
-    /// traz o pedido de buscar de novo. A cravada na mesma linha segue
-    /// recusando a linha toda.
-    #[test]
-    fn a_read_and_a_partial_search_on_one_line_run_whole_with_the_note() {
-        let (_dir, root) = word_search::fixture::repo("{}");
-        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
-        for (n, command) in [
-            "cat src/pedido.rs && grep -rn imposto .",
-            "grep -rn imposto . ; sed -n 1,4p src/pedido.rs",
-            "cd src && head -5 frete.rs | wc -l && rg imposto ..",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let note = noted(judge.installed(|| run_in(&root, command, Some(&format!("junto{n}")))), command);
-            assert!(note.starts_with("Parcial."), "{command}: {note}");
-            assert!(note.contains("src/frete.rs\n  2-6 calcular_frete"), "{command}: {note}");
-            assert!(!note.contains("Busque de novo"), "{command}: the note does not send the reader back: {note}");
-        }
-        let reason = refused(judge.installed(|| run_in(&root, "cat src/pedido.rs && grep -rn fechar_pedido .", Some("cravada"))), "a pinned search");
-        assert!(reason.starts_with("Cravado."), "{reason}");
     }
 }

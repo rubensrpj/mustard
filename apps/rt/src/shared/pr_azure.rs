@@ -30,19 +30,19 @@
 //! that records every request — the same design as `branch_state`'s `FakePr`.
 //! No test ever touches the network.
 
-use std::fmt::Write as _;
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE};
+use crate::shared::branch_state::{PR_CLI_FAILED, PR_UNREADABLE, PrEvidence, PrStatus};
 use crate::shared::pr_provider::{
-    checks_from_rows, short_ref, status_from_azure, PrChecks, PrLineComment, PrOpened, PrProvider,
-    PrRef, PrText, PrTextRead, PrToOpen, PrView, HEADS, PROVIDER_AZURE,
+    HEADS, PROVIDER_AZURE, PrChecks, PrLineComment, PrOpened, PrProvider, PrRef, PrText, PrTextRead, PrToOpen, PrView, checks_from_rows, short_ref,
+    status_from_azure,
 };
 
 /// The Azure DevOps REST API version every call pins. One spelling, so a bump
@@ -149,16 +149,8 @@ impl AzureRemote {
             let git_at = segments.iter().position(|s| *s == "_git")?;
             let repo = segments.get(git_at + 1)?;
             let project = segments.get(git_at.checked_sub(1)?)?;
-            let base = if host == "dev.azure.com" {
-                format!("https://dev.azure.com/{}", segments.first()?)
-            } else {
-                format!("https://{host}")
-            };
-            return Some(Self {
-                base,
-                project: (*project).to_string(),
-                repo: strip_git(repo),
-            });
+            let base = if host == "dev.azure.com" { format!("https://dev.azure.com/{}", segments.first()?) } else { format!("https://{host}") };
+            return Some(Self { base, project: (*project).to_string(), repo: strip_git(repo) });
         }
 
         None
@@ -166,10 +158,7 @@ impl AzureRemote {
 
     /// The REST collection every PR call addresses.
     pub(crate) fn api_pulls(&self) -> String {
-        format!(
-            "{}/{}/_apis/git/repositories/{}/pullrequests",
-            self.base, self.project, self.repo
-        )
+        format!("{}/{}/_apis/git/repositories/{}/pullrequests", self.base, self.project, self.repo)
     }
 
     /// A consulta de pull requests por commit deste repositório.
@@ -215,11 +204,7 @@ fn strip_git(repo: &str) -> String {
 /// `fill` answers; otherwise a refusal that NAMES both sources, so the
 /// operator knows the two ways to fix it. `pub(crate)` for the AC-pinned test
 /// in [`crate::shared::pr_provider`].
-pub(crate) fn pat_from(
-    env_pat: Option<String>,
-    fill: impl FnOnce() -> Option<String>,
-    remote_url: &str,
-) -> Result<String, String> {
+pub(crate) fn pat_from(env_pat: Option<String>, fill: impl FnOnce() -> Option<String>, remote_url: &str) -> Result<String, String> {
     if let Some(pat) = env_pat {
         let pat = pat.trim().to_string();
         if !pat.is_empty() {
@@ -253,11 +238,7 @@ fn credential_fill(root: &Path, url: &str) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|line| line.strip_prefix("password="))
-        .map(str::to_string)
-        .filter(|pat| !pat.is_empty())
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|line| line.strip_prefix("password=")).map(str::to_string).filter(|pat| !pat.is_empty())
 }
 
 /// The credential in force for this remote: [`PAT_ENV`] → the git vault →
@@ -276,13 +257,7 @@ fn resolve_pat(root: &Path, remote_url: &str) -> Result<String, String> {
 /// value, `body` the JSON document for the writing verbs. Answers the parsed
 /// response body, or the reason as a stable-prefixed string.
 pub(crate) trait AzureTransport {
-    fn call(
-        &self,
-        method: &str,
-        url: &str,
-        auth: &str,
-        body: Option<&Value>,
-    ) -> Result<Value, String>;
+    fn call(&self, method: &str, url: &str, auth: &str, body: Option<&Value>) -> Result<Value, String>;
 }
 
 /// The real transport: `ureq`, blocking, one agent per call (each command
@@ -292,35 +267,15 @@ pub(crate) trait AzureTransport {
 struct UreqTransport;
 
 impl AzureTransport for UreqTransport {
-    fn call(
-        &self,
-        method: &str,
-        url: &str,
-        auth: &str,
-        body: Option<&Value>,
-    ) -> Result<Value, String> {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
-            .http_status_as_error(false)
-            .build()
-            .new_agent();
+    fn call(&self, method: &str, url: &str, auth: &str, body: Option<&Value>) -> Result<Value, String> {
+        let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS))).http_status_as_error(false).build().new_agent();
         let sent = match (method, body) {
-            ("GET", None) => agent
-                .get(url)
-                .header("Authorization", auth)
-                .header("Accept", "application/json")
-                .call(),
-            ("POST", Some(doc)) => agent
-                .post(url)
-                .header("Authorization", auth)
-                .header("Content-Type", "application/json")
-                .send_json(doc),
-            ("PATCH", Some(doc)) => agent
-                .patch(url)
-                .header("Authorization", auth)
-                .header("Content-Type", "application/json")
-                .send_json(doc),
-            _ => return Err(format!("azure-transport: unsupported request shape {method}")),
+            ("GET", None) => agent.get(url).header("Authorization", auth).header("Accept", "application/json").call(),
+            ("POST", Some(doc)) => agent.post(url).header("Authorization", auth).header("Content-Type", "application/json").send_json(doc),
+            ("PATCH", Some(doc)) => agent.patch(url).header("Authorization", auth).header("Content-Type", "application/json").send_json(doc),
+            _ => {
+                return Err(format!("azure-transport: unsupported request shape {method}"));
+            }
         };
         let mut response = sent.map_err(|e| format!("azure-transport: {e}"))?;
         let status = response.status();
@@ -329,11 +284,7 @@ impl AzureTransport for UreqTransport {
             return Ok(doc);
         }
         let message = doc.get("message").and_then(Value::as_str).unwrap_or_default();
-        Err(if message.is_empty() {
-            format!("azure-http-{}", status.as_u16())
-        } else {
-            format!("azure-http-{}: {message}", status.as_u16())
-        })
+        Err(if message.is_empty() { format!("azure-http-{}", status.as_u16()) } else { format!("azure-http-{}: {message}", status.as_u16()) })
     }
 }
 
@@ -366,12 +317,7 @@ fn view_from_azure(remote: &AzureRemote, row: &Value) -> Result<PrView, String> 
 /// POST the create. Branch names arrive short (the port's contract) and leave
 /// as the FULL refs the REST contract demands; the answered URL is derived.
 /// `pub(crate)` for the AC-pinned test in [`crate::shared::pr_provider`].
-pub(crate) fn do_open(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    pr: &PrToOpen,
-) -> Result<PrOpened, String> {
+pub(crate) fn do_open(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, pr: &PrToOpen) -> Result<PrOpened, String> {
     let url = format!("{}?api-version={API_VERSION}", remote.api_pulls());
     let body = json!({
         "sourceRefName": format!("{HEADS}{}", pr.head),
@@ -381,35 +327,21 @@ pub(crate) fn do_open(
         "isDraft": pr.draft,
     });
     let doc = transport.call("POST", &url, auth, Some(&body))?;
-    let number = doc
-        .get("pullRequestId")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "parse-error".to_string())?;
+    let number = doc.get("pullRequestId").and_then(Value::as_u64).ok_or_else(|| "parse-error".to_string())?;
     Ok(PrOpened { number, url: remote.pr_url(number) })
 }
 
 /// PATCH one field of PR `number`. `edit_body`, `edit_title`, `ready` and
 /// `mark_draft` are all this — the REST contract updates a PR by PATCHing the
 /// fields that change.
-fn do_patch(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-    body: &Value,
-) -> Result<(), String> {
+fn do_patch(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64, body: &Value) -> Result<(), String> {
     let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
     transport.call("PATCH", &url, auth, Some(body)).map(|_| ())
 }
 
 /// GET PR `number`, normalised. `pub(crate)` for the AC-pinned test in
 /// [`crate::shared::pr_provider`].
-pub(crate) fn do_view_number(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<PrView, String> {
+pub(crate) fn do_view_number(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64) -> Result<PrView, String> {
     let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
     view_from_azure(remote, &transport.call("GET", &url, auth, None)?)
 }
@@ -438,12 +370,7 @@ fn query_encode(value: &str) -> String {
     out
 }
 
-fn do_view_branch(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    branch: &str,
-) -> Result<PrView, String> {
+fn do_view_branch(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, branch: &str) -> Result<PrView, String> {
     let rows = evidence_rows(remote, transport, auth, branch)?;
     let row = rows.first().ok_or_else(|| format!("no-pr-for-branch: {branch}"))?;
     view_from_azure(remote, row)
@@ -478,16 +405,10 @@ fn checks_from_azure(rows: &[Value]) -> PrChecks {
 /// GET the statuses of PR `number` and reduce them. A document without a
 /// `value` array could not be read — `parse-error`, never an empty answer,
 /// which is exactly the answer that authorises a merge.
-pub(crate) fn do_checks(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<PrChecks, String> {
+pub(crate) fn do_checks(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64) -> Result<PrChecks, String> {
     let url = format!("{}/{number}/statuses?api-version={API_VERSION}", remote.api_pulls());
     let doc = transport.call("GET", &url, auth, None)?;
-    let rows =
-        doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
+    let rows = doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
     Ok(checks_from_azure(&rows))
 }
 
@@ -498,20 +419,10 @@ pub(crate) fn do_checks(
 /// never an empty answer, because an empty answer here means "this branch is
 /// open to anyone with push rights" and that sentence must only ever be said
 /// about a reading that really happened.
-pub(crate) fn do_branch_policy(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    branch: &str,
-) -> Result<bool, String> {
-    let url = format!(
-        "{}?refName={}&api-version={API_VERSION}",
-        remote.api_policies(),
-        query_encode(&format!("{HEADS}{branch}")),
-    );
+pub(crate) fn do_branch_policy(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, branch: &str) -> Result<bool, String> {
+    let url = format!("{}?refName={}&api-version={API_VERSION}", remote.api_policies(), query_encode(&format!("{HEADS}{branch}")));
     let doc = transport.call("GET", &url, auth, None)?;
-    let rows =
-        doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
+    let rows = doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
     Ok(policies_protect(&rows))
 }
 
@@ -537,12 +448,7 @@ pub(crate) fn policies_protect(rows: &[Value]) -> bool {
 /// of. ONE spelling of the search URL, so the two consumers can never drift.
 /// A document without a `value` array could not be read — `parse-error`,
 /// never an empty (which would read as a measured absence).
-pub(crate) fn evidence_rows(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    branch: &str,
-) -> Result<Vec<Value>, String> {
+pub(crate) fn evidence_rows(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, branch: &str) -> Result<Vec<Value>, String> {
     let url = format!(
         "{}?searchCriteria.sourceRefName={}&searchCriteria.status=all&api-version={API_VERSION}",
         remote.api_pulls(),
@@ -565,8 +471,7 @@ pub(crate) fn evidence_rows(
 /// AFTER the merge is beyond it, which is exactly what lets the exit ritual
 /// (`crate::commands::git_settle`) refuse to prune a branch that moved.
 pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
-    let status_of =
-        |row: &Value| status_from_azure(row.get("status").and_then(Value::as_str).unwrap_or_default());
+    let status_of = |row: &Value| status_from_azure(row.get("status").and_then(Value::as_str).unwrap_or_default());
     let statuses: Vec<PrStatus> = rows.iter().map(status_of).collect();
     let status = if statuses.contains(&PrStatus::Merged) {
         PrStatus::Merged
@@ -584,9 +489,7 @@ pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
     let merged_heads: BTreeSet<String> = rows
         .iter()
         .filter(|row| status_of(row) == PrStatus::Merged)
-        .filter_map(|row| {
-            row.get("lastMergeSourceCommit").and_then(|c| c.get("commitId")).and_then(Value::as_str)
-        })
+        .filter_map(|row| row.get("lastMergeSourceCommit").and_then(|c| c.get("commitId")).and_then(Value::as_str))
         .filter(|head| !head.is_empty())
         .map(str::to_string)
         .collect();
@@ -600,15 +503,14 @@ pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
 /// measured absence is one of the answers that AUTHORISES the exit ritual to
 /// prune a branch.
 pub(crate) fn evidence_of(repo: &Path, branch: &str) -> PrEvidence {
-    let unknown = |reason: &'static str| PrEvidence {
-        status: PrStatus::Unknown(reason),
-        merged_heads: BTreeSet::new(),
-    };
+    let unknown = |reason: &'static str| PrEvidence { status: PrStatus::Unknown(reason), merged_heads: BTreeSet::new() };
     let adapter = AzurePrRest::new(repo);
-    let Ok((remote, auth)) = adapter.context() else {
-        // No recognisable remote or no credential: nothing was asked — the
-        // same bucket the GitHub adapter files an unauthenticated `gh` under.
-        return unknown(PR_CLI_FAILED);
+    let (remote, auth) = match adapter.context() {
+        Ok(context) => context,
+        Err(reason) if reason.starts_with("azure-credential-missing:") => {
+            return unknown("azure-credential-missing");
+        }
+        Err(_) => return unknown(PR_CLI_FAILED),
     };
     match evidence_rows(&remote, adapter.transport.as_ref(), &auth, branch) {
         Ok(rows) => evidence_from_rows(&rows),
@@ -624,9 +526,7 @@ pub(crate) fn evidence_of(repo: &Path, branch: &str) -> PrEvidence {
 /// Run `git` in `root` and return its trimmed stdout — the same degradation
 /// shape as the GitHub adapter's `gh_out`, for the same reason.
 fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
-    mustard_core::platform::git::run(root, args)
-        .result()
-        .map_err(|err| if err.is_empty() { "git-failed".to_string() } else { err })
+    mustard_core::platform::git::run(root, args).result().map_err(|err| if err.is_empty() { "git-failed".to_string() } else { err })
 }
 
 /// The Azure DevOps adapter — REST over the injectable transport, credential
@@ -651,10 +551,8 @@ impl AzurePrRest {
     /// own stable token, so a door can tell "not an Azure remote" apart from
     /// "no credential".
     fn context(&self) -> Result<(AzureRemote, String), String> {
-        let url = git_out(&self.repo, &["remote", "get-url", "origin"])
-            .map_err(|e| format!("azure-remote-unreadable: {e}"))?;
-        let remote = AzureRemote::parse(&url)
-            .ok_or_else(|| format!("azure-remote-unrecognized: '{url}' is not an Azure DevOps remote"))?;
+        let url = git_out(&self.repo, &["remote", "get-url", "origin"]).map_err(|e| format!("azure-remote-unreadable: {e}"))?;
+        let remote = AzureRemote::parse(&url).ok_or_else(|| format!("azure-remote-unrecognized: '{url}' is not an Azure DevOps remote"))?;
         let pat = resolve_pat(&self.repo, &remote.https_remote())?;
         Ok((remote, basic_auth(&pat)))
     }
@@ -731,12 +629,7 @@ impl PrProvider for AzurePrRest {
 /// GET do pull request `number`: o título e a descrição. O Azure DevOps não
 /// dá marca de versão nessa leitura, e a volta a um pull request já lido o
 /// lê de novo.
-pub(crate) fn do_text(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<PrText, String> {
+pub(crate) fn do_text(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64) -> Result<PrText, String> {
     let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
     let doc = transport.call("GET", &url, auth, None)?;
     let title = doc.get("title").and_then(Value::as_str).ok_or_else(|| "parse-error".to_string())?;
@@ -749,17 +642,9 @@ pub(crate) fn do_text(
 /// `rightFileStart`), com o último commit do ramo de origem, que é a versão
 /// que o lado novo mostra. A conversa geral, a apagada e o comentário do
 /// sistema ficam fora.
-pub(crate) fn do_line_comments(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Vec<PrLineComment>, String> {
+pub(crate) fn do_line_comments(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64) -> Result<Vec<PrLineComment>, String> {
     let pr = transport.call("GET", &format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls()), auth, None)?;
-    let commit = pr
-        .pointer("/lastMergeSourceCommit/commitId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "parse-error".to_string())?;
+    let commit = pr.pointer("/lastMergeSourceCommit/commitId").and_then(Value::as_str).ok_or_else(|| "parse-error".to_string())?;
     let doc = transport.call("GET", &format!("{}/{number}/threads?api-version={API_VERSION}", remote.api_pulls()), auth, None)?;
     let threads = doc.get("value").and_then(Value::as_array).ok_or_else(|| "parse-error".to_string())?;
     Ok(line_comments_from_azure(threads, commit))
@@ -773,7 +658,9 @@ fn line_comments_from_azure(threads: &[Value], commit: &str) -> Vec<PrLineCommen
         if thread.get("isDeleted").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let Some(context) = thread.get("threadContext").filter(|context| !context.is_null()) else { continue };
+        let Some(context) = thread.get("threadContext").filter(|context| !context.is_null()) else {
+            continue;
+        };
         let path = context.get("filePath").and_then(Value::as_str).unwrap_or_default().trim_start_matches('/');
         let Some(line) = context.pointer("/rightFileStart/line").and_then(Value::as_u64).filter(|line| *line > 0) else {
             continue;
@@ -797,21 +684,12 @@ fn line_comments_from_azure(threads: &[Value], commit: &str) -> Vec<PrLineCommen
 /// O pull request mesclado que levou o commit `sha` à base, pela consulta
 /// do Azure DevOps por commit de merge. É um POST, mas só consulta: nada se
 /// grava no servidor.
-pub(crate) fn do_pr_of_commit(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    sha: &str,
-) -> Result<Option<u64>, String> {
+pub(crate) fn do_pr_of_commit(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, sha: &str) -> Result<Option<u64>, String> {
     let url = format!("{}?api-version={API_VERSION}", remote.api_pull_query());
     let query = serde_json::json!({ "queries": [{ "type": "lastMergeCommit", "items": [sha] }] });
     let doc = transport.call("POST", &url, auth, Some(&query))?;
     let results = doc.get("results").and_then(Value::as_array).ok_or_else(|| "parse-error".to_string())?;
-    Ok(results
-        .iter()
-        .filter_map(|result| result.get(sha).and_then(Value::as_array))
-        .flatten()
-        .find_map(|row| row.get("pullRequestId").and_then(Value::as_u64)))
+    Ok(results.iter().filter_map(|result| result.get(sha).and_then(Value::as_array)).flatten().find_map(|row| row.get("pullRequestId").and_then(Value::as_u64)))
 }
 
 /// Test-only fixtures shared with the AC-pinned tests that live in
@@ -846,47 +724,26 @@ pub(crate) mod test_support {
 
     impl FakeTransport {
         pub(crate) fn of(rows: &[(&str, &str, Value)]) -> Self {
-            Self {
-                responses: rows
-                    .iter()
-                    .map(|(m, u, v)| (((*m).to_string(), (*u).to_string()), v.clone()))
-                    .collect(),
-                calls: RefCell::new(Vec::new()),
-            }
+            Self { responses: rows.iter().map(|(m, u, v)| (((*m).to_string(), (*u).to_string()), v.clone())).collect(), calls: RefCell::new(Vec::new()) }
         }
     }
 
     impl AzureTransport for FakeTransport {
-        fn call(
-            &self,
-            method: &str,
-            url: &str,
-            auth: &str,
-            body: Option<&Value>,
-        ) -> Result<Value, String> {
-            self.calls.borrow_mut().push(Recorded {
-                method: method.to_string(),
-                url: url.to_string(),
-                auth: auth.to_string(),
-                body: body.cloned(),
-            });
-            self.responses
-                .get(&(method.to_string(), url.to_string()))
-                .cloned()
-                .ok_or_else(|| format!("unexpected request: {method} {url}"))
+        fn call(&self, method: &str, url: &str, auth: &str, body: Option<&Value>) -> Result<Value, String> {
+            self.calls.borrow_mut().push(Recorded { method: method.to_string(), url: url.to_string(), auth: auth.to_string(), body: body.cloned() });
+            self.responses.get(&(method.to_string(), url.to_string())).cloned().ok_or_else(|| format!("unexpected request: {method} {url}"))
         }
     }
 
     /// The canonical parsed remote every operation test stands on.
     pub(crate) fn remote() -> AzureRemote {
-        AzureRemote::parse("https://dev.azure.com/contoso/vendas/_git/portal")
-            .expect("a canonical https remote parses")
+        AzureRemote::parse("https://dev.azure.com/contoso/vendas/_git/portal").expect("a canonical https remote parses")
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{remote, FakeTransport};
+    use super::test_support::{FakeTransport, remote};
     use super::*;
     use crate::shared::branch_state::PrStatus;
 
@@ -894,15 +751,8 @@ mod tests {
     /// for: Basic auth of `:PAT`.
     #[test]
     fn base64_matches_the_rfc_vectors() {
-        for (input, expected) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
+        for (input, expected) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")]
+        {
             assert_eq!(base64(input.as_bytes()), expected, "for {input:?}");
         }
         assert_eq!(basic_auth("abc"), "Basic OmFiYw==", "empty user, colon, PAT");
@@ -913,13 +763,7 @@ mod tests {
     /// point it at any remote.
     #[test]
     fn a_foreign_remote_is_refused() {
-        for url in [
-            "https://github.com/org/repo.git",
-            "git@gitlab.com:team/repo.git",
-            "https://dev.azure.com/contoso",
-            "/local/path/no/remote",
-            "",
-        ] {
+        for url in ["https://github.com/org/repo.git", "git@gitlab.com:team/repo.git", "https://dev.azure.com/contoso", "/local/path/no/remote", ""] {
             assert_eq!(AzureRemote::parse(url), None, "for {url:?}");
         }
     }
@@ -932,8 +776,7 @@ mod tests {
         let patch_url = format!("{}/7?api-version=7.1", remote.api_pulls());
         let fake = FakeTransport::of(&[("PATCH", &patch_url, json!({ "pullRequestId": 7 }))]);
 
-        do_patch(&remote, &fake, "a", 7, &json!({ "description": "new body" }))
-            .expect("edit succeeds");
+        do_patch(&remote, &fake, "a", 7, &json!({ "description": "new body" })).expect("edit succeeds");
         do_patch(&remote, &fake, "a", 7, &json!({ "isDraft": false })).expect("ready succeeds");
 
         let calls = fake.calls.borrow();
@@ -954,10 +797,7 @@ mod tests {
     #[test]
     fn view_by_branch_searches_the_full_source_ref() {
         let remote = remote();
-        let search_url = format!(
-            "{}?searchCriteria.sourceRefName=refs/heads/feature/my-unit&searchCriteria.status=all&api-version=7.1",
-            remote.api_pulls()
-        );
+        let search_url = format!("{}?searchCriteria.sourceRefName=refs/heads/feature/my-unit&searchCriteria.status=all&api-version=7.1", remote.api_pulls());
         let fake = FakeTransport::of(&[(
             "GET",
             &search_url,
@@ -969,8 +809,7 @@ mod tests {
                 "targetRefName": "refs/heads/dev",
             }]}),
         )]);
-        let view =
-            do_view_branch(&remote, &fake, "a", "feature/my-unit").expect("search finds the PR");
+        let view = do_view_branch(&remote, &fake, "a", "feature/my-unit").expect("search finds the PR");
         assert_eq!(view.number, 11);
         assert_eq!(view.status, PrStatus::Merged, "status=all keeps a landed PR viewable");
 
@@ -995,27 +834,16 @@ mod tests {
     /// status word cannot be read are an unreadable answer, never an absence.
     #[test]
     fn azure_evidence_reduces_states_and_merged_heads() {
-        let row = |status: &str, head: &str| {
-            json!({ "status": status, "lastMergeSourceCommit": { "commitId": head } })
-        };
+        let row = |status: &str, head: &str| json!({ "status": status, "lastMergeSourceCommit": { "commitId": head } });
 
         let empty = evidence_from_rows(&[]);
         assert_eq!(empty.status, PrStatus::Absent, "an empty answer is a measurement");
         assert!(empty.merged_heads.is_empty());
 
         assert_eq!(evidence_from_rows(&[row("abandoned", "")]).status, PrStatus::Closed);
-        assert_eq!(
-            evidence_from_rows(&[row("abandoned", ""), row("active", "")]).status,
-            PrStatus::Open,
-            "open beats closed",
-        );
+        assert_eq!(evidence_from_rows(&[row("abandoned", ""), row("active", "")]).status, PrStatus::Open, "open beats closed");
 
-        let landed = evidence_from_rows(&[
-            row("abandoned", "x1"),
-            row("completed", "m1"),
-            row("active", "x2"),
-            row("completed", "m2"),
-        ]);
+        let landed = evidence_from_rows(&[row("abandoned", "x1"), row("completed", "m1"), row("active", "x2"), row("completed", "m2")]);
         assert_eq!(landed.status, PrStatus::Merged, "merged wins whatever the row order");
         assert_eq!(
             landed.merged_heads,
@@ -1024,11 +852,7 @@ mod tests {
         );
 
         let unreadable = evidence_from_rows(&[json!({ "title": "no status word" })]);
-        assert_eq!(
-            unreadable.status,
-            PrStatus::Unknown(PR_UNREADABLE),
-            "rows that could not be read are never a measured absence",
-        );
+        assert_eq!(unreadable.status, PrStatus::Unknown(PR_UNREADABLE), "rows that could not be read are never a measured absence");
     }
 
     /// The evidence read asks the SAME search `do_view_branch` asks
@@ -1037,10 +861,7 @@ mod tests {
     #[test]
     fn evidence_rows_search_the_full_source_ref_with_status_all() {
         let remote = remote();
-        let search_url = format!(
-            "{}?searchCriteria.sourceRefName=refs/heads/dev_x&searchCriteria.status=all&api-version=7.1",
-            remote.api_pulls()
-        );
+        let search_url = format!("{}?searchCriteria.sourceRefName=refs/heads/dev_x&searchCriteria.status=all&api-version=7.1", remote.api_pulls());
         let fake = FakeTransport::of(&[(
             "GET",
             &search_url,
@@ -1051,10 +872,7 @@ mod tests {
         let rows = evidence_rows(&remote, &fake, "a", "dev_x").expect("search answers");
         let evidence = evidence_from_rows(&rows);
         assert_eq!(evidence.status, PrStatus::Merged);
-        assert_eq!(
-            evidence.merged_heads,
-            ["frozen".to_string()].into_iter().collect::<BTreeSet<String>>(),
-        );
+        assert_eq!(evidence.merged_heads, ["frozen".to_string()].into_iter().collect::<BTreeSet<String>>(),);
 
         let broken = FakeTransport::of(&[("GET", &search_url, json!({ "count": 0 }))]);
         assert_eq!(
@@ -1074,37 +892,19 @@ mod tests {
     #[test]
     fn branch_policy_only_counts_when_enabled_and_blocking() {
         let remote = remote();
-        let url = format!(
-            "{}?refName=refs/heads/master&api-version=7.1",
-            remote.api_policies(),
-        );
+        let url = format!("{}?refName=refs/heads/master&api-version=7.1", remote.api_policies());
         let answer = |value: Value| {
             let fake = FakeTransport::of(&[("GET", &url, json!({ "value": value }))]);
             do_branch_policy(&remote, &fake, "a", "master")
         };
 
         assert_eq!(answer(json!([])), Ok(false), "sem política nenhuma, a branch está aberta");
-        assert_eq!(
-            answer(json!([{ "isEnabled": true, "isBlocking": true }])),
-            Ok(true),
-            "uma política ligada e bloqueante protege",
-        );
-        assert_eq!(
-            answer(json!([{ "isEnabled": false, "isBlocking": true }])),
-            Ok(false),
-            "uma política desligada não para ninguém",
-        );
-        assert_eq!(
-            answer(json!([{ "isEnabled": true, "isBlocking": false }])),
-            Ok(false),
-            "e uma que só avisa também não",
-        );
+        assert_eq!(answer(json!([{ "isEnabled": true, "isBlocking": true }])), Ok(true), "uma política ligada e bloqueante protege");
+        assert_eq!(answer(json!([{ "isEnabled": false, "isBlocking": true }])), Ok(false), "uma política desligada não para ninguém");
+        assert_eq!(answer(json!([{ "isEnabled": true, "isBlocking": false }])), Ok(false), "e uma que só avisa também não");
 
         let without_value = FakeTransport::of(&[("GET", &url, json!({}))]);
-        assert!(
-            do_branch_policy(&remote, &without_value, "a", "master").is_err(),
-            "resposta ilegível é erro, nunca uma branch aberta medida",
-        );
+        assert!(do_branch_policy(&remote, &without_value, "a", "master").is_err(), "resposta ilegível é erro, nunca uma branch aberta medida");
     }
 
     /// The checks read addresses the PR's own `statuses` sub-resource and
@@ -1122,31 +922,17 @@ mod tests {
         };
 
         assert_eq!(answer(json!([])), Ok(PrChecks::Absent), "no pipeline is a measurement");
-        assert_eq!(
-            answer(json!([{ "state": "succeeded" }, { "state": "notApplicable" }])),
-            Ok(PrChecks::Passed),
-        );
-        assert_eq!(
-            answer(json!([{ "state": "succeeded" }, { "state": "pending" }])),
-            Ok(PrChecks::Running),
-        );
+        assert_eq!(answer(json!([{ "state": "succeeded" }, { "state": "notApplicable" }])), Ok(PrChecks::Passed),);
+        assert_eq!(answer(json!([{ "state": "succeeded" }, { "state": "pending" }])), Ok(PrChecks::Running),);
         assert_eq!(
             answer(json!([{ "state": "pending" }, { "state": "error" }])),
             Ok(PrChecks::Failed),
             "an error decides like a failure, whatever is still in flight",
         );
-        assert_eq!(
-            answer(json!([{ "state": "notSet" }])),
-            Ok(PrChecks::Unknown(PR_UNREADABLE)),
-            "'state not set' is not evidence of a green run",
-        );
+        assert_eq!(answer(json!([{ "state": "notSet" }])), Ok(PrChecks::Unknown(PR_UNREADABLE)), "'state not set' is not evidence of a green run");
 
         let broken = FakeTransport::of(&[("GET", &statuses_url, json!({ "count": 0 }))]);
-        assert_eq!(
-            do_checks(&remote, &broken, "a", 7),
-            Err("parse-error".to_string()),
-            "a document without `value` could not be read — never an empty answer",
-        );
+        assert_eq!(do_checks(&remote, &broken, "a", 7), Err("parse-error".to_string()), "a document without `value` could not be read — never an empty answer");
     }
 
     /// A transport failure travels to the caller untouched — the operations

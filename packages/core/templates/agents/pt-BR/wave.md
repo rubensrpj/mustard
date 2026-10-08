@@ -19,17 +19,18 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
 - Rode cada comando de dentro da cópia.
-- Ache e leia o código pelo mapa, cada comando na sua hora:
-  - `mustard-rt run map search "<padrão>"`: ao começar, para achar onde mexer, com o texto que você poria no `Grep`.
+- Parta da evidência atual do pedido: objetivo, itens completos, regras, trechos e testes candidatos. Regras obrigatórias sempre valem, inclusive com `omitClaudeMd`.
+- Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
+  - `mustard-rt run map search "<padrão>"`: para achar onde mexer, com o texto que você poria no `Grep`.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo, para ver as declarações e suas linhas.
   - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração.
   - `mustard-rt run map users --name <nome>`: antes de mudar uma declaração, para ver quem a usa.
-  - `mustard-rt run map tests --file <arquivo>`: para achar os testes que cobrem o arquivo.
-  - `mustard-rt run map history --name <nome>`: para saber por que a declaração ficou assim.
+  - `mustard-rt run map tests --file <arquivo>`: para achar testes candidatos, sem afirmar cobertura.
+  - `mustard-rt run map history --name <nome>`: quando precisar saber por que a declaração ficou assim.
   - `mustard-rt run map note "<frase>" --file <arquivo> --name <nome>`: depois de ler o trecho, para gravar o que ele faz em palavras de negócio.
-- Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. Cravado: o mapa achou pelo nome. Parcial: achou parte. Não achei: a busca comum roda. Leia com faixa de linhas o que o `summary` mostrou; o arquivo inteiro, só para mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
+- `Grep`/`rg` executam com as opções originais, sem Jev por busca literal. O scan sugere relações e testes; não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
-- Durante o trabalho, rode só os testes do que mudou. A suíte inteira e o lint são da rodada, que os roda antes do commit e o recusa quando caem.
+- Durante o trabalho, rode só os testes do que mudou. A rodada executa o build e as provas pertinentes antes do commit. A suíte inteira e o lint ficam na validação final da spec.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor, troque de branch nem use o stash, e nunca edite os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
 - Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; o nome de teste segue o idioma do código.

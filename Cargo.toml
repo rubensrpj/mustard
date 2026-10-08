@@ -40,6 +40,9 @@ dialoguer = "0.12"
 # Blocking, no async runtime, matching the synchronous shape of the rest of the
 # crate. Versions verified against crates.io, May 2026.
 ureq = { version = "3.3", features = ["json"] }
+# Cloudflare Pages Direct Upload uses BLAKE3 content keys and base64 assets.
+blake3 = { version = "1.8.7", default-features = false, features = ["std", "pure"] }
+base64 = "0.23.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::normalize` reduces
 # each word to its root in every language the project declares, so "apagar",
@@ -195,3 +198,7 @@ incremental = true
 # biblioteca do mustard-rt sobem de 130 s para 212 s: pior no total.
 [profile.dev.package."*"]
 opt-level = 1
+
+[profile.mustard-dev]
+inherits = "dev"
+incremental = true

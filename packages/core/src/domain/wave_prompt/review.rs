@@ -81,6 +81,7 @@ impl Writer<'_> {
             self.part(&mut out, key, items);
         }
         self.review_execution(&mut out);
+        self.prepared_sources(&mut out);
         while out.ends_with("\n\n") {
             out.pop();
         }

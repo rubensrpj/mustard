@@ -53,6 +53,11 @@ fn program_alone(root: &Path) -> PathBuf {
     let dir = root.join("programa").join("bin");
     fs::create_dir_all(&dir).expect("mkdir program dir");
     let program = dir.join(format!("mustard{}", std::env::consts::EXE_SUFFIX));
+    // A process outside this parallel test runner owns the writable descriptor.
+    // Otherwise a concurrent fork can inherit it and Linux refuses execution.
+    #[cfg(unix)]
+    assert!(Command::new("cp").arg(env!("CARGO_BIN_EXE_mustard")).arg(&program).status().expect("copy the program").success());
+    #[cfg(not(unix))]
     fs::copy(env!("CARGO_BIN_EXE_mustard"), &program).expect("copy the program");
     for beside in [dir.join("templates"), dir.join("..").join("templates")] {
         assert!(!beside.exists(), "fixture broken: {} exists", beside.display());

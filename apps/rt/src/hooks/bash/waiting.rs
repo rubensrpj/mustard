@@ -30,9 +30,9 @@
 use serde_json::Value;
 
 use mustard_core::domain::model::contract::{HookInput, Verdict};
-use mustard_core::{translate, SupportedLocale};
+use mustard_core::{SupportedLocale, translate};
 
-use super::lex::{truncate, Segment};
+use super::lex::{Segment, truncate};
 
 /// The command's own time limit, in milliseconds, once it stops waiting in
 /// the background (the Bash tool's ceiling: `up to 600000ms / 10 minutes`).
@@ -53,29 +53,42 @@ pub(crate) fn is_a_waiting_loop(script: &str) -> bool {
 /// also uses. A `for` loop, or a bare `pgrep` with no loop around it, is not
 /// this danger.
 fn waits_in_a_loop(segments: &[Segment]) -> bool {
-    let mut depth = 0u32;
+    // process observed, unbounded condition, inside the body
+    let mut loops: Vec<(bool, bool, bool)> = Vec::new();
     for seg in segments {
+        if seg.leading.iter().any(|k| k == "done")
+            && let Some((process, condition, _)) = loops.pop()
+                && process && condition {
+                    return true;
+                }
         if seg.leading.iter().any(|k| k == "while" || k == "until") {
-            depth += 1;
+            // A numeric/file condition bounds an inspection loop. Only a
+            // process condition or a constant true/false can wait for a process.
+            let indefinite = matches!(seg.name(), "pgrep" | "pidof" | "ps" | "true" | "false" | ":");
+            loops.push((false, indefinite, false));
         }
-        if depth > 0 && matches!(seg.name(), "pgrep" | "pidof" | "ps") {
-            return true;
-        }
-        if seg.leading.iter().any(|k| k == "done") {
-            depth = depth.saturating_sub(1);
-        }
+        if seg.leading.iter().any(|k| k == "do")
+            && let Some((_, _, body)) = loops.last_mut() {
+                *body = true;
+            }
+        if matches!(seg.name(), "pgrep" | "pidof" | "ps")
+            && let Some((process, indefinite, body)) = loops.last_mut() {
+                *process = true;
+                // A compound condition may start with a file test and only
+                // later query a process. It is still process-dependent.
+                if !*body {
+                    *indefinite = true;
+                }
+            }
     }
-    false
+    loops.into_iter().any(|(process, indefinite, _)| process && indefinite)
 }
 
 /// The raw spelling of the `cargo` program when it was called by its full
 /// path (`~/.cargo/bin/cargo`, `/home/x/.cargo/bin/cargo`), which the
 /// separate `rtk` hook — matching the bare word `cargo` — does not catch.
 fn full_path_cargo(segments: &[Segment]) -> Option<&str> {
-    segments
-        .iter()
-        .find(|seg| seg.name() == "cargo" && seg.program.text != "cargo" && seg.program.raw.ends_with("/cargo"))
-        .map(|seg| seg.program.raw.as_str())
+    segments.iter().find(|seg| seg.name() == "cargo" && seg.program.text != "cargo" && seg.program.raw.ends_with("/cargo")).map(|seg| seg.program.raw.as_str())
 }
 
 /// `true` when the line itself backgrounds the command with a lone `&` at
@@ -184,7 +197,11 @@ mod tests {
     /// in the loop's body, not only its condition, is caught the same way.
     #[test]
     fn pidof_and_ps_and_a_body_check_are_the_same_danger() {
-        for cmd in ["while pidof cargo >/dev/null; do sleep 1; done", "until ps -p 123 >/dev/null; do sleep 1; done", "while true; do pgrep -f x >/dev/null && break; sleep 1; done"] {
+        for cmd in [
+            "while pidof cargo >/dev/null; do sleep 1; done",
+            "until ps -p 123 >/dev/null; do sleep 1; done",
+            "while true; do pgrep -f x >/dev/null && break; sleep 1; done",
+        ] {
             assert!(matches!(check(cmd, None), Some(Verdict::Deny { .. })), "{cmd}");
         }
     }
@@ -193,7 +210,7 @@ mod tests {
     /// `pgrep` are not this danger: only `while`/`until` count.
     #[test]
     fn a_bare_pgrep_and_a_for_loop_pass() {
-        for cmd in ["pgrep -f x", "for i in 1 2 3; do pgrep -f x; done"] {
+        for cmd in ["pgrep -f x", "for i in 1 2 3; do pgrep -f x; done", "i=0; while [ $i -lt 3 ]; do ps -p 123; i=$((i + 1)); done"] {
             assert_eq!(check(cmd, None), None, "{cmd}");
         }
     }
@@ -281,7 +298,9 @@ mod tests {
     #[test]
     fn the_guard_refuses_waiting_loops_and_background_builds() {
         match check("while pgrep -f x >/dev/null; do sleep 1; done", None) {
-            Some(Verdict::Deny { reason }) => assert!(reason.contains("primeiro plano"), "{reason}"),
+            Some(Verdict::Deny { reason }) => {
+                assert!(reason.contains("primeiro plano"), "{reason}");
+            }
             other => panic!("expected a loop to be denied, got {other:?}"),
         }
 
@@ -295,7 +314,9 @@ mod tests {
         }
 
         match check("/home/rubens/.cargo/bin/cargo test -p mustard-rt", None) {
-            Some(Verdict::Rewrite { tool_input, .. }) => assert_eq!(tool_input["command"], "rtk cargo test -p mustard-rt"),
+            Some(Verdict::Rewrite { tool_input, .. }) => {
+                assert_eq!(tool_input["command"], "rtk cargo test -p mustard-rt");
+            }
             other => panic!("expected the full path to be rewritten through rtk, got {other:?}"),
         }
 

@@ -1,7 +1,7 @@
 //! O gasto de cada dia: a conta pura, sem disco e sem relógio. O Mustard conta
 //! cada dia fechado pelas conversas do Claude Code, um projeto por vez, e
-//! guarda a linha de cada dia num arquivo da máquina (o [`Ledger`]); a página
-//! do gasto lê essas linhas de um banco de dados. O dia de hoje é aberto: entra
+//! guarda a linha de cada dia num arquivo da máquina (o [`Ledger`]); a publicação
+//! explícita exporta essas linhas como snapshot estático. O dia de hoje é aberto: entra
 //! no resumo e na página como parcial, e nunca no arquivo dos dias fechados.
 
 use std::collections::BTreeMap;
@@ -168,10 +168,6 @@ pub struct Summary {
     /// O mínimo de ações que a página diz.
     pub min_actions: u64,
 }
-
-/// A coleção do banco da página onde o resumo mora, e o nome do documento.
-pub const SUMMARY_COLLECTION: &str = "summary";
-pub const SUMMARY_DOC: &str = "current";
 
 /// Os projetos somados, um total por dia, do mais velho ao mais novo.
 pub(crate) fn totals<'a>(rows: impl IntoIterator<Item = &'a DayRow>) -> Vec<DayTotal> {
@@ -352,21 +348,7 @@ impl Ledger {
         self.rows.iter().filter(|row| copied.is_none_or(|copied| row.day.as_str() > copied)).collect()
     }
 
-    /// Dá por feita a cópia que acabou de ser preparada: a página recebeu as
-    /// linhas fechadas até `through`, e cada documento de `docs` (o dia aberto
-    /// e o resumo, que a cópia seguinte troca) sobe uma versão. Numa página
-    /// nova (`fresh`) o banco está vazio e as versões recomeçam em um.
-    pub fn record_sent(&mut self, through: Option<String>, docs: Vec<String>, fresh: bool) {
-        if fresh {
-            self.copied_through = None;
-            self.versions.clear();
-        }
-        if through.is_some() {
-            self.copied_through = through;
-        }
-        let versions = &self.versions;
-        self.versions = docs.into_iter().map(|doc| (doc.clone(), versions.get(&doc).map_or(1, |v| v.saturating_add(1)))).collect();
-    }
+
 }
 
 /// Por que o comando do gasto recusa: o endereço não é `https://…`, a pasta da
@@ -551,25 +533,14 @@ mod tests {
         assert_eq!(ledger.to_count("sem dia"), None);
     }
 
-    /// A cópia leva cada dia fechado uma vez e sobe a versão de cada documento
-    /// que a cópia seguinte troca: só o resumo e as linhas do dia aberto
-    /// ficam guardados, e os de um dia que fechou saem. Uma página nova
-    /// recomeça: todas as linhas voltam e as versões partem de um.
+    /// Recibos históricos permanecem legíveis; a preparação não os avança.
     #[test]
-    fn a_copy_sends_each_closed_day_once_and_a_new_page_starts_over() {
-        let mut ledger = Ledger { rows: vec![busy("2026-09-30", "a", 1, 1), busy("2026-10-01", "a", 1, 1)], ..Ledger::default() };
-        let docs = || vec!["days/2026-10-02-a".to_string(), "summary/current".to_string()];
-        assert_eq!(ledger.uncopied().len(), 2, "nothing was copied yet");
-        ledger.record_sent(Some("2026-10-01".into()), docs(), false);
-        assert!(ledger.uncopied().is_empty(), "the closed lines went");
-        ledger.record_sent(None, docs(), false);
-        assert_eq!(ledger.versions.get("summary/current"), Some(&2), "a replaced document rises one version");
-        assert_eq!(ledger.copied_through.as_deref(), Some("2026-10-01"), "a copy with no closed line keeps the day");
-        ledger.record_sent(None, vec!["summary/current".into()], false);
-        assert_eq!(ledger.versions.keys().collect::<Vec<_>>(), ["summary/current"], "the day that closed is not pinned anymore");
-
-        ledger.record_sent(None, docs(), true);
-        assert_eq!(ledger.versions.get("summary/current"), Some(&1), "the new database starts at version 1");
-        assert_eq!(ledger.uncopied().len(), 2, "a new page gets every closed line again");
+    fn historical_receipts_keep_only_the_remaining_closed_rows() {
+        let ledger = Ledger {
+            copied_through: Some("2026-09-30".into()),
+            rows: vec![busy("2026-09-30", "a", 1, 1), busy("2026-10-01", "a", 1, 1)],
+            ..Ledger::default()
+        };
+        assert_eq!(ledger.uncopied().iter().map(|row| row.day.as_str()).collect::<Vec<_>>(), ["2026-10-01"]);
     }
 }

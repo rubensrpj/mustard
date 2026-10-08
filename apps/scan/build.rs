@@ -11,7 +11,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
+// Reuse the stamp emitter; the runtime-only hooks emitter is unused here.
+#[allow(dead_code)]
+#[path = "../rt/build.rs"]
+mod version_stamp;
+
 fn main() {
+    version_stamp::emit_version_full();
+    println!("cargo:rerun-if-changed=../rt/build.rs");
     let manifest = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
     let registry_path = Path::new(&manifest).join("languages.toml");

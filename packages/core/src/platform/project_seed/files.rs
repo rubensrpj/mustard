@@ -1,5 +1,5 @@
 //! The static seeds: Mustard's own texts — the session map under
-//! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
+//! `.claude/mustard/`
 //! and the two agents under `.claude/agents/mustard/` —,
 //! the `.claude/.gitignore` rule list, and the project-root `mustard.json`,
 //! with the migrations that bring an older `inject` list onto the session map.
@@ -11,24 +11,12 @@ use crate::domain::config::{AgentSettings, Injectable, ProjectConfig, Runtime};
 use crate::io::fs;
 use crate::platform::error::Result;
 use crate::platform::i18n::Locale;
-use crate::platform::page_templates::{project_page_template, spec_page_template};
-use crate::platform::seeds::{
-    agent_texts, session_map, with_agent_settings, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME,
-};
+use crate::platform::seeds::{AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME, agent_texts, session_map, with_agent_settings};
 
 use super::SeedOutcome;
 
 /// A pasta do mapa do início da sessão, a partir de `.claude/`.
 const SESSION_MAP_DIR: &str = "mustard";
-
-/// A pasta dos templates das páginas, a partir de `.claude/`.
-const PAGES_DIR: &str = "mustard/pages";
-
-/// O nome do template da página de uma spec, em [`PAGES_DIR`].
-const SPEC_PAGE_NAME: &str = "spec.html";
-
-/// O nome do template da página do projeto, em [`PAGES_DIR`].
-const PROJECT_PAGE_NAME: &str = "project.html";
 
 /// A pasta dos agentes do Mustard, a partir de `.claude/`. É uma subpasta
 /// própria dentro de `agents/`, que é uma pasta onde o projeto também escreve:
@@ -36,22 +24,17 @@ const PROJECT_PAGE_NAME: &str = "project.html";
 const AGENTS_DIR: &str = "agents/mustard";
 
 /// Os textos do Mustard no projeto, a partir de `.claude/`, com o corpo no
-/// idioma `text`: o mapa do início da sessão, os dois templates das páginas (a
-/// da spec e a do projeto) e os dois agentes, nessa ordem.
+/// idioma `text`: o mapa do início da sessão e os dois agentes, nessa ordem.
 ///
 /// Os dois idiomas são molde do produto; o projeto recebe só o do
 /// `language.text`. O caminho não muda com o idioma, então trocar o idioma e
-/// rodar o instalador de novo troca o texto no mesmo arquivo. Cada template
-/// vai com o catálogo já preenchido nesse idioma: é o arquivo que o assistente
-/// publica como está, uma vez só, quando a página nasce. O `model:` e o
+/// rodar o instalador de novo troca o texto no mesmo arquivo. Páginas externas
+/// são exportações explícitas; os caminhos históricos permanecem reconhecidos.
+/// O `model:` e o
 /// `effort:` do cabeçalho de cada agente são os que o projeto declara.
 #[must_use]
 pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, String)> {
-    let mut out = vec![
-        (format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text).to_string()),
-        (format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"), spec_page_template(text)),
-        (format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"), project_page_template(text)),
-    ];
+    let mut out = vec![(format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text).to_string())];
     out.extend(agent_files(text, agents));
     out
 }
@@ -60,9 +43,7 @@ pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, St
 /// `.claude/`: `(caminho, corpo)`, no idioma `text` e com o `model:` e o
 /// `effort:` de `agents` no cabeçalho.
 fn agent_files(text: Locale, agents: AgentSettings<'_>) -> impl Iterator<Item = (String, String)> + '_ {
-    agent_texts(text)
-        .into_iter()
-        .map(move |(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents)))
+    agent_texts(text).into_iter().map(move |(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents)))
 }
 
 /// Regrava, em `.claude/agents/mustard/` do projeto em `root`, o agente cujo
@@ -100,21 +81,9 @@ pub fn refresh_agent_texts(root: &Path) -> Result<Vec<String>> {
 /// grava — os mesmos em qualquer idioma.
 #[must_use]
 pub fn harness_text_paths() -> Vec<String> {
-    let mut out = vec![
-        format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"),
-        format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"),
-        format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"),
-    ];
+    let mut out = vec![format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}")];
     out.extend(AGENT_NAMES.iter().map(|name| format!("{AGENTS_DIR}/{name}.md")));
     out
-}
-
-/// O caminho do template da página do projeto, a partir da raiz do projeto:
-/// é o arquivo que o início da sessão manda publicar quando a página ainda
-/// não existe.
-#[must_use]
-pub fn project_page_template_path() -> String {
-    format!(".claude/{PAGES_DIR}/{PROJECT_PAGE_NAME}")
 }
 
 /// O caminho declarado do mapa do início da sessão, a partir da raiz do
@@ -140,11 +109,7 @@ pub fn session_map_declared_path() -> String {
 /// # Errors
 ///
 /// An IO error creating a directory or writing a file.
-pub fn seed_harness_texts(
-    claude_dir: &Path,
-    text: Locale,
-    agents: AgentSettings<'_>,
-) -> Result<Vec<(String, SeedOutcome)>> {
+pub fn seed_harness_texts(claude_dir: &Path, text: Locale, agents: AgentSettings<'_>) -> Result<Vec<(String, SeedOutcome)>> {
     let mut out = Vec::new();
     for (rel, body) in harness_texts(text, agents) {
         let dest = claude_dir.join(&rel);
@@ -206,8 +171,7 @@ pub fn seed_gitignore(claude_dir: &Path, overwrite: bool) -> Result<SeedOutcome>
 
 /// The header the line-merge writes above the patterns it appends, so the
 /// addition is attributable rather than mysterious.
-const GITIGNORE_BACKFILL_HEADER: &str =
-    "\n# Added by Mustard: patterns the seed gained after this file was written.\n";
+const GITIGNORE_BACKFILL_HEADER: &str = "\n# Added by Mustard: patterns the seed gained after this file was written.\n";
 
 /// The seed's pattern lines that `existing` does not already carry, in seed
 /// order and without repeats.
@@ -264,7 +228,6 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
     }
 }
 
-
 /// A declaração padrão do `mustard.json#inject`: o mapa do início da sessão,
 /// entregue no `sessionStart`.
 ///
@@ -310,10 +273,11 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
 
     let mut changed = false;
     if let Some(version) = version
-        && config.version.as_deref() != Some(version) {
-            config.version = Some(version.to_string());
-            changed = true;
-        }
+        && config.version.as_deref() != Some(version)
+    {
+        config.version = Some(version.to_string());
+        changed = true;
+    }
     if config.inject.is_empty() {
         config.inject = default_inject_entries();
         changed = true;
@@ -453,8 +417,7 @@ fn rename_old_session_map(root: &Path, claude_dir: &Path) -> bool {
                     config.inject.push(entry.clone());
                     continue;
                 }
-                let delivers_map =
-                    |e: &Injectable| e.on.eq_ignore_ascii_case(&entry.on) && same_declared_path(&e.file, &map);
+                let delivers_map = |e: &Injectable| e.on.eq_ignore_ascii_case(&entry.on) && same_declared_path(&e.file, &map);
                 if before.iter().any(delivers_map) || config.inject.iter().any(delivers_map) {
                     continue;
                 }
@@ -473,8 +436,7 @@ fn rename_old_session_map(root: &Path, claude_dir: &Path) -> bool {
 /// Os três textos do roteador que instalações antigas semeavam e declaravam,
 /// escritos como foram gravados. O mapa do início da sessão tomou o lugar dos
 /// três.
-const RETIRED_ROUTER_PARTS: [&str; 3] =
-    [".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md", ".claude/mustard/material.md"];
+const RETIRED_ROUTER_PARTS: [&str; 3] = [".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md", ".claude/mustard/material.md"];
 
 /// Troca as três partes do roteador antigo pelo mapa do início da sessão.
 ///
@@ -532,7 +494,7 @@ fn retire_agents(claude_dir: &Path) -> Vec<&'static str> {
 mod tests {
     use super::*;
     use crate::platform::git;
-    use crate::platform::project_seed::{upsert_project, InstallMode};
+    use crate::platform::project_seed::{InstallMode, upsert_project};
     use std::fs as std_fs;
     use tempfile::tempdir;
 
@@ -579,11 +541,7 @@ mod tests {
         std_fs::create_dir_all(&claude).unwrap();
         // An ignore file from an older install: two of the seed's patterns, plus
         // a line only this project's user knows about.
-        std_fs::write(
-            claude.join(".gitignore"),
-            "# Mustard harness scratch\n.cache/\nworktrees/\n\n# mine\nmy-notes/\n",
-        )
-        .unwrap();
+        std_fs::write(claude.join(".gitignore"), "# Mustard harness scratch\n.cache/\nworktrees/\n\n# mine\nmy-notes/\n").unwrap();
 
         let outcome = seed_gitignore(&claude, false).unwrap();
 
@@ -596,25 +554,14 @@ mod tests {
             if pattern.is_empty() || pattern.starts_with('#') {
                 continue;
             }
-            assert!(
-                merged.lines().any(|l| l.trim() == pattern),
-                "seed pattern {pattern:?} missing after the merge: {merged}",
-            );
+            assert!(merged.lines().any(|l| l.trim() == pattern), "seed pattern {pattern:?} missing after the merge: {merged}");
         }
-        assert_eq!(
-            merged.lines().filter(|l| l.trim() == ".cache/").count(),
-            1,
-            "a pattern already present is not appended twice: {merged}",
-        );
+        assert_eq!(merged.lines().filter(|l| l.trim() == ".cache/").count(), 1, "a pattern already present is not appended twice: {merged}");
 
         // Convergence: the same call over the merged file changes nothing.
         let second = seed_gitignore(&claude, false).unwrap();
         assert_eq!(second, SeedOutcome::Preserved, "the merge is idempotent");
-        assert_eq!(
-            std_fs::read_to_string(claude.join(".gitignore")).unwrap(),
-            merged,
-            "…byte for byte",
-        );
+        assert_eq!(std_fs::read_to_string(claude.join(".gitignore")).unwrap(), merged, "…byte for byte");
     }
 
     #[test]
@@ -627,10 +574,7 @@ mod tests {
 
         assert_eq!(seed_gitignore(&claude, false).unwrap(), SeedOutcome::Created);
 
-        assert_eq!(
-            std_fs::read_to_string(claude.join(".gitignore")).unwrap(),
-            CLAUDE_GITIGNORE,
-        );
+        assert_eq!(std_fs::read_to_string(claude.join(".gitignore")).unwrap(), CLAUDE_GITIGNORE,);
     }
 
     /// Uma instalação anterior à lista de pendências recebe `pending/` pelo merge
@@ -666,10 +610,7 @@ mod tests {
     fn the_seeded_gitignore_holds_back_the_gate_markers() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        assert!(
-            git::run(root, &["init", "-q"]).ok,
-            "the test measures git's decision, so it needs a real repository",
-        );
+        assert!(git::run(root, &["init", "-q"]).ok, "the test measures git's decision, so it needs a real repository");
 
         let claude = root.join(".claude");
         std_fs::create_dir_all(&claude).unwrap();
@@ -716,23 +657,12 @@ mod tests {
         // The stale inject entry is gone, and the old router part gave way to
         // the session map.
         let config = ProjectConfig::load(root);
-        assert!(
-            !config.inject.iter().any(|e| e.file.ends_with("response-style.md")),
-            "response-style entry retired: {:?}",
-            config.inject,
-        );
+        assert!(!config.inject.iter().any(|e| e.file.ends_with("response-style.md")), "response-style entry retired: {:?}", config.inject);
         assert_eq!(config.inject, default_inject_entries());
         // The orphaned instruction file is deleted.
-        assert!(
-            !claude.join("mustard/response-style.md").exists(),
-            "orphan response-style.md removed"
-        );
+        assert!(!claude.join("mustard/response-style.md").exists(), "orphan response-style.md removed");
         // And the migration is reported.
-        assert!(
-            report.migrated.iter().any(|m| m.contains("response-style")),
-            "migration reported: {:?}",
-            report.migrated
-        );
+        assert!(report.migrated.iter().any(|m| m.contains("response-style")), "migration reported: {:?}", report.migrated);
     }
 
     /// Um projeto instalado com o roteador antigo — as três partes declaradas
@@ -783,11 +713,7 @@ mod tests {
     fn a_list_without_the_router_is_left_alone() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std_fs::write(
-            root.join("mustard.json"),
-            r#"{"version":"1.0.0","inject":[{"on":"sessionStart","file":"docs/my-rules.md","once":false}]}"#,
-        )
-        .unwrap();
+        std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","inject":[{"on":"sessionStart","file":"docs/my-rules.md","once":false}]}"#).unwrap();
 
         let report = upsert_project(root, None, InstallMode::Shared).unwrap();
 
@@ -819,8 +745,7 @@ mod tests {
         let migrated = migrate_inject_declarations(root, &root.join(".claude"));
 
         let config = ProjectConfig::load(root);
-        let entries: Vec<(&str, &str, bool)> =
-            config.inject.iter().map(|e| (e.on.as_str(), e.file.as_str(), e.once)).collect();
+        let entries: Vec<(&str, &str, bool)> = config.inject.iter().map(|e| (e.on.as_str(), e.file.as_str(), e.once)).collect();
         assert_eq!(
             entries,
             [
@@ -891,11 +816,8 @@ mod tests {
         for (rel, body) in harness_texts(Locale::EnUs, AgentSettings::default()) {
             assert_eq!(std_fs::read_to_string(claude.join(&rel)).unwrap(), body, "{rel}");
         }
-        let agents: Vec<String> = std_fs::read_dir(claude.join("agents/mustard"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let agents: Vec<String> =
+            std_fs::read_dir(claude.join("agents/mustard")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(agents.len(), 2, "{agents:?}");
     }
 

@@ -8,8 +8,8 @@
 
 mod classify;
 mod condense;
-mod facts;
 mod extract;
+mod facts;
 mod graph;
 mod history;
 mod ingest;
@@ -33,11 +33,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(
-    name = "grain",
-    version,
-    about = "Map a codebase (files, declarations, links, history and stacks) into a language-agnostic model."
-)]
+#[command(name = "grain", version = env!("MUSTARD_VERSION_FULL"), about = "Map a codebase (files, declarations, links, history and stacks) into a language-agnostic model.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -222,11 +218,7 @@ fn main() -> Result<()> {
                 } else {
                     println!("\nMap unchanged at {}", out.display());
                 }
-                println!(
-                    "Read {} file(s){}",
-                    analysis.read.len(),
-                    if analysis.full { " (every file)" } else { " (only what changed)" }
-                );
+                println!("Read {} file(s){}", analysis.read.len(), if analysis.full { " (every file)" } else { " (only what changed)" });
             }
         }
         Command::Format => println!("{}", refresh::FORMAT),
@@ -258,9 +250,7 @@ fn main() -> Result<()> {
             // A leitura roda em segundo plano enquanto o usuário busca no mapa:
             // a busca passa na frente dela.
             lower_priority();
-            let moves = moves.unwrap_or_else(|| {
-                ProjectConfig::load(&path).history_moves().or(mustard_core::domain::project_map::MOVES_FOLLOWED)
-            });
+            let moves = moves.unwrap_or_else(|| ProjectConfig::load(&path).history_moves().or(mustard_core::domain::project_map::MOVES_FOLLOWED));
             let report = history::run_all(&path, &out, moves, batch, newest)?;
             // O resumo de cada declaração junta os títulos dos commits que a
             // mudaram, e a história acabou de chegar: o vetor se refaz só nas
@@ -356,14 +346,8 @@ fn census_pass(root: &Path, out: &Path, all: bool, max_same_name: usize) -> Opti
 /// contents gave, without opening the files again. A signature counts only in
 /// the files of its stack's language ([`signal_fits_file`]).
 fn code_evidence<'a>(modules: impl Iterator<Item = &'a Module>) -> Vec<String> {
-    let signals: BTreeSet<&str> = modules
-        .flat_map(|m| m.signals.iter().filter(|signal| signal_fits_file(signal, &m.path)).map(String::as_str))
-        .collect();
-    if signals.is_empty() {
-        Vec::new()
-    } else {
-        vec![signals.into_iter().collect::<Vec<_>>().join("\n")]
-    }
+    let signals: BTreeSet<&str> = modules.flat_map(|m| m.signals.iter().filter(|signal| signal_fits_file(signal, &m.path)).map(String::as_str)).collect();
+    if signals.is_empty() { Vec::new() } else { vec![signals.into_iter().collect::<Vec<_>>().join("\n")] }
 }
 
 /// Whether the code signature `signal`, found in the file at `path`, is code
@@ -382,8 +366,7 @@ fn signal_fits_file(signal: &str, path: &str) -> bool {
         return true;
     };
     let wanted = extract::family(&stack_language.to_ascii_lowercase());
-    wanted.is_empty()
-        || extract::detect_language(Path::new(path)).is_some_and(|language| extract::family(&language) == wanted)
+    wanted.is_empty() || extract::detect_language(Path::new(path)).is_some_and(|language| extract::family(&language) == wanted)
 }
 
 /// What one read of the project gives before the declarations are linked:
@@ -456,32 +439,24 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             // additive provenance on the module. The map keeps the module —
             // its file, its place in the graph and its declarations — and
             // leaves it out of its search and of its examples.
-            let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
-                .map(|c| (c.class, c.marker))
-                .unwrap_or_default();
+            let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides).map(|c| (c.class, c.marker)).unwrap_or_default();
             // A classe sai antes da leitura, e a leitura pula o que o arquivo
             // não guarda. Os comentários e os nomes de dentro das declarações
             // do arquivo escrito por máquina ficam fora da busca; os do
             // arquivo de teste ficam, como a documentação dele. O texto fixo e
             // a rota do arquivo de teste são do teste, e os do escrito por
             // máquina ficam fora da busca: nenhum dos dois guarda os seus.
-            let keep = extract::Keep {
-                written_text: file_class.is_empty(),
-                texts_and_routes: file_class.is_empty() && !is_test_path(&sf.rel_path),
-            };
+            let keep = extract::Keep { written_text: file_class.is_empty(), texts_and_routes: file_class.is_empty() && !is_test_path(&sf.rel_path) };
             // A dependência do manifesto mais próximo acima liga a regra de
             // rota sem import no arquivo; o import global de outro arquivo,
             // só conhecido depois da leitura de todos, liga logo abaixo.
             let analyzer = analyzers.get(sf.language.as_str());
             let manifest_deps = match analyzer {
-                Some(a) if keep.texts_and_routes && a.routes_follow_manifests() => {
-                    graph::nearest_manifest_deps(&sf.rel_path, &ing.manifests)
-                }
+                Some(a) if keep.texts_and_routes && a.routes_follow_manifests() => graph::nearest_manifest_deps(&sf.rel_path, &ing.manifests),
                 _ => Vec::new(),
             };
             let folder = markup::imports_above(&imports_files, &sf.rel_path, &sf.language);
-            let project =
-                routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path, folder: &folder };
+            let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path, folder: &folder };
             let extracted = analyzer.map(|a| a.extract(&sf.content, keep, &project)).unwrap_or_default();
             Some(Module {
                 path: sf.rel_path.clone(),
@@ -508,6 +483,9 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 tests: Vec::new(),
                 has_tests: testmap::has_inline_tests(&sf.content),
                 quality: Default::default(),
+                analysis: Some(serde_json::json!({"parse_complete":extracted.parse_complete,
+                    "origin":if analyzer.is_some(){"tree-sitter"}else{"unsupported"},
+                    "relations":"syntactic-candidates", "tests":"candidates-not-coverage"})),
                 signals: code_signals(&sf.content),
                 calls: extracted.calls,
                 unbound_heads: extracted.unbound_heads,
@@ -575,11 +553,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
 /// lido de novo, com esse import, e fica com as rotas dessa leitura. O arquivo
 /// tomado do mapa anterior já as tem: a mudança de import global relê os
 /// arquivos da língua (ver [`refresh::stale_citers`]).
-fn routes_by_global_imports(
-    ing: &ingest::Ingested,
-    modules: &mut [Module],
-    analyzers: &extract::Registry,
-) {
+fn routes_by_global_imports(ing: &ingest::Ingested, modules: &mut [Module], analyzers: &extract::Registry) {
     let reach = graph::global_reach(modules, &ing.manifests);
     if reach.is_empty() {
         return;
@@ -595,16 +569,10 @@ fn routes_by_global_imports(
         .iter()
         .enumerate()
         .zip(reaching)
-        .filter(|((_, m), globals)| {
-            !globals.is_empty() && read.contains(m.path.as_str()) && m.file_class.is_empty() && !is_test_path(&m.path)
-        })
+        .filter(|((_, m), globals)| !globals.is_empty() && read.contains(m.path.as_str()) && m.file_class.is_empty() && !is_test_path(&m.path))
         .filter_map(|((at, m), globals)| {
             let analyzer = analyzers.get(m.language.as_str())?;
-            let manifest_deps = if analyzer.routes_follow_manifests() {
-                graph::nearest_manifest_deps(&m.path, &ing.manifests)
-            } else {
-                Vec::new()
-            };
+            let manifest_deps = if analyzer.routes_follow_manifests() { graph::nearest_manifest_deps(&m.path, &ing.manifests) } else { Vec::new() };
             let imports: Vec<String> = m.imports.iter().chain(&m.global_imports).cloned().collect();
             let less = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &m.path, folder: &[] };
             let more = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &m.path, folder: &[] };
@@ -615,8 +583,7 @@ fn routes_by_global_imports(
     let keep = extract::Keep { written_text: false, texts_and_routes: true };
     let found = ingest::in_parallel(again, |(at, analyzer, globals, manifest_deps)| {
         let content = std::fs::read_to_string(ing.root.join(&modules[at].path)).ok()?;
-        let project =
-            routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &modules[at].path, folder: &[] };
+        let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &modules[at].path, folder: &[] };
         let extracted = analyzer.extract(&content, keep, &project);
         Some((at, extracted.routes, extracted.route_links, extracted.route_calls))
     });
@@ -690,12 +657,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
     let head = refresh::head(&ing.root);
     let base = listing.as_ref().map(|l| l.base.clone()).unwrap_or_default();
     let history = match &head {
-        Some(_) => refresh::history(
-            &ing.root,
-            &base,
-            same.map(|p| &p.history),
-            same.map_or("", |p| p.state.base_tip.as_str()),
-        ),
+        Some(_) => refresh::history(&ing.root, &base, same.map(|p| &p.history), same.map_or("", |p| p.state.base_tip.as_str())),
         None => History::default(),
     };
     testmap::assign(&mut modules, &history);
@@ -758,11 +720,7 @@ fn stacks(
 ) -> (Vec<mustard_core::domain::vocabulary::stacks::StackDetection>, Vec<model::ProjectUnit>) {
     use mustard_core::domain::vocabulary::stacks::infer_stacks;
 
-    let evidence_deps: Vec<String> = manifests
-        .iter()
-        .filter(|m| !is_test_path(&m.path))
-        .flat_map(|m| m.dependencies.iter().cloned())
-        .collect();
+    let evidence_deps: Vec<String> = manifests.iter().filter(|m| !is_test_path(&m.path)).flat_map(|m| m.dependencies.iter().cloned()).collect();
     let evidence_paths: Vec<String> = walk_paths.iter().filter(|p| !is_test_path(p)).cloned().collect();
     let evidence_code = code_evidence(modules.iter().filter(|m| !is_test_path(&m.path)));
     let detected_stacks = infer_stacks(&evidence_deps, &evidence_paths, &evidence_code);
@@ -786,16 +744,10 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
     // Project name was derived at ingest time per the manifest's own rule
     // (manifests.toml) — no build-system literal here. Fall back to the dir.
     let name_of = |m: &model::Manifest| -> String {
-        if !m.name.is_empty() {
-            m.name.clone()
-        } else {
-            dir_of(&m.path).rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("(root)").to_string()
-        }
+        if !m.name.is_empty() { m.name.clone() } else { dir_of(&m.path).rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("(root)").to_string() }
     };
-    let mut projects: Vec<ProjectUnit> = manifests
-        .iter()
-        .map(|m| ProjectUnit { name: name_of(m), dir: dir_of(&m.path), kind: m.kind.clone(), code_files: 0, ..Default::default() })
-        .collect();
+    let mut projects: Vec<ProjectUnit> =
+        manifests.iter().map(|m| ProjectUnit { name: name_of(m), dir: dir_of(&m.path), kind: m.kind.clone(), code_files: 0, ..Default::default() }).collect();
     // longest-prefix attribution
     for md in modules {
         let mut best: Option<usize> = None;
@@ -832,12 +784,7 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
 /// paths arrive sorted from `ingest` and prefix-filtering preserves that order;
 /// for a single-unit repo the result coincides with the model-level field by
 /// construction.
-fn infer_unit_stacks(
-    projects: &mut [model::ProjectUnit],
-    manifests: &[model::Manifest],
-    walk_paths: &[String],
-    modules: &[Module],
-) {
+fn infer_unit_stacks(projects: &mut [model::ProjectUnit], manifests: &[model::Manifest], walk_paths: &[String], modules: &[Module]) {
     use mustard_core::domain::vocabulary::stacks::infer_stacks;
     // Immutable snapshot for the longest-prefix ownership test while mutating.
     let snapshot: Vec<model::ProjectUnit> = projects.to_vec();
@@ -848,19 +795,9 @@ fn infer_unit_stacks(
         // that ships fixtures of another stack must not report that stack as
         // its own.
         let owned = facts::owned_manifests(project, &snapshot, manifests);
-        let deps: Vec<String> = owned
-            .iter()
-            .filter(|m| !is_test_path(&m.path))
-            .flat_map(|m| m.dependencies.iter().cloned())
-            .collect();
-        let paths: Vec<String> = walk_paths
-            .iter()
-            .filter(|p| facts::dir_contains(&project.dir, p) && !is_test_path(p))
-            .cloned()
-            .collect();
-        let contents = code_evidence(
-            modules.iter().filter(|m| facts::dir_contains(&project.dir, &m.path) && !is_test_path(&m.path)),
-        );
+        let deps: Vec<String> = owned.iter().filter(|m| !is_test_path(&m.path)).flat_map(|m| m.dependencies.iter().cloned()).collect();
+        let paths: Vec<String> = walk_paths.iter().filter(|p| facts::dir_contains(&project.dir, p) && !is_test_path(p)).cloned().collect();
+        let contents = code_evidence(modules.iter().filter(|m| facts::dir_contains(&project.dir, &m.path) && !is_test_path(&m.path)));
         project.detected_stacks = infer_stacks(&deps, &paths, &contents);
     }
 }
@@ -904,7 +841,8 @@ fn print_summary(model: &ProjectModel) {
         println!("dependencies: {}", model.frameworks.join(", "));
     }
     if model.projects.len() > 1 {
-        let ps: Vec<String> = model.projects.iter().map(|p| format!("{} ({}, {} files)", p.name, if p.dir.is_empty() { "." } else { &p.dir }, p.code_files)).collect();
+        let ps: Vec<String> =
+            model.projects.iter().map(|p| format!("{} ({}, {} files)", p.name, if p.dir.is_empty() { "." } else { &p.dir }, p.code_files)).collect();
         println!("projects: {}", ps.join("; "));
     }
     println!("graph: {} modules, {} edges, cyclic={}", model.graph.nodes, model.graph.edges, model.graph.cyclic);
@@ -935,6 +873,49 @@ mod shouting_words;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_changes_deletions_and_new_files_match_a_complete_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "mod math; pub fn total() -> u32 { math::sum() }\n").unwrap();
+        std::fs::write(root.join("src/math.rs"), "pub fn sum() -> u32 { 1 }\n").unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "Cargo.toml", "src"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let ran = std::process::Command::new("git").args(args).current_dir(root).output().unwrap();
+            assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        }
+        let first = analyze(root, None, 20).unwrap();
+        let db = root.join(".claude/grain.db");
+        first.model.save(&db, refresh::FORMAT, &Languages::of_project(root)).unwrap();
+        let previous = ProjectModel::load(&db).unwrap();
+        std::fs::remove_file(root.join("src/math.rs")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "mod new_math; pub fn total() -> u32 { new_math::sum() }\n").unwrap();
+        std::fs::write(root.join("src/new_math.rs"), "pub fn sum() -> u32 { 2 }\n").unwrap();
+        let incremental = analyze(root, Some(&previous), 20).unwrap();
+        let complete = analyze(root, None, 20).unwrap();
+        assert!(!incremental.full, "the actual incremental path must execute");
+        assert_eq!(serde_json::to_value(&incremental.model.modules).unwrap(), serde_json::to_value(&complete.model.modules).unwrap());
+        assert_eq!(serde_json::to_value(&incremental.model.graph).unwrap(), serde_json::to_value(&complete.model.graph).unwrap());
+    }
 
     fn manifest(path: &str, kind: &str, name: &str) -> model::Manifest {
         model::Manifest { path: path.into(), kind: kind.into(), name: name.into(), ..Default::default() }
@@ -968,13 +949,7 @@ mod tests {
         assert_eq!(evidence(&[module_with_signals("app/Post.php", &["extends Controller"])]), ["extends Controller"]);
 
         // O que os outros arquivos escrevem não empresta a língua a este.
-        assert_eq!(
-            evidence(&[
-                module_with_signals("src/lib.rs", &["next/link"]),
-                module_with_signals("scripts/app.js", &["next/router"]),
-            ]),
-            ["next/router"],
-        );
+        assert_eq!(evidence(&[module_with_signals("src/lib.rs", &["next/link"]), module_with_signals("scripts/app.js", &["next/router"]),]), ["next/router"],);
     }
 
     /// As palavras em maiúsculas fora de crase em `texts`, cada uma uma vez,
@@ -996,23 +971,16 @@ mod tests {
     /// cada valor que o argumento aceita. O defeito diz o comando, o
     /// argumento, quando há, e a palavra.
     fn help_uppercase_defects(path: &str, cmd: &clap::Command, out: &mut Vec<String>) {
-        let own: Vec<String> = [
-            cmd.get_about(),
-            cmd.get_long_about(),
-            cmd.get_before_help(),
-            cmd.get_before_long_help(),
-            cmd.get_after_help(),
-            cmd.get_after_long_help(),
-        ]
-        .into_iter()
-        .flatten()
-        .map(ToString::to_string)
-        .collect();
+        let own: Vec<String> =
+            [cmd.get_about(), cmd.get_long_about(), cmd.get_before_help(), cmd.get_before_long_help(), cmd.get_after_help(), cmd.get_after_long_help()]
+                .into_iter()
+                .flatten()
+                .map(ToString::to_string)
+                .collect();
         push_defects(path, &own, out);
         for arg in cmd.get_arguments() {
             let name = arg.get_long().map_or_else(|| arg.get_id().to_string(), |long| format!("--{long}"));
-            let mut texts: Vec<String> =
-                [arg.get_help(), arg.get_long_help()].into_iter().flatten().map(ToString::to_string).collect();
+            let mut texts: Vec<String> = [arg.get_help(), arg.get_long_help()].into_iter().flatten().map(ToString::to_string).collect();
             texts.extend(arg.get_possible_values().iter().filter_map(|value| value.get_help().map(ToString::to_string)));
             push_defects(&format!("{path} {name}"), &texts, out);
         }
@@ -1050,14 +1018,8 @@ mod tests {
             let (about, help) = (about.to_string(), help.to_string());
             Cli::command().mut_subcommand("scan", move |scan| scan.about(about).mut_arg("all", move |all| all.help(help)))
         };
-        assert_eq!(
-            tree_defects(&with("Writes THE model.", "Reads every file.")),
-            vec!["grain scan: uppercase word THE outside backticks"]
-        );
-        assert_eq!(
-            tree_defects(&with("Writes the model.", "Reads THE files.")),
-            vec!["grain scan --all: uppercase word THE outside backticks"]
-        );
+        assert_eq!(tree_defects(&with("Writes THE model.", "Reads every file.")), vec!["grain scan: uppercase word THE outside backticks"]);
+        assert_eq!(tree_defects(&with("Writes the model.", "Reads THE files.")), vec!["grain scan --all: uppercase word THE outside backticks"]);
         assert_eq!(tree_defects(&with("Writes `THE` model.", "Reads `THE` files.")), Vec::<String>::new());
     }
 
@@ -1073,16 +1035,11 @@ mod tests {
             manifest("rust-toolchain.toml", "cargo", "(root)"),
             manifest("apps/rt/Cargo.toml", "cargo", "rt"),
         ];
-        let modules = vec![
-            module("src/main.rs"),
-            module("build.rs"),
-            module("apps/rt/src/lib.rs"),
-        ];
+        let modules = vec![module("src/main.rs"), module("build.rs"), module("apps/rt/src/lib.rs")];
         let projects = build_projects(&manifests, &modules);
 
         // Exactly one unit per distinct dir — the two root manifests collapse.
-        let root_units: Vec<&model::ProjectUnit> =
-            projects.iter().filter(|p| p.dir.is_empty()).collect();
+        let root_units: Vec<&model::ProjectUnit> = projects.iter().filter(|p| p.dir.is_empty()).collect();
         assert_eq!(root_units.len(), 1, "root must be deduped to one unit: {projects:?}");
         // The surviving root keeps its real file count, never 0.
         assert_eq!(root_units[0].code_files, 2, "root file count merged, not split");

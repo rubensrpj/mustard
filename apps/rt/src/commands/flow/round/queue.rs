@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
-use mustard_core::domain::wave_prompt::{dispatch_items, Choice};
-use serde_json::{json, Map, Value};
+use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
+use serde_json::{Map, Value, json};
 
 use super::leftovers::is_cleanup;
 use super::stops::waves_replanned;
-use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
+use crate::commands::wave::wave_overlap_check::{WaveGraph, wave_graph};
 use crate::shared::dag::{sets_cross, touches_whole_tree};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
@@ -47,12 +47,7 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 /// nunca uma conta própria à parte —, e, se uma onda gravada antes do backlog
 /// trouxer um, a rodada devolve os números do ciclo em vez de escolher uma
 /// ordem às cegas.
-pub(super) fn next_waves(
-    log: &SpecLog,
-    limit: usize,
-    running: &BTreeMap<u64, u64>,
-    stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
-) -> Result<Vec<u64>, Vec<u64>> {
+pub(super) fn next_waves(log: &SpecLog, limit: usize, running: &BTreeMap<u64, u64>, stuck: &BTreeMap<u64, Vec<&SpecEvent>>) -> Result<Vec<u64>, Vec<u64>> {
     outgoing(log, limit, running, stuck, &BTreeSet::new()).map(|out| out.go)
 }
 
@@ -150,9 +145,7 @@ pub(super) fn outgoing(
     let mut whole_tree_out = running.keys().any(|n| graph.files.get(n).is_some_and(touches_whole_tree));
     let mut go = Vec::new();
     let mut fresh = 0;
-    let (own, rest): (Vec<u64>, Vec<u64>) = ready_in_order(&depends, &graph, &already_out, &delivered, &done)?
-        .into_iter()
-        .partition(|n| holding.contains(n));
+    let (own, rest): (Vec<u64>, Vec<u64>) = ready_in_order(&depends, &graph, &already_out, &delivered, &done)?.into_iter().partition(|n| holding.contains(n));
     for n in own.into_iter().chain(rest) {
         if whole_tree_out || (!holding.contains(&n) && fresh >= slots) {
             break;
@@ -215,10 +208,7 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
             if ids.iter().any(|id| *id > sent) {
                 return false;
             }
-            let judged_before = verdicts
-                .get(n)
-                .and_then(|list| list.iter().rev().find(|v| v.id < sent))
-                .and_then(|v| v.str_field("result"));
+            let judged_before = verdicts.get(n).and_then(|list| list.iter().rev().find(|v| v.id < sent)).and_then(|v| v.str_field("result"));
             !ids.iter().any(|id| *id < sent) || judged_before == Some("rejected")
         })
         .collect()
@@ -230,8 +220,7 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// que a rodada ou o fechamento grava ao assumi-la.
 pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
     let visible = log.visible();
-    let asked =
-        visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
+    let asked = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
     (!visible.iter().any(|e| e.event_type == "verdict" && e.id > asked)).then_some(asked)
 }
 
@@ -262,7 +251,9 @@ pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>)
 /// fechado; fora do Linux, onde nada é dado como órfão, conta como aberto:
 /// quem decide aí é a pausa que o orquestrador manda.
 fn claude_still_here(log: &SpecLog, sent: u64) -> bool {
-    let Some(event) = log.get(sent) else { return false };
+    let Some(event) = log.get(sent) else {
+        return false;
+    };
     match (event.int("claude_pid"), event.int("claude_started")) {
         #[allow(clippy::cast_possible_truncation)]
         (Some(pid), Some(started)) => crate::commands::flow::stuck::process_alive(pid as u32, started),
@@ -322,9 +313,7 @@ pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -
 /// agente novo grava o Claude Code dele, e a regra de sempre volta a valer.
 fn rejected_unclaimed(log: &SpecLog, wave: u64, sent: u64) -> bool {
     let unclaimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_none());
-    unclaimed
-        && super::rejection::rejection_of(log, wave)
-            .is_some_and(|(back, _)| super::rejection::pending_return(log, wave) == Some(back))
+    unclaimed && super::rejection::rejection_of(log, wave).is_some_and(|(back, _)| super::rejection::pending_return(log, wave) == Some(back))
 }
 
 /// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou
@@ -344,9 +333,7 @@ pub(crate) fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
 /// binário — e não a combinação à mão do plano: só a de lote devolve tarefa
 /// ao backlog quando cortada, porque só ela é o que o backlog empacota de novo.
 pub(crate) fn backlog_wave(log: &SpecLog, n: u64) -> bool {
-    log.visible().into_iter().any(|event| {
-        event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary")
-    })
+    log.visible().into_iter().any(|event| event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary"))
 }
 
 /// Minutos desde a última ação da onda `wave`: a mais nova entre a hora do
@@ -359,15 +346,13 @@ pub(crate) fn backlog_wave(log: &SpecLog, n: u64) -> bool {
 pub(crate) fn silent_minutes(root: &Path, spec: &str, wave: u64, log: &SpecLog, sent: u64) -> Option<i64> {
     let parse = |raw: &str| chrono::DateTime::parse_from_rfc3339(raw.trim()).ok();
     let send = log.get(sent);
-    let copy = send.and_then(|event| event.str_field("copy").map(str::to_string)).or_else(|| {
-        mustard_core::io::wave_prompt::recorded_copy(log, wave).map(|copy| copy.path)
-    });
+    let copy = send
+        .and_then(|event| event.str_field("copy").map(str::to_string))
+        .or_else(|| mustard_core::io::wave_prompt::recorded_copy(log, wave).map(|copy| copy.path));
     let from_file = copy
         .filter(|copy| mustard_core::io::wave_prompt::is_slot_of(root, spec, copy))
         .and_then(|copy| Path::new(&copy).file_name().map(|name| name.to_string_lossy().into_owned()))
-        .and_then(|slot| {
-            std::fs::read_to_string(crate::hooks::observe::wave_alive_observer::alive_path(root, spec, &slot)).ok()
-        })
+        .and_then(|slot| std::fs::read_to_string(crate::hooks::observe::wave_alive_observer::alive_path(root, spec, &slot)).ok())
         .and_then(|raw| parse(&raw));
     let from_send = send.and_then(|event| parse(event.at()));
     let at = match (from_file, from_send) {
@@ -443,11 +428,7 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_dispatch_by_wave();
     let replanned = waves_replanned(log);
-    waves_pending_fix(log)
-        .into_iter()
-        .filter(|(n, id)| replanned.contains(n) || last_send.get(n).is_none_or(|sent| sent < id))
-        .map(|(n, _)| n)
-        .collect()
+    waves_pending_fix(log).into_iter().filter(|(n, id)| replanned.contains(n) || last_send.get(n).is_none_or(|sent| sent < id)).map(|(n, _)| n).collect()
 }
 
 /// As ondas prontas para sair, na ordem do grafo de dependências que
@@ -484,15 +465,10 @@ fn ready_in_order(
         })
         .map(|(n, _)| *n)
         .collect();
-    let deps: BTreeMap<u64, BTreeSet<u64>> =
-        depends.iter().map(|(n, on)| (*n, on.iter().copied().collect())).collect();
+    let deps: BTreeMap<u64, BTreeSet<u64>> = depends.iter().map(|(n, on)| (*n, on.iter().copied().collect())).collect();
     let unlocks = task_unlocks(&deps);
-    let mut order: Vec<(u32, std::cmp::Reverse<usize>, u64)> = depends
-        .keys()
-        .map(|&n| {
-            (graph.level.get(&n).copied().unwrap_or(0), std::cmp::Reverse(unlocks.get(&n).copied().unwrap_or(0)), n)
-        })
-        .collect();
+    let mut order: Vec<(u32, std::cmp::Reverse<usize>, u64)> =
+        depends.keys().map(|&n| (graph.level.get(&n).copied().unwrap_or(0), std::cmp::Reverse(unlocks.get(&n).copied().unwrap_or(0)), n)).collect();
     order.sort_unstable();
     Ok(order.into_iter().map(|(_, _, n)| n).filter(|n| candidates.contains(n)).collect())
 }
@@ -553,12 +529,9 @@ pub(super) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
 pub(super) fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
     let raw = match EventRef::from_value(value)? {
         EventRef::Id(id) => id,
-        EventRef::Code(code) => log
-            .visible()
-            .into_iter()
-            .filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code))
-            .map(|event| event.id)
-            .next_back()?,
+        EventRef::Code(code) => {
+            log.visible().into_iter().filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code)).map(|event| event.id).next_back()?
+        }
     };
     log.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
 }
@@ -677,11 +650,7 @@ pub(crate) fn tasks_not_delivered(log: &SpecLog, returning: &BTreeSet<u64>) -> B
         .filter(|e| e.event_type == "task")
         .filter(|t| t.wave().is_some_and(|w| planned.contains(&w) && !done_waves.contains(&w)))
         .map(|t| t.id);
-    backlog_left(log)
-        .into_iter()
-        .chain(in_open_wave)
-        .filter(|id| log.get(*id).and_then(SpecEvent::wave).is_none_or(|w| !returning.contains(&w)))
-        .collect()
+    backlog_left(log).into_iter().chain(in_open_wave).filter(|id| log.get(*id).and_then(SpecEvent::wave).is_none_or(|w| !returning.contains(&w))).collect()
 }
 
 /// Uma tarefa ainda por entregar, como a leitura do backlog a mostra: o
@@ -777,6 +746,7 @@ pub(super) fn backlog_ready_without(log: &SpecLog, undone: &BTreeSet<u64>) -> Ve
 /// backlog formou e ainda não saiu inclusive. A onda de lote que ficou sem
 /// tarefa saiu do plano e não aparece, nem com a entrega gravada em nome
 /// dela. A página da spec lista as ondas por aqui, e só por aqui.
+#[cfg(test)]
 pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveStates {
     use mustard_core::view::document::WaveState;
     let running = waves_in_progress(log);
@@ -802,10 +772,7 @@ pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveSt
 /// O cenário da volta com tarefa não feita, que os testes da entrega também
 /// usam.
 #[cfg(test)]
-pub(super) use tests::{
-    backlog_project, backlog_task_on, return_with_an_undone_task, seed_running, spec_now, task_now, wave_order,
-    UndoneReturn, SIX_FILES,
-};
+pub(super) use tests::{SIX_FILES, UndoneReturn, backlog_project, backlog_task_on, return_with_an_undone_task, seed_running, spec_now, task_now, wave_order};
 
 #[cfg(test)]
 mod tests {
@@ -816,7 +783,7 @@ mod tests {
     use mustard_core::domain::spec_state::PhaseWriter;
     use mustard_core::io::spec_events as store;
     use mustard_core::io::wave_prompt::{shown, slot_path};
-    use mustard_core::platform::i18n::{translate, Locale};
+    use mustard_core::platform::i18n::{Locale, translate};
     use tempfile::tempdir;
 
     use super::*;
@@ -981,17 +948,7 @@ mod tests {
         // quatro; a quinta espera.
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(
-            root,
-            "x",
-            &[
-                (1, &["src/a.rs"], &[]),
-                (2, &["src/b.rs"], &[]),
-                (3, &["src/c.rs"], &[]),
-                (4, &["src/d.rs"], &[]),
-                (5, &["src/e.rs"], &[]),
-            ],
-        );
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[]), (5, &["src/e.rs"], &[])]);
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3, 4], "sem cruzar arquivo, as quatro saem: {out}");
     }
@@ -1037,14 +994,7 @@ mod tests {
         let (dead_pid, dead_started) = closed_process();
         draft["claude_pid"] = json!(dead_pid);
         draft["claude_started"] = json!(dead_started);
-        store::write_at(
-            &path,
-            "send",
-            draft.as_object().cloned().unwrap(),
-            &[],
-            &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
-        )
-        .unwrap();
+        store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()).unwrap();
 
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         let second = round(root, "x", None);
@@ -1067,16 +1017,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        write(
-            root,
-            "x",
-            "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}),
-        );
+        write(root, "x", "delivered", json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}));
 
         let out = round(root, "x", None);
-        let waves: Vec<u64> =
-            out["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
+        let waves: Vec<u64> = out["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(waves, vec![2], "a onda 1 já tem entrega: {out}");
     }
 
@@ -1123,8 +1067,13 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
-        let task = write(root, "x", "task", json!({"wave": 1, "text": "Tarefa nova da onda 1.",
-            "files": [{"path": "src/b.rs"}], "depends_on": [], "origin": said}));
+        let task = write(
+            root,
+            "x",
+            "task",
+            json!({"wave": 1, "text": "Tarefa nova da onda 1.",
+            "files": [{"path": "src/b.rs"}], "depends_on": [], "origin": said}),
+        );
         let task_code = task["code"].as_str().unwrap_or_else(|| panic!("{task}")).to_string();
 
         let again = round(root, "x", None);
@@ -1300,10 +1249,7 @@ mod tests {
 
     /// As refs que guardam código de cópia, no repositório principal.
     fn folder_refs(root: &Path) -> Vec<String> {
-        git_text(root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept"])
-            .lines()
-            .map(str::to_string)
-            .collect()
+        git_text(root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept"]).lines().map(str::to_string).collect()
     }
 
     /// Uma pasta de vaga que o git já não conhece: sem cópia ligada, com o
@@ -1346,9 +1292,7 @@ mod tests {
         let kept = warning_of(&out, "code-kept");
         assert_eq!(kept["ref"], json!(refs[0]), "{out}");
         assert_eq!(kept["files"], json!(["lixo/velho.txt", "src/a.rs", "src/novo.rs"]), "{out}");
-        let hint = translate("round.code_kept_slot", Locale::PtBr)
-            .replace("{copy}", &shown(&slot))
-            .replace("{ref}", &refs[0]);
+        let hint = translate("round.code_kept_slot", Locale::PtBr).replace("{copy}", &shown(&slot)).replace("{ref}", &refs[0]);
         assert_eq!(kept["hint"], json!(hint), "{kept}");
         assert!(slot.join(".git").is_file() && !slot.join("src/novo.rs").exists(), "a cópia nova sai limpa: {out}");
         assert_eq!(git_text(&slot, &["status", "--porcelain"]), "", "{out}");
@@ -1461,11 +1405,7 @@ mod tests {
     /// rodada: o item da lista de cada um.
     fn local_files_missing(out: &Value) -> Vec<String> {
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
-        warnings
-            .iter()
-            .filter(|w| w["reason"] == json!("local-file-missing"))
-            .map(|w| w["file"].as_str().unwrap_or_default().to_string())
-            .collect()
+        warnings.iter().filter(|w| w["reason"] == json!("local-file-missing")).map(|w| w["file"].as_str().unwrap_or_default().to_string()).collect()
     }
 
     /// A cópia nova da onda recebe cada arquivo da lista de arquivos locais
@@ -1722,8 +1662,11 @@ mod tests {
         raw("delivered", json!({"author": "wave", "wave": 2, "text": "Saiu.", "files": ["src/b.rs"]}));
         // O lote 3 tem tarefa e ainda não saiu.
         raw("wave", batch(3));
-        raw("task", json!({"author": "binary", "wave": 3, "text": "Tarefa do lote.", "files": [{"path": "src/c.rs"}],
-            "depends_on": []}));
+        raw(
+            "task",
+            json!({"author": "binary", "wave": 3, "text": "Tarefa do lote.", "files": [{"path": "src/c.rs"}],
+            "depends_on": []}),
+        );
         let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
         assert_eq!(
             wave_states(&log).into_iter().collect::<Vec<_>>(),
@@ -1759,13 +1702,7 @@ mod tests {
         assert_eq!(sent_copy(root, 3), freed, "a 3 usa a vaga que a 2 deixou, e não a da 1 ({held})");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
-        let sent = |wave: u64| {
-            log.visible()
-                .into_iter()
-                .rfind(|e| e.event_type == "send" && e.wave() == Some(wave))
-                .map(|e| codes[&e.id].clone())
-                .unwrap()
-        };
+        let sent = |wave: u64| log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).map(|e| codes[&e.id].clone()).unwrap();
         let running: Vec<Value> = out["running"].as_array().cloned().unwrap_or_default();
         assert_eq!(
             running.iter().map(|r| (r["wave"].clone(), r["send"].clone())).collect::<Vec<_>>(),
@@ -1791,13 +1728,7 @@ mod tests {
         let running = again["running"].as_array().cloned().unwrap_or_default();
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
-        let newest = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "send" && e.wave() == Some(2))
-            .map(|e| codes[&e.id].clone())
-            .next_back()
-            .unwrap();
+        let newest = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(2)).map(|e| codes[&e.id].clone()).next_back().unwrap();
         assert_eq!(running[1]["wave"], json!(2), "o pedido novo é o que conta: {again}");
         assert_eq!(running[1]["send"], json!(newest), "o pedido novo é o que conta: {again}");
 
@@ -1877,21 +1808,33 @@ mod tests {
     fn with_items_to_judge(root: &Path) -> BTreeMap<String, u64> {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let rule = |text: &str| {
-                id_of(&write(root, "x", "rule", json!({"title": text, "text": text, "example": "e", "keys": ["k"],
-                    "applies_to": {"files": ["**"]}, "origin": said})))
+                id_of(&write(
+                    root,
+                    "x",
+                    "rule",
+                    json!({"title": text, "text": text, "example": "e", "keys": ["k"],
+                    "applies_to": {"files": ["**"]}, "origin": said}),
+                ))
             };
             rule("Vale sempre: a tabela nova tem chave.");
             rule("Vale sempre: a spec vira um PR só.");
             let done = rule("Vale sempre: a tabela nova tem índice.");
-            for (text, extra) in [("Sem dono: a tabela nasce vazia.", json!({"keys": ["tabela"]})),
+            for (text, extra) in [
+                ("Sem dono: a tabela nasce vazia.", json!({"keys": ["tabela"]})),
                 ("Sem dono: o download não muda.", json!({"keys": ["índice"]})),
-                ("Da onda um: a coluna é texto.", json!({"waves": [1]}))] {
+                ("Da onda um: a coluna é texto.", json!({"waves": [1]})),
+            ] {
                 let mut body = json!({"title": text, "text": text, "keys": ["k"], "why": "w", "origin": said});
                 body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
                 id_of(&write(root, "x", "decision", body));
             }
-            write(root, "x", "task", json!({"wave": 1, "text": "Criar o índice da tabela.", "files": [{"path": "src/a.rs"}],
-                "depends_on": [], "covers": [done], "origin": said}));
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": "Criar o índice da tabela.", "files": [{"path": "src/a.rs"}],
+                "depends_on": [], "covers": [done], "origin": said}),
+            );
         });
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
@@ -1940,11 +1883,7 @@ mod tests {
     /// As chamadas `wave items` gravadas na spec `x`.
     fn item_calls(root: &Path) -> Vec<Map<String, Value>> {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        log.visible()
-            .into_iter()
-            .filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave items"))
-            .map(|call| call.fields.clone())
-            .collect()
+        log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave items")).map(|call| call.fields.clone()).collect()
     }
 
     /// O Jev, numa chamada por onda, tira do pedido a regra do projeto todo
@@ -1994,12 +1933,15 @@ mod tests {
         }
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(sent.fields["analysis"], json!({
-            "judged": candidates,
-            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Jev p=0.19"}],
-            "added": [{"item": ids["MSTD-DEC-0001"], "why": "Jev p=0.85"}],
-            "judged_lessons": [], "removed_lessons": [],
-        }));
+        assert_eq!(
+            sent.fields["analysis"],
+            json!({
+                "judged": candidates,
+                "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Jev p=0.19"}],
+                "added": [{"item": ids["MSTD-DEC-0001"], "why": "Jev p=0.85"}],
+                "judged_lessons": [], "removed_lessons": [],
+            })
+        );
         let calls = item_calls(root);
         assert_eq!(calls.len(), 1, "{calls:?}");
         let call = &calls[0];
@@ -2029,11 +1971,21 @@ mod tests {
             rule("Dos arquivos: a coluna tem tipo.", json!({}));
             let done = rule("Dos arquivos e da tarefa: o índice é único.", json!({}));
             rule("Dos arquivos e de toda onda: a tabela tem dono.", json!({"every_wave": true}));
-            write(root, "x", "decision", json!({"title": "Dos arquivos e da onda um: a coluna é texto.",
+            write(
+                root,
+                "x",
+                "decision",
+                json!({"title": "Dos arquivos e da onda um: a coluna é texto.",
                 "text": "Dos arquivos e da onda um: a coluna é texto.", "keys": ["k"], "why": "w",
-                "waves": [1], "applies_to": files, "origin": said}));
-            write(root, "x", "task", json!({"wave": 1, "text": "Criar o índice da tabela.",
-                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [done], "origin": said}));
+                "waves": [1], "applies_to": files, "origin": said}),
+            );
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": "Criar o índice da tabela.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [done], "origin": said}),
+            );
         });
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
@@ -2074,12 +2026,15 @@ mod tests {
         }
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(sent.fields["analysis"], json!({
-            "judged": [ids["MSTD-RULE-0001"], ids["MSTD-RULE-0002"]],
-            "removed": [{"item": ids["MSTD-RULE-0001"], "why": "Jev p=0.19"}],
-            "added": [],
-            "judged_lessons": [], "removed_lessons": [],
-        }));
+        assert_eq!(
+            sent.fields["analysis"],
+            json!({
+                "judged": [ids["MSTD-RULE-0001"], ids["MSTD-RULE-0002"]],
+                "removed": [{"item": ids["MSTD-RULE-0001"], "why": "Jev p=0.19"}],
+                "added": [],
+                "judged_lessons": [], "removed_lessons": [],
+            })
+        );
     }
 
     /// Sem Jev, o pedido leva os itens ligados aos arquivos da onda como
@@ -2178,10 +2133,20 @@ mod tests {
         approved_with(root, "x", &[], |said| {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
-            write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
-                "done_when": "A suíte passa.", "origin": said}));
-            write(root, "x", "task", json!({"wave": 1, "text": "Somar.",
-                "files": [{"path": "src/a.rs"}], "depends_on": [], "must_read": ["src/a.rs#soma"], "origin": said}));
+            write(
+                root,
+                "x",
+                "wave",
+                json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+                "done_when": "A suíte passa.", "origin": said}),
+            );
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": "Somar.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "must_read": ["src/a.rs#soma"], "origin": said}),
+            );
         });
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":0}"#).unwrap();
         // O que a instalação grava no projeto fica fora do git: a spec que a
@@ -2206,10 +2171,7 @@ mod tests {
 
         // O teto está em zero: nenhuma onda sai, mas o mapa já é conferido.
         // Nada mudou: a ferramenta do scan não roda.
-        fn mine_untouched(
-            _: &Path,
-            _: &Path,
-        ) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
+        fn mine_untouched(_: &Path, _: &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
             panic!("a ferramenta do scan não deveria rodar com o mapa em dia");
         }
         let first = round_with_mine(root, "x", None, &mine_untouched);
@@ -2242,10 +2204,7 @@ mod tests {
         let second = round_with_mine(root, "x", None, &mine_refreshed);
         assert_eq!(waves_in(&second, "dispatch"), vec![1], "{second}");
         let prompt = &request_at(&second, 0);
-        assert!(
-            prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"),
-            "o pedido segue o commit atual: {prompt}"
-        );
+        assert!(prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"), "o pedido segue o commit atual: {prompt}");
         assert!(!prompt.contains("linhas 3-5"), "{prompt}");
     }
 
@@ -2354,18 +2313,10 @@ mod tests {
     /// comando de verdade, não a função auxiliar que só ordena.
     #[test]
     fn same_set_of_waves_always_produces_the_same_dispatch_order() {
-        let plan_a: [(u64, &[&str], &[u64]); 4] = [
-            (10, &["src/a.rs"], &[]),
-            (20, &["src/b.rs"], &[10]),
-            (21, &["src/c.rs"], &[10]),
-            (22, &["src/d.rs"], &[21]),
-        ];
-        let plan_b: [(u64, &[&str], &[u64]); 4] = [
-            (22, &["src/d.rs"], &[21]),
-            (21, &["src/c.rs"], &[10]),
-            (20, &["src/b.rs"], &[10]),
-            (10, &["src/a.rs"], &[]),
-        ];
+        let plan_a: [(u64, &[&str], &[u64]); 4] =
+            [(10, &["src/a.rs"], &[]), (20, &["src/b.rs"], &[10]), (21, &["src/c.rs"], &[10]), (22, &["src/d.rs"], &[21])];
+        let plan_b: [(u64, &[&str], &[u64]); 4] =
+            [(22, &["src/d.rs"], &[21]), (21, &["src/c.rs"], &[10]), (20, &["src/b.rs"], &[10]), (10, &["src/a.rs"], &[])];
         let mut sequences = Vec::new();
         for plan in [plan_a.as_slice(), plan_b.as_slice()] {
             let dir = tempdir().unwrap();
@@ -2373,15 +2324,7 @@ mod tests {
             approved(root, "x", plan);
             let first = round(root, "x", None);
             let second = round(root, "x", Some(&delivered(root, 10, "Saiu.", &["src/a.rs"])));
-            let third = round(
-                root,
-                "x",
-                Some(&format!(
-                    "{}\n{}",
-                    delivered(root, 21, "Saiu.", &["src/c.rs"]),
-                    delivered(root, 20, "Saiu.", &["src/b.rs"])
-                )),
-            );
+            let third = round(root, "x", Some(&format!("{}\n{}", delivered(root, 21, "Saiu.", &["src/c.rs"]), delivered(root, 20, "Saiu.", &["src/b.rs"]))));
             sequences.push(vec![waves_in(&first, "dispatch"), waves_in(&second, "dispatch"), waves_in(&third, "dispatch")]);
         }
         let expected = vec![vec![10], vec![21, 20], vec![22]];
@@ -2412,8 +2355,7 @@ mod tests {
 
     /// A recusa das ondas 4 e 7, que dependem uma da outra, como a pessoa a
     /// lê: as duas pelo número, e nenhuma outra.
-    const WAVE_LOOP_4_7: &str =
-        "As ondas 4, 7 dependem umas das outras em círculo, e nenhuma pode começar. Corte uma das dependências.";
+    const WAVE_LOOP_4_7: &str = "As ondas 4, 7 dependem umas das outras em círculo, e nenhuma pode começar. Corte uma das dependências.";
 
     /// A rodada que recebe a entrega da onda 1 junta, comita e grava a
     /// entrega, e só depois, ao escolher as ondas seguintes, acha as ondas 4 e
@@ -2437,10 +2379,20 @@ mod tests {
         let said = visible.iter().find(|e| e.event_type == "message").unwrap().id;
         let crit = visible.iter().find(|e| e.event_type == "criterion").unwrap().id;
         for (n, on, file) in [(4u64, 7u64, "src/b.rs"), (7, 4, "src/c.rs")] {
-            write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
-                "done_when": "A suíte passa.", "depends_on": [on], "origin": said}));
-            write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
-                "files": [{"path": file}], "depends_on": [], "origin": said}));
+            write(
+                root,
+                "x",
+                "wave",
+                json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+                "done_when": "A suíte passa.", "depends_on": [on], "origin": said}),
+            );
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": [{"path": file}], "depends_on": [], "origin": said}),
+            );
         }
 
         let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
@@ -2467,11 +2419,9 @@ mod tests {
 
         // As instruções de cópia da página, com a recusa como o passo seguinte.
         let next = out["next"].as_str().unwrap_or_default();
-        assert!(next.contains("Leia `.claude/spec/x/copy/next.md`"), "{next}");
         assert!(next.ends_with(WAVE_LOOP_4_7), "{next}");
-        assert!(out["copy"].is_object(), "{out}");
-        let order = std::fs::read_to_string(root.join(".claude/spec/x/copy/next.md")).expect("a ordem de cópia");
-        assert!(order.contains("ArtifactData"), "{order}");
+        assert!(out.get("copy").is_none() && out.get("publish").is_none());
+        assert!(!root.join(".claude/spec/x/copy").exists());
     }
 
     /// A tarefa que sai de uma onda de duas por evento de remoção, depois de a
@@ -2495,18 +2445,8 @@ mod tests {
         // Dois itens combinados sem dono (uma decisão cada), sem prova — o
         // caso que o backlog empacota quando o levantamento marca um item sem
         // onda: `waves` os dá dono antes mesmo de a onda 2 existir.
-        let item1 = id_of(&write(
-            root,
-            "x",
-            "decision",
-            json!({"text": "Um item.", "keys": ["k1"], "why": "porque sim", "waves": [2], "origin": said}),
-        ));
-        let item2 = id_of(&write(
-            root,
-            "x",
-            "decision",
-            json!({"text": "Outro item.", "keys": ["k2"], "why": "porque sim", "waves": [2], "origin": said}),
-        ));
+        let item1 = id_of(&write(root, "x", "decision", json!({"text": "Um item.", "keys": ["k1"], "why": "porque sim", "waves": [2], "origin": said})));
+        let item2 = id_of(&write(root, "x", "decision", json!({"text": "Outro item.", "keys": ["k2"], "why": "porque sim", "waves": [2], "origin": said})));
 
         // Duas tarefas soltas no mesmo arquivo, cada uma cobrindo um item sem
         // prova: o pronto-quando da onda cai nos títulos delas — o mesmo
@@ -2544,14 +2484,8 @@ mod tests {
         assert_eq!(waves.len(), 2, "{out}");
         let prompt = &request_of(&out, waves[1]);
         assert!(!prompt.is_empty(), "the batch wave: {out}");
-        assert!(
-            !prompt.contains("Gravar a versao nova de uma decisao"),
-            "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}"
-        );
-        assert!(
-            prompt.contains("Trocar a mensagem de erro do campo vazio\n"),
-            "o pronto-quando nasce das tarefas visiveis agora: {prompt}"
-        );
+        assert!(!prompt.contains("Gravar a versao nova de uma decisao"), "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}");
+        assert!(prompt.contains("Trocar a mensagem de erro do campo vazio\n"), "o pronto-quando nasce das tarefas visiveis agora: {prompt}");
         for whole in ["A decisao ja foi feita", "Hoje a mensagem nao diz"] {
             assert!(!prompt.contains(whole), "o texto inteiro da tarefa nao entra no pedido: {prompt}");
         }
@@ -2560,13 +2494,7 @@ mod tests {
     /// Os motivos dos avisos do plano que conferiam onda como desenho: ondas
     /// da mesma rodada dividindo arquivo, onda ou spec que podia sair
     /// dividida, e tarefa cujo texto não casa com o da onda.
-    const WAVE_DRAWING_REASONS: [&str; 5] = [
-        "waves-share-a-file",
-        "wave-should-split",
-        "spec-should-split",
-        "task-in-the-wrong-wave",
-        "task-matches-no-wave",
-    ];
+    const WAVE_DRAWING_REASONS: [&str; 5] = ["waves-share-a-file", "wave-should-split", "spec-should-split", "task-in-the-wrong-wave", "task-matches-no-wave"];
 
     /// Um projeto com `src/a.rs` e `src/b.rs` no git e uma spec aprovada sem
     /// onda nenhuma: as tarefas vão para o backlog. Devolve o número da fala
@@ -2586,12 +2514,8 @@ mod tests {
             // O levantamento fechado, ponto a ponto, como o plano exige.
             let goal = "Mexer no código de um e de dois.";
             id_of(&write(root, "x", "context", json!({"text": goal, "origin": said})));
-            let opts = crate::commands::flow::grill::GrillOpts {
-                root: root.to_path_buf(),
-                spec: Some("x".into()),
-                kinds: Some("fix".into()),
-                condensed: false,
-            };
+            let opts =
+                crate::commands::flow::grill::GrillOpts { root: root.to_path_buf(), spec: Some("x".into()), kinds: Some("fix".into()), condensed: false };
             // O `grill` grava os pontos abertos; cada um é fechado pelo número.
             let listed = crate::commands::flow::grill::grill_for(&opts, None);
             for item in listed["points"].as_array().cloned().unwrap_or_default() {
@@ -2608,8 +2532,13 @@ mod tests {
 
     /// Uma tarefa do backlog, gravada pela porta do modelo, num arquivo só.
     fn backlog_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
-        id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": [],
-            "covers": [crit], "origin": said})))
+        id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": text, "files": [{"path": file}], "depends_on": [],
+            "covers": [crit], "origin": said}),
+        ))
     }
 
     /// A spec reaberta, de volta ao levantamento, e o plano rodado de novo
@@ -2625,10 +2554,7 @@ mod tests {
             None,
         );
         assert_eq!(reopened["ok"], json!(true), "{reopened}");
-        let report = crate::commands::flow::plan::plan_for(
-            &crate::commands::flow::plan::PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) },
-            None,
-        );
+        let report = crate::commands::flow::plan::plan_for(&crate::commands::flow::plan::PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let notes = log.visible().into_iter().filter(|e| e.event_type == "note").map(|e| Value::Object(e.fields.clone())).collect();
         (report, notes)
@@ -2641,10 +2567,7 @@ mod tests {
             .iter()
             .flat_map(|field| report[*field].as_array().cloned().unwrap_or_default())
             .filter_map(|f| f["reason"].as_str().map(str::to_string));
-        let noted = notes
-            .iter()
-            .flat_map(|n| n["keys"].as_array().cloned().unwrap_or_default())
-            .filter_map(|k| k.as_str().map(str::to_string));
+        let noted = notes.iter().flat_map(|n| n["keys"].as_array().cloned().unwrap_or_default()).filter_map(|k| k.as_str().map(str::to_string));
         answered.chain(noted).filter(|r| WAVE_DRAWING_REASONS.contains(&r.as_str())).collect()
     }
 
@@ -2668,11 +2591,7 @@ mod tests {
         let again = backlog_task(root, said, crit, "Mexer de novo no código de um.", "src/a.rs");
         let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, max_parallel(root), None),
-            Ok(vec![2, 3]),
-            "cada tarefa nova vira a onda do seu assunto"
-        );
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2, 3]), "cada tarefa nova vira a onda do seu assunto");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
@@ -2689,10 +2608,7 @@ mod tests {
     /// também as versões já substituídas, na ordem em que foram gravadas.
     fn every_line_of(root: &Path, kind: &str) -> Vec<Value> {
         let text = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap();
-        text.lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|event| event["type"] == json!(kind))
-            .collect()
+        text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()).filter(|event| event["type"] == json!(kind)).collect()
     }
 
     /// Duas rodadas ao mesmo tempo, com uma tarefa pronta no backlog, leem a
@@ -2737,8 +2653,7 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let one = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let first_entry = store::read(&path).unwrap().unwrap();
-        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.",
-            &["src/b.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"]);
         let second_entry = store::read(&path).unwrap().unwrap();
 
         // A outra rodada, que entrou antes da tarefa dois, forma a onda 1 com a
@@ -2776,8 +2691,13 @@ mod tests {
         let first = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
 
         let entry = round_entry(root, None);
-        let revised = id_of(&write(root, "x", "task", json!({"replaces": first, "text": "Mexer de outro jeito no código de um.",
-            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+        let revised = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"replaces": first, "text": "Mexer de outro jeito no código de um.",
+            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said}),
+        ));
         let out = round_from(root, None, entry);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "a tarefa revista sai no lote: {out}");
 
@@ -2832,10 +2752,8 @@ mod tests {
     /// verdade.
     #[test]
     fn refused_round_leaves_no_wave_written() {
-        let cases: [(&str, &str, &str); 2] = [
-            ("campo novo", ",\"text\":", "unknown-field"),
-            ("sem dependências", ",\"depends_on\":[]", "task-declaration-missing"),
-        ];
+        let cases: [(&str, &str, &str); 2] =
+            [("campo novo", ",\"text\":", "unknown-field"), ("sem dependências", ",\"depends_on\":[]", "task-declaration-missing")];
         for (case, cut, reason) in cases {
             let dir = tempdir().unwrap();
             let root = dir.path();
@@ -2865,7 +2783,11 @@ mod tests {
 
             assert_eq!(out["ok"], json!(false), "{case}: {out}");
             assert_eq!(out["reason"], json!(reason), "{case}: {out}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), edited, "{case}: a spec fica igual byte a byte");
+            assert_eq!(
+                super::super::tests::without_measurements(&std::fs::read_to_string(&path).unwrap()),
+                super::super::tests::without_measurements(&edited),
+                "{case}: a spec fica igual byte a byte"
+            );
             let log = store::read(&path).unwrap().unwrap();
             assert!(log.visible().iter().all(|e| e.event_type != "wave"), "{case}: nenhuma onda gravada");
         }
@@ -2874,8 +2796,13 @@ mod tests {
     /// Uma tarefa de limpeza do backlog — nasceu de uma sobra que só muda
     /// comentário —, gravada pela porta do modelo, num arquivo só.
     fn cleanup_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
-        id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": [],
-            "covers": [crit], "origin": said, "cleanup": true})))
+        id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": text, "files": [{"path": file}], "depends_on": [],
+            "covers": [crit], "origin": said, "cleanup": true}),
+        ))
     }
 
     /// A spec `x` como está no arquivo agora.
@@ -2914,11 +2841,10 @@ mod tests {
 
         let assumed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(assumed["ok"], json!(true), "{assumed}");
-        assert_eq!(waves_in(&assumed, "dispatch"), Vec::<u64>::new(), "{assumed}");
-        assert_eq!(assumed["command"], json!("mustard-rt run round --spec x"), "{assumed}");
+        assert_eq!(waves_in(&assumed, "dispatch"), vec![2], "the existing cleanup is released in the same round: {assumed}");
 
         let again = round(root, "x", None);
-        assert_eq!(waves_in(&again, "dispatch"), vec![2], "a limpeza sai na onda 2: {again}");
+        assert!(waves_in(&again, "dispatch").is_empty(), "the cleanup was already dispatched: {again}");
         assert_eq!(wave_order(root, 2), vec![tidy], "a onda 2 leva só a limpeza");
 
         let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
@@ -3021,22 +2947,31 @@ mod tests {
     /// Uma tarefa do backlog em vários arquivos, gravada pela porta do modelo.
     /// Seis arquivos declarados: o tamanho com que um lote sai ao lado de
     /// outra onda em andamento.
-    pub(crate) const SIX_FILES: [&str; 6] =
-        ["lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"];
+    pub(crate) const SIX_FILES: [&str; 6] = ["lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"];
 
     /// Um pedido aberto da onda `n`, com o processo deste teste por trás: a
     /// onda está em andamento.
     pub(crate) fn seed_running(root: &Path, n: u64) {
         let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
-        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": n, "role": "wave",
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "send",
+            json!({"wave": n, "role": "wave",
             "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary",
-            "claude_pid": claude_pid, "claude_started": claude_started}));
+            "claude_pid": claude_pid, "claude_started": claude_started}),
+        );
     }
 
     pub(crate) fn backlog_task_on(root: &Path, said: u64, crit: u64, text: &str, files: &[&str]) -> u64 {
         let files: Vec<Value> = files.iter().map(|file| json!({ "path": file })).collect();
-        id_of(&write(root, "x", "task", json!({"text": text, "files": files, "depends_on": [],
-            "covers": [crit], "origin": said})))
+        id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": text, "files": files, "depends_on": [],
+            "covers": [crit], "origin": said}),
+        ))
     }
 
     /// Três assuntos no backlog, cada um num arquivo, e duas vagas: saem duas
@@ -3114,9 +3049,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
-        let tasks: Vec<u64> = (1..=7)
-            .map(|n| backlog_task(root, said, crit, &format!("Mexer no código {n}."), "src/a.rs"))
-            .collect();
+        let tasks: Vec<u64> = (1..=7).map(|n| backlog_task(root, said, crit, &format!("Mexer no código {n}."), "src/a.rs")).collect();
 
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]), "uma onda só");
@@ -3127,7 +3060,7 @@ mod tests {
     /// `kind_of` diz, pelo número da tarefa, com confiança alta.
     fn judging(
         kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
-    ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
+    ) -> impl Fn(&crate::shared::judgement::Board) -> Result<crate::shared::judgement::Judged, mustard_core::domain::map_filter::FilterError> {
         judging_sized(kind_of, |_| 0.0)
     }
 
@@ -3136,22 +3069,17 @@ mod tests {
     fn judging_sized(
         kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
         size_of: impl Fn(u64) -> f64,
-    ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
+    ) -> impl Fn(&crate::shared::judgement::Board) -> Result<crate::shared::judgement::Judged, mustard_core::domain::map_filter::FilterError> {
         move |board| {
             let tasks = board
                 .backlog
                 .iter()
                 .map(|task| {
-                    let judgement = crate::shared::dag::Judgement {
-                        kind: kind_of(task.id),
-                        confidence: 0.9,
-                        clash: 0.0,
-                        size: size_of(task.id),
-                    };
+                    let judgement = crate::shared::dag::Judgement { kind: kind_of(task.id), confidence: 0.9, clash: 0.0, size: size_of(task.id) };
                     (task.id, judgement)
                 })
                 .collect();
-            Ok(crate::shared::jev::Judged { tasks, usage: mustard_core::domain::map_filter::FilterUsage::default() })
+            Ok(crate::shared::judgement::Judged { tasks, usage: mustard_core::domain::map_filter::FilterUsage::default() })
         }
     }
 
@@ -3333,13 +3261,7 @@ mod tests {
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
         seed_running(root, 1);
         let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs"]);
-        let later = backlog_task_on(
-            root,
-            said,
-            crit,
-            "Mexer na parte seguinte.",
-            &["src/a.rs", "doc/1.md", "doc/2.md", "doc/3.md", "doc/4.md", "doc/5.md"],
-        );
+        let later = backlog_task_on(root, said, crit, "Mexer na parte seguinte.", &["src/a.rs", "doc/1.md", "doc/2.md", "doc/3.md", "doc/4.md", "doc/5.md"]);
 
         let judge = judging(|id| if id == small { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
@@ -3405,21 +3327,13 @@ mod tests {
         let assumed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(assumed["ok"], json!(true), "{assumed}");
 
-        assert_eq!(
-            crate::commands::flow::close::finished_refusal(&spec_now(root)),
-            Some(("backlog-not-empty".into(), None)),
-            "{assumed}"
-        );
+        assert_eq!(crate::commands::flow::close::finished_refusal(&spec_now(root)), Some(("wave-without-commit".into(), Some(2))), "{assumed}");
     }
 
     /// As versões de tarefa com o código `code` que a leitura mostra.
     fn shown_task_versions(log: &SpecLog, code: &str) -> Vec<u64> {
         let codes = log.codes();
-        log.visible()
-            .into_iter()
-            .filter(|e| e.event_type == "task" && codes.get(&e.id).map(String::as_str) == Some(code))
-            .map(|e| e.id)
-            .collect()
+        log.visible().into_iter().filter(|e| e.event_type == "task" && codes.get(&e.id).map(String::as_str) == Some(code)).map(|e| e.id).collect()
     }
 
     /// A tarefa `task` solta pela rodada numa onda de lote, e a versão dela
@@ -3464,9 +3378,14 @@ mod tests {
         let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let with_wave = batched(root, task);
         let code = spec_now(root).codes().get(&task).cloned().expect("a tarefa tem código");
-        let by_agent = id_of(&write(root, "x", "task", json!({"replaces": with_wave, "wave": 1,
+        let by_agent = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"replaces": with_wave, "wave": 1,
             "text": "Mexer de outro jeito no código de um.", "files": [{"path": "src/a.rs"}],
-            "depends_on": [], "covers": [crit], "origin": said})));
+            "depends_on": [], "covers": [crit], "origin": said}),
+        ));
         assert_eq!(shown_task_versions(&spec_now(root), &code), vec![by_agent], "a versão do agente é a vigente");
 
         let removed = write(root, "x", "remove", json!({"targets": [with_wave], "reason": "Não é mais preciso."}));
@@ -3494,9 +3413,7 @@ mod tests {
         let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Não é mais preciso."}));
         assert_eq!(removed["ok"], json!(true), "{removed}");
 
-        let Err(refusal) = record(root, "x", "task", draft, PhaseWriter::Binary) else {
-            panic!("a versão nova sobre a tarefa removida foi gravada")
-        };
+        let Err(refusal) = record(root, "x", "task", draft, PhaseWriter::Binary) else { panic!("a versão nova sobre a tarefa removida foi gravada") };
         assert_eq!(refusal.reason(), "replaces-removed", "{refusal:?}");
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "a tarefa segue fora");
@@ -3513,12 +3430,15 @@ mod tests {
         let (said, crit) = backlog_project(root);
         let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let draft = task_revision(&spec_now(root), task, Map::from_iter([("wave".to_string(), json!(1))])).expect("o rascunho");
-        let revised = id_of(&write(root, "x", "task", json!({"replaces": task, "text": "Mexer de outro jeito no código de um.",
-            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+        let revised = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"replaces": task, "text": "Mexer de outro jeito no código de um.",
+            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said}),
+        ));
 
-        let Err(refusal) = record(root, "x", "task", draft, PhaseWriter::Binary) else {
-            panic!("a versão da rodada passou por cima do texto novo")
-        };
+        let Err(refusal) = record(root, "x", "task", draft, PhaseWriter::Binary) else { panic!("a versão da rodada passou por cima do texto novo") };
         assert_eq!(refusal.reason(), "replaces-superseded", "{refusal:?}");
         let log = spec_now(root);
         assert_eq!(log.current(task).map(|e| e.id), Some(revised), "a versão com texto novo segue vigente");
@@ -3536,8 +3456,13 @@ mod tests {
         let with_wave = batched(root, task);
         write(root, "x", "remove", json!({"targets": [with_wave], "reason": "Não é mais preciso."}));
         let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
-        id_of(&write(root, "x", "task", json!({"replaces": other, "text": "Mexer de outro jeito no código de dois.",
-            "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+        id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"replaces": other, "text": "Mexer de outro jeito no código de dois.",
+            "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [crit], "origin": said}),
+        ));
 
         let before = spec_now(root);
         let codes = before.codes();
@@ -3545,8 +3470,7 @@ mod tests {
         assert_eq!(dispatch_backlog(root, "x", &before, &before, max_parallel(root), None), Ok(vec![2]), "a outra tarefa sai na onda 2");
 
         let after = spec_now(root);
-        let written: Vec<&SpecEvent> =
-            after.events.iter().filter(|e| e.id > before.max_id() && e.event_type == "task").collect();
+        let written: Vec<&SpecEvent> = after.events.iter().filter(|e| e.id > before.max_id() && e.event_type == "task").collect();
         let after_codes = after.codes();
         for version in &written {
             let code = after_codes.get(&version.id).expect("a versão tem código");
@@ -3675,8 +3599,13 @@ mod tests {
         let (said, crit) = backlog_project(root);
         let first = backlog_task(root, said, crit, "Preparar o código de um.", "src/a.rs");
         let after = |on: u64, text: &str| {
-            id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": "src/a.rs"}], "depends_on": [on],
-                "covers": [crit], "origin": said})))
+            id_of(&write(
+                root,
+                "x",
+                "task",
+                json!({"text": text, "files": [{"path": "src/a.rs"}], "depends_on": [on],
+                "covers": [crit], "origin": said}),
+            ))
         };
         let second = after(first, "Mexer no código de um.");
         let third = after(second, "Testar o código de um.");
@@ -3733,15 +3662,18 @@ mod tests {
         }
         let decisions = std::cell::Cell::new((0, 0));
         let (said, crit) = backlog_project_with(root, |said| {
-            let decision = |text: &str| {
-                id_of(&write(root, "x", "decision", json!({"text": text, "why": "w", "keys": ["k"], "origin": said})))
-            };
+            let decision = |text: &str| id_of(&write(root, "x", "decision", json!({"text": text, "why": "w", "keys": ["k"], "origin": said})));
             decisions.set((decision("A soma arredonda para baixo."), decision("A lista vazia soma zero.")));
         });
         let (for_a, for_b) = decisions.get();
         let task = |text: &str, file: &str, covers: Vec<u64>, depends: Vec<u64>| {
-            id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": depends,
-                "covers": covers, "origin": said})))
+            id_of(&write(
+                root,
+                "x",
+                "task",
+                json!({"text": text, "files": [{"path": file}], "depends_on": depends,
+                "covers": covers, "origin": said}),
+            ))
         };
         let a = task("Arredondar a soma.", "src/a.rs", vec![crit, for_a], vec![]);
         let b = task("Somar a lista vazia.", "src/a.rs", vec![crit, for_b], vec![]);
@@ -3754,11 +3686,7 @@ mod tests {
 
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-        let batch: Vec<String> = [&a, &b, &c, &d]
-            .into_iter()
-            .filter(|task| task_now(root, task).wave() == Some(1))
-            .cloned()
-            .collect();
+        let batch: Vec<String> = [&a, &b, &c, &d].into_iter().filter(|task| task_now(root, task).wave() == Some(1)).cloned().collect();
         assert_eq!(batch, vec![a.clone(), b.clone()], "a onda leva A e B: {first}");
 
         let session = "s-tarefa-nao-feita";
@@ -3770,11 +3698,7 @@ mod tests {
             .iter()
             .map(|item| {
                 let code = log.codes()[&item.id].clone();
-                if code == b_decision {
-                    json!({"item": code, "met": false, "text": "B não foi feita."})
-                } else {
-                    json!({"item": code, "met": true})
-                }
+                if code == b_decision { json!({"item": code, "met": false, "text": "B não foi feita."}) } else { json!({"item": code, "met": true}) }
             })
             .collect();
         assert_eq!(agreed.len(), 2, "o pedido leva as duas decisões: {agreed:?}");
@@ -3812,18 +3736,35 @@ mod tests {
         assert_eq!(returned_b.wave(), None, "B voltou sem onda: {:?}", returned_b.fields);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert!(backlog_left(&log).contains(&returned_b.id), "B está no backlog");
-        assert_eq!(waves_in(&accepted, "dispatch"), Vec::<u64>::new(), "B só sai na rodada seguinte: {accepted}");
-
+        assert_eq!(waves_in(&accepted, "dispatch"), vec![2], "D foi liberada por A nesta chamada: {accepted}");
+        assert_eq!(task_now(root, &d).wave(), Some(2));
+        assert_eq!(task_now(root, &b).wave(), None, "o corte de B espera outra chamada");
+        assert_eq!(task_now(root, &c).wave(), None, "C ainda depende de B");
+        std::fs::write(root.join("src/d.rs"), "fn one() {}\n// D terminou.\n").unwrap();
+        returned(root, json!({"wave":2,"text":"D saiu.","files":["src/d.rs"],"commit":"mostrar soma"}));
         let next = round(root, "x", None);
-        assert_eq!(waves_in(&next, "dispatch"), vec![2, 3], "só as ondas novas saem, nunca a onda entregue: {next}");
-        let in_wave = |n: u64| -> Vec<String> {
-            [&a, &b, &c, &d].into_iter().filter(|task| task_now(root, task).wave() == Some(n)).cloned().collect()
-        };
-        assert_eq!(in_wave(2), vec![b.clone()], "a onda 2 leva a devolvida: {next}");
-        assert_eq!(in_wave(3), vec![d.clone()], "a onda 3 leva D, que esperava só por A: {next}");
-        assert_eq!(task_now(root, &c).wave(), None, "C espera B ser entregue");
+        assert_eq!(waves_in(&next, "dispatch"), vec![3], "sai B, nunca a onda entregue: {next}");
+        assert_eq!(task_now(root, &b).wave(), Some(3));
+        assert_eq!(task_now(root, &a).wave(), Some(1));
+        assert_eq!(task_now(root, &c).wave(), None);
 
         let quiet = round(root, "x", None);
         assert!(!waves_in(&quiet, "dispatch").contains(&1), "a onda entregue não sai de novo: {quiet}");
+    }
+    #[test]
+    fn the_actual_dispatched_request_carries_root_and_touched_directory_rules_in_full() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        super::super::tests::approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("CLAUDE.md"), "# Root\nPreserve root-contract in full.\n").unwrap();
+        std::fs::write(root.join("src/CLAUDE.md"), "# Source\nPreserve source-contract in full.\n").unwrap();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/CLAUDE.md"), "Unrelated directory contract.").unwrap();
+        let sent = round(root, "x", None);
+        assert_eq!(sent["ok"], true, "{sent}");
+        let request = super::super::tests::request_at(&sent, 0);
+        assert!(request.contains("Preserve root-contract in full."), "{request}");
+        assert!(request.contains("Preserve source-contract in full."), "{request}");
+        assert!(!request.contains("Unrelated directory contract."), "{request}");
     }
 }
