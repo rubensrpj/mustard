@@ -1,0 +1,1482 @@
+{
+  "source_revision": "5e0115bd3653e31cd43f2789a06faac2bebfab45",
+  "binaries": {
+    "baseline": {
+      "sha256": "247a16bd5c974f76f73817216c2522bca3c124dbbd547f207c48462b8fe299b3",
+      "version": "mustard-rt 0.2.7 (build dev, g5e0115bd3653 2026-10-08)"
+    },
+    "current": {
+      "sha256": "7006f7982262145bec92f5873a430d7546fbe6daf5dcb9a9777f84f5ed801f8d",
+      "version": "mustard-rt 0.2.7 (build dev, g5e0115bd3653 2026-10-08)"
+    }
+  },
+  "sources": {
+    "apps/rt/src/commands/flow/grill.rs": "ade5f47ecf07ba6fdc56a575683facb85c27eaea74633f66bb354a192046f523",
+    "apps/rt/src/commands/flow/round/answer.rs": "9555621f952844197f110dd2f27cdd0008e28ef5e6ecdadbce0b5c86a9d4ee6e",
+    "apps/rt/src/commands/spec/spend.rs": "b22bf630ecd67e3af0a440b156fa4f98371b616493e6f3ed3fbacfb147907313",
+    "apps/rt/src/shared/publication.rs": "53b44a021761e1918a96188223965b8f01f534f6a6820f83662a5b01f2943037",
+    "packages/core/src/io/wave_prompt/prepared.rs": "bfe98614f89e34e9283e04027a1676d9a7005de51356a9f332329f67cadd9f1e",
+    "apps/rt/src/shared/judgement.rs": "ad952a0412c28c9467f17b423cdd4e6bd4ee298a9b5f741ab88f484ac30eaeb8",
+    "packages/core/src/domain/map_select.rs": "6ebfc127b52251837e40ddf22665d7da2376e6815f27527fbbd3d19038b99303",
+    "packages/core/src/io/wave_prompt.rs": "e5ae2137a9e8bd8d0aef97cd0ea5b5728cf43cee560361841251eaca0f3ef78c",
+    "packages/core/src/io/knowledge.rs": "c29f9d3f748aa10790cd1a13486a1a8c2ab8cabd5c20701afdfb22175e365d59",
+    "packages/core/src/io/spend.rs": "2deb8c60b8a1086b4454d7b0d9cca8200f2458d093a58bc8e2a0a950e142dab9",
+    "apps/rt/src/commands/git_settle.rs": "d438cef910f4d9f8d96216ed6ef716ead974a7f6914d8e780f01d1191092d566",
+    "packages/core/src/domain/knowledge.rs": "eca125824ce0955c32fa971eb51501f47532f49194a41a0e70947d1516a8fa29"
+  },
+  "scope": "same frozen 5e0115bd working-tree snapshot; six pilot and six additional local structural questions; no independent semantic or cost evaluation",
+  "remote_model_calls": 0,
+  "results": [
+    {
+      "query": "levantamento de spec e pontos do pedido",
+      "expected": "apps/rt/src/commands/flow/grill.rs",
+      "group": "pilot",
+      "mode": "baseline",
+      "hit": false,
+      "position": 0,
+      "bytes": 34537,
+      "ms": 2587,
+      "files": [
+        "packages/core/src/domain/spec_events/against.rs",
+        "apps/rt/src/commands/flow/cli.rs",
+        "apps/rt/src/commands/flow/resume.rs",
+        "apps/rt/src/commands/flow/answer.rs",
+        "apps/rt/src/commands/flow/round/queue.rs",
+        "packages/core/src/domain/spec_events/codes.rs",
+        "packages/core/src/domain/spec_events/read.rs"
+      ],
+      "cards": [
+        {
+          "name": "same_open_point",
+          "file": "packages/core/src/domain/spec_events/against.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "spec",
+          "file": "apps/rt/src/commands/flow/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "next_item",
+          "file": "apps/rt/src/commands/flow/resume.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "spec",
+          "file": "apps/rt/src/commands/flow/answer.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "waves_in_progress",
+          "file": "apps/rt/src/commands/flow/round/queue.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "next_command",
+          "file": "apps/rt/src/commands/flow/resume.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "codes",
+          "file": "packages/core/src/domain/spec_events/codes.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "wave",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "despachar ondas e tarefas",
+      "expected": "apps/rt/src/commands/flow/round/answer.rs",
+      "group": "pilot",
+      "mode": "baseline",
+      "hit": false,
+      "position": 0,
+      "bytes": 33100,
+      "ms": 2355,
+      "files": [
+        "apps/rt/src/commands/wave/wave_overlap_check.rs",
+        "apps/rt/src/commands/flow/round/backlog.rs",
+        "apps/rt/src/commands/flow/round/stops.rs",
+        "apps/rt/src/commands/flow/reopen.rs",
+        "packages/core/src/domain/spec_events/read.rs"
+      ],
+      "cards": [
+        {
+          "name": "level",
+          "file": "apps/rt/src/commands/wave/wave_overlap_check.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "unsent_batch_waves",
+          "file": "apps/rt/src/commands/flow/round/backlog.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "waves_replanned",
+          "file": "apps/rt/src/commands/flow/round/stops.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "open_fix_wave",
+          "file": "apps/rt/src/commands/flow/reopen.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "last_planned",
+          "file": "apps/rt/src/commands/flow/round/stops.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "SpecLog",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "get",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "last_dispatch_by_wave",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "contar consumo de conversas por projeto",
+      "expected": "apps/rt/src/commands/spec/spend.rs",
+      "group": "pilot",
+      "mode": "baseline",
+      "hit": false,
+      "position": 0,
+      "bytes": 29189,
+      "ms": 2605,
+      "files": [
+        "apps/rt/src/commands/flow/round/usage.rs",
+        "apps/rt/src/commands/spec/cli.rs",
+        "packages/core/src/io/transcript.rs",
+        "packages/core/src/domain/spec_events/types.rs",
+        "packages/core/src/domain/spec_events/read.rs",
+        "packages/core/src/domain/spec_state.rs"
+      ],
+      "cards": [
+        {
+          "name": "main_usage",
+          "file": "apps/rt/src/commands/flow/round/usage.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Spend",
+          "file": "apps/rt/src/commands/spec/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Usage",
+          "file": "packages/core/src/io/transcript.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Conversation",
+          "file": "packages/core/src/domain/spec_events/types.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "at",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "SpecLog",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "events",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "State",
+          "file": "packages/core/src/domain/spec_state.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "publicar snapshot Cloudflare",
+      "expected": "apps/rt/src/shared/publication.rs",
+      "group": "pilot",
+      "mode": "baseline",
+      "hit": true,
+      "position": 1,
+      "bytes": 35209,
+      "ms": 2039,
+      "files": [
+        "apps/rt/src/shared/publication.rs",
+        "apps/rt/src/shared/publication/export.rs",
+        "apps/rt/src/report/snapshot.rs",
+        "apps/rt/src/commands/panel/publication.rs",
+        "packages/core/src/io/sha256.rs"
+      ],
+      "cards": [
+        {
+          "name": "validate",
+          "file": "apps/rt/src/shared/publication.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "snapshot_id",
+          "file": "apps/rt/src/shared/publication/export.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "public_spend_snapshot",
+          "file": "apps/rt/src/report/snapshot.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "prepare_project",
+          "file": "apps/rt/src/commands/panel/publication.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Sha256",
+          "file": "packages/core/src/io/sha256.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "new",
+          "file": "packages/core/src/io/sha256.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "update",
+          "file": "packages/core/src/io/sha256.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "hex_digest",
+          "file": "packages/core/src/io/sha256.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "contexto preparado da cópia da onda",
+      "expected": "packages/core/src/io/wave_prompt/prepared.rs",
+      "group": "pilot",
+      "mode": "baseline",
+      "hit": false,
+      "position": 0,
+      "bytes": 32286,
+      "ms": 2624,
+      "files": [
+        "packages/core/src/domain/config.rs",
+        "packages/core/src/io/wave_prompt.rs",
+        "packages/core/src/domain/wave_prompt.rs",
+        "apps/rt/src/commands/flow/round/slots.rs",
+        "packages/core/src/domain/normalize/mod.rs",
+        "packages/core/src/domain/spec_events/read.rs"
+      ],
+      "cards": [
+        {
+          "name": "prepare",
+          "file": "packages/core/src/domain/config.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "execution",
+          "file": "packages/core/src/io/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "prepare",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Prepared",
+          "file": "apps/rt/src/commands/flow/round/slots.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "collect",
+          "file": "packages/core/src/domain/normalize/mod.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "get",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "Execution",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "wave_files",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "cache por evidência de julgamento Jev",
+      "expected": "apps/rt/src/shared/judgement.rs",
+      "group": "pilot",
+      "mode": "baseline",
+      "hit": true,
+      "position": 1,
+      "bytes": 21093,
+      "ms": 2088,
+      "files": [
+        "apps/rt/src/shared/judgement.rs",
+        "apps/rt/src/shared/dag.rs",
+        "apps/rt/src/shared/jev.rs",
+        "packages/core/src/io/spend.rs"
+      ],
+      "cards": [
+        {
+          "name": "cache",
+          "file": "apps/rt/src/shared/judgement.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "UNJUDGED",
+          "file": "apps/rt/src/shared/dag.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "JevFilter",
+          "file": "apps/rt/src/shared/jev.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "JevCall",
+          "file": "packages/core/src/io/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "TaskKind",
+          "file": "apps/rt/src/shared/dag.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "Feature",
+          "file": "apps/rt/src/shared/dag.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "Judgement",
+          "file": "apps/rt/src/shared/dag.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "localizar implementação dos métodos de contrato",
+      "expected": "packages/core/src/domain/map_select.rs",
+      "group": "regression",
+      "mode": "baseline",
+      "hit": true,
+      "position": 1,
+      "bytes": 32791,
+      "ms": 2179,
+      "files": [
+        "packages/core/src/domain/map_select.rs",
+        "packages/core/src/io/map_search.rs",
+        "apps/rt/src/commands/flow/round/removed_check.rs",
+        "apps/scan/src/model.rs",
+        "packages/core/src/domain/project_map.rs"
+      ],
+      "cards": [
+        {
+          "name": "implementation",
+          "file": "packages/core/src/domain/map_select.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "links",
+          "file": "packages/core/src/io/map_search.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "entry_point",
+          "file": "apps/rt/src/commands/flow/round/removed_check.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "implemented_by",
+          "file": "apps/scan/src/model.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "is_empty",
+          "file": "packages/core/src/domain/project_map.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "MapModule",
+          "file": "packages/core/src/domain/project_map.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "path",
+          "file": "packages/core/src/domain/project_map.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "declarations",
+          "file": "packages/core/src/domain/project_map.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "montar pedido de revisão final",
+      "expected": "packages/core/src/io/wave_prompt.rs",
+      "group": "regression",
+      "mode": "baseline",
+      "hit": false,
+      "position": 0,
+      "bytes": 31996,
+      "ms": 2647,
+      "files": [
+        "packages/core/src/domain/wave_prompt.rs",
+        "packages/core/src/domain/spec_events/types.rs",
+        "packages/core/src/domain/wave_prompt/review.rs",
+        "apps/rt/src/commands/spec_events/read_record.rs",
+        "packages/core/src/domain/spec_events/read.rs"
+      ],
+      "cards": [
+        {
+          "name": "last_final_rejection",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "ReadQuery",
+          "file": "packages/core/src/domain/spec_events/types.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "final_review_text",
+          "file": "packages/core/src/domain/wave_prompt/review.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "wave",
+          "file": "apps/rt/src/commands/spec_events/read_record.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "SpecEvent",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "str_field",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "SpecLog",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "get",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "conferir hashes de múltiplas fontes de interpretação",
+      "expected": "packages/core/src/io/knowledge.rs",
+      "group": "regression",
+      "mode": "baseline",
+      "hit": true,
+      "position": 2,
+      "bytes": 30203,
+      "ms": 2304,
+      "files": [
+        "packages/core/src/domain/knowledge.rs",
+        "packages/core/src/io/knowledge.rs",
+        "apps/rt/src/commands/doctor/doctor/host.rs",
+        "packages/core/src/domain/citation.rs",
+        "apps/rt/src/commands/doctor/doctor.rs"
+      ],
+      "cards": [
+        {
+          "name": "cards",
+          "file": "packages/core/src/domain/knowledge.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Interpretation",
+          "file": "packages/core/src/io/knowledge.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "check_nerd_font",
+          "file": "apps/rt/src/commands/doctor/doctor/host.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Finding",
+          "file": "packages/core/src/domain/citation.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "scan_for_any_nerd_font",
+          "file": "apps/rt/src/commands/doctor/doctor/host.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "CheckResult",
+          "file": "apps/rt/src/commands/doctor/doctor.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "ok",
+          "file": "apps/rt/src/commands/doctor/doctor.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "warn",
+          "file": "apps/rt/src/commands/doctor/doctor.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "projeto da conversa de agente em cópia já apagada",
+      "expected": "packages/core/src/io/spend.rs",
+      "group": "regression",
+      "mode": "baseline",
+      "hit": true,
+      "position": 1,
+      "bytes": 31331,
+      "ms": 2884,
+      "files": [
+        "packages/core/src/io/spend.rs",
+        "apps/rt/src/hooks/session/conversation_size.rs",
+        "apps/rt/src/commands/flow/round/answer.rs",
+        "apps/rt/src/shared/task_size.rs",
+        "packages/core/src/platform/project_seed/files.rs",
+        "packages/core/src/platform/i18n.rs",
+        "packages/core/src/domain/wave_prompt.rs"
+      ],
+      "cards": [
+        {
+          "name": "project_conversations",
+          "file": "packages/core/src/io/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "WaveContext",
+          "file": "apps/rt/src/hooks/session/conversation_size.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "agents_refreshed",
+          "file": "apps/rt/src/commands/flow/round/answer.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "AGENT_START_TOKENS",
+          "file": "apps/rt/src/shared/task_size.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "refresh_agent_texts",
+          "file": "packages/core/src/platform/project_seed/files.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "Locale",
+          "file": "packages/core/src/platform/i18n.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "translate",
+          "file": "packages/core/src/platform/i18n.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "is_empty",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "base de integração com commit próprio merge ff only",
+      "expected": "apps/rt/src/commands/git_settle.rs",
+      "group": "regression",
+      "mode": "baseline",
+      "hit": true,
+      "position": 1,
+      "bytes": 30621,
+      "ms": 2496,
+      "files": [
+        "apps/rt/src/commands/git_settle.rs",
+        "apps/rt/src/commands/event/work_branch.rs",
+        "apps/rt/src/shared/branch_state.rs",
+        "apps/rt/src/commands/review/cli.rs"
+      ],
+      "cards": [
+        {
+          "name": "update_bases",
+          "file": "apps/rt/src/commands/git_settle.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "fast_forward_base",
+          "file": "apps/rt/src/commands/event/work_branch.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "base",
+          "file": "apps/rt/src/shared/branch_state.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Merge",
+          "file": "apps/rt/src/commands/review/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "local_branch_exists",
+          "file": "apps/rt/src/commands/event/work_branch.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "remote_branch_exists",
+          "file": "apps/rt/src/commands/event/work_branch.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "run_git",
+          "file": "apps/rt/src/commands/event/work_branch.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "is_ancestor",
+          "file": "apps/rt/src/commands/event/work_branch.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "renderizar documentação Markdown do conhecimento",
+      "expected": "packages/core/src/domain/knowledge.rs",
+      "group": "regression",
+      "mode": "baseline",
+      "hit": true,
+      "position": 1,
+      "bytes": 27132,
+      "ms": 2347,
+      "files": [
+        "packages/core/src/domain/knowledge.rs",
+        "packages/core/src/view/document/mod.rs",
+        "apps/rt/src/commands/spec/spec_sections.rs",
+        "apps/rt/src/commands/scan_cli.rs",
+        "packages/core/src/domain/project_map.rs"
+      ],
+      "cards": [
+        {
+          "name": "markdown",
+          "file": "packages/core/src/domain/knowledge.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "footer",
+          "file": "packages/core/src/view/document/mod.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "section_blocks",
+          "file": "apps/rt/src/commands/spec/spec_sections.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "markdown",
+          "file": "apps/rt/src/commands/scan_cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "is_heading",
+          "file": "apps/rt/src/commands/spec/spec_sections.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "section_end",
+          "file": "apps/rt/src/commands/spec/spec_sections.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "file_history",
+          "file": "packages/core/src/domain/project_map.rs",
+          "retrieval": "static-relation"
+        },
+        {
+          "name": "Card",
+          "file": "packages/core/src/domain/knowledge.rs",
+          "retrieval": "static-relation"
+        }
+      ]
+    },
+    {
+      "query": "levantamento de spec e pontos do pedido",
+      "expected": "apps/rt/src/commands/flow/grill.rs",
+      "group": "pilot",
+      "mode": "current",
+      "hit": true,
+      "position": 3,
+      "bytes": 13880,
+      "ms": 2272,
+      "files": [
+        "apps/rt/src/commands/flow/cli.rs",
+        "packages/core/src/domain/spec_events/against.rs",
+        "apps/rt/src/commands/flow/grill.rs",
+        "apps/rt/src/commands/spec_events/write.rs",
+        "apps/rt/src/commands/flow/resume.rs",
+        "packages/core/src/domain/spec_state.rs",
+        "apps/rt/src/commands/flow/answer.rs",
+        "apps/rt/src/commands/flow/plan.rs"
+      ],
+      "cards": [
+        {
+          "name": "spec",
+          "file": "apps/rt/src/commands/flow/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "same_open_point",
+          "file": "packages/core/src/domain/spec_events/against.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "spec",
+          "file": "apps/rt/src/commands/flow/grill.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "spec",
+          "file": "apps/rt/src/commands/spec_events/write.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "next_item",
+          "file": "apps/rt/src/commands/flow/resume.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "survey_rule",
+          "file": "packages/core/src/domain/spec_state.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "spec",
+          "file": "apps/rt/src/commands/flow/answer.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Refused",
+          "file": "apps/rt/src/commands/flow/plan.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "despachar ondas e tarefas",
+      "expected": "apps/rt/src/commands/flow/round/answer.rs",
+      "group": "pilot",
+      "mode": "current",
+      "hit": true,
+      "position": 3,
+      "bytes": 17335,
+      "ms": 2197,
+      "files": [
+        "apps/rt/src/commands/flow/reopen.rs",
+        "apps/rt/src/commands/wave/wave_overlap_check.rs",
+        "apps/rt/src/commands/flow/round/answer.rs",
+        "apps/rt/src/commands/flow/round/backlog.rs",
+        "apps/rt/src/commands/flow/round/stops.rs",
+        "apps/rt/src/commands/flow/round/queue.rs",
+        "apps/rt/src/commands/flow/round/report.rs",
+        "packages/core/src/domain/spec_events/read.rs"
+      ],
+      "cards": [
+        {
+          "name": "open_fix_wave",
+          "file": "apps/rt/src/commands/flow/reopen.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "level",
+          "file": "apps/rt/src/commands/wave/wave_overlap_check.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "run_entered_round",
+          "file": "apps/rt/src/commands/flow/round/answer.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "unsent_batch_waves",
+          "file": "apps/rt/src/commands/flow/round/backlog.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "waves_replanned",
+          "file": "apps/rt/src/commands/flow/round/stops.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "unanswered_sends",
+          "file": "apps/rt/src/commands/flow/round/queue.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "return_cut_batches",
+          "file": "apps/rt/src/commands/flow/round/report.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "planned_waves",
+          "file": "packages/core/src/domain/spec_events/read.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "contar consumo de conversas por projeto",
+      "expected": "apps/rt/src/commands/spec/spend.rs",
+      "group": "pilot",
+      "mode": "current",
+      "hit": false,
+      "position": 0,
+      "bytes": 13817,
+      "ms": 2067,
+      "files": [
+        "packages/core/src/io/transcript.rs",
+        "apps/rt/src/commands/flow/round/usage.rs",
+        "apps/rt/src/commands/spec/cli.rs",
+        "apps/rt/src/commands/statusline/preview.rs",
+        "packages/core/src/domain/spec_events/types.rs",
+        "packages/core/src/domain/spend.rs",
+        "packages/core/src/io/spend.rs",
+        "apps/rt/src/commands/flow/round/report.rs"
+      ],
+      "cards": [
+        {
+          "name": "Usage",
+          "file": "packages/core/src/io/transcript.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "main_usage",
+          "file": "apps/rt/src/commands/flow/round/usage.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Spend",
+          "file": "apps/rt/src/commands/spec/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "synthetic_segments",
+          "file": "apps/rt/src/commands/statusline/preview.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Conversation",
+          "file": "packages/core/src/domain/spec_events/types.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "DayTotal",
+          "file": "packages/core/src/domain/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "project_place",
+          "file": "packages/core/src/io/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "usage",
+          "file": "apps/rt/src/commands/flow/round/report.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "publicar snapshot Cloudflare",
+      "expected": "apps/rt/src/shared/publication.rs",
+      "group": "pilot",
+      "mode": "current",
+      "hit": true,
+      "position": 2,
+      "bytes": 14417,
+      "ms": 1930,
+      "files": [
+        "apps/rt/src/report/snapshot.rs",
+        "apps/rt/src/shared/publication.rs",
+        "packages/core/src/domain/config.rs",
+        "apps/rt/src/shared/publication/export.rs",
+        "apps/rt/src/commands/spec/spend.rs",
+        "apps/rt/src/commands/panel/publication.rs",
+        "packages/core/src/domain/spend.rs",
+        "apps/rt/src/commands/panel/mod.rs"
+      ],
+      "cards": [
+        {
+          "name": "public_spend_snapshot",
+          "file": "apps/rt/src/report/snapshot.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "validate",
+          "file": "apps/rt/src/shared/publication.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "publication",
+          "file": "packages/core/src/domain/config.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "snapshot_id",
+          "file": "apps/rt/src/shared/publication/export.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "answer",
+          "file": "apps/rt/src/commands/spec/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "prepare_project",
+          "file": "apps/rt/src/commands/panel/publication.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "counted_through",
+          "file": "packages/core/src/domain/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "snapshot",
+          "file": "apps/rt/src/commands/panel/mod.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "contexto preparado da cópia da onda",
+      "expected": "packages/core/src/io/wave_prompt/prepared.rs",
+      "group": "pilot",
+      "mode": "current",
+      "hit": false,
+      "position": 0,
+      "bytes": 13974,
+      "ms": 2068,
+      "files": [
+        "packages/core/src/io/wave_prompt.rs",
+        "packages/core/src/domain/config.rs",
+        "apps/rt/src/commands/flow/close.rs",
+        "apps/rt/src/commands/flow/round/keep.rs",
+        "packages/core/src/domain/wave_prompt.rs",
+        "apps/rt/src/commands/flow/round/slots.rs",
+        "packages/core/src/domain/wave_prompt/request.rs",
+        "apps/rt/src/commands/flow/round/answer.rs"
+      ],
+      "cards": [
+        {
+          "name": "execution",
+          "file": "packages/core/src/io/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "prepare",
+          "file": "packages/core/src/domain/config.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "prepare_review_copy",
+          "file": "apps/rt/src/commands/flow/close.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "wave",
+          "file": "apps/rt/src/commands/flow/round/keep.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "prepare",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Prepared",
+          "file": "apps/rt/src/commands/flow/round/slots.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "to_work",
+          "file": "packages/core/src/domain/wave_prompt/request.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "MergeConflict",
+          "file": "apps/rt/src/commands/flow/round/answer.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "cache por evidência de julgamento Jev",
+      "expected": "apps/rt/src/shared/judgement.rs",
+      "group": "pilot",
+      "mode": "current",
+      "hit": true,
+      "position": 1,
+      "bytes": 13126,
+      "ms": 2032,
+      "files": [
+        "apps/rt/src/shared/judgement.rs",
+        "apps/rt/src/shared/dag.rs",
+        "apps/rt/src/commands/flow/round/backlog.rs",
+        "apps/rt/src/shared/jev.rs",
+        "packages/core/src/io/spend.rs",
+        "packages/core/src/domain/spend.rs",
+        "apps/rt/src/shared/jev_budget.rs",
+        "packages/core/src/io/claude_paths.rs"
+      ],
+      "cards": [
+        {
+          "name": "cache",
+          "file": "apps/rt/src/shared/judgement.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "UNJUDGED",
+          "file": "apps/rt/src/shared/dag.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Judge",
+          "file": "apps/rt/src/commands/flow/round/backlog.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "JevFilter",
+          "file": "apps/rt/src/shared/jev.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "JevCall",
+          "file": "packages/core/src/io/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "cache_creation_input_tokens",
+          "file": "packages/core/src/domain/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "release_cached",
+          "file": "apps/rt/src/shared/jev_budget.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "DOCUMENTED_DIRS",
+          "file": "packages/core/src/io/claude_paths.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "localizar implementação dos métodos de contrato",
+      "expected": "packages/core/src/domain/map_select.rs",
+      "group": "regression",
+      "mode": "current",
+      "hit": true,
+      "position": 2,
+      "bytes": 15204,
+      "ms": 1953,
+      "files": [
+        "apps/rt/src/commands/flow/round/removed_check.rs",
+        "packages/core/src/domain/map_select.rs",
+        "apps/scan/src/graph.rs",
+        "packages/core/src/io/map_search.rs",
+        "apps/scan/src/model.rs",
+        "packages/core/src/domain/project_map.rs",
+        "apps/scan/src/main.rs",
+        "packages/core/src/io/project_map.rs"
+      ],
+      "cards": [
+        {
+          "name": "entry_point",
+          "file": "apps/rt/src/commands/flow/round/removed_check.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "implementation",
+          "file": "packages/core/src/domain/map_select.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "METHOD_KINDS",
+          "file": "apps/scan/src/graph.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "links",
+          "file": "packages/core/src/io/map_search.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "implemented_by",
+          "file": "apps/scan/src/model.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "implemented_by",
+          "file": "packages/core/src/domain/project_map.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "analyze",
+          "file": "apps/scan/src/main.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "named_decl",
+          "file": "packages/core/src/io/project_map.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "montar pedido de revisão final",
+      "expected": "packages/core/src/io/wave_prompt.rs",
+      "group": "regression",
+      "mode": "current",
+      "hit": true,
+      "position": 6,
+      "bytes": 15161,
+      "ms": 2217,
+      "files": [
+        "apps/rt/src/commands/flow/round/report.rs",
+        "packages/core/src/domain/wave_prompt.rs",
+        "packages/core/src/domain/spec_events/types.rs",
+        "apps/rt/src/hooks/task/subagent_inject.rs",
+        "packages/core/src/domain/wave_prompt/review.rs",
+        "packages/core/src/io/wave_prompt.rs",
+        "apps/rt/src/commands/spec_events/read_record.rs",
+        "apps/rt/src/commands/flow/close.rs"
+      ],
+      "cards": [
+        {
+          "name": "agreed_tasks",
+          "file": "apps/rt/src/commands/flow/round/report.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "last_final_rejection",
+          "file": "packages/core/src/domain/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "ReadQuery",
+          "file": "packages/core/src/domain/spec_events/types.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "assemble",
+          "file": "apps/rt/src/hooks/task/subagent_inject.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "final_review_text",
+          "file": "packages/core/src/domain/wave_prompt/review.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "FinalReview",
+          "file": "packages/core/src/io/wave_prompt.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "wave",
+          "file": "apps/rt/src/commands/spec_events/read_record.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "final_approved",
+          "file": "apps/rt/src/commands/flow/close.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "conferir hashes de múltiplas fontes de interpretação",
+      "expected": "packages/core/src/io/knowledge.rs",
+      "group": "regression",
+      "mode": "current",
+      "hit": true,
+      "position": 3,
+      "bytes": 15133,
+      "ms": 2119,
+      "files": [
+        "packages/core/src/domain/knowledge.rs",
+        "packages/core/src/io/project_map.rs",
+        "packages/core/src/io/knowledge.rs",
+        "apps/rt/src/commands/doctor/doctor/host.rs",
+        "packages/core/src/domain/citation.rs",
+        "packages/core/src/io/spec_events.rs",
+        "apps/cli/src/commands/install_nerd_font.rs",
+        "apps/rt/src/commands/doctor/doctor/report.rs"
+      ],
+      "cards": [
+        {
+          "name": "cards",
+          "file": "packages/core/src/domain/knowledge.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "KNOWLEDGE_NOTES",
+          "file": "packages/core/src/io/project_map.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Interpretation",
+          "file": "packages/core/src/io/knowledge.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "check_nerd_font",
+          "file": "apps/rt/src/commands/doctor/doctor/host.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Finding",
+          "file": "packages/core/src/domain/citation.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "check_citations",
+          "file": "packages/core/src/io/spec_events.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "font",
+          "file": "apps/cli/src/commands/install_nerd_font.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "render_report_json",
+          "file": "apps/rt/src/commands/doctor/doctor/report.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "projeto da conversa de agente em cópia já apagada",
+      "expected": "packages/core/src/io/spend.rs",
+      "group": "regression",
+      "mode": "current",
+      "hit": true,
+      "position": 1,
+      "bytes": 14212,
+      "ms": 2054,
+      "files": [
+        "packages/core/src/io/spend.rs",
+        "apps/rt/src/commands/maint/cli.rs",
+        "apps/rt/src/hooks/session/conversation_size.rs",
+        "apps/rt/src/hooks/session/session_start_inject.rs",
+        "apps/rt/src/commands/flow/round/answer.rs",
+        "apps/rt/src/commands/maint/scratch_gc.rs",
+        "apps/rt/src/shared/task_size.rs",
+        "packages/core/src/domain/spend.rs"
+      ],
+      "cards": [
+        {
+          "name": "project_conversations",
+          "file": "packages/core/src/io/spend.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "ScratchGc",
+          "file": "apps/rt/src/commands/maint/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "WaveContext",
+          "file": "apps/rt/src/hooks/session/conversation_size.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "disk_notice",
+          "file": "apps/rt/src/hooks/session/session_start_inject.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "agents_refreshed",
+          "file": "apps/rt/src/commands/flow/round/answer.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "empty_dir",
+          "file": "apps/rt/src/commands/maint/scratch_gc.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "AGENT_START_TOKENS",
+          "file": "apps/rt/src/shared/task_size.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "project",
+          "file": "packages/core/src/domain/spend.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "base de integração com commit próprio merge ff only",
+      "expected": "apps/rt/src/commands/git_settle.rs",
+      "group": "regression",
+      "mode": "current",
+      "hit": true,
+      "position": 2,
+      "bytes": 15752,
+      "ms": 2192,
+      "files": [
+        "apps/rt/src/commands/event/work_branch.rs",
+        "apps/rt/src/commands/git_settle.rs",
+        "apps/rt/src/shared/branch_state.rs",
+        "apps/rt/src/commands/review/pr_door.rs",
+        "apps/rt/src/commands/review/cli.rs",
+        "packages/core/src/platform/git_branches.rs",
+        "packages/core/src/platform/i18n/gates.rs",
+        "apps/rt/src/commands/review/pr_publish.rs"
+      ],
+      "cards": [
+        {
+          "name": "fast_forward_base",
+          "file": "apps/rt/src/commands/event/work_branch.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "update_bases",
+          "file": "apps/rt/src/commands/git_settle.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "base",
+          "file": "apps/rt/src/shared/branch_state.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "land",
+          "file": "apps/rt/src/commands/review/pr_door.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "Merge",
+          "file": "apps/rt/src/commands/review/cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "protected_branches",
+          "file": "packages/core/src/platform/git_branches.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "PREFIXES",
+          "file": "packages/core/src/platform/i18n/gates.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "fill_from_commits",
+          "file": "apps/rt/src/commands/review/pr_publish.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    },
+    {
+      "query": "renderizar documentação Markdown do conhecimento",
+      "expected": "packages/core/src/domain/knowledge.rs",
+      "group": "regression",
+      "mode": "current",
+      "hit": true,
+      "position": 2,
+      "bytes": 14659,
+      "ms": 2059,
+      "files": [
+        "apps/rt/src/commands/spec/spec_sections.rs",
+        "packages/core/src/domain/knowledge.rs",
+        "packages/core/src/view/document/mod.rs",
+        "packages/core/src/io/wave_prompt/rules.rs",
+        "apps/rt/src/report/markdown.rs",
+        "apps/rt/src/commands/scan_cli.rs",
+        "apps/rt/src/report/render.rs",
+        "apps/rt/src/shared/word_search.rs"
+      ],
+      "cards": [
+        {
+          "name": "section_blocks",
+          "file": "apps/rt/src/commands/spec/spec_sections.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "markdown",
+          "file": "packages/core/src/domain/knowledge.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "footer",
+          "file": "packages/core/src/view/document/mod.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "markdown_under",
+          "file": "packages/core/src/io/wave_prompt/rules.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "blocks",
+          "file": "apps/rt/src/report/markdown.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "markdown",
+          "file": "apps/rt/src/commands/scan_cli.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "render",
+          "file": "apps/rt/src/report/render.rs",
+          "retrieval": "local-hybrid-index"
+        },
+        {
+          "name": "type_filters",
+          "file": "apps/rt/src/shared/word_search.rs",
+          "retrieval": "local-hybrid-index"
+        }
+      ]
+    }
+  ]
+}

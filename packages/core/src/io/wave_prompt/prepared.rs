@@ -62,7 +62,11 @@ fn component(root: &Path, tree: &Path, location: &str) -> PreparedSource {
         .filter(|module| module.deps.contains(&path)).map(|module| module.path).collect::<Vec<_>>()).unwrap_or_default();
     part.knowledge=crate::io::knowledge::for_source(root,tree,&path,name);
     // Optional evidence cannot crowd mandatory rules/items out of the prompt.
-    if part.knowledge.to_string().len()>3000 {part.knowledge=Value::Null;}
+    if part.knowledge.to_string().len()>3000 {
+        part.knowledge=json!({"evidence_version":part.knowledge["evidence_version"],
+            "semantic_proof":false,"detail_compacted":true,
+            "expand":"run knowledge --file <source file> --detail"});
+    }
     let facts = json!({"declarations":selected,"tests":tests,"importers":importers,"knowledge":part.knowledge});
     let fingerprint = digest(json!({"revision":1,"source":location,"version":part.version,"facts":facts}).to_string().as_bytes());
     let cache = root.join(".claude/mustard/prepared-context");

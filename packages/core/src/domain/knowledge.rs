@@ -23,20 +23,52 @@ pub struct Card {
     pub id: String,
     pub name: String,
     pub kind: String,
+    #[serde(default)]
     pub signature: String,
+    #[serde(default)]
     pub documentation: String,
+    #[serde(default)]
     pub body_comment: String,
+    #[serde(default)]
     pub literals: Vec<Value>,
+    #[serde(default)]
     pub file_documentation: String,
     pub source: Source,
     pub parse_complete: Option<bool>,
+    #[serde(default)]
     pub contracts: Vec<String>,
+    #[serde(default)]
     pub routes: Vec<Value>,
+    #[serde(default)]
     pub tests: Vec<String>,
+    #[serde(default)]
     pub inline_tests: bool,
+    #[serde(default)]
     pub outgoing: Vec<Value>,
+    #[serde(default)]
     pub callers: Vec<Value>,
+    #[serde(default)]
     pub unresolved_calls: usize,
+}
+
+/// A first-read projection. The stored evidence is untouched; a detailed
+/// query expands the same symbols. Contracts and routes stay visible.
+pub fn summary(card: &Card) -> Value {
+    let outgoing: Vec<_> = card.outgoing.iter().take(3).map(|edge| json!({
+        "target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"],
+    })).collect();
+    let callers: Vec<_> = card.callers.iter().take(2).map(|edge| json!({
+        "file":edge["file"],"line":edge["line"],"from":edge["from"],"resolution":edge["resolution"],
+        "candidate_count":edge["candidates"].as_array().map_or(0,Vec::len),
+    })).collect();
+    json!({"id":card.id,"name":card.name,"kind":card.kind,"source":card.source,
+        "signature":short(&card.signature,320),"documentation":short(&card.documentation,320),
+        "file_documentation":short(&card.file_documentation,220),
+        "parse_complete":card.parse_complete,"contracts":card.contracts,"routes":card.routes,
+        "outgoing":outgoing,"callers":callers,"inline_tests":card.inline_tests,"unresolved_calls":card.unresolved_calls,
+        "detail_counts":{"literals":card.literals.len(),"tests":card.tests.len(),"body_comment_chars":card.body_comment.chars().count()},
+        "text_compacted":card.signature.chars().count()>320 || card.documentation.chars().count()>320 || card.file_documentation.chars().count()>220,
+    })
 }
 
 fn short(text: &str, max: usize) -> String {
@@ -188,6 +220,9 @@ pub fn cards(map: &ProjectMap) -> Vec<Card> {
 }
 
 pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> {
+    if query.trim().is_empty() {
+        return (0..cards.len()).collect();
+    }
     let mut normalizer = Normalizer::new(languages);
     let asked = normalizer.query(query);
     let documents: Vec<BTreeSet<String>> = cards
@@ -236,6 +271,77 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
         .collect();
     ranked.sort_by(|(a, x), (b, y)| y.total_cmp(x).then_with(|| cards[*a].id.cmp(&cards[*b].id)));
     ranked.into_iter().map(|(i, _)| i).collect()
+}
+
+/// Intent evidence by file. Count each query word once, prefer words in
+/// documented responsibilities, and use the best declaration rather than
+/// adding every declaration of a large module. Repeated headers count once.
+pub fn intent_files(cards: &[Card], query: &str, languages: &Languages) -> Vec<String> {
+    let mut normalizer = Normalizer::new(languages);
+    let asked = normalizer.query(query);
+    if asked.is_empty() {
+        return vec![];
+    }
+    let mut files = BTreeMap::<String, (Vec<bool>, Vec<Vec<bool>>)>::new();
+    for card in cards {
+        let entry = files.entry(card.source.file.clone()).or_insert_with(|| {
+            let header: BTreeSet<_> = normalizer
+                .forms(&format!("{} {}", card.source.file, card.file_documentation))
+                .into_iter()
+                .flatten()
+                .collect();
+            (
+                asked
+                    .iter()
+                    .map(|forms| forms.iter().any(|form| header.contains(form)))
+                    .collect(),
+                vec![],
+            )
+        });
+        let own: BTreeSet<_> = normalizer
+            .forms(&format!(
+                "{} {} {}",
+                card.name, card.documentation, card.body_comment
+            ))
+            .into_iter()
+            .flatten()
+            .collect();
+        entry.1.push(
+            asked
+                .iter()
+                .map(|forms| forms.iter().any(|form| own.contains(form)))
+                .collect(),
+        );
+    }
+    let weights: Vec<_> = (0..asked.len())
+        .map(|at| {
+            let seen = files
+                .values()
+                .filter(|(header, decls)| header[at] || decls.iter().any(|decl| decl[at]))
+                .count();
+            ((files.len() + 1) as f64 / (seen + 1) as f64).ln() + 1.0
+        })
+        .collect();
+    let mut scored: Vec<_> = files
+        .into_iter()
+        .map(|(file, (header, decls))| {
+            let score = decls
+                .iter()
+                .map(|own| {
+                    weights
+                        .iter()
+                        .enumerate()
+                        .filter(|(at, _)| header[*at] || own[*at])
+                        .map(|(at, weight)| weight * if own[at] { 2.0 } else { 1.0 })
+                        .sum::<f64>()
+                })
+                .fold(0.0_f64, f64::max);
+            (file, score)
+        })
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    scored.sort_by(|(a, x), (b, y)| y.total_cmp(x).then_with(|| a.cmp(b)));
+    scored.into_iter().map(|(file, _)| file).collect()
 }
 
 /// Native report from evidence, not fabricated business prose. A model or a

@@ -161,8 +161,87 @@ pub fn query_at(
     depth: usize,
     all: bool,
 ) -> Result<(Value, ProjectMap), MapRefusal> {
-    let map = store::read(root)?;
-    let mut cards = knowledge::cards(&map);
+    query_with(
+        root,
+        tree,
+        &Query {
+            text: query,
+            file,
+            limit,
+            depth,
+            all,
+            detail: all,
+        },
+    )
+}
+
+pub struct Query<'a> {
+    pub text: &'a str,
+    pub file: Option<&'a str>,
+    pub limit: usize,
+    pub depth: usize,
+    pub all: bool,
+    pub detail: bool,
+}
+
+/// Read the persisted packs directly, skipping unrelated analysis fields.
+/// Do not deserialize declarations, texts, lineage and every Git receipt
+/// just to retrieve a few source locations.
+fn packs(root: &Path) -> Result<Vec<Card>, MapRefusal> {
+    #[derive(Deserialize)]
+    struct Analysis {
+        knowledge: Option<Pack>,
+    }
+    #[derive(Deserialize)]
+    struct Pack {
+        version: u64,
+        cards: Vec<Card>,
+    }
+    let db = open_existing(&store::model_path(root))?;
+    let mut statement = db
+        .conn()
+        .prepare("SELECT analysis FROM texts ORDER BY path")
+        .map_err(|e| unreadable(e.into()))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, Option<String>>(0))
+        .map_err(|e| unreadable(e.into()))?;
+    let mut cards = Vec::new();
+    for row in rows {
+        if let Some(text) = row.map_err(|e| unreadable(e.into()))? {
+            let analysis: Analysis =
+                serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+            if let Some(pack) = analysis
+                .knowledge
+                .filter(|pack| pack.version == knowledge::VERSION)
+            {
+                cards.extend(pack.cards);
+            }
+        }
+    }
+    Ok(cards)
+}
+
+pub fn query_with(
+    root: &Path,
+    tree: &Path,
+    opts: &Query<'_>,
+) -> Result<(Value, ProjectMap), MapRefusal> {
+    let Query {
+        text: query,
+        file,
+        limit,
+        depth,
+        all,
+        detail,
+    } = *opts;
+    let detail = detail || all;
+    let mut map = store::read_for(root, store::Need::Summary)?;
+    map.skeleton = store::read_for(root, store::Need::Terrain)?.skeleton;
+    let state = store::read_state_at(&store::model_path(root))?;
+    map.state = serde_json::from_str::<ProjectMap>(&state.json)
+        .map_err(|e| invalid(e.to_string()))?
+        .state;
+    let mut cards = packs(root)?;
     let mut hashes = BTreeMap::new();
     let notes = interpretations(root)?;
     let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| {
@@ -209,6 +288,7 @@ pub fn query_at(
         for source in &fresh[i].sources {
             for (n, card) in cards.iter().enumerate().filter(|(_, card)| {
                 card.source.file == source.file
+                    && file.is_none_or(|file| card.source.file == file)
                     && card.source.line <= source.end_line
                     && source.line <= card.source.end_line
             }) {
@@ -223,49 +303,84 @@ pub fn query_at(
         }
     }
     let mut stale_cards = 0;
-    let seed_limit = if all || depth == 0 {
-        max
-    } else {
-        (max / 2).max(1)
-    };
+    let seed_limit = max;
     let mut ranking = Vec::new();
     let mut local_hybrid_index = false;
-    if selected.len() < seed_limit
-        && !query.trim().is_empty()
-        && let Ok(candidates) =
-            crate::io::map_search::candidates(root, query, query, &languages, |path| {
-                file.is_none_or(|file| file == path)
-            })
-    {
+    let mut index_unavailable = false;
+    let discovery = if selected.len() < seed_limit && !query.trim().is_empty() {
+        match crate::io::map_search::discovery(root, tree, query, &languages) {
+            Ok(discovery) => Some(discovery),
+            Err(_) => {
+                index_unavailable = true;
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(discovery) = discovery {
         let by_place: BTreeMap<_, _> = cards
             .iter()
             .enumerate()
             .map(|(i, card)| {
                 (
                     (
-                        card.source.file.as_str(),
+                        card.source.file.clone(),
                         card.source.line,
-                        card.name.as_str(),
+                        card.name.clone(),
                     ),
                     i,
                 )
             })
             .collect();
-        let mut indexed = Vec::new();
-        for candidate in candidates.candidates {
-            if let Some(&i) = by_place.get(&(
-                candidate.path.as_str(),
-                u64::from(candidate.line),
-                candidate.name.as_str(),
-            )) && !indexed.contains(&i)
+        let indexed: Vec<_> = discovery
+            .places
+            .iter()
+            .filter_map(|place| by_place.get(place).copied())
+            .collect();
+        let mut ranked = BTreeSet::new();
+        // Preserve literal identifiers before natural-language file discovery.
+        ranking.extend(
+            indexed
+                .iter()
+                .copied()
+                .filter(|&i| cards[i].name.eq_ignore_ascii_case(query.trim()) && ranked.insert(i)),
+        );
+        let purpose = knowledge::intent_files(&cards, query, &languages);
+        // Alternate documented intent and the existing hybrid order. Neither
+        // source can fill the first response with near-identical symbols.
+        let file_order: Vec<_> = (0..purpose.len().max(discovery.files.len()))
+            .flat_map(|at| {
+                [purpose.get(at), discovery.files.get(at)]
+                    .into_iter()
+                    .flatten()
+            })
+            .collect();
+        for path in file_order {
+            if file.is_none_or(|file| file == path)
+                && let Some(&i) = indexed.iter().find(|&&i| cards[i].source.file == *path)
+                && ranked.insert(i)
             {
-                indexed.push(i);
+                ranking.push(i);
             }
         }
-        if !indexed.is_empty() {
-            local_hybrid_index = true;
-            ranking = indexed;
+        // One entry per file first; supplementary symbols follow. A large
+        // file's many matching declarations cannot crowd out other entries.
+        let mut seen_files: BTreeSet<_> = ranking
+            .iter()
+            .map(|&i| cards[i].source.file.clone())
+            .collect();
+        for &i in &indexed {
+            if seen_files.insert(cards[i].source.file.clone()) && ranked.insert(i) {
+                ranking.push(i);
+            }
         }
+        for i in indexed {
+            if ranked.insert(i) {
+                ranking.push(i);
+            }
+        }
+        local_hybrid_index = !ranking.is_empty();
     }
     if !local_hybrid_index && selected.len() < seed_limit {
         ranking = knowledge::ranked(&cards, query, &languages);
@@ -303,6 +418,9 @@ pub fn query_at(
         let mut next = BTreeSet::new();
         for &i in &selected {
             for edge in &cards[i].outgoing {
+                if edge["resolution"] != "unique-static-target" {
+                    continue;
+                }
                 if let Some(&n) = edge["target"].as_str().and_then(|id| by_id.get(id)) {
                     if selected.contains(&n) || next.contains(&n) {
                         continue;
@@ -329,6 +447,7 @@ pub fn query_at(
     let mut result = Vec::new();
     let mut compacted_relations = 0;
     let mut stale_relations = 0;
+    let mut ambiguous_relations = 0;
     for i in order {
         let card = &mut cards[i];
         card.callers.retain(|edge| {
@@ -349,27 +468,31 @@ pub fn query_at(
         });
         let outgoing = card.outgoing.len();
         let callers = card.callers.len();
-        if !all {
-            card.outgoing.truncate(8);
-            card.callers.truncate(6);
-            compacted_relations += outgoing - card.outgoing.len() + callers - card.callers.len();
-        }
-        let mut item = serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))?;
-        if !all {
-            for caller in item["callers"].as_array_mut().into_iter().flatten() {
-                let count = caller["candidates"].as_array().map_or(0, Vec::len);
-                caller["candidate_count"] = json!(count);
-                if let Some(candidates) = caller["candidates"].as_array_mut() {
-                    candidates.truncate(6);
-                }
-            }
-        }
+        ambiguous_relations += card
+            .outgoing
+            .iter()
+            .chain(&card.callers)
+            .filter(|edge| edge["resolution"] == "ambiguous")
+            .count();
+        let mut item = if detail {
+            serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))?
+        } else {
+            knowledge::summary(card)
+        };
+        compacted_relations += outgoing - item["outgoing"].as_array().map_or(0, Vec::len) + callers
+            - item["callers"].as_array().map_or(0, Vec::len);
         item["retrieval"] = json!(reasons[&i]);
         item["current_outgoing_count"] = json!(outgoing);
         item["current_caller_count"] = json!(callers);
         result.push(item);
     }
     let mut gaps=vec!["Static relations do not prove runtime order, authorization, business rules or test coverage.".to_string()];
+    if index_unavailable {
+        gaps.push("Local discovery index unavailable; lexical fallback used. Refresh scan for full retrieval.".into());
+    }
+    if ambiguous_relations > 0 {
+        gaps.push(format!("{ambiguous_relations} ambiguous static relations remain candidates; they do not expand the initial graph. Use --detail to inspect possible targets."));
+    }
     if !stale.is_empty() {
         gaps.push(format!(
             "{} interpretations excluded: at least one source changed or disappeared.",
@@ -388,7 +511,7 @@ pub fn query_at(
         gaps.push(format!("{omitted_edges} related declarations omitted by scope/depth/output or source validity; narrow the query or export --all."));
     }
     if compacted_relations > 0 {
-        gaps.push(format!("{compacted_relations} current relations compacted from the response; use --file and --all for the full graph."));
+        gaps.push(format!("{compacted_relations} current relations compacted from the response; use --file and --detail to expand selected symbols, or --all for all matching symbols."));
     }
     if result.iter().any(|card| card["parse_complete"] != true) {
         gaps.push("Some selected sources have partial or unknown parse coverage.".into());
@@ -402,7 +525,20 @@ pub fn query_at(
     if result.is_empty() {
         gaps.push("No current evidence found. Use exact search or scan; absence is not proof that the capability does not exist.".into());
     }
-    let interpretations: Vec<_> = matching.into_iter().map(|i| fresh[i].clone()).collect();
+    let interpretations: Vec<_> = matching
+        .into_iter()
+        .map(|i| {
+            let mut note = json!(fresh[i]);
+            if !detail && fresh[i].text.chars().count() > 600 {
+                note["text"] = json!(format!(
+                    "{}…",
+                    fresh[i].text.chars().take(600).collect::<String>()
+                ));
+                note["text_compacted"] = json!(true);
+            }
+            note
+        })
+        .collect();
     let flows:Vec<_>=result.iter().filter(|card|card["routes"].as_array().is_some_and(|rows|!rows.is_empty()) || card["outgoing"].as_array().is_some_and(|rows|!rows.is_empty())).map(|card|
         json!({"entry":card["id"],"static_targets":card["outgoing"].as_array().into_iter().flatten().map(|edge|&edge["target"]).collect::<Vec<_>>(),"runtime_order":"unknown"})).collect();
     Ok((
@@ -410,7 +546,8 @@ pub fn query_at(
         "flows":flows,"scan_snapshot":{"head":map.state.head,"projects":map.projects,"languages":map.languages,
             "skeleton":map.skeleton.iter().filter(|layer|all || result.iter().any(|card|card["source"]["file"].as_str().is_some_and(|file|file.starts_with(&format!("{}/",layer.dir))))).collect::<Vec<_>>(),
             "freshness":"catalog-at-last-scan; selected sources individually verified"},
-        "local_hybrid_index":local_hybrid_index,
+        "local_hybrid_index":local_hybrid_index,"projection":if detail {"detail"} else {"summary"},
+        "expand":{"detail":"Repeat the query with --detail; --file narrows entry points.","source":"run map slice --file <source.file> --name <name>","relations":"Both ends checked against the investigated checkout; static resolution is not runtime proof."},
         "stale_interpretations":stale.iter().map(|note|&note.id).collect::<Vec<_>>(),"gaps":gaps,
         "origin":"scan-and-versioned-interpretations","remote_model_calls":0}),
         map,
@@ -474,11 +611,23 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
             .take(6)
             .cloned()
             .collect();
-        let notes:Vec<_>=notes.into_iter().map(|note|json!({"id":note.id,"text":note.text,"status":note.status,"origin":note.origin,"sources":note.sources})).collect();
         if edges.is_empty() && notes.is_empty() {
             Ok(Value::Null)
         } else {
-            Ok(json!({"candidate_edges":edges,"interpretations":notes,"semantic_proof":false}))
+            // Fingerprint full evidence before projection: even an edit past
+            // the visible excerpt invalidates a prepared component's cache.
+            let mut version = Sha256::new();
+            version.update(json!({"edges":edges,"notes":notes}).to_string().as_bytes());
+            let edge_count = edges.len();
+            let edges:Vec<_>=edges.iter().map(|edge|json!({"target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"]})).collect();
+            let notes:Vec<_>=notes.iter().map(|note|json!({"id":note.id,"title":note.title,
+                "text":note.text.chars().take(500).collect::<String>(),"text_compacted":note.text.chars().count()>500,
+                "status":note.status,"origin":note.origin,"source_count":note.sources.len()})).collect();
+            Ok(
+                json!({"candidate_edges":edges,"interpretations":notes,"semantic_proof":false,
+                "evidence_version":version.hex_digest(),"current_edge_count":edge_count,
+                "expand":"run knowledge --file <source file> --detail"}),
+            )
         }
     })();
     read.unwrap_or(Value::Null)

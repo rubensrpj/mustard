@@ -37,10 +37,13 @@ pub enum ScanCmd {
         all: bool,
         #[arg(long, conflicts_with = "record")]
         markdown: bool,
+        /// Expand stored evidence and every current relation of selected symbols.
+        #[arg(long, conflicts_with = "record")]
+        detail: bool,
         #[arg(long, conflicts_with = "record")]
         out: Option<PathBuf>,
         /// Explicit multi-source interpretation receipt, as a `.json` file.
-        #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "out"])]
+        #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out"])]
         record: Option<PathBuf>,
     },
     /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
@@ -154,8 +157,8 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Knowledge {root,query,file,limit,depth,all,markdown,out,record} => {
-            super::knowledge::run(&root,&query,file.as_deref(),limit,depth,all,markdown,out.as_deref(),record.as_deref());
+        ScanCmd::Knowledge {root,query,file,limit,depth,all,markdown,detail,out,record} => {
+            super::knowledge::run(&root,&query,file.as_deref(),limit,depth,all,markdown,detail,out.as_deref(),record.as_deref());
         }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),

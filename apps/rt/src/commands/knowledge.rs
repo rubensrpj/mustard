@@ -9,6 +9,7 @@ pub fn run(
     depth: usize,
     all: bool,
     markdown: bool,
+    detail: bool,
     out: Option<&Path>,
     record: Option<&Path>,
 ) {
@@ -33,9 +34,19 @@ pub fn run(
                 .map(|v| v.to_string())
                 .map_err(|e| format!("{e:?}"));
         }
-        let (report, map) =
-            mustard_core::io::knowledge::query_at(root, &tree, query, file, limit, depth, all)
-                .map_err(|e| format!("{e:?}"))?;
+        let (report, map) = mustard_core::io::knowledge::query_with(
+            root,
+            &tree,
+            &mustard_core::io::knowledge::Query {
+                text: query,
+                file,
+                limit,
+                depth,
+                all,
+                detail: detail || markdown,
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
         let text = if markdown {
             mustard_core::domain::knowledge::markdown(&report, &map)
         } else {

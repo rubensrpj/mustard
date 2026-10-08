@@ -47,10 +47,11 @@ Atualizar o banco, recuperar uma capacidade e expandir o trecho localizado:
 ```sh
 mustard-rt run scan
 mustard-rt run knowledge --query "restaurar backup do projeto"
+mustard-rt run knowledge --query "restaurar backup do projeto" --detail
 mustard-rt run map slice --file src/backup.rs --name restore
 ```
 
-`knowledge` usa oito declarações e duas etapas de expansão por padrão. `--file` restringe os pontos de partida; a expansão pode trazer declarações chamadas de outro arquivo. `--depth 0` desliga essa expansão. Os parâmetros controlam a apresentação, não orçamento financeiro. A consulta vazia lista evidência; ausência de resultado não prova ausência da capacidade.
+`knowledge` prioriza oito declarações e consulta duas etapas de relações por padrão. A descoberta alterna a responsabilidade documentada dos arquivos com a ordem do índice híbrido; nomes exatos mantêm prioridade. Cada arquivo recebe um ponto de entrada antes dos símbolos suplementares. Relações únicas complementam posições livres, sem reservar metade da resposta para funções genéricas; relações ambíguas permanecem candidatas e não expandem o grafo inicial. `--file` restringe os pontos de partida; a expansão pode trazer declarações chamadas de outro arquivo. `--depth 0` desliga essa expansão. A resposta inicial é uma projeção curta, preservando fontes, contratos extraídos, rotas, contagens e lacunas. `--detail` expande a evidência armazenada dos mesmos símbolos; `--markdown` já usa a projeção detalhada. `--all` amplia a seleção para todos os resultados encontrados, incluindo relações. O banco conserva os pacotes originais; a projeção inicial não é o texto completo das fontes. Os parâmetros controlam a apresentação, não orçamento financeiro. A consulta vazia lista evidência; ausência de resultado não prova ausência da capacidade.
 
 Exportar um levantamento local completo ou sobre um assunto:
 
@@ -120,3 +121,39 @@ A última passada, após compactar JSON e remover trabalho de ordenação redund
 A recomendação é comparar Codebase Memory MCP e CodeGraph-Rust no mesmo corpus, sem substituir o fluxo do Mustard nem aplicar instaladores globais. Comparar relações, cobertura e recuperação com o banco atual; somente depois decidir entre aproveitar um motor por interface e ampliar o índice próprio. ContextGraph orienta a ingestão de documentação/configuração/dados, enquanto Code Context Graph orienta o vocabulário de negócio explicitamente registrado. SCIP/LSP é uma opção para a resolução que ficar ambígua. O gerador incremental de interpretações permanece uma peça separada, com fontes verificáveis e revisão do significado.
 
 Aceite de um oráculo eficaz exige corpus maior com localização e semântica conferidas: perguntas de negócio, referências cruzadas, exceções, código dinâmico, alterações sem novo scan e worktrees divergentes. Comparar busca atual, recuperação do banco e recuperação com julgamento, mantendo tarefa/modelo/esforço. Medir acerto e omissões, leituras adicionais, tamanho/tokens do contexto, chamadas pagas, construção/manutenção do índice, latência e qualidade da spec/implementação resultante. Não substituir essa prova por uma porcentagem anunciada por terceiros.
+
+
+## Melhoria verificada nesta versão
+
+Mantivemos a cópia de código usada pela régua, do commit `5e0115bd3653`, e as seis perguntas/gabaritos originais. Mais seis perguntas estruturais foram registradas antes de executar a nova ordenação; os testes também usam um projeto sintético separado com Rust, TypeScript e Python, documentos de intenção e um módulo de diagnóstico repetitivo. É avaliação local pelo executor, sem gabarito semântico independente. Nenhuma nota específica foi acrescentada para fazer as perguntas acertarem.
+
+A descoberta passa a alternar evidência de responsabilidade documentada com o índice híbrido existente. A frequência conta por arquivo, e a melhor declaração conta uma vez: repetir muitas funções ou o mesmo cabeçalho não acumula relevância. Identificadores exatos preservam prioridade. A primeira passagem diversifica arquivos; símbolos suplementares vêm depois. Todo o espaço inicial pode servir à descoberta, e relações estáticas únicas preenchem lugares livres. Relações ambíguas não ocupam esses lugares por expansão; continuam visíveis e inspecionáveis. A ordenação dos candidatos usada pelo filtro pago existente permanece separada.
+
+A consulta inicial guarda assinatura/comentário curtos, fonte íntegra por hash, contratos e rotas extraídos, amostras de ligações e contagens. `--detail` expande os mesmos símbolos; Markdown usa detalhe automaticamente. Trechos compactados e relações omitidas são indicados. A consulta lê pacotes tipados diretamente do SQLite, com catálogo/história para o relatório, sem montar o mapa inteiro com todas as declarações, textos e recibos Git. Consulta sem sinal no índice não transforma o reservatório amplo do filtro em evidência; falha do índice aparece como fallback nas lacunas.
+
+No contexto preparado, interpretações longas têm trecho curto e caminho de expansão. A versão usada no cache deriva da evidência integral, incluindo fontes e texto além do trecho visível. O pacote excessivo conserva versão e orientação de expansão, em vez de desaparecer por inteiro. Fontes secundárias continuam verificadas contra a cópia da onda.
+
+| Pergunta | Antes encontrou o destino | Agora encontrou o destino | Bytes da resposta |
+| --- | --- | --- | --- |
+| levantamento de spec e pontos do pedido | Não | Sim | 34.537 → 13.880 |
+| despachar ondas e tarefas | Não | Sim | 33.100 → 17.335 |
+| contar consumo de conversas por projeto | Não | Não | 29.189 → 13.817 |
+| publicar snapshot Cloudflare | Sim | Sim | 35.209 → 14.417 |
+| contexto preparado da cópia da onda | Não | Não | 32.286 → 13.974 |
+| cache por evidência de julgamento Jev | Sim | Sim | 21.093 → 13.126 |
+| localizar implementação dos métodos de contrato | Sim | Sim | 32.791 → 15.204 |
+| montar pedido de revisão final | Não | Sim | 31.996 → 15.161 |
+| conferir hashes de múltiplas fontes de interpretação | Sim | Sim | 30.203 → 15.133 |
+| projeto da conversa de agente em cópia já apagada | Sim | Sim | 31.331 → 14.212 |
+| base de integração com commit próprio merge ff only | Sim | Sim | 30.621 → 15.752 |
+| renderizar documentação Markdown do conhecimento | Sim | Sim | 27.132 → 14.659 |
+
+No conjunto original: **2/6 → 4/6**. Nas seis perguntas adicionais: **5/6 → 6/6**. Total: **7/12 → 10/12**. Somando as doze respostas: **369.488 → 176.670 bytes**, cerca de **52% menos bytes**. Isso não mede tokens faturados nem economia de dinheiro. As duas buscas ainda incompletas são consumo de conversas no comando da spec e contexto preparado da onda. Não ajustamos o gabarito para ocultar essas falhas. Já encontram componentes relacionados, mas não o arquivo de implementação específico exigido pela régua.
+
+As novas consultas ficaram entre **1,93 e 2,27 segundos** nesta execução. A versão anterior rodou primeiro, a nova depois, no mesmo banco já utilizado em ensaios: ordem, caches de sistema e apenas uma medida por pergunta impedem afirmar um ganho estável de latência. Sem comparação paga, `rg`/outros motores ou realização de specs pelo modelo, não há conclusão sobre custo ou qualidade do código gerado.
+
+Resultados por pergunta, versões/hashes dos executáveis e hashes dos destinos estão em [registro do comparativo](../apps/scan/tests/fixtures/knowledge-comparison.json). O executável da melhoria nesse ensaio era da árvore de trabalho antes do commit final; o hash identifica exatamente o programa medido. Os artefatos posteriores de revisão são compilados novamente a partir do commit final limpo. Nenhuma API de modelo ou upload remoto foi utilizado.
+
+A suíte completa aprovou **3.809 testes Rust**, sem falhas, com dois ignorados herdados. Lint estrito aprovado. O aceite nativo inclui instalação/scan em pasta vazia, projeção curta/detalhada dos mesmos símbolos, pergunta inexistente sem resultado inventado, exportação Markdown, recibos e invalidação por fonte secundária. Os mapas de sessão seguem abaixo de 3 kB em ambos os idiomas. Isso verifica os contratos; ainda precisamos de avaliação de negócio independente para aceitar um oráculo completo.
+
+Pacote de revisão em `target/review-plugin`, com manifesto em `target/review-plugin-manifest.json`: três executáveis compilados do commit final limpo. A instalação nativa foi conferida novamente depois dessa compilação; manifesto/hooks do pacote aprovados pelo validador oficial. Logs locais: `/tmp/mustard-knowledge-build-checked.log`, `/tmp/mustard-knowledge-native-acceptance.log` e `/tmp/mustard-knowledge-package-validate.log`. O pacote continua isolado da instalação pessoal e a validação local não substitui o ensaio no host Claude Code.
