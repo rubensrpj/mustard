@@ -25,15 +25,30 @@ pub(crate) struct Asset {
 }
 
 pub(crate) fn publish(root: &Path, dir: &Path, scope: &str, assets: &[Asset]) -> Value {
-    let Some(config) = mustard_core::ProjectConfig::load(root).publication else {
+    let project = mustard_core::ProjectConfig::load(root);
+    if project.unreadable {
+        return json!({"published":false,"transport_required":true,"reason":"publication-unreadable-config",
+            "hint":"Não foi possível ler mustard.json. Corrija o arquivo antes de publicar; os arquivos da página continuam locais."});
+    }
+    let Some(config) = project.publication else {
         return json!({"published":false,"transport_required":true,"reason":"publication-not-configured",
             "hint":"Configure publication com provider cloudflare-pages, accountId e projectName; forneça CLOUDFLARE_API_TOKEN no ambiente. Os arquivos continuam locais."});
     };
+    if let Err(reason) = validate(&config, scope, assets) {
+        let hint = if reason == "publication-invalid-assets" {
+            "Confira os arquivos da página: index.html e snapshot.json distintos, com até 25 MiB cada. Os arquivos continuam locais."
+        } else {
+            "Confira publication em mustard.json: provider cloudflare-pages, accountId com 32 caracteres hexadecimais e projectName válido de um projeto Direct Upload. Os arquivos continuam locais."
+        };
+        return json!({"published":false,"transport_required":true,"reason":reason,
+            "hint":hint});
+    }
     let token = std::env::var(TOKEN_ENV)
         .ok()
         .filter(|token| !token.trim().is_empty());
     let Some(token) = token else {
-        return json!({"published":false,"transport_required":true,"reason":"publication-token-missing"});
+        return json!({"published":false,"transport_required":true,"reason":"publication-token-missing",
+            "hint":"Forneça CLOUDFLARE_API_TOKEN no ambiente do processo; o token não é lido de mustard.json. Os arquivos continuam locais."});
     };
     let http = Http {
         api: API.into(),

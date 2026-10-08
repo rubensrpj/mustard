@@ -214,3 +214,37 @@ comentários colaborativos integrados dos
 [Artifacts do Claude](https://code.claude.com/docs/en/artifacts). Essas capacidades
 são requisitos próprios, caso necessários; não devem ser anunciadas como
 presentes somente porque uma página foi hospedada.
+
+## Continuação: configuração no mustard.json
+
+Em 08/10, o usuário confirmou que a configuração de Cloudflare pode ficar no
+`mustard.json`. O bloco opcional `publication` contém `provider`, `accountId` e
+`projectName`; a autenticação continua exclusivamente no ambiente
+`CLOUDFLARE_API_TOKEN`. A confirmação conserva a publicação sob pedido explícito.
+O preenchimento dos identificadores reais aguarda o Account ID e o nome do
+projeto Direct Upload fornecidos pelo usuário.
+
+O runtime agora distingue arquivo de configuração ilegível, destino inválido e
+token ausente antes de tentar comunicação remota. Os diagnósticos orientam a
+correção sem incluir valores de credenciais ou o corpo da configuração.
+
+Provas adicionais sobre o commit-base `c6eab2b9`:
+
+- 10 testes focados no transporte aprovados, incluindo os dois novos casos de
+  configuração inválida. Comando: `cargo test --locked -p mustard-rt --lib
+  shared::publication`; log: `/tmp/mustard-cloudflare-config-tests.log`. Essa
+  contagem inclui testes existentes; não deve ser somada à suíte geral anterior.
+- Build dos três programas aprovado em `/tmp/mustard-cloudflare-config-build.log`.
+  Lint estrito do workspace e de todos os alvos aprovado em
+  `/tmp/mustard-cloudflare-config-lint.log`.
+- Instalação e `mustard config --yes` exercitados com os executáveis reais em
+  projeto temporário. Preservaram o bloco Cloudflare, uma opção futura e as
+  configurações pessoais. A publicação explícita leu o destino configurado e
+  informou token ausente, sem envio remoto. Log:
+  `/tmp/mustard-cloudflare-config-native.log`; fixture removida ao terminar.
+
+O pacote local de revisão é atualizado com os três executáveis identificados
+pelo commit dessa continuação. A instalação em uso e seu `mustard.json`
+permanecem preservados enquanto faltam os identificadores reais. Aceites
+autenticados de Cloudflare/Mods, medição paga de Jev, Windows e revisão
+independente mantêm as limitações já registradas.

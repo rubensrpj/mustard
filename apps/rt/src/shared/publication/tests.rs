@@ -1,4 +1,3 @@
-
 use super::*;
 use std::cell::RefCell;
 
@@ -89,6 +88,35 @@ fn assets() -> Vec<Asset> {
 }
 fn run(http: &Fake, dir: &Path) -> Result<Value, String> {
     deploy(http, &config(), "account-token", dir, "spec-123", &assets())
+}
+
+#[test]
+fn unreadable_configuration_is_reported_before_any_transport() {
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("not-created");
+    std::fs::write(root.path().join("mustard.json"), b"{broken json").unwrap();
+    let answer = publish(root.path(), &output, "spec-123", &assets());
+    assert_eq!(answer["reason"], "publication-unreadable-config");
+    assert_eq!(answer["published"], false);
+    assert!(!output.exists());
+}
+
+#[test]
+fn invalid_destination_is_reported_before_credentials_or_transport() {
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("not-created");
+    let mut destination = config();
+    destination.account_id = "invalid-account".into();
+    mustard_core::ProjectConfig {
+        publication: Some(destination),
+        ..Default::default()
+    }
+    .write(root.path())
+    .unwrap();
+    let answer = publish(root.path(), &output, "spec-123", &assets());
+    assert_eq!(answer["reason"], "publication-invalid-configuration");
+    assert_eq!(answer["published"], false);
+    assert!(!output.exists());
 }
 
 #[test]

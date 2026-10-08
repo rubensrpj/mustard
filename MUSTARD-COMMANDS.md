@@ -133,6 +133,13 @@ Os nomes acima são exemplos. `accountId` é o identificador real da conta,
 e `projectName` é o projeto Direct Upload já criado. A instalação não cria
 contas, projetos remotos ou credenciais.
 
+O bloco `publication` é opcional e pertence ao `mustard.json` da raiz do projeto.
+Instalação, atualização e `mustard config` preservam seus campos e as demais
+configurações existentes. O binário informa separadamente arquivo ilegível,
+destino inválido e token ausente, antes de tentar comunicação remota. O token
+é lido exclusivamente de `CLOUDFLARE_API_TOKEN` no ambiente; um campo de token
+no JSON não configura a autenticação.
+
 - `mustard-rt run publish --project` ou `/mustard-pages project` publica o projeto
   sem exigir uma spec aberta.
 - `mustard-rt run publish` ou `/mustard-pages spec` usa a spec da branch atual.
