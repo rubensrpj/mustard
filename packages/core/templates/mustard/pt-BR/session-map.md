@@ -19,7 +19,7 @@ Fluxo: levantamento, plano, aprovação, ondas, revisão final, fechamento e pul
 ## Acompanhamento
 
 - `/mustard-panel`: projeto, specs, execução e consumo local; consulta e renderização não chamam modelo nem Jev.
-- `/mustard-publish` só sob pedido. Gera snapshot datado; exportação local não confirma publicação remota. Atualizar exige nova ação.
+- `/mustard-pages` só sob pedido. Gera snapshot datado; exportação local não confirma publicação remota. Atualizar exige nova ação.
 - Sem Mods: `mustard-rt run panel --root <projeto> --spec <spec>`. Exportar: `mustard-rt run publish --spec <spec>`; `--include-consumption` autoriza compartilhar consumo.
 - Página avulsa: `mustard-rt run page` recebe markdown.
 - `mustard-rt run spend` mede localmente; `mustard-rt run spend --publish` prepara exportação só sob pedido.

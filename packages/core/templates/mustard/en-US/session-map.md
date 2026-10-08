@@ -19,7 +19,7 @@ Flow: survey, plan, approval, waves, final review, close and pull request. Follo
 ## Tracking
 
 - `/mustard-panel`: project, specs, execution and local consumption; querying and rendering call neither a model nor Jev.
-- `/mustard-publish` requires a request. A dated local export does not confirm remote publication. Updating requires another action.
+- `/mustard-pages` requires a request. A dated local export does not confirm remote publication. Updating requires another action.
 - Without Mods: `mustard-rt run panel --root <project> --spec <spec>`. Export: `mustard-rt run publish --spec <spec>`; `--include-consumption` authorizes sharing consumption.
 - Standalone page: `mustard-rt run page` takes markdown.
 - `mustard-rt run spend` measures locally; `mustard-rt run spend --publish` prepares export only on request.

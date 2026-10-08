@@ -171,9 +171,12 @@ ArtifactData, template de gasto e fixtures sem consumidores foram removidos;
 ledger/histórico pessoal não foram apagados.
 
 A tentativa interativa de Mods usou somente uma instalação/sessão temporária,
-sem turno de modelo. A sessão não reconheceu autenticação e não exibiu os comandos;
-portanto o aceite visual real segue pendente. Credenciais temporárias e fixture
-foram removidas, sem alterar a configuração pessoal. Resultado local em
+sem turno de modelo. A sessão não reconheceu autenticação e não exibiu os comandos.
+A conferência posterior identificou também que `defaultEnabled:false` exige
+habilitar `mustard@inline` quando o pacote é passado por `--plugin-dir`; a
+tentativa anterior não isolou esse requisito. O aceite visual real segue
+pendente. Credenciais temporárias e fixture foram removidas, sem alterar a
+configuração pessoal. Resultado local em
 `/tmp/mustard-mods-interactive-result.json`.
 
 Resultados finais estão na seção de provas acima. Calibração paga do Jev,
@@ -248,3 +251,26 @@ pelo commit dessa continuação. A instalação em uso e seu `mustard.json`
 permanecem preservados enquanto faltam os identificadores reais. Aceites
 autenticados de Cloudflare/Mods, medição paga de Jev, Windows e revisão
 independente mantêm as limitações já registradas.
+
+## Continuação: teste pelo usuário no Claude Code
+
+O usuário confirmou que fará o aceite na sessão real do Claude. O pacote local
+permite isso sem instalar uma release: `--plugin-dir` seleciona a cópia em
+revisão, `--settings` habilita `mustard@inline:true` somente na sessão e o PATH
+aponta primeiro para os três programas desse pacote. A leitura do CLI confirmou
+o plugin `mustard@inline` habilitado, com escopo `session` e o caminho do pacote
+de revisão; isso comprova reconhecimento da configuração, não aceite visual.
+O CLI do pacote prepara/atualiza os arquivos locais do projeto de teste.
+
+Foram corrigidas três referências ao nome antigo `/mustard-publish` que ainda
+estavam em `continue.md` e nos mapas de sessão pt-BR/en-US. Cinco testes de
+instalação/entrega do mapa ao início de sessão passaram em
+`/tmp/mustard-claude-handoff-tests.log`. A busca nos textos ativos do plugin e nos
+templates confirma o uso de `/mustard-pages`. O procedimento está em
+`MUSTARD-COMMANDS.md`, seção de teste da versão de desenvolvimento.
+
+O usuário deve conferir `/plugin`, `/mustard-panel`, statusline e uma alteração
+pequena pelo fluxo de levantamento, aprovação, ondas e fechamento. O resultado
+real ainda precisa ser registrado. A preparação não publicou páginas, iniciou
+um turno de modelo, atualizou a instalação permanente ou adotou a branch no
+checkout original.

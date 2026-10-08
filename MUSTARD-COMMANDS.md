@@ -182,3 +182,34 @@ a publicação mecânica em um comando Markdown que consome turno do modelo.
 Relatórios atuais publicam texto/tabelas do Markdown; anexos em arquivos locais
 não são enviados implicitamente. A leitura do arquivo é explícita e não inclui
 outras conversas, código ou a spec inteira por conta própria.
+
+## Teste da versão de desenvolvimento no Claude Code
+
+O aceite do painel e dos eventos deve ser realizado numa sessão autenticada do
+Claude Code. Na raiz do projeto de teste, prepare os arquivos locais com o CLI
+do pacote em revisão e inicie o Claude com esse pacote:
+
+```sh
+mustard_review_plugin="/caminho/do/checkout/target/review-plugin"
+"$mustard_review_plugin/bin/mustard" init --yes
+PATH="$mustard_review_plugin/bin:$PATH" claude \
+  --plugin-dir "$mustard_review_plugin" \
+  --settings '{"enabledPlugins":{"mustard@inline":true}}'
+```
+
+Use o caminho real do pacote de revisão; o `mustard` instalado no sistema pode
+pertencer à versão anterior. O PATH informado vale para o Claude e seus filhos.
+O manifesto do Mustard declara `defaultEnabled:false`, portanto a configuração
+`mustard@inline:true` habilita a cópia local somente nessa sessão, sem gravar
+habilitação nas configurações pessoais.
+
+No Claude, confira o plugin em `/plugin` e abra `/mustard-panel`. Peça uma
+alteração pequena pelo fluxo normal: levantamento, aprovação do plano, ondas,
+validação e revisão final. Observe a atualização do painel, os dados de consumo
+e a statusline durante as ferramentas e após a retomada. A publicação externa
+continua exigindo pedido explícito e pode ser validada separadamente.
+
+Registre a versão retornada por `mustard-rt --version` e o resultado de cada
+etapa. Uma sessão que não carregou `mustard@inline` ou usa outro executável não
+comprova o comportamento desta entrega. Fonte:
+[carregamento de plugins](https://code.claude.com/docs/en/plugins/loading).
