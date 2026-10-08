@@ -874,6 +874,9 @@ pub struct Decl {
     /// inteira.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub whole_doc: String,
+    /// Explicit metadata in attached documentation, with original line ranges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<mustard_core::domain::knowledge::Annotation>,
     /// Os comentários escritos nas linhas da declaração, da primeira à
     /// última, limpos das marcas e juntados numa linha. Os de uma declaração
     /// de dentro são também da que a contém.

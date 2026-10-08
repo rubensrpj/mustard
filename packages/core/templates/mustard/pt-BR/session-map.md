@@ -1,13 +1,13 @@
 # Mustard neste projeto
 
-Fluxo: levantamento, plano, aprovação, ondas, revisão final, fechamento e pull request. Siga o comando. Estado, buscas, contexto, cálculos e páginas ficam no binário; o modelo raciocina e implementa. Operação mecânica ausente pede comando.
+Fluxo: levantamento, plano, aprovação, ondas, revisão final, fechamento e PR. O binário cuida de estado, buscas, contexto, cálculos e páginas; o modelo raciocina e implementa. Mecânica ausente pede comando.
 
 ## Pedido e levantamento
 
 - Abra mudanças com `mustard-rt run open`, grave o objetivo em `context` e sugira `/clear`; a linha de retomada mostra o estado. Pergunta, leitura e status não abrem spec. Branch alheia ao Mustard não bloqueia.
 - Explique um ponto por vez na ordem de explicar do estilo de resposta. Confira código e histórico antes de remover.
 - Grave cada resposta com `mustard-rt run answer`.
-- `mustard-rt run knowledge --query "<capacidade>"`: localização com fontes atuais. Expanda com `--detail` ou `run map slice`. Confira lacunas e interpretações no código.
+- `mustard-rt run knowledge --query "<capacidade>"`: fontes atuais. `--symbol <id> --direction callers`: impacto; `run map slice`: código; `--refresh`: notas antigas. Confira lacunas e regras no código.
 
 ## Spec aberta
 

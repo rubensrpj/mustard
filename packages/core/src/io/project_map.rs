@@ -302,10 +302,10 @@ pub const FILES: MapBlock = block!("files", version 3, {
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 14, {
+pub const DECLS: MapBlock = block!("decls", version 15, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
-        "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
+        "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text, "annotations" Json,
         "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ],

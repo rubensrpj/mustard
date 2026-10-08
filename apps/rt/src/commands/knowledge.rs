@@ -3,13 +3,8 @@ use std::path::Path;
 
 pub fn run(
     root: &Path,
-    query: &str,
-    file: Option<&str>,
-    limit: usize,
-    depth: usize,
-    all: bool,
+    query: &mustard_core::io::knowledge::Query<'_>,
     markdown: bool,
-    detail: bool,
     out: Option<&Path>,
     record: Option<&Path>,
 ) {
@@ -34,19 +29,8 @@ pub fn run(
                 .map(|v| v.to_string())
                 .map_err(|e| format!("{e:?}"));
         }
-        let (report, map) = mustard_core::io::knowledge::query_with(
-            root,
-            &tree,
-            &mustard_core::io::knowledge::Query {
-                text: query,
-                file,
-                limit,
-                depth,
-                all,
-                detail: detail || markdown,
-            },
-        )
-        .map_err(|e| format!("{e:?}"))?;
+        let (report, map) = mustard_core::io::knowledge::query_with(root, &tree, query)
+            .map_err(|e| format!("{e:?}"))?;
         let text = if markdown {
             mustard_core::domain::knowledge::markdown(&report, &map)
         } else {

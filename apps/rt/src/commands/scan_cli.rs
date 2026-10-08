@@ -29,6 +29,15 @@ pub enum ScanCmd {
         query: String,
         #[arg(long)]
         file: Option<String>,
+        /// Exact card identity returned by discovery: <file>:<line>:<name>.
+        #[arg(long, conflicts_with_all = ["query", "file", "record", "refresh"])]
+        symbol: Option<String>,
+        /// Follow calls, consumers, or both from one exact symbol.
+        #[arg(long, requires = "symbol", value_parser = ["outgoing", "callers", "both"])]
+        direction: Option<String>,
+        /// List stale interpretations and affected sources for explicit review.
+        #[arg(long, conflicts_with_all = ["record", "symbol", "direction"])]
+        refresh: bool,
         #[arg(long, default_value_t = 8)]
         limit: usize,
         #[arg(long, default_value_t = 2)]
@@ -43,7 +52,7 @@ pub enum ScanCmd {
         #[arg(long, conflicts_with = "record")]
         out: Option<PathBuf>,
         /// Explicit multi-source interpretation receipt, as a `.json` file.
-        #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out"])]
+        #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out", "symbol", "direction", "refresh"])]
         record: Option<PathBuf>,
     },
     /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
@@ -157,8 +166,11 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Knowledge {root,query,file,limit,depth,all,markdown,detail,out,record} => {
-            super::knowledge::run(&root,&query,file.as_deref(),limit,depth,all,markdown,detail,out.as_deref(),record.as_deref());
+        ScanCmd::Knowledge {root,query,file,symbol,direction,refresh,limit,depth,all,markdown,detail,out,record} => {
+            super::knowledge::run(&root,&mustard_core::io::knowledge::Query {
+                text:&query,file:file.as_deref(),symbol:symbol.as_deref(),refresh,limit,depth,all,detail:detail || markdown,
+                direction:match direction.as_deref(){Some("callers")=>mustard_core::io::knowledge::Direction::Callers,Some("both")=>mustard_core::io::knowledge::Direction::Both,_=>mustard_core::io::knowledge::Direction::Outgoing},
+            },markdown,out.as_deref(),record.as_deref());
         }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),

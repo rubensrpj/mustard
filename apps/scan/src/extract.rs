@@ -720,7 +720,7 @@ impl Analyzer {
             let mut body_end: Option<usize> = None;
             let mut value_start: Option<usize> = None;
             let mut name_kind: &'static str = "";
-            let mut doc_inside: Option<(usize, String)> = None;
+            let mut doc_inside: Option<(usize, u64, String)> = None;
             // Os imports deste match, com o byte e a linha em que cada um foi
             // escrito, e os nomes que o mesmo pattern diz que eles trazem.
             let mut here_imports: Vec<Written> = Vec::new();
@@ -842,7 +842,7 @@ impl Analyzer {
                     CapKind::Doc => {
                         doc_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
-                            doc_inside = Some((node.start_byte(), t.to_string()));
+                            doc_inside = Some((node.start_byte(), node.start_position().row as u64 + 1, t.to_string()));
                         }
                     }
                     CapKind::Supertype => {
@@ -987,8 +987,12 @@ impl Analyzer {
                 let supertypes = supers_by_name.get(&key).map(|s| s.iter().cloned().collect()).unwrap_or_default();
                 let above = doc_above(h.node, bytes, &decorations, self.doc_tags);
                 let top = above.doc_row.min(above.first_row) + 1;
+                let mut annotations = above.annotations;
                 let whole = match h.doc_inside {
-                    Some((_, inside)) if above.whole.is_empty() => one_line(&inside, usize::MAX),
+                    Some((_, line, inside)) => {
+                        annotations.extend(mustard_core::domain::knowledge::annotation::parse(&inside,line));
+                        if above.whole.is_empty() { one_line(&inside, usize::MAX) } else { above.whole }
+                    },
                     _ => above.whole,
                 };
                 let doc = one_line(&whole, DOC_MAX_CHARS);
@@ -1003,6 +1007,7 @@ impl Analyzer {
                     supertypes,
                     doc,
                     whole_doc,
+                    annotations,
                     body_comment: String::new(),
                     body_names: String::new(),
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
@@ -1265,7 +1270,7 @@ struct Header<'t> {
     value_start: Option<usize>,
     /// The documentation written inside the declaration (where it starts, and
     /// its text), when a query marks it.
-    doc_inside: Option<(usize, String)>,
+    doc_inside: Option<(usize, u64, String)>,
     /// O tipo dono escrito fora da declaração (`@owner`).
     owner: Vec<String>,
     /// O contrato que ela cumpre por onde foi escrita (`@owner.contract`).
@@ -1357,6 +1362,7 @@ const SIGNATURE_MAX_CHARS: usize = 600;
 /// inside the node already starts the node there, and the line is the node's.
 fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Above {
     let mut parts: Vec<String> = Vec::new();
+    let mut annotation_lines = BTreeMap::new();
     let mut anchor = node;
     let mut top = node.start_position().row;
     let mut first_row = top;
@@ -1377,6 +1383,9 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
                     break 'climb;
                 };
                 parts.push(clean_comment(text, tags));
+                for (offset,line) in clean_comment_lines(text,tags).into_iter().enumerate() {
+                    annotation_lines.insert(prev.start_position().row as u64 + offset as u64 + 1,line);
+                }
                 doc_row = doc_row.min(prev.start_position().row);
             } else if is_decoration(&prev, decorations) {
                 first_row = first_row.min(prev.start_position().row);
@@ -1394,7 +1403,14 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
         anchor = parent;
     }
     parts.reverse();
-    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row, doc_row }
+    let annotations=match (annotation_lines.first_key_value(),annotation_lines.last_key_value()) {
+        (Some((&first,_)),Some((&last,_))) => {
+            let lines=(first..=last).map(|line|annotation_lines.get(&line).map(String::as_str).unwrap_or_default()).collect::<Vec<_>>().join("\n");
+            mustard_core::domain::knowledge::annotation::parse(&lines,first)
+        },
+        _=>Vec::new(),
+    };
+    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row, doc_row, annotations }
 }
 
 /// What is read above a declaration: its whole documentation comment, in one
@@ -1402,6 +1418,7 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
 /// starts.
 struct Above {
     whole: String,
+    annotations: Vec<mustard_core::domain::knowledge::Annotation>,
     first_row: usize,
     /// A linha (a partir de zero) em que começa o comentário escrito logo
     /// acima da declaração; a da própria declaração, sem comentário.
@@ -1535,6 +1552,10 @@ fn merged_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
 /// draws its lines with, not a language's. The markup `tags` of the language
 /// go too, their text staying (see [`strip_doc_tags`]).
 fn clean_comment(raw: &str, tags: &[&str]) -> String {
+    clean_comment_lines(raw,tags).into_iter().filter(|line|!line.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+fn clean_comment_lines(raw: &str, tags: &[&str]) -> Vec<String> {
     raw.lines()
         .map(|line| strip_doc_tags(line, tags))
         .map(|line| {
@@ -1542,9 +1563,7 @@ fn clean_comment(raw: &str, tags: &[&str]) -> String {
             let line = line.strip_suffix("*/").unwrap_or(line);
             line.trim_start_matches(['/', '*', '#', '-', ';', '!', '<', '=']).trim().to_string()
         })
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
 }
 
 /// Drop from `line` every markup tag named in `tags` — opening, closing or

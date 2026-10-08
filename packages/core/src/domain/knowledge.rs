@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 use super::normalize::{Languages, Normalizer};
 use super::project_map::{ProjectMap, UseSite, file_history};
 
+pub mod annotation;
+pub use annotation::Annotation;
+
 pub const VERSION: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +36,8 @@ pub struct Card {
     pub literals: Vec<Value>,
     #[serde(default)]
     pub file_documentation: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
     pub source: Source,
     pub parse_complete: Option<bool>,
     #[serde(default)]
@@ -54,6 +59,9 @@ pub struct Card {
 /// A first-read projection. The stored evidence is untouched; a detailed
 /// query expands the same symbols. Contracts and routes stay visible.
 pub fn summary(card: &Card) -> Value {
+    let annotations: Vec<_> = card.annotations.iter().take(6).map(|item| json!({
+        "tag":item.tag,"text":short(&item.text,240),"line":item.line,"end_line":item.end_line,
+    })).collect();
     let outgoing: Vec<_> = card.outgoing.iter().take(3).map(|edge| json!({
         "target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"],
     })).collect();
@@ -61,14 +69,27 @@ pub fn summary(card: &Card) -> Value {
         "file":edge["file"],"line":edge["line"],"from":edge["from"],"resolution":edge["resolution"],
         "candidate_count":edge["candidates"].as_array().map_or(0,Vec::len),
     })).collect();
-    json!({"id":card.id,"name":card.name,"kind":card.kind,"source":card.source,
+    let mut projection = json!({"id":card.id,"name":card.name,"kind":card.kind,"source":card.source,
         "signature":short(&card.signature,320),"documentation":short(&card.documentation,320),
         "file_documentation":short(&card.file_documentation,220),
         "parse_complete":card.parse_complete,"contracts":card.contracts,"routes":card.routes,
         "outgoing":outgoing,"callers":callers,"inline_tests":card.inline_tests,"unresolved_calls":card.unresolved_calls,
         "detail_counts":{"literals":card.literals.len(),"tests":card.tests.len(),"body_comment_chars":card.body_comment.chars().count()},
         "text_compacted":card.signature.chars().count()>320 || card.documentation.chars().count()>320 || card.file_documentation.chars().count()>220,
-    })
+    });
+    if !card.annotations.is_empty() {
+        projection["annotations"] = json!(annotations);
+        projection["annotation_status"] = json!("author-assertion; not semantic proof");
+        projection["detail_counts"]["annotations"] = json!(card.annotations.len());
+        projection["annotations_compacted"] = json!(
+            card.annotations.len() > 6
+                || card
+                    .annotations
+                    .iter()
+                    .any(|item| item.text.chars().count() > 240)
+        );
+    }
+    projection
 }
 
 fn short(text: &str, max: usize) -> String {
@@ -147,6 +168,8 @@ pub fn enrich(raw: &mut Value) {
                     text["owner"].as_str()==Some(name) && text["line"].as_u64().is_some_and(|at|line<=at && at<=end_line))
                     .map(|text|json!({"line":text["line"],"kind":text["kind"],"value":short(text["value"].as_str().unwrap_or_default(),400)})).take(12).collect(),
                 file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),
+                annotations:declaration["annotations"].as_array().into_iter().flatten()
+                    .filter_map(|item|serde_json::from_value(item.clone()).ok()).collect(),
                 source:Source {file:file.to_string(),line,end_line,sha256:sha256.to_string()},
                 parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:strings("contract"),
                 routes:module["routes"].as_array().into_iter().flatten().filter(|route| route["handler"].as_str()==Some(name))
@@ -230,7 +253,7 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
         .map(|card| {
             normalizer
                 .forms(&format!(
-                    "{} {} {} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {}",
                     card.name,
                     card.source.file,
                     card.signature,
@@ -238,7 +261,8 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
                     card.body_comment,
                     card.file_documentation,
                     serde_json::to_string(&card.routes).unwrap_or_default(),
-                    serde_json::to_string(&card.literals).unwrap_or_default()
+                    serde_json::to_string(&card.literals).unwrap_or_default(),
+                    annotation_text(card)
                 ))
                 .into_iter()
                 .flatten()
@@ -300,8 +324,11 @@ pub fn intent_files(cards: &[Card], query: &str, languages: &Languages) -> Vec<S
         });
         let own: BTreeSet<_> = normalizer
             .forms(&format!(
-                "{} {} {}",
-                card.name, card.documentation, card.body_comment
+                "{} {} {} {}",
+                card.name,
+                card.documentation,
+                card.body_comment,
+                annotation_text(card)
             ))
             .into_iter()
             .flatten()
@@ -399,6 +426,51 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
         }
         text.push('\n');
     }
+    for item in report["refresh_candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let _ = writeln!(
+            text,
+            "## Revisar interpretação / review interpretation: {}\n\n`{}` · interpretação antiga, revisão necessária / stale, review required.\n",
+            item["title"].as_str().unwrap_or_default(),
+            item["id"].as_str().unwrap_or_default()
+        );
+        if let Some(previous) = item["previous_text"].as_str() {
+            let _ = writeln!(
+                text,
+                "Texto anterior, sem validade atual / previous text, not current evidence:\n\n{previous}\n"
+            );
+        }
+        for change in item["changed_sources"].as_array().into_iter().flatten() {
+            let _ = writeln!(
+                text,
+                "- `{}` · {} · hash anterior / previous hash `{}` · atual / current `{}`. Intervalo atual desconhecido / current range unknown.",
+                change["previous_source"]["file"]
+                    .as_str()
+                    .unwrap_or_default(),
+                change["reason"].as_str().unwrap_or_default(),
+                change["previous_source"]["sha256"]
+                    .as_str()
+                    .unwrap_or_default(),
+                change["current_file"]["sha256"]
+                    .as_str()
+                    .unwrap_or("unavailable")
+            );
+        }
+        for source in item["unchanged_sources"].as_array().into_iter().flatten() {
+            let _ = writeln!(
+                text,
+                "- Fonte preservada para conferir contexto / unchanged context source: `{}`:{}–{} · SHA-256 `{}`",
+                source["file"].as_str().unwrap_or_default(),
+                source["line"],
+                source["end_line"],
+                source["sha256"].as_str().unwrap_or_default()
+            );
+        }
+        text.push('\n');
+    }
     for item in report["cards"].as_array().into_iter().flatten() {
         let Ok(card) = serde_json::from_value::<Card>(item.clone()) else {
             continue;
@@ -426,6 +498,17 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
                 "Comentários internos / body comments:\n\n{}\n",
                 card.body_comment
             );
+        }
+        if !card.annotations.is_empty() {
+            text.push_str("Intenção e regras declaradas pelo autor; sem prova semântica / author assertions, not semantic proof:\n\n");
+            for item in &card.annotations {
+                let _ = writeln!(
+                    text,
+                    "- `@{}` · linhas / lines {}–{}: {}",
+                    item.tag, item.line, item.end_line, item.text
+                );
+            }
+            text.push('\n');
         }
         if !card.file_documentation.is_empty() {
             let _ = writeln!(
@@ -466,6 +549,16 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
                 edge["resolution"].as_str().unwrap_or_default()
             );
         }
+        for edge in &card.callers {
+            let _ = writeln!(
+                text,
+                "- Consumidor / consumer: `{}`:{} · `{}` · {}",
+                edge["file"].as_str().unwrap_or_default(),
+                edge["line"],
+                edge["from"].as_str().unwrap_or_default(),
+                edge["resolution"].as_str().unwrap_or_default()
+            );
+        }
         let _ = writeln!(
             text,
             "\nTestes candidatos / test candidates: {} · inline: {}.\n",
@@ -486,6 +579,14 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
         let _ = writeln!(text, "- {}", gap.as_str().unwrap_or_default());
     }
     text
+}
+
+fn annotation_text(card: &Card) -> String {
+    card.annotations
+        .iter()
+        .map(|item| item.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

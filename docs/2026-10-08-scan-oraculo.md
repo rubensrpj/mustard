@@ -106,7 +106,7 @@ Ainda não entregamos ingestão universal de regras de negócio, rastreamento em
 
 O próximo contrato do banco deve relacionar capacidades, entradas/saídas, estados, configurações, dados persistidos, eventos, permissões e testes às fontes. Cada vínculo precisa de método de extração, validade e lacunas. Para linguagens/artefatos sem suporte, conservar busca textual e declarar cobertura desconhecida. Canais, banco de dados e serviços externos não podem ser inventados a partir do nome de uma função.
 
-Para eliminar a procura manual com segurança, a consulta também precisa dar expansão por símbolo e impacto em consumidores, não apenas um grande resumo. A arquitetura do banco e o contrato JSON permitem um adaptador futuro para outros clientes; isso não significa suporte operacional ao Codex nesta versão.
+A consulta agora oferece expansão por identidade exata e consumidores estáticos, descrita abaixo. Isso não cobre consumidores dinâmicos nem substitui resolução de tipos por compilador/LSP. A arquitetura do banco e o contrato JSON permitem um adaptador futuro para outros clientes; isso não significa suporte operacional ao Codex nesta versão.
 
 ## Régua de eficácia
 
@@ -157,3 +157,70 @@ Resultados por pergunta, versões/hashes dos executáveis e hashes dos destinos 
 A suíte completa aprovou **3.809 testes Rust**, sem falhas, com dois ignorados herdados. Lint estrito aprovado. O aceite nativo inclui instalação/scan em pasta vazia, projeção curta/detalhada dos mesmos símbolos, pergunta inexistente sem resultado inventado, exportação Markdown, recibos e invalidação por fonte secundária. Os mapas de sessão seguem abaixo de 3 kB em ambos os idiomas. Isso verifica os contratos; ainda precisamos de avaliação de negócio independente para aceitar um oráculo completo.
 
 Pacote de revisão em `target/review-plugin`, com manifesto em `target/review-plugin-manifest.json`: três executáveis compilados do commit final limpo. A instalação nativa foi conferida novamente depois dessa compilação; manifesto/hooks do pacote aprovados pelo validador oficial. Logs locais: `/tmp/mustard-knowledge-build-checked.log`, `/tmp/mustard-knowledge-native-acceptance.log` e `/tmp/mustard-knowledge-package-validate.log`. O pacote continua isolado da instalação pessoal e a validação local não substitui o ensaio no host Claude Code.
+
+## Conceitos da pesquisa aplicados ao produto
+
+Continuação autorizada em 08/10/2026. Implementação própria em Rust, reaproveitando o banco e o parser existentes; sem instalar os projetos consultados nem copiar seus motores. A comparação de 12 perguntas acima permanece um registro da versão anterior, não uma nova medida desta continuação.
+
+| Referência | Aplicação no Mustard | Benefício e limite |
+| --- | --- | --- |
+| Code Context Graph | Metadados explícitos `@intent`, `@domainRule`, `@requires`, `@ensures`, `@sideEffect`, `@mutates`, `@index` na documentação ligada a uma declaração | Vocabulário humano pesquisável, condições e efeitos organizados sem geração por IA. São declarações do autor; não provam o comportamento. |
+| Codebase Memory MCP / Serena | Separar descoberta de navegação por identidade exata; percurso de chamadas ou consumidores com profundidade, origem de cada passo e fontes atuais | Investigar impacto para a spec/ondas sem ler arquivos inteiros ou misturar homônimos. Aplicamos o conceito; não incorporamos MCP, servidores de linguagem ou o motor desses projetos. |
+| ContextGraph | Fila explícita das interpretações que perderam validade, com fonte anterior, motivo e hash atual do arquivo | Reavaliar somente conhecimento afetado. A comparação usa conteúdo de todas as fontes, não apenas inventário de símbolos. Não redige texto nem renova recibos automaticamente. |
+| ckg / CodeGraph-Rust | Consulta inicial curta, expansão detalhada, SQLite e trabalho mecânico no binário | Anotações também são projetadas sob demanda; o banco preserva o conteúdo extraído. Não introduzimos dependências desses projetos. |
+| SCIP | Conservar resolução ambígua como candidata e identidade exata na navegação | Princípio de precisão aplicado. Importação real de índices SCIP continua pendente; identidade local por arquivo/linha/nome não é um identificador SCIP. |
+
+### Intenção e regras explícitas
+
+Tags devem começar uma linha na documentação imediatamente associada à declaração. A normalização preserva os intervalos originais antes de juntar a prosa. Continuação vale até linha vazia ou próxima tag; tags desconhecidas interrompem a associação. Exemplos cercados por cercas de código, e-mails, menções no meio da prosa e textos literais do corpo não viram anotações. Não exigimos editar todo o projeto: a busca continua usando comentários comuns e interpretações com fontes.
+
+Exemplo de comentário que o parser pode extrair:
+
+```text
+@intent Recuperar o plano
+@requires Aprovação do responsável
+@domainRule Preservar as tarefas concluídas
+@sideEffect Persiste o plano recuperado
+```
+
+Cada anotação guarda tag, texto e linhas, vinculados ao arquivo/hash da declaração. O ranking local aproveita esse vocabulário. Resposta inicial traz até seis anotações com trechos curtos, contagem e indicação de compactação; `--detail` devolve o conteúdo armazenado, e Markdown o organiza como declarações do autor. Sem anotações, esses campos não acrescentam texto à projeção curta.
+
+O contexto preparado das ondas incorpora anotações pertinentes ao componente, como evidência candidata. A versão do cache inclui o conteúdo completo, mesmo quando a apresentação foi encurtada. Fonte alterada perde validade na própria cópia da onda. As anotações também persistem nas declarações para sobreviver à reutilização incremental de arquivos; a versão do bloco é atualizada e o digest do scan inclui as regras de extração.
+
+### Navegação e impacto por símbolo
+
+Primeiro descubra o ponto de entrada e copie o `id` devolvido, então navegue:
+
+```sh
+mustard-rt run knowledge --query "recuperar plano"
+mustard-rt run knowledge --symbol "<id devolvido>" --direction callers --depth 2 --detail
+mustard-rt run knowledge --symbol "<id devolvido>" --direction outgoing --depth 1
+mustard-rt run knowledge --symbol "<id devolvido>" --direction both --all --markdown --out impacto.md
+```
+
+`--symbol` seleciona uma declaração exata, sem rodada de busca semântica ou seleção de notas não relacionadas. `callers` percorre consumidores; `outgoing` chamadas; `both` os dois sentidos. `--file` e `--query` pertencem à descoberta e não são combinados com essa seleção exata. ID ausente ou fonte antiga não conduz à função de mesmo nome: recebe ausência de evidência e orientação de investigação.
+
+A navegação usa somente vínculos `unique-static-target`, com recibo do destino compatível com a declaração atual. Ambos os extremos são conferidos no checkout investigado. Ciclos não duplicam declarações. A resposta explica cada passo e distância; declarações fora da profundidade/apresentação, ou antigas, são contadas. O percurso padrão é de duas etapas, com máximo de quatro; `--all` amplia apresentação, não esse máximo. Esses parâmetros descrevem o contexto, sem limitar gasto financeiro. Ausência de vínculo não prova ausência de consumidor; macros, reflexão, chamadas indiretas e resolução parcial continuam lacunas.
+
+### Revisão incremental do conhecimento
+
+```sh
+mustard-rt run knowledge --refresh
+mustard-rt run knowledge --refresh --query "recuperação" --detail
+mustard-rt run knowledge --refresh --file src/store.rs --markdown --out revisoes.md
+```
+
+A fila informa as fontes alteradas/removidas/inválidas e mantém as fontes intactas necessárias à conferência. O texto anterior aparece apenas com detalhe, rotulado como antigo. Os campos de evidência atual ficam vazios nessa operação. Hash atual e quantidade de linhas não renovam a interpretação nem identificam automaticamente a posição de uma função que mudou: o responsável deve atualizar o scan, consultar os símbolos afetados, conferir o significado e registrar novo recibo explicitamente. Consulta e exportação não escrevem novo conhecimento nem geram publicação externa.
+
+### Onde entra na condução da obra e no Jev
+
+- Levantamento/spec: recuperar intenção e regras documentadas, conferir condições/lacunas e expandir somente os símbolos relevantes.
+- Separação em ondas: consultar consumidores e chamadas das funções afetadas para sustentar dependências e detectar possíveis interferências. Grafo parcial não aprova paralelismo automaticamente.
+- Execução: usar evidência atual e anotações do componente preparado; evitar reenviar o inventário inteiro a cada tarefa.
+- Revisão final: seguir consumidores que exigem conferência e usar a fila para localizar narrativas antigas. Resumos de ondas orientam leitura, com conclusões conferidas nas fontes.
+
+Nenhuma dessas operações chama Jev. O julgamento continua reservado a perguntas tipadas que permaneçam ambíguas após a recuperação local, com pergunta/evidência/revisão determinando o cache. Anotação escrita e grafo estático não devem virar um julgamento pago por declaração. Interpretação de negócio nova pertence à revisão/raciocínio do responsável ou gerador separado, não à exportação mecânica.
+
+Aceite específico: testes de anotações em documentação de três gramáticas, textos literais/falsas tags, linhas originais, persistência incremental real em Git e invalidação do contexto; navegação por símbolo, consumidores, profundidade, ciclos, homônimos, ambiguidade, recibo incompatível e cópia divergente; fila de revisão com fonte secundária alterada/removida sem renovar o recibo. Isso mede contratos de recuperação, não melhoria comprovada na qualidade de specs/código ou redução de cobrança.
+
+Suíte desta continuação: **3.815 testes Rust aprovados**, sem falhas, mais os dois ignorados herdados. Log `/tmp/mustard-concepts-workspace.log`; lint estrito aprovado em `/tmp/mustard-concepts-clippy.log`. Mapas de sessão com 2.468/2.500 bytes preservam a retomada e o estilo; os detalhes novos ficam disponíveis sob demanda. Build e aceite operacional dos executáveis são registrados em `/tmp/mustard-concepts-build.log` e `/tmp/mustard-concepts-native-acceptance.log`, com resultado JSON em `/tmp/mustard-concepts-native-acceptance-result.json`. Validação do pacote em `/tmp/mustard-concepts-package-validate.log`; versão/hash dos programas no manifesto de revisão. Nenhuma dependência dos motores consultados foi acrescentada.

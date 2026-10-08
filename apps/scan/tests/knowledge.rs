@@ -4,6 +4,271 @@ mod model;
 use mustard_core::io::knowledge::{self, Interpretation};
 use std::path::Path;
 
+fn options() -> knowledge::Query<'static> {
+    knowledge::Query {
+        text: "",
+        file: None,
+        limit: 8,
+        depth: 2,
+        all: false,
+        detail: false,
+        symbol: None,
+        direction: knowledge::Direction::Outgoing,
+        refresh: false,
+    }
+}
+
+#[test]
+fn attached_annotations_are_grounded_across_grammars_and_survive_incremental_scan() {
+    let dir = seed();
+    let root = dir.path();
+    std::fs::write(root.join("src/lib.rs"),"mod store;\n/// @intent Recuperar\n/// o plano\n/// @domainRule Exigir aprovação\n/// @unknown Não virar regra\n/// texto desconhecido\npub fn restore() { let _s = \"@intent texto literal falso\"; store::write(); }\n").unwrap();
+    std::fs::write(root.join("src/invoices.ts"),"/**\n * @intent Liquidar parcelas\n * @requires Fatura aprovada\n * @sideEffect Persiste baixa\n */\nexport function settleInvoice() {}\n").unwrap();
+    std::fs::write(root.join("src/audit.py"),"# Documentation above must not hide the attached inner tags.\ndef expire():\n    \"\"\"\n    @intent Eliminar registros vencidos\n    @ensures Preserva registros recentes\n    \"\"\"\n    return None\n").unwrap();
+    // A real Git checkout lets the next scan reuse unchanged declarations.
+    let git = |args: &[&str]| mustard_core::platform::git::run(root, args);
+    assert!(git(&["init", "-q"]).ok);
+    assert!(git(&["add", "."]).ok);
+    assert!(
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "seed"
+        ])
+        .ok
+    );
+    let (first, _) = model::scan(root, &root.join(".claude"), &[]);
+    let restored = knowledge::query(root, "restore", Some("src/lib.rs"), 8, 0, false)
+        .unwrap()
+        .0;
+    let annotations = &restored["cards"][0]["annotations"];
+    assert_eq!(annotations[0]["tag"], "intent");
+    assert_eq!(annotations[0]["text"], "Recuperar o plano");
+    assert_eq!(annotations[0]["line"], 2);
+    assert_eq!(annotations[0]["end_line"], 3);
+    assert_eq!(annotations[1]["tag"], "domainRule");
+    assert_eq!(annotations.as_array().unwrap().len(), 2);
+    assert!(
+        restored["cards"][0]["annotation_status"]
+            .as_str()
+            .unwrap()
+            .contains("not semantic proof")
+    );
+    for (query, file, tag, line) in [
+        ("settleInvoice", "src/invoices.ts", "requires", 3),
+        ("expire", "src/audit.py", "ensures", 5),
+    ] {
+        let found = knowledge::query(root, query, Some(file), 8, 0, false)
+            .unwrap()
+            .0;
+        assert_eq!(found["cards"][0]["annotations"][1]["tag"], tag, "{found}");
+        assert_eq!(found["cards"][0]["annotations"][1]["line"], line, "{found}");
+    }
+    let prepared = knowledge::for_source(root, root, "src/audit.py", "expire");
+    assert_eq!(
+        prepared["annotations"][0]["annotations"][0]["tag"],
+        "intent"
+    );
+    assert_eq!(prepared["semantic_proof"], false);
+    let version = prepared["evidence_version"].clone();
+    std::fs::write(
+        root.join("src/store.rs"),
+        "pub fn write() { }\n// changed\n",
+    )
+    .unwrap();
+    let (second, report) = model::scan(root, &root.join(".claude"), &[]);
+    assert_eq!(report["full"], false, "{report}");
+    assert_eq!(
+        report["read"],
+        serde_json::json!(["src/store.rs"]),
+        "{report}"
+    );
+    let persisted = |map: &serde_json::Value| {
+        map["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["path"] == "src/audit.py")
+            .unwrap()["declarations"][0]["annotations"]
+            .clone()
+    };
+    assert_eq!(persisted(&first), persisted(&second));
+    assert_eq!(
+        knowledge::for_source(root, root, "src/audit.py", "expire")["evidence_version"],
+        version
+    );
+    std::fs::write(root.join("src/audit.py"),"def expire():\n    \"\"\"\n    @intent Arquivar registros vencidos\n    \"\"\"\n    return None\n").unwrap();
+    assert!(knowledge::for_source(root, root, "src/audit.py", "expire").is_null());
+    model::scan(root, &root.join(".claude"), &[]);
+    assert_ne!(
+        knowledge::for_source(root, root, "src/audit.py", "expire")["evidence_version"],
+        version
+    );
+}
+
+#[test]
+fn exact_symbol_navigation_recovers_consumers_and_refuses_stale_or_unknown_identities() {
+    let dir = seed();
+    let root = dir.path();
+    std::fs::write(root.join("src/lib.rs"),"mod store;\n/// Restaura o plano.\npub fn restore() { store::write(); }\npub fn entry() { restore(); }\npub fn unrelated() {}\n").unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let found = knowledge::query(root, "write", Some("src/store.rs"), 8, 0, false)
+        .unwrap()
+        .0;
+    let id = found["cards"][0]["id"].as_str().unwrap();
+    let opts = knowledge::Query {
+        symbol: Some(id),
+        direction: knowledge::Direction::Callers,
+        ..options()
+    };
+    let result = knowledge::query_with(root, root, &opts).unwrap().0;
+    let names: Vec<_> = result["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| card["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["write", "restore", "entry"], "{result}");
+    assert_eq!(result["cards"][0]["retrieval"], "exact-symbol");
+    assert_eq!(result["navigation"]["paths"][1]["distance"], 2);
+    assert_eq!(result["navigation"]["paths"][1]["via"], "caller");
+    let limited = knowledge::query_with(root, root, &knowledge::Query { depth: 1, ..opts })
+        .unwrap()
+        .0;
+    assert_eq!(limited["cards"].as_array().unwrap().len(), 2);
+    assert_eq!(limited["navigation"]["omitted_destinations"], 1);
+    let out = knowledge::query_with(
+        root,
+        root,
+        &knowledge::Query {
+            direction: knowledge::Direction::Outgoing,
+            ..opts
+        },
+    )
+    .unwrap()
+    .0;
+    assert_eq!(out["cards"].as_array().unwrap().len(), 1);
+    let copy = seed();
+    let divergent = knowledge::query_with(root, copy.path(), &opts).unwrap().0;
+    assert_eq!(divergent["cards"].as_array().unwrap().len(), 1);
+    assert_eq!(divergent["navigation"]["stale_destinations"], 1);
+    let absent = knowledge::query_with(
+        root,
+        root,
+        &knowledge::Query {
+            symbol: Some("src/missing.rs:1:write"),
+            ..options()
+        },
+    )
+    .unwrap()
+    .0;
+    assert_eq!(absent["cards"], serde_json::json!([]));
+    assert!(
+        knowledge::query_with(
+            root,
+            root,
+            &knowledge::Query {
+                text: "write",
+                ..opts
+            }
+        )
+        .is_err()
+    );
+    std::fs::write(root.join("src/store.rs"), "pub fn write() { panic!(); }\n").unwrap();
+    let stale = knowledge::query_with(root, root, &opts).unwrap().0;
+    assert_eq!(stale["cards"], serde_json::json!([]));
+}
+
+#[test]
+fn refresh_queue_is_scoped_and_keeps_old_claims_out_of_current_evidence() {
+    let dir = seed();
+    let root = dir.path();
+    model::scan(root, &root.join(".claude"), &[]);
+    let sources = knowledge::query(root, "backup", None, 8, 2, false)
+        .unwrap()
+        .0["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| serde_json::from_value(card["source"].clone()).unwrap())
+        .collect();
+    let note = Interpretation {
+        id: "recovery".into(),
+        title: "Recuperação de desastre".into(),
+        text: "O plano é recuperado e persiste.".into(),
+        status: "reviewed".into(),
+        origin: "fixture".into(),
+        sources,
+    };
+    knowledge::record(root, &note).unwrap();
+    let opts = knowledge::Query {
+        refresh: true,
+        ..options()
+    };
+    let current = knowledge::query_with(root, root, &opts).unwrap().0;
+    assert_eq!(current["matching_stale_count"], 0);
+    std::fs::write(
+        root.join("src/store.rs"),
+        "// declaration moved\npub fn write() { panic!(); }\n",
+    )
+    .unwrap();
+    let (result, map) = knowledge::query_with(root, root, &opts).unwrap();
+    assert_eq!(result["remote_model_calls"], 0);
+    assert_eq!(result["matching_stale_count"], 1);
+    assert_eq!(result["cards"], serde_json::json!([]));
+    assert_eq!(result["interpretations"], serde_json::json!([]));
+    let candidate = &result["refresh_candidates"][0];
+    assert_eq!(candidate["changed_sources"][0]["reason"], "content-changed");
+    assert_eq!(
+        candidate["changed_sources"][0]["previous_source"]["file"],
+        "src/store.rs"
+    );
+    assert_eq!(candidate["unchanged_sources"].as_array().unwrap().len(), 1);
+    assert!(candidate.get("previous_text").is_none());
+    assert_ne!(
+        candidate["changed_sources"][0]["current_file"]["sha256"],
+        candidate["changed_sources"][0]["previous_source"]["sha256"]
+    );
+    assert!(mustard_core::domain::knowledge::markdown(&result, &map).contains("content-changed"));
+    let full = knowledge::query_with(
+        root,
+        root,
+        &knowledge::Query {
+            detail: true,
+            ..opts
+        },
+    )
+    .unwrap()
+    .0;
+    assert_eq!(full["refresh_candidates"][0]["previous_text"], note.text);
+    let unrelated = knowledge::query_with(
+        root,
+        root,
+        &knowledge::Query {
+            file: Some("src/unrelated.rs"),
+            ..opts
+        },
+    )
+    .unwrap()
+    .0;
+    assert_eq!(unrelated["matching_stale_count"], 0);
+    std::fs::remove_file(root.join("src/store.rs")).unwrap();
+    let missing = knowledge::query_with(root, root, &opts).unwrap().0;
+    assert_eq!(
+        missing["refresh_candidates"][0]["changed_sources"][0]["reason"],
+        "missing-unreadable-or-outside-tree"
+    );
+    assert_eq!(
+        knowledge::interpretations(root).unwrap()[0].sources,
+        note.sources
+    );
+    assert!(knowledge::record(root, &note).is_err());
+}
+
 fn seed() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -321,6 +586,9 @@ fn summary_expands_the_same_sources_without_losing_contracts_or_mutating_the_pac
         depth: 0,
         all: false,
         detail: false,
+        symbol: None,
+        direction: knowledge::Direction::Outgoing,
+        refresh: false,
     };
     let summary = knowledge::query_with(root, root, &query).unwrap().0;
     let full = knowledge::query_with(
