@@ -670,3 +670,25 @@ fn prepared_evidence_keeps_a_compact_interpretation_and_tracks_hidden_edits() {
     );
     assert_ne!(before["evidence_version"], after["evidence_version"]);
 }
+
+#[test]
+fn schema_models_fields_relations_and_constraints_are_indexed_as_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/graph_prisma/schema.prisma");
+    std::fs::write(dir.path().join("schema.prisma"),std::fs::read(fixture).unwrap()).unwrap();
+    let (map, _) = model::scan(dir.path(),&dir.path().join(".claude"),&[]);
+    let module = map["modules"].as_array().unwrap().iter().find(|m|m["path"] == "schema.prisma").unwrap();
+    assert_eq!(module["analysis"]["parse_complete"],true);
+    let declarations = module["declarations"].as_array().unwrap();
+    for (name,kind) in [("Order","struct"),("Customer","struct"),("Entry","type"),("Status","enum"),("APPROVED","enum_member"),("customer","field"),("label","field")] {
+        assert!(declarations.iter().any(|d|d["name"] == name && d["kind"] == kind),"{name}:{kind}");
+    }
+    let customer = declarations.iter().find(|d|d["name"] == "customer").unwrap();
+    assert!(customer["signature"].as_str().unwrap().contains("@relation"));
+    let label = declarations.iter().find(|d|d["name"] == "label").unwrap();
+    assert!(label["signature"].as_str().unwrap().contains("String?"));
+    let report = knowledge::query(dir.path(),"Order",None,8,0,false).unwrap().0;
+    assert_eq!(report["cards"][0]["name"],"Order");
+    assert_eq!(report["remote_model_calls"],0);
+
+}

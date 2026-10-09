@@ -38,6 +38,7 @@ pub mod git_settle;
 pub mod maint;
 pub mod map;
 pub mod knowledge;
+pub mod knowledge_enrichment;
 pub mod panel;
 pub mod retired;
 pub mod review;

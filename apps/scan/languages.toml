@@ -599,3 +599,12 @@ implicit_self = true
 prelude = ["print", "identical", "identityHashCode"]
 log_calls = ["print", "debugPrint", "log", "logger.*"]
 error_forms = ["throw", "*Exception", "*Error"]
+
+# Schema declarations use the same generic type/member captures as source code.
+[[language]]
+name = "prisma"
+extensions = ["prisma"]
+dir = "prisma"
+grammar = "grammar_schema::LANGUAGE"
+qualified_separators = ["."]
+global_namespace = true

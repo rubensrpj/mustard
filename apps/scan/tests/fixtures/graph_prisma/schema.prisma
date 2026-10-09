@@ -1,0 +1,26 @@
+/// Purchase order persisted after validation.
+model Order {
+  id Int @id @default(autoincrement())
+  customerId Int
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status Status @default(DRAFT)
+  entries Entry[]
+  label String? @map("order_label")
+  @@unique([customerId, label])
+  @@index([status])
+  @@map("orders")
+}
+model Customer {
+  id Int @id
+  orders Order[]
+}
+enum Status {
+  DRAFT
+  APPROVED @map("approved")
+}
+type Entry {
+  amount Decimal
+}
+view Summary {
+  count Int
+}

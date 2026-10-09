@@ -292,3 +292,10 @@ pequena pelo fluxo de levantamento, aprovação, ondas e fechamento. O resultado
 real ainda precisa ser registrado. A preparação não publicou páginas, iniciou
 um turno de modelo, atualizou a instalação permanente ou adotou a branch no
 checkout original.
+
+
+### Continuação do scan: geração local opcional
+
+A continuação introduz a porta `SemanticEnrichmentProvider` e o adaptador local Ollama no comando `run knowledge --enrich`, explicitamente configurado em `mustard.json`. A indexação continua nativa; Jev conserva seu papel de classificação/seleção pela porta de julgamento. Respostas locais são hipóteses citadas, com cache por fontes e digest do modelo. Não houve download de modelo, inferência real, chamada paga ou publicação. A cobertura passou a incluir esquemas pelo registro de linguagens e pela gramática MIT Prisma. A medição no backend mantém 16/21 consultas válidas, com ganhos e regressões individuais: não se declara melhora global de precisão. Detalhes, configuração e próximos critérios estão em `2026-10-08-scan-oraculo.md`.
+
+Verificação desta continuação: 3.824 testes passaram, dois ignorados herdados; análise estática estrita sem avisos. Aceitação com os binários reais em pasta vazia e servidor de modelo simulado confirmou cache, exportação Markdown, fontes, digest, recusa de modelo remoto, citações e concorrência. A inferência real continua pendente.

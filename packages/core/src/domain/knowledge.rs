@@ -297,78 +297,113 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
     ranked.into_iter().map(|(i, _)| i).collect()
 }
 
-/// Intent evidence by file. Count each query word once, prefer words in
-/// documented responsibilities, and use the best declaration rather than
-/// adding every declaration of a large module. Repeated headers count once.
-pub fn intent_files(cards: &[Card], query: &str, languages: &Languages) -> Vec<String> {
+/// Rank responsibility evidence while keeping the winning declaration's identity.
+/// Repeated file headers count once; a declaration's own evidence carries
+/// more weight. File selection must not replace that winner with its first field.
+pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> {
     let mut normalizer = Normalizer::new(languages);
     let asked = normalizer.query(query);
     if asked.is_empty() {
         return vec![];
     }
-    let mut files = BTreeMap::<String, (Vec<bool>, Vec<Vec<bool>>)>::new();
-    for card in cards {
-        let entry = files.entry(card.source.file.clone()).or_insert_with(|| {
+    let documents: Vec<_> = cards
+        .iter()
+        .map(|card| {
             let header: BTreeSet<_> = normalizer
                 .forms(&format!("{} {}", card.source.file, card.file_documentation))
                 .into_iter()
                 .flatten()
                 .collect();
-            (
-                asked
-                    .iter()
-                    .map(|forms| forms.iter().any(|form| header.contains(form)))
-                    .collect(),
-                vec![],
-            )
-        });
-        let own: BTreeSet<_> = normalizer
-            .forms(&format!(
-                "{} {} {} {}",
-                card.name,
-                card.documentation,
-                card.body_comment,
-                annotation_text(card)
-            ))
-            .into_iter()
-            .flatten()
-            .collect();
-        entry.1.push(
-            asked
-                .iter()
-                .map(|forms| forms.iter().any(|form| own.contains(form)))
-                .collect(),
-        );
-    }
-    let weights: Vec<_> = (0..asked.len())
-        .map(|at| {
-            let seen = files
-                .values()
-                .filter(|(header, decls)| header[at] || decls.iter().any(|decl| decl[at]))
-                .count();
-            ((files.len() + 1) as f64 / (seen + 1) as f64).ln() + 1.0
+            let own: BTreeSet<_> = normalizer
+                .forms(&format!(
+                    "{} {} {} {}",
+                    card.name,
+                    card.documentation,
+                    card.body_comment,
+                    annotation_text(card)
+                ))
+                .into_iter()
+                .flatten()
+                .collect();
+            (header, own)
         })
         .collect();
-    let mut scored: Vec<_> = files
-        .into_iter()
-        .map(|(file, (header, decls))| {
-            let score = decls
+    let files: BTreeSet<_> = cards.iter().map(|card| &card.source.file).collect();
+    let weights: Vec<_> = asked
+        .iter()
+        .map(|forms| {
+            let seen: BTreeSet<_> = documents
                 .iter()
-                .map(|own| {
-                    weights
+                .enumerate()
+                .filter(|(_, (header, own))| {
+                    forms
                         .iter()
-                        .enumerate()
-                        .filter(|(at, _)| header[*at] || own[*at])
-                        .map(|(at, weight)| weight * if own[at] { 2.0 } else { 1.0 })
-                        .sum::<f64>()
+                        .any(|form| header.contains(form) || own.contains(form))
                 })
-                .fold(0.0_f64, f64::max);
-            (file, score)
+                .map(|(i, _)| &cards[i].source.file)
+                .collect();
+            ((files.len() + 1) as f64 / (seen.len() + 1) as f64).ln() + 1.0
+        })
+        .collect();
+    let mut scored: Vec<_> = documents
+        .iter()
+        .enumerate()
+        .map(|(i, (header, own))| {
+            let score = asked
+                .iter()
+                .zip(&weights)
+                .map(|(forms, weight)| {
+                    if forms.iter().any(|form| own.contains(form)) {
+                        weight * 2.0
+                    } else if forms.iter().any(|form| header.contains(form)) {
+                        *weight
+                    } else {
+                        0.0
+                    }
+                })
+                .sum::<f64>();
+            (i, score)
         })
         .filter(|(_, score)| *score > 0.0)
         .collect();
-    scored.sort_by(|(a, x), (b, y)| y.total_cmp(x).then_with(|| a.cmp(b)));
-    scored.into_iter().map(|(file, _)| file).collect()
+    scored.sort_by(|(a, x), (b, y)| {
+        y.total_cmp(x)
+            .then_with(|| cards[*a].source.file.cmp(&cards[*b].source.file))
+            .then_with(|| {
+                cards[*a]
+                    .source
+                    .end_line
+                    .saturating_sub(cards[*a].source.line)
+                    .cmp(
+                        &cards[*b]
+                            .source
+                            .end_line
+                            .saturating_sub(cards[*b].source.line),
+                    )
+            })
+            .then_with(|| cards[*a].id.cmp(&cards[*b].id))
+    });
+    scored.into_iter().map(|(i, _)| i).collect()
+}
+
+/// Interpretations assert one topic. Require all informative query terms in
+/// their prose; a shared source path or one generic word is insufficient.
+/// Missing lexical evidence falls back to source discovery, not a false claim.
+pub fn interpretation_matches(card: &Card, query: &str, languages: &Languages) -> bool {
+    if query.trim().is_empty() {
+        return true;
+    }
+    let mut normalizer = Normalizer::new(languages);
+    let asked = normalizer.query(query);
+    let own: BTreeSet<_> = normalizer
+        .forms(&format!("{} {}", card.name, card.documentation))
+        .into_iter()
+        .flatten()
+        .collect();
+    !asked.is_empty()
+        && asked
+            .iter()
+            .all(|forms| forms.iter().any(|form| own.contains(form)))
 }
 
 /// Native report from evidence, not fabricated business prose. A model or a
@@ -621,5 +656,38 @@ mod tests {
         );
         assert_eq!(cards[ranking[0]].name, "reconcile");
         assert_eq!(ranking.len(), 1);
+    }
+    #[test]
+    fn intent_keeps_function_instead_of_a_file_header_match() {
+        let mut raw = json!({"modules":[{"path":"orders/service.rs","doc":"Order operations", "declarations":[
+            {"name":"client","kind":"field","line":2,"end_line":2},
+            {"name":"persist","kind":"method","line":8,"end_line":14,"doc":"Restores the order backup after validation."},
+            {"name":"Settings","kind":"struct","line":1,"end_line":30}]}]});
+        enrich(&mut raw);
+        let map: ProjectMap = serde_json::from_value(raw).unwrap();
+        let cards = cards(&map);
+        let ranking = intent_cards(&cards, "restore order backup", &Languages::new(["en-US"]));
+        assert_eq!(cards[ranking[0]].name, "persist");
+    }
+
+    #[test]
+    fn interpretation_requires_topic_evidence_instead_of_a_shared_path() {
+        let mut raw = json!({"modules":[{"path":"pcp/plan.rs","declarations":[
+            {"name":"Creation of PCP plan", "doc":"Copies site from PI to create the PCP plan", "line":1,"end_line":2},
+            {"name":"PI officialization", "doc":"Officializes the PI plan. PCP plans do not run this operation", "line":3,"end_line":4}]}]});
+        enrich(&mut raw);
+        let map: ProjectMap = serde_json::from_value(raw).unwrap();
+        let cards = cards(&map);
+        let languages = Languages::new(["en-US"]);
+        assert!(interpretation_matches(
+            &cards[0],
+            "creation PCP plan",
+            &languages
+        ));
+        assert!(!interpretation_matches(
+            &cards[1],
+            "creation PCP plan",
+            &languages
+        ));
     }
 }

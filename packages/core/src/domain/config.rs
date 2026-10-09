@@ -598,6 +598,10 @@ pub struct Commands {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectConfig {
+    /// Optional, explicit-only semantic generation. Search and scan never
+    /// start this provider automatically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<EnrichmentConfig>,
     /// Explicit snapshot hosting. Credentials are read only from the process
     /// environment, never from this project configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -737,6 +741,33 @@ pub struct PublicationConfig {
     pub project_name: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnrichmentConfig {
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+    pub context_tokens: u32,
+    pub output_tokens: u32,
+    pub timeout_seconds: u64,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for EnrichmentConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            endpoint: "http://127.0.0.1:11434".into(),
+            model: String::new(),
+            context_tokens: 8192,
+            output_tokens: 1536,
+            timeout_seconds: 120,
+            extra: Map::new(),
+        }
+    }
 }
 
 impl ProjectConfig {

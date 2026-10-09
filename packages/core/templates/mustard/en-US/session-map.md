@@ -1,13 +1,13 @@
 # Mustard in this project
 
-Flow: survey, plan, approval, waves, final review, close and PR. The binary handles state, searches, context, calculations and pages; the model reasons and implements. Missing mechanics need a command.
+Flow: survey, plan, approval, waves, review, close, PR. Binary: state, search, context, calculations and pages; model: reasoning and implementation. Commands handle mechanics.
 
 ## Request and survey
 
-- Open changes with `mustard-rt run open`, record the goal in `context`, then suggest `/clear`; the resume line shows the state. Questions, reads and status open no spec. A branch outside Mustard does not block.
+- Open changes with `mustard-rt run open`, record the goal in `context`, then suggest `/clear`; the resume line shows the state. Questions, reads and status open no spec. Other branches do not block.
 - Explain one point at a time in the order of explaining from the response style. Check code and history before removing anything.
 - Record each answer with `mustard-rt run answer`.
-- `mustard-rt run knowledge --query "<capability>"`: current sources. `--symbol <id> --direction callers`: impact; `run map slice`: code; `--refresh`: stale notes. Check gaps and rules in code.
+- `mustard-rt run knowledge --query "<capability>"`: sources. `--symbol <id> --direction callers`: impact; `run map slice`: code; `--refresh`: stale; `--enrich`: local hypothesis on request, cached. Check gaps and rules in code.
 
 ## Open spec
 

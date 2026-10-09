@@ -13,6 +13,7 @@ use crate::domain::project_map::{MapRefusal, ProjectMap};
 use crate::io::project_map::{self as store, open_existing, unreadable};
 use crate::io::sha256::Sha256;
 
+pub mod enrichment;
 mod navigation;
 mod refresh;
 pub use navigation::Direction;
@@ -264,6 +265,25 @@ pub fn query_with(
     tree: &Path,
     opts: &Query<'_>,
 ) -> Result<(Value, ProjectMap), MapRefusal> {
+    query_internal(root, tree, opts, true)
+}
+
+// Generation evidence must not depend on the interpretation it is about to
+// create, otherwise saving one note changes its own cache key on the next run.
+fn query_sources(
+    root: &Path,
+    tree: &Path,
+    options: &Query<'_>,
+) -> Result<(Value, ProjectMap), MapRefusal> {
+    query_internal(root, tree, options, false)
+}
+
+fn query_internal(
+    root: &Path,
+    tree: &Path,
+    options: &Query<'_>,
+    include_interpretations: bool,
+) -> Result<(Value, ProjectMap), MapRefusal> {
     let Query {
         text: query,
         file,
@@ -274,7 +294,7 @@ pub fn query_with(
         symbol,
         direction,
         refresh,
-    } = *opts;
+    } = *options;
     if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh))
         || (direction != Direction::Outgoing && symbol.is_none())
     {
@@ -288,7 +308,11 @@ pub fn query_with(
         .map_err(|e| invalid(e.to_string()))?
         .state;
     let mut hashes = BTreeMap::new();
-    let notes = interpretations(root)?;
+    let notes = if include_interpretations {
+        interpretations(root)?
+    } else {
+        vec![]
+    };
     let languages = Languages::of_project(root);
     if refresh {
         return Ok((
@@ -321,6 +345,7 @@ pub fn query_with(
         .into_iter()
         .filter(|i| {
             symbol.is_none()
+                && knowledge::interpretation_matches(&note_documents[*i], query, &languages)
                 && file
                     .is_none_or(|file| fresh[*i].sources.iter().any(|source| source.file == file))
         })
@@ -393,29 +418,53 @@ pub fn query_with(
             .filter_map(|place| by_place.get(place).copied())
             .collect();
         let mut ranked = BTreeSet::new();
-        // Preserve literal identifiers before natural-language file discovery.
-        ranking.extend(
-            indexed
-                .iter()
-                .copied()
-                .filter(|&i| cards[i].name.eq_ignore_ascii_case(query.trim()) && ranked.insert(i)),
-        );
-        let purpose = knowledge::intent_files(&cards, query, &languages);
-        // Alternate documented intent and the existing hybrid order. Neither
-        // source can fill the first response with near-identical symbols.
-        let file_order: Vec<_> = (0..purpose.len().max(discovery.files.len()))
-            .flat_map(|at| {
-                [purpose.get(at), discovery.files.get(at)]
-                    .into_iter()
-                    .flatten()
-            })
+        // Exact spelling precedes case-folded references (a type and its
+        // injected field may otherwise compete). Preserve all card identities.
+        for exact_case in [true, false] {
+            for (i, card) in cards.iter().enumerate() {
+                if (if exact_case {
+                    card.name == query.trim()
+                } else {
+                    card.name.eq_ignore_ascii_case(query.trim())
+                }) && ranked.insert(i)
+                {
+                    ranking.push(i);
+                }
+            }
+        }
+        let indexed_files: BTreeSet<_> = indexed
+            .iter()
+            .map(|&i| cards[i].source.file.as_str())
             .collect();
-        for path in file_order {
-            if file.is_none_or(|file| file == path)
-                && let Some(&i) = indexed.iter().find(|&&i| cards[i].source.file == *path)
-                && ranked.insert(i)
+        let intent = knowledge::intent_cards(&cards, query, &languages);
+        let mut purpose = BTreeMap::new();
+        let mut purpose_files = Vec::new();
+        for i in intent {
+            if !purpose.contains_key(&cards[i].source.file) {
+                purpose.insert(cards[i].source.file.clone(), i);
+                purpose_files.push(cards[i].source.file.clone());
+            }
+        }
+        // Alternate intent and hybrid discovery, retaining the winning symbol
+        // within each file instead of substituting its first indexed member.
+        for at in 0..purpose_files.len().max(discovery.files.len()) {
+            for path in [purpose_files.get(at), discovery.files.get(at)]
+                .into_iter()
+                .flatten()
             {
-                ranking.push(i);
+                let winner = purpose.get(path).copied().or_else(|| {
+                    indexed
+                        .iter()
+                        .find(|&&i| cards[i].source.file == *path)
+                        .copied()
+                });
+                if file.is_none_or(|file| file == path)
+                    && indexed_files.contains(path.as_str())
+                    && let Some(i) = winner
+                    && ranked.insert(i)
+                {
+                    ranking.push(i);
+                }
             }
         }
         // One entry per file first; supplementary symbols follow. A large

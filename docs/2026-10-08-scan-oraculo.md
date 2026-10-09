@@ -87,7 +87,7 @@ Use `hypothesis` para interpretação ainda não conferida. `reviewed` é uma de
 
 Conforme a [documentação do Jev](https://docs.typesafe.ai/introduction), ele avalia questões tipadas sobre estado; não é o gerador do documento. O uso correto aqui é uma ambiguidade delimitada: qual candidato é pertinente, se duas tarefas interferem ou se um vínculo proposto deve ser aceito. Extração, hashes, catálogo, busca exata, cálculo e Markdown são nativos.
 
-Não acrescentamos chamada paga à consulta `knowledge` nem um varrimento de todo o projeto pelo Jev. As portas de julgamento do plano B continuam independentes do provedor, com cache por evidência/pergunta/revisão, exclusão entre processos e medição de tentativas físicas. Não confundir essa interface de julgamento com uma futura interface de geração de texto.
+Não acrescentamos chamada paga à consulta `knowledge` nem um varrimento de todo o projeto pelo Jev. As portas de julgamento do plano B continuam independentes do provedor, com cache por evidência/pergunta/revisão, exclusão entre processos e medição de tentativas físicas. Não confundir essa interface de julgamento com a interface de geração de texto, agora disponível como etapa local explícita.
 
 Para enriquecer descrições de negócio, a sequência proposta é:
 
@@ -224,3 +224,56 @@ Nenhuma dessas operações chama Jev. O julgamento continua reservado a pergunta
 Aceite específico: testes de anotações em documentação de três gramáticas, textos literais/falsas tags, linhas originais, persistência incremental real em Git e invalidação do contexto; navegação por símbolo, consumidores, profundidade, ciclos, homônimos, ambiguidade, recibo incompatível e cópia divergente; fila de revisão com fonte secundária alterada/removida sem renovar o recibo. Isso mede contratos de recuperação, não melhoria comprovada na qualidade de specs/código ou redução de cobrança.
 
 Suíte desta continuação: **3.815 testes Rust aprovados**, sem falhas, mais os dois ignorados herdados. Log `/tmp/mustard-concepts-workspace.log`; lint estrito aprovado em `/tmp/mustard-concepts-clippy.log`. Mapas de sessão com 2.468/2.500 bytes preservam a retomada e o estilo; os detalhes novos ficam disponíveis sob demanda. Build e aceite operacional dos executáveis são registrados em `/tmp/mustard-concepts-build.log` e `/tmp/mustard-concepts-native-acceptance.log`, com resultado JSON em `/tmp/mustard-concepts-native-acceptance-result.json`. Validação do pacote em `/tmp/mustard-concepts-package-validate.log`; versão/hash dos programas no manifesto de revisão. Nenhuma dependência dos motores consultados foi acrescentada.
+
+
+## Continuação: geração local opcional e cobertura de esquemas
+
+Implementado na mesma branch `codex/mustard-plano-completo`. O motor continua agnóstico: Prisma entrou como gramática MIT (`tree-sitter-prisma-io =1.6.0`), registro de linguagem, queries e fixture. Nenhuma condição com nome de linguagem/framework foi adicionada ao motor. Ao contrário das etapas anteriores que apenas aproveitaram conceitos de projetos pesquisados, esta etapa acrescenta uma dependência de parser de terceiros, com licença MIT; não incorpora aqueles motores de grafo/wiki.
+
+A seleção conserva a identidade da declaração que ganhou a classificação local de responsabilidade. A grafia exata de um identificador precede referências com outra capitalização. Notas exigem os termos informativos da consulta em seu próprio texto; um termo genérico ou caminho compartilhado não basta. A ordenação ainda pode escolher uma classe abrangente em vez do método desejado.
+
+### Três papéis de modelo
+
+- **Vetores:** o Model2Vec embarcado continua recuperando significado localmente. Ele não escreve documentos.
+- **Jev:** classificar e escolher sobre evidência relevante, nas etapas de levantamento, plano, preparação de contexto, ondas e revisão em que exista uma decisão tipada. Busca, contexto e planejamento de ondas já têm portas de julgamento. Não se deve chamar Jev para inventariar cada função, montar páginas, somar consumo, verificar hashes ou redigir explicações. Uma futura decisão de tipo de recurso (função que calcula versus entidade que guarda resultados) deve usar a mesma interface, pergunta curta e candidatos reais, com cache; ainda não foi integrada à consulta `knowledge`.
+- **Gerador local:** `SemanticEnrichmentProvider`, separado do `JudgementProvider`. O primeiro adaptador usa a API local do Ollama. Recebe trechos atuais selecionados pelo binário e devolve JSON com título, explicação e IDs de fontes. Outros geradores podem implementar a porta; Jev permanece na porta de julgamento.
+
+Configuração opcional no `mustard.json`:
+
+```json
+{
+  "knowledge": {
+    "provider": "ollama",
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "qwen3.5:4b",
+    "context_tokens": 8192,
+    "output_tokens": 1536,
+    "timeout_seconds": 120
+  }
+}
+```
+
+O modelo é exemplo para avaliação, não requisito nem recomendação já validada no backend. A máquina inspecionada tem 15 GiB de RAM e RTX 2060 com 6 GiB de VRAM. O [pacote Ollama de Qwen3.5:4b](https://ollama.com/library/qwen3.5:4b) consultado ocupa aproximadamente 4 GB. Contexto e runtime também consomem memória; desempenho e qualidade ainda precisam de inferência real. Não instalamos Ollama nem baixamos pesos nesta etapa.
+
+Com servidor e modelo já instalados pelo usuário, o comando nativo é:
+
+```text
+mustard-rt run knowledge --query "<capacidade delimitada>" --enrich --markdown --out explicacao.md
+mustard-rt run knowledge --query "<capacidade delimitada>" --markdown --out explicacao.md
+```
+
+A primeira execução explica o tópico, registra uma **hipótese** e exporta essa mesma explicação com as fontes, nunca uma revisão aprovada. Destino inválido é recusado antes de inferência. A segunda exporta conhecimento vigente; não gera novamente e não publica. `scan`, consultas comuns, hooks, instalação e painel não acionam esse gerador automaticamente. Não há instalação/download automático nem fallback para modelo pago.
+
+O binário fornece no máximo oito fontes e 12.000 bytes de trechos, com cortes somente entre linhas e indicação de truncamento. Esses bytes são um controle de tamanho, não uma medição exata de tokens. A geração segue o [contrato oficial de JSON estruturado](https://docs.ollama.com/api/generate). A resposta só pode citar IDs fornecidos; caminhos, linhas e hashes são montados nativamente. JSON inválido, citação inventada, resposta incompleta ou alteração em qualquer fonte apresentada recusam o registro. Fonte atual não demonstra que a interpretação é correta.
+
+O cache considera prompt/schema, tópico, trechos, hashes completos dos arquivos, identidade/digest do modelo e opções. Guardar uma interpretação não altera sua própria seleção de evidências. Repetir a consulta reaproveita a resposta; editar fonte ou substituir o modelo invalida a chave. Há exclusão por chave entre processos. Contadores de tokens são os informados pelo servidor, quando presentes. O adaptador consulta metadados locais em acessos ao cache, sem inferência. URLs externas, redirecionamentos, proxy e modelos declarados remotos/cloud são recusados pelo adaptador local.
+
+### Evidência medida e limite atual
+
+No backend Suzano, no mesmo commit `a3fe37ab454cede37d3471993eb876985fcdfe1b`, foram indexados **20 arquivos Prisma e 2.428 declarações**: 114 estruturas, 30 enums, 123 membros de enum e 2.161 campos. Relações e modificadores ficam acessíveis como evidência de origem/cabeçalhos; isso não é validação do comportamento do banco ou extração formal de toda regra de negócio.
+
+O conjunto de 22 perguntas permaneceu congelado; excluindo a pergunta N11 cuja premissa de notificação em tempo real era falsa, o resultado global continua em **16/21 consultas válidas**, com **12/17 perguntas naturais** e **4/4 identificadores literais**. A pergunta de tabelas N14 passou; a pergunta de cálculo de indicadores N09 deixou de recuperar o motor esperado. O índice ampliado também modifica a distribuição de termos e pode promover uma entidade que guarda indicadores. Não há evidência de ganho global de precisão ou de economia de tokens pagos nesta rodada. As métricas de símbolo por pergunta usam o gabarito congelado e não equivalem à correção da resposta de negócio.
+
+Os testes do gerador utilizam respostas simuladas. A suíte completa passou com 3.824 testes e dois ignorados herdados; as últimas mudanças de exportação também passaram por aceitação nativa e análise estática sem avisos. A aceitação executa os binários reais, instala em pasta vazia e testa geração explícita, exportação Markdown sem geração adicional, destino inválido antes de inferência, reaproveitamento, recusa de fonte alterada, mudança de digest, bloqueio de modelo remoto, citações inválidas e concorrência com uma única geração. Isso comprova o contrato e a mecânica; não comprova qualidade, latência ou custo de um modelo real. O projeto original ficou intacto; não houve chamada paga ou publicação.
+
+Artefatos desta rodada ficam em `target/suzano-oracle-20261008-v2/`; a avaliação anterior foi preservada. Próximas prioridades: separar intenção de consultar dados de intenção de localizar implementação, preservar recall ao ampliar linguagens e avaliar o gerador real com perguntas novas, fontes conferidas e métricas de resposta. Um documento completo do Puzzle ainda exige vários tópicos, evidência suficiente e revisão das hipóteses. A integração atual não promete produzir essa análise completa em uma única chamada.

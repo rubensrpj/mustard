@@ -107,3 +107,6 @@ kinds = [
   "property",
   "enum_member",
 ]
+
+[prisma]
+kinds = ["struct", "type", "enum", "field", "enum_member"]

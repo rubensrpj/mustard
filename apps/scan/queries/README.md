@@ -87,6 +87,7 @@ navigation* do tree-sitter; mantivemos os sufixos de kind compatíveis):
 | `go/`        | tree-sitter/tree-sitter-go (0.25)           | MIT     | `function`/`method` do upstream; `field`/`type`/`struct`/`interface` locais |
 | `python/`    | tree-sitter/tree-sitter-python (0.25)       | MIT     | `class`/`function` do upstream (que também não separa method de function); `field` local |
 | `rust/`      | tree-sitter/tree-sitter-rust (0.24)         | MIT     | itens do upstream (que também não separa method de function); `field`/`enum_member` locais |
+| `prisma/` | victorhqc/tree-sitter-prisma (tree-sitter-prisma-io =1.6.0) | MIT | patterns locais: models/views como struct, composite como type, campos e enum; atributos preservados no cabeçalho |
 | `php/`       | tree-sitter/tree-sitter-php (0.24)          | MIT     | `class`/`interface`/`trait`/`function`/`method` do upstream; `property`/`enum_member` locais |
 
 Notas de decisão (por que não há kind `method` em python/rust): nessas
