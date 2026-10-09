@@ -19,6 +19,87 @@ fn options() -> knowledge::Query<'static> {
 }
 
 #[test]
+fn investigation_shapes_current_source_for_the_task_and_never_uses_configured_ai() {
+    use mustard_core::domain::knowledge::investigation::{Purpose, Task};
+    let dir = seed(); let root = dir.path();
+    let body = (0..100).map(|n|format!("    let step_{n} = {n};\n")).collect::<String>();
+    std::fs::write(root.join("src/long.rs"),format!("/// Restore a quartz snapshot.\npub fn restoreQuartz() {{\n{body}}}\n")).unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    // Settings must not opt this path back into inference or paid judgement.
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":true,"fallback":true},"search":{"filter":"jev"},"jev":{"key":"not-a-real-key"}}"#).unwrap();
+    let query = knowledge::Query { text:"restoreQuartz", depth:0, ..options() };
+    let (located, _) = knowledge::query_for(root,root,&query,Task::default()).unwrap();
+    let (editing, map) = knowledge::query_for(root,root,&query,Task {intent:"",purpose:Purpose::Implement}).unwrap();
+    assert_eq!(editing["cards"][0]["name"],"restoreQuartz");
+    assert!(located["cards"][0]["source_excerpt"]["text"].as_str().unwrap().lines().count()<=7);
+    assert_eq!(editing["cards"][0]["source_excerpt"]["text"].as_str().unwrap().lines().count(),80);
+    assert_eq!(editing["cards"][0]["source_excerpt"]["truncated"],true);
+    assert_eq!(editing["local_model_calls"],0); assert_eq!(editing["remote_model_calls"],0);
+    assert_eq!(editing["vectors_enabled"],false);
+    let rendered = mustard_core::domain::knowledge::markdown(&editing,&map);
+    assert!(rendered.contains("step_30 = 30"));
+    assert!(rendered.contains("Finalidade / purpose: `implement`"));
+}
+
+#[test]
+fn investigation_reports_new_and_changed_source_without_reusing_old_symbol_spans() {
+    use mustard_core::domain::knowledge::investigation::Task;
+    let dir = seed(); let root = dir.path();
+    assert!(mustard_core::platform::git::run(root,&["init","-q"]).ok);
+    model::scan(root,&root.join(".claude"),&[]);
+    std::fs::write(root.join("src/store.rs"),"pub fn write() { let quartzDelta = 42; }\n").unwrap();
+    std::fs::write(root.join("src/new.rs"),"pub fn unscanned() { let quartzDelta = 43; }\n").unwrap();
+    let query = knowledge::Query {text:"quartzDelta",depth:0,..options()};
+    let (report,_) = knowledge::query_for(root,root,&query,Task::default()).unwrap();
+    assert!(report["cards"].as_array().unwrap().is_empty(),"{report}");
+    let live = report["investigation"]["live_matches"].as_array().unwrap();
+    for file in ["src/store.rs","src/new.rs"] {
+        let found = live.iter().find(|hit|hit["source"]["file"]==file).unwrap();
+        assert!(found["indexed_symbol"].is_null());
+        assert!(found["excerpt"]["text"].as_str().unwrap().contains("quartzDelta"));
+    }
+    assert_eq!(report["remote_model_calls"],0);
+}
+
+#[test]
+fn executed_hits_are_crossed_with_only_current_owners_and_linked_tree_content() {
+    use knowledge::investigation::{Occurrence,cross_hits};
+    let dir=seed(); let root=dir.path();
+    model::scan(root,&root.join(".claude"),&[]);
+    let tree=tempfile::tempdir().unwrap();std::fs::create_dir(tree.path().join("src")).unwrap();
+    let source=std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    std::fs::write(tree.path().join("src/lib.rs"),&source).unwrap();
+    let hits=[Occurrence {file:"src/lib.rs",line:3,text:"pub fn restore() { store::write(); }"}];
+    let report=cross_hits(root,tree.path(),&hits).unwrap();
+    assert_eq!(report["symbols"][0]["name"],"restore");
+    assert_eq!(report["symbols"][0]["matched_lines"],serde_json::json!([3]));
+    std::fs::write(tree.path().join("src/lib.rs"),format!("{source}// changed only in this tree\n")).unwrap();
+    let changed=cross_hits(root,tree.path(),&hits).unwrap();
+    assert!(changed["symbols"].as_array().unwrap().is_empty());
+    assert_eq!(changed["unmapped_occurrences"],1);
+    let stale=[Occurrence {file:"src/lib.rs",line:3,text:"different output"}];
+    assert!(cross_hits(root,tree.path(),&stale).is_err());
+    let outside=[Occurrence {file:"../outside",line:1,text:""}];
+    assert!(cross_hits(root,tree.path(),&outside).is_err());
+}
+
+#[test]
+fn task_intent_refines_a_broad_investigation_but_preserves_an_exact_name() {
+    use mustard_core::domain::knowledge::investigation::{Purpose,Task};
+    let dir=seed();let root=dir.path();
+    std::fs::write(root.join("src/snapshots.ts"),"/** Archive a draft. */\nexport function archiveDraft() { return 1; }\n/** Archive after verifying snapshot checksum. */\nexport function verifySnapshotChecksum() { return 2; }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&[]);
+    let task=Task {intent:"verify snapshot checksum",purpose:Purpose::Implement};
+    let query=knowledge::Query {text:"archive",file:Some("src/snapshots.ts"),depth:0,..options()};
+    let (broad,_) = knowledge::query_for(root,root,&query,task).unwrap();
+    assert_eq!(broad["cards"][0]["name"],"verifySnapshotChecksum","{broad}");
+    let exact=knowledge::Query {text:"archiveDraft",..query};
+    let (named,_) = knowledge::query_for(root,root,&exact,task).unwrap();
+    assert_eq!(named["cards"][0]["name"],"archiveDraft","{named}");
+    assert_eq!(named["remote_model_calls"],0);
+}
+
+#[test]
 fn native_retrieval_finds_actions_and_preserves_exact_data_symbols_without_vectors() {
     let dir = seed();
     let root = dir.path();

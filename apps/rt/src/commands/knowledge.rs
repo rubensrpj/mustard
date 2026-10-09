@@ -3,7 +3,8 @@ use std::path::Path;
 
 mod evaluation;
 
-pub struct Modes<'a> { pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool }
+pub struct Modes<'a> { pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
+    pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
 
 fn read_manifest<T:serde::de::DeserializeOwned>(path:&Path)->Result<T,String> {
     if std::fs::metadata(path).map_err(|e|e.to_string())?.len()>1_000_000 {return Err("knowledge-manifest-too-large".into());}
@@ -48,7 +49,7 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
             let text=if markdown {mustard_core::io::knowledge::dossier::markdown(&report,&map)}else{report.to_string()};
             (report,text)
         } else {
-            let (report,map)=if modes.responsibility {mustard_core::io::knowledge::query_with_selector(root,&tree,query,selector)} else {mustard_core::io::knowledge::query_with(root,&tree,query)}.map_err(|e|format!("{e:?}"))?;
+            let (report,map)=if modes.responsibility {mustard_core::io::knowledge::query_with_selector(root,&tree,query,selector)} else {mustard_core::io::knowledge::query_for(root,&tree,query,modes.task)}.map_err(|e|format!("{e:?}"))?;
             let text=if markdown {mustard_core::domain::knowledge::markdown(&report,&map)}else{report.to_string()};
             (report,text)
         };

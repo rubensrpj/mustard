@@ -28,6 +28,12 @@ pub enum ScanCmd {
         root: PathBuf,
         #[arg(long, default_value = "")]
         query: String,
+        /// What the current task is trying to establish; never rewrites a literal pattern.
+        #[arg(long, conflicts_with_all = ["symbol", "coverage", "record", "refresh", "topics", "evaluate", "responsibility"])]
+        intent: Option<String>,
+        /// Shape current evidence for discovery, planning, editing or verification.
+        #[arg(long, value_parser = ["locate", "understand", "spec", "implement", "validate"], conflicts_with_all = ["coverage", "record", "refresh", "topics", "evaluate", "responsibility"])]
+        purpose: Option<String>,
         #[arg(long)]
         file: Option<String>,
         /// Exact card identity returned by discovery: <file>:<line>:<name>.
@@ -181,7 +187,7 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Knowledge { root, query, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility } => {
+        ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility } => {
             super::knowledge::run(
                 &root,
                 &mustard_core::io::knowledge::Query {
@@ -202,7 +208,11 @@ pub fn dispatch(cmd: ScanCmd) {
                 markdown,
                 out.as_deref(),
                 record.as_deref(),
-                super::knowledge::Modes { coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility },
+                super::knowledge::Modes { coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,
+                    task: mustard_core::domain::knowledge::investigation::Task {
+                        intent: intent.as_deref().unwrap_or_default(),
+                        purpose: purpose.as_deref().and_then(mustard_core::domain::knowledge::investigation::Purpose::parse).unwrap_or_default(),
+                    } },
             );
         }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
@@ -272,11 +282,14 @@ mod tests {
     #[test]
     fn knowledge_modes_cannot_combine_or_silently_ignore_a_query() {
         for args in [vec!["--coverage","--topics","topics.json"],vec!["--evaluate","eval.json","--query","quartz"],
-            vec!["--topics","topics.json","--symbol","a.rs:1:run"],vec!["--coverage","--markdown"]] {
+            vec!["--topics","topics.json","--symbol","a.rs:1:run"],vec!["--coverage","--markdown"],
+            vec!["--purpose","implement","--topics","topics.json"],vec!["--intent","quartz","--responsibility"],
+            vec!["--purpose","guess"],vec!["--symbol","a.rs:1:run","--intent","quartz"]] {
             let mut line=vec!["probe","knowledge"];line.extend(args);
             assert!(Probe::try_parse_from(line).is_err());
         }
         assert!(Probe::try_parse_from(["probe","knowledge","--coverage"]).is_ok());
+        assert!(Probe::try_parse_from(["probe","knowledge","--query","quartz","--intent","restore","--purpose","implement"]).is_ok());
     }
 
     fn opts_of(args: &[&str]) -> crate::commands::map::MapOpts {

@@ -1,5 +1,7 @@
 # Implementação do plano completo
 
+Continuação autorizada em 09/10: investigação nativa por tarefa, cruzando índice e ocorrências atuais sem IA auxiliar. `--intent` acrescenta pistas; `--purpose` ajusta trechos para localizar, compreender, criar spec, implementar ou validar. Integração no levantamento, consultas, relatórios e instruções; o hook cruza os resultados efetivamente executados. Símbolos alterados não reutilizam intervalos antigos. A integração Codex continua futura; CLI e núcleo permanecem independentes do host. Resultados e limites atualizados na seção inicial de [Scan como oráculo](2026-10-08-scan-oraculo.md).
+
 Atualização de escopo em 09/10: o usuário autorizou seleção de responsabilidade por arquivo, contexto inicial menor, cobertura explícita, reuso/relatórios por assuntos e avaliação repetível, com piloto Jev pago e restrito às ambiguidades. A seleção arquivo→símbolo ficou experimental (`--responsibility`) devido a 14/60 → 13/60 símbolos na nova amostra externa; o padrão preserva a recuperação anterior. Piloto Jev real: US$ 0,001493 estimados, um ganho em 33 perguntas com símbolo, cache sem nova chamada. Contratos e resultados vigentes ficam na seção inicial de [Scan como oráculo](2026-10-08-scan-oraculo.md). Validação de uma spec real no Claude permanece distinta dos testes locais; não declarar economia faturada pela redução de bytes. As afirmações históricas de que não houve chamadas pagas valem para suas respectivas etapas.
 
 
@@ -8,6 +10,10 @@ Autorizada pelo usuário em 08/10/2026. Base: `18ef6eed4d2e1d367a1f0ce111178bf8d
 Contrato de entrada: `2026-10-07-prompt-implementacao-mustard.md`. O escopo abrange as trilhas A–E e o item A16 aprovado. Não envolve publicar recursos externos ou atualizar a instalação pessoal automaticamente.
 
 Esclarecimento do usuário em 08/10: suporte ao Codex é futuro. A preparação atual conserva interfaces de julgamento e projeção de estado independentes dos adaptadores do Claude. Não será implementada integração Codex nesta entrega; não haverá alteração da configuração pessoal desse cliente.
+
+## Aceite da investigação nativa em 09/10
+
+3.876 testes Rust aprovados, zero falhas e dois ignorados herdados; lint estrito e 10 testes do Mods aprovados. Instalação real do binário em pasta vazia, scan, Markdown, consultas por finalidade e hook PostToolUse conferidos. Sem chamada paga nesta etapa. A nova amostra RepoQA preserva 34/40 arquivos e 18/40 símbolos principais e acrescenta 9 alvos nas alternativas; no backend conhecido, preserva 32/37 e 21/33 e acrescenta 5 alvos nas alternativas. O retorno final é maior que o baseline (+64,9% e +56,4% em bytes, respectivamente). Portanto, há ganho na evidência disponível, sem melhora comprovada na escolha principal, economia faturada ou qualidade de uma implementação. Detalhes, corpus, hashes e limites ficam no documento do scan.
 
 ## Etapa anterior do scan em 09/10: evidência ampliada
 

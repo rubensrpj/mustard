@@ -40,8 +40,13 @@ fn cites_the_search_with_the_text_of_grep(text: &str) -> bool {
     cited.peek().is_some()
         && cited.all(|c| c.options.is_empty())
         && text.contains("run map search \"<")
-        && !text.contains("--query")
-        && !text.contains("--intent")
+}
+
+#[test]
+fn native_task_context_does_not_change_the_literal_search_contract() {
+    assert!(cites_the_search_with_the_text_of_grep("`mustard-rt run knowledge --query q --intent task` and `mustard-rt run map search \"<pattern>\"`"));
+    assert!(!cites_the_search_with_the_text_of_grep("`mustard-rt run map search \"<pattern>\" --query q`"));
+    assert!(!cites_the_search_with_the_text_of_grep("`mustard-rt run map search \"<pattern>\" --intent task`"));
 }
 
 fn template(lang: &str, name: &str) -> String {

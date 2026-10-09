@@ -62,7 +62,9 @@ pub fn assemble(
     let before = super::generation(root)?;
     for topic in &plan.topics {
         let query = Query { text: &topic.query, file: topic.file.as_deref(), symbol: None, refresh: false, ..*options };
-        let (evidence, source) = if responsibility { query_with_selector(root, tree, &query, selector) } else { super::query_with(root, tree, &query) }?;
+        let (evidence, source) = if responsibility { query_with_selector(root, tree, &query, selector) } else {
+            super::query_for(root, tree, &query, knowledge::investigation::Task { intent: "", purpose: knowledge::investigation::Purpose::Understand })
+        }?;
         calls = calls.zip(evidence["remote_model_calls"].as_u64()).map(|(a, b)| a + b);
         if map.is_none() {
             map = Some(source);
@@ -75,7 +77,7 @@ pub fn assemble(
     if before != after {
         return Err(invalid("knowledge-concurrent-scan; retry topic assembly after the writer finishes"));
     }
-    let local = if crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled() { Value::Null } else { json!(0) };
+    let local = if responsibility && crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled() { Value::Null } else { json!(0) };
     Ok((
         json!({"ok":true,"title":plan.title,"topics":topics,"remote_model_calls":calls,"local_model_calls":local,
         "generation":"native-composition; reviewed interpretations remain author claims, not automatic semantic proof"}),

@@ -53,11 +53,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     ),
     (
         "map",
-        "intent",
-        "hidden alias of the search measurement (the ruler); the search teaches the text of Grep",
-    ),
-    (
-        "map",
         "said",
         "hidden option of the search measurement: the terminal hook fills the last speech of the agent by itself",
     ),

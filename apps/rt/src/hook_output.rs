@@ -153,11 +153,14 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
                 hook_output.insert("additionalContext".to_string(), serde_json::Value::String(note.clone()));
             }
         }
-        Verdict::ToolOutput { tool_output } => {
+        Verdict::ToolOutput { tool_output, context } => {
             if event_name != "PostToolUse" {
                 return None;
             }
             hook_output.insert("updatedToolOutput".into(), tool_output.clone());
+            if let Some(context)=context {
+                hook_output.insert("additionalContext".into(),serde_json::Value::String(context.clone()));
+            }
         }
         Verdict::Inject { context } => {
             // Só o contexto: a nota que vai junto da ferramenta nunca a libera.
@@ -193,6 +196,17 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executed_tool_evidence_and_projection_share_post_tool_output_without_permissions() {
+        let output = serde_json::json!({"stdout":"hit 2 | quartz", "stderr":"", "interrupted":false,"isImage":false});
+        let outcome = Outcome { verdict: Verdict::ToolOutput { tool_output:output.clone(),context:Some("current owner".into()) },warnings:vec![] };
+        let value:serde_json::Value = serde_json::from_str(&hook_specific_output("PostToolUse",&outcome).unwrap()).unwrap();
+        assert_eq!(value["hookSpecificOutput"]["updatedToolOutput"],output);
+        assert_eq!(value["hookSpecificOutput"]["additionalContext"],"current owner");
+        assert!(!value.to_string().contains("permissionDecision"));
+        assert!(hook_specific_output("PreToolUse",&outcome).is_none());
+    }
 
     fn inject_outcome() -> Outcome {
         Outcome { verdict: Verdict::Inject { context: "remember this".to_string() }, warnings: Vec::new() }

@@ -14,7 +14,7 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 - Só leia, rode testes e faça cortes, desfeitos logo. Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor nem troque de branch, e nunca mexa no `.claude/` nem no `mustard.json`. A lista de pendências, em `.claude/pending/`, não é sua para fechar.
 - Use os resumos vigentes das ondas como mapa inicial: ligue entregas a arquivos, commits e critérios. Confirme as conclusões no diff e no código; resumo ausente, incompleto ou errado não exclui nenhuma área. Expanda para consumidores, contratos e alterações não citadas quando necessário.
 - Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
-  - `mustard-rt run map search "<padrão>"`: para achar o código de um critério que a entrega não cita, com o mesmo texto que você poria no `Grep`.
+  - `mustard-rt run knowledge --query "<recurso>" --intent "<tarefa>" --purpose validate`: evidência atual; `mustard-rt run map search "<padrão>"`: busca pelo texto do Grep.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo mudado, para ver as declarações e suas linhas.
   - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração que a onda mudou.
   - `mustard-rt run map users --name <nome>`: para ver quem usa o que a onda mudou e se algum uso ficou de fora.

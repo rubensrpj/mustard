@@ -970,10 +970,18 @@ pub fn discovery(
     query: &str,
     languages: &Languages,
 ) -> std::result::Result<Discovery, MapRefusal> {
+    discovery_mode(root,tree,query,languages,false)
+}
+
+pub fn discovery_native(root:&Path,tree:&Path,query:&str,languages:&Languages)->std::result::Result<Discovery,MapRefusal> {
+    discovery_mode(root,tree,query,languages,true)
+}
+
+fn discovery_mode(root:&Path,tree:&Path,query:&str,languages:&Languages,native:bool)->std::result::Result<Discovery,MapRefusal> {
     let db = indexed(&model_path(root), languages, &map_fill::READ_BY_CANDIDATES)?;
-    let ordered = map_order::ordered(
-        db.conn(), map_order::Check::On(Some(tree)), query, "", languages,
-    ).map_err(unreadable)?;
+    let ordered = if native {
+        map_order::ordered_with(db.conn(),map_order::Check::On(Some(tree)),&crate::io::map_sense::Sense::off(),query,"",languages)
+    } else { map_order::ordered(db.conn(), map_order::Check::On(Some(tree)), query, "", languages) }.map_err(unreadable)?;
     // The filter's broad candidate reservoir can contain unrelated symbols
     // even when no term or local meaning found evidence. A knowledge answer
     // must not present that reservoir as a discovery.

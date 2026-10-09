@@ -368,7 +368,7 @@ pub enum Verdict {
     },
 
     /// Replace a completed tool result, preserving the tool's output schema.
-    ToolOutput { tool_output: Value },
+    ToolOutput { tool_output: Value, context: Option<String> },
 
     /// Permit the action and inject extra context for the agent
     /// (`additionalContext` in the JS hook protocol).

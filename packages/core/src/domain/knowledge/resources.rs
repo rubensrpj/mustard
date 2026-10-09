@@ -44,6 +44,11 @@ pub struct Registry {
 }
 
 impl Registry {
+    pub fn admits_path(&self, file: &str) -> bool {
+        !self.excluded.as_ref().is_some_and(|set| set.is_match(file))
+            && !Path::new(file).components().filter_map(|part| part.as_os_str().to_str()).any(|part| part.starts_with('.'))
+    }
+
     pub fn load() -> Result<Self, String> {
         let mut registry: Self = toml::from_str(include_str!("resources.toml")).map_err(|err| err.to_string())?;
         let mut builder = GlobSetBuilder::new();

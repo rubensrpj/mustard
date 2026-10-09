@@ -15,6 +15,7 @@ pub mod capabilities;
 pub mod evidence;
 pub mod selection;
 pub mod projection;
+pub mod investigation;
 mod retrieval;
 pub use annotation::Annotation;
 
@@ -453,6 +454,13 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
         report["query"].as_str().unwrap_or_default()
     );
     text.push_str("Relações estáticas são candidatas; não demonstram ordem de execução, autorização ou cobertura de testes. Static links are candidates, not runtime or test proofs.\n\n");
+    if let Some(purpose) = report["investigation"]["purpose"].as_str() {
+        let _ = writeln!(text, "Finalidade / purpose: `{purpose}` · evidência parcial / partial: {}.\n", report["investigation"]["partial"]);
+    }
+    for hit in report["investigation"]["live_matches"].as_array().into_iter().flatten() {
+        let _ = writeln!(text, "## Ocorrência atual sem símbolo confirmado / current unindexed occurrence\n\n`{}`:{} · SHA-256 `{}`\n", hit["source"]["file"].as_str().unwrap_or_default(), hit["source"]["line"], hit["source"]["sha256"].as_str().unwrap_or_default());
+        render_excerpt(&mut text, &hit["excerpt"]);
+    }
     text.push_str("## Catálogo da última passada / last scan catalog\n\nAs fontes recuperadas são conferidas por conteúdo; o catálogo geral retrata a última passada. Selected sources are content-checked; the catalog describes the last scan.\n\n");
     for project in &map.projects {
         let _ = writeln!(
@@ -580,6 +588,11 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
                 card.documentation
             );
         }
+        render_excerpt(&mut text, &item["source_excerpt"]);
+        for alternative in item["alternatives"].as_array().into_iter().flatten() {
+            let _ = writeln!(text, "Alternativa a conferir / candidate to inspect: `{}` · `{}`:{}–{} · SHA-256 `{}`.\n", alternative["name"].as_str().unwrap_or_default(), alternative["source"]["file"].as_str().unwrap_or_default(), alternative["source"]["line"], alternative["source"]["end_line"], alternative["source"]["sha256"].as_str().unwrap_or_default());
+            render_excerpt(&mut text, &alternative["source_excerpt"]);
+        }
         if !card.body_comment.is_empty() {
             let _ = writeln!(
                 text,
@@ -667,6 +680,13 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
         let _ = writeln!(text, "- {}", gap.as_str().unwrap_or_default());
     }
     text
+}
+
+fn render_excerpt(text: &mut String, excerpt: &Value) {
+    use std::fmt::Write as _;
+    let Some(body) = excerpt["text"].as_str() else { return; };
+    let fence = "`".repeat(body.split(|c| c != '`').map(str::len).max().unwrap_or(0).max(2) + 1);
+    let _ = writeln!(text, "Trecho atual da fonte / current source excerpt · truncado / truncated: {}.\n\n{fence}text\n{body}\n{fence}\n", excerpt["truncated"]);
 }
 
 fn annotation_text(card: &Card) -> String {

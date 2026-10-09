@@ -260,7 +260,10 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     });
     // Discovery only: grounded flow evidence does not close survey points,
     // introduce a requirement or substitute the required source read.
-    if let Ok((evidence,_))=mustard_core::io::knowledge::query(&opts.root,&goal_text,None,4,1,false)
+    let discovery=mustard_core::io::knowledge::Query {text:&goal_text,file:None,limit:4,depth:1,all:false,detail:false,symbol:None,
+        direction:mustard_core::io::knowledge::Direction::Outgoing,refresh:false};
+    if let Ok((evidence,_))=mustard_core::io::knowledge::query_for(&opts.root,&opts.root,&discovery,
+        mustard_core::domain::knowledge::investigation::Task {intent:"",purpose:mustard_core::domain::knowledge::investigation::Purpose::Spec})
         && (evidence["cards"].as_array().is_some_and(|cards|!cards.is_empty()) || evidence["interpretations"].as_array().is_some_and(|notes|!notes.is_empty())) {
         report["knowledge"]=evidence;
     }

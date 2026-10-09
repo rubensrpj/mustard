@@ -946,10 +946,8 @@ fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
 }
 
 /// O molde da onda e o do revisor, nos dois idiomas, mandam procurar código
-/// como sempre, com o mesmo texto: o `Grep`, o `grep` e o `rg` passam pelo
-/// Mustard, que responde no lugar da busca, e o cravado, o parcial e o não
-/// achei têm o sentido dito. A linha do comando da busca traz o texto entre
-/// aspas, como o `Grep` o recebe, e nenhuma das opções de palavras e de frase.
+/// como sempre, com o mesmo texto. O mapa é uma recuperação explícita e
+/// `knowledge` recebe a tarefa; nenhum deles substitui a execução literal.
 #[test]
 fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_recovery() {
     for (lang, literal, command, uncertain) in [
@@ -963,9 +961,13 @@ fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_r
             assert!(agent.contains(literal), "{lang} {name}: original tool behavior must stay explicit");
             assert!(agent.contains(command), "{lang} {name}: map recovery is available");
             assert!(agent.contains(uncertain), "{lang} {name}: graph uncertainty must stay explicit");
-            for obsolete in ["answers in place of the search", "responde no lugar da busca", "--query", "--intent"] {
+            for obsolete in ["answers in place of the search", "responde no lugar da busca"] {
                 assert!(!agent.contains(obsolete), "{lang} {name}: obsolete search instruction {obsolete}");
             }
+            for line in agent.lines().filter(|line|line.contains("--query") || line.contains("--intent")) {
+                assert!(line.contains("run knowledge"),"task context belongs to native knowledge, not the literal search: {line}");
+            }
+            assert!(agent.contains("run knowledge") && agent.contains("--purpose"),"{lang} {name}: task-oriented evidence must be available");
         }
     }
 }

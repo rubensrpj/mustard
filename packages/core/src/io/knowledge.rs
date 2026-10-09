@@ -17,6 +17,7 @@ pub mod enrichment;
 pub mod audit;
 pub mod coverage;
 pub mod dossier;
+pub mod investigation;
 pub(crate) mod catalog;
 pub(crate) mod references;
 mod navigation;
@@ -236,13 +237,22 @@ pub fn query_with(
     tree: &Path,
     opts: &Query<'_>,
 ) -> Result<(Value, ProjectMap), MapRefusal> {
-    consistent_query(root, tree, opts, true, None, false)
+    consistent_query(root, tree, opts, true, None, false, None)
+}
+
+/// Native task-aware retrieval. This port never selects a paid provider or a
+/// local sense model, including projects with legacy AI settings enabled.
+pub fn query_for(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::investigation::Task<'_>) -> Result<(Value, ProjectMap), MapRefusal> {
+    if task.intent.len()>4000 || opts.text.len()>4000 || (opts.symbol.is_some() && !task.intent.trim().is_empty()) {
+        return Err(invalid("knowledge-invalid-investigation-context"));
+    }
+    consistent_query(root, tree, opts, true, None, false, Some(task))
 }
 
 /// Explicit experimental responsibility ranking, optionally judged. Ordinary
 /// queries retain the established ranking until independent relevance improves.
 pub fn query_with_selector(root:&Path,tree:&Path,opts:&Query<'_>,selector:Option<&dyn knowledge::selection::SymbolSelector>)->Result<(Value,ProjectMap),MapRefusal> {
-    consistent_query(root,tree,opts,true,selector,true)
+    consistent_query(root,tree,opts,true,selector,true,None)
 }
 
 /// Compare read generations without exposing the database connection publicly.
@@ -258,19 +268,19 @@ fn query_sources(
     tree: &Path,
     options: &Query<'_>,
 ) -> Result<(Value, ProjectMap), MapRefusal> {
-    consistent_query(root, tree, options, false, None, false)
+    consistent_query(root, tree, options, false, None, false, None)
 }
 
 /// Source blocks can be read through several database ports. Detect a writer
 /// between those reads instead of returning a mixed source generation.
-fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool) -> Result<(Value,ProjectMap),MapRefusal> {
+fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
     let mut calls=Some(0u64);
     let mut attempts=Vec::new();
     for attempt in 0..2 {
         let before = generation(root)?;
         // A concurrent writer invalidates a choice. Retry natively rather than
         // automatically paying for another generation of the same query.
-        let mut result=query_internal(root,tree,options,include_interpretations,if attempt==0 {selector}else{None},responsibility)?;
+        let mut result=query_internal(root,tree,options,include_interpretations,if attempt==0 {selector}else{None},responsibility,task)?;
         calls=calls.zip(result.0["remote_model_calls"].as_u64()).map(|(a,b)|a+b);
         attempts.push(result.0["responsibility_selection"]["usage"].clone());
         let after = generation(root)?;
@@ -300,7 +310,7 @@ fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_inter
     Err(invalid("knowledge-concurrent-scan; retry after the current scan commits"))
 }
 
-fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool) -> Result<(Value, ProjectMap), MapRefusal> {
+fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
     let Query { text: query, file, limit, depth, all, detail, symbol, direction, refresh } = *options;
     if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh)) || (direction != Direction::Outgoing && symbol.is_none()) {
         return Err(invalid("knowledge-navigation-requires-exact-symbol"));
@@ -321,7 +331,8 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let mut index_unavailable = false;
     let exact_name = symbol.is_none() && catalog::exact_name(root,options)?;
     let discovery = if symbol.is_none() && !exact_name && !query.trim().is_empty() {
-        match crate::io::map_search::discovery(root, tree, query, &languages) {
+        let discovered = if task.is_some() { crate::io::map_search::discovery_native(root,tree,query,&languages) } else { crate::io::map_search::discovery(root,tree,query,&languages) };
+        match discovered {
             Ok(discovery) => Some(discovery),
             Err(_) => { index_unavailable = true; None }
         }
@@ -486,6 +497,10 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         for i in ranking {if included.insert(i){reranked.push(i);}}
         ranking=reranked;
     }
+    let investigation = if let Some(task)=task {
+        Some(investigation::prepare(root,tree,options,task,&mut cards,&mut ranking,&mut hashes)?)
+    } else {None};
+    if let Some(native)=&investigation {candidates_omitted|=native.omitted;}
     for i in ranking.into_iter().filter(|i| file.is_none_or(|file| cards[*i].source.file == file)) {
         if selected.len() >= seed_limit {
             break;
@@ -515,6 +530,8 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let mut compacted_relations = 0;
     let mut stale_relations = 0;
     let mut ambiguous_relations = 0;
+    let primary_ids:BTreeSet<String> = order.iter().map(|&i|cards[i].id.clone()).collect();
+    let primary_refs:BTreeSet<&str> = primary_ids.iter().map(String::as_str).collect();
     for i in order {
         let card = &mut cards[i];
         card.callers.retain(|edge| {
@@ -548,6 +565,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         }
         item["current_outgoing_count"] = json!(outgoing);
         item["current_caller_count"] = json!(callers);
+        if let (Some(native),Some(task))=(&investigation,task) {native.adorn(card,&mut item,task.purpose,&primary_refs);}
         result.push(item);
     }
     let mut gaps = vec!["Static relations do not prove runtime order, authorization, business rules or test coverage.".to_string()];
@@ -608,8 +626,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let flows:Vec<_>=result.iter().filter(|card|card["routes"].as_array().is_some_and(|rows|!rows.is_empty()) || card["outgoing"].as_array().is_some_and(|rows|!rows.is_empty())).map(|card|
         json!({"entry":card["id"],"static_targets":card["outgoing"].as_array().into_iter().flatten().map(|edge|&edge["target"]).collect::<Vec<_>>(),"runtime_order":"unknown"})).collect();
     let capabilities=if detail {knowledge::capabilities::groups(&result)} else {Vec::new()};
-    Ok((
-        json!({"ok":true,"schema_version":knowledge::VERSION,"query":query,"cards":result,"interpretations":interpretations,
+    let mut report = json!({"ok":true,"schema_version":knowledge::VERSION,"query":query,"cards":result,"interpretations":interpretations,
         "resources":resources.items,"scan_coverage":coverage::report(root)?,"resource_coverage":{"indexed":resources.available,"files_at_scan":resources.indexed_files,
             "issues_at_scan":resources.issues,"issue_count":resources.issue_count,"issues_compacted":resources.issue_count>resources.issues.len() as i64,"stale_excerpts":resources.stale,"has_more":resources.omitted>0,
             "meaning":"verbatim text only; accepted formats and excluded paths declared by registry"},
@@ -623,10 +640,14 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         "stale_interpretations":stale.iter().map(|note|&note.id).collect::<Vec<_>>(),"gaps":gaps,
         "origin":"scan-and-versioned-interpretations","remote_model_calls":selection_usage["remote_model_calls"],
         "responsibility_selection":{"experimental":responsibility,"expanded_candidates":expanded_candidates,"ambiguous_files":ambiguous_files,"usage":selection_usage},
-        "retrieval_method":if exact_name {"exact-name-index"}else{"native-index-and-vocabulary"},"vectors_enabled":crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(),
-        "local_model_calls":if crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(){Value::Null}else{json!(0)}}),
-        map,
-    ))
+        "retrieval_method":if exact_name {"exact-name-index"}else{"native-index-and-vocabulary"},"vectors_enabled":task.is_none() && crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(),
+        "local_model_calls":if task.is_none() && crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(){Value::Null}else{json!(0)}});
+    if let Some(native)=investigation {
+        if !native.verify(tree) {return Err(invalid("knowledge-source-changing; repeat the investigation"));}
+        report["investigation"]=native.report;
+        report["retrieval_method"]=json!("native-index-and-current-source");
+    }
+    Ok((report,map))
 }
 
 /// Narrow query for a prepared component: no full project deserialization or

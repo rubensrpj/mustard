@@ -59,6 +59,25 @@ function isSymbol(card, needle) {
   return card.source.file === needle.path && nameOf(card.name) === nameOf(needle.name)
     && card.source.line <= needle.end_line + 1 && needle.start_line + 1 <= card.source.end_line;
 }
+function excerpts(root, cards) {
+  for (const card of cards) {
+    const excerpt = card.source_excerpt;
+    if (!excerpt) continue;
+    const source = fs.readFileSync(path.join(root, card.source.file), 'utf8');
+    assert.equal(sha(source), card.source.sha256);
+    const lines = source.split(/\r?\n/);
+    for (const line of excerpt.text.split('\n')) {
+      const matched = /^(\d+) \| (.*)$/.exec(line); assert.ok(matched, 'Invalid numbered source excerpt');
+      const at = Number(matched[1]);
+      assert.ok(at >= card.source.line && at <= card.source.end_line);
+      assert.ok(lines[at - 1].startsWith(matched[2]), 'Excerpt differs from actual source');
+    }
+  }
+}
+function complete(card) {
+  const excerpt = card.source_excerpt;
+  return !!excerpt && !excerpt.truncated && excerpt.line <= card.source.line && excerpt.end_line >= card.source.end_line;
+}
 try {
   for (let repoAt = 0; repoAt < selection.repositories.length; repoAt++) {
     const picked = selection.repositories[repoAt];
@@ -86,9 +105,26 @@ try {
           ...(version === 'current' && responsibility ? ['--responsibility'] : [])], root);
         assert.equal(query.value.remote_model_calls, 0); assert.equal(query.value.local_model_calls, 0);
         for (const card of query.value.cards) assert.equal(sha(fs.readFileSync(path.join(root, card.source.file))), card.source.sha256);
+        const alternatives = query.value.cards.flatMap(card => card.alternatives || []);
+        excerpts(root, [...query.value.cards, ...alternatives]);
+        const target = query.value.cards.filter(card => isSymbol(card, needle));
+        const alternativeHit = alternatives.some(card => isSymbol(card, needle));
+        let editing;
+        if (version === 'current' && !responsibility) {
+          editing = run(version, 'mustard-rt', ['run','knowledge','--root',root,'--query',needle.description,'--purpose','implement'], root);
+          assert.equal(editing.value.local_model_calls,0); assert.equal(editing.value.remote_model_calls,0);
+          excerpts(root, editing.value.cards);
+          fs.writeFileSync(path.join(output, `${repoAt}-${at}-implement.json`), JSON.stringify(editing.value));
+        }
         const row = { version, language: picked.language, repo: picked.repo, commit: picked.commit, id: `${picked.repo}:${at}`, query_sha256: sha(needle.description),
           expected: { file: needle.path, name: needle.name, start_line: needle.start_line, end_line: needle.end_line, lines_zero_based: true },
           index_coverage: expected, file_hit: query.value.cards.some(card => card.source.file === needle.path), symbol_hit: query.value.cards.some(card => isSymbol(card, needle)),
+          alternative_symbol_hit: alternativeHit, target_current_excerpt: target.some(card => !!card.source_excerpt),
+          complete_primary_declaration: target.some(complete),
+          implement: editing && {bytes:editing.bytes,ms:editing.ms,complete_primary_declaration:editing.value.cards.filter(card=>isSymbol(card,needle)).some(complete)},
+          failure_stage: !expected ? 'target-not-indexed' : !query.value.cards.some(card=>card.source.file===needle.path) ? 'file-not-retrieved'
+            : !target.length ? alternativeHit ? 'target-only-in-alternatives' : 'symbol-not-selected' : target.some(card=>!!card.source_excerpt) ? 'current-excerpt-returned' : 'target-without-source-excerpt',
+          implementation_sufficiency:'unverified; full indexed declaration does not prove sufficient task context',
           ms: query.ms, bytes: query.bytes, selected: query.value.cards.map(card => ({ name: card.name, source: card.source })), catalog: query.value.catalog };
         report.results.push(row);
         fs.writeFileSync(path.join(output, `${repoAt}-${at}-${version}.json`), JSON.stringify(query.value));
@@ -101,7 +137,13 @@ try {
   report.summary = Object.fromEntries(Object.keys(binaries).map(version => {
     const rows = report.results.filter(row => row.version === version);
     return [version, { total: rows.length, indexed_symbols: rows.filter(row => row.index_coverage).length,
-      file_hits: rows.filter(row => row.file_hit).length, symbol_hits: rows.filter(row => row.symbol_hit).length, bytes: rows.reduce((n, row) => n + row.bytes, 0) }];
+      file_hits: rows.filter(row => row.file_hit).length, symbol_hits: rows.filter(row => row.symbol_hit).length,
+      alternative_rescues:rows.filter(row=>!row.symbol_hit && row.alternative_symbol_hit).length,
+      target_current_excerpts:rows.filter(row=>row.target_current_excerpt).length,
+      complete_primary_declarations:rows.filter(row=>row.complete_primary_declaration).length,
+      implement_complete_primary_declarations:rows.filter(row=>row.implement?.complete_primary_declaration).length,
+      failure_stages:Object.fromEntries([...new Set(rows.map(row=>row.failure_stage))].map(stage=>[stage,rows.filter(row=>row.failure_stage===stage).length])),
+      bytes: rows.reduce((n, row) => n + row.bytes, 0), median_ms:rows.map(row=>row.ms).sort((a,b)=>a-b)[Math.floor(rows.length/2)] }];
   }));
   fs.writeFileSync(path.join(output, 'benchmark.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ stage: 'complete', summary: report.summary }));

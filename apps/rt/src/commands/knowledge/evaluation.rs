@@ -1,5 +1,6 @@
 //! Explicit retrieval evaluation. Bytes are context size, not billed tokens.
 use mustard_core::domain::knowledge::selection::SymbolSelector;
+use mustard_core::domain::knowledge::investigation::{Purpose,Task};
 use mustard_core::io::knowledge::{Query, query_with_selector};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,6 +24,10 @@ pub(super) struct Question {
     pub expected: Vec<String>,
     #[serde(default)]
     pub symbols: Vec<String>,
+    #[serde(default)]
+    pub intent: String,
+    #[serde(default)]
+    pub purpose: Purpose,
 }
 
 impl Plan {
@@ -37,6 +42,7 @@ impl Plan {
                 || !ids.insert(&q.id)
                 || q.query.trim().is_empty()
                 || q.query.len() > 4000
+                || q.intent.len() > 4000
                 || q.expected.is_empty()
                 || q.expected
                     .iter()
@@ -60,7 +66,7 @@ pub(super) fn evaluate(root: &Path, tree: &Path, plan: &Plan, options: &Query<'_
     let generation = || mustard_core::io::knowledge::generation(root).map_err(|e| format!("{e:?}"));
     let initial = generation()?;
     let mut variants = Vec::new();
-    let mut modes = vec![("native-compact", false, None), ("native-detail", true, None), ("native-responsibility-experimental", false, None)];
+    let mut modes = vec![("native-compact", false, None), ("native-detail", true, None), ("native-investigation", false, None), ("native-responsibility-experimental", false, None)];
     if selector.is_some() {
         modes.push(("configured-choice", false, selector));
     }
@@ -71,7 +77,9 @@ pub(super) fn evaluate(root: &Path, tree: &Path, plan: &Plan, options: &Query<'_
         for q in &plan.questions {
             let query = Query { text: &q.query, file: None, symbol: None, all: false, refresh: false, detail, ..*options };
             let start = Instant::now();
-            let (report, _) = if mode == "native-responsibility-experimental" || mode == "configured-choice" {
+            let (report, _) = if mode == "native-investigation" {
+                mustard_core::io::knowledge::query_for(root,tree,&query,Task {intent:&q.intent,purpose:q.purpose})
+            } else if mode == "native-responsibility-experimental" || mode == "configured-choice" {
                 query_with_selector(root, tree, &query, select)
             } else {
                 mustard_core::io::knowledge::query_with(root, tree, &query)
@@ -81,11 +89,18 @@ pub(super) fn evaluate(root: &Path, tree: &Path, plan: &Plan, options: &Query<'_
             let sources: Vec<_> = report["cards"].as_array().into_iter().flatten().map(|c| c["source"]["file"].as_str().unwrap_or_default()).collect();
             let selected: Vec<_> = report["cards"].as_array().into_iter().flatten().map(|c| c["id"].as_str().unwrap_or_default()).collect();
             let file_hit = q.expected.iter().any(|file| sources.contains(&file.as_str()));
-            let symbol_hit = (!q.symbols.is_empty()).then(|| q.symbols.iter().any(|id| selected.contains(&id.as_str())));
+            let matches = |card:&Value| q.expected.iter().any(|file|card["source"]["file"]==*file)
+                && q.symbols.iter().any(|name|card["id"]==*name || card["name"]==*name);
+            let symbol_hit = (!q.symbols.is_empty()).then(|| report["cards"].as_array().into_iter().flatten().any(&matches));
+            let alternative_hit = (!q.symbols.is_empty()).then(|| report["cards"].as_array().into_iter().flatten()
+                .flat_map(|card|card["alternatives"].as_array().into_iter().flatten()).any(&matches));
+            let current_excerpt = report["cards"].as_array().into_iter().flatten().filter(|card|matches(card))
+                .any(|card|card["source_excerpt"]["text"].as_str().is_some_and(|text|!text.is_empty()));
             file_hits += usize::from(file_hit);
             symbol_hits += usize::from(symbol_hit == Some(true));
             calls = calls.zip(report["remote_model_calls"].as_u64()).map(|(a, b)| a + b);
-            rows.push(json!({"id":q.id,"query":q.query,"file_hit":file_hit,"symbol_hit":symbol_hit,"selected":selected,
+            rows.push(json!({"id":q.id,"query":q.query,"file_hit":file_hit,"symbol_hit":symbol_hit,"alternative_symbol_hit":alternative_hit,
+                "target_source_excerpt":current_excerpt,"implementation_sufficiency":"unverified","selected":selected,
                 "response_bytes":report.to_string().len(),"elapsed_ms":ms,"remote_model_calls":report["remote_model_calls"],
                 "selection":report["responsibility_selection"],"llm_tokens":null}));
         }

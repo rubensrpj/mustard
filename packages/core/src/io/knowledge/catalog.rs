@@ -344,7 +344,7 @@ pub(super) fn expand_files(root:&Path,cards:&mut Vec<Card>,files:&[String],query
     Ok((added,omitted))
 }
 
-fn hydrate(conn: &Connection, ids: &BTreeSet<String>) -> Result<Vec<Card>> {
+pub(super) fn hydrate(conn: &Connection, ids: &BTreeSet<String>) -> Result<Vec<Card>> {
     let mut statement = conn.prepare(
         "SELECT json_extract(t.analysis,'$.knowledge.cards['||s.position||']') FROM knowledge_symbols s JOIN texts t ON t.path=s.path WHERE s.id=?1",
     )?;

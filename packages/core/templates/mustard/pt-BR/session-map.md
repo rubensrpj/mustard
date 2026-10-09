@@ -7,7 +7,7 @@ Fluxo: levantamento, plano, aprovação, ondas, revisão final, fechamento e PR.
 - Abra mudanças com `mustard-rt run open`, grave o objetivo em `context` e sugira `/clear`; a linha de retomada mostra o estado. Pergunta, leitura e status não abrem spec. Branch alheia não bloqueia.
 - Explique um ponto por vez na ordem de explicar do estilo de resposta. Confira código e histórico antes de remover.
 - Grave cada resposta com `mustard-rt run answer`.
-- `mustard-rt run knowledge --query "<capacidade>"`: símbolos em `cards`, textos em `resources`; `--detail` expande; `--symbol <id> --direction callers`: impacto; `--refresh`: antigas; `--markdown`: documento. Confira regras no código.
+- `mustard-rt run knowledge --query "<recurso>" --purpose spec`: evidência atual; `--intent "<tarefa>"`: pistas; `--purpose implement|validate`: mais código. Confira candidatos e expanda cortes.
 
 ## Spec aberta
 
