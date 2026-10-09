@@ -952,14 +952,14 @@ fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
 fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_recovery() {
     for (lang, literal, command, uncertain) in [
         ("pt-BR", "preserve as opções originais, sem Jev por busca literal.",
-         r#"`mustard-rt run map search "<padrão>"`"#, "não comprova cobertura nem ausência de uso"),
+         "mustard-rt run search --shell-output", "não comprova cobertura nem ausência de uso"),
         ("en-US", "preserve the original options, without Jev for literal searches.",
-         r#"`mustard-rt run map search "<pattern>"`"#, "does not prove coverage or absence of use"),
+         "mustard-rt run search --shell-output", "does not prove coverage or absence of use"),
     ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
             assert!(agent.contains(literal), "{lang} {name}: original tool behavior must stay explicit");
-            assert!(agent.contains(command), "{lang} {name}: map recovery is available");
+            assert!(agent.contains(command), "{lang} {name}: routine searches use agent output instead of diagnostics");
             assert!(agent.contains(uncertain), "{lang} {name}: graph uncertainty must stay explicit");
             for obsolete in ["answers in place of the search", "responde no lugar da busca"] {
                 assert!(!agent.contains(obsolete), "{lang} {name}: obsolete search instruction {obsolete}");

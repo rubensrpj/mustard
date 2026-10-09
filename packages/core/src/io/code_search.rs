@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Stdio;
 
+pub mod presentation;
+
 pub struct Answer {
     pub report: Value,
     pub stdout: Vec<u8>,

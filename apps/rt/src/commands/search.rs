@@ -30,22 +30,21 @@ pub fn run(
                     .ok_or("search-invalid-purpose")?;
         }
         request.choose |= choose;
-        if (raw || shell_output) && !matches!(request.tool.as_str(), "rg" | "grep" | "git") {
+        if raw && !matches!(request.tool.as_str(), "rg" | "grep" | "git") {
             return Err("search-raw-output-requires-native-tool".into());
         }
-        crate::shared::search_gateway::answer(root, &request)
+        crate::shared::search_gateway::answer(root, &request).map(|answer| (answer, request))
     })();
     match result {
-        Ok(answer) => {
+        Ok((answer, request)) => {
             if raw || shell_output {
-                let _ = std::io::stdout().write_all(&answer.stdout);
+                let output = if shell_output {
+                    mustard_core::io::code_search::presentation::agent(&answer, &request, root).stdout
+                } else {
+                    answer.stdout
+                };
+                let _ = std::io::stdout().write_all(&output);
                 let _ = std::io::stderr().write_all(&answer.stderr);
-                if shell_output && !answer.report["evidence"].is_null() {
-                    println!(
-                        "\nMustard current source evidence:\n{}",
-                        answer.report["evidence"]
-                    );
-                }
             } else {
                 println!("{}", answer.report);
             }

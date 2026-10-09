@@ -7,7 +7,7 @@ Flow: survey, plan, approval, waves, review, close, PR. Binary: state, search an
 - Open changes with `mustard-rt run open`, record the goal in `context`, then suggest `/clear`; the resume line shows the state. Questions, reads and status open no spec. Other branches do not block.
 - Explain in the order of explaining from the response style. Check code/history before removing anything.
 - Record each answer with `mustard-rt run answer`.
-- Search/read code through `mcp__mustard__search` or `mustard-rt run search --intent "<task>" --purpose spec -- rg -n "<pattern>" .`: source search + scan; otherwise original results. If intent_requested, supply intent. Expand with `mustard-rt run knowledge --symbol <id>`.
+- Search/read code through `mcp__mustard__search` or `mustard-rt run search --shell-output --intent "<task>" --purpose spec -- rg -n "<pattern>" .`. Preserve options and state intent. Original or compact results retain all matches; expand with `mustard-rt run knowledge --symbol <id>`.
 
 ## Open spec
 

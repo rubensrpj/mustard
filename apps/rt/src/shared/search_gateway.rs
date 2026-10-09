@@ -298,7 +298,7 @@ pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         mustard_core::io::code_search::arguments(&request).ok()?;
     }
     let command = format!(
-        "mustard-rt run search --root {} --request {}",
+        "mustard-rt run search --root {} --request {} --shell-output",
         quote(cwd),
         quote(&serde_json::to_string(&request).ok()?)
     );

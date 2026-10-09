@@ -131,8 +131,26 @@ try {
   assert.equal(rewritten.updatedInput.timeout, 5000);
   const executed = run('sh', ['-c', rewritten.updatedInput.command]);
   assert.equal(executed.status, 0, executed.stderr.toString());
-  assert.ok(executed.stdout.subarray(0, original.stdout.length).equals(original.stdout));
-  assert.ok(executed.stdout.toString().includes('Mustard current source evidence:'));
+  assert.deepEqual(executed.stdout, original.stdout, 'Small searches keep native output; diagnostics must not be appended');
+  // A multi-file rg can order files differently between two executions. Keep
+  // this cross-execution size check on one file; pagination is checked above.
+  const agentRequest={...typed,input:{...typed.input,path:'src/lib.rs',offset:0}};
+  const agentExpected=search(['--request',JSON.stringify(agentRequest)]);
+  const typedAgent = successful('mustard-rt', ['run','search','--root',root,'--shell-output','--request',JSON.stringify(agentRequest)]);
+  assert.ok(typedAgent.stdout.length <= Buffer.byteLength(JSON.stringify(agentExpected.result))+1);
+  assert.ok(!typedAgent.stdout.toString().includes('source_hashes'));
+  assert.ok(!typedAgent.stdout.toString().includes('local_model_calls'));
+  for(const request of [{tool:'Read',input:{file_path:'src/lib.rs',offset:2,limit:1}},{tool:'Glob',input:{pattern:'**/*.rs',path:'src'}}]){
+    const diagnostic=search(['--request',JSON.stringify(request)]);
+    const agent=successful('mustard-rt',['run','search','--root',root,'--shell-output','--request',JSON.stringify(request)]);
+    const result=JSON.parse(agent.stdout);
+    if(request.tool==='Glob'){
+      // Separate native enumerations need not order files alike. The unit test
+      // checks exact field/order preservation for one executed Answer.
+      result.filenames.sort();diagnostic.result.filenames.sort();
+    }
+    assert.deepEqual(result,diagnostic.result,'Typed Read/Glob retain their complete result contract');
+  }
   fs.writeFileSync(path.join(root, 'private.pem'), 'secret-fixture-sentinel');
   const refused = run('mustard-rt', ['run', 'search', '--root', root, '--request', JSON.stringify({ tool: 'Read', input: { file_path: 'private.pem' } })]);
   assert.equal(refused.status, 2);
@@ -161,6 +179,7 @@ try {
     truly_empty_native_install: true, automatic_native_refresh: true, repeat_deduplicates_without_rescan: true,
     changed_and_new_sources: true, failed_scan_keeps_native_and_retries_later: true,
     raw_stdout_stderr_status_parity: true, native_fallback_parity: true,
+    automatic_output_does_not_append_reports: true, typed_agent_pagination: true,
     typed_tools: true, native_search_unavailable_passes_host_tool: true,
     real_classic_hook_handoff_and_rewrite: true, original_read_guard: true,
     checkout_isolation: true, default_http_requests: httpRequests, local_model_calls: 0, remote_model_calls: 0,

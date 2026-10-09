@@ -29,6 +29,96 @@ fn execute(
     code_search::execute(root, root, root, request, selector).unwrap()
 }
 
+// Independent decoder: every original occurrence, duplicate and order must
+// survive the alternative representation; comments are metadata, not matches.
+fn restore_grouped(bytes: &[u8]) -> String {
+    let text = std::str::from_utf8(bytes).unwrap();
+    let mut file = "";
+    let mut output = String::new();
+    for line in text.lines() {
+        if let Some(path) = line.strip_prefix("@ ") {
+            file = path;
+        } else if !line.starts_with("# ") {
+            assert!(!file.is_empty());
+            output.push_str(file);
+            output.push(':');
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+    if !text.ends_with('\n') { output.pop(); }
+    output
+}
+
+#[test]
+fn agent_view_keeps_small_searches_exact_and_omits_diagnostic_reports() {
+    let dir = fixture(true);
+    let req = request(&["rg", "-n", "--with-filename", "let quartz = 1", "src"]);
+    let answer = execute(dir.path(), &req, None);
+    let view = code_search::presentation::agent(&answer, &req, dir.path());
+    assert_eq!(view.representation, "native");
+    assert_eq!(view.stdout, answer.stdout);
+    assert_eq!(answer.report["evidence"]["symbols"].as_array().unwrap().len(), 1);
+    assert_eq!(answer.report["learning"]["new_facts"], 1);
+    assert!(!String::from_utf8_lossy(&view.stdout).contains("source_hashes"));
+}
+
+#[test]
+fn agent_view_adds_current_ranges_only_when_lossless_grouping_pays_for_them() {
+    let dir = fixture(false);
+    let folder = dir.path().join("src/features/persistence/application/services/snapshot-storage");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("store.rs"),"pub fn persist() {\n    let quartz = 1;\n    let quartz = 2;\n    let quartz = 3;\n    let quartz = 4;\n    let quartz = 5;\n}\n").unwrap();
+    model::scan(dir.path(), &dir.path().join(".claude"), &[]);
+    let req = request(&["rg", "--sort=path", "-n", "--with-filename", "let quartz", "src"]);
+    let answer = execute(dir.path(), &req, None);
+    let view = code_search::presentation::agent(&answer, &req, dir.path());
+    assert_eq!(view.representation, "grouped-current-owners");
+    assert!(view.stdout.len() < answer.stdout.len());
+    assert!(view.owner_ranges > 0);
+    assert!(String::from_utf8_lossy(&view.stdout).contains("persist 1-7"));
+    assert_eq!(restore_grouped(&view.stdout).as_bytes(), answer.stdout);
+}
+
+#[test]
+fn agent_view_preserves_pagination_and_unsupported_native_formats() {
+    let dir = fixture(true);
+    let root = dir.path();
+    let mut req = request(&["rg"]);
+    req.tool = "Grep".into();
+    req.input = json!({"pattern":"let quartz","path":"src","output_mode":"content","-n":true,"head_limit":1,"offset":1});
+    let answer = execute(root, &req, None);
+    let view = code_search::presentation::agent(&answer, &req, root);
+    let text = String::from_utf8_lossy(&view.stdout);
+    assert!(text.contains("src/a.rs"));
+    assert!(text.contains("let quartz = 2"));
+    assert!(!text.contains("let quartz = 1"),"unpaginated subprocess output must never leak");
+    assert!(view.stdout.len() <= answer.report["result"].to_string().len()+1);
+    for args in [
+        vec!["rg", "-n", "--with-filename", "-C", "1", "let quartz", "src"],
+        vec!["rg", "-c", "quartz", "src"],
+        vec!["rg", "--json", "quartz", "src"],
+        vec!["rg", "[", "src"],
+        vec!["rg", "absent-sentinel", "src"],
+    ] {
+        let req=request(&args);
+        let answer=execute(root,&req,None);
+        let view=code_search::presentation::agent(&answer,&req,root);
+        assert_eq!(view.stdout,answer.stdout,"{args:?}");
+    }
+    #[cfg(unix)]
+    {
+        let folder=root.join("ambiguous");
+        std::fs::create_dir(&folder).unwrap();
+        for name in ["a-very-long-shared-prefix:12:first.rs","a-very-long-shared-prefix:13:second.rs","a-very-long-shared-prefix:14:third.rs"] {
+            std::fs::write(folder.join(name),"pub fn marker() {}\n").unwrap();
+        }
+        let req=request(&["rg","--files","ambiguous"]);
+        let answer=execute(root,&req,None);
+        assert_eq!(code_search::presentation::agent(&answer,&req,root).stdout,answer.stdout,"file-list names must never become content coordinates");
+    }
+}
+
 #[test]
 fn raw_results_match_real_search_options_with_and_without_a_database() {
     for scan in [false, true] {
@@ -173,6 +263,9 @@ fn choice_requires_intent_explicit_authorization_and_an_unresolved_native_tie() 
         "choice cannot filter native occurrences"
     );
     assert_eq!(chosen.report["remote_model_calls"], 1);
+    let view = code_search::presentation::agent(&chosen, &req, root);
+    assert!(String::from_utf8_lossy(&view.stdout).contains("second 4-4 [recommended]"));
+    assert_eq!(restore_grouped(&view.stdout).as_bytes(), chosen.stdout);
     req.intent = "first".into();
     execute(root, &req, Some(&selector));
     assert_eq!(
@@ -203,10 +296,14 @@ fn typed_tools_apply_paths_ranges_patterns_and_pagination() {
     let answer = execute(root, &req, None);
     assert_eq!(answer.report["result"]["numLines"], 1);
     assert_eq!(answer.report["evidence"]["symbols"][0]["name"], "second");
+    let view = code_search::presentation::agent(&answer, &req, root);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&view.stdout).unwrap(), answer.report["result"]);
     req.tool = "Glob".into();
     req.input = json!({"pattern":"**/*.rs","path":"src"});
     let answer = execute(root, &req, None);
     assert_eq!(answer.report["result"]["filenames"], json!(["src/a.rs"]));
+    let view = code_search::presentation::agent(&answer, &req, root);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&view.stdout).unwrap(), answer.report["result"]);
     assert_eq!(
         answer.report["evidence"]["files"][0]["declarations"]
             .as_array()

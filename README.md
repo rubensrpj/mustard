@@ -25,7 +25,7 @@ flowchart LR
 2. A **porta de busca** (`mustard-rt run search`) pesquisa o código com os parâmetros recebidos, registra achados verificados e cruza o resultado com o scan. Arquivos novos/alterados atualizam o índice estrutural sem IA. O mapa prepara expansões e referências; relações e testes candidatos não provam comportamento ou cobertura.
 3. Objetivo: **economia de contexto** — o mapa acha *onde olhar*, e o modelo confere os trechos necessários. Economia de tokens faturados deve ser medida no fluxo real.
 
-`mustard-rt run search --intent "<tarefa>" --purpose implement -- rg -n --with-filename "<padrão>" src` preserva a busca original e acrescenta proprietários atuais e intervalos para leitura. O Mods registra `mcp__mustard__search`; entradas suportadas também são encaminhadas pelos hooks. Intenção não substitui o padrão. Contratos e limites: [gateway de busca](docs/2026-10-09-gateway-de-busca.md).
+`mustard-rt run search --shell-output --intent "<tarefa>" --purpose implement -- rg -n --with-filename "<padrão>" src` retorna a busca original ou uma versão menor sem perder ocorrências, com intervalos atuais quando couberem. O Mods registra `mcp__mustard__search`; hooks encaminham entradas suportadas. Intenção não substitui o padrão. Contratos e limites: [gateway de busca](docs/2026-10-09-gateway-de-busca.md).
 
 `mustard-rt run knowledge --query "<assunto>"` permanece como consulta analítica de símbolos/documentação/configuração com linhas e hash; `--detail` expande e `--all --markdown --out levantamento.md` exporta. Referências explícitas podem conectar documentos ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade e índices sem modelo auxiliar.
 

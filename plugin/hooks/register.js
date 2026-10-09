@@ -138,10 +138,12 @@ export function register(on) {
     // permissions, classic hooks and the shell sandbox still apply. A process
     // launched directly by a mod would bypass that boundary.
     const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
-    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(request))].join(' ');
+    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(request)),'--shell-output'].join(' ');
     const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
     if(result.deny) return {deny:result.deny};
-    return {result:{content:[{type:'text',text:result.result?.stdout || result.text || ''}],isError:result.isError===true}};
+    const stdout=result.result?.stdout ?? result.text ?? '';
+    const stderr=result.result?.stderr || '';
+    return {result:{content:[{type:'text',text:stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:'')}],isError:result.isError===true}};
   });
   // Observe completed operations without replacing permissions or the
   // native orchestration. Coalesce bursts; retain polling for external edits.

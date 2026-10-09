@@ -37,7 +37,7 @@ pub enum ScanCmd {
         /// Exact native stdout, stderr and exit code, without added context.
         #[arg(long,conflicts_with="shell_output")]
         raw: bool,
-        /// Native output plus useful current evidence; otherwise exact native output.
+        /// Agent output: lossless smaller matches/current ranges, or original tool result.
         #[arg(long)]
         shell_output: bool,
         /// Native executable and arguments, after `--` (rg, grep or git grep).

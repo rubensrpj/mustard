@@ -7,7 +7,7 @@ Fluxo: levantamento, plano, aprovação, ondas, revisão, fechamento e PR. Biná
 - Abra mudanças com `mustard-rt run open`, grave o objetivo em `context` e sugira `/clear`; a linha de retomada mostra o estado. Pergunta, leitura e status não abrem spec. Branch alheia não bloqueia.
 - Explique na ordem de explicar do estilo de resposta. Confira código e histórico antes de remover.
 - Grave cada resposta com `mustard-rt run answer`.
-- Busque/leia código por `mcp__mustard__search` ou `mustard-rt run search --intent "<tarefa>" --purpose spec -- rg -n "<padrão>" .`: busca atual + scan; sem ganho, resultado original. Se intent_requested, informe a intenção. Expanda por `mustard-rt run knowledge --symbol <id>`.
+- Busque/leia código por `mcp__mustard__search` ou `mustard-rt run search --shell-output --intent "<tarefa>" --purpose spec -- rg -n "<padrão>" .`. Preserve opções e informe a intenção. Retorno original ou compacto sem perder ocorrências; expanda por `mustard-rt run knowledge --symbol <id>`.
 
 ## Spec aberta
 

@@ -25,7 +25,7 @@ flowchart LR
 2. The **search gateway** (`mustard-rt run search`) searches source with the received arguments, records verified discoveries and crosses the result with the scan. New/changed sources refresh the structural index without AI. The map provides expansion and references; relations and candidate tests do not prove behavior or coverage.
 3. Goal: **context economy** — the map finds *where to look*, and the model checks the necessary excerpts. Billed token savings must be measured in the actual workflow.
 
-`mustard-rt run search --intent "<task>" --purpose implement -- rg -n --with-filename "<pattern>" src` preserves the original search and adds current owners and read ranges. Mods register `mcp__mustard__search`; hooks also route supported inputs. Intent never replaces the pattern. Contracts and limits: [search gateway](docs/2026-10-09-gateway-de-busca.md).
+`mustard-rt run search --shell-output --intent "<task>" --purpose implement -- rg -n --with-filename "<pattern>" src` returns the original search or a smaller lossless representation, with current ranges when they fit. Mods register `mcp__mustard__search`; hooks route supported inputs. Intent never replaces the pattern. Contracts and limits: [search gateway](docs/2026-10-09-gateway-de-busca.md).
 
 `mustard-rt run knowledge --query "<subject>"` remains an analytical query for symbols/documentation/configuration with lines and hashes; `--detail` expands and `--all --markdown --out inventory.md` exports. Explicit references can connect documents to code; a mention does not validate a rule. `mustard-rt run map audit` checks database/index consistency without an auxiliary model.
 
