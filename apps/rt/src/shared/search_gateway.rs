@@ -27,10 +27,10 @@ pub(crate) fn answer(
     } else {
         None
     };
-    let mut answer = mustard_core::io::code_search::execute(&root, &tree, &cwd, request, None)?;
+    let mut answer = mustard_core::io::code_search::execute_native(&cwd, request)?;
+    mustard_core::io::code_search::observe(&root,&tree,&cwd,request,&mut answer);
     let learning = answer.report["learning"].clone();
     let mut index_root = root.clone();
-    let mut refreshed = false;
     if learning["needs_scan"] == true {
         // A linked checkout gets its own structural snapshot. Its observations
         // remain keyed by checkout in the anchor; main's scan is never replaced.
@@ -39,7 +39,6 @@ pub(crate) fn answer(
         match scan {
             Ok(report) => {
                 index_root.clone_from(&tree);
-                refreshed = true;
                 let saved =
                     mustard_core::io::knowledge::observations::scanned(&root, &tree, &learning);
                 answer.report["learning"]["scan"] = json!({"status":"refreshed-native","files_read":report.read.len(),"acknowledged":saved.is_ok(),"local_model_calls":0,"remote_model_calls":0});
@@ -57,8 +56,7 @@ pub(crate) fn answer(
     } else if tree != root && mustard_core::io::project_map::model_path(&tree).is_file() {
         index_root.clone_from(&tree);
     }
-    if refreshed || index_root != root || selector.is_some() {
-        mustard_core::io::code_search::enrich(
+    mustard_core::io::code_search::enrich(
             &index_root,
             &tree,
             &cwd,
@@ -68,6 +66,19 @@ pub(crate) fn answer(
                 .as_ref()
                 .map(|s| s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector),
         );
+    // A complementary source hit can discover a file the original command
+    // did not mention. Refresh it before classifying incomplete candidates.
+    if answer.report["task_context"]["learning"]["needs_scan"]==true
+        && answer.report["remote_model_calls"]==0 {
+        let learning=answer.report["task_context"]["learning"].clone();
+        match mustard_core::Scan::locate().scan_native(&tree,&mustard_core::io::project_map::model_path(&tree)) {
+            Ok(report)=>{
+                let saved=mustard_core::io::knowledge::observations::scanned(&index_root,&tree,&learning);
+                mustard_core::io::code_search::enrich(&tree,&tree,&cwd,request,&mut answer,selector.as_ref().map(|s|s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector));
+                answer.report["task_context"]["learning"]["scan"]=json!({"status":"refreshed-native","files_read":report.read.len(),"acknowledged":saved.is_ok(),"local_model_calls":0,"remote_model_calls":0});
+            },
+            Err(error)=>answer.report["task_context"]["learning"]["scan"]=json!({"status":"pending","reason":error.to_string()}),
+        }
     }
     Ok(answer)
 }

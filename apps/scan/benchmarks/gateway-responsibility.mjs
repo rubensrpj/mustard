@@ -44,7 +44,9 @@ function restore(bytes) {
 
 const cases = [];
 for (const item of fixture.cases) {
-  const request = { ...item.request, choose: paid && item.request.choose };
+  // Keep this frozen responsibility/parity suite on the original-occurrence
+  // representation. gateway-task.mjs exercises task evidence separately.
+  const request = { ...item.request, purpose:'locate', choose: paid && item.request.choose };
   const report = JSON.parse(run(request).stdout);
   const native = run({ ...request, choose: false }, '--raw');
   assert.equal(report.result.stdout, native.stdout.toString());

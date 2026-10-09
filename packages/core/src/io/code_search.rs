@@ -9,6 +9,9 @@ use std::process::Stdio;
 
 pub mod presentation;
 mod quality;
+mod scope;
+mod task;
+mod task_view;
 
 pub struct Answer {
     pub report: Value,
@@ -24,15 +27,24 @@ pub fn execute(
     request: &Request,
     selector: Option<&dyn SymbolSelector>,
 ) -> Result<Answer, String> {
-    request.validate()?;
-    // Native execution deliberately precedes every database access and Choice.
-    let mut answer = if request.tool == "Read" {
-        read(cwd, request)?
-    } else {
-        run(cwd, request)?
-    };
+    let mut answer = execute_native(cwd, request)?;
     enrich(root, tree, cwd, request, &mut answer, selector);
     Ok(answer)
+}
+
+/// The runtime can refresh the scan between native execution/observation and
+/// investigation without running the original search or judgement twice.
+pub fn execute_native(cwd: &Path, request: &Request) -> Result<Answer, String> {
+    request.validate()?;
+    if request.tool == "Read" {read(cwd,request)} else {run(cwd,request)}
+}
+
+pub fn observe(root: &Path, tree: &Path, cwd: &Path, request: &Request, answer: &mut Answer) {
+    if answer.report.get("learning").is_none() {
+        let hits=occurrences(tree,cwd,request,&answer.report["result"],&answer.stdout);
+        answer.report["learning"]=crate::io::knowledge::observations::record(root,tree,&hits)
+            .unwrap_or_else(|reason|json!({"status":"not-stored","reason":reason,"needs_scan":false}));
+    }
 }
 
 /// Reuse the executed result after refreshing the scan; never rerun the search.
@@ -45,12 +57,8 @@ pub fn enrich(
     selector: Option<&dyn SymbolSelector>,
 ) {
     let hits = occurrences(tree, cwd, request, &answer.report["result"], &answer.stdout);
-    if answer.report.get("learning").is_none() {
-        answer.report["learning"] = crate::io::knowledge::observations::record(root, tree, &hits)
-            .unwrap_or_else(
-                |reason| json!({"status":"not-stored","reason":reason,"needs_scan":false}),
-            );
-    }
+    observe(root,tree,cwd,request,answer);
+    let task_requested=task::requested(request) && matches!(answer.exit_code,0|1);
     let borrowed: Vec<_> = hits
         .iter()
         .map(|(file, line, text)| Occurrence {
@@ -66,7 +74,7 @@ pub fn enrich(
             &borrowed,
             &request.intent,
             request.purpose,
-            if request.choose { selector } else { None },
+            if request.choose && !task_requested { selector } else { None },
         )
     });
     let (evidence, status) = match crossed {
@@ -99,6 +107,15 @@ pub fn enrich(
         .get("remote_model_calls")
         .cloned()
         .unwrap_or_else(|| json!(0));
+    if task_requested {
+        match task::investigate(root,tree,cwd,request,answer,if request.choose {selector}else{None}) {
+            Ok(context)=>{
+                answer.report["remote_model_calls"]=context["remote_model_calls"].clone();
+                answer.report["task_context"]=context;
+            },
+            Err(reason)=>answer.report["task_context"]=json!({"status":"native-fallback","reason":reason,"remote_model_calls":0}),
+        }
+    }
 }
 
 fn number(input: &Value, key: &str, default: u64) -> Result<u64, String> {

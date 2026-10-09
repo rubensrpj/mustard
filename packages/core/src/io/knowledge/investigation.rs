@@ -188,7 +188,7 @@ fn cross(
     {
         return Err(invalid("knowledge-live-evidence-changed"));
     }
-    let mut report = json!({"symbols":evidence,"omitted_symbols":total.saturating_sub(4),"unmapped_occurrences":unmatched,
+    let mut report = json!({"symbols":evidence,"current_owner_ids":cards.iter().map(|card|&card.id).collect::<Vec<_>>(),"omitted_symbols":total.saturating_sub(4),"unmapped_occurrences":unmatched,
         "omitted_occurrences":hits.len().saturating_sub(processed),"semantic_completeness":"unknown","local_model_calls":0,"remote_model_calls":0});
     if rich {
         let mut outlines = Vec::new();
@@ -224,7 +224,7 @@ fn cross(
 /// Bounded, line-addressed source evidence. Small declarations are complete;
 /// larger ones retain their boundaries and actual hit neighborhoods. A missing
 /// middle is explicitly incomplete, never evidence that a behavior is absent.
-fn selection_excerpt(card: &Card, text: &str, hits: Option<&Vec<u64>>) -> knowledge::selection::Excerpt {
+pub(crate) fn selection_excerpt(card: &Card, text: &str, hits: Option<&Vec<u64>>) -> knowledge::selection::Excerpt {
     let source = &card.source;
     let lines: Vec<_> = text.lines().collect();
     let mut wanted = BTreeSet::new();
@@ -271,7 +271,7 @@ fn scoped(file: &str, scope: Option<&str>) -> bool {
     scope.is_none_or(|scope| scope == file)
 }
 
-pub(super) fn safe_read(
+pub(crate) fn safe_read(
     tree: &Path,
     path: &str,
     registry: &knowledge::resources::Registry,
@@ -292,6 +292,7 @@ pub(super) fn safe_read(
     (!text.contains('\0') && !registry.sensitive(&text)).then_some(text)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     root: &Path,
     tree: &Path,
@@ -300,6 +301,7 @@ pub(super) fn prepare(
     cards: &mut Vec<Card>,
     ranking: &mut Vec<usize>,
     hashes: &mut BTreeMap<String, Option<(String, u64)>>,
+    scope: Option<&super::EvidenceScope<'_>>,
 ) -> Result<Investigation, MapRefusal> {
     let languages = Languages::of_project(root);
     let phrase = if task.intent.trim().is_empty() {
@@ -327,7 +329,7 @@ pub(super) fn prepare(
             text: task.intent,
             ..*query
         };
-        let pool = catalog::candidates(root, &intent, &[], None, &[], false)?;
+        let pool = if let Some(scope)=scope {catalog::scoped_candidates(root,&intent,scope)?} else {catalog::candidates(root, &intent, &[], None, &[], false)?};
         intent_omitted = pool.omitted;
         let mut ids: BTreeSet<_> = cards.iter().map(|card| card.id.clone()).collect();
         let extra: Vec<_> = pool
@@ -345,6 +347,12 @@ pub(super) fn prepare(
         phases.push(
             json!({"operation":"intent-discovery","added_candidates":count,"partial":pool.omitted}),
         );
+    }
+    if let Some(scope)=scope {
+        let weights=catalog::intent_weights(root,&phrase,&languages)?;
+        let mut order=knowledge::selection::task_order(cards,&phrase,&languages,&weights,scope.seeds);
+        for &i in ranking.iter() {if !order.contains(&i) {order.push(i);}}
+        *ranking=order;
     }
     let mut paths = Vec::new();
     let mut seen = BTreeSet::new();
@@ -373,6 +381,11 @@ pub(super) fn prepare(
     };
     omitted |= intent_omitted;
     phases.push(json!({"operation":"file-to-symbol-expansion","added_candidates":expanded,"partial":omitted}));
+    if let Some(scope)=scope {
+        for path in catalog::unindexed_files(root,scope)? {
+            if !paths.contains(&path) {paths.push(path);}
+        }
+    }
     // Include current modifications and untracked, nonignored files even if
     // the index has no corresponding symbol. Never modify the user's index.
     let changes = crate::platform::git::run(
@@ -389,7 +402,7 @@ pub(super) fn prepare(
         for path in changes
             .stdout
             .split('\0')
-            .filter(|path| !path.is_empty() && scoped(path, query.file))
+            .filter(|path| !path.is_empty() && scoped(path, query.file) && scope.is_none_or(|scope|scope.files.contains(*path)))
         {
             if !paths.iter().any(|old| old == path) {
                 paths.push(path.into());
@@ -408,7 +421,7 @@ pub(super) fn prepare(
             for path in listed
                 .stdout
                 .split('\0')
-                .filter(|path| !path.is_empty() && scoped(path, query.file))
+                .filter(|path| !path.is_empty() && scoped(path, query.file) && scope.is_none_or(|scope|scope.files.contains(*path)))
             {
                 if !paths.iter().any(|old| old == path) {
                     paths.push(path.into());
@@ -501,7 +514,7 @@ pub(super) fn prepare(
         choices.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
         // Only explicit intent can replace the existing representative. Native
         // natural-language reranking remains separately measured before rollout.
-        if !task.intent.trim().is_empty()
+        if scope.is_none() && !task.intent.trim().is_empty()
             && query.symbol.is_none()
             && !cards[*i].name.eq_ignore_ascii_case(query.text.trim())
             && let Some(&(winner, _, matched)) = choices.first()
@@ -599,6 +612,15 @@ fn excerpt(file: &File, first: u64, last: u64, limit: usize) -> Value {
         || rows.iter().skip(start.saturating_sub(1) as usize).take(end.saturating_sub(start) as usize + 1).any(|line|line.chars().count()>500)})
 }
 
+pub(crate) fn current_excerpt(card: &Card, text: &str, matcher: &mut Matcher, purpose: Purpose) -> Value {
+    let hits=text.lines().enumerate().filter_map(|(at,line)| {
+        let slots=matcher.matched(line);
+        (!slots.is_empty()).then_some((at as u64+1,slots))
+    }).collect();
+    let full=card.source.end_line-card.source.line<64 && text.lines().skip(card.source.line.saturating_sub(1) as usize).take((card.source.end_line-card.source.line+1) as usize).map(str::len).sum::<usize>()<=4096;
+    excerpt(&File{text:text.into(),hash:card.source.sha256.clone(),hits},card.source.line,card.source.end_line,if full {64}else{purpose.excerpt_lines()})
+}
+
 impl Investigation {
     pub(super) fn adorn(
         &self,
@@ -612,12 +634,7 @@ impl Investigation {
             .get(&card.source.file)
             .filter(|file| file.hash == card.source.sha256)
         {
-            let limit = match purpose {
-                Purpose::Locate => 7,
-                Purpose::Understand | Purpose::Spec => 15,
-                Purpose::Implement => 80,
-                Purpose::Validate => 30,
-            };
+            let limit = purpose.excerpt_lines();
             item["source_excerpt"] = excerpt(file, card.source.line, card.source.end_line, limit);
         }
         if let Some(cards) = self.alternatives.get(&card.id) {

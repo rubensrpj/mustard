@@ -13,6 +13,7 @@ pub struct Presentation {
 }
 
 pub fn agent(answer: &Answer, request: &Request, cwd: &Path) -> Presentation {
+    if let Some(view)=super::task_view::agent(answer,request) {return view;}
     let native = matches!(request.tool.as_str(), "rg" | "grep" | "git");
     let original = if native {
         answer.stdout.clone()

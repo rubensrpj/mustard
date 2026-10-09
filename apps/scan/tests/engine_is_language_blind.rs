@@ -199,6 +199,9 @@ fn responsibility_selection_has_no_language_or_framework_cases() {
     for path in ["packages/core/src/domain/knowledge/selection.rs",
         "packages/core/src/io/knowledge/investigation.rs",
         "packages/core/src/io/code_search/quality.rs",
+        "packages/core/src/io/code_search/scope.rs",
+        "packages/core/src/io/code_search/task.rs",
+        "packages/core/src/io/code_search/task_view.rs",
         "apps/rt/src/shared/knowledge_selection.rs"] {
         let text=std::fs::read_to_string(root.join(path)).unwrap();
         for (line,text) in text.lines().enumerate().take_while(|(_,line)|!line.trim_start().starts_with("#[cfg(test)]")) {

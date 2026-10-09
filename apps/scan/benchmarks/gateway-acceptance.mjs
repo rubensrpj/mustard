@@ -134,12 +134,23 @@ try {
   assert.deepEqual(executed.stdout, original.stdout, 'Small searches keep native output; diagnostics must not be appended');
   // A multi-file rg can order files differently between two executions. Keep
   // this cross-execution size check on one file; pagination is checked above.
-  const agentRequest={...typed,input:{...typed.input,path:'src/lib.rs',offset:0}};
+  const agentRequest={...typed,purpose:'locate',input:{...typed.input,path:'src/lib.rs',offset:0}};
   const agentExpected=search(['--request',JSON.stringify(agentRequest)]);
   const typedAgent = successful('mustard-rt', ['run','search','--root',root,'--shell-output','--request',JSON.stringify(agentRequest)]);
   assert.ok(typedAgent.stdout.length <= Buffer.byteLength(JSON.stringify(agentExpected.result))+1);
   assert.ok(!typedAgent.stdout.toString().includes('source_hashes'));
   assert.ok(!typedAgent.stdout.toString().includes('local_model_calls'));
+  const taskRequest={...agentRequest,intent:'revised quartz snapshot',purpose:'spec'};
+  const taskResult=search(['--request',JSON.stringify(taskRequest)]);
+  assert.equal(taskResult.task_context.status,'current-task-evidence');
+  const taskView=successful('mustard-rt',['run','search','--root',root,'--shell-output','--request',JSON.stringify(taskRequest)]);
+  assert.ok(taskView.stdout.toString().includes('# task evidence'));
+  assert.ok(taskView.stdout.toString().includes('purpose=locate'));
+  fs.writeFileSync(path.join(root,'src/fresh.py'),"def restore():\n    return 'fresh_oracle_snapshot'\n");
+  const discovered=search(['--request',JSON.stringify({...typed,input:{pattern:'let quartz',path:'src',output_mode:'content'},intent:'fresh_oracle_snapshot',purpose:'spec'})]);
+  assert.equal(discovered.task_context.learning.scan.status,'refreshed-native');
+  assert.ok(discovered.task_context.cards.some(card=>card.name==='restore'));
+  assert.equal(discovered.remote_model_calls,0);
   for(const request of [{tool:'Read',input:{file_path:'src/lib.rs',offset:2,limit:1}},{tool:'Glob',input:{pattern:'**/*.rs',path:'src'}}]){
     const diagnostic=search(['--request',JSON.stringify(request)]);
     const agent=successful('mustard-rt',['run','search','--root',root,'--shell-output','--request',JSON.stringify(request)]);
@@ -181,6 +192,7 @@ try {
     raw_stdout_stderr_status_parity: true, native_fallback_parity: true,
     automatic_output_does_not_append_reports: true, typed_agent_pagination: true,
     typed_tools: true, native_search_unavailable_passes_host_tool: true,
+    task_evidence_visible_to_agent:true, complementary_new_source_refreshes_natively:true,
     real_classic_hook_handoff_and_rewrite: true, original_read_guard: true,
     checkout_isolation: true, default_http_requests: httpRequests, local_model_calls: 0, remote_model_calls: 0,
     binaries: ['mustard', 'mustard-rt', 'scan'].map(name => ({ name,

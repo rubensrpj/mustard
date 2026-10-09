@@ -94,7 +94,7 @@ fn source_bytes(root: &Path, file: &str) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-fn current(
+pub(crate) fn current(
     root: &Path,
     source: &Source,
     hashes: &mut BTreeMap<String, Option<(String, u64)>>,
@@ -257,6 +257,21 @@ pub fn query_for(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::in
     consistent_query(root, tree, opts, true, None, false, Some(task))
 }
 
+/// The gateway supplies the inventory allowed by the original tool. Task
+/// discovery, current-source reads and graph expansion stay in that inventory.
+pub(crate) struct EvidenceScope<'a> {
+    pub files: &'a BTreeSet<String>,
+    pub seeds: &'a [String],
+}
+
+pub(crate) fn cards_for_ids(root: &Path, ids: &BTreeSet<String>) -> Result<Vec<Card>, MapRefusal> {
+    catalog::hydrate(open_existing(&store::model_path(root))?.conn(), ids).map_err(unreadable)
+}
+
+pub(crate) fn query_for_scope(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::investigation::Task<'_>, scope: &EvidenceScope<'_>) -> Result<(Value, ProjectMap), MapRefusal> {
+    consistent_scoped_query(root, tree, opts, true, None, false, Some(task), Some(scope))
+}
+
 /// Explicit experimental responsibility ranking, optionally judged. Ordinary
 /// queries retain the established ranking until independent relevance improves.
 pub fn query_with_selector(root:&Path,tree:&Path,opts:&Query<'_>,selector:Option<&dyn knowledge::selection::SymbolSelector>)->Result<(Value,ProjectMap),MapRefusal> {
@@ -282,13 +297,18 @@ fn query_sources(
 /// Source blocks can be read through several database ports. Detect a writer
 /// between those reads instead of returning a mixed source generation.
 fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
+    consistent_scoped_query(root, tree, options, include_interpretations, selector, responsibility, task, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn consistent_scoped_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
     let mut calls=Some(0u64);
     let mut attempts=Vec::new();
     for attempt in 0..2 {
         let before = generation(root)?;
         // A concurrent writer invalidates a choice. Retry natively rather than
         // automatically paying for another generation of the same query.
-        let mut result=query_internal(root,tree,options,include_interpretations,if attempt==0 {selector}else{None},responsibility,task)?;
+        let mut result=query_internal(root,tree,options,include_interpretations,if attempt==0 {selector}else{None},responsibility,task,scope)?;
         calls=calls.zip(result.0["remote_model_calls"].as_u64()).map(|(a,b)|a+b);
         attempts.push(result.0["responsibility_selection"]["usage"].clone());
         let after = generation(root)?;
@@ -318,9 +338,10 @@ fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_inter
     Err(invalid("knowledge-concurrent-scan; retry after the current scan commits"))
 }
 
-fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
+#[allow(clippy::too_many_arguments)]
+fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
     let Query { text: query, file, limit, depth, all, detail, symbol, direction, refresh } = *options;
-    if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh)) || (direction != Direction::Outgoing && symbol.is_none()) {
+    if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh)) || (direction != Direction::Outgoing && symbol.is_none() && scope.is_none()) {
         return Err(invalid("knowledge-navigation-requires-exact-symbol"));
     }
     let detail = detail || all;
@@ -329,16 +350,16 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let state = store::read_state_at(&store::model_path(root))?;
     map.state = serde_json::from_str::<ProjectMap>(&state.json).map_err(|e| invalid(e.to_string()))?.state;
     let mut hashes = BTreeMap::new();
-    let notes = if include_interpretations { interpretations(root)? } else { vec![] };
+    let notes = if include_interpretations { interpretations(root)?.into_iter().filter(|note| scope.is_none_or(|scope|note.sources.iter().all(|source|scope.files.contains(&source.file)))).collect() } else { vec![] };
     let languages = Languages::of_project(root);
     if refresh {
         return Ok((refresh::report(tree, &notes, query, file, limit, all, detail, &languages, &mut hashes), map));
     }
-    let mut resources = resources::retrieve(root, tree, options, &mut hashes)?;
+    let mut resources = resources::retrieve_in(root, tree, options, &mut hashes, scope)?;
     let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| note.sources.iter().all(|source| current(tree, source, &mut hashes)));
     let mut index_unavailable = false;
-    let exact_name = symbol.is_none() && catalog::exact_name(root,options)?;
-    let discovery = if symbol.is_none() && !exact_name && !query.trim().is_empty() {
+    let exact_name = scope.is_none() && symbol.is_none() && catalog::exact_name(root,options)?;
+    let discovery = if scope.is_none() && symbol.is_none() && !exact_name && !query.trim().is_empty() {
         let discovered = if task.is_some() { crate::io::map_search::discovery_native(root,tree,query,&languages) } else { crate::io::map_search::discovery(root,tree,query,&languages) };
         match discovered {
             Ok(discovery) => Some(discovery),
@@ -346,8 +367,8 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         }
     } else { None };
     let mut referenced = references::targets(root,&resources.items)?;
-    referenced.retain(|_,source|current(tree,source,&mut hashes));
-    let pool = catalog::candidates(root,options,&fresh,discovery.as_ref(),&referenced.keys().cloned().collect::<Vec<_>>(),exact_name)?;
+    referenced.retain(|_,source|scope.is_none_or(|scope|scope.files.contains(&source.file)) && current(tree,source,&mut hashes));
+    let pool = if let Some(scope)=scope {catalog::scoped_candidates(root,options,scope)?} else {catalog::candidates(root,options,&fresh,discovery.as_ref(),&referenced.keys().cloned().collect::<Vec<_>>(),exact_name)?};
     let outdated_packs=pool.outdated;
     let indexed_symbols = pool.total;
     let hydrated_candidates = pool.cards.len();
@@ -401,7 +422,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             stale_cards += 1;
         }
     }
-    let seed_limit = max;
+    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)} else {max};
     let mut ranking = Vec::new();
     let mut local_hybrid_index = false;
     if let Some(discovery) = discovery {
@@ -471,6 +492,11 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         ranking = knowledge::ranked(&cards, query, &languages);
         if exact_name {ranking.sort_by_key(|&i|if cards[i].name==query.trim(){0}else{1});}
     }
+    if let Some(scope)=scope {
+        for (i,_) in cards.iter().enumerate().filter(|(_,card)|scope.seeds.contains(&card.id)) {
+            if !ranking.contains(&i) {ranking.push(i);}
+        }
+    }
     let mut expanded_candidates=0;
     let mut ambiguous_files=0;
     let mut selection_usage=knowledge::selection::native_usage();
@@ -506,7 +532,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         ranking=reranked;
     }
     let investigation = if let Some(task)=task {
-        Some(investigation::prepare(root,tree,options,task,&mut cards,&mut ranking,&mut hashes)?)
+        Some(investigation::prepare(root,tree,options,task,&mut cards,&mut ranking,&mut hashes,scope)?)
     } else {None};
     if let Some(native)=&investigation {candidates_omitted|=native.omitted;}
     for i in ranking.into_iter().filter(|i| file.is_none_or(|file| cards[*i].source.file == file)) {
@@ -522,7 +548,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             stale_cards += 1;
         }
     }
-    candidates_omitted |= catalog::neighbors(root,&mut cards,&order,depth,direction,all)?;
+    candidates_omitted |= catalog::neighbors_in(root,&mut cards,&order,depth,direction,all,scope)?;
     let walk = navigation::walk(tree, &cards, &order, max, depth, direction, &mut hashes);
     let omitted_edges = walk.omitted;
     let stale_navigation = walk.stale;
@@ -546,7 +572,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             let valid = edge
                 .get("source")
                 .and_then(|value| serde_json::from_value::<Source>(value.clone()).ok())
-                .is_some_and(|source| current(tree, &source, &mut hashes));
+                .is_some_and(|source| scope.is_none_or(|scope|scope.files.contains(&source.file)) && current(tree, &source, &mut hashes));
             stale_relations += usize::from(!valid);
             valid
         });
@@ -554,7 +580,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             let valid = edge
                 .get("source")
                 .and_then(|value| serde_json::from_value::<Source>(value.clone()).ok())
-                .is_some_and(|source| current(tree, &source, &mut hashes));
+                .is_some_and(|source| scope.is_none_or(|scope|scope.files.contains(&source.file)) && current(tree, &source, &mut hashes));
             stale_relations += usize::from(!valid);
             valid
         });
@@ -564,6 +590,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         let mut item = if detail { serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))? } else { knowledge::summary(card) };
         compacted_relations += outgoing - item["outgoing"].as_array().map_or(0, Vec::len) + callers - item["callers"].as_array().map_or(0, Vec::len);
         item["retrieval"] = json!(reasons[&i]);
+        if let Some(scope)=scope {item["native_search_owner"]=json!(scope.seeds.contains(&card.id));}
         if !detail {
             let witnesses = knowledge::evidence::compact_witnesses(card, query, &languages);
             if !witnesses.is_null() { item["matched_evidence"] = witnesses; }

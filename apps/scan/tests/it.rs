@@ -31,6 +31,7 @@ mod kinds_content;
 mod kinds_parity;
 mod knowledge;
 mod search_gateway;
+mod gateway_task;
 mod map_database;
 mod markup_page;
 mod member_read;

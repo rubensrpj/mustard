@@ -10,7 +10,7 @@ Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvol
 4. Arquivos descobertos ou alterados solicitam o scan estrutural incremental nativo. Nenhum modelo de significado é carregado nesse caminho. O resultado da pesquisa é reaproveitado, sem executar a mesma busca novamente.
 5. As ocorrências são cruzadas com declarações da mesma versão. O retorno acrescenta funções proprietárias, documentação, contratos disponíveis, referências candidatas e intervalo exato para leitura. O histórico pode ser expandido pelo comando indicado.
 6. A intenção organiza candidatos para leitura. Pontuação por palavras não certifica responsabilidade. Identidades exatas permanecem nativas; alternativas ainda não resolvidas, com intenção e autorização explícita `choose`, podem chegar ao seletor configurado, inclusive entre arquivos. A seleção nunca remove ocorrências da resposta original.
-7. A apresentação automática escolhe o resultado original ou um agrupamento menor que conserva todas as ocorrências. Funções/faixas entram quando a economia de repetição comportar essas referências. Falha de banco/scan não apaga achados reais.
+7. Em `locate`, a apresentação escolhe o resultado original ou um agrupamento menor que conserva todas as ocorrências. Com intenção e outra finalidade, pode entregar evidência de tarefa: trechos atuais, referências expansíveis e lacunas. O resultado original continua no diagnóstico e pode ser solicitado com `locate` ou `--raw` nativo. Falha de banco/scan não apaga achados reais.
 
 ## Entrada e retorno
 
@@ -18,7 +18,7 @@ Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvol
 mustard-rt run search --shell-output --intent "corrigir a persistência" --purpose implement -- rg -n --with-filename "save|persist" src
 ```
 
-Sem flag de apresentação, o CLI retorna o diagnóstico JSON: `result`, `evidence`, `learning` e contadores. Esse relatório completo não é injetado automaticamente pelo Mods/hooks. O padrão `locate` prepara referências curtas; as demais finalidades preparam metadados específicos. Expansão explícita: `run knowledge --symbol <id>`; o JSON também conserva comandos/faixas de leitura e história. O padrão de pesquisa nunca é reescrito pela intenção.
+Sem flag de apresentação, o CLI retorna o diagnóstico JSON: `result`, `evidence`, `learning`, `task_context` quando aplicável, e contadores. Esse relatório completo não é injetado automaticamente pelo Mods/hooks. `locate` conserva a busca; as demais finalidades, acompanhadas de intenção, ativam a investigação descrita abaixo. Expansão explícita: `run knowledge --symbol <id>`; o JSON também conserva comandos/faixas de leitura e história. O padrão de pesquisa nunca é reescrito pela intenção.
 
 ```json
 {
@@ -34,11 +34,53 @@ Sem flag de apresentação, o CLI retorna o diagnóstico JSON: `result`, `eviden
 
 Essa é a entrada de `mcp__mustard__search`. O CLI `--request` recebe o objeto interno, sem o envelope `request`. Adaptadores: `Grep`, `Glob`, `Read` textual, `rg`, `grep` e `git grep`. Executáveis nativos usam `input.args`.
 
-`--raw` preserva bytes de stdout/stderr e código de saída dos executáveis nativos. `--shell-output`, usado pelo Mods/hooks, retorna o resultado original ou um agrupamento menor, sem descartar/reordenar linhas ou duplicatas. `@ caminho` abre um grupo; cada linha mantém `número:texto`. `# static owners:` identifica funções e faixas estáticas conferidas. Candidatos cujo relatório aumentaria a resposta conservam o resultado original/agrupado sem esses extras. Isso compara duas representações completas; não corta resultados para cumprir um limite. Formatos mistos, contexto, JSON nativo, saídas não reconhecidas e erros preservam a saída original.
+`--raw` preserva bytes de stdout/stderr e código de saída dos executáveis nativos. Com `purpose=locate`, `--shell-output`, usado pelo Mods/hooks, retorna o resultado original ou um agrupamento menor, sem descartar/reordenar linhas ou duplicatas. `@ caminho` abre um grupo; cada linha mantém `número:texto`. `# static owners:` identifica funções e faixas estáticas conferidas. Candidatos cujo relatório aumentaria a resposta conservam o resultado original/agrupado sem esses extras. Isso compara duas representações completas; não corta resultados para cumprir um limite. Formatos mistos, contexto, JSON nativo, saídas não reconhecidas e erros preservam a saída original.
 
-O modo de agente também aceita ferramentas tipadas: usa o resultado paginado de Grep, incluindo offset/continuação; nunca o stdout não paginado do subprocesso. Glob/Read/count preservam o objeto de resultado do adaptador, sem acrescentar o relatório. Read conserva arquivo, offset e total de linhas. `--raw` continua exclusivo de executáveis nativos. stderr e falhas do host ficam visíveis no Mods. Um `choose` explícito pode acrescentar a recomendação solicitada, identificada como tal, além do tamanho da busca original; não é o comportamento das buscas comuns.
+Em `locate`, o modo de agente também aceita ferramentas tipadas: usa o resultado paginado de Grep, incluindo offset/continuação; nunca o stdout não paginado do subprocesso. Glob/Read/count preservam o objeto de resultado do adaptador, sem acrescentar o relatório. Read e count continuam assim mesmo em outras finalidades; Grep/Glob com intenção podem produzir a visão de tarefa separada. Read conserva arquivo, offset e total de linhas. `--raw` continua exclusivo de executáveis nativos. stderr e falhas do host ficam visíveis no Mods. Um `choose` explícito pode acrescentar a recomendação solicitada, identificada como tal, além do tamanho da busca original; não é o comportamento das buscas comuns.
 
 `run map search` encaminha ao mesmo gateway e retorna o diagnóstico JSON. Os agentes usam a porta de apresentação, não essa projeção completa. Consultas analíticas `knowledge` permanecem para expansão/investigação explícitas.
+
+## Investigação integrada à busca — continuação em 09/10
+
+A visão de tarefa conecta ao gateway a investigação que antes exigia chamar `knowledge` separadamente. A finalidade deve ser `understand`, `spec`, `implement` ou `validate`, com intenção não vazia. Busca literal/`locate`, Read e contagens mantêm seu contrato anterior. Não acrescentamos dependências, um modelo de significado ou regras sobre um projeto específico.
+
+1. A busca original roda primeiro, com seus argumentos, resultado, stderr e código de saída preservados. O runtime pode atualizar a estrutura nativamente sem repetir essa busca.
+2. Um inventário nativo aplica caminhos, globs, tipos e opções de exclusão suportadas **antes** de selecionar candidatos no SQLite. Símbolos, recursos, interpretações e navegação ficam nesse inventário; recibos externos não autorizam leituras complementares. Git grep usa arquivos rastreados; grep simples limita essa expansão aos arquivos das ocorrências verificadas. Opções desconhecidas/ambíguas conservam o resultado nativo em vez de ampliar silenciosamente o escopo.
+3. As pistas da expressão original e da intenção alimentam a recuperação textual do banco. São pistas lexicais, sem reescrever a expressão regular. O catálogo preserva proprietários dos achados nativos, considera responsabilidades próprias das declarações, diversifica arquivos e reserva espaço para navegação estática. A pesquisa é parcial: o reservatório tem orçamento e o retorno inicial usa até 12 cartões principais; alternativas e referências permanecem identificadas.
+4. Descoberta tipada de nomes de arquivos faz uma busca complementar de conteúdo, mantendo padrão/filtros, para obter coordenadas reais das funções. O resultado/página original não é alterado. Essa investigação adicional aparece separada no diagnóstico e na apresentação.
+5. O pacote inicial entrega corpos/trechos que acrescentam pistas escritas da intenção, além de uma escolha explicitamente recomendada. Tipos que contêm métodos não repetem automaticamente todos os filhos. Os demais candidatos e destinos de chamadas pertinentes permanecem como referências com arquivo, função e faixa para expansão. Cobertura de palavras não significa entendimento semântico ou investigação completa.
+6. Trechos atuais incluem linhas, assinaturas/comentários não redundantes, contratos disponíveis e candidatos de teste. Declarações pequenas podem seguir completas; maiores recebem janela orientada à finalidade, aviso de incompletude e intervalo de Read. Relações estáticas indicam onde verificar, sem afirmar ordem de execução, cobertura de teste ou equivalência de formatos.
+7. Fontes/hash e geração do banco são verificados durante a investigação e depois da seleção. Evidência invalidada é descartada, conservando o resultado nativo e a contabilização física do modelo. Descobertas complementares novas solicitam atualização estrutural nativa antes do julgamento; a classificação não vira fato persistente.
+8. Sem evidência útil para a intenção, ou diante de falha/escopo não suportado, volta a apresentação da busca original. Com evidência, a saída se identifica como investigação parcial e mostra como recuperar o resultado completo com `purpose=locate`. Não se apresenta um pacote de contexto como se fossem todas as ocorrências nativas.
+
+O registro do Mods e os moldes dos agentes nas duas línguas ensinam essa distinção e a expansão dirigida. O núcleo continua independente do host; a instalação do adaptador para Codex segue fora desta etapa.
+
+### Jev progressivo
+
+O provedor continua atrás de `SymbolSelector`. Só participa com `choose`, configuração habilitada e alternativas não resolvidas; uma identidade exata não precisa de inferência. O primeiro julgamento recebe evidência factual atual. Apenas `insufficient-evidence` pode produzir **uma** etapa adicional, quando houver fonte efetivamente nova: completar declarações de até 256 linhas e 16 KiB. Baixa confiança, erro de transporte ou mudança da fonte não produzem uma repetição paga automática. Se não houver evidência adicional admissível, mantém a abstenção e os intervalos para leitura.
+
+Cache e registro de tentativas continuam ativos. O retorno soma o uso conhecido das etapas; uso desconhecido permanece desconhecido. Esta mudança melhora a condição de decidir, mas não promete reduzir tokens do Jev: descobrir mais alternativas pode aumentar o estado enviado. O controle de gasto principal continua sendo não chamá-lo para pesquisa literal, atualização, cálculo ou renderização.
+
+### Verificação desta etapa
+
+O replay `apps/scan/benchmarks/gateway-task.mjs` usa oito pesquisas conhecidas do mesmo backend congelado (`a3fe37ab454cede37d3471993eb876985fcdfe1b`). Confere os resultados nativos, recibos SHA-256, linhas entregues, isolamento do checkout e ausência de inferência comum. O backend original permaneceu intacto.
+
+- **8/8 declarações esperadas localizadas**, com arquivo/faixa visível ao agente. **3/8** tiveram corpo completo entregue na visão inicial; as demais exigem expansão antes de concluir sobre seu comportamento. `toMenuRow`, por exemplo, é uma referência estática localizada, não uma responsabilidade demonstrada pelo seu corpo.
+- Os oito pacotes entregaram **457 linhas únicas** de fonte atual (**601** considerando repetições entre consultas). Retorno do gateway em `locate`: **21.791 bytes**; visão de tarefa: **62.917 bytes**. A segunda inclui fonte e alternativas que a primeira não entrega. Portanto, **não houve redução de tamanho frente à busca literal** e essa comparação não prova economia nem aumento de custo de uma tarefa equivalente: ainda faltam suas leituras/turnos posteriores.
+- Três julgamentos reais do Jev concordaram com as expectativas conferidas no código: `createXlsxStream`, `no-match` para múltiplas abas/fórmulas e `copyPlanFiles`. A identidade exata `plantioCurveToDownload` ficou nativa. Foram **3 chamadas físicas**, **27.036 tokens de entrada**, custo estimado **US$ 0,001135512**, usando o preço de US$ 0,042/M consultado na etapa anterior. Repetições aproveitaram o cache; não houve refinamento adicional nesses três casos. O mecanismo de refinamento foi exercitado com provedor de teste.
+- O estado mais amplo da tarefa fez o Jev receber **mais tokens** do que na seleção anterior. A etapa amplia descoberta/entrega de evidência; não é apresentada como redução demonstrada do custo do Jev ou da sessão.
+
+Relatórios locais: `target/scan-task-context-20261009/benchmark-offline.json` (apresentação final) e `benchmark-jev.json` (uso real na primeira execução, antes da compactação final das referências). A compactação altera a apresentação, mantendo o estado de decisão; a repetição final com cache registra a versão revisada separadamente. Casos/expectativas são conhecidos de desenvolvimento, sem percentual independente de acurácia.
+
+```sh
+node apps/scan/benchmarks/gateway-task.mjs --root <snapshot-do-backend> --out <relatorio.json>
+```
+
+Sem `--jev`, o benchmark remove a chave do ambiente e exige zero inferência. `--jev` exige `TYPESAFE_API_KEY`, configuração de busca habilitada no snapshot e permite chamadas pagas; não salva a credencial. A prova de instalação usa o binário desta cópia em pasta temporária vazia, verifica a visão de tarefa e uma função nova encontrada pela intenção, com atualização estrutural nativa e zero HTTP/modelos.
+
+Validação: **3.907 testes Rust distintos aprovados**, dois ignorados herdados, **13 testes oficiais do Mods aprovados** e lint estrito. O comando de todos os alvos executa também o conjunto do runtime novamente pelo alvo binário; essas repetições não foram contadas como testes distintos. Os sete testes da integração de tarefa foram repetidos depois dos ajustes finais de consistência/apresentação. Logs locais: `target/task-context-{workspace-tests,final-regression,clippy,mods-tests,native-acceptance}-20261009.log`.
+
+Ainda precisa de medição em sessões reais equivalentes para afirmar menor consumo total, menos buscas ou melhor implementação. A visão inicial não elimina toda leitura: fornece evidência e coordenadas para a leitura que falta.
 
 ## O que alimenta o banco
 
@@ -54,7 +96,7 @@ A descrição disponível da ferramenta é capturada como intenção. Com vário
 
 O Jev usa a interface existente `SymbolSelector`, cache, critérios de aceitação e registro de tentativas. Só recebe alternativas atuais ainda não resolvidas. Uma escolha só é aceita se pertencer ao grupo enviado, que pode abranger arquivos diferentes; fica destacada para expansão, sem eliminar os demais resultados. A interface permite outro provedor no futuro. Busca comum, registro dos achados, atualização estrutural e painel não ativam esse seletor. Ter uma chave configurada não ativa chamadas por pesquisa.
 
-### Seleção por responsabilidade — continuação em 09/10
+### Seleção por responsabilidade — etapa anterior em 09/10
 
 O caso real do input XLSX do PI revelou uma indicação incorreta: uma vantagem de palavras fazia `createXlsxBuffer` vencer mesmo quando a intenção era a entrega HTTP. O gateway considerava a vantagem suficiente e não consultava o Jev. A correção separa **ordem de leitura**, **identidade exata** e **julgamento de responsabilidade**:
 

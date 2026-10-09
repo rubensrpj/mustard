@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing';
 
-test('gateway tool transports original inputs and intent through host permissions',async ($,on)=>{
+test('gateway tool transports task evidence and intent through host permissions',async ($,on)=>{
   mock.env(on,{});
   let shellCalls=0,processCalls=0;
   on('session.start',($,e)=>({cwd:e.cwd}));
@@ -18,12 +18,13 @@ test('gateway tool transports original inputs and intent through host permission
     expect(e.command).toContain('--shell-output');
     expect(e.command).toContain('"pattern":"save|restore"');
     expect(e.command).toContain('"intent":"repair persistence"');
+    expect(e.command).toContain('"purpose":"spec"');
     expect(e.command).toContain('"choose":false');
-    return {result:{stdout:'src/store:12:save',stderr:'',interrupted:false,isImage:false}};
+    return {result:{stdout:'# task evidence (Spec)\n@ src/store\n12 | save',stderr:'',interrupted:false,isImage:false}};
   });
   await $.session.start({cwd:'/fixture with spaces',surface:'terminal',isInteractive:true});
-  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'Grep',input:{pattern:'save|restore',output_mode:'content','-n':true},intent:'repair persistence',choose:false}});
-  expect(result.result.content[0].text).toContain('src/store:12:save');
+  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'Grep',input:{pattern:'save|restore',output_mode:'content','-n':true},intent:'repair persistence',purpose:'spec',choose:false}});
+  expect(result.result.content[0].text).toBe('# task evidence (Spec)\n@ src/store\n12 | save');
   expect(shellCalls).toBe(1);
   expect(processCalls).toBe(0);
 });

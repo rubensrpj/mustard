@@ -139,6 +139,43 @@ pub(super) struct Pool {
     pub outdated: i64,
 }
 
+/// Apply the native search's file inventory before hydration. Broad words in
+/// another directory must not consume a scoped task's candidate reservoir.
+pub(super) fn scoped_candidates(root: &Path, options: &Query<'_>, scope: &super::EvidenceScope<'_>) -> std::result::Result<Pool, MapRefusal> {
+    ensure_languages(root)?;
+    let db = store::open_existing(&store::model_path(root))?;
+    let conn = db.conn();
+    let inventory = serde_json::to_string(scope.files).map_err(|e| super::invalid(e.to_string()))?;
+    let total: i64 = conn.query_row("SELECT count(*) FROM knowledge_symbols WHERE path IN (SELECT value FROM json_each(?1))", [&inventory], |r| r.get(0)).map_err(|e| unreadable(e.into()))?;
+    let mut ids = BTreeSet::new();
+    let mut omitted = false;
+    for id in scope.seeds {
+        add_ids(conn, "SELECT id FROM knowledge_symbols WHERE id=?1 AND path IN (SELECT value FROM json_each(?2))", params![id, inventory], &mut ids, 512, &mut omitted)?;
+    }
+    if let Some(id) = options.symbol {
+        add_ids(conn, "SELECT id FROM knowledge_symbols WHERE id=?1 AND path IN (SELECT value FROM json_each(?2))", params![id, inventory], &mut ids, 512, &mut omitted)?;
+    } else {
+        let terms = query_terms(options.text, &Languages::of_project(root));
+        for join in ["AND", "OR"] {
+            let expression = fts_query(&terms, join);
+            if !expression.is_empty() {
+                add_ids(conn,
+                    "SELECT s.id FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path IN (SELECT value FROM json_each(?2)) ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.path,s.line",
+                    params![expression, inventory], &mut ids, 512, &mut omitted)?;
+            }
+        }
+    }
+    let cards = hydrate(conn, &ids).map_err(unreadable)?;
+    Ok(Pool { cards, total: usize::try_from(total).unwrap_or(0), omitted, outdated: 0 })
+}
+
+pub(super) fn unindexed_files(root: &Path, scope: &super::EvidenceScope<'_>) -> std::result::Result<Vec<String>, MapRefusal> {
+    let db=store::open_existing(&store::model_path(root))?;
+    let inventory=serde_json::to_string(scope.files).map_err(|e|super::invalid(e.to_string()))?;
+    let mut statement=db.conn().prepare("SELECT value FROM json_each(?1) WHERE NOT EXISTS(SELECT 1 FROM knowledge_symbols s WHERE s.path=value) ORDER BY value").map_err(|e|unreadable(e.into()))?;
+    statement.query_map([inventory],|row|row.get(0)).map_err(|e|unreadable(e.into()))?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|unreadable(e.into()))
+}
+
 pub(super) fn intent_weights(root: &Path, query: &str, languages: &Languages) -> std::result::Result<Vec<f64>, MapRefusal> {
     let db = store::open_existing(&store::model_path(root))?;
     let conn = db.conn();
@@ -363,13 +400,9 @@ pub(super) fn hydrate(conn: &Connection, ids: &BTreeSet<String>) -> Result<Vec<C
     Ok(cards)
 }
 
-pub(super) fn neighbors(
-    root: &Path,
-    cards: &mut Vec<Card>,
-    seeds: &[usize],
-    depth: usize,
-    direction: super::Direction,
-    all: bool,
+pub(super) fn neighbors_in(
+    root: &Path, cards: &mut Vec<Card>, seeds: &[usize], depth: usize,
+    direction: super::Direction, all: bool, scope: Option<&super::EvidenceScope<'_>>,
 ) -> std::result::Result<bool, MapRefusal> {
     let db = store::open_existing(&store::model_path(root))?;
     let conn = db.conn();
@@ -377,14 +410,15 @@ pub(super) fn neighbors(
     let mut frontier: BTreeSet<_> = seeds.iter().map(|&i| cards[i].id.clone()).collect();
     let mut omitted = false;
     let budget = if all { usize::MAX } else { 512 };
+    let inventory = scope.map(|scope| serde_json::to_string(scope.files)).transpose().map_err(|e| super::invalid(e.to_string()))?;
     for _ in 0..=depth.min(4) {
         let mut ids = BTreeSet::new();
         for id in frontier {
             if direction != super::Direction::Callers {
-                add_ids(conn, "SELECT target FROM knowledge_links WHERE source=?1 ORDER BY target", [&id], &mut ids, budget, &mut omitted)?;
+                add_ids(conn, "SELECT l.target FROM knowledge_links l JOIN knowledge_symbols s ON s.id=l.target WHERE l.source=?1 AND (?2 IS NULL OR s.path IN (SELECT value FROM json_each(?2))) ORDER BY l.target", params![id, inventory], &mut ids, budget, &mut omitted)?;
             }
             if direction != super::Direction::Outgoing {
-                add_ids(conn, "SELECT source FROM knowledge_links WHERE target=?1 ORDER BY source", [&id], &mut ids, budget, &mut omitted)?;
+                add_ids(conn, "SELECT l.source FROM knowledge_links l JOIN knowledge_symbols s ON s.id=l.source WHERE l.target=?1 AND (?2 IS NULL OR s.path IN (SELECT value FROM json_each(?2))) ORDER BY l.source", params![id, inventory], &mut ids, budget, &mut omitted)?;
             }
         }
         ids.retain(|id| !known.contains(id));

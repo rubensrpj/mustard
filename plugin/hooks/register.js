@@ -118,11 +118,11 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec]', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
-    await $.tool.register({name:'search',description:'Search current code through Mustard using the original tool and arguments. Joins verified functions, contracts, comments and read locations. Supply intent to locate responsibility; scores only order reading. Exact symbols stay native. Set choose only for unresolved alternatives: optional Jev compares source evidence across files and may abstain.',
+    await $.tool.register({name:'search',description:'Search current code through Mustard using the original tool and arguments. purpose=locate preserves original occurrences. With intent and purpose=understand/spec/implement/validate, returns current task evidence: complementary symbols, source excerpts, static relations and gaps inside the original path filters. Expand incomplete excerpts before concluding. Set choose only for unresolved alternatives: optional Jev compares source, may request one evidence refinement, or abstain. Exact symbols stay native.',
       inputSchema:{type:'object',properties:{request:{type:'object',properties:{tool:{type:'string',enum:['rg','grep','git','Grep','Glob','Read']},
         input:{type:'object',description:'Original tool arguments. For rg/grep/git use {args:[...]}; for Grep/Glob/Read use their original input object.'},
         intent:{type:'string',description:'Why this evidence is needed; never changes the search pattern.'},
-        purpose:{type:'string',enum:['locate','understand','spec','implement','validate']},choose:{type:'boolean'}},required:['tool','input'],additionalProperties:false}},required:['request'],additionalProperties:false}});
+        purpose:{type:'string',enum:['locate','understand','spec','implement','validate'],description:'locate: original occurrences. Other purposes with intent: task evidence with exact read ranges; repeat locate for the original result.'},choose:{type:'boolean'}},required:['tool','input'],additionalProperties:false}},required:['request'],additionalProperties:false}});
     return next(e);
   });
   on('command.run', { command: 'mustard-panel' }, async ($, e) => {

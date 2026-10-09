@@ -78,6 +78,14 @@ pub(super) fn retrieve(
     opts: &super::Query<'_>,
     hashes: &mut BTreeMap<String, Option<(String, u64)>>,
 ) -> std::result::Result<Retrieved, MapRefusal> {
+    retrieve_in(root, tree, opts, hashes, None)
+}
+
+pub(super) fn retrieve_in(
+    root: &Path, tree: &Path, opts: &super::Query<'_>,
+    hashes: &mut BTreeMap<String, Option<(String, u64)>>,
+    scope: Option<&super::EvidenceScope<'_>>,
+) -> std::result::Result<Retrieved, MapRefusal> {
     let mut db = store::open_existing(&store::model_path(root))?;
     // An old map has an empty new block. Preserve readability, explicitly
     // reporting lack of coverage until a scan fills it.
@@ -119,10 +127,18 @@ pub(super) fn retrieve(
     } else {
         "SELECT p.path,p.section FROM resource_fts JOIN resource_positions p ON p.id=resource_fts.rowid WHERE resource_fts MATCH ?1 AND (?2 IS NULL OR p.path=?2) ORDER BY bm25(resource_fts,4,1,0.25),p.id"
     };
-    let mut select = db.conn().prepare(sql).map_err(|err| unreadable(err.into()))?;
+    let sql = if scope.is_some() {
+        let (select, order)=sql.split_once(" ORDER BY ").ok_or_else(||super::invalid("knowledge-resource-query-order"))?;
+        format!("{select} AND {} IN (SELECT value FROM json_each(?4)) ORDER BY {order}", if exact_path.is_none() && !opts.text.trim().is_empty(){"p.path"}else{"path"})
+    } else {sql.to_string()};
+    let mut select = db.conn().prepare(&sql).map_err(|err| unreadable(err.into()))?;
     // Bind the optional exact-path slot only for the corresponding query.
     let mut bound = vec![rusqlite::types::Value::Text(match_text),opts.file.map_or(rusqlite::types::Value::Null,|file|file.to_string().into())];
     if exact_path.is_some() {bound.push(opts.text.trim().to_string().into());}
+    if let Some(scope)=scope {
+        while bound.len()<3 {bound.push(rusqlite::types::Value::Null);}
+        bound.push(serde_json::to_string(scope.files).map_err(|e|super::invalid(e.to_string()))?.into());
+    }
     let rows = select.query_map(rusqlite::params_from_iter(bound), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(|err| unreadable(err.into()))?;
     let max = if opts.all { usize::MAX } else { opts.limit.clamp(1, 4) };
     let mut seen = BTreeSet::new();

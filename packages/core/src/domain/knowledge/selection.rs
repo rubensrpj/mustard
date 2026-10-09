@@ -153,6 +153,40 @@ pub fn responsibility(cards: &[Card], query: &str, languages: &Languages) -> Pla
     }
 }
 
+/// One responsibility-bearing declaration per file precedes supplementary
+/// symbols. This is a reading plan, not a semantic recommendation.
+pub fn task_order(cards:&[Card],query:&str,languages:&Languages,weights:&[f64],anchors:&[String])->Vec<usize> {
+    let groups=within_files(cards,query,languages,weights);
+    let mut ranked:Vec<_>=groups.values().flatten().cloned().collect();
+    // Explicit acronym identifiers may be shorter than lexical stems. An
+    // exact path component is a useful navigation clue, never a domain rule.
+    let identifiers:BTreeSet<_>=query.split(|c:char|!c.is_alphanumeric()).filter(|word|word.len()>=2 && word.chars().any(char::is_uppercase) && word.chars().all(|c|c.is_uppercase() || c.is_ascii_digit())).map(str::to_lowercase).collect();
+    let path_clues=|i:usize|cards[i].source.file.split(|c:char|!c.is_alphanumeric()).filter(|part|identifiers.contains(&part.to_lowercase())).count();
+    ranked.sort_by(|a,b|anchors.contains(&cards[b.card].id).cmp(&anchors.contains(&cards[a.card].id))
+        .then_with(||path_clues(b.card).cmp(&path_clues(a.card))).then_with(||b.score.total_cmp(&a.score)).then_with(||b.own_matches.cmp(&a.own_matches)).then_with(||cards[a.card].id.cmp(&cards[b.card].id)));
+    let mut files=BTreeSet::new();
+    let mut leaders=Vec::new();let mut additional=Vec::new();
+    for rank in ranked {
+        if files.insert(&cards[rank.card].source.file) {leaders.push(rank.card);} else {additional.push(rank.card);}
+    }
+    leaders.extend(additional);leaders
+}
+
+/// Bodies add new written clues; other candidates remain expandable ranges.
+/// Containing types cannot spend context repeating their callable children.
+pub fn task_bodies(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<String>,recommended:&[String],query:&str,languages:&Languages)->BTreeSet<usize> {
+    let terms=Terms::of(query,languages);
+    let mut covered=BTreeSet::new();let mut bodies=BTreeSet::new();
+    for (i,card) in cards.iter().enumerate() {
+        let chosen=recommended.contains(&card.id);
+        let container=!terms.definition() && cards.iter().any(|child|child.source.file==card.source.file && child.source.line>card.source.line && child.source.end_line<=card.source.end_line && terms.callable(&child.kind));
+        if chosen || (primary.contains(&card.id) && !container && slots[i].iter().any(|slot|!covered.contains(slot))) {
+            bodies.insert(i);covered.extend(slots[i].iter().copied());
+        }
+    }
+    bodies
+}
+
 /// Only candidates close to the native winner, with multiple written query
 /// clues, can affect the next choice. No request for a missing candidate.
 pub fn ambiguity(file: &str, group: &[Ranked], cards: &[Card]) -> Option<Ambiguity> {
@@ -253,5 +287,24 @@ mod tests {
             assert!(plan.groups.is_empty());
             assert!(plan.recommendations.is_empty());
         }
+    }
+
+    #[test]
+    fn task_reading_keeps_native_anchors_and_explicit_short_path_identifiers() {
+        let mut cards=cards();cards[0].source.file="src/xy/archive.ext".into();cards[1].source.file="src/qz/archive.ext".into();
+        let anchors=vec![cards[0].id.clone(),cards[1].id.clone()];
+        let order=task_order(&cards,"QZ quartz beacon",&Languages::new(["en-US"]),&[],&anchors);
+        assert_eq!(order[0],1);
+        assert!(responsibility(&cards,"QZ quartz beacon",&Languages::new(["en-US"])).recommendations.is_empty());
+    }
+
+    #[test]
+    fn initial_task_bodies_do_not_repeat_containers_but_preserve_a_requested_choice() {
+        let cards = cards();
+        let primary = cards.iter().map(|card| card.id.clone()).collect();
+        let slots = vec![BTreeSet::from([0, 1]), BTreeSet::from([0, 1]), BTreeSet::from([1])];
+        let languages = Languages::new(["en-US"]);
+        assert_eq!(task_bodies(&cards, &slots, &primary, &[], "quartz beacon", &languages), BTreeSet::from([1]));
+        assert_eq!(task_bodies(&cards, &slots, &primary, &[cards[2].id.clone()], "quartz beacon", &languages), BTreeSet::from([1, 2]));
     }
 }

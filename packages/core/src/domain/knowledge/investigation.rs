@@ -17,6 +17,15 @@ pub enum Purpose {
 }
 
 impl Purpose {
+    pub fn excerpt_lines(self) -> usize {
+        match self {
+            Self::Locate => 7,
+            Self::Understand | Self::Spec => 15,
+            Self::Implement => 80,
+            Self::Validate => 30,
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "locate" => Some(Self::Locate),
