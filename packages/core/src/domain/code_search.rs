@@ -2,6 +2,7 @@
 use super::knowledge::investigation::Purpose;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub mod contract;
 
 /// Stable wire contract shared by host adapters; the host supplies this version.
 pub const CONTRACT_VERSION: u32 = 1;
@@ -11,6 +12,9 @@ pub const CONTRACT_VERSION: u32 = 1;
 pub struct Invocation {
     pub schema_version: u32,
     pub request: Request,
+    /// Transport-owned delivery identity; never supplied by the search model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<contract::DeliveryContext>,
 }
 
 /// Written identifiers in a native pattern; anchors still require an actual
@@ -27,6 +31,7 @@ impl Invocation {
         Self {
             schema_version: CONTRACT_VERSION,
             request,
+            context: None,
         }
     }
 }
@@ -68,6 +73,7 @@ impl Request {
             if invocation.schema_version != CONTRACT_VERSION {
                 return Err("search-unsupported-contract-version".into());
             }
+            if let Some(context) = &invocation.context { context.validate()?; }
             Ok(invocation.request)
         } else {
             serde_json::from_value(value)
@@ -118,6 +124,7 @@ impl Request {
         if !self.input.is_object() {
             return Err("search-input-object-required".into());
         }
+        contract::validate_input(&self.tool, &self.input)?;
         if (self.purpose != Purpose::Locate || self.choose) && self.intent.trim().is_empty() {
             return Err("search-intent-required; provide the specific question this investigation must answer".into());
         }

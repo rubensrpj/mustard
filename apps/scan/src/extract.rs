@@ -1013,6 +1013,7 @@ impl Analyzer {
                     body_comment: String::new(),
                     body_names: String::new(),
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
+                    syntax: header_fields(h.node,bytes),
                     calls: Vec::new(),
                     used_by: Vec::new(),
                     common_calls: 0,
@@ -1633,6 +1634,21 @@ fn quoted_value(text: &str) -> Option<String> {
     let body = &text[start + 1..];
     let end = body.find(quote)?;
     Some(body[..end].to_string())
+}
+
+/// Declared parameter/type fields with source coordinates; absent fields stay unknown.
+fn header_fields(node: Node, bytes: &[u8]) -> serde_json::Value {
+    let mut fields=serde_json::Map::new();
+    let body_start=node.child_by_field_name("body").map_or(node.end_byte(),|body|body.start_byte());
+    for (field,role) in [("parameters","parameters"),("return_type","return_type"),("type","declared_type")] {
+        if let Some(part)=node.child_by_field_name(field).filter(|part|part.end_byte()<=body_start)
+            && let Ok(text)=part.utf8_text(bytes) {
+            fields.insert(role.into(),serde_json::json!({"text":text.chars().take(4096).collect::<String>(),
+                "line":part.start_position().row+1,"end_line":part.end_position().row+1,
+                "start_byte":part.start_byte(),"end_byte":part.end_byte(),"truncated":text.chars().count()>4096}));
+        }
+    }
+    if fields.is_empty(){serde_json::Value::Null}else{serde_json::Value::Object(fields)}
 }
 
 /// The declaration's own header: its text up to where the body opens — the

@@ -187,7 +187,7 @@ pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Resul
             let cards:Vec<_>=cards.into_iter().filter(|card|card["source"]["file"].as_str()
                 .is_some_and(|file|knowledge::investigation::safe_read(&tree,file,&registry).is_some()))
                 .map(|card|json!({"id":card["id"],"name":card["name"],"kind":card["kind"],
-                    "source":card["source"],"signature":card["signature"],"parse_complete":card["parse_complete"]})).collect();
+                    "source":card["source"],"signature":card["signature"],"syntax":card["syntax"],"parse_complete":card["parse_complete"]})).collect();
             let allowed: BTreeSet<_> = cards
                 .iter()
                 .filter_map(|card| card["id"].as_str())

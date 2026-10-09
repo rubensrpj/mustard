@@ -55,6 +55,7 @@ fn note_card(note: &Interpretation) -> Card {
         name: note.title.clone(),
         documentation: note.text.clone(),
         signature: String::new(),
+        syntax:Value::Null,
         body_comment: String::new(),
         kind: "interpretation".into(),
         source: note.sources[0].clone(),

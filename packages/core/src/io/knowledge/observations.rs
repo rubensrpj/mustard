@@ -30,7 +30,11 @@ fn tree_key(tree: &Path) -> String {
 
 pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Result<Value, String> {
     if hits.is_empty() {
-        return Ok(json!({"status":"no-source-facts","new_facts":0,"needs_scan":false}));
+        let needs_scan=if store::model_path(root).is_file() {
+            let db=MapDb::open_waiting(&store::model_path(root),root,&store::DB_BLOCKS,std::time::Duration::from_millis(50)).map_err(|e|e.to_string())?;
+            !structure_ready(&db)?
+        }else{false};
+        return Ok(json!({"status":"no-source-facts","new_facts":0,"needs_scan":needs_scan,"source_hashes":{}}));
     }
     let registry = Registry::load()?;
     let mut sources = BTreeMap::new();
@@ -54,6 +58,9 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
         std::time::Duration::from_millis(50),
     )
     .map_err(|e| e.to_string())?;
+    // A schema upgrade rebuilds derived blocks empty. A source hash learned
+    // under the old schema cannot acknowledge that missing structural index.
+    let structure_ready=structure_ready(&db)?;
     let key = tree_key(tree);
     let mut added = 0;
     let mut reused = 0;
@@ -65,7 +72,7 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             tx.execute("INSERT INTO search_files(tree,path,sha256) VALUES(?1,?2,?3) ON CONFLICT(tree,path) DO UPDATE SET sha256=excluded.sha256",params![key,file,digest])?;
             let indexed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM knowledge_symbols WHERE path=?1 AND sha256=?2)",params![file,digest],|row|row.get(0))?;
             let learned:bool=tx.query_row("SELECT indexed=sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0))?;
-            if !indexed && !learned {pending.push(file.clone());}
+            if !structure_ready || !indexed && !learned {pending.push(file.clone());}
         }
         for (file,line,text) in hits.iter().take(256) {
             let Some((digest,source))=sources.get(file) else {continue};
@@ -82,6 +89,13 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
         json!({"status":"stored-current-source-facts","new_facts":added,"reused_facts":reused,"needs_scan":!pending.is_empty(),"pending_paths":pending,
         "tree":key,"source_hashes":sources.iter().map(|(file,(digest,_))|(file,digest)).collect::<BTreeMap<_,_>>(),"interpretations_recorded":0}),
     )
+}
+
+fn structure_ready(db:&MapDb)->Result<bool,String> {
+    for block in [&store::CENSUS,&store::FILES,&store::DECLS,&store::GRAPH,&store::RESOURCES] {
+        if db.mark(block.name()).map_err(|e|e.to_string())?.is_none_or(|mark|mark.is_empty()) {return Ok(false);}
+    }
+    Ok(true)
 }
 
 /// Mark only the source versions the completed native scan was asked to learn.

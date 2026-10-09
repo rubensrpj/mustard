@@ -856,6 +856,8 @@ pub struct MapDecl {
     /// A assinatura da declaração, sem o corpo. Vazia quando o scan não
     /// gravou uma.
     pub signature: String,
+    #[serde(default)]
+    pub syntax: serde_json::Value,
     /// Cada uso da declaração no projeto: o arquivo, a linha e a declaração
     /// de onde parte a chamada, provado ou suspeito. Vazio num mapa antigo,
     /// sem o campo.

@@ -1,6 +1,6 @@
 //! Optional live compiler queries using the same servers as init/doctor. No
-//! shell, installation or model call. Cold sessions are deliberate: compiler
-//! conclusions are never reused across edits, branches or dependency changes.
+//! shell, installation or model call. A private idle worker can reuse the
+//! compiler session; source/context changes restart it, never cache answers.
 use super::{Location, PreciseSymbols, Reference, Relation, Resolution, byte_column, hash};
 use crate::domain::knowledge::{Source, resources::Registry};
 use crate::platform::code_tools::{CodeTool, code_tool_for_language};
@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 const DEADLINE: Duration = Duration::from_secs(15);
 const MAX_FRAME: usize = 8 * 1024 * 1024;
+pub mod worker;
 
 struct Client {
     child: Child,
@@ -337,6 +338,7 @@ impl PreciseSymbols for LspSymbols<'_> {
         let language = crate::domain::source_lang::language_of_path(location.file)
             .ok_or("lsp-language-unsupported")?;
         let tool = code_tool_for_language(language).ok_or("lsp-language-unsupported")?;
+        if let Some(result)=worker::resolve(self.tree,location,relation,limit,language) {return result;}
         resolve_with(self.tree, location, relation, limit, tool, language)
     }
 }
@@ -348,6 +350,33 @@ fn resolve_with(
     tool: &CodeTool,
     language: &str,
 ) -> Result<Resolution, String> {
+    let mut session=Session::start(tree,tool)?;
+    session.resolve(tree,location,relation,limit,tool,language)
+}
+
+struct Session {
+    client: Client,
+    capabilities: Value,
+    encoding: i32,
+    next_id: u32,
+    opened: std::collections::BTreeSet<String>,
+}
+impl Session {
+    fn start(tree:&Path,tool:&CodeTool)->Result<Self,String> {
+        let mut client=Client::start(tree,tool)?;
+        let initialized=client.request(1,"initialize",json!({"processId":std::process::id(),"rootUri":uri(tree),
+            "workspaceFolders":[{"uri":uri(tree),"name":"mustard"}],
+            "capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]},"textDocument":{"definition":{"linkSupport":true}}},
+            "initializationOptions":tool.lsp.initialization_options.and_then(|s|serde_json::from_str::<Value>(s).ok())}),tree)?;
+        let capabilities=initialized["capabilities"].clone();
+        let encoding=match capabilities["positionEncoding"].as_str().unwrap_or("utf-16") {
+            "utf-8"=>1,"utf-16"=>2,"utf-32"=>3,_=>return Err("lsp-position-encoding-unsupported".into()),
+        };
+        client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
+        Ok(Self{client,capabilities,encoding,next_id:2,opened:std::collections::BTreeSet::new()})
+    }
+    fn resolve(&mut self,tree:&Path,location:&Location<'_>,relation:Relation,limit:usize,tool:&CodeTool,language:&str)->Result<Resolution,String> {
+    if self.next_id>2 {self.client.deadline=Instant::now()+DEADLINE;}
     let tree = tree.canonicalize().map_err(|e| e.to_string())?;
     let registry = Registry::load()?;
     let source = super::super::investigation::safe_read(&tree, location.file, &registry)
@@ -362,21 +391,8 @@ fn resolve_with(
         .ok_or("lsp-line-outside-source")?;
     let byte = usize::try_from(location.column_bytes).map_err(|_| "lsp-invalid-column")?;
     let prefix = line_text.get(..byte).ok_or("lsp-invalid-byte-column")?;
-    let mut client = Client::start(&tree, tool)?;
-    let initialized = client.request(1, "initialize", json!({"processId":std::process::id(),"rootUri":uri(&tree),
-        "workspaceFolders":[{"uri":uri(&tree),"name":"mustard"}],
-        "capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]},"textDocument":{"definition":{"linkSupport":true}}},
-        "initializationOptions":tool.lsp.initialization_options.and_then(|s|serde_json::from_str::<Value>(s).ok())}), &tree)?;
-    let capabilities = &initialized["capabilities"];
-    let encoding = match capabilities["positionEncoding"]
-        .as_str()
-        .unwrap_or("utf-16")
-    {
-        "utf-8" => 1,
-        "utf-16" => 2,
-        "utf-32" => 3,
-        _ => return Err("lsp-position-encoding-unsupported".into()),
-    };
+    let capabilities=&self.capabilities;
+    let encoding=self.encoding;
     let (method, capability) = match relation {
         Relation::Definitions => ("textDocument/definition", "definitionProvider"),
         Relation::References => ("textDocument/references", "referencesProvider"),
@@ -385,11 +401,12 @@ fn resolve_with(
     if capabilities[capability].is_null() || capabilities[capability] == false {
         return Err("lsp-operation-unsupported".into());
     }
-    client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
     let document = uri(&tree.join(location.file));
     let language =
         crate::domain::source_lang::lsp_language_of_path(location.file).unwrap_or(language);
-    client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":language,"version":1,"text":source}}}))?;
+    if self.opened.insert(document.clone()) {
+        self.client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":language,"version":1,"text":source}}}))?;
+    }
     let character = match encoding {
         1 => prefix.len(),
         2 => prefix.encode_utf16().count(),
@@ -400,7 +417,8 @@ fn resolve_with(
     if relation == Relation::References {
         params["context"] = json!({"includeDeclaration":false});
     }
-    let reply = client.request(2, method, params, &tree)?;
+    let id=self.next_id;self.next_id=self.next_id.checked_add(1).ok_or("lsp-request-id-exhausted")?;
+    let reply = self.client.request(id, method, params, &tree)?;
     let (references, has_more) = locations(&tree, &reply, encoding, relation, limit)?;
     if super::super::investigation::safe_read(&tree, location.file, &registry).as_deref()
         != Some(&source)
@@ -415,6 +433,7 @@ fn resolve_with(
         references,
         has_more,
     })
+    }
 }
 
 #[cfg(test)]
@@ -516,5 +535,27 @@ mod tests {
         .unwrap();
         assert_eq!(result.references.len(), 1);
         assert_eq!(result.references[0].source.line, 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn warm_session_issues_new_queries_without_reinitializing_or_caching_answers() {
+        use crate::platform::code_tools::LanguageServer;
+        let dir=tempfile::tempdir().unwrap();let tree=dir.path().canonicalize().unwrap();
+        std::fs::write(tree.join("x.ts"),"const first=1;\nconst second=2;\nfirst; second;\n").unwrap();
+        let mut frames=String::new();
+        for message in [json!({"id":1,"result":{"capabilities":{"definitionProvider":true}}}),
+            json!({"id":2,"result":{"uri":uri(&tree.join("x.ts")),"range":{"start":{"line":0,"character":6},"end":{"line":0,"character":11}}}}),
+            json!({"id":3,"result":{"uri":uri(&tree.join("x.ts")),"range":{"start":{"line":1,"character":6},"end":{"line":1,"character":12}}}})] {
+            use std::fmt::Write as _;let body=message.to_string();write!(frames,"Content-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+        }
+        std::fs::write(tree.join("reply"),frames).unwrap();
+        let tool=CodeTool{program:"sh",lsp:LanguageServer{args:&["-c","cat reply; exec sleep 30"],initialization_options:None},
+            plugin:None,install_cmd:"",check:None,start_hint:None,pin:None};
+        let mut session=Session::start(&tree,&tool).unwrap();
+        for (column,line) in [(0,1),(7,2)] {
+            let result=session.resolve(&tree,&Location{file:"x.ts",line:3,column_bytes:column},Relation::Definitions,10,&tool,"typescript").unwrap();
+            assert_eq!(result.references[0].source.line,line);
+        }
+        assert_eq!(session.next_id,4);assert_eq!(session.opened.len(),1);
     }
 }

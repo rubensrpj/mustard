@@ -13,6 +13,7 @@ pub fn run(
     raw: bool,
     shell_output: bool,
 ) {
+    let delivery_context=request.and_then(|text|mustard_core::domain::code_search::contract::DeliveryContext::from_json(text).ok().flatten());
     let result = (|| {
         let mut request: Request = match request {
             Some(text) if text.len() <= 64 * 1024 => Request::from_json(text)?,
@@ -34,14 +35,22 @@ pub fn run(
         crate::shared::search_gateway::answer(root, &request).map(|answer| (answer, request))
     })();
     match result {
-        Ok((answer, request)) => {
+        Ok((mut answer, request)) => {
             if raw || shell_output {
-                let output = if shell_output {
+                let git=mustard_core::platform::git::run(root,&["rev-parse","--show-toplevel"]);
+                let tree=if git.ok {std::path::PathBuf::from(git.stdout.trim())}else{root.to_path_buf()};
+                let receipt=if shell_output {delivery_context.as_ref().and_then(|context|
+                    mustard_core::io::code_search::delivery::prepare(&mut answer,&request,&tree,context))}else{None};
+                let mut output = if shell_output {
                     mustard_core::io::code_search::presentation::agent(&answer, &request, root)
                         .stdout
                 } else {
                     answer.stdout
                 };
+                if let Some(token)=receipt {
+                    let receipt=mustard_core::io::code_search::delivery::receipt(&token,&output);
+                    output.extend_from_slice(receipt.as_bytes());
+                }
                 let _ = std::io::stdout().write_all(&output);
                 let _ = std::io::stderr().write_all(&answer.stderr);
             } else {

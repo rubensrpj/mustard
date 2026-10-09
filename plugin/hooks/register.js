@@ -1,3 +1,5 @@
+import searchSchema from './search-schema.js';
+import {completeDelivery} from './delivery-check.js';
 // Local observation only. Runtime events remain the source of truth; the
 // poller coalesces overlapping reads and never calls a model or search tool.
 let timer, eventTimer, busy = false, opened = false, data, problem, selected, usage, revision = 0;
@@ -8,6 +10,12 @@ let consumptionMeasuredAt;
 let measurementQueue = Promise.resolve();
 const searchPurposes = ['locate','understand','spec','implement','validate'];
 const searchTools = ['rg','grep','git','Grep','Glob','Read','Symbol','Trace','Structure','References'];
+let evidenceEpoch, evidenceAcknowledged = new Map();
+function resetEvidence() {
+  evidenceEpoch=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  evidenceAcknowledged.clear();
+}
+resetEvidence();
 function searchContractError(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return 'request object required';
   for (const field of ['tool','input','intent','purpose']) {
@@ -20,6 +28,25 @@ function searchContractError(request) {
   if (typeof request.intent !== 'string') return 'intent string required';
   if (Object.hasOwn(request,'choose') && typeof request.choose !== 'boolean') return 'choose boolean required';
   if ((request.purpose !== 'locate' || request.choose) && !request.intent.trim()) return 'provide the specific question in intent';
+  const branch=searchSchema.properties.request.oneOf.find(branch=>branch.properties.tool.const===request.tool);
+  return inputContractError(branch.properties.input,request.input,'input');
+}
+function inputContractError(schema,value,path) {
+  const type=schema.type;
+  const valid=type==='object' ? value!==null && typeof value==='object' && !Array.isArray(value)
+    : type==='array' ? Array.isArray(value) : type==='integer' ? Number.isSafeInteger(value) && value>=0 : typeof value===type;
+  if (!valid || schema.enum && !schema.enum.includes(value) || schema.minimum!==undefined && value<schema.minimum) return `invalid ${path}`;
+  if (type==='array') {
+    if (schema.minItems!==undefined && value.length<schema.minItems) return `invalid ${path}`;
+    for (const item of value) { const error=inputContractError(schema.items,item,path);if(error)return error; }
+  }
+  if (type==='object') {
+    for (const field of schema.required||[]) if (!Object.hasOwn(value,field)) return `missing ${path}.${field}`;
+    for (const [field,item] of Object.entries(value)) {
+      if (!Object.hasOwn(schema.properties,field)) return `unknown ${path}.${field}`;
+      const error=inputContractError(schema.properties[field],item,`${path}.${field}`);if(error)return error;
+    }
+  }
 }
 async function runtime($) {
   if (!runtimeBinary) runtimeBinary = `${$.plugin.root}/bin/mustard-rt${await $.env.get('OS') === 'Windows_NT' ? '.exe' : ''}`;
@@ -131,13 +158,11 @@ async function publishPage($,rawArgs) {
 }
 export function register(on) {
   on('session.start', async ($, e, next) => {
+    resetEvidence();
     await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec]', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
     await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (the specific question now) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. choose=true permits optional Jev only for unresolved responsibility alternatives; exact identities stay native. The adapter supplies the contract version.',
-      inputSchema:{type:'object',properties:{request:{type:'object',properties:{tool:{type:'string',enum:searchTools},
-        input:{type:'object',description:'Original tool arguments for rg/grep/git/Grep/Glob/Read. For Symbol/Trace, Structure and References use the explicit operation fields in the tool description; file_path is mandatory.'},
-        intent:{type:'string',description:'Specific question to establish now, for example: does this export read the edited copy from the database? Required and nonempty for investigation or choose. Empty is allowed only for literal locate.'},
-        purpose:{type:'string',enum:searchPurposes,description:'locate: literal lookup. understand/spec/implement/validate: investigate the specific intent using current source. Repeat locate for original occurrences.'},choose:{type:'boolean',description:'Permit optional Jev for unresolved responsibility alternatives after native triage. Default false.'}},required:['tool','input','intent','purpose'],additionalProperties:false}},required:['request'],additionalProperties:false}});
+      inputSchema:searchSchema});
     return next(e);
   });
   on('command.run', { command: 'mustard-panel' }, async ($, e) => {
@@ -155,10 +180,28 @@ export function register(on) {
     // permissions, classic hooks and the shell sandbox still apply. A process
     // launched directly by a mod would bypass that boundary.
     const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
-    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify({schema_version:1,request})),'--shell-output'].join(' ');
+    const envelope={schema_version:1,request};
+    const agent=e.agentId || 'main';
+    const epoch=evidenceEpoch;
+    try {
+      const session=await $.session.id();
+      if ([session,agent,epoch].every(value=>typeof value==='string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value))) {
+        envelope.context={session,agent,epoch,acknowledged:[...(evidenceAcknowledged.get(agent)||[])]};
+      }
+    } catch { /* Without a host delivery identity every body is delivered again. */ }
+    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(envelope)),'--shell-output'].join(' ');
     const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
     if(result.deny) return {deny:result.deny};
-    const stdout=result.result?.stdout ?? result.text ?? '';
+    let stdout=result.result?.stdout ?? result.text ?? '';
+    const receipt=/\n# mustard-delivery:([a-f0-9]{64}):(\d+):([a-f0-9]{16})\n?$/.exec(stdout);
+    if (receipt && envelope.context && epoch===evidenceEpoch && result.isError!==true && result.result?.interrupted!==true
+        && completeDelivery(stdout.slice(0,receipt.index),receipt)) {
+      const acknowledged=evidenceAcknowledged.get(agent)||new Set();
+      acknowledged.add(receipt[1]);
+      if(acknowledged.size>128) acknowledged.delete(acknowledged.values().next().value);
+      evidenceAcknowledged.set(agent,acknowledged);
+    }
+    if(receipt)stdout=stdout.slice(0,receipt.index);
     const stderr=result.result?.stderr || '';
     return {result:{content:[{type:'text',text:stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:'')}],isError:result.isError===true}};
   });
@@ -175,6 +218,7 @@ export function register(on) {
     return result;
   });
   on('session.compact', async ($, e, next) => {
+    resetEvidence();
     const result=await next(e);
     requestRefresh($);
     return result;
@@ -196,6 +240,7 @@ export function register(on) {
     return next(e);
   });
   on('session.end', async ($, e, next) => {
+    resetEvidence();
     stopPanel();
     data = undefined;
     consumptionMeasuredAt = undefined;

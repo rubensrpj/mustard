@@ -7,6 +7,11 @@ use std::fmt::Write;
 
 fn quote(value:&str)->String {format!("'{}'",value.replace('\'',"'\\''"))}
 
+pub(super) fn reuse_notice(card:&Value)->Option<String> {
+    Some(format!("@ {}\n# Reuse {} {}-{}: complete body already delivered here; current hash. Scoped Read repeats.\n",
+        card["source"]["file"].as_str()?,card["name"].as_str()?,card["source"]["line"].as_u64()?,card["source"]["end_line"].as_u64()?))
+}
+
 pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> {
     let context = &answer.report["task_context"];
     if context["status"] != "current-task-evidence" {
@@ -77,6 +82,11 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         let file = card["source"]["file"].as_str()?;
         let start = card["source"]["line"].as_u64()?;
         let end = card["source"]["end_line"].as_u64()?;
+        if card["reused_delivery"] == true {
+            text.push_str(&reuse_notice(card)?);
+            visible_ids.insert(card["id"].as_str().unwrap_or_default());
+            continue;
+        }
         if card["initial_source_excerpt"] != true {
             if card["initial_reference"] == true {
                 ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));
@@ -157,6 +167,16 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             "@ {file}\n# References (expand source/responsibility): {}",
             candidates.join("; ")
         );
+    }
+    for step in context["chain"]["steps"].as_array().into_iter().flatten() {
+        let _=writeln!(text,"# Native follow-up: {} -> {} at {}:{}; declared signature: {}. Static target, values/effects unverified.",
+            step["from"].as_str().unwrap_or_default(),step["to"].as_str().unwrap_or_default(),
+            step["call_source"]["file"].as_str().unwrap_or_default(),step["call_source"]["line"],
+            step["signature"].as_str().unwrap_or_default().replace(['\r','\n']," "));
+    }
+    for test in context["chain"]["test_mentions"].as_array().into_iter().flatten() {
+        let _=writeln!(text,"@ {}\n{} | {}\n# Associated test mention; coverage/execution unverified.",
+            test["source"]["file"].as_str().unwrap_or_default(),test["source"]["line"],test["text"].as_str().unwrap_or_default());
     }
     for (file,count) in deferred {
         let _=writeln!(text,"# {count} additional candidates in {file}: mustard-rt run map summary --file {}",quote(file));

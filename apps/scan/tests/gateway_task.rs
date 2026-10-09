@@ -247,18 +247,18 @@ fn relations_outside_the_requested_file_are_not_reported_as_stale_sources() {
 }
 
 #[test]
-fn named_source_keeps_its_callee_expandable_without_automatically_pasting_another_body() {
+fn named_source_follows_unique_callee_and_keeps_explicit_read_available() {
     let dir=fixture();let root=dir.path();
     std::fs::write(root.join("src/allowed/chain.rs"),"pub fn read_current() { fetch(); }\npub fn fetch() { let quartz_snapshot=3; }\n").unwrap();
     model::scan(root,&root.join(".claude"),&[]);
     let req=Request{input:json!({"args":["-n","--with-filename","read_current","src/allowed/chain.rs"]}),..request()};
     let answer=run(root,&req,None);
     let target=answer.report["task_context"]["cards"].as_array().unwrap().iter().find(|card|card["name"]=="fetch").unwrap();
-    assert_eq!(target["initial_source_excerpt"],false);
+    assert_eq!(target["initial_source_excerpt"],true);
     assert_eq!(target["initial_reference"],true);
     let view=String::from_utf8(code_search::presentation::agent(&answer,&req,root).stdout).unwrap();
-    assert!(!view.contains("let quartz_snapshot=3"));
-    assert!(view.contains("# References (expand source/responsibility): fetch "));
+    assert!(view.contains("let quartz_snapshot=3"));
+    assert!(view.contains("# Native follow-up:"));
     let read=Request{tool:"Read".into(),input:target["read"]["input"].clone(),..req};
     assert!(run(root,&read,None).report["result"]["content"].as_str().unwrap().contains("let quartz_snapshot=3"));
 }
@@ -473,7 +473,7 @@ fn exact_named_anchor_defers_generic_unindexed_mocks_but_preserves_native_hits()
     let mut req = request();
     req.intent = "create a file for snapshot".into();
     for pattern in ["entry", "entry|restore"] {
-        req.input = json!({"args":["-n","--with-filename",pattern,"src/allowed"]});
+        req.input = json!({"args":["-n","--with-filename","--sort=path",pattern,"src/allowed"]});
         let answer = run(root, &req, None);
         let native = String::from_utf8_lossy(&answer.stdout);
         assert!(native.contains("actual.test.rs"));

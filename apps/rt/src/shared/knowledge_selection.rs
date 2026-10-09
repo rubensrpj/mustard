@@ -28,18 +28,18 @@ impl SymbolSelector for KnowledgeSelector {
         let mut questions = serde_json::Map::new();
         let usable: Vec<_> = groups.iter().filter(|g| (2..=253).contains(&g.candidates.len())).collect();
         for (at, group) in usable.iter().enumerate() {
+            let witnesses:Vec<_>=group.candidates.iter().map(|card|evidence::witnesses(card,query,&self.languages)).collect();
             let candidates:Vec<_>=group.candidates.iter().enumerate().map(|(n,c)|json!({"option":format!("s{n}"),"id":c.id,"name":c.name,
                 "kind":c.kind,"signature":c.signature.chars().take(320).collect::<String>(),"documentation":c.documentation.chars().take(400).collect::<String>(),
-                "clues":evidence::compact_witnesses(c,query,&self.languages),"source":c.source,
+                "source":c.source,
                 "excerpt":group.excerpts.get(&c.id),"routes":c.routes,
-                "calls":c.outgoing.iter().take(6).collect::<Vec<_>>(),
-                "relations_status":"static parser candidates; target source and runtime behavior not established"})).collect();
+                "calls":c.outgoing.iter().take(6).collect::<Vec<_>>() })).collect();
             state.push(json!({"group":format!("f{at}"),"scope":group.key,"candidates":candidates}));
             let mut criteria: serde_json::Map<String, Value> = group
                 .candidates
                 .iter()
                 .enumerate()
-                .map(|(n, c)| (format!("s{n}"), json!(format!("{} at {}:{}", c.name, c.source.file, c.source.line))))
+                .map(|(n, c)| (format!("s{n}"), criteria(c,n,&witnesses)))
                 .collect();
             criteria.insert(
                 "none".into(),
@@ -51,7 +51,8 @@ impl SymbolSelector for KnowledgeSelector {
         if usable.is_empty() {
             return Decisions { usage: json!({"status":"native; candidate-group-too-large","remote_model_calls":0}), ..Decisions::default() };
         }
-        let payload = json!({"model":JEV_MODEL,"state":{"revision":"knowledge-choice-v2","query":query,"groups":state},"questions":questions}).to_string();
+        let payload = json!({"model":JEV_MODEL,"state":{"revision":"knowledge-choice-v3","query":query,"groups":state,
+            "relations_status":"static parser candidates; target source and runtime behavior not established"},"questions":questions}).to_string();
         let doc = match (self.invoke)(&payload) {
             Ok(doc) => doc,
             Err(error) => {
@@ -68,26 +69,24 @@ impl SymbolSelector for KnowledgeSelector {
         let complete = tokens.is_some() && requests <= 1;
         let mut choices = std::collections::BTreeMap::new();
         let mut outcomes = std::collections::BTreeMap::new();
+        let mut observations=Vec::new();
         for (at, group) in usable.iter().enumerate() {
             let answer = &doc["answers"][format!("f{at}")];
             let Some(option) = answer["choice"].as_str() else {
                 outcomes.insert(group.key.clone(), Outcome::InvalidAnswer); continue;
             };
             let candidate = option.strip_prefix('s').and_then(|v| v.parse::<usize>().ok()).and_then(|n| group.candidates.get(n));
+            let accepted=(candidate.is_some() || matches!(option,"none"|"insufficient"))
+                && mustard_core::domain::knowledge::selection::policy::Acceptance::default().accepts(answer);
+            observations.push(json!({"scope":group.key,"candidate":candidate.map(|c|c.id.as_str()),"choice":option,
+                "confidence":answer["confidence"],"probabilities":answer["probabilities"],
+                "accepted":accepted}));
             if candidate.is_none() && !matches!(option, "none" | "insufficient") {
                 outcomes.insert(group.key.clone(), Outcome::InvalidAnswer); continue;
             }
-            let probability = answer["probabilities"][option].as_f64().unwrap_or(0.0);
-            let other = answer["probabilities"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .filter(|(key, _)| key.as_str() != option)
-                .filter_map(|(_, p)| p.as_f64())
-                .fold(0.0, f64::max);
             // Conservative pilot policy; confidence is not inferred when absent.
             // Thresholds require calibration on a future independent set.
-            if answer["confidence"].as_f64().is_some_and(|c| c >= 0.5) && probability >= 0.7 && probability - other >= 0.2 {
+            if accepted {
                 let outcome = if let Some(candidate) = candidate {
                     choices.insert(group.key.clone(), candidate.id.clone());
                     Outcome::Selected
@@ -102,13 +101,23 @@ impl SymbolSelector for KnowledgeSelector {
         Decisions {
             usage: json!({"status":"jev-choice","model":doc["model"],"remote_model_calls":requests,"cached":cached,
             "groups":usable.len(),"accepted_choices":choices.len(),"usage_complete":complete,
+            "observations":observations,
             "input_tokens":if complete{tokens}else{None},"known_input_tokens":tokens,
             "cost_micro_usd":if complete{tokens.map(|t|(t as f64*PRICE_PER_MILLION_INPUT_TOKENS).round() as u64)}else{None},
-            "policy":"confidence>=0.5, probability>=0.7, margin>=0.2; provisional, not calibrated"}),
+            "policy":"confidence>=0.5, probability>=0.7, margin>=0.2; measured pilot policy, general calibration unproven"}),
             choices,
             outcomes,
         }
     }
+}
+
+fn criteria(card:&mustard_core::domain::knowledge::Card,at:usize,witnesses:&[Vec<Value>])->Value {
+    let distinct:Vec<_>=witnesses[at].iter().filter(|w|!witnesses.iter().enumerate().any(|(other,values)|other!=at
+        && values.iter().any(|v|v["kind"]==w["kind"] && v["value"]==w["value"]))).collect();
+    let mut result=json!({"name":card.name});
+    if !distinct.is_empty(){result["distinct_written_clues"]=json!(distinct);}
+    if !card.contracts.is_empty(){result["declared_contract"]=json!(card.contracts);}
+    result
 }
 
 #[cfg(test)]

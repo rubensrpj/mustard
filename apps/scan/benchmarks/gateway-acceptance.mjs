@@ -6,6 +6,7 @@ import cp from 'node:child_process';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -59,7 +60,7 @@ try {
   fs.writeFileSync(path.join(root, 'src/lib.rs'), '/// Stores a quartz snapshot.\npub fn persist() { let quartz = 1; }\n');
   const argv = ['rg', '--sort=path', '-n', '--with-filename', 'let quartz', 'src'];
   const first = search(['--', ...argv]);
-  assert.equal(first.learning.new_facts, 1);
+  assert.equal(first.learning.new_facts, 1,JSON.stringify({learning:first.learning,fallback:first.fallback}));
   assert.equal(first.learning.scan.status, 'refreshed-native');
   assert.equal(first.learning.needs_scan, false);
   assert.equal(first.evidence.symbols[0].name, 'persist');
@@ -70,6 +71,13 @@ try {
   assert.equal(repeat.learning.reused_facts, 1);
   assert.equal(repeat.learning.needs_scan, false);
   assert.equal(repeat.learning.scan, undefined);
+  const oldSchema=new DatabaseSync(path.join(root,'.claude/grain.db'));
+  oldSchema.prepare("UPDATE blocks SET version=15 WHERE name='decls'").run();oldSchema.close();
+  const migrated=search(['--','rg','-n','--with-filename','absent-upgrade-sentinel','src']);
+  assert.equal(migrated.exit_code,1);
+  assert.equal(migrated.learning.scan.status,'refreshed-native');
+  assert.equal(migrated.learning.needs_scan,false);
+  assert.equal(search(['--',...argv]).evidence.symbols[0].name,'persist');
   fs.writeFileSync(path.join(root, 'src/lib.rs'), '/// Stores the revised snapshot.\npub fn revised() { let quartz = 2; }\n');
   fs.writeFileSync(path.join(root, 'src/new.rs'), 'pub fn discovered() { let quartz = 3; }\n');
   const changed = search(['--', ...argv]);
@@ -162,6 +170,7 @@ try {
     {schema_version:1,request:{tool:'rg',input:{args:['quartz','src']},intent:'question'}},
     {schema_version:1,request:{...taskRequest,intent:''}},
     {schema_version:2,request:taskRequest},
+    {schema_version:1,request:{...taskRequest,tool:'References',input:{file_path:'src/lib.rs',line:0,column:0}}},
   ]){
     const refused=run('mustard-rt',['run','search','--root',root,'--request',JSON.stringify(invalid)]);
     assert.equal(refused.status,2);
@@ -215,9 +224,24 @@ try {
   assert.equal(focused.remote_model_calls,0);
   const focusedView=successful('mustard-rt',['run','search','--root',root,'--request',JSON.stringify({schema_version:1,request:focusedRequest}),'--shell-output']).stdout.toString();
   assert.ok(focusedView.includes('pub fn read_current()'));
-  assert.ok(!focusedView.includes('let quartz_snapshot=3'));
+  assert.ok(focusedView.includes('let quartz_snapshot=3'));
+  assert.equal(focused.task_context.chain.steps.length,1);
   assert.ok(!focusedView.includes('let report_snapshot=4'));
-  assert.ok(focusedView.includes('References (expand source/responsibility): fetch'));
+  assert.ok(focusedView.includes('Native follow-up:'));
+  fs.writeFileSync(path.join(root,'src/reuse.rs'),'pub fn retain_context() {\n'+Array.from({length:30},(_,i)=>`    let snapshot_${i}=${i};\n`).join('')+'}\n');
+  const reuseRequest={...focusedRequest,input:{args:['-n','retain_context','src/reuse.rs']},intent:'inspect retain_context',purpose:'implement',choose:false};
+  const context={session:'native-test',agent:'main',epoch:'first',acknowledged:[]};
+  const delivered=JSON.stringify({schema_version:1,request:reuseRequest,context});
+  const firstBody=successful('mustard-rt',['run','search','--root',root,'--request',delivered,'--shell-output']).stdout.toString();
+  const receipt=firstBody.match(/# mustard-delivery:([a-f0-9]{64})/)[1];
+  assert.ok(firstBody.includes('let snapshot_29=29'));
+  const reused=successful('mustard-rt',['run','search','--root',root,'--request',JSON.stringify({schema_version:1,request:reuseRequest,context:{...context,acknowledged:[receipt]}}),'--shell-output']).stdout.toString();
+  assert.ok(reused.includes('already delivered'));
+  assert.ok(!reused.includes('let snapshot_29=29'));
+  assert.ok(Buffer.byteLength(reused)<Buffer.byteLength(firstBody));
+  const firstVisible=firstBody.replace(/\n# mustard-delivery:[a-f0-9]{64}:\d+:[a-f0-9]{16}\n?$/,'');
+  const freshContext=successful('mustard-rt',['run','search','--root',root,'--request',JSON.stringify({schema_version:1,request:reuseRequest,context:{...context,epoch:'after-compact',acknowledged:[receipt]}}),'--shell-output']).stdout.toString();
+  assert.ok(freshContext.includes('let snapshot_29=29'));
   const expandedRanges=JSON.parse(successful('mustard-rt',['run','map','summary','--root',root,'--file','src/focused.rs']).stdout);
   assert.ok(expandedRanges.parts.some(part=>part.name==='fetch'));
   assert.ok(expandedRanges.parts.some(part=>part.name==='archive'));
@@ -235,9 +259,10 @@ try {
     changed_and_new_sources: true, failed_scan_keeps_native_and_retries_later: true,
     raw_stdout_stderr_status_parity: true, native_fallback_parity: true,
     automatic_output_does_not_append_reports: true, typed_agent_pagination: true,
-    typed_tools: true, native_search_unavailable_passes_host_tool: true,
+    typed_tools: true, migrated_index_refreshes_after_empty_native_search:true, native_search_unavailable_passes_host_tool: true,
     task_evidence_visible_to_agent:true, complementary_new_source_refreshes_natively:true,
-    named_declaration_without_inference:true, structural_result_recrossed_after_refresh:true, deferred_candidates_expand_via_binary:true,
+    named_declaration_without_inference:true, typed_operation_contract:true, acknowledged_body_reuse_and_compaction_reset:true, native_dependency_body:true,
+    delivery_bytes:{initial:Buffer.byteLength(firstVisible),repeated:Buffer.byteLength(reused),initial_transport:Buffer.byteLength(firstBody),reduction_percent:100*(Buffer.byteLength(firstVisible)-Buffer.byteLength(reused))/Buffer.byteLength(firstVisible)}, structural_result_recrossed_after_refresh:true, deferred_candidates_expand_via_binary:true,
     real_classic_hook_handoff_and_rewrite: true, original_read_guard: true,
     checkout_isolation: true, default_http_requests: httpRequests, local_model_calls: 0, remote_model_calls: 0,
     binaries: ['mustard', 'mustard-rt', 'scan'].map(name => ({ name,

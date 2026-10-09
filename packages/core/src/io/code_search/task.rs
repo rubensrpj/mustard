@@ -339,6 +339,21 @@ pub(super) fn investigate(
         .map(|(_, slot)| slot.clone())
         .collect();
     report["cards"] = json!(items);
+    let chain_seeds: Vec<_> = cards.iter().filter(|card| anchors.contains(&card.id) || recommendations.contains(&card.id)).cloned().collect();
+    let mut chained_items = report["cards"].as_array().cloned().unwrap_or_default();
+    report["chain"] = super::chain::expand(root,tree,&scope.files,&chain_seeds,&mut chained_items,&mut matcher,request.purpose)?;
+    report["cards"] = json!(chained_items);
+    for step in report["chain"]["steps"].as_array().into_iter().flatten() {
+        if let (Some(file),Some(line),Some(text))=(step["call_source"]["file"].as_str(),step["call_source"]["line"].as_u64(),step["call_text"].as_str()) {
+            facts.push((file.into(),line,text.into()));
+        }
+    }
+    for test in report["chain"]["test_mentions"].as_array().into_iter().flatten() {
+        if let (Some(file),Some(line),Some(text))=(test["source"]["file"].as_str(),test["source"]["line"].as_u64(),test["text"].as_str()) {
+            facts.push((file.into(),line,text.into()));
+        }
+    }
+    if !verify(root,tree,&generation,&cards,&report) {return Err("task-source-changed-during-follow-up".into());}
     report["status"] = json!("current-task-evidence");
     report["scope"] = json!({"method":scope.method,"files":scope.files.len(),"native_query_rewritten":false,"outside_scope_reads":false});
     report["native_follow_up"] = follow_up;
@@ -420,6 +435,11 @@ fn verify(root: &Path, tree: &Path, generation: &str, cards: &[Card], report: &V
                 serde_json::from_value::<Source>(source.clone())
                     .is_ok_and(|source| knowledge::current(tree, &source, &mut hashes))
             })
+        && report["cards"].as_array().into_iter().flatten().chain(report["chain"]["test_mentions"].as_array().into_iter().flatten())
+            .all(|item|serde_json::from_value::<Source>(item["source"].clone()).is_ok_and(|source|knowledge::current(tree,&source,&mut hashes)))
+        && report["chain"]["steps"].as_array().into_iter().flatten()
+            .flat_map(|item| [&item["call_source"], &item["target_source"]])
+            .all(|source|serde_json::from_value::<Source>(source.clone()).is_ok_and(|source|knowledge::current(tree,&source,&mut hashes)))
 }
 
 fn combined_usage(stages: &[Value]) -> Value {

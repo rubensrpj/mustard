@@ -881,6 +881,9 @@ pub struct Decl {
     /// declaration has no header to speak of.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature: String,
+    /// Written grammar fields with exact ranges. Missing fields are unknown.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub syntax: serde_json::Value,
     /// A documentação de cima inteira, sem o teto de [`Decl::doc`]: guardada
     /// só quando o teto cortou alguma coisa, e vazia quando a de `doc` já é a
     /// inteira.

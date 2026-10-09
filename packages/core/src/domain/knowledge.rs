@@ -37,6 +37,8 @@ pub struct Card {
     pub kind: String,
     #[serde(default)]
     pub signature: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub syntax: Value,
     #[serde(default)]
     pub documentation: String,
     #[serde(default)]
@@ -88,6 +90,7 @@ pub fn summary(card: &Card) -> Value {
         "detail_counts":{"literals":card.literals.len(),"tests":card.tests.len(),"body_comment_chars":card.body_comment.chars().count()},
         "text_compacted":card.signature.chars().count()>320 || card.documentation.chars().count()>320 || card.file_documentation.chars().count()>220,
     });
+    if !card.syntax.is_null() {projection["syntax"]=card.syntax.clone();}
     if !card.annotations.is_empty() {
         projection["annotations"] = json!(annotations);
         projection["annotation_status"] = json!("author-assertion; not semantic proof");
@@ -187,7 +190,7 @@ pub fn enrich(raw: &mut Value) {
                 literals:module["texts"].as_array().into_iter().flatten().filter(|text|
                     text["owner"].as_str()==Some(name) && text["line"].as_u64().is_some_and(|at|line<=at && at<=end_line))
                     .map(evidence::source_literal).collect(),
-                file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),
+                syntax:declaration["syntax"].clone(),file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),
                 annotations:declaration["annotations"].as_array().into_iter().flatten()
                     .filter_map(|item|serde_json::from_value(item.clone()).ok()).collect(),
                 source:Source {file:file.to_string(),line,end_line,sha256:sha256.to_string()},
@@ -207,7 +210,7 @@ pub fn enrich(raw: &mut Value) {
             if end_line>0 {
                 cards.entry(file.into()).or_default().push(Card {
                     id:format!("{file}:1:@file"), name:std::path::Path::new(file).file_name().and_then(|name|name.to_str()).unwrap_or(file).into(),
-                    kind:"source-file".into(),signature:String::new(),documentation:String::new(),
+                    kind:"source-file".into(),signature:String::new(),syntax:Value::Null,documentation:String::new(),
                     body_comment:short(module["file_comment"].as_str().unwrap_or_default(),600),
                     identifiers:module["analysis"]["file_identifiers"].as_str().unwrap_or_default().into(),
                     literals:module["texts"].as_array().into_iter().flatten().map(evidence::source_literal).collect(),

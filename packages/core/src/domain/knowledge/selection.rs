@@ -5,6 +5,7 @@ use crate::domain::normalize::{Languages, Normalizer};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+pub mod policy;
 
 #[derive(Clone, Debug)]
 pub struct Ranked {

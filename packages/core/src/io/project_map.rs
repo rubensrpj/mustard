@@ -302,12 +302,12 @@ pub const FILES: MapBlock = block!("files", version 3, {
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 15, {
+pub const DECLS: MapBlock = block!("decls", version 16, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text, "annotations" Json,
         "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
-        "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
+        "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json, "syntax" Json
     ],
     "texts" at Place::Files => [
         "path" Text, "texts" Json, "file_doc" Text, "file_comment" Text, "file_doc_in_body" Int, "quality" Json, "analysis" Json
@@ -1334,8 +1334,8 @@ fn parts_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
 }
 
 /// As colunas de uma declaração que as perguntas pelo nome leem.
-const NAMED_COLUMNS: [&str; 14] =
-    ["file", "kind", "name", "line", "end_line", "doc", "signature", "used_by", "owner", "contract", "members", "implements", "implemented_by", "common_calls"];
+const NAMED_COLUMNS: [&str; 15] =
+    ["file", "kind", "name", "line", "end_line", "doc", "signature", "used_by", "owner", "contract", "members", "implements", "implemented_by", "common_calls", "syntax"];
 
 /// A declaração de uma linha com as colunas de [`NAMED_COLUMNS`].
 fn named_decl(row: &Picked) -> Result<MapDecl> {
@@ -1353,6 +1353,7 @@ fn named_decl(row: &Picked) -> Result<MapDecl> {
         implements: json_cell(&row[11])?,
         implemented_by: json_cell(&row[12])?,
         common_calls: usize::try_from(int_cell(&row[13])).unwrap_or_default(),
+        syntax:json_cell(&row[14])?,
     })
 }
 

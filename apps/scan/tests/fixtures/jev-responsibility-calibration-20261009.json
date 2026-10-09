@@ -1,0 +1,89 @@
+{
+  "method": "Authored small source-backed cases, frozen before pilot. Calibration and heldout splits separate. Not independent external semantic accuracy.",
+  "cases": [
+    {
+      "id": "sort",
+      "split": "calibration",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.sort((a,b)=>a.value-b.value); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.filter(row=>row.value>0); }\n",
+      "intent": "Format records: which function sorts records by ascending numeric value?",
+      "expected": "alpha"
+    },
+    {
+      "id": "filter",
+      "split": "calibration",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(row=>({...row,enabled:true})); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.filter(row=>row.enabled); }\n",
+      "intent": "Format records: which function removes records whose enabled flag is false?",
+      "expected": "beta"
+    },
+    {
+      "id": "copy",
+      "split": "calibration",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(row=>({...row})); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return [...rows]; }\n",
+      "intent": "Format records: which function creates independent shallow copies of every record?",
+      "expected": "alpha"
+    },
+    {
+      "id": "sum",
+      "split": "calibration",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(row=>row.quantity); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.reduce((n,row)=>n+row.quantity,0); }\n",
+      "intent": "Format records: which function returns the total quantity as a number?",
+      "expected": "beta"
+    },
+    {
+      "id": "none-sheets",
+      "split": "calibration",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(row=>row.value).join(\"\\n\"); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return JSON.stringify(rows); }\n",
+      "intent": "Format records: which function creates an Excel workbook with two sheets?",
+      "expected": "none"
+    },
+    {
+      "id": "required-pair",
+      "split": "calibration",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.filter(row=>row.enabled); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.sort((a,b)=>a.value-b.value); }\n",
+      "intent": "Format records: which single function both removes disabled records and sorts all remaining records by value?",
+      "expected": "abstain"
+    },
+    {
+      "id": "latest",
+      "split": "holdout",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.sort((a,b)=>a.createdAt-b.createdAt); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.sort((a,b)=>b.createdAt-a.createdAt); }\n",
+      "intent": "Format records: which function returns records ordered by descending timestamp?",
+      "expected": "beta"
+    },
+    {
+      "id": "redact",
+      "split": "holdout",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(({password,...rest})=>rest); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.map(row=>({...row,password:String(row.password)})); }\n",
+      "intent": "Format records: which function removes the password property from copies without changing input records?",
+      "expected": "alpha"
+    },
+    {
+      "id": "group",
+      "split": "holdout",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.filter(row=>row.customerId); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.reduce((groups,row)=>{ (groups[row.customerId]??=[]).push(row); return groups; },{}); }\n",
+      "intent": "Format records: which function groups all records by customer ID?",
+      "expected": "beta"
+    },
+    {
+      "id": "empty",
+      "split": "holdout",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.length?rows[0]:null; }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows[0]??{}; }\n",
+      "intent": "Format records: which function returns null for an empty list and the first record otherwise?",
+      "expected": "alpha"
+    },
+    {
+      "id": "none-persist",
+      "split": "holdout",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(row=>JSON.stringify(row)); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.filter(row=>row.id!==null); }\n",
+      "intent": "Format records: which function writes the records into a database transaction?",
+      "expected": "none"
+    },
+    {
+      "id": "distributed",
+      "split": "holdout",
+      "source": "/** Format records: candidate implementation. */\nexport function alpha(rows: any[]): any { return rows.map(({secret,...rest})=>rest); }\n/** Format records: candidate implementation. */\nexport function beta(rows: any[]): any { return rows.reduce((n,row)=>n+row.quantity,0); }\n",
+      "intent": "Format records: which single function removes confidential fields and then aggregates quantities?",
+      "expected": "abstain"
+    }
+  ]
+}

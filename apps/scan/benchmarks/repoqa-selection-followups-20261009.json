@@ -1,0 +1,39 @@
+{
+  "dataset_url": "https://github.com/evalplus/repoqa_release/releases/download/2024-06-23/repoqa-2024-06-23.json.gz",
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "criterion": "New repositories excluded from all earlier checked-in selections. Frozen before running this stage. Public labels, adapted retrieval only, not autonomous task success.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "psf/black",
+      "commit": "f03ee113c9f3dfeb477f2d4247bfb7de2e5f465c",
+      "needles": 10,
+      "files": 28,
+      "bytes": 429942
+    },
+    {
+      "language": "typescript",
+      "repo": "cheeriojs/cheerio",
+      "commit": "d0b3c2f6b57cd1f835741175d463963266be0eef",
+      "needles": 10,
+      "files": 33,
+      "bytes": 391255
+    },
+    {
+      "language": "rust",
+      "repo": "tokio-rs/tracing",
+      "commit": "908cc432a5994f6e17c8f36e13c217dc40085704",
+      "needles": 10,
+      "files": 11,
+      "bytes": 203218
+    },
+    {
+      "language": "go",
+      "repo": "nsqio/nsq",
+      "commit": "2127c0a1ce50a66d61d78496033b15ef5cb5e250",
+      "needles": 10,
+      "files": 42,
+      "bytes": 75111
+    }
+  ]
+}
