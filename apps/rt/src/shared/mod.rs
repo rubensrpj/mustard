@@ -68,6 +68,7 @@ pub mod dag;
 pub mod development_build;
 pub(crate) mod evidence;
 pub mod jev;
+pub(crate) mod knowledge_selection;
 /// O que sobra do teto de gasto do Jev no mês, a porta de toda chamada a ele.
 pub mod jev_budget;
 pub mod judgement;

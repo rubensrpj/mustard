@@ -238,7 +238,7 @@ fn filled_by_the_scan(_: &Connection, _: &Path) -> Result<()> {
 /// que mudam a leitura de todos os outros e os que não se decodificaram. E o
 /// teto do nome comum com que as chamadas ligaram, que religa o projeto
 /// quando muda.
-pub const CENSUS: MapBlock = block!("census", version 5, {
+pub const CENSUS: MapBlock = block!("census", version 6, {
     "census" at Place::One => [
         "root" Text,
         "head" Text ["state", "head"],
@@ -250,7 +250,7 @@ pub const CENSUS: MapBlock = block!("census", version 5, {
         "max_same_name" Int ["state", "max_same_name"],
         "frameworks" Json,
         "detected_stacks" Json,
-        "skipped_build_dirs" Json ["coverage", "skipped_build_dirs"]
+        "coverage_report" Json ["coverage"]
     ],
     "projects" at list(&["projects"]) => [
         "name" Text, "dir" Text, "kind" Text, "code_files" Int,
@@ -2329,7 +2329,6 @@ mod tests {
         top.remove("shared_contracts");
         top.insert("resources".into(), serde_json::json!([]));
         top["graph"].as_object_mut().unwrap().retain(|key, _| !["cyclic", "top_fan_out", "layers", "touchpoints"].contains(&key.as_str()));
-        top["coverage"].as_object_mut().unwrap().retain(|key, _| key == "skipped_build_dirs");
         top["projects"][0].as_object_mut().unwrap().remove("dependencies");
         assert_eq!(back, expected);
         assert_eq!(stored.marks.len(), BLOCKS.len());
@@ -2408,7 +2407,7 @@ mod tests {
         for key in ["root", "state", "manifests", "projects", "languages", "frameworks", "skeleton", "detected_stacks"] {
             assert_eq!(back[key], expected[key], "{key}");
         }
-        assert_eq!(back["coverage"], json!({"skipped_build_dirs": ["target"]}));
+        assert_eq!(back["coverage"], expected["coverage"]);
         assert_eq!(
             back["modules"],
             json!([

@@ -13,6 +13,8 @@ pub mod resources;
 pub mod references;
 pub mod capabilities;
 pub mod evidence;
+pub mod selection;
+pub mod projection;
 mod retrieval;
 pub use annotation::Annotation;
 
@@ -79,7 +81,7 @@ pub fn summary(card: &Card) -> Value {
     let mut projection = json!({"id":card.id,"name":card.name,"kind":card.kind,"source":card.source,
         "signature":short(&card.signature,320),"documentation":short(&card.documentation,320),
         "file_documentation":short(&card.file_documentation,220),
-        "parse_complete":card.parse_complete,"contracts":card.contracts,"routes":card.routes,
+        "parse_complete":card.parse_complete,"contracts":card.contracts.iter().take(3).collect::<Vec<_>>(),"routes":card.routes.iter().take(3).collect::<Vec<_>>(),
         "outgoing":outgoing,"callers":callers,"inline_tests":card.inline_tests,"unresolved_calls":card.unresolved_calls,
         "detail_counts":{"literals":card.literals.len(),"tests":card.tests.len(),"body_comment_chars":card.body_comment.chars().count()},
         "text_compacted":card.signature.chars().count()>320 || card.documentation.chars().count()>320 || card.file_documentation.chars().count()>220,
@@ -101,6 +103,9 @@ pub fn summary(card: &Card) -> Value {
         projection["identifiers_compacted"]=json!(card.identifiers.chars().count()>320);
     }
     projection["detail_counts"]["identifiers"]=json!(card.identifiers.split_whitespace().count());
+    projection["detail_counts"]["contracts"]=json!(card.contracts.len());
+    projection["detail_counts"]["routes"]=json!(card.routes.len());
+    if card.contracts.len()>3 || card.routes.len()>3 {projection["contracts_or_routes_compacted"]=json!(true);}
     projection
 }
 

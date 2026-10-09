@@ -12,6 +12,7 @@ pub(super) struct Terms {
     data: bool,
     executable_kinds: BTreeSet<String>,
     data_kinds: BTreeSet<String>,
+    responsibility_data: BTreeSet<String>,
 }
 
 impl Terms {
@@ -23,6 +24,7 @@ impl Terms {
             data: false,
             executable_kinds: BTreeSet::new(),
             data_kinds: BTreeSet::new(),
+            responsibility_data: BTreeSet::new(),
         };
         let original = out.asked.clone();
         for line in RULES
@@ -32,9 +34,11 @@ impl Terms {
         {
             let mut words = line.split_whitespace();
             let Some(first) = words.next() else { continue };
-            if matches!(first, "@executable" | "@data") {
+            if matches!(first, "@executable" | "@data" | "@responsibility-data") {
                 let kinds = if first == "@executable" {
                     &mut out.executable_kinds
+                } else if first=="@responsibility-data" {
+                    &mut out.responsibility_data
                 } else {
                     &mut out.data_kinds
                 };
@@ -73,6 +77,12 @@ impl Terms {
         } else {
             1.0
         }
+    }
+
+    pub fn callable(&self, kind: &str) -> bool { self.executable_kinds.contains(kind) }
+    pub fn definition(&self) -> bool { self.data && !self.executable }
+    pub fn responsibility_weight(&self,kind:&str)->f64 {
+        if self.definition() && self.responsibility_data.contains(kind) {1.25}else{self.weight(kind)}
     }
 }
 

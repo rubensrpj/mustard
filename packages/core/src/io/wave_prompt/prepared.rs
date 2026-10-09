@@ -63,7 +63,11 @@ fn component(root: &Path, tree: &Path, location: &str) -> PreparedSource {
     part.knowledge=crate::io::knowledge::for_source(root,tree,&path,name);
     // Optional evidence cannot crowd mandatory rules/items out of the prompt.
     if part.knowledge.to_string().len()>3000 {
-        part.knowledge=json!({"evidence_version":part.knowledge["evidence_version"],
+        let notes:Vec<_>=part.knowledge["interpretations"].as_array().into_iter().flatten().take(2).map(|note|json!({"id":note["id"],
+            "title":note["title"].as_str().unwrap_or_default().chars().take(160).collect::<String>(),
+            "text":note["text"].as_str().unwrap_or_default().chars().take(320).collect::<String>(),"status":note["status"],"text_compacted":true,
+            "source_count":note["source_count"]})).collect();
+        part.knowledge=json!({"evidence_version":part.knowledge["evidence_version"],"interpretations":notes,
             "semantic_proof":false,"detail_compacted":true,
             "expand":"run knowledge --file <source file> --detail"});
     }

@@ -207,6 +207,7 @@ fn main() -> Result<()> {
                     "resources": analysis.model.resources.len(),
                     "resource_issues": analysis.model.resources.iter().filter(|file| !file.issue.is_empty()).map(|file|
                         serde_json::json!({"file":file.path,"reason":file.issue})).collect::<Vec<_>>(),
+                    "coverage":analysis.model.coverage,
                     "head": analysis.model.state.head,
                     "route_rules": analysis.route_rules,
                     "vectors": vectors,
@@ -348,7 +349,7 @@ fn census_pass(root: &Path, out: &Path, all: bool, max_same_name: usize) -> Opti
     model.state.listing = listing.digest();
     model.detected_stacks = detected_stacks;
     model.projects = projects;
-    model.coverage.skipped_build_dirs = walk.skipped_build_dirs;
+    model.coverage = ingest::coverage_of(&walk.paths, walk.skipped_build_dirs, &model);
     let resources_changed = !resources::unchanged(&walk.paths, &model.resources, &listing).ok()?;
     let read = if resources_changed {
         let previous = store::resources_at(out).ok()?;
@@ -706,6 +707,12 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
         max_same_name,
     };
 
+    let mut coverage=ing.coverage;
+    let (mut complete,mut partial,mut unknown)=(0,0,0);
+    for module in &modules {
+        match module.analysis.as_ref().and_then(|a|a["parse_complete"].as_bool()) {Some(true)=>complete+=1,Some(false)=>partial+=1,None=>unknown+=1}
+    }
+    coverage.parse=serde_json::json!({"complete":complete,"partial":partial,"unknown":unknown});
     Ok(Analysis {
         model: ProjectModel {
             root: root_text,
@@ -717,7 +724,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
             modules,
             resources,
             graph: graph_stats,
-            coverage: ing.coverage,
+            coverage,
             projects,
             state,
             history,

@@ -176,17 +176,9 @@ pub(super) fn exact_name(root: &Path, options: &Query<'_>) -> std::result::Resul
         .is_some())
 }
 
-/// A query hydrates matching cards, not every analysis object in the bank.
-pub(super) fn candidates(
-    root: &Path,
-    options: &Query<'_>,
-    notes: &[Interpretation],
-    discovery: Option<&Discovery>,
-    resource_targets: &[String],
-    exact_name: bool,
-) -> std::result::Result<Pool, MapRefusal> {
-    let mut db = store::open_existing(&store::model_path(root))?;
-    let languages = Languages::of_project(root);
+pub(super) fn ensure_languages(root:&Path)->std::result::Result<(),MapRefusal> {
+    let mut db=store::open_existing(&store::model_path(root))?;
+    let languages=Languages::of_project(root);
     let codes = languages.codes().join(",");
     let stored: Option<String> =
         db.conn().query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional().map_err(|e| unreadable(e.into()))?;
@@ -198,6 +190,21 @@ pub(super) fn candidates(
         })
         .map_err(unreadable)?;
     }
+    Ok(())
+}
+
+/// A query hydrates matching cards, not every analysis object in the bank.
+pub(super) fn candidates(
+    root: &Path,
+    options: &Query<'_>,
+    notes: &[Interpretation],
+    discovery: Option<&Discovery>,
+    resource_targets: &[String],
+    exact_name: bool,
+) -> std::result::Result<Pool, MapRefusal> {
+    ensure_languages(root)?;
+    let db = store::open_existing(&store::model_path(root))?;
+    let languages = Languages::of_project(root);
     let conn = db.conn();
     let total: i64 = conn.query_row("SELECT count(*) FROM knowledge_symbols", [], |r| r.get(0)).map_err(|e| unreadable(e.into()))?;
     let mut ids = BTreeSet::new();
@@ -313,6 +320,28 @@ fn add_ids(
         ids.insert(id);
     }
     Ok(())
+}
+
+/// Revisit declarations inside already selected files. Each file gets its
+/// own indexed reservoir, so broad repository matches cannot hide its method.
+pub(super) fn expand_files(root:&Path,cards:&mut Vec<Card>,files:&[String],query:&str,all:bool)->std::result::Result<(usize,bool),MapRefusal> {
+    if all || files.is_empty() {return Ok((0,false));}
+    let db=store::open_existing(&store::model_path(root))?;
+    let terms=query_terms(query,&Languages::of_project(root));
+    let expression=format!("{{name own intent}} : {}",fts_query(&terms,"OR"));
+    if terms.is_empty(){return Ok((0,false));}
+    let per_file=512usize.div_ceil(files.len());
+    let mut ids=BTreeSet::new();let mut omitted=false;
+    for file in files {
+        let mut scoped=BTreeSet::new();
+        add_ids(db.conn(),"SELECT s.id FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path=?2 ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.line",
+            params![expression,file],&mut scoped,per_file,&mut omitted)?;
+        ids.extend(scoped);
+    }
+    for card in cards.iter(){ids.remove(&card.id);}
+    let extra=hydrate(db.conn(),&ids).map_err(unreadable)?;
+    let added=extra.len();cards.extend(extra);
+    Ok((added,omitted))
 }
 
 fn hydrate(conn: &Connection, ids: &BTreeSet<String>) -> Result<Vec<Card>> {

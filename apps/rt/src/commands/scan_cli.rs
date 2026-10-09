@@ -20,7 +20,8 @@ use crate::commands::scan;
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
     /// Retrieve current functions, documents, configuration and interpretations
-    /// without a model call. Export a report with `--markdown --out <file>`.
+    /// natively, with optional configured Choice for ambiguous responsibility.
+    /// Export a report with `--markdown --out <file>`.
     #[command(display_order = 28)]
     Knowledge {
         #[arg(long, default_value = ".")]
@@ -54,6 +55,19 @@ pub enum ScanCmd {
         /// Explicit multi-source interpretation receipt, as a `.json` file.
         #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out", "symbol", "direction", "refresh"])]
         record: Option<PathBuf>,
+        /// Report indexed scope, parser gaps and exclusions without inference.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "topics", "evaluate", "markdown", "all", "detail"])]
+        coverage: bool,
+        /// Compose current evidence for the topics in a JSON plan.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "evaluate"])]
+        topics: Option<PathBuf>,
+        /// Measure retrieval against an explicit JSON manifest, without a host model.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "markdown", "all", "detail"])]
+        evaluate: Option<PathBuf>,
+        /// Experimental file-to-symbol selection; may regress relevance.
+        /// Optional configured Jev only resolves its remaining ambiguities.
+        #[arg(long, conflicts_with_all = ["coverage", "record", "refresh"])]
+        responsibility: bool,
     },
     /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
     /// tool; only the blocks that changed are written again.
@@ -167,7 +181,7 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Knowledge { root, query, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record } => {
+        ScanCmd::Knowledge { root, query, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility } => {
             super::knowledge::run(
                 &root,
                 &mustard_core::io::knowledge::Query {
@@ -188,6 +202,7 @@ pub fn dispatch(cmd: ScanCmd) {
                 markdown,
                 out.as_deref(),
                 record.as_deref(),
+                super::knowledge::Modes { coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility },
             );
         }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
@@ -252,6 +267,16 @@ mod tests {
     struct Probe {
         #[command(subcommand)]
         cmd: ScanCmd,
+    }
+
+    #[test]
+    fn knowledge_modes_cannot_combine_or_silently_ignore_a_query() {
+        for args in [vec!["--coverage","--topics","topics.json"],vec!["--evaluate","eval.json","--query","quartz"],
+            vec!["--topics","topics.json","--symbol","a.rs:1:run"],vec!["--coverage","--markdown"]] {
+            let mut line=vec!["probe","knowledge"];line.extend(args);
+            assert!(Probe::try_parse_from(line).is_err());
+        }
+        assert!(Probe::try_parse_from(["probe","knowledge","--coverage"]).is_ok());
     }
 
     fn opts_of(args: &[&str]) -> crate::commands::map::MapOpts {

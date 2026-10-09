@@ -1,7 +1,16 @@
 use serde_json::json;
 use std::path::Path;
 
-pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown: bool, out: Option<&Path>, record: Option<&Path>) {
+mod evaluation;
+
+pub struct Modes<'a> { pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool }
+
+fn read_manifest<T:serde::de::DeserializeOwned>(path:&Path)->Result<T,String> {
+    if std::fs::metadata(path).map_err(|e|e.to_string())?.len()>1_000_000 {return Err("knowledge-manifest-too-large".into());}
+    serde_json::from_str(&std::fs::read_to_string(path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+}
+
+pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown: bool, out: Option<&Path>, record: Option<&Path>, modes:Modes<'_>) {
     let start = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
     let anchor = mustard_core::io::spec_events::spec_root(&start);
     let git = mustard_core::platform::git::run(&start, &["rev-parse", "--show-toplevel"]);
@@ -24,11 +33,29 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
                 return Err("knowledge-invalid-export-path".into());
             }
         }
-        let (report, map) = mustard_core::io::knowledge::query_with(root, &tree, query).map_err(|e| format!("{e:?}"))?;
-        let text = if markdown { mustard_core::domain::knowledge::markdown(&report, &map) } else { report.to_string() };
+        let selector=if modes.coverage || !modes.responsibility {None}else{crate::shared::knowledge_selection::KnowledgeSelector::configured(root)};
+        let selector=selector.as_ref().map(|s|s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector);
+        let (report,text)=if modes.coverage {
+            let report=mustard_core::io::knowledge::coverage::report(root).map_err(|e|format!("{e:?}"))?;
+            (report.clone(),report.to_string())
+        } else if let Some(path)=modes.evaluate {
+            let plan=read_manifest(path)?;
+            let report=evaluation::evaluate(root,&tree,&plan,query,selector)?;
+            (report.clone(),report.to_string())
+        } else if let Some(path)=modes.topics {
+            let plan=read_manifest(path)?;
+            let (report,map)=mustard_core::io::knowledge::dossier::assemble(root,&tree,&plan,query,selector,modes.responsibility).map_err(|e|format!("{e:?}"))?;
+            let text=if markdown {mustard_core::io::knowledge::dossier::markdown(&report,&map)}else{report.to_string()};
+            (report,text)
+        } else {
+            let (report,map)=if modes.responsibility {mustard_core::io::knowledge::query_with_selector(root,&tree,query,selector)} else {mustard_core::io::knowledge::query_with(root,&tree,query)}.map_err(|e|format!("{e:?}"))?;
+            let text=if markdown {mustard_core::domain::knowledge::markdown(&report,&map)}else{report.to_string()};
+            (report,text)
+        };
         if let Some(out) = out {
             mustard_core::io::fs::write_atomic(out, text.as_bytes()).map_err(|e| e.to_string())?;
-            return Ok(json!({"ok":true,"file":out,"local_model_calls":report.get("local_model_calls").cloned().unwrap_or_else(||json!(0)),"remote_model_calls":0}).to_string());
+            return Ok(json!({"ok":true,"file":out,"local_model_calls":report.get("local_model_calls").cloned().unwrap_or_else(||json!(0)),
+                "remote_model_calls":report.get("remote_model_calls").cloned().unwrap_or_else(||json!(0))}).to_string());
         }
         Ok(text)
     })();

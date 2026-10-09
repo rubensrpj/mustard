@@ -189,6 +189,25 @@ pub struct JevFilter {
 }
 
 impl JevFilter {
+    /// Knowledge uses the same authorization, budget, cache and attempt ledger
+    /// as other search decisions, without enabling context or wave judgement.
+    pub(crate) fn for_knowledge(root:&Path)->Option<Self> {
+        let config=ProjectConfig::load(root);
+        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter("search")) {return None;}
+        let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
+        let ledger=mustard_core::io::spend::machine_dir();
+        let mut filter=Self::new(root,loaded.key,Budget::open(root,&config,ledger.as_deref()));
+        let session=crate::shared::spec_state::session_from_env();
+        filter.spec=crate::shared::spec_state::active_spec(&root.to_string_lossy(),session.as_deref());
+        Some(filter)
+    }
+
+    pub(crate) fn choose_symbols(&self,payload:&str)->Result<Value,FilterError> {
+        validate_wire_size(payload)?;
+        self.send_all_for(&[payload.to_string()],Instant::now()+self.timeouts.response,Purpose::Search)?
+            .into_iter().next().ok_or_else(||FilterError::Unreadable("missing symbol choice".into()))
+    }
+
     /// O filtro com a chave do projeto, no endereço do serviço: o de
     /// [`JEV_URL`], ou o que [`URL_ENV`] diz. Toda chamada dele desconta de
     /// `budget`.

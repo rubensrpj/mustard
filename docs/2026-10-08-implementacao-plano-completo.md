@@ -1,12 +1,15 @@
 # Implementação do plano completo
 
+Atualização de escopo em 09/10: o usuário autorizou seleção de responsabilidade por arquivo, contexto inicial menor, cobertura explícita, reuso/relatórios por assuntos e avaliação repetível, com piloto Jev pago e restrito às ambiguidades. A seleção arquivo→símbolo ficou experimental (`--responsibility`) devido a 14/60 → 13/60 símbolos na nova amostra externa; o padrão preserva a recuperação anterior. Piloto Jev real: US$ 0,001493 estimados, um ganho em 33 perguntas com símbolo, cache sem nova chamada. Contratos e resultados vigentes ficam na seção inicial de [Scan como oráculo](2026-10-08-scan-oraculo.md). Validação de uma spec real no Claude permanece distinta dos testes locais; não declarar economia faturada pela redução de bytes. As afirmações históricas de que não houve chamadas pagas valem para suas respectivas etapas.
+
+
 Autorizada pelo usuário em 08/10/2026. Base: `18ef6eed4d2e1d367a1f0ce111178bf8d51d7cc8`, branch original `feature/validacao-leve-por-trecho`. Implementação isolada na branch `codex/mustard-plano-completo`; a instalação e a branch em uso são preservadas.
 
 Contrato de entrada: `2026-10-07-prompt-implementacao-mustard.md`. O escopo abrange as trilhas A–E e o item A16 aprovado. Não envolve publicar recursos externos ou atualizar a instalação pessoal automaticamente.
 
 Esclarecimento do usuário em 08/10: suporte ao Codex é futuro. A preparação atual conserva interfaces de julgamento e projeção de estado independentes dos adaptadores do Claude. Não será implementada integração Codex nesta entrega; não haverá alteração da configuração pessoal desse cliente.
 
-## Continuação mais recente do scan em 09/10
+## Etapa anterior do scan em 09/10: evidência ampliada
 
 Evidência dentro das funções agora participa da busca: identificadores do corpo, assinaturas e textos fixos completos, sem cortes anteriores à indexação nem limite dos primeiros 12 textos. A seleção ampla combina índice dos cartões e descoberta geral, com filtro de arquivo antecipado. Respostas iniciais oferecem pequenos trechos correspondentes; expansão mantém a evidência completa sem duplicação. Pacotes versão 3 exigem novo scan de bancos anteriores. O motor continua agnóstico e sem modelo auxiliar/Jev por padrão.
 

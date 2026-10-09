@@ -7,8 +7,8 @@
 //!
 //! O modelo se grava no mapa do projeto, o banco que a porta do núcleo
 //! declara (`mustard_core::io::project_map`), e se lê dele de volta: o que o
-//! banco não guarda — a cobertura além das pastas puladas e se o grafo tem
-//! ciclo — só serve ao resumo impresso da passada, e volta vazio.
+//! banco não guarda — como se o grafo tem ciclo — só serve ao resumo
+//! impresso da passada, e volta vazio. A cobertura fica no censo.
 
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{History, Quality};
@@ -137,6 +137,9 @@ pub struct ProjectUnit {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Coverage {
+    /// Aggregated while parsing; queries never decode every evidence pack.
+    #[serde(default)]
+    pub parse: serde_json::Value,
     pub top_dirs: Vec<DirCoverage>,
     /// As pastas que a caminhada pulou pela lista do `manifests.toml`, pelo
     /// caminho relativo, em qualquer profundidade: as que nunca guardam

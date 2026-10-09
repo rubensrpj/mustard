@@ -2,6 +2,102 @@
 
 Estado em 09/10/2026. A orientação atual é esgotar alternativas nativas antes de considerar IA; a avaliação pontual do Jev em todo o Mustard está registrada ao final deste documento. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
 
+
+## Continuação autorizada de 09/10: seleção de responsabilidade e medição
+
+O usuário autorizou as cinco frentes seguintes e um piloto pago pontual com Jev. O crédito informado de US$ 5 não é uma meta de gasto. Essa autorização sucede os registros históricos de ausência de chamadas pagas abaixo. A consulta continua nativa por padrão. A nova seleção é experimental (`--responsibility`), fora da recuperação padrão devido à regressão externa descrita abaixo; nem uma chave existente nem abrir painel/statusline ativam inferência.
+
+1. **Arquivo → declaração responsável:** no modo experimental, o índice descobre arquivos; um segundo reservatório busca declarações nesses arquivos. A seleção prioriza a quantidade de pistas próprias correspondentes e depois seu peso global. Comentários/identificadores herdados de métodos são descontados do cartão do tipo que os contém. São heurísticas de localização, sem prova de responsabilidade em execução.
+2. **Contexto inicial e expansão:** a resposta inicial evita documentação de arquivo repetida, campos vazios e a segunda projeção do mesmo grafo. Contratos/rotas iniciais têm contagem e expansão. Fonte, linhas, hash, lacunas e interpretações não perdem seus recibos. `--detail` e `--all` preservam a expansão armazenada.
+3. **Cobertura explícita:** `mustard-rt run knowledge --coverage` consulta o censo persistido: arquivos de código, extensões sem parser, falhas de leitura, diretórios pulados e contagem de parsing completo/parcial/desconhecido. Extensões podem ser recursos de texto indexados, e diretórios ignorados não são enumerados. Testes continuam fora dos cartões de produção; a porta de declarações/testes os investiga. Integridade do SQLite não comprova cobertura. Censos antigos exigem novo scan. As contagens são agregadas no scan; uma consulta não decodifica todos os pacotes para contá-los.
+4. **Reuso e relatório por assuntos:** interpretações revisadas atuais têm preferência no contexto das ondas. Todas as fontes precisam continuar válidas, inclusive as secundárias. A compactação preserva uma síntese identificada e a versão da evidência completa. `--topics` organiza fontes e interpretações existentes; não inventa nova explicação de negócio.
+5. **Avaliação repetível:** `--evaluate` compara recuperação nativa compacta/detalhada e a seleção experimental nativa. Somente `--evaluate perguntas.json --responsibility`, com as autorizações de configuração, inclui Choice remoto. Mede acerto por arquivo/símbolo, bytes e tempo de consulta; tokens do modelo permanecem desconhecidos. `spec` anexa observações existentes de consumo do painel, sem executar a spec. A economia total de uma execução real continua dependendo de validação no host autenticado.
+
+### Contratos de uso
+
+Plano de assuntos (1–24, ids únicos):
+
+```json
+{"title":"Visão do projeto","topics":[{"id":"sessao","title":"Sessões","query":"session origin validation","file":"src/session.rs"}]}
+```
+
+```text
+mustard-rt run knowledge --topics assuntos.json --markdown --out relatorio.md
+```
+
+O arquivo é local. Publicação externa continua exclusiva do pedido explícito pelo fluxo de páginas, no layout existente. O relatório nativo pode fornecer a estrutura e as referências de um documento como o Puzzle; uma narrativa de negócio com significado novo ainda exige revisão/raciocínio. `reviewed` é declaração do autor, sem certificação automática.
+
+Manifesto de avaliação (1–128 perguntas; gabaritos não são enviados ao Jev):
+
+```json
+{"source_commit":"<SHA completo da fonte>","provenance":"perguntas congeladas antes do teste","spec":"<spec opcional>","questions":[{"id":"sessao","query":"session origin validation","expected":["src/session.rs"],"symbols":["src/session.rs:12:validateOrigin"]}]}
+```
+
+```text
+mustard-rt run knowledge --evaluate perguntas.json --out avaliacao.json
+```
+
+`symbols` contém identidades exatas de cartões. `source_commit`, `provenance`, `spec` e `symbols` são opcionais; `expected` deve ter ao menos um caminho relativo. A geração do banco precisa permanecer estável durante a avaliação e durante a montagem por assuntos. Bytes não são convertidos em uma estimativa de tokens faturados. Uma execução da spec não é simulada por este comando.
+
+### Jev atrás da interface, apenas nas ambiguidades
+
+A porta `SymbolSelector` recebe consulta e candidatos atuais. O adaptador Jev usa a interface de julgamento, autorização por finalidade, modelo fixado, cache por conteúdo e registro físico já existentes no Mustard. Exige `--responsibility`, `ai.fallback:true` e `judgement.search.filter:"jev"`. As consultas comuns não instanciam o provedor, mesmo com essa configuração. Nomes/identidades exatos, ausência de candidatos, consulta exaustiva e cobertura não chamam Jev. Uma escolha só pode trocar o vencedor pelo id de um candidato fornecido no mesmo arquivo.
+
+As ambiguidades exigem ao menos duas pistas próprias por candidato, mesma quantidade de pistas do vencedor e diferença de pontuação dentro de uma faixa provisória de 12% (mínimo absoluto 0,5). A pontuação nativa não é probabilidade. O Jev recebe somente esses grupos: nome, assinatura/documentação compactadas, testemunhos escritos e recibos, sem corpo completo do projeto. Perguntas independentes compartilham um estado; cada grupo tem opção `none`. A política inicial aceita apenas confiança ≥0,5, probabilidade ≥0,7 e diferença ≥0,2; **não foi calibrada como probabilidade de correção**. Resposta insuficiente/falha preserva a seleção nativa; confiança ausente não é inventada.
+
+Essa forma segue [Choice](https://docs.typesafe.ai/primitives/choice) e [State](https://docs.typesafe.ai/concepts/state): opções explícitas, escape e perguntas independentes relevantes em lote. O preço usado é uma estimativa pela [tabela de modelos](https://docs.typesafe.ai/models), não fatura. Falhas/retries com uso ausente permanecem desconhecidos. Cache idêntico não conta nova cobrança. Uma geração alterada descarta a escolha e repete nativamente, preservando a contagem da tentativa anterior. Fontes retornadas são conferidas novamente depois da latência remota.
+
+O piloto reprodutível é `apps/scan/benchmarks/jev-choice.mjs`: exige chave no ambiente, copia a fonte autorizada, exclui Markdown/configurações pessoais e executa apenas consultas. Arquivo/símbolo esperado é comparado fora do payload. Perguntas conhecidas servem a desenvolvimento; a segunda seleção RepoQA foi congelada antes da implementação, excluindo os seis projetos já avaliados.
+
+### Piloto Jev real e aceite local
+
+Fonte Florestal `a3fe37ab454c`, 37 perguntas conhecidas de desenvolvimento, duas listas sem Markdown/ambiente, executáveis congelados antes das novas perguntas externas. Dezessete consultas tinham ambiguidades elegíveis; cada uma gerou uma requisição com seus grupos independentes. Outras vinte ficaram nativas. Foram 17 tentativas físicas, 35.553 tokens de entrada conhecidos e nenhum uso desconhecido. Estimativa: **1.493 microdólares = US$ 0,001493**, pela tabela, sem comparação com fatura. As dezessete repetições deram zero chamadas remotas. Busca exata e ausência de candidatos também mantiveram zero chamadas.
+
+A seleção aceitou dez escolhas de arquivo ao todo. Arquivos esperados ficaram em **32/37**, com e sem Jev. Símbolos passaram de **21/33 para 22/33**, um ganho (H01), sem regressão nesse conjunto. **É ganho modesto em perguntas conhecidas, sem confirmação independente do julgamento remoto.** O preço pequeno deste piloto não autoriza projetar ganho para todo o projeto, nem ativar Jev em rotina. Mantê-lo opcional; calibrar elegibilidade/qualidade em outra amostra antes de ampliar. O piloto não alterou o `mustard.json` original nem a instalação pessoal.
+
+Provas: `target/scan-hierarchy-20261009/jev/{pilot,summary}.json`, respostas por pergunta, registros de requisições/tentativas e hashes. O executor reprodutível recebe `--source`, `--bins`, `--questions`, `--out` e a chave por `TYPESAFE_API_KEY`; nunca grave a chave na linha de comando ou no relatório.
+
+A suíte completa teve **3.866 aprovações, zero falhas e dois ignorados**. Após a identificação da origem da seleção, os testes pertinentes e lint estrito foram repetidos, aprovados. A instalação real a partir do binário em diretório temporário inicialmente vazio passou, incluindo cobertura incremental de extensões, assuntos, avaliação, expansão, invalidação por fonte secundária e ausência de HTTP com chave/filtros legados sem autorização atual. Fontes que mudam durante a escolha são recusadas; gravação concorrente descarta a escolha, repete nativamente e conserva seu custo no registro.
+
+### Validação de uma spec real ainda pendente
+
+O CLI do Claude retornou `loggedIn:false` na conferência deste ambiente. A chave no `mustard.json` autenticou o Jev real; ela não é uma sessão do Claude. Não foi executada uma spec de implementação por modelo, nem demonstrada economia total de tokens/leituras/tempo ou melhoria do código final.
+
+Para esse aceite, usar duas cópias isoladas do mesmo commit, a mesma spec aprovada e critérios, modelo/esforço fixados e sessões novas. Comparar pacote baseline `3aa3e7c8` com o pacote desta continuação, alternando a ordem. Guardar transcrições reais e observações nativas de consumo/estado; medir duração, leituras de fonte, tokens de entrada/saída/cache, tentativas Jev, correções e aprovação dos mesmos testes. `--evaluate` com `spec` anexa o consumo observado, conservando intervalos/uso desconhecidos; não converte tamanho do contexto em economia nem substitui essa execução. Não publicar páginas ou instalar pacote na conta pessoal como parte desse teste.
+
+### Nova avaliação externa e decisão de não promover o experimento
+
+A segunda seleção congelada tem 60 descrições externas intactas, uma dezena por projeto: `openai/openai-python`, `scylladb/seastar`, `apache/flink-ml`, `expressjs/express`, `helix-editor/helix` e `caddyserver/caddy`. Exclui os seis projetos anteriores, usando a mesma regra de menor SHA-256 e limites de tamanho. O congelamento precedeu a implementação e os resultados. Não houve inferência nem execução do código dos projetos.
+
+| Linguagem | Arquivos baseline → experimento | Símbolos baseline → experimento |
+| --- | --- | --- |
+| Python | 9 → 9 | 1 → 1 |
+| C++ | 0 → 0 | 0 → 0 |
+| Java | 0 → 0 | 0 → 0 |
+| TypeScript/JavaScript | 10 → 10 | 8 → 8 |
+| Rust | 10 → 10 | 0 → 1 |
+| Go | 7 → 7 | 5 → 3 |
+| **Total** | **36/60 → 36/60** | **14/60 → 13/60** |
+
+Trinta e seis alvos estão no índice; o denominador mantém os 60. C++/Java continuam sem gramática no registro; outros quatro alvos têm exclusão/ausência no índice. Os bytes somados passaram de 670.501 para 644.225 (-3,9%). Há um ganho e duas regressões de símbolo. Portanto, a etapa não demonstra maior precisão geral e **não foi promovida a padrão**. O ranking experimental foi preservado, sem ajustá-lo aos novos gabaritos. O ajuste posterior foi isolá-lo atrás de opção explícita, inclusive restringindo a ampliação de pesos de tipos a esse modo, conservando os pesos antigos da recuperação padrão. Este conjunto passa agora a ser dado conhecido de regressão; novas otimizações exigem outro conjunto congelado.
+
+Provas da avaliação original: `target/scan-hierarchy-20261009/repoqa-experiment/` e `pre-external-freeze.json`, com hashes dos programas medidos. Reprodução do modo experimental no produto final (baseline é 3aa3e7c8, sem a opção nova):
+
+```text
+node apps/scan/benchmarks/repoqa.mjs --dataset /tmp/mustard-repoqa-2024-06-23.json \
+  --selection apps/scan/benchmarks/repoqa-selection-hierarchy-20261009.json \
+  --baseline target/scan-hierarchy-baseline --current target/debug \
+  --responsibility true --out target/scan-hierarchy-20261009/repoqa-reproduction
+```
+
+A comparação Florestal do experimento manteve 17/21 e 15/16 arquivos; 11/20 e 10/13 símbolos. Bytes: 316.880 → 296.463 (-6,4%) e 227.116 → 214.251 (-5,7%). Mediana aquecida alternada: 330 → 360 ms (+9,1%); banco com 78.778.368 bytes nas duas versões. Scan completo único: 12.257 → 11.421 ms; sem alterações: 137 → 112 ms. São programas de desenvolvimento em uma máquina, sem comprovação de velocidade universal ou economia faturada. As duas tentativas intermediárias foram preservadas, incluindo a regressão que levou à revisão da seleção. Provas em `target/scan-hierarchy-20261009/suzano-experiment/`.
+
+### Padrão final depois do isolamento
+
+No backend, o padrão final manteve exatamente os **32/37 arquivos e 21/33 símbolos**, sem Jev. As duas listas tiveram 316.880 → 296.371 bytes (-6,5%) e 227.116 → 212.200 (-6,6%). O banco permaneceu em 78.778.368 bytes. Scan completo único: 11.703 → 11.587 ms; sem alterações: 136 → 146 ms. Mediana aquecida alternada: 333 → 342 ms (+2,7%). Essas execuções e consultas individuais são exploratórias; não afirmar aceleração por elas. Provas em `target/scan-hierarchy-20261009/suzano-default/`.
+
+A verificação externa do padrão final manteve **36/60 arquivos e 14/60 símbolos**, sem mudança de acerto em nenhuma pergunta individual. Bytes: 670.501 → 642.949 (-4,1%). Provas em `target/scan-hierarchy-20261009/repoqa-default/`. Esta passada é teste de regressão sobre perguntas agora conhecidas, não uma nova avaliação independente. O conjunto não voltou a orientar o ranking. O ganho confirmado do padrão é menor contexto de recuperação e melhores contratos de cobertura/reuso/medição, sem aumento comprovado de precisão nem economia total de execução.
+
 ## Continuação atual: evidência dentro das funções e seleção de candidatos
 
 A recuperação agora considera identificadores usados no corpo das declarações, assinaturas e valores de textos fixos. Antes, esses identificadores já existiam no parser, mas não chegavam aos cartões de função. Os textos também eram cortados antes da indexação, e somente os primeiros 12 chegavam aos cartões. A versão 3 do pacote conserva todos os textos aceitos e seus valores normalizados completos, inclusive palavras depois da prévia de 300 caracteres; a própria decisão de aceitar um texto examina seu conteúdo completo. Pacotes anteriores precisam de novo scan; interpretações registradas permanecem preservadas.

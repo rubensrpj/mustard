@@ -20,6 +20,8 @@ const datasetPath = required('dataset');
 const selectionPath = required('selection');
 const binaries = { baseline: required('baseline'), current: required('current') };
 const output = required('out');
+const responsibility = flags.get('responsibility') === 'true';
+assert.ok(!flags.has('responsibility') || ['true','false'].includes(flags.get('responsibility')), '--responsibility must be true or false');
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const raw = fs.readFileSync(datasetPath);
 const dataset = JSON.parse(raw);
@@ -30,6 +32,7 @@ const env = { ...process.env, MUSTARD_RT_DELEGATED: '1', CLAUDE_CONFIG_DIR: path
 for (const name of ['TYPESAFE_API_KEY', 'MUSTARD_JEV_URL', 'CLOUDFLARE_API_TOKEN', 'CLAUDE_PLUGIN_ROOT', 'MUSTARD_ACTIVE_SPEC']) delete env[name];
 fs.mkdirSync(output, { recursive: true });
 const report = {
+  responsibility_experiment: responsibility,
   dataset_url: selection.dataset_url, dataset_json_sha256: sha(raw), selection_sha256: sha(fs.readFileSync(selectionPath)),
   method: 'Adapted retrieval test, not official RepoQA scoring. All supplied source files and ten unchanged descriptions for each selected repository. Top eight source cards; file/name/location separately. Original comments retained. No code execution or inference. Fixed order, exploratory latency.',
   binaries: Object.fromEntries(Object.entries(binaries).map(([version, directory]) => [version,
@@ -79,7 +82,8 @@ try {
         assert.equal(typeof needle.description, 'string');
         if (!files.has(needle.path)) files.set(needle.path, run(version, 'mustard-rt', ['run', 'knowledge', '--root', root, '--file', needle.path, '--all', '--detail'], root).value.cards);
         const expected = files.get(needle.path).some(card => isSymbol(card, needle));
-        const query = run(version, 'mustard-rt', ['run', 'knowledge', '--root', root, '--query', needle.description], root);
+        const query = run(version, 'mustard-rt', ['run', 'knowledge', '--root', root, '--query', needle.description,
+          ...(version === 'current' && responsibility ? ['--responsibility'] : [])], root);
         assert.equal(query.value.remote_model_calls, 0); assert.equal(query.value.local_model_calls, 0);
         for (const card of query.value.cards) assert.equal(sha(fs.readFileSync(path.join(root, card.source.file))), card.source.sha256);
         const row = { version, language: picked.language, repo: picked.repo, commit: picked.commit, id: `${picked.repo}:${at}`, query_sha256: sha(needle.description),

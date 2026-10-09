@@ -1,0 +1,61 @@
+{
+  "dataset_url": "https://github.com/evalplus/repoqa_release/releases/download/2024-06-23/repoqa-2024-06-23.json.gz",
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "selection": "Same frozen deterministic rule as first selection, excluding all six earlier repositories. Frozen before changes and results. All ten descriptions unchanged; no builds or inference.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "openai/openai-python",
+      "commit": "e41abf7b7dbc1e744d167f748e55d4dedfc0dca7",
+      "selection_hash": "1ddc14405196659658ad4c6fb446485c529f02953a04637c16265f34fa2d8ee6",
+      "files": 189,
+      "bytes": 887130,
+      "needles": 10
+    },
+    {
+      "language": "cpp",
+      "repo": "scylladb/seastar",
+      "commit": "b74a027c819ee5b9bfcee4f32edf8f37017bba12",
+      "selection_hash": "0fc84acf956a8aa33d1c154dc6e380d625b03902cd5e5f0f9e14b39d0b107d07",
+      "files": 100,
+      "bytes": 1455788,
+      "needles": 10
+    },
+    {
+      "language": "java",
+      "repo": "apache/flink-ml",
+      "commit": "f08f2756316c9fbd7fb7b7e39d140bfd3d959b2a",
+      "selection_hash": "1b4a5b77de18dbe55b843cb7f4e91c9112a2cb5c94d879f61bb30d294545ebf5",
+      "files": 48,
+      "bytes": 284810,
+      "needles": 10
+    },
+    {
+      "language": "typescript",
+      "repo": "expressjs/express",
+      "commit": "815f799310a5627c000d4a5156c1c958e4947b4c",
+      "selection_hash": "4b1cb9a625a5d4bea1fcbda02c3608acd574333fe2663711d19a4d978762e206",
+      "files": 11,
+      "bytes": 91598,
+      "needles": 10
+    },
+    {
+      "language": "rust",
+      "repo": "helix-editor/helix",
+      "commit": "e69292e5eb7b0f727fefa19cffec910718af31b3",
+      "selection_hash": "303792fc6442534a4d196e822999a566a553ee72965b4d36f4db02edfd836429",
+      "files": 34,
+      "bytes": 560028,
+      "needles": 10
+    },
+    {
+      "language": "go",
+      "repo": "caddyserver/caddy",
+      "commit": "4d6370bf92de163a53aec9081c5d5ae6614597a0",
+      "selection_hash": "6844f4bed6bbbe111bae20b7e0168c4f96c6a5ebaac9fc5d3881da4a2e2f955b",
+      "files": 176,
+      "bytes": 1469502,
+      "needles": 10
+    }
+  ]
+}

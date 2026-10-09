@@ -226,6 +226,31 @@ pub(crate) fn same_sources(paths: &[String], prev: &ProjectModel) -> bool {
     seen == stored.len()
 }
 
+/// Recompute the visited census without opening source files. The incremental
+/// path must notice newly added unsupported extensions as well as removals.
+pub(crate) fn coverage_of(paths:&[String], skipped_build_dirs:Vec<String>, model:&ProjectModel)->Coverage {
+    let code:HashSet<_>=model.modules.iter().map(|m|m.path.as_str()).collect();
+    let manifests:HashSet<_>=model.manifests.iter().map(|m|m.path.as_str()).collect();
+    let undecodable:HashSet<_>=model.state.non_utf8.iter().map(String::as_str).collect();
+    let mut top:BTreeMap<String,(usize,usize)>=BTreeMap::new();let mut extensions:BTreeMap<String,usize>=BTreeMap::new();
+    for path in paths {
+        let dir=path.split_once('/').map_or("(root)",|(dir,_)|dir).to_string();
+        if code.contains(path.as_str()) {top.entry(dir).or_default().0+=1;}
+        else if !undecodable.contains(path.as_str()) {
+            top.entry(dir).or_default().1+=1;
+            if !manifests.contains(path.as_str()) {
+                let ext=Path::new(path).extension().and_then(|e|e.to_str()).map(|e|format!(".{}",e.to_lowercase())).unwrap_or_else(||"(no-ext)".into());
+                *extensions.entry(ext).or_default()+=1;
+            }
+        }
+    }
+    let mut top_dirs:Vec<_>=top.into_iter().map(|(dir,(code_files,other_files))|DirCoverage{dir,code_files,other_files}).collect();
+    top_dirs.sort_by(|a,b|b.code_files.cmp(&a.code_files).then(a.dir.cmp(&b.dir)));
+    let mut unsupported_exts:Vec<_>=extensions.into_iter().map(|(ext,count)|ExtCount{ext,count}).collect();
+    unsupported_exts.sort_by(|a,b|b.count.cmp(&a.count).then(a.ext.cmp(&b.ext)));
+    Coverage{top_dirs,skipped_build_dirs,unsupported_exts,code_files_read:code.len(),non_utf8_skipped:undecodable.len(),parse:model.coverage.parse.clone()}
+}
+
 pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>, listing: Option<&Listing>) -> Result<Ingested> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut files: Vec<Walked> = Vec::new();
@@ -386,6 +411,7 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>, listing: Option<&Listin
 
     let code_files_read = files.len();
     let coverage = Coverage {
+        parse:serde_json::Value::Null,
         top_dirs,
         skipped_build_dirs: taken(&skipped),
         unsupported_exts,
