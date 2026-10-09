@@ -117,52 +117,47 @@ fn cross(
         return Err(invalid("knowledge-live-evidence-changed"));
     }
     let total = cards.len();
-    let mut recommendation = Vec::new();
-    let mut ambiguities = Vec::new();
-    if !intent.trim().is_empty() {
-        let ranked =
-            knowledge::selection::within_files(&cards, intent, &Languages::of_project(root), &[]);
-        for (file, group) in ranked {
-            let Some(first) = group.first() else { continue };
-            if group.get(1).is_none_or(|next| {
-                first.own_matches > next.own_matches || first.score > next.score * 1.5
-            }) {
-                recommendation.push(cards[first.card].id.clone());
-            } else {
-                ambiguities.push(knowledge::selection::Ambiguity {
-                    file,
-                    candidates: group
-                        .iter()
-                        .take(8)
-                        .map(|r| cards[r.card].clone())
-                        .collect(),
-                });
+    let mut plan = knowledge::selection::responsibility(&cards, intent, &Languages::of_project(root));
+    let mut recommendation = plan.recommendations;
+    // IO supplies checked source; the domain planner and provider remain
+    // independent of filesystems, languages, frameworks and search commands.
+    if selector.is_some() {
+        for group in &mut plan.groups {
+            for card in &group.candidates {
+                if let Some((_, text)) = files.get(&card.source.file) {
+                    group.excerpts.insert(card.id.clone(), selection_excerpt(card, text, matched.get(&card.id)));
+                }
             }
         }
     }
     let mut selection = json!({"status":"native","remote_model_calls":0});
-    let mut remaining_ambiguities = ambiguities.len();
-    if !ambiguities.is_empty()
+    let mut remaining_ambiguities = plan.groups.len();
+    if !plan.groups.is_empty()
         && let Some(selector) = selector
     {
-        let decisions = selector.select(intent, &ambiguities);
+        let decisions = selector.select(intent, &plan.groups);
         // Reject an adapter choice that was not supplied as current evidence.
         let accepted: Vec<_> = decisions
             .choices
             .into_iter()
-            .filter(|(file, id)| {
-                ambiguities.iter().any(|group| {
-                    group.file == *file && group.candidates.iter().any(|c| c.id == *id)
+            .filter(|(key, id)| {
+                plan.groups.iter().any(|group| {
+                    group.key == *key && group.candidates.iter().any(|c| c.id == *id)
                 })
             })
             .map(|(_, id)| id)
             .collect();
-        remaining_ambiguities = remaining_ambiguities.saturating_sub(accepted.len());
+        let no_match = decisions.outcomes.iter().filter(|(key, outcome)| {
+            **outcome == knowledge::selection::Outcome::NoMatch && plan.groups.iter().any(|group| &group.key == *key)
+        }).count();
+        remaining_ambiguities = remaining_ambiguities.saturating_sub(accepted.len() + no_match);
         recommendation.extend(accepted);
         selection = decisions.usage;
+        selection["outcomes"] = json!(decisions.outcomes);
     }
     if rich {
-        cards.sort_by_key(|card| !recommendation.contains(&card.id));
+        let order: BTreeMap<_, _> = plan.order.iter().enumerate().map(|(rank, &i)| (cards[i].id.clone(), rank)).collect();
+        cards.sort_by_key(|card| (!recommendation.contains(&card.id), order.get(&card.id).copied().unwrap_or(usize::MAX)));
     }
     let evidence:Vec<_>=cards.iter().take(4).map(|card| {
         if rich {
@@ -215,6 +210,7 @@ fn cross(
         report["intent_requested"] = json!(intent.trim().is_empty() && total > 1);
         report["remaining_ambiguities"] = json!(remaining_ambiguities);
         report["selection"] = selection;
+        report["selection_basis"] = json!(plan.basis);
         report["remote_model_calls"] = report["selection"]["remote_model_calls"].clone();
         report["relations_status"] =
             json!("static scan candidates; expand and verify target source before editing");
@@ -223,6 +219,32 @@ fn cross(
         return Err(invalid("knowledge-live-evidence-changed"));
     }
     Ok(report)
+}
+
+/// Bounded, line-addressed source evidence. Small declarations are complete;
+/// larger ones retain their boundaries and actual hit neighborhoods. A missing
+/// middle is explicitly incomplete, never evidence that a behavior is absent.
+fn selection_excerpt(card: &Card, text: &str, hits: Option<&Vec<u64>>) -> knowledge::selection::Excerpt {
+    let source = &card.source;
+    let lines: Vec<_> = text.lines().collect();
+    let mut wanted = BTreeSet::new();
+    for line in source.line..=source.end_line.min(source.line.saturating_add(31)) { wanted.insert(line); }
+    for line in source.end_line.saturating_sub(15).max(source.line)..=source.end_line { wanted.insert(line); }
+    for &hit in hits.into_iter().flatten() {
+        for line in hit.saturating_sub(2).max(source.line)..=hit.saturating_add(2).min(source.end_line) { wanted.insert(line); }
+    }
+    let mut content = String::new();
+    let mut included = 0_u64;
+    for line in wanted.into_iter().take(64) {
+        let Some(value) = usize::try_from(line.saturating_sub(1)).ok().and_then(|i| lines.get(i)) else { continue };
+        let next = format!("{line}:{value}\n");
+        if content.len() + next.len() > 4096 { continue; }
+        content.push_str(&next); included += 1;
+    }
+    knowledge::selection::Excerpt {
+        source: source.clone(), text: content,
+        complete: included == source.end_line.saturating_sub(source.line) + 1,
+    }
 }
 
 pub(super) struct File {

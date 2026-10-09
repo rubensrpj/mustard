@@ -9,7 +9,7 @@ Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvol
 3. As ocorrências retornadas são conferidas no arquivo atual e registradas com caminho, linha, texto, hash e identidade do checkout.
 4. Arquivos descobertos ou alterados solicitam o scan estrutural incremental nativo. Nenhum modelo de significado é carregado nesse caminho. O resultado da pesquisa é reaproveitado, sem executar a mesma busca novamente.
 5. As ocorrências são cruzadas com declarações da mesma versão. O retorno acrescenta funções proprietárias, documentação, contratos disponíveis, referências candidatas e intervalo exato para leitura. O histórico pode ser expandido pelo comando indicado.
-6. A intenção ajuda a recomendar candidatos. Só uma ambiguidade restante, com intenção e autorização explícita `choose`, pode chegar ao seletor configurado. A seleção nunca remove ocorrências da resposta original.
+6. A intenção organiza candidatos para leitura. Pontuação por palavras não certifica responsabilidade. Identidades exatas permanecem nativas; alternativas ainda não resolvidas, com intenção e autorização explícita `choose`, podem chegar ao seletor configurado, inclusive entre arquivos. A seleção nunca remove ocorrências da resposta original.
 7. A apresentação automática escolhe o resultado original ou um agrupamento menor que conserva todas as ocorrências. Funções/faixas entram quando a economia de repetição comportar essas referências. Falha de banco/scan não apaga achados reais.
 
 ## Entrada e retorno
@@ -52,7 +52,58 @@ Essa memória não vence o código atual. A busca começa na fonte e toda identi
 
 A descrição disponível da ferramenta é capturada como intenção. Com vários proprietários e nenhuma intenção, `evidence.intent_requested` sinaliza a necessidade de informar o objetivo. O agente pode completar a intenção; uma busca exata não precisa de pergunta adicional. O Mustard não tenta reconstruir o raciocínio privado do agente.
 
-O Jev usa a interface existente `SymbolSelector`, cache, critérios de aceitação e registro de tentativas. Só recebe candidatos atuais que a seleção nativa não resolveu. Uma escolha só é aceita se pertencer ao grupo/arquivo enviado; fica destacada para expansão, sem eliminar os demais resultados. A interface permite outro provedor no futuro. Busca comum, registro dos achados, atualização estrutural e painel não ativam esse seletor. Ter uma chave configurada não ativa chamadas por pesquisa.
+O Jev usa a interface existente `SymbolSelector`, cache, critérios de aceitação e registro de tentativas. Só recebe alternativas atuais ainda não resolvidas. Uma escolha só é aceita se pertencer ao grupo enviado, que pode abranger arquivos diferentes; fica destacada para expansão, sem eliminar os demais resultados. A interface permite outro provedor no futuro. Busca comum, registro dos achados, atualização estrutural e painel não ativam esse seletor. Ter uma chave configurada não ativa chamadas por pesquisa.
+
+### Seleção por responsabilidade — continuação em 09/10
+
+O caso real do input XLSX do PI revelou uma indicação incorreta: uma vantagem de palavras fazia `createXlsxBuffer` vencer mesmo quando a intenção era a entrega HTTP. O gateway considerava a vantagem suficiente e não consultava o Jev. A correção separa **ordem de leitura**, **identidade exata** e **julgamento de responsabilidade**:
+
+- O planejador do domínio recebe os mesmos pacotes de símbolos das linguagens já registradas. Usa nome, assinatura, comentários e metadados estruturais; não contém termos do backend, condicionais por linguagem ou regras específicas de exportação.
+- Assinaturas ganham peso próprio na ordem de leitura. A vantagem textual deixa de gerar automaticamente uma recomendação. Uma identidade única e exata dispensa o provedor; homônimos continuam candidatos.
+- Uma pergunta de responsabilidade compara as alternativas descobertas também entre arquivos. O grupo não é mais determinado apenas pela pasta ou pelo arquivo. A interface do domínio recebe decisões por chave de grupo, sem depender do Jev ou do filesystem.
+- A camada de IO fornece trechos numerados conferidos contra a fonte/hash atual. Declarações pequenas seguem completas; declarações maiores levam fronteiras e vizinhanças das ocorrências, com `complete:false`. A evidência completa continua disponível por leitura dirigida. Trechos usam até 64 linhas/4 KiB por candidato; isso não corta a busca original nem estabelece ausência de comportamento.
+- O adaptador do Jev recebe assinatura, trechos, pistas, rotas e chamadas estáticas identificadas como candidatas. `none` e `insufficient` são opções separadas. Ausência de suporte em um trecho incompleto não pode virar `no-match` aceito.
+- `selection.outcomes` distingue `selected`, `no-match`, `insufficient-evidence`, `below-acceptance` e `invalid-answer`. São resultados de classificação, não fatos de comportamento. Os critérios de confiança/probabilidade continuam provisórios e precisam de calibração independente.
+- A apresentação de uma escolha explicitamente solicitada mostra também a abstenção, preservando todas as ocorrências. A busca comum continua usando uma representação que não cresce apenas para levar diagnóstico. Ferramentas tipadas de lista/Read/count mantêm seu objeto de resultado.
+- Descoberta de arquivos ganha `query_quality` no diagnóstico, com quantidade retornada, inventário indexado, sinal de baixa seletividade e orientação para estreitar a consulta. A comparação com o inventário pode ser parcial; não mede cobertura semântica. O padrão original nunca é reescrito. Esse diagnóstico não é acrescentado automaticamente ao resultado tipado visto pelo agente.
+
+O registro do Mods foi atualizado para ensinar esse contrato. `choose` continua sendo opt-in para uma decisão útil; não é ativado em toda busca por existir uma chave.
+
+### Pesquisa aplicada à correção
+
+Conceitos reaproveitados em implementação própria, sem adicionar motores ou dependências:
+
+| Referência inspecionada | Aplicação |
+| --- | --- |
+| [Codebase Memory: resolução de chamadas](https://github.com/DeusData/codebase-memory-mcp/blob/92b2dd13d796f22f8001ef70f078e633fd9ec93a/src/pipeline/pass_calls.c) | Separar candidata de vínculo demonstrado; conservar estratégia/incerteza. Nosso seletor não transforma uma pista lexical ou relação estática em certeza. Não incorporamos seu resolvedor de tipos. |
+| [Serena: ferramentas de símbolos](https://github.com/oraios/serena/blob/1de556f71569f3acfc0743e526dd60aca40a545e/src/serena/tools/symbol_tools.py) | Identidade por símbolo e expansão de corpo sob demanda, evitando abrir arquivos inteiros por padrão. Não incorporamos servidores LSP. |
+| [ckg: recuperação e contexto de tarefa](https://github.com/phins-group/ckg/blob/0895461d16b0d028a67e792757a047536de7df0b/src/retrieval.rs) | Separação entre busca, símbolos, relações e contexto da tarefa; seleção de evidência em vez de anexar todo o banco. |
+| [Jev Choice](https://docs.typesafe.ai/primitives/choice) e [State](https://docs.typesafe.ai/concepts/state) | Pergunta atômica sobre alternativas conhecidas, critérios que as diferenciam e evidência factual relevante; abstenção explícita e reutilização de cache. |
+
+### Repetição do caso do backend
+
+Mesmo snapshot `develop` / `a3fe37ab454cede37d3471993eb876985fcdfe1b`, em outra cópia isolada. Repetidas as 28 consultas anteriores e acrescentados dois casos. O backend original permaneceu intacto.
+
+- A consulta que indicava `createXlsxBuffer` passou a indicar `createXlsxStream` pelo Jev. Uma segunda formulação confirmou a mesma função.
+- O pedido de várias abas/fórmulas retornou `no-match` para os dois geradores, com a classificação visível na saída do agente. Isso foi conferido no código; não representa um teste de exportação/reimportação.
+- A escolha entre três serviços apontou `copyPlanFiles`; a identidade exata `plantioCurveToDownload` permaneceu nativa, sem inferência.
+- Nas mesmas oito buscas nativas comparáveis, foram **38.821 bytes** na saída original, **24.390** antes e **24.053** depois. Redução em relação ao original: **37,2% → 38,0%**. Todas as ocorrências, ordem, stderr e códigos de saída foram preservados. A melhora adicional de tamanho é pequena; a correção principal é a recomendação.
+- As buscas comuns tiveram **zero chamadas a modelos**. Foram quatro chamadas físicas de seleção, **15.974 tokens de entrada**, custo estimado de **US$ 0,000670908** ao preço consultado de [US$ 0,042/M tokens](https://docs.typesafe.ai/models). As repetições/renderizações reutilizaram o cache sem novas tentativas pagas. O uso do Jev aumentou em relação ao teste anterior, que pulava escolhas por uma heurística incorreta.
+- A busca ampla por `export` continuou retornando os mesmos 881 arquivos; o diagnóstico passou a sinalizar baixa seletividade. Não foi apagada do custo nem apresentada como consulta corrigida automaticamente.
+
+Relatórios locais: `target/scan-pi-input-responsibility-20261009/{manifest,comparison,reproducible-jev}.json`. A primeira execução da seleção precedeu a mudança final de apresentação; o manifesto registra os hashes dos executáveis e o relatório reproduzível confirma a versão final usando o cache válido. Casos e expectativas conferidas no código: `apps/scan/tests/fixtures/gateway-responsibility-20261009.json`.
+
+Reprodução sem inferência:
+
+```sh
+node apps/scan/benchmarks/gateway-responsibility.mjs --root <snapshot-do-backend> --out <relatorio.json>
+```
+
+Para testar a classificação, o snapshot precisa da configuração de julgamento de busca já habilitada. Acrescentar `--jev` exige `TYPESAFE_API_KEY` no ambiente e autoriza inferência paga; nenhuma chave é gravada pelo benchmark. O script exige o commit do corpus, compara o retorno nativo, restaura todas as ocorrências e confere expectativas/cache. Não executar contra um checkout diferente e chamar de comparação equivalente.
+
+Os casos são conhecidos de desenvolvimento. Não constituem percentual independente de acurácia. Repetir as mesmas consultas mantém o número de buscas e as 901 linhas lidas; ainda não comprova economia de tokens/custo da sessão de implementação. Os testes de mecanismo cobrem alternativas entre linguagens, vantagem lexical falsa, abstenção, intervalos atuais, preservação da resposta e ausência de condicionais de linguagem/framework no novo seletor.
+
+Verificação desta continuação: **3.897 testes Rust aprovados**, dois ignorados herdados, **13 testes do Mods aprovados**, lint estrito e prova de instalação nativa vazia sem HTTP/inferência. Logs locais em `target/selection-{workspace-final-tests,clippy-final,mods-tests,native-acceptance}-20261009.log`. Após o ajuste de alocação de strings da apresentação, os 13 testes do gateway e o lint foram repetidos e aprovados; o ajuste conserva o mesmo texto retornado.
 
 ## Claude Code e limites
 
@@ -80,7 +131,7 @@ A mudança é de apresentação. A latência mediana exploratória ficou próxim
 
 Aceite após a auditoria: **3.889 testes Rust aprovados**, dois ignorados herdados, lint estrito e **13 testes oficiais do Mods aprovados**. A apresentação acrescenta três testes de preservação/tamanho/paginação e uma prova oficial de transporte de stderr. Prova com instalação nativa vazia e zero chamadas de IA também verifica recuperação após falha do scan e expansão de símbolos na própria worktree. A versão antiga de substituição foi retirada do executável; uma fixture histórica, compilada somente nos testes, preserva os comparativos anteriores.
 
-`apps/scan/tests/search_gateway.rs` verifica paridade nativa, proprietários/intervalos atuais, paginação, novas versões, persistência e escolha apenas em empates autorizados. Testes do runtime exercitam o gancho completo e o CLI; testes oficiais do Mods conferem transporte pelo host e preservação de recusas.
+`apps/scan/tests/search_gateway.rs` verifica paridade nativa, proprietários/intervalos atuais, paginação, novas versões, persistência e escolha apenas em responsabilidades ainda não resolvidas e autorizadas. Testes do runtime exercitam o gancho completo e o CLI; testes oficiais do Mods conferem transporte pelo host e preservação de recusas.
 
 `node apps/scan/benchmarks/gateway-acceptance.mjs` cria uma pasta realmente vazia, instala com o binário local e verifica descoberta, atualização automática, deduplicação sem novo scan, fallback, ferramentas tipadas, hooks e isolamento de worktrees. Não executa código do repositório pesquisado nem chama API paga. Relatório e hashes: `target/scan-gateway-20261009/native-acceptance.json`, separado dos benchmarks históricos.
 

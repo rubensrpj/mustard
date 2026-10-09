@@ -2,6 +2,7 @@
 //! Scores locate written evidence; neither scores nor model choices prove behavior.
 use super::{Card, evidence, retrieval::Terms};
 use crate::domain::normalize::{Languages, Normalizer};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +18,7 @@ pub fn within_files(cards: &[Card], query: &str, languages: &Languages, weights:
     let mut normalizer = Normalizer::new(languages);
     let mut forms = |text: &str| -> BTreeSet<String> { normalizer.forms(text).into_iter().flatten().collect() };
     let names: Vec<_> = cards.iter().map(|c| forms(&c.name)).collect();
+    let signatures: Vec<_> = cards.iter().map(|c| forms(&c.signature)).collect();
     let docs: Vec<_> = cards.iter().map(|c| forms(&format!("{} {}", c.documentation, super::annotation_text(c)))).collect();
     let comments: Vec<_> = cards.iter().map(|c| forms(&c.body_comment)).collect();
     let written: Vec<_> = cards.iter().map(|c| forms(&evidence::secondary_text(c))).collect();
@@ -48,6 +50,8 @@ pub fn within_files(cards: &[Card], query: &str, languages: &Languages, weights:
                 let hits = |set: &BTreeSet<String>| slot.iter().any(|s| set.contains(s));
                 let factor = if hits(&names[i]) {
                     4.0
+                } else if hits(&signatures[i]) {
+                    3.0
                 } else if hits(&docs[i]) || hits(&own_comments) {
                     2.5
                 } else if hits(&body) {
@@ -86,8 +90,67 @@ pub fn within_files(cards: &[Card], query: &str, languages: &Languages, weights:
 
 #[derive(Debug, Clone)]
 pub struct Ambiguity {
-    pub file: String,
+    /// Stable decision scope, which may span files. It is not a source path.
+    pub key: String,
     pub candidates: Vec<Card>,
+    pub excerpts: BTreeMap<String, Excerpt>,
+}
+
+impl Ambiguity {
+    pub fn new(key: String, candidates: Vec<Card>) -> Self {
+        Self { key, candidates, excerpts: BTreeMap::new() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Excerpt {
+    pub source: super::Source,
+    pub text: String,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Outcome {
+    Selected,
+    NoMatch,
+    InsufficientEvidence,
+    BelowAcceptance,
+    InvalidAnswer,
+}
+
+/// Ranking is only a reading order. A lexical lead never establishes the
+/// requested responsibility. Exact identities need no external judgement;
+/// all other supported alternatives share one decision across discovered files.
+#[derive(Debug, Default)]
+pub struct Plan {
+    pub order: Vec<usize>,
+    pub recommendations: Vec<String>,
+    pub groups: Vec<Ambiguity>,
+    pub basis: &'static str,
+}
+
+pub fn responsibility(cards: &[Card], query: &str, languages: &Languages) -> Plan {
+    if query.trim().is_empty() {
+        return Plan { basis: "intent-missing", ..Plan::default() };
+    }
+    let exact: Vec<_> = cards.iter().enumerate().filter(|(_, c)| c.name == query.trim() || c.id == query.trim()).collect();
+    if let [(i, card)] = exact.as_slice() {
+        return Plan {
+            order: vec![*i], recommendations: vec![card.id.clone()], basis: "exact-symbol-identity", ..Plan::default()
+        };
+    }
+    let mut ranked: Vec<_> = within_files(cards, query, languages, &[]).into_values().flatten().collect();
+    ranked.sort_by(|a, b| b.own_matches.cmp(&a.own_matches).then_with(|| b.score.total_cmp(&a.score))
+        .then_with(|| cards[a.card].id.cmp(&cards[b.card].id)));
+    let order: Vec<_> = ranked.iter().map(|r| r.card).collect();
+    let groups = if order.len() > 1 {
+        vec![Ambiguity::new("responsibility".into(), order.iter().map(|&i| cards[i].clone()).collect())]
+    } else { vec![] };
+    Plan {
+        basis: if groups.is_empty() { "insufficient-comparative-evidence" } else { "structural-reading-order; responsibility-unresolved" },
+        order, groups, recommendations: vec![],
+    }
 }
 
 /// Only candidates close to the native winner, with multiple written query
@@ -104,13 +167,14 @@ pub fn ambiguity(file: &str, group: &[Ranked], cards: &[Card]) -> Option<Ambigui
         .filter(|r| r.own_matches >= 2)
         .map(|r| cards[r.card].clone())
         .collect();
-    (candidates.len() > 1).then(|| Ambiguity { file: file.into(), candidates })
+    (candidates.len() > 1).then(|| Ambiguity::new(file.into(), candidates))
 }
 
 #[derive(Debug, Default)]
 pub struct Decisions {
-    /// Only a supplied candidate id can replace its own file's winner.
+    /// Only a supplied candidate id can replace its own group's winner.
     pub choices: BTreeMap<String, String>,
+    pub outcomes: BTreeMap<String, Outcome>,
     pub usage: Value,
 }
 
@@ -150,5 +214,44 @@ mod tests {
         assert_eq!(ambiguity("src/worker.rs", &groups["src/worker.rs"], &cards).unwrap().candidates.len(), 2);
         let groups = within_files(&cards, "quartz", &Languages::new(["en-US"]), &[]);
         assert!(ambiguity("src/worker.rs", &groups["src/worker.rs"], &cards).is_none());
+    }
+
+    #[test]
+    fn lexical_leads_are_reading_order_not_responsibility_certainty() {
+        let mut cards = cards();
+        cards[2].identifiers = "beacon".into();
+        let plan = responsibility(&cards, "quartz beacon", &Languages::new(["en-US"]));
+        assert!(plan.recommendations.is_empty());
+        assert_eq!(plan.groups.len(), 1);
+        assert!(plan.groups[0].candidates.iter().any(|c| c.name == "archive"));
+    }
+
+    #[test]
+    fn responsibility_compares_discovered_files_and_exact_names_need_no_choice() {
+        let mut cards = cards();
+        cards[2].source.file = "different/language.ext".into();
+        cards[2].identifiers = "quartz beacon".into();
+        let languages = Languages::new(["en-US"]);
+        let plan = responsibility(&cards, "quartz beacon", &languages);
+        assert_eq!(plan.groups.len(), 1);
+        assert!(plan.groups[0].candidates.iter().any(|c|c.source.file == "different/language.ext"));
+        let exact = responsibility(&cards, "archive", &languages);
+        assert_eq!(exact.recommendations, [cards[2].id.clone()]);
+        assert!(exact.groups.is_empty());
+        cards[1].name = "archive".into();
+        let homonyms = responsibility(&cards, "archive", &languages);
+        assert!(homonyms.recommendations.is_empty());
+        assert_eq!(homonyms.groups.len(), 1);
+    }
+
+    #[test]
+    fn missing_and_single_owners_do_not_invent_a_semantic_recommendation() {
+        let cards = cards();
+        let languages = Languages::new(["en-US"]);
+        for query in ["", "unknownIdentifier", "persist records"] {
+            let plan = responsibility(&cards[..1], query, &languages);
+            assert!(plan.groups.is_empty());
+            assert!(plan.recommendations.is_empty());
+        }
     }
 }

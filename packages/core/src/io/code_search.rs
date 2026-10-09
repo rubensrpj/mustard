@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 pub mod presentation;
+mod quality;
 
 pub struct Answer {
     pub report: Value,
@@ -91,6 +92,9 @@ pub fn enrich(
     answer.report["crossing_status"] = json!(status);
     answer.report["native_result_preserved"] = json!(true);
     answer.report["local_model_calls"] = json!(0);
+    if quality::is_file_discovery(request) {
+        answer.report["query_quality"] = quality::assess(root, answer);
+    }
     answer.report["remote_model_calls"] = answer.report["evidence"]
         .get("remote_model_calls")
         .cloned()

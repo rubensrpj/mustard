@@ -192,6 +192,24 @@ fn no_engine_source_names_a_language_the_registry_declares() {
 }
 
 #[test]
+fn responsibility_selection_has_no_language_or_framework_cases() {
+    let mut terms=declared_language_terms();
+    terms.extend(declared_framework_terms());
+    let root=crate_dir().join("../..");
+    for path in ["packages/core/src/domain/knowledge/selection.rs",
+        "packages/core/src/io/knowledge/investigation.rs",
+        "packages/core/src/io/code_search/quality.rs",
+        "apps/rt/src/shared/knowledge_selection.rs"] {
+        let text=std::fs::read_to_string(root.join(path)).unwrap();
+        for (line,text) in text.lines().enumerate().take_while(|(_,line)|!line.trim_start().starts_with("#[cfg(test)]")) {
+            for term in &terms {
+                assert!(!mentions_whole_word(text,term),"{path}:{} names language/framework {term}: {text}",line+1);
+            }
+        }
+    }
+}
+
+#[test]
 fn the_vocabulary_comes_from_the_registry_and_nowhere_else() {
     // A ratchet whose term list silently emptied would pass forever while
     // checking nothing. Assert it is actually loaded and plural, and that the

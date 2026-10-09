@@ -26,6 +26,13 @@ mod refresh;
 pub(crate) mod resources;
 pub use navigation::Direction;
 
+/// Inventory evidence for search diagnostics, never a completeness guarantee.
+pub(crate) fn indexed_file_count(root: &Path) -> Option<u64> {
+    let db = open_existing(&store::model_path(root)).ok()?;
+    let count: i64 = db.conn().query_row("SELECT count(*) FROM knowledge_files", [], |row| row.get(0)).ok()?;
+    u64::try_from(count).ok()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Interpretation {
@@ -486,7 +493,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         if !decisions.usage.is_null(){selection_usage=decisions.usage;}
         let mut reranked=Vec::new();let mut included=BTreeSet::new();
         for path in &files {
-            let winner=decisions.choices.get(path).and_then(|id|ambiguities.iter().find(|g|&g.file==path)
+            let winner=decisions.choices.get(path).and_then(|id|ambiguities.iter().find(|g|&g.key==path)
                 .and_then(|g|g.candidates.iter().find(|c|&c.id==id)).and_then(|c|cards.iter().position(|candidate|candidate.id==c.id)))
                 .or_else(||groups.get(path).and_then(|group|group.first()).map(|r|r.card))
                 .or_else(||ranking.iter().copied().find(|&i|cards[i].source.file==*path));
@@ -732,7 +739,7 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+use super::*;
     fn source(dir: &Path, file: &str) -> Source {
         let bytes = std::fs::read(dir.join(file)).unwrap();
         let mut hash = Sha256::new();
@@ -748,8 +755,8 @@ mod tests {
     impl knowledge::selection::SymbolSelector for Probe {
         fn select(&self,_:&str,groups:&[knowledge::selection::Ambiguity])->knowledge::selection::Decisions {
             self.0.set(self.0.get()+1);
-            knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.file.clone(),g.candidates.iter().find(|c|c.name=="second").unwrap().id.clone())).collect(),
-                usage:json!({"remote_model_calls":1})}
+            knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.key.clone(),g.candidates.iter().find(|c|c.name=="second").unwrap().id.clone())).collect(),
+                usage:json!({"remote_model_calls":1}),..Default::default()}
         }
     }
     #[test]
@@ -782,7 +789,7 @@ mod tests {
                 self.calls.set(self.calls.get()+1);
                 if self.change_file {std::fs::write(self.root.join("a.rs"),"changed\n").unwrap();}
                 else {let mut db=open_existing(&store::model_path(self.root)).unwrap();db.write(|tx|crate::io::map_revision::bump(tx)).unwrap();}
-                knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.file.clone(),g.candidates.last().unwrap().id.clone())).collect(),usage:json!({"remote_model_calls":1})}
+                knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.key.clone(),g.candidates.last().unwrap().id.clone())).collect(),usage:json!({"remote_model_calls":1}),..Default::default()}
             }
         }
         let dir=tempfile::tempdir().unwrap();let root=dir.path();

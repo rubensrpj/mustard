@@ -3,6 +3,7 @@
 use super::Answer;
 use crate::domain::code_search::Request;
 use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::path::Path;
 
 pub struct Presentation {
@@ -84,24 +85,24 @@ pub fn agent(answer: &Answer, request: &Request, cwd: &Path) -> Presentation {
     let Some(records) = records(text) else {
         return fallback();
     };
-    let page = if !native {
-        format!(
-            "# page offset {}; more {}\n",
+    let mut page = selection_note(answer, request);
+    let has_selection_note = !page.is_empty();
+    if !native {
+        let _ = writeln!(page,
+            "# page offset {}; more {}",
             request.input["offset"].as_u64().unwrap_or(0),
             answer.report["result"]["truncated"]
                 .as_bool()
                 .unwrap_or(false)
-        )
-    } else {
-        String::new()
-    };
+        );
+    }
     let (enriched, count) = grouped(answer, cwd, &records, &page, text.ends_with('\n'), true);
     // An explicit Choice request asks for a recommendation in addition to
     // matches. Ordinary searches never grow just to carry scan metadata.
-    let explicit_selection = request.choose
-        && answer.report["evidence"]["recommended_symbols"]
+    let explicit_selection = request.choose && (has_selection_note
+        || answer.report["evidence"]["recommended_symbols"]
             .as_array()
-            .is_some_and(|ids| !ids.is_empty());
+            .is_some_and(|ids| !ids.is_empty()));
     if count > 0 && (enriched.len() <= original.len() || explicit_selection) {
         return Presentation {
             stdout: enriched.into_bytes(),
@@ -118,6 +119,21 @@ pub fn agent(answer: &Answer, request: &Request, cwd: &Path) -> Presentation {
         };
     }
     fallback()
+}
+
+fn selection_note(answer: &Answer, request: &Request) -> String {
+    if !request.choose { return String::new(); }
+    let outcomes: BTreeSet<_> = answer.report["evidence"]["selection"]["outcomes"].as_object().into_iter()
+        .flat_map(|values|values.values()).filter_map(serde_json::Value::as_str)
+        .filter(|value|matches!(*value,"no-match"|"insufficient-evidence"|"below-acceptance"|"invalid-answer")).collect();
+    let mut note=String::new();
+    for outcome in outcomes {
+        let _ = writeln!(note,"# selection: {outcome} (model judgement; verify source)");
+    }
+    if note.is_empty() && answer.report["evidence"]["remaining_ambiguities"].as_u64().is_some_and(|n|n>0) {
+        note.push_str("# selection: unresolved; inspect source\n");
+    }
+    note
 }
 
 struct Record<'a> {

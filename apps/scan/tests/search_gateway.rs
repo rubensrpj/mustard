@@ -233,15 +233,16 @@ impl SymbolSelector for Selector {
         assert_eq!(intent, "persist quartz snapshot");
         assert_eq!(groups.len(), 1);
         Decisions {
-            choices: std::iter::once((groups[0].file.clone(), groups[0].candidates[1].id.clone()))
+            choices: std::iter::once((groups[0].key.clone(), groups[0].candidates[1].id.clone()))
                 .collect(),
             usage: json!({"remote_model_calls":1,"status":"fixture-choice"}),
+            ..Default::default()
         }
     }
 }
 
 #[test]
-fn choice_requires_intent_explicit_authorization_and_an_unresolved_native_tie() {
+fn choice_requires_intent_explicit_authorization_and_unresolved_responsibility() {
     let dir = fixture(true);
     let root = dir.path();
     let selector = Selector {
@@ -273,6 +274,74 @@ fn choice_requires_intent_explicit_authorization_and_an_unresolved_native_tie() 
         1,
         "native exact responsibility needs no choice"
     );
+}
+
+#[test]
+fn responsibility_crosses_languages_and_preserves_a_lexically_weaker_alternative() {
+    struct AcrossFiles;
+    impl SymbolSelector for AcrossFiles {
+        fn select(&self, _: &str, groups: &[Ambiguity]) -> Decisions {
+            assert_eq!(groups.len(),1);
+            let group=&groups[0];
+            assert!(group.candidates.iter().any(|c|c.source.file.ends_with(".rs")));
+            let selected=group.candidates.iter().find(|c|c.source.file.ends_with(".py")).unwrap();
+            let evidence=&group.excerpts[&selected.id];
+            assert!(evidence.complete);
+            assert!(evidence.text.contains("return quartz"));
+            Decisions {choices:std::iter::once((group.key.clone(),selected.id.clone())).collect(),
+                usage:json!({"remote_model_calls":1}),..Default::default()}
+        }
+    }
+    let dir=fixture(false);let root=dir.path();
+    std::fs::write(root.join("src/a.rs"),"/// Persist and restore the quartz snapshot archive.\npub fn archive() { let quartz = 1; }\n").unwrap();
+    std::fs::write(root.join("src/b.py"),"def restore():\n    quartz = 2\n    return quartz\n").unwrap();
+    model::scan(root,&root.join(".claude"),&[]);
+    let mut req=request(&["rg","--sort=path","-n","--with-filename","quartz","src"]);
+    req.intent="persist restore quartz snapshot archive".into();
+    let native=execute(root,&req,None);
+    assert!(native.report["evidence"]["recommended_symbols"].as_array().unwrap().is_empty(),"lexical superiority is not proof");
+    req.choose=true;
+    let selected=execute(root,&req,Some(&AcrossFiles));
+    assert_eq!(selected.stdout,native.stdout);
+    assert_eq!(selected.report["evidence"]["symbols"][0]["name"],"restore");
+    assert_eq!(selected.report["evidence"]["remaining_ambiguities"],0);
+}
+
+#[test]
+fn file_discovery_reports_breadth_without_changing_the_typed_result() {
+    let dir=fixture(true);let root=dir.path();
+    let mut req=request(&["rg"]);req.tool="Grep".into();
+    req.input=json!({"pattern":"quartz","path":"src","output_mode":"files_with_matches"});
+    let answer=execute(root,&req,None);
+    assert_eq!(answer.report["query_quality"]["returned_files"],1);
+    assert_eq!(answer.report["query_quality"]["native_query_rewritten"],false);
+    let view=code_search::presentation::agent(&answer,&req,root);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&view.stdout).unwrap(),answer.report["result"]);
+}
+
+#[test]
+fn requested_abstention_is_visible_and_does_not_remove_native_matches() {
+    use mustard_core::domain::knowledge::selection::Outcome;
+    struct Abstain;
+    impl SymbolSelector for Abstain {
+        fn select(&self,_:&str,groups:&[Ambiguity])->Decisions {
+            Decisions {outcomes:std::iter::once((groups[0].key.clone(),Outcome::NoMatch)).collect(),
+                usage:json!({"remote_model_calls":1,"status":"fixture-choice"}),..Default::default()}
+        }
+    }
+    let dir=fixture(true);let root=dir.path();
+    let mut req=request(&["rg","-n","--with-filename","let quartz","src"]);
+    req.intent="persist quartz snapshot".into();req.choose=true;
+    let answer=execute(root,&req,Some(&Abstain));
+    assert!(answer.report["evidence"]["recommended_symbols"].as_array().unwrap().is_empty());
+    assert_eq!(answer.report["evidence"]["remaining_ambiguities"],0);
+    let view=code_search::presentation::agent(&answer,&req,root);
+    assert!(String::from_utf8_lossy(&view.stdout).contains("# selection: no-match"));
+    assert_eq!(restore_grouped(&view.stdout).as_bytes(),answer.stdout);
+    req.choose=false;
+    let view=code_search::presentation::agent(&answer,&req,root);
+    assert!(!String::from_utf8_lossy(&view.stdout).contains("# selection:"));
+    assert!(view.stdout.len()<=answer.stdout.len());
 }
 
 #[test]
