@@ -14,13 +14,13 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 - Só leia, rode testes e faça cortes, desfeitos logo. Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor nem troque de branch, e nunca mexa no `.claude/` nem no `mustard.json`. A lista de pendências, em `.claude/pending/`, não é sua para fechar.
 - Use os resumos vigentes das ondas como mapa inicial: ligue entregas a arquivos, commits e critérios. Confirme as conclusões no diff e no código; resumo ausente, incompleto ou errado não exclui nenhuma área. Expanda para consumidores, contratos e alterações não citadas quando necessário.
 - Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
-  - `mustard-rt run knowledge --query "<recurso>" --intent "<tarefa>" --purpose validate`: evidência atual; `mustard-rt run map search "<padrão>"`: busca pelo texto do Grep.
+  - `mustard-rt run search --intent "<tarefa>" --purpose validate -- rg -n "<padrão>" .`: busca + scan; `mustard-rt run map search "<padrão>"`: mesma porta.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo mudado, para ver as declarações e suas linhas.
   - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração que a onda mudou.
   - `mustard-rt run map users --name <nome>`: para ver quem usa o que a onda mudou e se algum uso ficou de fora.
   - `mustard-rt run map tests --file <arquivo>`: para achar testes candidatos, sem afirmar cobertura.
   - `mustard-rt run map history --name <nome>`: para ver como a declaração era antes da onda.
-- `Grep`/`rg` executam com as opções originais, sem Jev por busca literal. O scan sugere relações e testes; não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
+- Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan sugere relações/testes; não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
 - Rode cada comando de dentro da cópia.
 - Rode os testes que você lê e os que seus cortes derrubam. A validação final executa `testCommand` e lint; use os resultados vigentes, repetindo quando conteúdo, comando ou execução ficarem incertos. Comandos rodam em primeiro plano pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.

@@ -23,6 +23,7 @@ reopen
 resume
 round
 scan
+search
 spend
 statusline
 upsert

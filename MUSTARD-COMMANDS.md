@@ -215,3 +215,15 @@ Registre a versão retornada por `mustard-rt --version` e o resultado de cada
 etapa. Uma sessão que não carregou `mustard@inline` ou usa outro executável não
 comprova o comportamento desta entrega. Fonte:
 [carregamento de plugins](https://code.claude.com/docs/en/plugins/loading).
+
+## Source-first code search
+
+`mustard-rt run search --root <project> --intent "<task>" --purpose implement -- rg -n --with-filename "<pattern>" .` executes the source search before consulting the scan. The original pattern, filters and occurrences stay intact. The result adds current owners, comments/contracts, candidate relations and an exact Read request. `--purpose locate` keeps evidence compact.
+
+`mustard-rt run search --request '<JSON>'` accepts `{ "tool": "Grep", "input": { "pattern": "save", "output_mode": "content", "-n": true }, "intent": "find persistence for a repair", "purpose": "implement", "choose": false }`. Other adapters: Glob, Read, rg, grep, git grep. Native executables use `input.args`; shell command strings are not executed. Unknown typed options report a fallback to the original host tool.
+
+`mustard-rt run search --raw -- rg <options>` preserves native stdout/stderr/exit status exactly. `mustard-rt run search --shell-output -- rg <options>` appends useful current evidence, or returns exact native output when enrichment is unavailable. `mustard-rt run search --choose --intent "<task>" -- rg -n <pattern> .` permits the configured provider only for remaining native responsibility ties; a choice never deletes occurrences.
+
+Verified new hits feed the local grain database with source hashes and checkout identity; repeated hits deduplicate. New/changed sources trigger the bundled incremental structural scan with `scan scan <root> --native --out <model> --json`, then the same executed result is crossed again. This path loads no sense model. A scan failure leaves native output usable and marks learning pending. Linked checkouts keep separate structural snapshots; inferred meanings need explicit interpretation receipts.
+
+Claude mods register `mcp__mustard__search` with a nested `request` object. It invokes the gateway through the host's Bash tool, retaining permissions and classic hooks. Classic hooks route supported Grep/Glob/text Read requests to the gateway and rewrite simple rg/grep/git grep commands. Unsupported tools/options, shell compounds, pipelines, redirects and substitutions keep the native path. This is not universal interception of arbitrary programs or a deployed Codex adapter. `run map search "<pattern>"` uses the same source-first path; `run knowledge --symbol <id>` expands indexed evidence.

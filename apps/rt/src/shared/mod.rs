@@ -49,6 +49,7 @@
 
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
 /// conversa; nunca texto do usuário.
+#[cfg(test)]
 pub mod agent_said;
 pub mod branch_state;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
@@ -77,6 +78,7 @@ pub mod paths;
 /// A porta única da busca do mapa, depois da triagem.
 pub mod search_door;
 pub(crate) mod search_output;
+pub(crate) mod search_gateway;
 /// A procura de segredo no texto, a mesma da página da spec, do expurgo e do
 /// envio a serviço de fora.
 pub mod secret;

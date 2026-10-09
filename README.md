@@ -22,10 +22,12 @@ flowchart LR
 ```
 
 1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Roda na instalação, ao abrir a spec e depois de commits da rodada; `mustard-rt run scan` atualiza explicitamente. Limites de parse e origem das relações ficam visíveis.
-2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e preparam trechos atuais com referências. Dependências e testes candidatos orientam a descoberta; não provam comportamento ou cobertura.
+2. A **porta de busca** (`mustard-rt run search`) pesquisa o código com os parâmetros recebidos, registra achados verificados e cruza o resultado com o scan. Arquivos novos/alterados atualizam o índice estrutural sem IA. O mapa prepara expansões e referências; relações e testes candidatos não provam comportamento ou cobertura.
 3. Objetivo: **economia de contexto** — o mapa acha *onde olhar*, e o modelo confere os trechos necessários. Economia de tokens faturados deve ser medida no fluxo real.
 
-`mustard-rt run knowledge --query "<assunto>"` recupera símbolos e trechos de documentação/configuração com linhas e hash, usando índices locais; `--detail` expande a evidência e mostra grupos estruturais, e `--all --markdown --out levantamento.md` exporta o inventário. Referências explícitas podem conectar um documento ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade, consistência dos índices e planos de consulta sem modelo auxiliar.
+`mustard-rt run search --intent "<tarefa>" --purpose implement -- rg -n --with-filename "<padrão>" src` preserva a busca original e acrescenta proprietários atuais e intervalos para leitura. O Mods registra `mcp__mustard__search`; entradas suportadas também são encaminhadas pelos hooks. Intenção não substitui o padrão. Contratos e limites: [gateway de busca](docs/2026-10-09-gateway-de-busca.md).
+
+`mustard-rt run knowledge --query "<assunto>"` permanece como consulta analítica de símbolos/documentação/configuração com linhas e hash; `--detail` expande e `--all --markdown --out levantamento.md` exporta. Referências explícitas podem conectar documentos ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade e índices sem modelo auxiliar.
 
 `--intent "<tarefa>" --purpose implement` cruza candidatos com código atual e fornece trechos para edição; `spec`, `understand`, `validate` e `locate` ajustam o tamanho da evidência. Arquivos novos/alterados aparecem como ocorrências sem identidade antiga. Alternativas exigem conferência; trechos truncados precisam de expansão. O caminho comum é inteiramente nativo, mesmo com IA configurada. Nos hooks, o cruzamento usa ocorrências já executadas, preservando a busca literal.
 

@@ -57,6 +57,9 @@ enum Command {
         /// Read every file, ignoring the previous model.
         #[arg(long)]
         all: bool,
+        /// Refresh source structure without loading a configured meaning model.
+        #[arg(long)]
+        native: bool,
         /// Print one JSON line (what was read) instead of the text summary.
         #[arg(long)]
         json: bool,
@@ -174,7 +177,7 @@ fn drop_legacy_map(out: &Path) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Scan { path, out, all, json } => {
+        Command::Scan { path, out, all, native, json } => {
             // O `mustard.json` da pasta lida: as línguas da busca e o teto do
             // nome comum da ligação. O valor inválido já vale o padrão aqui;
             // quem avisa é quem chama o scan.
@@ -197,7 +200,7 @@ fn main() -> Result<()> {
             };
             drop_legacy_map(&out)?;
             // O sentido de cada declaração e de cada palavra do mapa recém-gravado.
-            let vectors = fill_meaning(&out, &path);
+            let vectors = if native {0}else{fill_meaning(&out, &path)};
             if json {
                 let report = serde_json::json!({
                     "ok": true,

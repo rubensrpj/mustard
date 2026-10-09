@@ -16,7 +16,9 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
     let anchor = mustard_core::io::spec_events::spec_root(&start);
     let git = mustard_core::platform::git::run(&start, &["rev-parse", "--show-toplevel"]);
     let tree = if git.ok { std::path::PathBuf::from(git.stdout.trim()) } else { anchor.clone() };
-    let root = anchor.as_path();
+    let root = if tree != anchor && mustard_core::io::project_map::model_path(&tree).is_file() {
+        tree.as_path()
+    } else {anchor.as_path()};
     let answer: Result<String, String> = (|| {
         if let Some(record) = record {
             let metadata = std::fs::metadata(record).map_err(|e| e.to_string())?;
@@ -34,7 +36,7 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
                 return Err("knowledge-invalid-export-path".into());
             }
         }
-        let selector=if modes.coverage || !modes.responsibility {None}else{crate::shared::knowledge_selection::KnowledgeSelector::configured(root)};
+        let selector=if modes.coverage || !modes.responsibility {None}else{crate::shared::knowledge_selection::KnowledgeSelector::configured(&anchor)};
         let selector=selector.as_ref().map(|s|s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector);
         let (report,text)=if modes.coverage {
             let report=mustard_core::io::knowledge::coverage::report(root).map_err(|e|format!("{e:?}"))?;

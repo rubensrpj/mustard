@@ -14,13 +14,13 @@ You check someone else's work once, at the end: the waves, what each delivered, 
 - Only read, run tests and make cuts, undone after. Do not commit and do not use `git add`: the commit belongs to the round. Never push or switch branches, and never touch `.claude/` or the `mustard.json`. The pending ledger in `.claude/pending/` is not yours to close.
 - Use current wave summaries as an initial map: connect deliveries to files, commits and criteria. Confirm conclusions in the diff and code; a missing, incomplete or incorrect summary excludes no area. Expand to consumers, contracts and uncited changes as needed.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run knowledge --query "<resource>" --intent "<task>" --purpose validate`: current evidence; `mustard-rt run map search "<pattern>"`: search with the Grep text.
+  - `mustard-rt run search --intent "<task>" --purpose validate -- rg -n "<pattern>" .`: current search joined with the scan; `mustard-rt run map search "<pattern>"`: same gateway, with the Grep text.
   - `mustard-rt run map summary --file <file>`: before opening a changed file, to see its declarations and their lines.
   - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration the wave changed.
   - `mustard-rt run map users --name <name>`: to see who uses what the wave changed and whether a use was left out.
   - `mustard-rt run map tests --file <file>`: to find test candidates, without claiming coverage.
   - `mustard-rt run map history --name <name>`: to see how the declaration was before the wave.
-- `Grep`/`rg` run with the original options, without Jev for literal searches. The scan suggests relations and tests; it does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
+- Search/read code through `mustard-rt run search`; preserve the original options, without Jev for literal searches. Scan suggests relations/tests; it does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
 - Run every command from inside the copy.
 - Run the tests you read and the ones your cuts bring down. Final validation runs `testCommand` and lint; use current results, repeating when content, command or execution is uncertain. Commands run in the foreground through `rtk`, which shows only the failures.
 - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.

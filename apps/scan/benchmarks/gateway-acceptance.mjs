@@ -1,0 +1,176 @@
+// Native acceptance only: isolated fixture, no repository code execution or paid API.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import cp from 'node:child_process';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+
+const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const bin = path.join(checkout, 'target/debug');
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mustard-search-acceptance-'));
+const root = path.join(temporary, 'main');
+fs.mkdirSync(root);
+const env = { ...process.env, MUSTARD_RT_DELEGATED: '1', CLAUDE_CONFIG_DIR: path.join(temporary, 'host'),
+  MUSTARD_SPEND_DIR: path.join(temporary, 'usage'), PATH: bin + path.delimiter + process.env.PATH };
+for (const key of ['TYPESAFE_API_KEY', 'MUSTARD_JEV_URL', 'CLOUDFLARE_API_TOKEN', 'CLAUDE_PLUGIN_ROOT',
+  'CLAUDE_PROJECT_DIR', 'MUSTARD_WORKSPACE_ROOT', 'MUSTARD_ACTIVE_SPEC']) delete env[key];
+let httpRequests = 0;
+const server = http.createServer((_, response) => { httpRequests++; response.writeHead(500); response.end('Unexpected inference'); });
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+function run(program, args, cwd = root, input) {
+  const executable = ['mustard', 'mustard-rt', 'scan'].includes(program) ? path.join(bin, program) : program;
+  const output = cp.spawnSync(executable, args, { cwd, env, input, maxBuffer: 16 * 1024 * 1024 });
+  if (output.error) throw output.error;
+  return output;
+}
+function successful(program, args, cwd = root) {
+  const output = run(program, args, cwd);
+  assert.equal(output.status, 0, output.stderr.toString() || output.stdout.toString());
+  return output;
+}
+function search(args, cwd = root) {
+  const output = run('mustard-rt', ['run', 'search', '--root', cwd, ...args], cwd);
+  assert.ok([0, 1].includes(output.status), output.stderr.toString() || output.stdout.toString());
+  return JSON.parse(output.stdout);
+}
+function hook(tool, input, cwd = root) {
+  const output = run('mustard-rt', ['on', 'PreToolUse'], cwd, JSON.stringify({ hook_event_name: 'PreToolUse',
+    tool_name: tool, cwd, session_id: 'gateway-native-fixture', tool_input: input }));
+  assert.equal(output.status, 0, output.stderr.toString());
+  return JSON.parse(output.stdout).hookSpecificOutput;
+}
+try {
+  assert.deepEqual(fs.readdirSync(root), []);
+  successful('mustard', ['init', '--yes']);
+  const configFile = path.join(root, 'mustard.json');
+  const config = JSON.parse(fs.readFileSync(configFile));
+  config.ai = { fallback: true, vectors: true };
+  fs.writeFileSync(configFile, JSON.stringify(config));
+  env.TYPESAFE_API_KEY = 'acceptance-only-invalid-key';
+  env.MUSTARD_JEV_URL = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+  fs.mkdirSync(path.join(root, 'src'));
+  fs.writeFileSync(path.join(root, 'src/lib.rs'), '/// Stores a quartz snapshot.\npub fn persist() { let quartz = 1; }\n');
+  const argv = ['rg', '--sort=path', '-n', '--with-filename', 'let quartz', 'src'];
+  const first = search(['--', ...argv]);
+  assert.equal(first.learning.new_facts, 1);
+  assert.equal(first.learning.scan.status, 'refreshed-native');
+  assert.equal(first.learning.needs_scan, false);
+  assert.equal(first.evidence.symbols[0].name, 'persist');
+  assert.equal(first.evidence.symbols[0].read.input.offset, 2);
+  assert.equal(first.remote_model_calls, 0);
+  const repeat = search(['--', ...argv]);
+  assert.equal(repeat.learning.new_facts, 0);
+  assert.equal(repeat.learning.reused_facts, 1);
+  assert.equal(repeat.learning.needs_scan, false);
+  assert.equal(repeat.learning.scan, undefined);
+  fs.writeFileSync(path.join(root, 'src/lib.rs'), '/// Stores the revised snapshot.\npub fn revised() { let quartz = 2; }\n');
+  fs.writeFileSync(path.join(root, 'src/new.rs'), 'pub fn discovered() { let quartz = 3; }\n');
+  const changed = search(['--', ...argv]);
+  assert.equal(changed.learning.new_facts, 2);
+  assert.equal(changed.learning.scan.status, 'refreshed-native');
+  assert.deepEqual(changed.evidence.symbols.map(s => s.name).sort(), ['discovered', 'revised']);
+  assert.equal(changed.evidence.intent_requested, true);
+  assert.equal(changed.remote_model_calls, 0);
+
+  const isolatedBin = path.join(temporary, 'runtime-without-scan');
+  fs.mkdirSync(isolatedBin);
+  fs.copyFileSync(path.join(bin, 'mustard-rt'), path.join(isolatedBin, 'mustard-rt'));
+  const rgPath = successful('sh', ['-c', 'command -v rg']).stdout.toString().trim();
+  fs.symlinkSync(rgPath, path.join(isolatedBin, 'rg'));
+  fs.writeFileSync(path.join(root, 'src/pending.rs'), 'pub fn later_indexed() { let pending_quartz = 4; }\n');
+  const pendingRun = cp.spawnSync(path.join(isolatedBin, 'mustard-rt'), ['run', 'search', '--root', root,
+    '--', 'rg', '-n', '--with-filename', 'pending_quartz', 'src'], {cwd:root, env:{...env, PATH:isolatedBin}});
+  assert.equal(pendingRun.status, 0, pendingRun.stderr.toString());
+  const pending = JSON.parse(pendingRun.stdout);
+  assert.equal(pending.learning.scan.status, 'pending');
+  assert.equal(pending.learning.needs_scan, true);
+  assert.ok(pending.result.stdout.includes('pending_quartz'));
+  const recovered = search(['--', 'rg', '-n', '--with-filename', 'pending_quartz', 'src']);
+  assert.equal(recovered.learning.scan.status, 'refreshed-native');
+  assert.equal(recovered.evidence.symbols[0].name, 'later_indexed');
+
+  for (const args of [argv.slice(1), ['-n', 'absent-sentinel', 'src'], ['-n', '[', 'src'], ['--sort=path', '-c', 'quartz', 'src']]) {
+    const original = run('rg', args);
+    const gateway = run('mustard-rt', ['run', 'search', '--root', root, '--raw', '--', 'rg', ...args]);
+    assert.deepEqual(gateway.stdout, original.stdout);
+    assert.deepEqual(gateway.stderr, original.stderr);
+    assert.equal(gateway.status, original.status);
+  }
+  fs.writeFileSync(path.join(root, 'src/unsupported.cpp'), 'void unsupported_sentinel() {}\n');
+  const raw = run('rg', ['-n', '--with-filename', 'unsupported_sentinel', 'src/unsupported.cpp']);
+  const fallback = run('mustard-rt', ['run', 'search', '--root', root, '--shell-output', '--', 'rg', '-n', '--with-filename', 'unsupported_sentinel', 'src/unsupported.cpp']);
+  assert.deepEqual(fallback.stdout, raw.stdout);
+  assert.deepEqual(fallback.stderr, raw.stderr);
+  assert.equal(fallback.status, raw.status);
+
+  const typed = { tool: 'Grep', input: { pattern: 'quartz', path: 'src', output_mode: 'content', '-n': true, head_limit: 1, offset: 1 }, intent: 'inspect persistence', purpose: 'implement' };
+  const typedResult = search(['--request', JSON.stringify(typed)]);
+  assert.equal(typedResult.result.numLines, 1);
+  assert.equal(typedResult.intent, typed.intent);
+  const read = search(['--request', JSON.stringify({ tool: 'Read', input: { file_path: 'src/lib.rs', offset: 2, limit: 1 } })]);
+  assert.equal(read.evidence.symbols[0].name, 'revised');
+  const glob = search(['--request', JSON.stringify({ tool: 'Glob', input: { pattern: '**/*.rs', path: 'src' } })]);
+  assert.equal(glob.result.numFiles, 3);
+  const routed = hook('Grep', typed.input);
+  assert.equal(routed.permissionDecision, 'deny');
+  assert.ok(routed.permissionDecisionReason.includes('mcp__mustard__search'));
+  assert.ok(routed.permissionDecisionReason.includes(JSON.stringify(typed.input)));
+  const noTools=path.join(temporary,'no-native-search');
+  fs.mkdirSync(noTools);
+  const unavailable=cp.spawnSync(path.join(bin,'mustard-rt'),['on','PreToolUse'],{cwd:root,env:{...env,PATH:noTools},
+    input:JSON.stringify({hook_event_name:'PreToolUse',tool_name:'Grep',cwd:root,tool_input:typed.input})});
+  assert.equal(unavailable.status,0,unavailable.stderr.toString());
+  const passed=unavailable.stdout.toString().trim()?JSON.parse(unavailable.stdout):{};
+  assert.notEqual(passed.hookSpecificOutput?.permissionDecision,'deny','Without rg, the original host tool must stay usable');
+  const original = run('rg', argv.slice(1));
+  const rewritten = hook('Bash', { command: "rg --sort=path -n --with-filename 'let quartz' src", description: 'inspect persistence', timeout: 5000 });
+  assert.ok(rewritten.updatedInput.command.includes('run search'));
+  assert.equal(rewritten.updatedInput.timeout, 5000);
+  const executed = run('sh', ['-c', rewritten.updatedInput.command]);
+  assert.equal(executed.status, 0, executed.stderr.toString());
+  assert.ok(executed.stdout.subarray(0, original.stdout.length).equals(original.stdout));
+  assert.ok(executed.stdout.toString().includes('Mustard current source evidence:'));
+  fs.writeFileSync(path.join(root, 'private.pem'), 'secret-fixture-sentinel');
+  const refused = run('mustard-rt', ['run', 'search', '--root', root, '--request', JSON.stringify({ tool: 'Read', input: { file_path: 'private.pem' } })]);
+  assert.equal(refused.status, 2);
+  assert.ok(!refused.stdout.toString().includes('secret-fixture-sentinel'));
+
+  successful('git', ['init', '-q']);
+  successful('git', ['add', 'src']);
+  successful('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'fixture']);
+  const linked = path.join(temporary, 'linked');
+  successful('git', ['worktree', 'add', '-q', '-b', 'linked-fixture', linked]);
+  fs.writeFileSync(path.join(linked, 'src/lib.rs'), 'pub fn linked_only() { let quartz = 4; }\n');
+  const linkedResult = search(['--', ...argv], linked);
+  assert.ok(linkedResult.evidence.symbols.some(s => s.name === 'linked_only'));
+  assert.ok(fs.existsSync(path.join(linked, '.claude/grain.db')));
+  assert.notEqual(linkedResult.learning.tree, first.learning.tree);
+  const linkedSymbol=linkedResult.evidence.symbols.find(s=>s.name==='linked_only');
+  const expanded=JSON.parse(successful('mustard-rt',linkedSymbol.expand.args,linked).stdout);
+  assert.ok(expanded.cards.some(s=>s.name==='linked_only'));
+  const main = search(['--', ...argv]);
+  assert.ok(main.evidence.symbols.some(s => s.name === 'revised'));
+  assert.ok(!main.evidence.symbols.some(s => s.name === 'linked_only'));
+  assert.equal(main.learning.needs_scan, false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(httpRequests, 0, 'Neither ordinary gateway nor native learning may call inference');
+  const report = { ok: true, commit: successful('git', ['rev-parse', 'HEAD'], checkout).stdout.toString().trim(),
+    truly_empty_native_install: true, automatic_native_refresh: true, repeat_deduplicates_without_rescan: true,
+    changed_and_new_sources: true, failed_scan_keeps_native_and_retries_later: true,
+    raw_stdout_stderr_status_parity: true, native_fallback_parity: true,
+    typed_tools: true, native_search_unavailable_passes_host_tool: true,
+    real_classic_hook_handoff_and_rewrite: true, original_read_guard: true,
+    checkout_isolation: true, default_http_requests: httpRequests, local_model_calls: 0, remote_model_calls: 0,
+    binaries: ['mustard', 'mustard-rt', 'scan'].map(name => ({ name,
+      sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(bin, name))).digest('hex') })) };
+  const output = path.join(checkout, 'target/scan-gateway-20261009');
+  fs.mkdirSync(output, { recursive: true });
+  fs.writeFileSync(path.join(output, 'native-acceptance.json'), JSON.stringify(report, null, 2) + '\n');
+  console.log(JSON.stringify(report));
+} finally {
+  await new Promise(resolve => server.close(resolve));
+  fs.rmSync(temporary, { recursive: true, force: true });
+}

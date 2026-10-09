@@ -83,7 +83,7 @@ impl Check for CommandGuard {
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             return Ok(verdict);
         }
-        Ok(Verdict::Allow)
+        Ok(crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow))
     }
 }
 

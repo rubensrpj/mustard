@@ -28,6 +28,31 @@ pub struct Occurrence<'a> {
 /// Add current indexed structure to occurrences supplied by an executed tool.
 /// The occurrences themselves remain the tool's result, in their original order.
 pub fn cross_hits(root: &Path, tree: &Path, hits: &[Occurrence<'_>]) -> Result<Value, MapRefusal> {
+    cross(root, tree, hits, "", None, false, Purpose::Locate)
+}
+
+/// Classify responsibility only among current owners of actual source hits.
+/// The native result is held by the caller and cannot be pruned by a selector.
+pub fn cross_hits_for(
+    root: &Path,
+    tree: &Path,
+    hits: &[Occurrence<'_>],
+    intent: &str,
+    purpose: Purpose,
+    selector: Option<&dyn knowledge::selection::SymbolSelector>,
+) -> Result<Value, MapRefusal> {
+    cross(root, tree, hits, intent, selector, true, purpose)
+}
+
+fn cross(
+    root: &Path,
+    tree: &Path,
+    hits: &[Occurrence<'_>],
+    intent: &str,
+    selector: Option<&dyn knowledge::selection::SymbolSelector>,
+    rich: bool,
+    purpose: Purpose,
+) -> Result<Value, MapRefusal> {
     let before = super::generation(root)?;
     let db = super::open_existing(&super::store::model_path(root))?;
     let registry = knowledge::resources::Registry::load().map_err(invalid)?;
@@ -46,8 +71,14 @@ pub fn cross_hits(root: &Path, tree: &Path, hits: &[Occurrence<'_>]) -> Result<V
             if files.len() >= MAX_LIVE_FILES || bytes >= MAX_LIVE_BYTES {
                 break;
             }
-            let text = safe_read(tree, hit.file, &registry)
-                .ok_or_else(|| invalid("knowledge-live-source-unavailable"))?;
+            let Some(text) = safe_read(tree, hit.file, &registry) else {
+                if rich {
+                    unmatched += 1;
+                    processed += 1;
+                    continue;
+                }
+                return Err(invalid("knowledge-live-source-unavailable"));
+            };
             bytes += text.len();
             files.insert(hit.file.to_string(), (hash(text.as_bytes()), text));
         }
@@ -56,6 +87,11 @@ pub fn cross_hits(root: &Path, tree: &Path, hits: &[Occurrence<'_>]) -> Result<V
         };
         if hit.line == 0 || text.lines().nth(hit.line.saturating_sub(1) as usize) != Some(hit.text)
         {
+            if rich {
+                unmatched += 1;
+                processed += 1;
+                continue;
+            }
             return Err(invalid("knowledge-executed-hit-changed"));
         }
         let line =
@@ -71,11 +107,8 @@ pub fn cross_hits(root: &Path, tree: &Path, hits: &[Occurrence<'_>]) -> Result<V
         }
         processed += 1;
     }
-    let cards = catalog::hydrate(db.conn(), &ids).map_err(super::unreadable)?;
-    let total = cards.len();
-    let evidence:Vec<_>=cards.into_iter().take(4).map(|card|json!({"id":card.id,"name":card.name,"source":card.source,
-        "signature":card.signature,"matched_lines":matched.get(&card.id),"status":"current-static-owner",
-        "expand":{"command":"mustard-rt","args":["run","knowledge","--symbol",card.id,"--purpose","implement"]}})).collect();
+    let mut cards = catalog::hydrate(db.conn(), &ids).map_err(super::unreadable)?;
+    // Do not pay for a choice over a scan/source snapshot already invalidated.
     if before != super::generation(root)?
         || !files.iter().all(|(path, (digest, _))| {
             source_bytes(tree, path).is_some_and(|bytes| hash(&bytes) == *digest)
@@ -83,10 +116,113 @@ pub fn cross_hits(root: &Path, tree: &Path, hits: &[Occurrence<'_>]) -> Result<V
     {
         return Err(invalid("knowledge-live-evidence-changed"));
     }
-    Ok(
-        json!({"symbols":evidence,"omitted_symbols":total.saturating_sub(4),"unmapped_occurrences":unmatched,
-        "omitted_occurrences":hits.len().saturating_sub(processed),"semantic_completeness":"unknown","local_model_calls":0,"remote_model_calls":0}),
-    )
+    let total = cards.len();
+    let mut recommendation = Vec::new();
+    let mut ambiguities = Vec::new();
+    if !intent.trim().is_empty() {
+        let ranked =
+            knowledge::selection::within_files(&cards, intent, &Languages::of_project(root), &[]);
+        for (file, group) in ranked {
+            let Some(first) = group.first() else { continue };
+            if group.get(1).is_none_or(|next| {
+                first.own_matches > next.own_matches || first.score > next.score * 1.5
+            }) {
+                recommendation.push(cards[first.card].id.clone());
+            } else {
+                ambiguities.push(knowledge::selection::Ambiguity {
+                    file,
+                    candidates: group
+                        .iter()
+                        .take(8)
+                        .map(|r| cards[r.card].clone())
+                        .collect(),
+                });
+            }
+        }
+    }
+    let mut selection = json!({"status":"native","remote_model_calls":0});
+    let mut remaining_ambiguities = ambiguities.len();
+    if !ambiguities.is_empty()
+        && let Some(selector) = selector
+    {
+        let decisions = selector.select(intent, &ambiguities);
+        // Reject an adapter choice that was not supplied as current evidence.
+        let accepted: Vec<_> = decisions
+            .choices
+            .into_iter()
+            .filter(|(file, id)| {
+                ambiguities.iter().any(|group| {
+                    group.file == *file && group.candidates.iter().any(|c| c.id == *id)
+                })
+            })
+            .map(|(_, id)| id)
+            .collect();
+        remaining_ambiguities = remaining_ambiguities.saturating_sub(accepted.len());
+        recommendation.extend(accepted);
+        selection = decisions.usage;
+    }
+    if rich {
+        cards.sort_by_key(|card| !recommendation.contains(&card.id));
+    }
+    let evidence:Vec<_>=cards.iter().take(4).map(|card| {
+        if rich {
+            let mut item=if purpose==Purpose::Locate {
+                json!({"id":card.id,"name":card.name,"kind":card.kind,"source":card.source,
+                    "signature":card.signature.chars().take(160).collect::<String>(),"documentation":card.documentation.chars().take(160).collect::<String>()})
+            }else{knowledge::summary(card)};
+            item["matched_lines"]=json!(matched.get(&card.id));
+            item["status"]=json!("current-static-owner");
+            if purpose!=Purpose::Locate {
+                if !card.body_comment.is_empty() {item["body_comment"]=json!(card.body_comment.chars().take(240).collect::<String>());}
+                if !card.tests.is_empty() {item["tests"]=json!(card.tests.iter().take(3).collect::<Vec<_>>());}
+            }
+            item["read"]=json!({"tool":"Read","input":{"file_path":tree.join(&card.source.file),"offset":card.source.line,
+                "limit":card.source.end_line.saturating_sub(card.source.line)+1}});
+            item["expand"]=json!({"command":"mustard-rt","args":["run","knowledge","--symbol",card.id,"--purpose","implement","--root",tree]});
+            item["history"]=json!({"command":"mustard-rt","args":["run","map","history","--file",card.source.file,"--name",card.name]});
+            return item;
+        }
+        json!({"id":card.id,"name":card.name,"source":card.source,
+        "signature":card.signature,"matched_lines":matched.get(&card.id),"status":"current-static-owner",
+        "expand":{"command":"mustard-rt","args":["run","knowledge","--symbol",card.id,"--purpose","implement"]}})
+    }).collect();
+    if before != super::generation(root)?
+        || !files.iter().all(|(path, (digest, _))| {
+            source_bytes(tree, path).is_some_and(|bytes| hash(&bytes) == *digest)
+        })
+    {
+        return Err(invalid("knowledge-live-evidence-changed"));
+    }
+    let mut report = json!({"symbols":evidence,"omitted_symbols":total.saturating_sub(4),"unmapped_occurrences":unmatched,
+        "omitted_occurrences":hits.len().saturating_sub(processed),"semantic_completeness":"unknown","local_model_calls":0,"remote_model_calls":0});
+    if rich {
+        let mut outlines = Vec::new();
+        for (path, (digest, _)) in files.iter().take(4) {
+            if cards.iter().any(|card| &card.source.file == path) {
+                continue;
+            }
+            let mut statement=db.conn().prepare("SELECT id,name,line,end_line FROM knowledge_symbols WHERE path=?1 AND sha256=?2 ORDER BY line LIMIT 8").map_err(|e|super::unreadable(e.into()))?;
+            let rows=statement.query_map(rusqlite::params![path,digest],|row|Ok(json!({"id":row.get::<_,String>(0)?,"name":row.get::<_,String>(1)?,"line":row.get::<_,i64>(2)?,"end_line":row.get::<_,i64>(3)?}))).map_err(|e|super::unreadable(e.into()))?;
+            let declarations = rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| super::unreadable(e.into()))?;
+            if !declarations.is_empty() {
+                outlines.push(json!({"file":path,"sha256":digest,"declarations":declarations,"status":"current-static-outline","limit":8}));
+            }
+        }
+        report["files"] = json!(outlines);
+        report["recommended_symbols"] = json!(recommendation);
+        report["intent_requested"] = json!(intent.trim().is_empty() && total > 1);
+        report["remaining_ambiguities"] = json!(remaining_ambiguities);
+        report["selection"] = selection;
+        report["remote_model_calls"] = report["selection"]["remote_model_calls"].clone();
+        report["relations_status"] =
+            json!("static scan candidates; expand and verify target source before editing");
+    }
+    if before != super::generation(root)? {
+        return Err(invalid("knowledge-live-evidence-changed"));
+    }
+    Ok(report)
 }
 
 pub(super) struct File {
@@ -113,7 +249,11 @@ fn scoped(file: &str, scope: Option<&str>) -> bool {
     scope.is_none_or(|scope| scope == file)
 }
 
-fn safe_read(tree: &Path, path: &str, registry: &knowledge::resources::Registry) -> Option<String> {
+pub(super) fn safe_read(
+    tree: &Path,
+    path: &str,
+    registry: &knowledge::resources::Registry,
+) -> Option<String> {
     if !registry.admits_path(path)
         || Path::new(path)
             .components()

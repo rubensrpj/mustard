@@ -946,14 +946,14 @@ fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
 }
 
 /// O molde da onda e o do revisor, nos dois idiomas, mandam procurar código
-/// como sempre, com o mesmo texto. O mapa é uma recuperação explícita e
-/// `knowledge` recebe a tarefa; nenhum deles substitui a execução literal.
+/// pela porta, com o padrão original e a intenção em campos distintos.
+/// O scan enriquece a pesquisa executada, sem apagar suas ocorrências.
 #[test]
 fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_recovery() {
     for (lang, literal, command, uncertain) in [
-        ("pt-BR", "`Grep`/`rg` executam com as opções originais, sem Jev por busca literal.",
+        ("pt-BR", "preserve as opções originais, sem Jev por busca literal.",
          r#"`mustard-rt run map search "<padrão>"`"#, "não comprova cobertura nem ausência de uso"),
-        ("en-US", "`Grep`/`rg` run with the original options, without Jev for literal searches.",
+        ("en-US", "preserve the original options, without Jev for literal searches.",
          r#"`mustard-rt run map search "<pattern>"`"#, "does not prove coverage or absence of use"),
     ] {
         for name in ["wave", "review"] {
@@ -965,9 +965,9 @@ fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_r
                 assert!(!agent.contains(obsolete), "{lang} {name}: obsolete search instruction {obsolete}");
             }
             for line in agent.lines().filter(|line|line.contains("--query") || line.contains("--intent")) {
-                assert!(line.contains("run knowledge"),"task context belongs to native knowledge, not the literal search: {line}");
+                assert!(line.contains("run search"),"task context belongs to the gateway, separate from the literal pattern: {line}");
             }
-            assert!(agent.contains("run knowledge") && agent.contains("--purpose"),"{lang} {name}: task-oriented evidence must be available");
+            assert!(agent.contains("run search") && agent.contains("--purpose"),"{lang} {name}: task-oriented evidence must be available");
         }
     }
 }

@@ -1,60 +1,18 @@
-//! `reading` — a quarta conferência da trava de comandos: a leitura e a busca
-//! pelo terminal que o Mustard responde melhor, ou que mostrariam a chave do
-//! Jev.
-//!
-//! - **O arquivo de configuração com a chave.** Um programa que mostra o
-//!   texto de um arquivo ([`READERS`]) com o `mustard.json` nos argumentos,
-//!   por nome ou por um curinga que o terminal abre (`*.json`), ou qualquer
-//!   programa que o recebe por `<`, é recusado quando o arquivo guarda a
-//!   chave. O motivo traz o arquivo com a chave trocada por `***`.
-//! - **A busca em pastas que passa pelo arquivo com a chave.** O `grep`
-//!   recursivo numa pasta que guarda o `mustard.json`, e o `rg` que o lê
-//!   mesmo com ele no `.git/info/exclude` (com `-u`, ou com um `-g` que casa
-//!   com o nome), são recusados com a opção que deixa o arquivo de fora
-//!   ([`config_key::swept`]). A busca que só lista arquivos ou conta
-//!   linhas não mostra a chave, e passa.
-//! - **A busca por palavra em pastas.** O `grep` recursivo, o `rg` e o
-//!   `git grep`, numa pasta de código do projeto, recebem a marca do mapa
-//!   ([`word_search`]). O `git grep` lê as opções de padrão do `grep` (`-e`,
-//!   `-E`, `-F`, `-P`, `-i`, `-w`), busca a pasta em que roda quando não traz
-//!   caminho e só lê o que o git rastreia. O caminho com curinga que o
-//!   terminal abre (`src/*.ts`, `src/**/*.rs`; no `git grep`, também o entre
-//!   aspas, que o próprio git abre) vale pela pasta antes do primeiro curinga
-//!   e por um filtro de nome, como o `-g` do `rg`; o curinga no nome de uma
-//!   pasta (`src/*/x.rs`) deixa a busca passar. Com o mapa cravado, a busca que mostra
-//!   linhas é recusada com a resposta agrupada por função no lugar dela; com
-//!   o parcial, a busca roda inteira, com a nota do mapa junto, só como
-//!   contexto (o parcial passa antes pelo filtro do mapa, que entrega só as
-//!   peças certas, e sem chave ou com o filtro falhando vale a triagem, com o
-//!   aviso uma vez por sessão); a que só lista nomes ou conta (`-l`, `-c`)
-//!   segue, sem filtro e com uma linha da marca; sem achado, ou com o filtro
-//!   dizendo que nada serve, a busca segue com uma linha do que o mapa não
-//!   achou. A busca num arquivo só, fora do projeto, em
-//!   pasta sem código do mapa, com filtros de nome que deixam só documentos ou
-//!   que tiram todo o código do mapa (`-g '!*.rs'`, `--exclude=*.rs`), com
-//!   opção que esta leitura não entende (`-v`, `-x`) ou com a chave
-//!   `search.answer` desligada passa.
-//! - **A busca por nome de arquivo e o `find` que busca texto.** O `find`
-//!   com `-name`, `-iname` ou `-path` recebe a linha da marca do mapa para as
-//!   palavras do padrão (`-name '*payment*.ts'` dá `payment`) e roda como
-//!   veio; o padrão sem palavra passa calado. O `find ... -exec grep ... {}`
-//!   e o `find ... | xargs grep ...` são a busca de texto do `grep` recursivo
-//!   nas pastas do `find`, com o `-name` dele como filtro de nome; expressão
-//!   com `-o`, `!`, parênteses ou testes além de `-name` e `-type f` deixa a
-//!   busca passar.
-//!
-//! Lê os comandos que [`super::lex::segments`] achou, nunca o texto cru, e
-//! segue os `cd` da linha para saber de que pasta cada caminho parte.
+//! Configuration-key guards for native terminal searches and reads.
+//! Parse original arguments, including find/xargs and git grep pathspecs,
+//! to refuse output that would expose the project key. No search runs here;
+//! supported source-first routing follows these guards in CommandGuard.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
 use super::lex::{Segment, Word};
-use crate::hooks::write::write_gate::{say, search_reply};
-use crate::shared::code_route;
+use crate::hooks::write::write_gate::say;
 use crate::shared::config_key::{self, CONFIG_FILE, NameFilter, Walk};
-use crate::shared::word_search::{self, Dialect, Reply};
+use crate::shared::word_search;
+#[cfg(test)]
+use crate::shared::word_search::Dialect;
 
 /// Os programas que mostram o texto de um arquivo.
 pub(crate) const READERS: &[&str] = &[
@@ -131,7 +89,6 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
     let root = ctx.project_dir_or_cwd(input);
     let lang = ctx.config.language().text_or_default();
     let mut cwd = PathBuf::from(input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(&root));
-    let mut note: Option<String> = None;
     // O `grep` que o `xargs` alimenta com a saída do `find` anterior já foi
     // lido junto com ele.
     let mut fed = false;
@@ -152,33 +109,9 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
         let from_find = found.as_ref().and_then(|find| find_text_search(find, segments.get(at + 1), cmd));
         fed = from_find.as_ref().is_some_and(|(_, feeds)| *feeds);
         let Some(search) = from_find.map(|(search, _)| search).or_else(|| text_search(segment)) else {
-            if let Some(context) = found.and_then(|find| find_note(&find, &cwd, &root, input, ctx)) {
-                note = Some(context);
-            }
             continue;
         };
-        let base = cwd.to_string_lossy();
         let searched = if search.paths.is_empty() { vec![".".to_string()] } else { search.paths.clone() };
-        let folders: Vec<code_route::ProjectPath> =
-            searched.iter().filter_map(|path| code_route::project_path(&root, &base, path)).filter(|path| path.abs.is_dir()).collect();
-        // A busca só se responde quando todo caminho dela é pasta do projeto.
-        if !search.unsupported && !search.patterns.is_empty() && folders.len() == searched.len() {
-            let wanted = word_search::Search {
-                patterns: &search.patterns,
-                dialect: search.dialect,
-                ignore_case: search.ignore_case,
-                whole_word: search.whole_word,
-                folders: &folders,
-                filters: &search.filters,
-                walk: search.walk,
-                shows_lines: search.shows_lines,
-            };
-            match search_reply(&root, input, ctx, &wanted) {
-                Reply::Answer(reason) => return Some(Verdict::Deny { reason }),
-                Reply::Note(context) => note = Some(context),
-                Reply::Pass => {}
-            }
-        }
         // O `git grep` só lê o que o git rastreia, e o arquivo da chave fica no
         // `.git/info/exclude`: só a busca que passa por cima disso o alcança.
         let reaches_ignored = !search.git || search.walk == (Walk::Rg { unignored: true });
@@ -195,7 +128,7 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
             return Some(Verdict::Deny { reason: say("config_key.swept", lang, &[("{file}", &file), ("{fix}", &fix)]) });
         }
     }
-    note.map(|context| Verdict::Inject { context })
+    None
 }
 
 /// O nome que o `find` busca: o padrão do `-name`, `-iname` ou `-path`.
@@ -304,29 +237,6 @@ fn find_text_search(find: &FindRead, next: Option<&Segment>, cmd: &str) -> Optio
     Some((search, feeds))
 }
 
-/// A linha da marca do mapa para a busca por nome do `find`, quando o padrão
-/// tem palavra, a expressão é uma conjunção e as pastas são de código do
-/// projeto. A busca roda como veio.
-fn find_note(find: &FindRead, cwd: &Path, root: &str, input: &HookInput, ctx: &Ctx) -> Option<String> {
-    let name = find.name.as_ref().filter(|_| find.conjunction)?;
-    let words = word_search::name_words(&name.glob, name.whole_path);
-    if words.is_empty() {
-        return None;
-    }
-    let base = cwd.to_string_lossy();
-    let searched = if find.paths.is_empty() { vec![".".to_string()] } else { find.paths.clone() };
-    let folders: Vec<code_route::ProjectPath> =
-        searched.iter().filter_map(|path| code_route::project_path(root, &base, path)).filter(|path| path.abs.is_dir()).collect();
-    if folders.len() != searched.len() {
-        return None;
-    }
-    let filters = word_search::extension_filters(&name.glob);
-    match search_reply(root, input, ctx, &word_search::names_search(&words, &folders, &filters)) {
-        Reply::Note(context) => Some(context),
-        _ => None,
-    }
-}
-
 /// A recusa do comando que mostraria o arquivo de configuração com a chave:
 /// um leitor com o arquivo nos argumentos, ou qualquer programa com o arquivo
 /// entrando por `<`, pelo nome ou por um curinga que o alcança.
@@ -344,10 +254,14 @@ fn config_refusal(segment: &Segment, cwd: &Path, lang: mustard_core::platform::i
 pub(crate) struct TextSearch {
     /// Os padrões escritos na linha, um por `-e` ou o primeiro argumento sem
     /// opção; vazio quando lidos de arquivo.
+    #[cfg(test)]
     patterns: Vec<String>,
     /// Como o programa lê os padrões.
+    #[cfg(test)]
     dialect: Dialect,
+    #[cfg(test)]
     ignore_case: bool,
+    #[cfg(test)]
     whole_word: bool,
     /// A opção que muda o que a busca acha de um jeito que a resposta do mapa
     /// não acompanha (`-v`, `-x`, `-L`, `-U`, um filtro de tipo ou de pasta
@@ -397,7 +311,10 @@ pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
     // O `git grep` sempre desce pelas pastas, e o `rg` também.
     let mut recursive = rg || git;
     let (mut from_file, mut names_only, mut unignored) = (false, false, false);
-    let (mut ignore_case, mut smart_case, mut whole_word, mut unsupported) = (false, false, false, false);
+    let mut unsupported=false;
+    #[cfg(test)]
+    let (mut ignore_case, mut smart_case, mut whole_word) = (false,false,false);
+    #[cfg(test)]
     let mut dialect = match segment.name() {
         "egrep" => Dialect::Extended,
         "fgrep" => Dialect::Fixed,
@@ -429,10 +346,9 @@ pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
             // No `rg`, o `-L` segue os atalhos; no `grep`, lista os arquivos.
             names_only |= flags.contains(['l', 'c', 'q']) || (!rg && flags.contains('L'));
             unignored |= rg && flags.contains('u');
-            ignore_case |= flags.contains('i');
-            whole_word |= flags.contains('w');
-            smart_case |= rg && flags.contains('S');
+            #[cfg(test)] {ignore_case |= flags.contains('i');whole_word |= flags.contains('w');smart_case |= rg && flags.contains('S');}
             unsupported |= flags.contains(['v', 'x', 'z', 'U']) || (!rg && flags.contains('L'));
+            #[cfg(test)]
             if flags.contains('F') {
                 dialect = Dialect::Fixed;
             } else if !rg && flags.contains('E') {
@@ -478,13 +394,13 @@ pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
                 Some(typed) => filters.extend(typed),
                 None => unsupported = true,
             },
-            ("ignore-case", _) => ignore_case = true,
-            ("word-regexp", _) => whole_word = true,
-            ("smart-case", _) if rg => smart_case = true,
-            ("fixed-strings", _) => dialect = Dialect::Fixed,
-            ("basic-regexp", _) if !rg => dialect = Dialect::Basic,
-            ("extended-regexp", _) if !rg => dialect = Dialect::Extended,
-            ("perl-regexp", _) if !rg => dialect = Dialect::Rust,
+            ("ignore-case", _) => {#[cfg(test)] {ignore_case = true;}},
+            ("word-regexp", _) => {#[cfg(test)] {whole_word = true;}},
+            ("smart-case", _) if rg => {#[cfg(test)] {smart_case = true;}},
+            ("fixed-strings", _) => {#[cfg(test)] {dialect = Dialect::Fixed;}},
+            ("basic-regexp", _) if !rg => {#[cfg(test)] {dialect = Dialect::Basic;}},
+            ("extended-regexp", _) if !rg => {#[cfg(test)] {dialect = Dialect::Extended;}},
+            ("perl-regexp", _) if !rg => {#[cfg(test)] {dialect = Dialect::Rust;}},
             ("invert-match" | "line-regexp" | "null-data" | "multiline" | "type-not" | "T" | "pre" | "exclude-dir" | "exclude-from" | "include-from", _) => {
                 unsupported = true;
             }
@@ -501,7 +417,8 @@ pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
         patterns.clear();
     }
     // O `-S` do `rg` ignora a caixa quando o padrão não tem maiúscula.
-    ignore_case |= smart_case && !patterns.iter().any(|pattern| pattern.chars().any(char::is_uppercase));
+    #[cfg(test)]
+    {ignore_case |= smart_case && !patterns.iter().any(|pattern| pattern.chars().any(char::is_uppercase));}
     let walk = if rg || git { Walk::Rg { unignored } } else { Walk::Grep };
     if git {
         positionals.retain(|(path, _)| match git_exclusion(path) {
@@ -513,7 +430,7 @@ pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
         });
     }
     let paths = search_paths(positionals, git, &mut filters);
-    Some(TextSearch { patterns, dialect, ignore_case, whole_word, unsupported, paths, filters, walk, shows_lines: !names_only, git })
+    Some(TextSearch { #[cfg(test)] patterns, #[cfg(test)] dialect, #[cfg(test)] ignore_case, #[cfg(test)] whole_word, unsupported, paths, filters, walk, shows_lines: !names_only, git })
 }
 
 /// O nome que o filtro de caminho `path` do `git grep` deixa de fora (`:!x`,
@@ -786,6 +703,26 @@ mod tests {
         }
     }
 
+    /// Permission tests also accept a gateway rewrite if the original argv survives.
+    fn allowed_search(verdict: Verdict, command: &str) {
+        match verdict {
+            Verdict::Allow => {},
+            Verdict::Rewrite {tool_input,..} => {
+                let rewritten=tool_input["command"].as_str().unwrap();
+                assert!(rewritten.starts_with("mustard-rt run search "),"{rewritten}");
+                let parsed=segments(rewritten);
+                let args=&parsed[0].args;
+                let at=args.iter().position(|arg|arg.text=="--request").unwrap();
+                let request:mustard_core::domain::code_search::Request=serde_json::from_str(&args[at+1].text).unwrap();
+                let original=segments(command);
+                assert_eq!(request.tool,original[0].program.text);
+                assert_eq!(request.input["args"],serde_json::json!(original[0].args.iter().map(|arg|&arg.text).collect::<Vec<_>>()));
+                assert!(!request.choose);
+            },
+            other=>panic!("Expected authorized native search for {command}, got {other:?}"),
+        }
+    }
+
     /// A busca cujos filtros de saída deixam de fora todo o código do mapa nas
     /// pastas buscadas passa: o `rg` com `-g '!*.rs'` num projeto só de Rust,
     /// com chaves, com `**/`, com outro filtro de saída depois e com um de
@@ -806,7 +743,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(run_in(&root, command, Some(&format!("x{n}"))), Verdict::Allow, "{command}");
+            allowed_search(run_in(&root, command, Some(&format!("x{n}"))), command);
         }
     }
 
@@ -854,7 +791,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(run_in(&root, command, Some(&format!("u{n}"))), Verdict::Allow, "{command}");
+            allowed_search(run_in(&root, command, Some(&format!("u{n}"))), command);
         }
     }
 
@@ -877,7 +814,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(run_in(&root, command, Some(&format!("k{n}"))), Verdict::Allow, "{command}");
+            allowed_search(run_in(&root, command, Some(&format!("k{n}"))), command);
         }
     }
 
@@ -963,10 +900,10 @@ mod tests {
             "grep -n key 'm*'",
             "ls *",
         ] {
-            assert_eq!(run(&root, command), Verdict::Allow, "{command}");
+            allowed_search(run(&root, command), command);
         }
         let (_plain, plain) = fixture::project("{}", true);
-        assert_eq!(run(&plain, "grep -r jev ."), Verdict::Allow);
+        allowed_search(run(&plain, "grep -r jev ."), "grep -r jev .");
     }
 
     /// O `git grep` só lê o que o git rastreia, e o `mustard.json` fica no
@@ -980,7 +917,7 @@ mod tests {
         let (_dir, root) = fixture::project(&config, true);
         for command in ["git grep -n jev", "git grep -n key -- '*.json'", "git grep -n jev -- src", "git grep --no-index -l jev", "git grep --no-index -c jev"]
         {
-            assert_eq!(run(&root, command), Verdict::Allow, "{command}");
+            allowed_search(run(&root, command), command);
         }
         for command in ["git grep --no-index -n jev", "git grep -n --no-exclude-standard --untracked jev", "git grep --no-index -n jev -- '*.json'"] {
             let reason = refused(run(&root, command), command);
@@ -992,7 +929,7 @@ mod tests {
             "git grep --no-index -n jev ':^mustard.json'",
             "git grep --no-index -n jev -- ':(exclude)mustard.json'",
         ] {
-            assert_eq!(run(&root, command), Verdict::Allow, "{command}: the pathspec that leaves the file out passes");
+            allowed_search(run(&root, command), command);
         }
         refused(run(&root, "git grep --no-index -n jev -- . ':!other.json'"), "an exclusion of another file");
     }

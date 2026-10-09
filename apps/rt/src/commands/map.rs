@@ -20,10 +20,8 @@
 //!   mais velho, com o título e o número do pull request; a lista de cada
 //!   arquivo se monta na primeira pergunta sobre ele e fica gravada no mapa;
 //! - `search "<padrão>" [<pasta>]` (com `-i`, `-w`, `-F`, `--glob` e
-//!   `--type`): o mesmo texto que o `Grep` recebe, e a mesma resposta que o
-//!   gancho dá a ele: a lida pela mesma leitura ([`word_search::reply`]), com
-//!   o texto impresso como veio. A busca que o mapa não responde diz isso em
-//!   uma linha, e a busca comum segue;
+//!   `--type`): pesquisa nativa primeiro; resposta original e evidências
+//!   atuais do scan pela porta de busca compartilhada;
 //! - `search --query "<palavras>" --intent "<frase>"`, apelidos escondidos
 //!   que só a medida da busca usa: a busca por conceito, nos arquivos e nos
 //!   itens combinados das specs, cada um com a função ou o arquivo ligado a
@@ -75,7 +73,6 @@ use crate::shared::code_route;
 use crate::shared::config_key::Walk;
 use crate::shared::search_door::{self as door, Assemble, Numbers, first_warning, jev};
 use crate::shared::triage_view;
-use crate::shared::word_search::{self, Dialect, Reply, tool_filters};
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -182,6 +179,9 @@ pub(crate) type Trace<'t> = dyn Fn(&Path, &Path, &str, usize) -> mustard_core::p
 /// dos arquivos ligados aos itens achados, e por `assemble` o filtro, quando
 /// a configuração não o desliga.
 pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Value {
+    if opts.question==Question::Search && let Some(grep)=&opts.grep {
+        return source_search(opts,grep);
+    }
     let project = crate::commands::spec_events::project(&opts.root);
     if opts.question==Question::Audit {
         return mustard_core::io::knowledge::audit::run(&project.root).unwrap_or_else(|error|refused(&error,project.lang));
@@ -196,6 +196,24 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
         }
         Err(refusal) => refused(&refusal, lang),
     }
+}
+
+/// Compatibility spelling of the source-first gateway. No scan or remote
+/// filter is required to execute a literal search.
+fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
+    if let Err(refusal)=required(Some(&grep.pattern),Question::Search,"<pattern>") {
+        return refused(&refusal,mustard_core::ProjectConfig::load(&opts.root).language().text_or_default());
+    }
+    let mut argv=vec!["rg".to_string(),"-n".into(),"--with-filename".into(),"--no-heading".into(),"--color=never".into()];
+    for (enabled,flag) in [(grep.ignore_case,"-i"),(grep.whole_word,"-w"),(grep.fixed,"-F")] {if enabled {argv.push(flag.into());}}
+    if let Some(glob)=&grep.glob {argv.extend(["--glob".into(),glob.clone()]);}
+    if let Some(kind)=&grep.kind {argv.extend(["--type".into(),kind.clone()]);}
+    argv.extend(["-e".into(),grep.pattern.clone(),"--".into(),grep.folder.as_deref().unwrap_or(Path::new(".")).to_string_lossy().into_owned()]);
+    let result=mustard_core::domain::code_search::Request::native(&argv).and_then(|mut request|{
+        request.intent=opts.intent.as_deref().or(opts.described.as_deref()).unwrap_or_default().into();
+        crate::shared::search_gateway::answer(&opts.root,&request)
+    });
+    match result {Ok(answer)=>answer.report,Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
 }
 
 /// Guarda no glossário do mapa o que a resposta entregou à sessão de quem
@@ -368,7 +386,7 @@ fn note(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRefu
 /// história dos arquivos ligados aos itens achados, seguindo o número de
 /// `map.historyMoves` lido como a pergunta da história o lê. Os avisos saem
 /// uma vez por sessão. O texto do `Grep` (`opts.grep`) tem outro caminho:
-/// [`grep_answer`].
+/// a porta de busca nativa, antes de consultar o índice.
 fn search(
     opts: &MapOpts,
     root: &Path,
@@ -378,8 +396,7 @@ fn search(
     (trace, assemble): (&Trace<'_>, &Assemble<'_>),
 ) -> Result<Value, MapRefusal> {
     if let Some(grep) = &opts.grep {
-        after_the_map(required(Some(grep.pattern.as_str()), opts.question, "<pattern>"), read)?;
-        return Ok(grep_answer(opts, grep, root, lang, languages, assemble));
+        return Ok(source_search(opts, grep));
     }
     let started = Instant::now();
     let query = after_the_map(required(opts.query.as_deref(), opts.question, "<pattern>"), read)?;
@@ -440,58 +457,6 @@ fn search(
         let _ = record_measured_call(root, "map search", None, session, started, &report, measured);
     }
     Ok(report)
-}
-
-/// A resposta ao texto do `Grep` em `grep`: a mesma que o gancho da busca dá à
-/// ferramenta com esse padrão, pela mesma leitura ([`word_search::reply`]) e
-/// com os filtros de nome lidos como ele os lê ([`tool_filters`]). A pasta
-/// se conta a partir da pasta de `opts.root`, como o `grep` conta a dela a
-/// partir da pasta em que roda. A busca repetida não passa: o comando
-/// responde sempre, e não guarda a busca respondida. A que o mapa não
-/// responde (pasta fora do código do mapa, padrão que a leitura não entende,
-/// tipo que ela não conhece) diz isso em uma linha.
-fn grep_answer(opts: &MapOpts, grep: &GrepSearch, root: &Path, lang: Locale, languages: &Languages, assemble: &Assemble<'_>) -> Value {
-    let (mut filters, typed) = tool_filters(grep.glob.as_deref(), grep.kind.as_deref());
-    let base = std::path::absolute(&opts.root).unwrap_or_else(|_| opts.root.clone());
-    let given = grep.folder.as_deref().map_or_else(|| ".".to_string(), |folder| folder.to_string_lossy().into_owned());
-    let folder = code_route::project_path(&root.to_string_lossy(), &base.to_string_lossy(), &given).filter(|folder| folder.abs.is_dir());
-    let reply = match (typed, folder) {
-        (Some(typed), Some(folder)) => {
-            filters.extend(typed);
-            let patterns = [grep.pattern.clone()];
-            let search = word_search::Search {
-                patterns: &patterns,
-                dialect: if grep.fixed { Dialect::Fixed } else { Dialect::Rust },
-                ignore_case: grep.ignore_case,
-                whole_word: grep.whole_word,
-                folders: std::slice::from_ref(&folder),
-                filters: &filters,
-                walk: Walk::Rg { unignored: false },
-                shows_lines: true,
-            };
-            let config = mustard_core::ProjectConfig::load(root);
-            let scene = word_search::Scene {
-                root,
-                model: &store::model_path(root),
-                memory: None,
-                session: opts.session.as_deref(),
-                lang,
-                languages,
-                config: &config,
-                assemble,
-                record: &record_measured_call,
-                described: opts.described.as_deref().map(str::trim).unwrap_or_default(),
-                said: word_search::Said::Given(opts.said.as_deref().map(str::trim).unwrap_or_default()),
-            };
-            word_search::reply(&scene, &search)
-        }
-        _ => Reply::Pass,
-    };
-    let answer = match reply {
-        Reply::Answer(text) | Reply::Note(text) => text,
-        Reply::Pass => mustard_core::translate("map.search.pass", lang).to_string(),
-    };
-    json!({ "ok": true, "question": "search", "answer": answer })
 }
 
 /// A resposta da busca depois do filtro: as peças que passaram, com o grau, a
@@ -3899,273 +3864,121 @@ mod tests {
         assert_eq!(parts_from(root), [r#""gravar_pedido" 3-5"#, r#""cancelar_pedido" 7-7"#]);
     }
 
-    /// A busca com o texto do `Grep`: o comando dá a resposta que o gancho da
-    /// busca dá à ferramenta e ao terminal com o mesmo texto.
+    /// Native gateway compatibility spelling: preserve source search, not old filters.
     mod the_text_of_grep {
         use super::*;
         use crate::shared::word_search::fixture;
         use mustard_core::domain::model::contract::{HookInput, Trigger, Verdict as Hooked};
-        use mustard_core::platform::i18n::translate;
 
-        /// O projeto sem filtro: a resposta parcial sai só da triagem, e nenhum
-        /// aviso de chave entra nela.
-        const CONFIG: &str = r#"{"search":{"filter":"none"}}"#;
-
-        const INSTALLMENTS: &str = "export function splitInstallments(total: number, count: number) {\n  // divide o total em parcela iguais\n  return Array.from({ length: count }, () => total / count);\n}\n\nexport function payInstallment(value: number) {\n  return value;\n}\n";
-
-        /// O projeto das parcelas: uma função de nome em inglês, com a palavra
-        /// `parcela` só num comentário, e uma nota fora do mapa.
-        fn installments() -> (tempfile::TempDir, PathBuf) {
-            let map = json!({ "modules": [{
-                "path": "src/parcelas.ts", "language": "typescript", "loc": 8,
-                "declarations": [
-                    { "kind": "function", "name": "splitInstallments", "line": 1, "end_line": 4,
-                      "signature": "export function splitInstallments(total: number, count: number)",
-                      "body_comment": "divide o total em parcela iguais" },
-                    { "kind": "function", "name": "payInstallment", "line": 6, "end_line": 8 }
-                ]
-            }] });
-            fixture::repo_with(CONFIG, &[("src/parcelas.ts", INSTALLMENTS), ("docs/notas.md", "As parcela do pedido.\n")], map)
-        }
-
-        /// O texto que o gancho dá à chamada da ferramenta `tool`, na sessão
-        /// `session`: o motivo da recusa ou a linha que segue a busca; `None`
-        /// quando a busca passa calada.
-        fn hooked(root: &Path, tool: &str, tool_input: Value, session: &str) -> Option<String> {
-            let input = HookInput {
-                tool_name: Some(tool.to_string()),
-                tool_input,
-                hook_event_name: Some("PreToolUse".to_string()),
-                cwd: Some(root.to_string_lossy().into_owned()),
-                session_id: Some(session.to_string()),
-                ..HookInput::default()
-            };
+        fn hooked(root: &Path, input: Value) -> String {
+            let input = HookInput { tool_name: Some("Grep".into()), tool_input: input,
+                hook_event_name: Some("PreToolUse".into()), cwd: Some(root.to_string_lossy().into_owned()),
+                session_id: Some("native-gateway".into()), ..HookInput::default() };
             match crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict {
-                Hooked::Deny { reason } => Some(reason),
-                Hooked::Inject { context } => Some(context),
-                _ => None,
+                Hooked::Deny { reason } => reason,
+                other => panic!("Expected gateway handoff, got {other:?}"),
             }
         }
-
-        /// A resposta do comando `run map search` ao texto `grep`.
-        fn asked(root: &Path, grep: GrepSearch) -> Value {
-            let opts = MapOpts { grep: Some(grep), session: Some("s-comando".to_string()), ..ask(root, Question::Search) };
-            map_at(&opts, &|_, _| Ok(ScanReport::default()), &|_, _, _, _| panic!("a search with the text of Grep never reads a history"))
-        }
-
         fn pattern(text: &str) -> GrepSearch {
-            GrepSearch { pattern: text.to_string(), ..GrepSearch::default() }
+            GrepSearch { pattern: text.into(), ..GrepSearch::default() }
         }
-
-        /// O que o comando diz da busca que o mapa não responde.
-        fn nothing_to_say() -> String {
-            translate("map.search.pass", Locale::PtBr).to_string()
+        fn asked(root: &Path, grep: GrepSearch) -> Value {
+            let opts = MapOpts { grep: Some(grep), ..ask(root, Question::Search) };
+            map_at(&opts, &|_, _| panic!("gateway owns native refresh"), &no_history)
         }
+        fn stdout(report: &Value) -> &str { report["result"]["stdout"].as_str().unwrap() }
 
-        /// Explicit map recovery provides syntactic candidates, while the
-        /// original Grep tool remains authorized and unchanged.
         #[test]
-        fn explicit_map_search_does_not_replace_the_original_grep_tool() {
-            let text = "splitInstallments|parcela";
-            let (_dir, root) = installments();
-            assert!(hooked(&root, "Grep", json!({"pattern":text,"output_mode":"content"}), "s").is_none());
-            let report = asked(&root, pattern(text));
-            assert_eq!(report["ok"], true, "{report}");
-            let answer = report["answer"].as_str().unwrap();
-            assert!(answer.contains("src/parcelas.ts") && answer.contains("splitInstallments"), "{report}");
-        }
-
-        /// `--described` e `--said` do `run map search` com o texto do `Grep`
-        /// chegam ao filtro que julga a busca parcial, aparados.
-        #[test]
-        fn the_description_and_the_speech_of_the_command_reach_the_filter_for_the_text_of_grep() {
+        fn original_grep_request_routes_without_reinterpreting_its_pattern() {
             let (_dir, root) = fixture::repo("{}");
-            let fake = FakeFilter::scoring(&[0.9, 0.05]);
-            let opts = MapOpts {
-                grep: Some(pattern("imposto")),
-                described: Some(" Procura o imposto ".to_string()),
-                said: Some(" Vou olhar o imposto. ".to_string()),
-                session: Some("s-descrito".to_string()),
-                ..ask(&root, Question::Search)
-            };
-            crate::commands::map::map_at(
-                &opts,
-                &|_, _| Ok(ScanReport::default()),
-                &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
-                &fake.assemble(),
-            );
-            assert_eq!(fake.calls(), 1);
-            let asked = fake.last();
-            assert_eq!(asked.described, "Procura o imposto");
-            assert_eq!(asked.said, "Vou olhar o imposto.");
+            let input=json!({"pattern":"calcular_frete|imposto","output_mode":"content","-i":true});
+            let reason=hooked(&root,input.clone());
+            assert!(reason.contains("mcp__mustard__search"));
+            assert!(reason.contains(&input.to_string()));
+            let report=asked(&root,pattern("calcular_frete|imposto"));
+            assert_eq!(report["ok"],true);
+            assert!(stdout(&report).contains("calcular_frete"));
+            assert!(stdout(&report).contains("imposto"));
         }
-
-        /// A pasta e o glob do `run map search` com o texto do `Grep` valem
-        /// também para o filtro: ele recebe só os candidatos da pasta e dos
-        /// arquivos do tipo pedido, e a busca sem pasta nem glob manda os do
-        /// projeto inteiro.
         #[test]
-        fn the_folder_and_the_glob_of_the_command_limit_the_candidates_the_filter_is_asked() {
-            let (_dir, root) = crate::shared::word_search::scoped::project();
-            let fake = FakeFilter::scoring(&[0.9, 0.05]);
-            let by_command = |grep: GrepSearch| {
-                let opts = MapOpts { grep: Some(grep), session: Some("s-pasta".to_string()), ..ask(&root, Question::Search) };
-                crate::commands::map::map_at(
-                    &opts,
-                    &|_, _| Ok(ScanReport::default()),
-                    &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
-                    &fake.assemble(),
-                );
-                let mut paths: Vec<String> = fake.last().candidates.into_iter().map(|candidate| candidate.path).collect();
-                paths.sort();
-                paths
-            };
-
-            let narrowed = GrepSearch { folder: Some(PathBuf::from("src/frete")), glob: Some("*.rs".to_string()), ..pattern("imposto") };
-            assert_eq!(by_command(narrowed), ["src/frete/calculo.rs", "src/frete/tabela.rs"]);
-            let in_folder = GrepSearch { folder: Some(PathBuf::from("src/pedido")), ..pattern("imposto") };
-            assert_eq!(by_command(in_folder), ["src/pedido/recibo.rs", "src/pedido/total.rs"]);
-            assert_eq!(by_command(pattern("imposto")).len(), 5, "without a folder or a glob the whole project is asked");
+        fn intention_is_transported_without_invoking_the_retired_literal_filter() {
+            let (_dir, root)=fixture::repo("{}");
+            let fake=FakeFilter::scoring(&[0.9,0.05]);
+            let opts=MapOpts {grep:Some(pattern("imposto")),intent:Some("inspect tax persistence".into()),
+                described:Some("older description".into()),said:Some("older speech".into()),..ask(&root,Question::Search)};
+            let report=super::super::map_at(&opts,&|_,_|panic!("native refresh"),&no_history,&fake.assemble());
+            assert_eq!(report["intent"],"inspect tax persistence");
+            assert_eq!(fake.calls(),0);
+            assert!(stdout(&report).contains("imposto"));
+            assert_eq!(report["remote_model_calls"],0);
         }
-
-        /// O `run map search` com o texto do `Grep`, numa spec aberta, grava a
-        /// chamada `word search` da busca parcial que o filtro julga: o
-        /// comando, o resultado, o filtro, os tokens e o que voltou. A busca
-        /// cravada, que responde sem o filtro, não grava.
         #[test]
-        fn the_command_records_the_word_search_call_of_a_partial_search_in_an_open_spec() {
-            let (_dir, root) = fixture::repo("{}");
-            crate::shared::spec_state::stand_on_spec_branch(&root, "busca-por-texto");
-            crate::commands::spec_events::write::record_open(&root, "busca-por-texto", "feature/busca-por-texto", "dev").unwrap();
-            let fake = FakeFilter::scoring(&[0.9, 0.05]);
-            let by_command = |text: &str| {
-                let opts = MapOpts { grep: Some(pattern(text)), session: Some("s-comando".to_string()), ..ask(&root, Question::Search) };
-                crate::commands::map::map_at(
-                    &opts,
-                    &|_, _| Ok(ScanReport::default()),
-                    &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
-                    &fake.assemble(),
-                )
-            };
-
-            let report = by_command("imposto");
-            assert_eq!(report["ok"], json!(true), "{report}");
-            assert_eq!(fake.calls(), 1, "the partial search asks the filter: {report}");
-            let calls = calls_of(&root, "busca-por-texto");
-            assert_eq!(calls.len(), 1, "{calls:?}");
-            let call = &calls[0];
-            assert_eq!(call["command"], json!("word search"));
-            assert_eq!(call["result"], json!("ok"));
-            assert_eq!(
-                [&call["filter"], &call["tokens"], &call["cost_micro_usd"], &call["candidates"], &call["returned"]],
-                [&json!("jev"), &json!(21_000), &json!(882), &json!(2), &json!(1)]
-            );
-
-            by_command("fechar_pedido");
-            assert_eq!(fake.calls(), 1, "a pinned search never reaches the filter");
-            assert_eq!(calls_of(&root, "busca-por-texto").len(), 1, "a pinned search records no call");
+        fn folder_and_glob_restrict_actual_hits_without_a_filter_call() {
+            let (_dir,root)=crate::shared::word_search::scoped::project();
+            let report=asked(&root,GrepSearch{folder:Some("src/frete".into()),glob:Some("*.rs".into()),..pattern("imposto")});
+            assert!(stdout(&report).contains("src/frete/calculo.rs"));
+            assert!(stdout(&report).contains("src/frete/tabela.rs"));
+            assert!(!stdout(&report).contains("src/pedido/"));
+            assert!(!stdout(&report).contains("docs/"));
+            let all=asked(&root,pattern("imposto"));
+            assert!(stdout(&all).contains("src/pedido/"));
         }
-
-        /// A pasta, o `-i`, o `--glob` e o `--type` do comando chegam à busca
-        /// como chegam pelo `Grep`; o `-w` e o `-F`, como chegam pelo
-        /// `grep` do terminal. O comando responde a busca que o gancho
-        /// deixa passar com a linha que diz que o mapa não a responde.
         #[test]
-        fn the_options_reach_the_search_as_they_reach_the_hook() {
-            let (_dir, root) = fixture::repo(CONFIG);
-            let src = root.join("src").to_string_lossy().into_owned();
-            let cases: Vec<(&str, GrepSearch, (&str, Value))> = vec![
-                (
-                    "a folder",
-                    GrepSearch { folder: Some(PathBuf::from("src")), ..pattern("calcular_frete") },
-                    ("Grep", json!({ "pattern": "calcular_frete", "path": src, "output_mode": "content" })),
-                ),
-                (
-                    "ignore case",
-                    GrepSearch { ignore_case: true, ..pattern("CALCULAR_FRETE") },
-                    ("Grep", json!({ "pattern": "CALCULAR_FRETE", "-i": true, "output_mode": "content" })),
-                ),
-                (
-                    "a glob of the mapped code",
-                    GrepSearch { glob: Some("*.rs".to_string()), ..pattern("desconto_frete") },
-                    ("Grep", json!({ "pattern": "desconto_frete", "glob": "*.rs", "output_mode": "content" })),
-                ),
-                (
-                    "a glob that leaves the mapped code out",
-                    GrepSearch { glob: Some("!*.rs".to_string()), ..pattern("desconto_frete") },
-                    ("Grep", json!({ "pattern": "desconto_frete", "glob": "!*.rs", "output_mode": "content" })),
-                ),
-                (
-                    "a type",
-                    GrepSearch { kind: Some("rust".to_string()), ..pattern("fechar_pedido") },
-                    ("Grep", json!({ "pattern": "fechar_pedido", "type": "rust", "output_mode": "content" })),
-                ),
-                (
-                    "a type the reading does not know",
-                    GrepSearch { kind: Some("cobol".to_string()), ..pattern("fechar_pedido") },
-                    ("Grep", json!({ "pattern": "fechar_pedido", "type": "cobol", "output_mode": "content" })),
-                ),
-                ("whole words", GrepSearch { whole_word: true, ..pattern("calcular_frete") }, ("Bash", json!({ "command": "grep -rnw calcular_frete ." }))),
-                ("plain text", GrepSearch { fixed: true, ..pattern("calcular_frete") }, ("Bash", json!({ "command": "grep -rnF calcular_frete ." }))),
-                (
-                    "plain text with a bar",
-                    GrepSearch { fixed: true, ..pattern("calcular_frete|desconto_frete") },
-                    ("Bash", json!({ "command": "grep -rnF 'calcular_frete|desconto_frete' ." })),
-                ),
-            ];
-            for (n, (what, grep, (tool, tool_input))) in cases.into_iter().enumerate() {
-                assert!(hooked(&root, tool, tool_input, &format!("s-gancho-{n}")).is_none(), "original tool must execute: {what}");
-                let report = asked(&root, grep);
-                assert_eq!(report["ok"], true, "{what}: {report}");
+        fn ordinary_partial_search_does_not_record_an_inference_in_the_open_spec() {
+            let (_dir,root)=fixture::repo("{}");
+            crate::shared::spec_state::stand_on_spec_branch(&root,"busca-por-texto");
+            crate::commands::spec_events::write::record_open(&root,"busca-por-texto","feature/busca-por-texto","dev").unwrap();
+            let report=asked(&root,pattern("imposto"));
+            assert_eq!(report["remote_model_calls"],0);
+            assert!(calls_of(&root,"busca-por-texto").is_empty());
+            assert!(report["learning"]["new_facts"].as_u64().unwrap()>0);
+        }
+        #[test]
+        fn flags_have_native_regex_literal_case_type_and_error_semantics() {
+            let (_dir,root)=fixture::repo("{}");
+            for grep in [GrepSearch{ignore_case:true,..pattern("CALCULAR_FRETE")},
+                GrepSearch{whole_word:true,..pattern("calcular_frete")},
+                GrepSearch{kind:Some("rust".into()),..pattern("calcular_frete")}] {
+                let report=asked(&root,grep);
+                assert_eq!(report["exit_code"],0,"{report}");
+                assert!(stdout(&report).contains("calcular_frete"));
             }
-            // Os casos que passam não são o de sempre: pelo menos a pasta e o
-            // `--glob` do código do mapa trazem a resposta por função.
-            let plain = asked(&root, pattern("calcular_frete"));
-            assert!(plain["answer"].as_str().unwrap().contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{plain}");
-            let none = asked(&root, GrepSearch { glob: Some("!*.rs".to_string()), ..pattern("desconto_frete") });
-            assert_eq!(none["answer"], json!(nothing_to_say()), "{none}");
-            // O `-F` lê a barra como texto: o mesmo padrão, sem ele, lê as duas
-            // alternativas e acha; com ele, o mapa não tem o texto.
-            let either = asked(&root, pattern("calcular_frete|desconto_frete"));
-            let literal = asked(&root, GrepSearch { fixed: true, ..pattern("calcular_frete|desconto_frete") });
-            let found = either["answer"].as_str().unwrap();
-            assert!(found.contains("calcular_frete (2)") && found.contains("desconto_frete (8)"), "{either}");
-            assert_ne!(either["answer"], literal["answer"], "{literal}");
+            let regex=asked(&root,pattern("calcular_frete|desconto_frete"));
+            let literal=asked(&root,GrepSearch{fixed:true,..pattern("calcular_frete|desconto_frete")});
+            assert!(stdout(&regex).contains("calcular_frete"));
+            assert!(stdout(&regex).contains("desconto_frete"));
+            assert_eq!(literal["exit_code"],1);
+            assert_eq!(stdout(&literal),"");
+            let unsupported=asked(&root,GrepSearch{kind:Some("unknown-fixture-type".into()),..pattern("calcular_frete")});
+            assert_eq!(unsupported["ok"],false);
+            assert_eq!(unsupported["exit_code"],2);
+            assert!(!unsupported["result"]["stderr"].as_str().unwrap().is_empty());
         }
-
-        /// A mesma busca, pedida duas vezes, recebe a resposta nas duas: o
-        /// comando não guarda a busca respondida, como o gancho guarda.
         #[test]
-        fn the_same_search_asked_twice_is_answered_twice() {
-            let (_dir, root) = fixture::repo(CONFIG);
-            let first = asked(&root, pattern("calcular_frete"));
-            let second = asked(&root, pattern("calcular_frete"));
-            assert!(first["answer"].as_str().unwrap().starts_with("Cravado."), "{first}");
-            assert_eq!(first["answer"], second["answer"]);
-            let hook = hooked(&root, "Grep", json!({ "pattern": "calcular_frete", "output_mode": "content" }), "s-gancho");
-            let again = hooked(&root, "Grep", json!({ "pattern": "calcular_frete", "output_mode": "content" }), "s-gancho");
-            assert!(hook.is_none() && again.is_none(), "neither original search is intercepted: {hook:?} {again:?}");
+        fn repeated_searches_keep_results_and_reuse_verified_facts() {
+            let (_dir,root)=fixture::repo("{}");
+            let first=asked(&root,pattern("calcular_frete"));
+            let second=asked(&root,pattern("calcular_frete"));
+            assert!(!stdout(&first).is_empty());
+            let lines=|report:&Value|{let mut lines:Vec<_>=stdout(report).lines().map(str::to_string).collect();lines.sort();lines};
+            assert_eq!(lines(&first),lines(&second),"native parallel traversal may reorder files");
+            assert_eq!(second["learning"]["new_facts"],0);
+            assert!(second["learning"]["reused_facts"].as_u64().unwrap()>0);
+            assert_eq!(second["learning"]["scan"],Value::Null);
         }
-
-        /// A pasta fora do projeto, a que não é pasta e o padrão em branco não
-        /// recebem resposta do mapa: as duas primeiras dizem que o mapa não a
-        /// responde, e a última é recusada pelo nome do que falta.
         #[test]
-        fn a_search_the_map_cannot_answer_says_so_and_a_blank_pattern_is_refused() {
-            let (_dir, root) = fixture::repo(CONFIG);
-            let elsewhere = tempdir().unwrap();
-            for (what, folder) in [
-                ("a folder outside the project", elsewhere.path().to_path_buf()),
-                ("a file", PathBuf::from("src/frete.rs")),
-                ("a folder that does not exist", PathBuf::from("nada")),
-            ] {
-                let report = asked(&root, GrepSearch { folder: Some(folder), ..pattern("calcular_frete") });
-                assert_eq!(report["answer"], json!(nothing_to_say()), "{what}: {report}");
-            }
-            let blank = asked(&root, pattern("   "));
-            assert_eq!(blank["ok"], json!(false), "{blank}");
-            assert_eq!(blank["reason"], json!("missing-argument"), "{blank}");
-            assert!(blank["hint"].as_str().unwrap().contains("<pattern>"), "{blank}");
+        fn missing_scope_no_matches_and_blank_patterns_remain_distinct() {
+            let (_dir,root)=fixture::repo("{}");
+            let elsewhere=tempdir().unwrap();
+            let absent=asked(&root,GrepSearch{folder:Some(elsewhere.path().into()),..pattern("calcular_frete")});
+            assert_eq!(absent["exit_code"],1);
+            assert!(absent["evidence"].is_null());
+            let file=asked(&root,GrepSearch{folder:Some("src/frete.rs".into()),..pattern("calcular_frete")});
+            assert_eq!(file["exit_code"],0);
+            let missing=asked(&root,GrepSearch{folder:Some("no-such-folder".into()),..pattern("calcular_frete")});
+            assert_eq!(missing["exit_code"],2);
+            let blank=asked(&root,pattern("  "));
+            assert_eq!(blank["reason"],"missing-argument");
         }
     }
 }

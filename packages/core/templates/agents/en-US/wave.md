@@ -21,14 +21,14 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 - Run every command from inside the copy.
 - Start with current request evidence: goal, complete items, rules, excerpts and candidate tests. Mandatory rules always apply, including with `omitClaudeMd`.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run knowledge --query "<resource>" --intent "<task>" --purpose implement`: current evidence; `mustard-rt run map search "<pattern>"`: search with the Grep text.
+  - `mustard-rt run search --intent "<task>" --purpose implement -- rg -n "<pattern>" .`: current search joined with the scan; `mustard-rt run map search "<pattern>"`: same gateway, with the Grep text.
   - `mustard-rt run map summary --file <file>`: before opening a file, to see declarations and their lines.
   - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration.
   - `mustard-rt run map users --name <name>`: before changing a declaration, to see who uses it.
   - `mustard-rt run map tests --file <file>`: to find candidate tests, without claiming coverage.
   - `mustard-rt run map history --name <name>`: when you need to know why a declaration became this way.
   - `mustard-rt run map note "<phrase>" --file <file> --name <name>`: after reading the excerpt, to record what it does in business words.
-- `Grep`/`rg` run with the original options, without Jev for literal searches. The scan suggests relations and tests; it does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
+- Search/read code through `mustard-rt run search`; preserve the original options, without Jev for literal searches. Scan suggests relations/tests; it does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
 - During the work, run only the tests of what changed. The round runs the build and pertinent criterion proofs before the commit. The full suite and lint run during final spec validation.
 - Never send a build or test to the background or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.

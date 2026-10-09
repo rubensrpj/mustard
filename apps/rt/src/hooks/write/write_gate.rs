@@ -77,7 +77,7 @@ use mustard_core::platform::i18n::Locale;
 use crate::commands::git_settle::main_checkout_root;
 use crate::shared::code_route::{self, ProjectPath};
 use crate::shared::config_key;
-use crate::shared::paths::{self, Access, PathClass, WriteTarget};
+use crate::shared::paths::{Access, PathClass, WriteTarget};
 use crate::shared::spec_state::{DiskSpecState, lock_state};
 use crate::shared::word_search;
 
@@ -259,38 +259,41 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
     }
     let root = ctx.project_dir_or_cwd(input);
     match input.tool_name.as_deref() {
-        Some("Grep") => return search_verdict(&root, input, ctx),
-        Some("Glob") => return glob_verdict(&root, input, ctx),
+        Some("Grep") => {
+            let verdict=search_verdict(&root,input,ctx);
+            return if matches!(verdict,Verdict::Allow) {crate::shared::search_gateway::before_file(input,ctx).unwrap_or(verdict)}else{verdict};
+        }
+        Some("Glob") => return crate::shared::search_gateway::before_file(input,ctx).unwrap_or(Verdict::Allow),
         _ => {}
     }
-    let Some(target) = WriteTarget::classify(&root, input) else {
+    let verdict=file_verdict_with(rules,&root,input,ctx);
+    if let Verdict::Rewrite {tool_input,note}=&verdict {
+        let changed=HookInput {tool_input:tool_input.clone(),..input.clone()};
+        if let Some(Verdict::Deny {mut reason})=crate::shared::search_gateway::before_file(&changed,ctx) {
+            if let Some(note)=note {reason.push('\n');reason.push_str(note);}
+            return Verdict::Deny {reason};
+        }
+    }
+    if matches!(verdict,Verdict::Allow) {crate::shared::search_gateway::before_file(input,ctx).unwrap_or(verdict)}else{verdict}
+}
+
+pub(crate) fn file_verdict(root:&str,input:&HookInput,ctx:&Ctx)->Verdict {
+    file_verdict_with(RULES,root,input,ctx)
+}
+
+fn file_verdict_with(rules:&[&dyn WriteRule],root:&str,input:&HookInput,ctx:&Ctx)->Verdict {
+    let Some(target) = WriteTarget::classify(root, input) else {
         return Verdict::Allow;
     };
-    let at = WriteContext::read(&root, input, ctx, &target);
+    let at = WriteContext::read(root, input, ctx, &target);
     judge(rules, &target, &at)
 }
 
-/// A busca (`Grep`): no `mustard.json` que guarda a chave do Jev, a recusa
-/// com o arquivo sem a chave; numa pasta de código do projeto — a raiz, sem
-/// `path`, ou uma cópia de trabalho dele —, a resposta do mapa
-/// ([`word_search`]): com o mapa cravado, a busca que traz as linhas
-/// (`output_mode` `content`) é recusada com a resposta agrupada por função no
-/// lugar dela; com o parcial, a busca roda, com a nota do mapa junto, só como
-/// contexto (o parcial passa antes pelo filtro do mapa, que entrega só as
-/// peças certas, e sem chave ou com o filtro falhando vale a triagem, com o
-/// aviso uma vez por sessão); a que só lista arquivos ou conta segue, sem
-/// filtro e com uma linha da marca; sem achado, ou com o filtro dizendo que
-/// nada serve, a busca segue com uma linha do que o mapa não achou. A busca num arquivo só, fora do projeto,
-/// com um `glob` que deixa só arquivos fora do mapa — pelos filtros de entrada
-/// ou pelos de saída (`!*.rs`) — ou com a chave `search.answer` desligada
-/// passa. A busca que traz as linhas numa pasta que guarda o arquivo com a
-/// chave, com um `glob` que casa com o nome dele e passa por cima do que o
-/// git ignora, é recusada também.
+/// Apply the original configuration-key policy before gateway routing.
 fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
     let lang = ctx.config.language().text_or_default();
     let ti = &input.tool_input;
     let text = |field: &str| ti.get(field).and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty());
-    let flag = |field: &str| ti.get(field).and_then(serde_json::Value::as_bool).unwrap_or(false);
     let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
     let path = text("path");
     if let Some(path) = path.filter(|path| config_key::is_config_file(path)) {
@@ -299,32 +302,12 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
             None => Verdict::Allow,
         };
     }
-    let Some(pattern) = text("pattern") else {
+    let Some(_) = text("pattern") else {
         return Verdict::Allow;
     };
-    let (mut filters, typed) = word_search::tool_filters(text("glob"), text("type"));
-    let walk = config_key::Walk::Rg { unignored: false };
-    let answered = match (typed, code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())) {
-        (Some(typed), Some(folder)) if !flag("multiline") => {
-            filters.extend(typed);
-            let patterns = [pattern.to_string()];
-            let search = word_search::Search {
-                patterns: &patterns,
-                dialect: word_search::Dialect::Rust,
-                ignore_case: flag("-i"),
-                whole_word: false,
-                folders: std::slice::from_ref(&folder),
-                filters: &filters,
-                walk,
-                shows_lines: text("output_mode") == Some("content"),
-            };
-            search_reply(root, input, ctx, &search)
-        }
-        _ => word_search::Reply::Pass,
-    };
-    if let word_search::Reply::Answer(reason) = answered {
-        return Verdict::Deny { reason };
-    }
+    let (mut filters,typed)=word_search::tool_filters(text("glob"),text("type"));
+    if let Some(typed)=typed {filters.extend(typed);}
+    let walk=config_key::Walk::Rg {unignored:false};
     // Só o modo que traz as linhas mostraria a chave; os outros listam
     // arquivos ou contam.
     if text("output_mode") == Some("content") {
@@ -333,79 +316,7 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
             return Verdict::Deny { reason: say("config_key.swept_tool", lang, &[("{file}", &file)]) };
         }
     }
-    match answered {
-        word_search::Reply::Note(context) => Verdict::Inject { context },
-        _ => Verdict::Allow,
-    }
-}
-
-/// A busca por nome de arquivo (`Glob`): as palavras do padrão de nome
-/// (`**/*payment*.ts` dá `payment`) vão à mesma triagem do mapa da busca por
-/// palavra, e a busca roda como veio, com a linha da marca ou do que o mapa
-/// não achou ([`word_search::names_search`]). O padrão sem palavra
-/// (`**/*.ts`), a pasta fora do projeto ou sem código do mapa, e a chave
-/// `search.answer` desligada passam calados.
-fn glob_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
-    let ti = &input.tool_input;
-    let text = |field: &str| ti.get(field).and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty());
-    let Some(pattern) = text("pattern") else {
-        return Verdict::Allow;
-    };
-    let words = word_search::name_words(pattern, false);
-    if words.is_empty() {
-        return Verdict::Allow;
-    }
-    let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
-    let folder = glob_folder(pattern, text("path"));
-    let Some(folder) = code_route::project_path(root, base, &folder).filter(|folder| folder.abs.is_dir()) else {
-        return Verdict::Allow;
-    };
-    let filters = word_search::extension_filters(pattern);
-    let search = word_search::names_search(&words, std::slice::from_ref(&folder), &filters);
-    match search_reply(root, input, ctx, &search) {
-        word_search::Reply::Note(context) => Verdict::Inject { context },
-        _ => Verdict::Allow,
-    }
-}
-
-/// A pasta do padrão de nome, em texto com barra normal: a `path` da
-/// ferramenta (ou `.`) e as partes do padrão antes da primeira que traz
-/// curinga (`packages/core/src/**/*.rs`). O padrão que abre com `/` ou com a
-/// letra de uma unidade (`C:/` ou `C:\`) já traz a pasta inteira, e a `path`
-/// fica de lado.
-fn glob_folder(pattern: &str, path: Option<&str>) -> String {
-    let pattern = pattern.replace('\\', "/");
-    let root_len = if pattern.starts_with('/') {
-        1
-    } else if paths::is_absolute(&pattern) {
-        3
-    } else {
-        0
-    };
-    let (mut folder, rest) = match root_len {
-        0 => (path.unwrap_or(".").replace('\\', "/"), pattern.as_str()),
-        len => (pattern[..len].to_string(), &pattern[len..]),
-    };
-    let parts: Vec<&str> = rest.split('/').collect();
-    let named = parts[..parts.len() - 1].iter().take_while(|part| !part.contains(['*', '?', '[', '{']));
-    for part in named.filter(|part| !part.is_empty()) {
-        if !folder.ends_with('/') {
-            folder.push('/');
-        }
-        folder.push_str(part);
-    }
-    folder
-}
-
-/// A resposta do gancho à busca `search`, com a chamada medida da busca
-/// parcial gravada na spec da conversa. É o único lugar em que os ganchos
-/// ligam a busca por palavra, que é parte compartilhada, à gravação da
-/// conversa, que é de quem a grava.
-pub(crate) fn search_reply(_root: &str, _input: &HookInput, _ctx: &Ctx, _search: &word_search::Search<'_>) -> word_search::Reply {
-    // Search must execute with its original flags, effects and file universe.
-    // Semantic discovery is explicit through map search. Literal search
-    // projection runs after execution and never needs a remote judgement.
-    word_search::Reply::Pass
+    Verdict::Allow
 }
 
 /// A primeira resposta de `rules` para `target`; sem resposta, passa.
@@ -927,10 +838,10 @@ mod tests {
             std::fs::write(root.join("src/a.rs"), "fn sum() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
             let path = abs(root, "src/a.rs");
             match WriteGate.evaluate(&call(root, "Read", &path, None), &ctx(root)).expect("never errors") {
-                Verdict::Rewrite { tool_input, note } => {
-                    assert_eq!(tool_input, json!({ "file_path": path, "limit": 2 }), "{lang:?}");
-                    let note = note.expect("a note names the cut line");
-                    assert!(note.contains('3'), "{lang:?}: {note}");
+                Verdict::Deny { reason } => {
+                    assert!(reason.contains("mustard-rt run search"), "{lang:?}: {reason}");
+                    assert!(reason.contains(&serde_json::to_string(&json!({"file_path":path,"limit":2})).unwrap()),"{reason}");
+                    assert!(reason.contains('3'), "{lang:?}: {reason}");
                 }
                 other => panic!("{lang:?}: the read is cut, got {other:?}"),
             }
@@ -954,7 +865,7 @@ mod tests {
                 cwd: Some(root.to_string_lossy().into_owned()),
                 ..HookInput::default()
             };
-            assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"), Verdict::Allow);
+            assert_allowed_or_gateway(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"));
         }
     }
 
@@ -967,7 +878,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.rs"), "fn sum() {}\n").unwrap();
         let path = abs(root, "src/a.rs");
-        assert_eq!(gate(root, "Read", &path), Verdict::Allow);
+        assert_allowed_or_gateway(gate(root, "Read", &path));
     }
 
     /// Um projeto que declara `develop` e `master` no `git.flow`, num
@@ -1064,7 +975,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude").join("spec").join("x")).expect("spec folder");
         bind_session_spec(&root.to_string_lossy(), "s-unopened", "x");
         let input = call(root, "Write", &abs(root, "src/a.rs"), Some("s-unopened"));
-        assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"), Verdict::Allow);
+        assert_allowed_or_gateway(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"));
     }
 
     /// Num worktree ligado, a raiz do projeto é o checkout principal, mas a
@@ -1262,11 +1173,19 @@ mod tests {
                 json!({"pattern":"calcular_frete","output_mode":"files_with_matches"}),
                 json!({"pattern":"a\\nb","multiline":true,"output_mode":"content"}),
             ] {
-                assert_eq!(hook_in(&root, "Grep", request, Some("native-search")), Verdict::Allow);
+                assert_gateway(hook_in(&root, "Grep", request, Some("native-search")));
             }
-            assert_eq!(hook_in(&root, "Glob", json!({"pattern":"**/*frete*.rs"}), Some("native-search")), Verdict::Allow);
+            assert_gateway(hook_in(&root, "Glob", json!({"pattern":"**/*frete*.rs"}), Some("native-search")));
         });
         assert_eq!(remote.calls(), 0);
+    }
+
+    fn assert_gateway(verdict: Verdict) {
+        let reason=refused(verdict,"the source-first gateway handoff");
+        assert!(reason.contains("mcp__mustard__search") && reason.contains("mustard-rt run search --root"),"{reason}");
+    }
+    fn assert_allowed_or_gateway(verdict: Verdict) {
+        if verdict!=Verdict::Allow {assert_gateway(verdict);}
     }
 
     /// O motivo de uma recusa; qualquer outra resposta derruba o teste.
@@ -1305,7 +1224,7 @@ mod tests {
             json!({ "file_path": abs(&root, "src/small.rs") }),
             json!({ "file_path": abs(&root, "docs/big.md") }),
         ] {
-            assert_eq!(hook_on(&root, "Read", tool_input.clone()), Verdict::Allow, "{tool_input}");
+            assert_gateway(hook_on(&root, "Read", tool_input.clone()));
         }
     }
 
@@ -1317,8 +1236,9 @@ mod tests {
         let (_dir, root) = fixture::project("{}", true);
         let short = abs(&root, "src/tested.rs");
         match hook_on(&root, "Read", json!({ "file_path": short })) {
-            Verdict::Rewrite { tool_input, .. } => {
-                assert_eq!(tool_input, json!({ "file_path": short, "limit": 100 }));
+            Verdict::Deny {reason} => {
+                assert!(reason.contains("mustard-rt run search"));
+                assert!(reason.contains(&serde_json::to_string(&json!({"file_path":short,"limit":100})).unwrap()),"{reason}");
             }
             other => panic!("the short production part is cut, got {other:?}"),
         }
@@ -1335,8 +1255,8 @@ mod tests {
         let (_broken, garbled) = fixture::project("{}", false);
         mustard_core::io::project_map::write_text(&garbled, "isto não é um mapa").expect("garbled map");
         for root in [&bare, &garbled] {
-            assert_eq!(hook_on(root, "Read", json!({ "file_path": abs(root, "src/big.rs") })), Verdict::Allow);
-            assert_eq!(hook_on(root, "Grep", json!({ "pattern": "Alpha", "path": abs(root, "src") })), Verdict::Allow);
+            assert_gateway(hook_on(root, "Read", json!({ "file_path": abs(root, "src/big.rs") })));
+            assert_gateway(hook_on(root, "Grep", json!({ "pattern": "Alpha", "path": abs(root, "src") })));
         }
         let (_none, without) = word_search::fixture::repo("{}");
         let (_broken, unreadable) = word_search::fixture::repo("{}");
@@ -1344,7 +1264,7 @@ mod tests {
         mustard_core::io::project_map::write_text(&unreadable, "isto não é um mapa").expect("garbled map");
         for (n, root) in [&without, &unreadable].into_iter().enumerate() {
             let tool_input = json!({ "pattern": "calcular_frete", "path": abs(root, "src") });
-            assert_eq!(hook_in(root, "Grep", tool_input, Some(&format!("sem-mapa-{n}"))), Verdict::Allow, "{root:?}");
+            assert_gateway(hook_in(root, "Grep", tool_input, Some(&format!("sem-mapa-{n}"))));
         }
     }
 
@@ -1372,7 +1292,7 @@ mod tests {
         assert!(reason.contains("--file src/big.rs"), "{reason}");
         assert!(reason.contains("Alpha 1-150, alpha 151-400."), "{reason}");
         let ranged = json!({ "file_path": abs(&copy, "src/big.rs"), "offset": 1, "limit": 10 });
-        assert_eq!(hook_on(&copy, "Read", ranged), Verdict::Allow);
+        assert_gateway(hook_on(&copy, "Read", ranged));
 
         let on_top = |count: usize, file: &str| {
             let text = std::fs::read_to_string(main.join(file)).expect("project file");
@@ -1408,31 +1328,14 @@ mod tests {
         }
 
         let (_plain, plain) = fixture::project(r#"{"language": {"text": "pt-BR"}}"#, true);
-        assert_eq!(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })), Verdict::Allow);
+        assert_gateway(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })));
     }
 
     /// A pasta de um padrão de nome sai inteira do padrão que abre com a letra
     /// de uma unidade, com barra normal ou invertida, como do que abre com
     /// `/`, e a `path` da ferramenta fica de lado; o padrão relativo parte da
     /// `path`, ou da pasta de trabalho sem ela.
-    #[test]
-    fn the_folder_of_a_glob_with_a_drive_letter_is_the_whole_folder_of_the_pattern() {
-        for (pattern, path, folder) in [
-            (r"C:/a/b\src/**/*frete*.rs", Some("fora"), "C:/a/b/src"),
-            (r"d:\a\*frete*", None, "d:/a"),
-            ("C:/*frete*", None, "C:/"),
-            ("/a/b/src/**/*frete*.rs", Some("fora"), "/a/b/src"),
-            ("src/**/*frete*.rs", Some("lib"), "lib/src"),
-            ("src/**/*frete*.rs", None, "./src"),
-            ("**/*frete*.rs", Some(r"C:\a\src"), "C:/a/src"),
-        ] {
-            assert_eq!(glob_folder(pattern, path), folder, "{pattern} {path:?}");
-        }
-    }
 
-    /// A busca num arquivo só, com o tipo ou o `glob` de outra família, só em
-    /// documentos, numa pasta sem código do mapa, fora do projeto, sem
-    /// sessão ou em várias linhas passa.
     #[test]
     fn a_search_in_one_file_or_outside_the_code_passes() {
         let (_dir, root) = word_search::fixture::repo("{}");
@@ -1449,10 +1352,10 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(hook_in(&root, "Grep", tool_input.clone(), Some(&format!("c{n}"))), Verdict::Allow, "{tool_input}");
+            if n==3 {assert_eq!(hook_in(&root, "Grep", tool_input, Some(&format!("c{n}"))),Verdict::Allow);}else{assert_gateway(hook_in(&root,"Grep",tool_input,Some(&format!("c{n}"))));}
         }
         let unnamed = json!({ "pattern": "calcular_frete", "path": "src" });
-        assert_eq!(hook_on(&root, "Grep", unnamed), Verdict::Allow, "no session, no answer");
+        assert_gateway(hook_on(&root, "Grep", unnamed));
     }
 
     /// A busca que a rota do nome deixa passar por causa do `glob` — só
@@ -1467,7 +1370,7 @@ mod tests {
         assert!(!reason.contains(fixture::FAKE_KEY), "{tool_input}: the key leaked");
         assert!(reason.contains("mustard.json"), "{tool_input}: {reason}");
         let names_only = json!({ "pattern": "Alpha", "glob": "!*.rs" });
-        assert_eq!(hook_on(&root, "Grep", names_only), Verdict::Allow);
+        assert_gateway(hook_on(&root, "Grep", names_only));
     }
 
     /// A busca que traz as linhas numa pasta com o `mustard.json` que guarda
@@ -1494,10 +1397,10 @@ mod tests {
             json!({ "pattern": "key", "glob": "*.json", "output_mode": "count" }),
             json!({ "pattern": "key", "glob": "*.json", "output_mode": "content", "path": abs(&root, "src") }),
         ] {
-            assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
+            assert_gateway(hook_on(&root, "Grep", tool_input.clone()));
         }
         let (_plain, plain) = fixture::project("{}", true);
         let tool_input = json!({ "pattern": "key", "glob": "*.json", "output_mode": "content" });
-        assert_eq!(hook_on(&plain, "Grep", tool_input), Verdict::Allow);
+        assert_gateway(hook_on(&plain, "Grep", tool_input));
     }
 }

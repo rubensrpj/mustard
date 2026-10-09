@@ -74,9 +74,11 @@ use super::{FileHits, SHOWN_FILES};
 use crate::shared::agent_said;
 
 /// A prova de versão do número e a conferência dos mapas que a régua abre.
+#[path="ruler/gate.rs"]
 mod gate;
 
 /// O que o filtro fez em cada busca, e a soma dele.
+#[path="ruler/jev.rs"]
 pub(crate) mod jev;
 
 /// Uma leitura que o Claude fez entre a busca e a edição.

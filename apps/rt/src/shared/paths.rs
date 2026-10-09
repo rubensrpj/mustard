@@ -30,6 +30,7 @@ const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git
 
 /// `true` quando o caminho `rel`, relativo à raiz do projeto, mora numa pasta
 /// de artefato: estado do harness, dependências ou saída de compilação.
+#[cfg(test)]
 pub(crate) fn is_artifact(rel: &str) -> bool {
     ARTIFACT_PREFIXES.iter().any(|prefix| rel.starts_with(prefix))
 }

@@ -15,6 +15,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "write_gate",
     "code_route",
     "config_key",
+    "search",
     "approval",
     "change",
     "workbranch",
@@ -28,6 +29,8 @@ pub(super) const PREFIXES: &[&str] = &[
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
+        ("search.gateway.route", Locale::PtBr) => "[Mustard] Use `mcp__mustard__search` com o pedido original ou rode {command}. Diga o que quer fazer com o achado. Se faltar uma opção na nova busca, use a ferramenta de antes.",
+        ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with the original request or run {command}. Say what you need the result for. If the new search lacks an option, use the original tool.",
         // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
         // written to telemetry), so they are ENGLISH regardless of the user's
@@ -555,8 +558,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            71,
-            0x8e59_1182_3aae_d2d6,
+            72,
+            0xcbd8_540c_1149_1641,
         );
     }
 

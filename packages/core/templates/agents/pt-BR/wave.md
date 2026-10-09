@@ -21,14 +21,14 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 - Rode cada comando de dentro da cópia.
 - Parta da evidência atual do pedido: objetivo, itens completos, regras, trechos e testes candidatos. Regras obrigatórias sempre valem, inclusive com `omitClaudeMd`.
 - Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
-  - `mustard-rt run knowledge --query "<recurso>" --intent "<tarefa>" --purpose implement`: evidência atual; `mustard-rt run map search "<padrão>"`: busca pelo texto do Grep.
+  - `mustard-rt run search --intent "<tarefa>" --purpose implement -- rg -n "<padrão>" .`: busca + scan; `mustard-rt run map search "<padrão>"`: mesma porta.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo, para ver as declarações e suas linhas.
   - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração.
   - `mustard-rt run map users --name <nome>`: antes de mudar uma declaração, para ver quem a usa.
   - `mustard-rt run map tests --file <arquivo>`: para achar testes candidatos, sem afirmar cobertura.
   - `mustard-rt run map history --name <nome>`: quando precisar saber por que a declaração ficou assim.
   - `mustard-rt run map note "<frase>" --file <arquivo> --name <nome>`: depois de ler o trecho, para gravar o que ele faz em palavras de negócio.
-- `Grep`/`rg` executam com as opções originais, sem Jev por busca literal. O scan sugere relações e testes; não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
+- Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan sugere relações/testes; não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A rodada executa o build e as provas pertinentes antes do commit. A suíte inteira e o lint ficam na validação final da spec.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.

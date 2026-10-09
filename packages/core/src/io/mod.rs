@@ -18,6 +18,7 @@ pub mod map_glossary;
 mod map_index;
 pub mod map_notes;
 pub mod knowledge;
+pub mod code_search;
 mod map_notes_fresh;
 pub mod map_lineage;
 mod map_check;

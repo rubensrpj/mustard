@@ -1,13 +1,13 @@
 # Mustard neste projeto
 
-Fluxo: levantamento, plano, aprovação, ondas, revisão final, fechamento e PR. O binário cuida de estado, busca, contexto, cálculos e páginas; o modelo raciocina e implementa.
+Fluxo: levantamento, plano, aprovação, ondas, revisão, fechamento e PR. Binário: estado, busca e cálculos. Modelo: raciocínio e código.
 
 ## Pedido e levantamento
 
 - Abra mudanças com `mustard-rt run open`, grave o objetivo em `context` e sugira `/clear`; a linha de retomada mostra o estado. Pergunta, leitura e status não abrem spec. Branch alheia não bloqueia.
-- Explique um ponto por vez na ordem de explicar do estilo de resposta. Confira código e histórico antes de remover.
+- Explique na ordem de explicar do estilo de resposta. Confira código e histórico antes de remover.
 - Grave cada resposta com `mustard-rt run answer`.
-- `mustard-rt run knowledge --query "<recurso>" --purpose spec`: evidência atual; `--intent "<tarefa>"`: pistas; `--purpose implement|validate`: mais código. Confira candidatos e expanda cortes.
+- Busque/leia código por `mcp__mustard__search` ou `mustard-rt run search --intent "<tarefa>" --purpose spec -- rg -n "<padrão>" .`: busca atual + scan; sem ganho, resultado original. Se intent_requested, informe a intenção. Expanda por `mustard-rt run knowledge --symbol <id>`.
 
 ## Spec aberta
 
@@ -27,4 +27,4 @@ Fluxo: levantamento, plano, aprovação, ondas, revisão final, fechamento e PR.
 
 ## Retomar
 
-Retome com `mustard-rt run resume`. O binário monta commit/corpo do PR sem nomes de clientes, e-mail ou caminho local.
+Retome com `mustard-rt run resume`. Commit/PR não levam nomes de clientes, e-mail ou caminho local.

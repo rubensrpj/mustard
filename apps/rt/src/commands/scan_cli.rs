@@ -19,6 +19,31 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
+    /// Execute a source search, then join its real hits with current scan evidence.
+    #[command(display_order = 30)]
+    Search {
+        #[arg(long,default_value=".")]
+        root: PathBuf,
+        /// Host-independent JSON: tool, input, intent, purpose, choose.
+        #[arg(long,conflicts_with="args")]
+        request: Option<String>,
+        #[arg(long)]
+        intent: Option<String>,
+        #[arg(long,value_parser=["locate","understand","spec","implement","validate"])]
+        purpose: Option<String>,
+        /// Permit optional configured Choice only for remaining responsibility ties.
+        #[arg(long)]
+        choose: bool,
+        /// Exact native stdout, stderr and exit code, without added context.
+        #[arg(long,conflicts_with="shell_output")]
+        raw: bool,
+        /// Native output plus useful current evidence; otherwise exact native output.
+        #[arg(long)]
+        shell_output: bool,
+        /// Native executable and arguments, after `--` (rg, grep or git grep).
+        #[arg(last=true)]
+        args: Vec<String>,
+    },
     /// Retrieve current functions, documents, configuration and interpretations
     /// natively, with optional configured Choice for ambiguous responsibility.
     /// Export a report with `--markdown --out <file>`.
@@ -187,6 +212,7 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
+        ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args}=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output),
         ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility } => {
             super::knowledge::run(
                 &root,

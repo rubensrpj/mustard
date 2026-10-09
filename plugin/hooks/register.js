@@ -118,6 +118,11 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec]', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
+    await $.tool.register({name:'search',description:'Search project code through Mustard. Executes the original search first, then joins current functions, contracts, comments and read locations from the scan. Supply intent (what you need to establish) when responsibility is ambiguous. No model call unless choose is explicit and native ranking remains tied.',
+      inputSchema:{type:'object',properties:{request:{type:'object',properties:{tool:{type:'string',enum:['rg','grep','git','Grep','Glob','Read']},
+        input:{type:'object',description:'Original tool arguments. For rg/grep/git use {args:[...]}; for Grep/Glob/Read use their original input object.'},
+        intent:{type:'string',description:'Why this evidence is needed; never changes the search pattern.'},
+        purpose:{type:'string',enum:['locate','understand','spec','implement','validate']},choose:{type:'boolean'}},required:['tool','input'],additionalProperties:false}},required:['request'],additionalProperties:false}});
     return next(e);
   });
   on('command.run', { command: 'mustard-panel' }, async ($, e) => {
@@ -125,6 +130,19 @@ export function register(on) {
     return {};
   });
   on('command.run', { command: 'mustard-pages' }, async ($,e)=>publishPage($,e.args));
+  on('tool.call',{tool:'mcp__mustard__search'},async ($,e)=>{
+    const cwd=await $.session.cwd();
+    const request=e.request;
+    // MCP arguments are fields of e; the nested request avoids reserved tool.
+    // Use Bash through the host tool API so
+    // permissions, classic hooks and the shell sandbox still apply. A process
+    // launched directly by a mod would bypass that boundary.
+    const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
+    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(request))].join(' ');
+    const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
+    if(result.deny) return {deny:result.deny};
+    return {result:{content:[{type:'text',text:result.result?.stdout || result.text || ''}],isError:result.isError===true}};
+  });
   // Observe completed operations without replacing permissions or the
   // native orchestration. Coalesce bursts; retain polling for external edits.
   on('tool.call', async ($, e, next) => {

@@ -36,6 +36,7 @@ pub mod flow;
 pub mod git_delete;
 pub mod git_settle;
 pub mod knowledge;
+pub mod search;
 pub mod maint;
 pub mod map;
 pub mod panel;

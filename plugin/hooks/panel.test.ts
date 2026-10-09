@@ -2,6 +2,7 @@ import { test, expect, mock } from 'claude-code/testing';
 
 test('panel updates locally, preserves unknown usage, and stops on close', async ($, on) => {
   const clock = mock.clock(on);
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on, {});
   let reads = 0;
   let measurements = 0;
@@ -46,6 +47,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
 });
 
 test('host measurements persist natively and official context percent renders without a model turn', async ($,on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on,{});mock.clock(on);
   let turns=0;
   const recorded:any[]=[];
@@ -80,6 +82,7 @@ test('host measurements persist natively and official context percent renders wi
 });
 
 test('explicit export without host transport starts no model turn', async ($, on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on, {});
   let turns = 0;
   let publications = 0;
@@ -103,6 +106,7 @@ test('explicit export without host transport starts no model turn', async ($, on
 
 test('a Windows query failure retains the dated state and the English panel', async ($, on) => {
   const clock = mock.clock(on);
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on, {OS:'Windows_NT'});
   let reads = 0;
   const snapshot = {ok:true,schema_version:1,at:'2026-10-08T12:00:00Z',
@@ -136,6 +140,7 @@ test('a Windows query failure retains the dated state and the English panel', as
 });
 
 test('advertised publication tools do not delegate an unverified upload to a model', async ($, on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on, {});
   let turns = 0;
   let uploads = 0;
@@ -157,6 +162,7 @@ test('advertised publication tools do not delegate an unverified upload to a mod
 });
 
 test('native publication exposes a confirmed URL without calling the model', async ($, on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on, {});
   let turns=0, toolCalls=0;
   on('session.start', ($,e)=>({cwd:e.cwd}));
@@ -176,6 +182,7 @@ test('native publication exposes a confirmed URL without calling the model', asy
 });
 
 test('pending deployment tells the user to resume it without advertising a URL', async ($, on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on, {});
   on('session.start', ($,e)=>({cwd:e.cwd}));
   on('command.register', ()=>({value:null}));
@@ -189,6 +196,7 @@ test('pending deployment tells the user to resume it without advertising a URL',
 });
 
 test('project publication needs no selected spec and shows its result in the pane', async ($,on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on,{});mock.clock(on);
   let publications=0, turns=0;
   on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
@@ -212,6 +220,7 @@ test('project publication needs no selected spec and shows its result in the pan
 });
 
 test('completed tool events coalesce local refreshes without opening another model turn', async ($,on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on,{});const clock=mock.clock(on);let reads=0;
   on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
   on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{rateLimits:[]}}));
@@ -228,6 +237,7 @@ test('completed tool events coalesce local refreshes without opening another mod
 });
 
 test('report publication preserves the requested document path without calling the model', async ($,on) => {
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   mock.env(on,{});let turns=0;
   on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));on('session.cwd',()=>({value:'/fixture'}));
   on('process.run',($,e)=> {expect(e.argv.slice(1)).toEqual(['run','publish','--root','/fixture','--document','reports/Resumo gestor.md']);

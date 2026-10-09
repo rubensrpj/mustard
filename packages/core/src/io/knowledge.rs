@@ -18,6 +18,7 @@ pub mod audit;
 pub mod coverage;
 pub mod dossier;
 pub mod investigation;
+pub mod observations;
 pub(crate) mod catalog;
 pub(crate) mod references;
 mod navigation;

@@ -147,6 +147,13 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
+    /// Refresh structural evidence without loading a configured sense model.
+    pub fn scan_native(&self,root:&Path,out:&Path)->Result<ScanReport> {
+        let mut args=scan_args(root,out);args.push("--native".into());
+        let stdout=self.run(&args)?;
+        serde_json::from_str(last_line(&stdout)).map_err(|e|Error::check_failed(format!("scan native report: {e}")))
+    }
+
     /// Read from git the history of each declaration of `file`, in the base
     /// branch the project declares, and keep it in the map at `out` (`grain
     /// history`), following a declaration into the file it came from up to

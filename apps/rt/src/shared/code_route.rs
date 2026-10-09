@@ -13,7 +13,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::project_map::{self, FilePart, FileParts, ProjectMap};
+use mustard_core::domain::project_map::{self, FilePart, FileParts};
+#[cfg(test)]
+use mustard_core::domain::project_map::ProjectMap;
 use mustard_core::domain::search::within;
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
@@ -358,6 +360,7 @@ pub(crate) fn in_search(rel: &str, folders: &[String], filters: &[NameFilter], w
 /// que casam com certeza, pelo nome ou pela pasta. `walk` diz como a busca lê
 /// as chaves dos filtros. Só a busca que passa por código do mapa é assunto do
 /// mapa: a de um arquivo só, de documentos ou de pastas sem código passa.
+#[cfg(test)]
 pub(crate) fn holds_code(paths: &ProjectMap, folders: &[String], filters: &[NameFilter], walk: Walk) -> bool {
     if folders.is_empty() {
         return false;
