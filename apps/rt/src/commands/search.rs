@@ -15,9 +15,7 @@ pub fn run(
 ) {
     let result = (|| {
         let mut request: Request = match request {
-            Some(text) if text.len() <= 64 * 1024 => {
-                serde_json::from_str(text).map_err(|e| e.to_string())?
-            }
+            Some(text) if text.len() <= 64 * 1024 => Request::from_json(text)?,
             Some(_) => return Err("search-request-too-large".into()),
             None => Request::native(argv)?,
         };
@@ -39,7 +37,8 @@ pub fn run(
         Ok((answer, request)) => {
             if raw || shell_output {
                 let output = if shell_output {
-                    mustard_core::io::code_search::presentation::agent(&answer, &request, root).stdout
+                    mustard_core::io::code_search::presentation::agent(&answer, &request, root)
+                        .stdout
                 } else {
                     answer.stdout
                 };
@@ -51,9 +50,17 @@ pub fn run(
             std::process::exit(answer.exit_code);
         }
         Err(reason) => {
+            let fallback = if reason.starts_with("search-contract-")
+                || reason.starts_with("search-intent-required")
+                || reason == "search-unsupported-contract-version"
+            {
+                "correct-search-request; preserve original arguments and supply explicit intent and purpose"
+            } else {
+                "use-original-host-tool"
+            };
             println!(
                 "{}",
-                json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false,"remote_model_calls":0})
+                json!({"ok":false,"reason":reason,"fallback":fallback,"executed":false,"remote_model_calls":0})
             );
             std::process::exit(2);
         }

@@ -7,7 +7,8 @@ Flow: survey, plan, approval, waves, review, close, PR. Binary: state, search an
 - Open changes with `mustard-rt run open`, record the goal in `context`, then suggest `/clear`; the resume line shows the state. Questions, reads and status open no spec. Other branches do not block.
 - Explain in the order of explaining from the response style. Check code/history before removing anything.
 - Record each answer with `mustard-rt run answer`.
-- Search/read through `mcp__mustard__search` or `mustard-rt run search --shell-output --intent "<task>" --purpose spec -- rg -n "<pattern>" .`. Current scoped evidence; expand incomplete ranges. `locate`: original matches; `--raw`: native bytes. Jev: `choose`.
+- Search/read code through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`. Preserve arguments and scope. In `intent`, state the specific question this search must answer; for a spec, the overall goal is already in `context`. Explicitly set `purpose`: `locate`, `understand`, `spec`, `implement` or `validate`. Investigation requires intent; literal locate permits an empty intent. `Read` preserves the original result.
+- Without the tool: `mustard-rt run search --shell-output --intent "<specific question>" --purpose spec -- rg -n "<pattern>" .`. For native Bash, description `mustard:spec: <question>` carries purpose through the hook. Unannotated searches remain `locate`. Expand incomplete ranges; `--raw` returns native bytes. `choose:true`/`--choose` permits Jev for unresolved responsibility alternatives, without enabling it on every search.
 - `mustard-rt run knowledge`: investigation/export.
 
 ## Open spec

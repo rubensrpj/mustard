@@ -250,7 +250,8 @@ fn choice_requires_intent_explicit_authorization_and_unresolved_responsibility()
     };
     let mut req = request(&["rg", "-n", "--with-filename", "let quartz", "src"]);
     req.choose = true;
-    execute(root, &req, Some(&selector));
+    let error = code_search::execute(root, root, root, &req, Some(&selector)).err().unwrap();
+    assert!(error.starts_with("search-intent-required"));
     assert_eq!(selector.calls.get(), 0, "without intent no choice");
     req.intent = "persist quartz snapshot".into();
     req.choose = false;

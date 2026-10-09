@@ -45,6 +45,9 @@ function hook(tool, input, cwd = root) {
 try {
   assert.deepEqual(fs.readdirSync(root), []);
   successful('mustard', ['init', '--yes']);
+  const sessionMap=fs.readFileSync(path.join(root,'.claude/mustard/session-map.md'),'utf8');
+  assert.ok(sessionMap.includes('{request:{tool,input,intent,purpose,choose?}}'));
+  assert.ok(sessionMap.includes('mustard:spec:'));
   const configFile = path.join(root, 'mustard.json');
   const config = JSON.parse(fs.readFileSync(configFile));
   config.ai = { fallback: true, vectors: true };
@@ -146,6 +149,26 @@ try {
   const taskView=successful('mustard-rt',['run','search','--root',root,'--shell-output','--request',JSON.stringify(taskRequest)]);
   assert.ok(taskView.stdout.toString().includes('# task evidence'));
   assert.ok(taskView.stdout.toString().includes('purpose=locate'));
+  const versionedTask=search(['--request',JSON.stringify({schema_version:1,request:taskRequest})]);
+  assert.equal(versionedTask.task_context.status,'current-task-evidence');
+  assert.equal(versionedTask.intent,taskRequest.intent);
+  const annotated=hook('Bash',{command:"rg --sort=path -n --with-filename 'let quartz' src/lib.rs",description:'mustard:spec: revised quartz snapshot'});
+  assert.ok(annotated.updatedInput.command.includes('"schema_version":1'));
+  const annotatedResult=run('sh',['-c',annotated.updatedInput.command]);
+  assert.equal(annotatedResult.status,0,annotatedResult.stderr.toString());
+  assert.ok(annotatedResult.stdout.toString().includes('# task evidence'));
+  for(const invalid of [
+    {schema_version:1,request:{tool:'rg',input:{args:['quartz','src']},intent:'question'}},
+    {schema_version:1,request:{...taskRequest,intent:''}},
+    {schema_version:2,request:taskRequest},
+  ]){
+    const refused=run('mustard-rt',['run','search','--root',root,'--request',JSON.stringify(invalid)]);
+    assert.equal(refused.status,2);
+    const result=JSON.parse(refused.stdout);
+    assert.equal(result.executed,false);
+    assert.equal(result.remote_model_calls,0);
+    assert.ok(result.fallback.startsWith('correct-search-request'));
+  }
   fs.writeFileSync(path.join(root,'src/fresh.py'),"def restore():\n    return 'fresh_oracle_snapshot'\n");
   const discovered=search(['--request',JSON.stringify({...typed,input:{pattern:'let quartz',path:'src',output_mode:'content'},intent:'fresh_oracle_snapshot',purpose:'spec'})]);
   assert.equal(discovered.task_context.learning.scan.status,'refreshed-native');

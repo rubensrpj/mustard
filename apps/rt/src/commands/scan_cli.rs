@@ -24,9 +24,11 @@ pub enum ScanCmd {
     Search {
         #[arg(long,default_value=".")]
         root: PathBuf,
-        /// Host-independent JSON: tool, input, intent, purpose, choose.
+        /// Versioned JSON: {schema_version:1,request:{tool,input,intent,purpose,choose?}}.
+        /// The original CLI request shape remains supported.
         #[arg(long,conflicts_with="args")]
         request: Option<String>,
+        /// Specific question to establish; required for investigation or Choice.
         #[arg(long)]
         intent: Option<String>,
         #[arg(long,value_parser=["locate","understand","spec","implement","validate"])]

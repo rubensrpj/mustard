@@ -14,7 +14,7 @@ You check someone else's work once, at the end: the waves, what each delivered, 
 - Only read, run tests and make cuts, undone after. Do not commit and do not use `git add`: the commit belongs to the round. Never push or switch branches, and never touch `.claude/` or the `mustard.json`. The pending ledger in `.claude/pending/` is not yours to close.
 - Use current wave summaries as an initial map: connect deliveries to files, commits and criteria. Confirm conclusions in the diff and code; a missing, incomplete or incorrect summary excludes no area. Expand to consumers, contracts and uncited changes as needed.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run search --shell-output --intent "<task>" --purpose validate -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: original occurrences.
+  - `mustard-rt run search --shell-output --intent "<specific question to verify>" --purpose validate -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: literal lookup. Preserve arguments and scope; do not repeat the whole spec in intent. For native Bash, description `mustard:validate: <question>` carries purpose through the hook.
   - `mustard-rt run map summary --file <file>`: before opening a changed file, to see its declarations and their lines.
   - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration the wave changed.
   - `mustard-rt run map users --name <name>`: to see who uses what the wave changed and whether a use was left out.

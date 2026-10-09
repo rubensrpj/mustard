@@ -2,6 +2,20 @@
 
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
+## Contrato de busca: Claude Code primeiro
+
+O Mods exige `{request:{tool,input,intent,purpose,choose?}}`. `purpose` é explícito; `intent` contém a pergunta específica que a consulta deve esclarecer. Investigação ou seleção sem pergunta é recusada antes de executar a pesquisa. Localização literal admite intenção vazia. O erro orienta corrigir o pedido, sem apresentar uma quebra de contrato como motivo para contornar o gateway.
+
+O adaptador acrescenta a versão e chama o CLI com `{"schema_version":1,"request":{...}}`. O contrato vive no domínio do binário, sem tipos do SDK Claude. Versões desconhecidas e campos obrigatórios ausentes são recusados. O CLI conserva o formato anterior para consumidores existentes, aplicando a mesma exigência de intenção nas investigações. O envelope prepara novos adaptadores; não instala integração de ChatGPT/Codex nem presume que esses aplicativos tenham os mesmos hooks.
+
+A ferramenta é o caminho preferido. No Bash original, a descrição `mustard:spec: Verificar se o download usa os dados atuais da cópia` transmite finalidade e pergunta pelo hook, preservando os argumentos nativos. As outras finalidades usam o mesmo formato. Descrição comum continua em `locate`; o binário não adivinha finalidade a partir de prosa. Sintaxe de shell não suportada conserva o caminho original e suas permissões. Não há promessa de interceptar toda forma de leitura de qualquer aplicativo.
+
+Os moldes de sessão, ondas e revisão ensinam o mesmo contrato em português e inglês. O objetivo geral da spec continua no bloco `context`; cada consulta leva a dúvida local, sem repetir a spec inteira. `choose` autoriza o seletor existente apenas diante de alternativas de responsabilidade ainda não resolvidas. O contrato não torna uma intenção automaticamente correta e não comprova economia de uma sessão.
+
+Nesta versão, a integração ativa é Claude Code: Mods, hooks e CLI. A comparação com modelos pequenos permanece uma avaliação separada; o modelo estático opcional existente não é ativado por esta alteração.
+
+Validação do contrato: 28 testes Rust (3 de domínio, 5 de encaminhamento e 20 do gateway), 14 testes do SDK Mods e validação do plugin aprovados. A análise estática de todo o workspace passou sem avisos. Esses testes verificam transporte, correção de pedidos inválidos e preservação das permissões; não medem economia nem substituem a sessão real com Claude Code.
+
 ## Fluxo entregue
 
 1. O adaptador recebe ferramenta, parâmetros originais, intenção e finalidade.

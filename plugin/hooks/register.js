@@ -6,6 +6,21 @@ let publishing = false, publicationMessage;
 let runtimeBinary;
 let consumptionMeasuredAt;
 let measurementQueue = Promise.resolve();
+const searchPurposes = ['locate','understand','spec','implement','validate'];
+const searchTools = ['rg','grep','git','Grep','Glob','Read'];
+function searchContractError(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return 'request object required';
+  for (const field of ['tool','input','intent','purpose']) {
+    if (!Object.hasOwn(request,field)) return `missing ${field}`;
+  }
+  if (Object.keys(request).some(key=>!['tool','input','intent','purpose','choose'].includes(key))) return 'unknown request field';
+  if (!searchTools.includes(request.tool)) return 'unsupported tool';
+  if (!request.input || typeof request.input !== 'object' || Array.isArray(request.input)) return 'input object required';
+  if (!searchPurposes.includes(request.purpose)) return 'invalid purpose';
+  if (typeof request.intent !== 'string') return 'intent string required';
+  if (Object.hasOwn(request,'choose') && typeof request.choose !== 'boolean') return 'choose boolean required';
+  if ((request.purpose !== 'locate' || request.choose) && !request.intent.trim()) return 'provide the specific question in intent';
+}
 async function runtime($) {
   if (!runtimeBinary) runtimeBinary = `${$.plugin.root}/bin/mustard-rt${await $.env.get('OS') === 'Windows_NT' ? '.exe' : ''}`;
   return runtimeBinary;
@@ -118,11 +133,11 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec]', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
-    await $.tool.register({name:'search',description:'Search current code through Mustard using the original tool and arguments. purpose=locate preserves original occurrences. With intent and purpose=understand/spec/implement/validate, returns current task evidence: complementary symbols, source excerpts, static relations and gaps inside the original path filters. Expand incomplete excerpts before concluding. Set choose only for unresolved alternatives: optional Jev compares source, may request one evidence refinement, or abstain. Exact symbols stay native.',
-      inputSchema:{type:'object',properties:{request:{type:'object',properties:{tool:{type:'string',enum:['rg','grep','git','Grep','Glob','Read']},
+    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve the original tool arguments and scope. Always provide intent and purpose: intent is the specific question this search must answer, not the entire task. locate returns original occurrences; understand/spec/implement/validate with a question return current scoped source evidence and exact read ranges. Read keeps the original read result. Expand missing evidence before concluding. choose=true permits optional Jev only for unresolved responsibility alternatives; exact identities stay native. The adapter supplies the contract version.',
+      inputSchema:{type:'object',properties:{request:{type:'object',properties:{tool:{type:'string',enum:searchTools},
         input:{type:'object',description:'Original tool arguments. For rg/grep/git use {args:[...]}; for Grep/Glob/Read use their original input object.'},
-        intent:{type:'string',description:'Why this evidence is needed; never changes the search pattern.'},
-        purpose:{type:'string',enum:['locate','understand','spec','implement','validate'],description:'locate: original occurrences. Other purposes with intent: task evidence with exact read ranges; repeat locate for the original result.'},choose:{type:'boolean'}},required:['tool','input'],additionalProperties:false}},required:['request'],additionalProperties:false}});
+        intent:{type:'string',description:'Specific question to establish now, for example: does this export read the edited copy from the database? Required and nonempty for investigation or choose. Empty is allowed only for literal locate.'},
+        purpose:{type:'string',enum:searchPurposes,description:'locate: literal lookup. understand/spec/implement/validate: investigate the specific intent using current source. Repeat locate for original occurrences.'},choose:{type:'boolean',description:'Permit optional Jev for unresolved responsibility alternatives after native triage. Default false.'}},required:['tool','input','intent','purpose'],additionalProperties:false}},required:['request'],additionalProperties:false}});
     return next(e);
   });
   on('command.run', { command: 'mustard-panel' }, async ($, e) => {
@@ -131,14 +146,16 @@ export function register(on) {
   });
   on('command.run', { command: 'mustard-pages' }, async ($,e)=>publishPage($,e.args));
   on('tool.call',{tool:'mcp__mustard__search'},async ($,e)=>{
-    const cwd=await $.session.cwd();
     const request=e.request;
+    const problem=searchContractError(request);
+    if(problem) return {result:{content:[{type:'text',text:`search-contract: ${problem}. Retry with {request:{tool,input,intent,purpose,choose?}}; preserve original search arguments.`}],isError:true}};
+    const cwd=await $.session.cwd();
     // MCP arguments are fields of e; the nested request avoids reserved tool.
     // Use Bash through the host tool API so
     // permissions, classic hooks and the shell sandbox still apply. A process
     // launched directly by a mod would bypass that boundary.
     const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
-    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(request)),'--shell-output'].join(' ');
+    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify({schema_version:1,request})),'--shell-output'].join(' ');
     const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
     if(result.deny) return {deny:result.deny};
     const stdout=result.result?.stdout ?? result.text ?? '';

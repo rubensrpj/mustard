@@ -29,8 +29,8 @@ pub(super) const PREFIXES: &[&str] = &[
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
-        ("search.gateway.route", Locale::PtBr) => "[Mustard] Use `mcp__mustard__search` com o pedido original ou rode {command}. Diga o que quer fazer com o achado. Se faltar uma opção na nova busca, use a ferramenta de antes.",
-        ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with the original request or run {command}. Say what you need the result for. If the new search lacks an option, use the original tool.",
+        ("search.gateway.route", Locale::PtBr) => "[Mustard] Use `mcp__mustard__search` com {request:{tool,input,intent,purpose,choose?}}, preservando os argumentos originais. Para investigar, diga em intent a pergunta específica e declare purpose (understand/spec/implement/validate); locate mantém a busca literal. Alternativa: {command}. Se faltar uma opção na nova busca, use a ferramenta de antes.",
+        ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with {request:{tool,input,intent,purpose,choose?}}, preserving original arguments. For investigation, state the specific question in intent and set purpose (understand/spec/implement/validate); locate keeps literal lookup. Alternative: {command}. If the new search lacks an option, use the original tool.",
         // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
         // written to telemetry), so they are ENGLISH regardless of the user's

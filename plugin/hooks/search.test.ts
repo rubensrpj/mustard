@@ -9,6 +9,7 @@ test('gateway tool transports task evidence and intent through host permissions'
   on('tool.register',($,e)=>{
     expect(e.tool.name).toBe('search');
     expect(e.tool.inputSchema.required).toEqual(['request']);
+    expect(e.tool.inputSchema.properties.request.required).toEqual(['tool','input','intent','purpose']);
     return {value:{tool:'mcp__mustard__search'}};
   });
   on('process.run',()=>{processCalls++;throw new Error('Search must not bypass host tools');});
@@ -20,6 +21,7 @@ test('gateway tool transports task evidence and intent through host permissions'
     expect(e.command).toContain('"intent":"repair persistence"');
     expect(e.command).toContain('"purpose":"spec"');
     expect(e.command).toContain('"choose":false');
+    expect(e.command).toContain('"schema_version":1');
     return {result:{stdout:'# task evidence (Spec)\n@ src/store\n12 | save',stderr:'',interrupted:false,isImage:false}};
   });
   await $.session.start({cwd:'/fixture with spaces',surface:'terminal',isInteractive:true});
@@ -37,7 +39,7 @@ test('gateway returns native search errors instead of dropping stderr',async ($,
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   on('tool.call',{tool:'Bash'},()=>({result:{stdout:'',stderr:'rg: regex parse error'},isError:true}));
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
-  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['[','src']}}});
+  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['[','src']},intent:'',purpose:'locate'}});
   expect(result.result.content[0].text).toBe('rg: regex parse error');
   expect(result.result.isError).toBe(true);
 });
@@ -50,6 +52,29 @@ test('a refused host execution never becomes gateway evidence',async ($,on)=>{
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   on('tool.call',{tool:'Bash'},()=>({deny:'fixture permission refusal'}));
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
-  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['-n','save','src']}}});
+  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['-n','save','src']},intent:'',purpose:'locate'}});
   expect(result.deny).toBe('fixture permission refusal');
+});
+
+test('invalid investigations get a corrective result before any host execution',async ($,on)=>{
+  mock.env(on,{});
+  let executions=0;
+  on('session.start',($,e)=>({cwd:e.cwd}));
+  on('command.register',()=>({value:null}));
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('process.run',()=>{executions++;throw new Error('No process for invalid input');});
+  on('tool.call',{tool:'Bash'},()=>{executions++;throw new Error('No search for invalid input');});
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  for(const request of [
+    {tool:'rg',input:{args:['save','src']},intent:'question'},
+    {tool:'rg',input:{args:['save','src']},intent:' ',purpose:'implement'},
+    {tool:'rg',input:{args:['save','src']},intent:'',purpose:'locate',choose:true},
+    {tool:'rg',input:{args:['save','src']},intent:'question',purpose:'spec',choose:'true'},
+    {tool:'rg',input:{args:['save','src']},intent:'question',purpose:'spec',invented_evidence:true},
+  ]){
+    const result=await $.tool.call({tool:'mcp__mustard__search',request});
+    expect(result.result.isError).toBe(true);
+    expect(result.result.content[0].text).toContain('search-contract:');
+  }
+  expect(executions).toBe(0);
 });

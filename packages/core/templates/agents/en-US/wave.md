@@ -21,7 +21,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 - Run every command from inside the copy.
 - Start with current request evidence: goal, complete items, rules, excerpts and candidate tests. Mandatory rules always apply, including with `omitClaudeMd`.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run search --shell-output --intent "<task>" --purpose implement -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: original occurrences.
+  - `mustard-rt run search --shell-output --intent "<specific question for this change>" --purpose implement -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: literal lookup. Preserve arguments and scope; do not repeat the whole spec in intent. For native Bash, description `mustard:implement: <question>` carries purpose through the hook.
   - `mustard-rt run map summary --file <file>`: before opening a file, to see declarations and their lines.
   - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration.
   - `mustard-rt run map users --name <name>`: before changing a declaration, to see who uses it.

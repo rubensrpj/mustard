@@ -1,5 +1,5 @@
 //! Shared gateway for CLI and host adapters; never evaluates shell request text.
-use mustard_core::domain::code_search::Request;
+use mustard_core::domain::code_search::{Invocation, Request};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use serde_json::json;
 use std::path::Path;
@@ -12,6 +12,7 @@ pub(crate) fn answer(
     cwd: &Path,
     request: &Request,
 ) -> Result<mustard_core::io::code_search::Answer, String> {
+    request.validate()?;
     let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
     let root = mustard_core::io::spec_events::spec_root(&cwd);
     let git = mustard_core::platform::git::run(&cwd, &["rev-parse", "--show-toplevel"]);
@@ -177,17 +178,12 @@ pub(crate) fn before_bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         .collect();
     let mut request = Request::native(&argv).ok()?;
     mustard_core::io::code_search::arguments(&request).ok()?;
-    request.intent = input
-        .tool_description()
-        .unwrap_or_default()
-        .chars()
-        .take(1000)
-        .collect();
+    request.describe(input.tool_description().unwrap_or_default());
     let cwd = input.cwd.as_deref().unwrap_or(&ctx.project_dir);
     let replacement = format!(
         "mustard-rt run search --root {} --request {} --shell-output",
         quote(cwd),
-        quote(&serde_json::to_string(&request).ok()?)
+        quote(&serde_json::to_string(&Invocation::new(request)).ok()?)
     );
     let mut tool_input = input.tool_input.clone();
     tool_input["command"] = json!(replacement);
@@ -280,18 +276,14 @@ pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     {
         return None;
     }
-    let request = Request {
+    let mut request = Request {
         tool: tool.into(),
         input: input.tool_input.clone(),
-        intent: input
-            .tool_description()
-            .unwrap_or_default()
-            .chars()
-            .take(1000)
-            .collect(),
+        intent: String::new(),
         purpose: Default::default(),
         choose: false,
     };
+    request.describe(input.tool_description().unwrap_or_default());
     if tool == "Read" {
         if input
             .tool_input
@@ -311,7 +303,7 @@ pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let command = format!(
         "mustard-rt run search --root {} --request {} --shell-output",
         quote(cwd),
-        quote(&serde_json::to_string(&request).ok()?)
+        quote(&serde_json::to_string(&Invocation::new(request)).ok()?)
     );
     let reason = super::say::say(
         "search.gateway.route",
@@ -362,7 +354,7 @@ mod tests {
             let parts = crate::hooks::bash::lex::segments(tool_input["command"].as_str().unwrap());
             let args = &parts[0].args;
             let at = args.iter().position(|arg| arg.text == "--request").unwrap();
-            let request: Request = serde_json::from_str(&args[at + 1].text).unwrap();
+            let request = Request::from_json(&args[at + 1].text).unwrap();
             let original_parts = crate::hooks::bash::lex::segments(command);
             assert_eq!(
                 request.input["args"],
@@ -399,6 +391,27 @@ mod tests {
             let (input, ctx) = call(dir.path(), "Bash", json!({"command":command}));
             assert!(before_bash(&input, &ctx).is_none(), "{command}");
         }
+    }
+    #[test]
+    fn structured_host_description_preserves_investigation_purpose_in_versioned_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let (input, ctx) = call(dir.path(), "Bash", json!({
+            "command":"rg -n 'current_copy' src",
+            "description":"mustard:spec: Verify which operation exports the edited copy"
+        }));
+        let Some(Verdict::Rewrite { tool_input, .. }) = before_bash(&input, &ctx) else {
+            panic!("annotated search should be routed");
+        };
+        let parts = crate::hooks::bash::lex::segments(tool_input["command"].as_str().unwrap());
+        let args = &parts[0].args;
+        let at = args.iter().position(|arg| arg.text == "--request").unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&args[at + 1].text).unwrap();
+        assert_eq!(envelope["schema_version"], 1);
+        let request = Request::from_json(&args[at + 1].text).unwrap();
+        assert_eq!(request.purpose, mustard_core::domain::knowledge::investigation::Purpose::Spec);
+        assert_eq!(request.intent, "Verify which operation exports the edited copy");
+        assert_eq!(request.input["args"], json!(["-n","current_copy","src"]));
+        assert!(!request.choose);
     }
     #[test]
     fn typed_search_handoff_keeps_the_complete_request_and_unknown_fields_pass() {
