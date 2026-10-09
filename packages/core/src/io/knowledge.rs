@@ -563,27 +563,27 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let mut result = Vec::new();
     let mut compacted_relations = 0;
     let mut stale_relations = 0;
+    let mut outside_scope_relations = 0;
     let mut ambiguous_relations = 0;
     let primary_ids:BTreeSet<String> = order.iter().map(|&i|cards[i].id.clone()).collect();
     let primary_refs:BTreeSet<&str> = primary_ids.iter().map(String::as_str).collect();
     for i in order {
         let card = &mut cards[i];
-        card.callers.retain(|edge| {
-            let valid = edge
-                .get("source")
-                .and_then(|value| serde_json::from_value::<Source>(value.clone()).ok())
-                .is_some_and(|source| scope.is_none_or(|scope|scope.files.contains(&source.file)) && current(tree, &source, &mut hashes));
-            stale_relations += usize::from(!valid);
-            valid
-        });
-        card.outgoing.retain(|edge| {
-            let valid = edge
-                .get("source")
-                .and_then(|value| serde_json::from_value::<Source>(value.clone()).ok())
-                .is_some_and(|source| scope.is_none_or(|scope|scope.files.contains(&source.file)) && current(tree, &source, &mut hashes));
-            stale_relations += usize::from(!valid);
-            valid
-        });
+        for edges in [&mut card.callers,&mut card.outgoing] {
+            edges.retain(|edge| {
+                let Some(source)=edge.get("source").and_then(|value|serde_json::from_value::<Source>(value.clone()).ok()) else {
+                    stale_relations+=1;
+                    return false;
+                };
+                if scope.is_some_and(|scope|!scope.files.contains(&source.file)) {
+                    outside_scope_relations+=1;
+                    return false;
+                }
+                let valid=current(tree,&source,&mut hashes);
+                stale_relations+=usize::from(!valid);
+                valid
+            });
+        }
         let outgoing = card.outgoing.len();
         let callers = card.callers.len();
         ambiguous_relations += card.outgoing.iter().chain(&card.callers).filter(|edge| edge["resolution"] == "ambiguous").count();
@@ -670,7 +670,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             "freshness":"catalog-at-last-scan; selected sources individually verified"},
         "local_hybrid_index":local_hybrid_index,"projection":if detail {"detail"} else {"summary"},
         "catalog":{"symbols":indexed_symbols,"entries":indexed_symbols,"entry_kinds":"declarations and source-file evidence","hydrated_candidates":hydrated_candidates,"hydrated_with_neighbors":cards.len(),"has_more_candidates":candidates_omitted,"outdated_packs":outdated_packs},
-        "navigation":{"symbol":symbol,"direction":direction,"max_depth":depth.min(4),"paths":if symbol.is_some(){walk.paths}else{vec![]},"omitted_destinations":omitted_edges,"stale_destinations":stale_navigation,"impact_completeness":"unknown; static links only"},
+        "navigation":{"symbol":symbol,"direction":direction,"max_depth":depth.min(4),"paths":if symbol.is_some(){walk.paths}else{vec![]},"omitted_destinations":omitted_edges,"stale_destinations":stale_navigation,"stale_relations":stale_relations,"outside_scope_relations":outside_scope_relations,"ambiguous_relations":ambiguous_relations,"impact_completeness":"unknown; static links only"},
         "expand":{"detail":"Repeat the query with --detail; --symbol <id> selects one exact declaration.","source":"run map slice --file <source.file> --name <name>","relations":"run knowledge --symbol <id> --direction callers --detail; both ends checked, static resolution is not runtime proof.","refresh":"run knowledge --refresh to inspect stale interpretations without regenerating them."},
         "stale_interpretations":stale.iter().map(|note|&note.id).collect::<Vec<_>>(),"gaps":gaps,
         "origin":"scan-and-versioned-interpretations","remote_model_calls":selection_usage["remote_model_calls"],

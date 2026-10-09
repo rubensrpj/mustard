@@ -198,6 +198,114 @@ fn unmatched_intent_does_not_replace_a_useful_native_result_with_only_references
 }
 
 #[test]
+fn a_named_native_declaration_keeps_its_body_and_defers_unrelated_word_matches() {
+    let dir=fixture();
+    let root=dir.path();
+    std::fs::write(root.join("src/allowed/catalog.ts"),"export class Catalog {\n  async retrieve() {\n    return this.database.findMany({ snapshots: true });\n  }\n  formatReport() {\n    return { archive: true };\n  }\n}\n").unwrap();
+    model::scan(root,&root.join(".claude"),&[]);
+    let req=Request {
+        input:json!({"args":["-n","--with-filename","retrieve","src/allowed/catalog.ts"]}),
+        intent:"retrieve database snapshots and archive output".into(),
+        ..request()
+    };
+    let answer=run(root,&req,None);
+    let cards=answer.report["task_context"]["cards"].as_array().unwrap();
+    let target=cards.iter().find(|card|card["name"]=="retrieve").unwrap();
+    assert_eq!(target["initial_source_excerpt"],true);
+    assert_eq!(target["source_excerpt"]["truncated"],false);
+    assert_eq!(target["missing_source_reads"],json!([]));
+    let lateral=cards.iter().find(|card|card["name"]=="formatReport").unwrap();
+    assert_eq!(lateral["initial_source_excerpt"],false);
+    let view=String::from_utf8(code_search::presentation::agent(&answer,&req,root).stdout).unwrap();
+    assert!(view.contains("this.database.findMany"));
+    assert!(!view.contains("return { archive: true }"));
+    assert!(view.contains("additional candidates"));
+    assert!(view.contains("run map summary --file"));
+    let native=run(root,&Request{purpose:Purpose::Locate,..req},None);
+    assert_eq!(answer.stdout,native.stdout);
+    assert_eq!(answer.report["remote_model_calls"],0);
+}
+
+#[test]
+fn relations_outside_the_requested_file_are_not_reported_as_stale_sources() {
+    let dir=fixture();
+    let root=dir.path();
+    let req=Request {
+        input:json!({"args":["-n","--with-filename","entry_sentinel","src/allowed/entry.rs"]}),
+        ..request()
+    };
+    let answer=run(root,&req,None);
+    let navigation=&answer.report["task_context"]["navigation"];
+    assert!(navigation["outside_scope_relations"].as_u64().unwrap()>0,"{navigation}");
+    assert_eq!(navigation["stale_relations"],0);
+    assert!(!answer.report["task_context"]["gaps"].as_array().unwrap().iter().filter_map(Value::as_str).any(|gap|gap.contains("source changed")));
+    // Even an actually changed excluded target must not be read to classify
+    // the scoped query's current relations.
+    std::fs::write(root.join("src/allowed/store.rs"),"fn replaced() {}\n").unwrap();
+    let changed=run(root,&req,None);
+    assert_eq!(changed.report["task_context"]["navigation"]["stale_relations"],0);
+}
+
+#[test]
+fn named_source_keeps_its_callee_expandable_without_automatically_pasting_another_body() {
+    let dir=fixture();let root=dir.path();
+    std::fs::write(root.join("src/allowed/chain.rs"),"pub fn read_current() { fetch(); }\npub fn fetch() { let quartz_snapshot=3; }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&[]);
+    let req=Request{input:json!({"args":["-n","--with-filename","read_current","src/allowed/chain.rs"]}),..request()};
+    let answer=run(root,&req,None);
+    let target=answer.report["task_context"]["cards"].as_array().unwrap().iter().find(|card|card["name"]=="fetch").unwrap();
+    assert_eq!(target["initial_source_excerpt"],false);
+    assert_eq!(target["initial_reference"],true);
+    let view=String::from_utf8(code_search::presentation::agent(&answer,&req,root).stdout).unwrap();
+    assert!(!view.contains("let quartz_snapshot=3"));
+    assert!(view.contains("# References (expand source/responsibility): fetch "));
+    let read=Request{tool:"Read".into(),input:target["read"]["input"].clone(),..req};
+    assert!(run(root,&read,None).report["result"]["content"].as_str().unwrap().contains("let quartz_snapshot=3"));
+}
+
+#[test]
+fn incomplete_bodies_request_only_unseen_ranges_including_cropped_source_lines() {
+    let dir=fixture();
+    let root=dir.path();
+    let body=(0..100).map(|at|format!("    let quartz_snapshot_{at}=1;\n")).collect::<String>();
+    let text=format!("pub fn restore() {{\n{body}    let quartz_snapshot_long=\"{}\";\n}}\n","á".repeat(600));
+    std::fs::write(root.join("src/allowed/long.rs"),&text).unwrap();
+    model::scan(root,&root.join(".claude"),&[]);
+    let req=Request {
+        input:json!({"args":["-n","--with-filename","restore","src/allowed/long.rs"]}),
+        purpose:Purpose::Understand,
+        ..request()
+    };
+    let answer=run(root,&req,None);
+    let card=answer.report["task_context"]["cards"].as_array().unwrap().iter().find(|card|card["name"]=="restore").unwrap();
+    assert_eq!(card["initial_source_excerpt"],true);
+    assert_eq!(card["source_excerpt"]["truncated"],true);
+    let source:Vec<_>=text.lines().collect();
+    let excerpt=&card["source_excerpt"];
+    let mut received=std::collections::BTreeSet::new();
+    for row in excerpt["text"].as_str().unwrap().lines() {
+        let (line,value)=row.split_once(" | ").unwrap();
+        let line:usize=line.parse().unwrap();
+        if source[line-1]==value {received.insert(line);}
+    }
+    let initial=received.clone();
+    for expansion in card["missing_source_reads"].as_array().unwrap() {
+        let read=Request{tool:"Read".into(),input:expansion["input"].clone(),..req.clone()};
+        let result=run(root,&read,None).report["result"].clone();
+        for (at,value) in result["content"].as_str().unwrap().lines().enumerate() {
+            let line=result["offset"].as_u64().unwrap() as usize+at;
+            assert_eq!(source[line-1],value);
+            assert!(!initial.contains(&line),"Complete source must not be read twice");
+            received.insert(line);
+        }
+    }
+    assert_eq!(received.len(),source.len());
+    let view=String::from_utf8(code_search::presentation::agent(&answer,&req,root).stdout).unwrap();
+    assert!(view.contains("Missing source ranges"));
+    assert!(!view.contains("Read this file at offset"));
+}
+
+#[test]
 fn newly_discovered_source_without_git_is_live_evidence_and_never_borrows_an_old_symbol() {
     let dir = fixture();
     let root = dir.path();
@@ -228,6 +336,35 @@ fn newly_discovered_source_without_git_is_live_evidence_and_never_borrows_an_old
 struct Progressive {
     calls: Cell<usize>,
     mutate: Option<std::path::PathBuf>,
+}
+
+#[test]
+fn a_unique_literal_native_name_needs_no_paid_choice_for_a_longer_question() {
+    let dir=fixture();
+    let req=Request {
+        input:json!({"args":["-n","--with-filename","restore","src/allowed/store.rs"]}),
+        intent:"How does restore recover the quartz snapshot?".into(),
+        choose:true,
+        ..request()
+    };
+    let selector=Progressive{calls:Cell::new(0),mutate:None};
+    let answer=run(dir.path(),&req,Some(&selector));
+    assert_eq!(selector.calls.get(),0);
+    assert_eq!(answer.report["remote_model_calls"],0);
+    assert_eq!(answer.report["task_context"]["selection_basis"],"exact-symbol-identity");
+    let selected=answer.report["task_context"]["cards"].as_array().unwrap().iter().find(|card|card["name"]=="restore").unwrap();
+    assert_eq!(selected["recommended"],true);
+    std::fs::write(dir.path().join("src/allowed/other.py"),"def restore():\n    return 'recover quartz snapshot'\n").unwrap();
+    model::scan(dir.path(),&dir.path().join(".claude"),&[]);
+    let homonyms=run(dir.path(),&Request{input:json!({"args":["-n","--with-filename","restore","src/allowed"]}),..req},Some(&selector));
+    assert!(selector.calls.get()>0,"Homonyms require a comparison or abstention");
+    assert_ne!(homonyms.report["task_context"]["selection_basis"],"exact-symbol-identity");
+    std::fs::write(dir.path().join("src/allowed/store.rs"),"// restore is mentioned outside a declaration\npub fn restore() { let quartz_snapshot=2; }\npub fn encode() { let quartz_snapshot=3; }\n").unwrap();
+    model::scan(dir.path(),&dir.path().join(".claude"),&[]);
+    let incomplete=run(dir.path(),&Request{input:json!({"args":["-n","--with-filename","restore","src/allowed/store.rs"]}),..request()},None);
+    assert!(incomplete.report["evidence"]["unmapped_occurrences"].as_u64().unwrap()>0);
+    assert_eq!(incomplete.report["task_context"]["source_focus"]["native_crossing_complete"],false);
+    assert_ne!(incomplete.report["task_context"]["selection_basis"],"exact-symbol-identity");
 }
 impl SymbolSelector for Progressive {
     fn select(&self, _: &str, groups: &[Ambiguity]) -> Decisions {

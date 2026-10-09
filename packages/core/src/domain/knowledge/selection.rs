@@ -174,13 +174,21 @@ pub fn task_order(cards:&[Card],query:&str,languages:&Languages,weights:&[f64],a
 
 /// Bodies add new written clues; other candidates remain expandable ranges.
 /// Containing types cannot spend context repeating their callable children.
-pub fn task_bodies(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<String>,recommended:&[String],query:&str,languages:&Languages)->BTreeSet<usize> {
+pub fn task_bodies(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<String>,recommended:&[String],anchors:&BTreeSet<String>,query:&str,languages:&Languages)->BTreeSet<usize> {
     let terms=Terms::of(query,languages);
     let mut covered=BTreeSet::new();let mut bodies=BTreeSet::new();
-    for (i,card) in cards.iter().enumerate() {
+    let container=|card:&Card|!terms.definition() && !terms.callable(&card.kind) && cards.iter().any(|child|child.source.file==card.source.file && child.source.line>card.source.line && child.source.end_line<=card.source.end_line && terms.callable(&child.kind));
+    let focused:BTreeSet<_>=cards.iter().filter(|card|anchors.contains(&card.id) && !container(card)).map(|card|card.id.as_str()).collect();
+    let mut order:Vec<_>=(0..cards.len()).collect();
+    order.sort_by_key(|&i|(!focused.contains(cards[i].id.as_str()),!recommended.contains(&cards[i].id),i));
+    for i in order {
+        let card=&cards[i];
         let chosen=recommended.contains(&card.id);
-        let container=!terms.definition() && cards.iter().any(|child|child.source.file==card.source.file && child.source.line>card.source.line && child.source.end_line<=card.source.end_line && terms.callable(&child.kind));
-        if chosen || (primary.contains(&card.id) && !container && slots[i].iter().any(|slot|!covered.contains(slot))) {
+        // An exact name in the native pattern anchors a local investigation.
+        // Neighbouring declarations that only share words stay expandable;
+        // they cannot spend context on an unrelated implementation.
+        let discover=focused.is_empty();
+        if (chosen && !container(card)) || focused.contains(card.id.as_str()) || (primary.contains(&card.id) && !container(card) && discover && slots[i].iter().any(|slot|!covered.contains(slot))) {
             bodies.insert(i);covered.extend(slots[i].iter().copied());
         }
     }
@@ -304,7 +312,22 @@ mod tests {
         let primary = cards.iter().map(|card| card.id.clone()).collect();
         let slots = vec![BTreeSet::from([0, 1]), BTreeSet::from([0, 1]), BTreeSet::from([1])];
         let languages = Languages::new(["en-US"]);
-        assert_eq!(task_bodies(&cards, &slots, &primary, &[], "quartz beacon", &languages), BTreeSet::from([1]));
-        assert_eq!(task_bodies(&cards, &slots, &primary, &[cards[2].id.clone()], "quartz beacon", &languages), BTreeSet::from([1, 2]));
+        assert_eq!(task_bodies(&cards, &slots, &primary, &[], &BTreeSet::new(), "quartz beacon", &languages), BTreeSet::from([1]));
+        assert_eq!(task_bodies(&cards, &slots, &primary, &[cards[2].id.clone()], &BTreeSet::new(), "quartz beacon", &languages), BTreeSet::from([1, 2]));
+        assert_eq!(task_bodies(&cards, &slots, &primary, &[cards[0].id.clone()], &BTreeSet::from([cards[0].id.clone()]), "quartz beacon", &languages), BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn native_names_focus_bodies_without_suppressing_an_explicit_choice_or_navigation() {
+        let cards=cards();
+        let primary=cards.iter().map(|card|card.id.clone()).collect();
+        let anchors=BTreeSet::from([cards[1].id.clone()]);
+        let slots=vec![BTreeSet::from([0,1]),BTreeSet::from([0]),BTreeSet::from([1])];
+        let languages=Languages::new(["en-US"]);
+        assert_eq!(task_bodies(&cards,&slots,&primary,&[],&anchors,"quartz archive",&languages),BTreeSet::from([1]));
+        assert_eq!(task_bodies(&cards,&slots,&primary,&[cards[2].id.clone()],&anchors,"quartz archive",&languages),BTreeSet::from([1,2]));
+        let mut linked=cards.clone();
+        linked[1].outgoing.push(json!({"target":cards[2].id}));
+        assert_eq!(task_bodies(&linked,&slots,&primary,&[],&anchors,"quartz archive",&languages),BTreeSet::from([1]));
     }
 }

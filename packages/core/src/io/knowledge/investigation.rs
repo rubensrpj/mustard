@@ -608,8 +608,22 @@ fn excerpt(file: &File, first: u64, last: u64, limit: usize) -> Value {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    json!({"line":start,"end_line":end,"text":text,"truncated":start>first || end<last
-        || rows.iter().skip(start.saturating_sub(1) as usize).take(end.saturating_sub(start) as usize + 1).any(|line|line.chars().count()>500)})
+    let mut missing=Vec::new();
+    if start>first {missing.push((first,start-1));}
+    for line in start..=end {
+        if rows.get(line.saturating_sub(1) as usize).is_some_and(|text|text.chars().count()>500) {
+            missing.push((line,line));
+        }
+    }
+    if end<last {missing.push((end+1,last));}
+    let mut ranges:Vec<(u64,u64)>=Vec::new();
+    for (line,end_line) in missing {
+        if let Some(previous)=ranges.last_mut().filter(|previous|previous.1.saturating_add(1)>=line) {
+            previous.1=previous.1.max(end_line);
+        } else {ranges.push((line,end_line));}
+    }
+    json!({"line":start,"end_line":end,"text":text,"truncated":!ranges.is_empty(),
+        "missing_ranges":ranges.into_iter().map(|(line,end_line)|json!({"line":line,"end_line":end_line})).collect::<Vec<_>>()})
 }
 
 pub(crate) fn current_excerpt(card: &Card, text: &str, matcher: &mut Matcher, purpose: Purpose) -> Value {

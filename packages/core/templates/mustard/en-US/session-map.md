@@ -9,6 +9,7 @@ Flow: survey, plan, approval, waves, review, close, PR. Binary: state, search an
 - Record each answer with `mustard-rt run answer`.
 - Search/read code through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`. Preserve arguments and scope. In `intent`, state the specific question this search must answer; for a spec, the overall goal is already in `context`. Explicitly set `purpose`: `locate`, `understand`, `spec`, `implement` or `validate`. Investigation requires intent; literal locate permits an empty intent. `Read` preserves the original result.
 - Without the tool: `mustard-rt run search --shell-output --intent "<specific question>" --purpose spec -- rg -n "<pattern>" .`. For native Bash, description `mustard:spec: <question>` carries purpose through the hook. Unannotated searches remain `locate`. Expand incomplete ranges; `--raw` returns native bytes. `choose:true`/`--choose` permits Jev for unresolved responsibility alternatives, without enabling it on every search.
+- Reuse complete bodies already received. After finding a file, investigate the relevant declaration with purpose and a question; do not open the whole file by default. For incomplete excerpts, read the indicated missing ranges; without coordinates, use `run map summary --file <file>` before choosing `Read` with `offset` and `limit`. Expand when the decision depends on omitted source.
 - `mustard-rt run knowledge`: investigation/export.
 
 ## Open spec

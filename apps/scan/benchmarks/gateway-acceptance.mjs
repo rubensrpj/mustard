@@ -48,6 +48,7 @@ try {
   const sessionMap=fs.readFileSync(path.join(root,'.claude/mustard/session-map.md'),'utf8');
   assert.ok(sessionMap.includes('{request:{tool,input,intent,purpose,choose?}}'));
   assert.ok(sessionMap.includes('mustard:spec:'));
+  assert.ok(sessionMap.includes('corpos completos') || sessionMap.includes('complete bodies'));
   const configFile = path.join(root, 'mustard.json');
   const config = JSON.parse(fs.readFileSync(configFile));
   config.ai = { fallback: true, vectors: true };
@@ -207,6 +208,19 @@ try {
   assert.ok(main.evidence.symbols.some(s => s.name === 'revised'));
   assert.ok(!main.evidence.symbols.some(s => s.name === 'linked_only'));
   assert.equal(main.learning.needs_scan, false);
+  fs.writeFileSync(path.join(root,'src/focused.rs'),'pub fn read_current() { fetch(); }\npub fn fetch() { let quartz_snapshot=3; }\npub fn archive() { let report_snapshot=4; }\n');
+  const focusedRequest={tool:'rg',input:{args:['-n','--with-filename','read_current','src/focused.rs']},intent:'recover quartz snapshot report',purpose:'spec',choose:true};
+  const focused=search(['--request',JSON.stringify({schema_version:1,request:focusedRequest})]);
+  assert.equal(focused.task_context.selection_basis,'exact-symbol-identity');
+  assert.equal(focused.remote_model_calls,0);
+  const focusedView=successful('mustard-rt',['run','search','--root',root,'--request',JSON.stringify({schema_version:1,request:focusedRequest}),'--shell-output']).stdout.toString();
+  assert.ok(focusedView.includes('pub fn read_current()'));
+  assert.ok(!focusedView.includes('let quartz_snapshot=3'));
+  assert.ok(!focusedView.includes('let report_snapshot=4'));
+  assert.ok(focusedView.includes('References (expand source/responsibility): fetch'));
+  const expandedRanges=JSON.parse(successful('mustard-rt',['run','map','summary','--root',root,'--file','src/focused.rs']).stdout);
+  assert.ok(expandedRanges.parts.some(part=>part.name==='fetch'));
+  assert.ok(expandedRanges.parts.some(part=>part.name==='archive'));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(httpRequests, 0, 'Neither ordinary gateway nor native learning may call inference');
   const report = { ok: true, commit: successful('git', ['rev-parse', 'HEAD'], checkout).stdout.toString().trim(),
@@ -216,6 +230,7 @@ try {
     automatic_output_does_not_append_reports: true, typed_agent_pagination: true,
     typed_tools: true, native_search_unavailable_passes_host_tool: true,
     task_evidence_visible_to_agent:true, complementary_new_source_refreshes_natively:true,
+    named_declaration_without_inference:true, deferred_candidates_expand_via_binary:true,
     real_classic_hook_handoff_and_rewrite: true, original_read_guard: true,
     checkout_isolation: true, default_http_requests: httpRequests, local_model_calls: 0, remote_model_calls: 0,
     binaries: ['mustard', 'mustard-rt', 'scan'].map(name => ({ name,

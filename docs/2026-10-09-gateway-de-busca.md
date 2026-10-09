@@ -16,6 +16,34 @@ Nesta versão, a integração ativa é Claude Code: Mods, hooks e CLI. A compara
 
 Validação do contrato: 28 testes Rust (3 de domínio, 5 de encaminhamento e 20 do gateway), 14 testes do SDK Mods e validação do plugin aprovados. A análise estática de todo o workspace passou sem avisos. Esses testes verificam transporte, correção de pedidos inválidos e preservação das permissões; não medem economia nem substituem a sessão real com Claude Code.
 
+## Expansão por declaração — ajuste após a simulação V3
+
+Uma declaração cujo nome aparece no padrão nativo ganha prioridade como fonte. Quando há uma única identidade atual, o padrão é um identificador literal e o cruzamento nativo está completo, a resolução é nativa mesmo que a pergunta seja mais longa; `choose` não aciona o Jev para escolher essa identidade novamente. Ocorrências não mapeadas, cortes de página/recibos e proprietários não recuperados impedem afirmar identidade única. Homônimos e perguntas de responsabilidade continuam sujeitos à comparação ou abstenção existentes. Identificar uma declaração não comprova que ela atende à regra de negócio.
+
+Na investigação de um nome, outros corpos deixam de entrar apenas por acrescentarem palavras da intenção. Chamadas relacionadas continuam como referências expansíveis; seleção explícita pode acrescentar uma alternativa. Tipos que contêm métodos não repetem todos os filhos em perguntas de comportamento. Descoberta sem âncora nominal conserva a investigação complementar anterior. O diagnóstico mantém todos os cartões recuperados; o retorno inicial dá coordenadas aos proprietários/relacionados pertinentes e comandos nativos para expandir os demais candidatos.
+
+Trechos incompletos fornecem `missing_source_reads`: intervalos omitidos e linhas cujo texto foi abreviado. A expansão não exige reler linhas completas já entregues. Corpos completos reaproveitam seus comentários internos, sem duplicar o campo de resumo; testes adicionais têm comando `map tests`, e pontuações lexicais ficam no diagnóstico. Relações fora do escopo têm contador próprio, sem serem rotuladas como fontes desatualizadas nem provocar leitura externa para conferir o hash.
+
+Mods e os moldes de sessão/ondas/revisão nas duas línguas orientam investigar a declaração após descobrir o arquivo, reutilizar corpos completos e escolher `Read` com faixa específica. `Read` continua preservando exatamente o pedido; reduzir leituras amplas depende de o agente seguir essa orientação. Nenhum modelo ou dependência foi adicionado.
+
+### Medição no último prompt de Excel
+
+Snapshot Florestal `a3fe37ab454c`, base nativa atual com 12.832 declarações. O prompt é o **PROMPT TÉCNICO V3: GERAÇÃO DE PLANILHAS EXCEL (MENU E CURVA) A PARTIR DO BANCO DE DADOS** enviado pelo usuário. Relatórios, pedidos, código de reprodução e retornos ficam em `target/simulation-excel-db-v3-focused-20261009/`.
+
+| Cenário | Consultas | Retorno ao agente | Corpos de referência completos |
+| --- | ---: | ---: | ---: |
+| Simulação anterior | 34 | 66.286 bytes | 8/8 |
+| Repetição das mesmas consultas após o ajuste | 34 | 65.025 bytes (-1,90%) | 8/8 |
+| Consultas por declaração e duas verificações adicionais | 36 | 58.326 bytes (-12,01%) | 8/8 |
+
+A repetição controlada conserva os achados das 34 consultas originais. Sua saída ainda fica 7,65% acima da referência nativa de 60.405 bytes, porque as duas investigações entregam fonte adicional. Leituras explícitas não são truncadas para melhorar números. Referências diretas dos corpos exibidos mantêm nomes, faixas e assinaturas disponíveis mesmo sem coincidência lexical com a intenção; preservar essas pistas acrescenta saída em relação à medição intermediária.
+
+No fluxo por declaração, 14 leituras amplas viram investigações pelos nomes encontrados no levantamento anterior. Uma leitura dos modelos Prisma continua com suas 100 linhas; todas as 25 declarações selecionadas para conferência chegam completas. Foram verificadas 682 linhas únicas de fonte, contra 1.412 anteriormente. As duas consultas adicionais conferem o caminho oficial da entrada e os contratos de armazenamento. Zero chamadas locais/remotas a modelos e US$ 0 de Jev. As execuções das ferramentas levaram aproximadamente 4,2 s, contra 1,65 s na medição anterior: há menos saída e mais investigação local, sem ganho de latência demonstrado.
+
+São casos conhecidos de desenvolvimento e consultas guiadas pelo levantamento anterior, não decisões de uma sessão autônoma do Claude. Bytes de saída não incluem instruções, esquema, argumentos, raciocínio e turnos seguintes; esses percentuais não equivalem a tokens faturados nem economia total. Cobertura das declarações escolhidas não mede precisão geral, correção da implementação ou fidelidade de uma planilha que não foi gerada.
+
+Validação desta etapa: 37 testes de conhecimento no núcleo, 25 testes do gateway, 14 testes Mods, análise estática estrita e instalação nativa em pasta vazia. As regressões cobrem foco por nome, expansão de chamadas, faixas omitidas inclusive linhas abreviadas, escopo versus desatualização e ausência de chamada paga para identidade única, preservando comparação de homônimos.
+
 ## Fluxo entregue
 
 1. O adaptador recebe ferramenta, parâmetros originais, intenção e finalidade.
@@ -62,7 +90,7 @@ A visão de tarefa conecta ao gateway a investigação que antes exigia chamar `
 2. Um inventário nativo aplica caminhos, globs, tipos e opções de exclusão suportadas **antes** de selecionar candidatos no SQLite. Símbolos, recursos, interpretações e navegação ficam nesse inventário; recibos externos não autorizam leituras complementares. Git grep usa arquivos rastreados; grep simples limita essa expansão aos arquivos das ocorrências verificadas. Opções desconhecidas/ambíguas conservam o resultado nativo em vez de ampliar silenciosamente o escopo.
 3. As pistas da expressão original e da intenção alimentam a recuperação textual do banco. São pistas lexicais, sem reescrever a expressão regular. O catálogo preserva proprietários dos achados nativos, considera responsabilidades próprias das declarações, diversifica arquivos e reserva espaço para navegação estática. A pesquisa é parcial: o reservatório tem orçamento e o retorno inicial usa até 12 cartões principais; alternativas e referências permanecem identificadas.
 4. Descoberta tipada de nomes de arquivos faz uma busca complementar de conteúdo, mantendo padrão/filtros, para obter coordenadas reais das funções. O resultado/página original não é alterado. Essa investigação adicional aparece separada no diagnóstico e na apresentação.
-5. O pacote inicial entrega corpos/trechos que acrescentam pistas escritas da intenção, além de uma escolha explicitamente recomendada. Tipos que contêm métodos não repetem automaticamente todos os filhos. Os demais candidatos e destinos de chamadas pertinentes permanecem como referências com arquivo, função e faixa para expansão. Cobertura de palavras não significa entendimento semântico ou investigação completa.
+5. O pacote inicial prioriza corpos/trechos das declarações nomeadas no padrão original, além de uma escolha explicitamente recomendada. Sem uma âncora nominal utilizável, conserva a investigação por pistas escritas da intenção. Tipos que contêm métodos não repetem automaticamente todos os filhos. Os demais candidatos e destinos de chamadas pertinentes permanecem como referências com arquivo, função e faixa para expansão. Cobertura de palavras não significa entendimento semântico ou investigação completa.
 6. Trechos atuais incluem linhas, assinaturas/comentários não redundantes, contratos disponíveis e candidatos de teste. Declarações pequenas podem seguir completas; maiores recebem janela orientada à finalidade, aviso de incompletude e intervalo de Read. Relações estáticas indicam onde verificar, sem afirmar ordem de execução, cobertura de teste ou equivalência de formatos.
 7. Fontes/hash e geração do banco são verificados durante a investigação e depois da seleção. Evidência invalidada é descartada, conservando o resultado nativo e a contabilização física do modelo. Descobertas complementares novas solicitam atualização estrutural nativa antes do julgamento; a classificação não vira fato persistente.
 8. Sem evidência útil para a intenção, ou diante de falha/escopo não suportado, volta a apresentação da busca original. Com evidência, a saída se identifica como investigação parcial e mostra como recuperar o resultado completo com `purpose=locate`. Não se apresenta um pacote de contexto como se fossem todas as ocorrências nativas.

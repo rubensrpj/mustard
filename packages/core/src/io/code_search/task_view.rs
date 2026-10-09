@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
+fn quote(value:&str)->String {format!("'{}'",value.replace('\'',"'\\''"))}
+
 pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> {
     let context = &answer.report["task_context"];
     if context["status"] != "current-task-evidence" {
@@ -38,6 +40,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         request.purpose
     );
     text.push_str("# Complete original result: repeat this request with purpose=locate; native CLI also supports --raw.\n");
+    text.push_str("# Reuse complete bodies below; read only missing ranges when further source is required.\n");
     if request.tool == "Grep" {
         let _ = writeln!(
             text,
@@ -68,18 +71,20 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     let mut previous = "";
     let mut test_files = BTreeSet::new();
     let mut ranges = BTreeMap::<&str, Vec<String>>::new();
+    let mut deferred = BTreeMap::<&str, usize>::new();
+    let mut visible_ids = BTreeSet::new();
     for card in cards {
         let file = card["source"]["file"].as_str()?;
         let start = card["source"]["line"].as_u64()?;
         let end = card["source"]["end_line"].as_u64()?;
         if card["initial_source_excerpt"] != true {
-            ranges.entry(file).or_default().push(format!(
-                "{} {start}-{end} [{}]",
-                card["name"].as_str().unwrap_or_default(),
-                card["retrieval"].as_str().unwrap_or("static evidence")
-            ));
+            if card["initial_reference"] == true {
+                ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));
+                visible_ids.insert(card["id"].as_str().unwrap_or_default());
+            } else {*deferred.entry(file).or_default()+=1;}
             continue;
         }
+        visible_ids.insert(card["id"].as_str().unwrap_or_default());
         if previous != file {
             let _ = writeln!(text, "@ {file}");
             previous = file;
@@ -89,7 +94,9 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             "# {} {start}-{end} [{}{}]",
             card["name"].as_str().unwrap_or_default(),
             card["retrieval"].as_str().unwrap_or("static evidence"),
-            if card["recommended"] == true {
+            if card["recommended"] == true && context["selection_basis"]=="exact-symbol-identity" {
+                "; exact name"
+            } else if card["recommended"] == true {
                 "; recommended"
             } else {
                 ""
@@ -97,6 +104,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         );
         let source = card["source_excerpt"]["text"].as_str().unwrap_or_default();
         for field in ["signature", "documentation", "body_comment"] {
+            if field=="body_comment" && card["source_excerpt"]["truncated"]==false {continue;}
             if let Some(value) = card[field].as_str().filter(|v| {
                 !v.is_empty() && !v.split_whitespace().all(|word| source.contains(word))
             }) {
@@ -119,19 +127,25 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             let _ = writeln!(
                 text,
                 "# test candidates (coverage unverified): {}",
-                tests.join(", ")
+                tests.iter().take(2).copied().collect::<Vec<_>>().join(", ")
             );
+            if tests.len()>2 {
+                let _=writeln!(text,"# {} more test candidates: mustard-rt run map tests --file {}",tests.len()-2,quote(file));
+            }
         }
         if !source.is_empty() {
             text.push_str(source);
             text.push('\n');
         }
         if card["source_excerpt"]["truncated"] == true {
-            let _ = writeln!(
-                text,
-                "# Incomplete excerpt. Read this file at offset {start}, limit {} before conclusions that depend on omitted code.",
-                end - start + 1
-            );
+            text.push_str("# Incomplete excerpt. Missing source ranges in this file:\n");
+            if let Some(reads)=card["missing_source_reads"].as_array().filter(|reads|!reads.is_empty()) {
+                for read in reads {
+                    let _=writeln!(text,"# Read offset {}, limit {}",read["input"]["offset"],read["input"]["limit"]);
+                }
+            } else {
+                let _=writeln!(text,"# Read offset {start}, limit {}",end-start+1);
+            }
         }
         if card["parse_complete"] != true {
             text.push_str("# Parse coverage partial or unknown.\n");
@@ -143,6 +157,9 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             "@ {file}\n# References (expand source/responsibility): {}",
             candidates.join("; ")
         );
+    }
+    for (file,count) in deferred {
+        let _=writeln!(text,"# {count} additional candidates in {file}: mustard-rt run map summary --file {}",quote(file));
     }
     for edge in context["navigation"]["paths"]
         .as_array()
@@ -172,16 +189,17 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|reference| reference["initial_reference"] == true)
+        .filter(|reference| reference["initial_reference"] == true && !visible_ids.contains(reference["id"].as_str().unwrap_or_default()))
     {
         references
             .entry(reference["source"]["file"].as_str()?)
             .or_default()
             .push(format!(
-                "{} {}-{}",
+                "{} {}-{}: {}",
                 reference["name"].as_str().unwrap_or_default(),
                 reference["source"]["line"],
-                reference["source"]["end_line"]
+                reference["source"]["end_line"],
+                reference["signature"].as_str().unwrap_or_default().replace(['\r','\n']," ")
             ));
     }
     for (file, targets) in references {
@@ -210,20 +228,21 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             note["text"].as_str().unwrap_or_default()
         );
     }
-    let _ = writeln!(
-        text,
-        "# Written intent clues: {}/{}. This is not semantic completeness.",
-        context["written_clues"]["covered_slots"], context["written_clues"]["slots"]
-    );
     for gap in context["gaps"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
     {
-        let _ = writeln!(text, "# Gap: {gap}");
+        if gap=="Static relations do not prove runtime order, authorization, business rules or test coverage." {continue;}
+        if let Some(count)=context["navigation"]["ambiguous_relations"].as_u64()
+            && gap.starts_with(&format!("{count} ambiguous static relations")) {
+            let _=writeln!(text,"# Gap: {count} ambiguous static links; inspect an exact symbol to verify targets.");
+        } else {
+            let _ = writeln!(text, "# Gap: {gap}");
+        }
     }
-    text.push_str("# Missing evidence is not proof that a capability does not exist.\n");
+    text.push_str("# Partial evidence; static links/tests are candidates. Expand before inferring absence.\n");
     Some(Presentation {
         stdout: text.into_bytes(),
         representation: "current-task-evidence",

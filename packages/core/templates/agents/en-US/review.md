@@ -20,7 +20,7 @@ You check someone else's work once, at the end: the waves, what each delivered, 
   - `mustard-rt run map users --name <name>`: to see who uses what the wave changed and whether a use was left out.
   - `mustard-rt run map tests --file <file>`: to find test candidates, without claiming coverage.
   - `mustard-rt run map history --name <name>`: to see how the declaration was before the wave.
-- Search/read code through `mustard-rt run search`; preserve the original options, without Jev for literal searches. Scan suggests relations/tests; it does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
+- Search/read code through `mustard-rt run search`; preserve the original options, without Jev for literal searches. Scan suggests relations/tests; it does not prove coverage or absence of use. Reuse complete bodies already received; after finding a file, investigate the relevant declaration before opening the whole file. Expand only indicated missing ranges; without coordinates, consult `map summary --file` and choose `Read` with `offset` and `limit`. Reread when content changed or a proof requires it.
 - Run every command from inside the copy.
 - Run the tests you read and the ones your cuts bring down. Final validation runs `testCommand` and lint; use current results, repeating when content, command or execution is uncertain. Commands run in the foreground through `rtk`, which shows only the failures.
 - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.

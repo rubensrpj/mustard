@@ -131,11 +131,9 @@ pub(super) fn investigate(
         .map(str::to_string)
         .collect();
     let target_ids = targets.iter().take(128).cloned().collect();
-    let mut reference_matcher =
-        Matcher::new(&format!("{} {}", scope.clues, request.intent), &languages)?;
     let references=knowledge::cards_for_ids(root,&target_ids).map_err(|e|format!("{e:?}"))?.into_iter()
         .filter(|card|scope.files.contains(&card.source.file) && knowledge::current(tree,&card.source,&mut source_hashes))
-        .map(|card|json!({"id":card.id,"name":card.name,"source":card.source,"signature":card.signature,"initial_reference":!reference_matcher.matched(&card.name).is_empty(),"status":"static target candidate; source current, runtime behavior unverified"})).collect::<Vec<_>>();
+        .map(|card|json!({"id":card.id,"name":card.name,"source":card.source,"signature":card.signature,"status":"static target candidate; source current, runtime behavior unverified"})).collect::<Vec<_>>();
     report["static_references"] = json!(references);
     report["static_references_partial"] = json!(targets.len() > 128);
     for card in &cards {
@@ -148,7 +146,20 @@ pub(super) fn investigate(
             return Err("task-source-changed-before-selection".into());
         }
     }
-    let mut plan = selection::responsibility(&cards, &request.intent, &languages);
+    let pattern_names:BTreeSet<_>=scope.clues.split(|c:char|!c.is_alphanumeric() && c!='_' && c!='$').filter(|s|!s.is_empty()).collect();
+    let anchors:BTreeSet<_>=cards.iter().filter(|card|seeds.contains(&card.id) && pattern_names.iter().any(|name|name.eq_ignore_ascii_case(&card.name))).map(|card|card.id.clone()).collect();
+    let literal_name=!scope.clues.is_empty() && scope.clues.chars().all(|c|c.is_alphanumeric() || c=='_');
+    let crossing_complete=answer.report["evidence"]["unmapped_occurrences"]==0
+        && answer.report["evidence"]["omitted_occurrences"]==0
+        && answer.report["result"]["truncated"]!=true
+        && super::occurrences(tree,cwd,request,&answer.report["result"],&answer.stdout).len()<256
+        && seeds.iter().all(|id|cards.iter().any(|card|card.id==*id));
+    let identities:Vec<_>=cards.iter().filter(|card|literal_name && crossing_complete && anchors.contains(&card.id) && scope.clues.eq_ignore_ascii_case(&card.name)).collect();
+    // A literal name with one current declaration is identity resolution,
+    // even when the local question is longer than that name. It needs no
+    // comparative judgement. Homonyms and responsibility queries stay open.
+    let identity=if let [card]=identities.as_slice() {Some(card.id.as_str())} else {None};
+    let mut plan = selection::responsibility(&cards, identity.unwrap_or(&request.intent), &languages);
     for group in &mut plan.groups {
         for card in &group.candidates {
             if let Some(text) = source_text.get(&card.source.file) {
@@ -293,14 +304,21 @@ pub(super) fn investigate(
         &item_slots,
         &primary,
         &recommendations,
+        &anchors,
         &request.intent,
         &languages,
     );
     for (i, item) in items.iter_mut().enumerate() {
         item["initial_source_excerpt"] = json!(bodies.contains(&i));
+        item["initial_reference"] = json!(seeds.contains(&cards[i].id) || recommendations.contains(&cards[i].id) || cards.iter().enumerate().any(|(parent,card)|bodies.contains(&parent) && card.outgoing.iter().any(|edge|edge["target"]==cards[i].id)));
+        let missing:Vec<_>=item["source_excerpt"]["missing_ranges"].as_array().into_iter().flatten().map(|range|json!({"tool":"Read","input":{"file_path":cards[i].source.file,"offset":range["line"],"limit":range["end_line"].as_u64().unwrap_or(0).saturating_sub(range["line"].as_u64().unwrap_or(0))+1}})).collect();
+        item["missing_source_reads"] = json!(missing);
         if bodies.contains(&i) {
             covered.extend(item_slots[i].iter().copied());
         }
+    }
+    for reference in report["static_references"].as_array_mut().into_iter().flatten() {
+        reference["initial_reference"] = json!(cards.iter().enumerate().any(|(i,card)|bodies.contains(&i) && card.outgoing.iter().any(|edge|edge["target"]==reference["id"])));
     }
     for item in report["investigation"]["live_matches"]
         .as_array()
@@ -329,6 +347,7 @@ pub(super) fn investigate(
     report["selection_stages"] = json!(stages);
     report["recommended_symbols"] = json!(recommendations);
     report["selection_basis"] = json!(plan.basis);
+    report["source_focus"] = json!({"named_native_anchors":anchors,"native_crossing_complete":crossing_complete,"meaning":"exact names in the original pattern guide source expansion; not semantic recommendations"});
     report["remote_model_calls"] = report["selection"]["remote_model_calls"].clone();
     report["written_clues"] = json!({"covered_slots":covered.len(),"slots":matcher.slots.len(),"uncovered":uncovered,"meaning":"written clue coverage only; not semantic completeness or proof of absence"});
     report["native_fallback"] = json!({"request":Request{purpose:Purpose::Locate,choose:false,..request.clone()},"raw_native":"Repeat the same CLI request with --raw for exact native stdout/stderr/status."});

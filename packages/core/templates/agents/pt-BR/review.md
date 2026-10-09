@@ -20,7 +20,7 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
   - `mustard-rt run map users --name <nome>`: para ver quem usa o que a onda mudou e se algum uso ficou de fora.
   - `mustard-rt run map tests --file <arquivo>`: para achar testes candidatos, sem afirmar cobertura.
   - `mustard-rt run map history --name <nome>`: para ver como a declaração era antes da onda.
-- Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan sugere relações/testes; não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
+- Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan sugere relações/testes; não comprova cobertura nem ausência de uso. Reaproveite corpos completos já recebidos; depois de achar um arquivo, investigue a declaração pertinente antes de abrir o arquivo inteiro. Expanda só as faixas faltantes indicadas; sem coordenadas, consulte `map summary --file` e escolha `Read` com `offset` e `limit`. Releia quando o conteúdo mudou ou a prova exigir.
 - Rode cada comando de dentro da cópia.
 - Rode os testes que você lê e os que seus cortes derrubam. A validação final executa `testCommand` e lint; use os resultados vigentes, repetindo quando conteúdo, comando ou execução ficarem incertos. Comandos rodam em primeiro plano pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.

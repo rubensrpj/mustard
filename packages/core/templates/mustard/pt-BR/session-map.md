@@ -9,6 +9,7 @@ Fluxo: levantamento, plano, aprovação, ondas, revisão, fechamento e PR. Biná
 - Grave cada resposta com `mustard-rt run answer`.
 - Busque/leia código por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`. Preserve argumentos e escopo. Em `intent`, escreva a pergunta específica desta busca; numa spec, o objetivo geral já está em `context`. Declare `purpose`: `locate`, `understand`, `spec`, `implement` ou `validate`. Investigação exige intenção; localização literal aceita intenção vazia. `Read` mantém o resultado original.
 - Sem a ferramenta: `mustard-rt run search --shell-output --intent "<pergunta específica>" --purpose spec -- rg -n "<padrão>" .`. Em Bash nativo, a descrição `mustard:spec: <pergunta>` preserva a finalidade pelo hook. Sem anotação, a busca é `locate`. Expanda faixas incompletas; `--raw` devolve bytes nativos. `choose:true`/`--choose` permite Jev para alternativas de responsabilidade ainda ambíguas, sem ativá-lo em toda busca.
+- Reaproveite corpos completos já recebidos. Ao achar um arquivo, investigue a declaração pertinente com finalidade e pergunta; não abra o arquivo inteiro por padrão. Para trechos incompletos, leia as faixas faltantes indicadas; sem coordenadas, use `run map summary --file <arquivo>` antes de escolher `Read` com `offset` e `limit`. Amplie quando a decisão depender de código omitido.
 - `mustard-rt run knowledge`: dossiê.
 
 ## Spec aberta
