@@ -28,7 +28,7 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         let text = if markdown { mustard_core::domain::knowledge::markdown(&report, &map) } else { report.to_string() };
         if let Some(out) = out {
             mustard_core::io::fs::write_atomic(out, text.as_bytes()).map_err(|e| e.to_string())?;
-            return Ok(json!({"ok":true,"file":out,"local_model_calls":0,"remote_model_calls":0}).to_string());
+            return Ok(json!({"ok":true,"file":out,"local_model_calls":report.get("local_model_calls").cloned().unwrap_or_else(||json!(0)),"remote_model_calls":0}).to_string());
         }
         Ok(text)
     })();
