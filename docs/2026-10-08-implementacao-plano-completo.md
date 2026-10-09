@@ -6,7 +6,15 @@ Contrato de entrada: `2026-10-07-prompt-implementacao-mustard.md`. O escopo abra
 
 Esclarecimento do usuário em 08/10: suporte ao Codex é futuro. A preparação atual conserva interfaces de julgamento e projeção de estado independentes dos adaptadores do Claude. Não será implementada integração Codex nesta entrega; não haverá alteração da configuração pessoal desse cliente.
 
-## Aceite da continuação nativa
+## Continuação do scan em 09/10
+
+Documentação/configuração/textos de esquemas agora entram no banco como recursos separados dos símbolos, com origem, linhas, hash, busca local, janela curta/expansão e Markdown. Conteúdo não vira prova de comportamento. Atualização de recurso preserva os blocos de código/grafo quando continuam válidos; a manutenção FTS dos recursos ainda ocorre em bloco. O perfil continua sem IA auxiliar/Jev por padrão.
+
+No backend Suzano: localização de código permaneceu em **16/21 arquivos e 10/21 símbolos**; cinco consultas literais adicionais de configuração passaram de **0/5 para 5/5**. Respostas do conjunto de código ficaram **2,8% maiores em bytes**. Não há prova de redução de tokens faturados. Prova com um YAML de teste no backend isolado releu somente esse arquivo e preservou hashes dos blocos de código/rotas/grafo/história. Original intacto.
+
+Suíte completa com **3.835 testes Rust aprovados**, zero falhas e dois ignorados. O último ajuste de correspondência teve seis testes específicos de recursos, incluindo um novo teste de exclusão de coincidência genérica, além de lint de todos os alvos/build aprovados. Instalação real temporária e consulta/exportação nativas verificadas com zero pedidos HTTP ao servidor de teste. A revisão completa dos conceitos aplicados, medições e pendências está em [scan como oráculo](2026-10-08-scan-oraculo.md). Resolver tipos/SCIP, agrupar capacidades, ligar textos a símbolos e comparar motores continuam pendentes; não são declarados entregues por esta continuação.
+
+## Aceite anterior da continuação nativa em 08/10
 
 Estado mais recente: auxiliares sem modelo por padrão; credenciais e filtros antigos não autorizam inferência. Ollama/`--enrich` retirados. Jev e vetores mantidos como opções independentes, desligadas, sem reativação nesta entrega. O scan preserva interpretações atuais e gera Markdown nativamente.
 

@@ -624,6 +624,7 @@ pub fn date_of(at: i64) -> String {
 #[serde(default)]
 pub struct ProjectMap {
     pub modules: Vec<MapModule>,
+    pub resources: Vec<crate::domain::knowledge::resources::File>,
     pub projects: Vec<MapProject>,
     pub languages: Vec<MapLanguage>,
     pub graph: MapGraph,

@@ -7,7 +7,7 @@ Flow: survey, plan, approval, waves, review, close, PR. Binary: state, search, c
 - Open changes with `mustard-rt run open`, record the goal in `context`, then suggest `/clear`; the resume line shows the state. Questions, reads and status open no spec. Other branches do not block.
 - Explain one point at a time in the order of explaining from the response style. Check code and history before removing anything.
 - Record each answer with `mustard-rt run answer`.
-- `mustard-rt run knowledge --query "<capability>"`: sources by native rules. `--symbol <id> --direction callers`: impact; `run map slice`: code; `--refresh`: stale; `--markdown`: document. Check gaps and rules in code.
+- `mustard-rt run knowledge --query "<capability>"`: symbols in `cards`, text in `resources`; `--detail` expands; `--symbol <id> --direction callers`: impact; `--refresh`: stale; `--markdown`: document. Check rules in code.
 
 ## Open spec
 

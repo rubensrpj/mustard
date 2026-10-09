@@ -491,11 +491,11 @@ fn fake_dependency(dir: &Path, file: &str, plant: bool) {
 /// `change` roda entre duas passadas, com a dependência falsa plantada em
 /// `file` antes: a segunda não relê nada nem refaz o grafo, e a falsa fica.
 /// Depois ela sai, e o mapa é o que a passada gravou.
-fn only_the_census_is_redone(dir: &Path, file: &str, change: impl FnOnce()) {
+fn only_the_census_is_redone(dir: &Path, file: &str, expected_read: &[&str], change: impl FnOnce()) {
     fake_dependency(dir, file, true);
     change();
     let report = scan(dir, &[]);
-    assert_eq!((report["full"].clone(), report["read"].clone()), (json!(false), json!([])), "{report}");
+    assert_eq!((report["full"].clone(), report["read"].clone()), (json!(false), json!(expected_read)), "{report}");
     assert!(deps_in_the_map(dir, file).contains(&json!(FAKE)), "the graph was not rebuilt");
     assert!(!model::is_behind(dir), "the new listing mark is written");
     fake_dependency(dir, file, false);
@@ -522,10 +522,10 @@ fn php_project(prefix: &str) -> tempfile::TempDir {
     )
 }
 
-/// Editar um arquivo que não é código não relê nada nem refaz o grafo: a
-/// passada grava só a marca nova da listagem, e o mapa deixa de estar atrás.
+/// Editar documentação relê o texto e atualiza seu índice sem refazer o
+/// código/grafo; a marca da listagem também fica atual.
 #[test]
-fn editing_a_file_that_is_not_code_writes_only_the_new_mark() {
+fn editing_documentation_reads_only_the_resource_and_keeps_the_graph() {
     let temp = project(
         "scan-not-code-",
         &[
@@ -542,7 +542,7 @@ fn editing_a_file_that_is_not_code_writes_only_the_new_mark() {
     assert!(model::is_behind(dir), "the edit puts the map behind");
     let report = scan(dir, &[]);
     assert_eq!(report["full"], json!(false), "{report}");
-    assert_eq!(report["read"], json!([]), "{report}");
+    assert_eq!(report["read"], json!(["README.md"]), "{report}");
     assert_eq!(report["files"], json!(2), "{report}");
     assert_eq!(report["head"], json!(git(dir, &["rev-parse", "HEAD"]).trim()), "{report}");
     assert!(!model::is_behind(dir), "the new listing mark is written");
@@ -588,20 +588,20 @@ fn a_file_that_is_not_code_entering_changing_and_leaving_gives_the_map_of_a_full
     assert_eq!(laravel_marked(dir), (false, false));
     let file = "app/Models/User.php";
 
-    only_the_census_is_redone(dir, file, || write(dir, "artisan", "#!/usr/bin/env php\n<?php\n"));
+    only_the_census_is_redone(dir, file, &[], || write(dir, "artisan", "#!/usr/bin/env php\n<?php\n"));
     assert_eq!(laravel_marked(dir), (true, true), "the path marker entered");
     same_as_a_full_pass(dir);
 
-    only_the_census_is_redone(dir, file, || write(dir, "artisan", "#!/usr/bin/env php\n<?php\n// outra\n"));
+    only_the_census_is_redone(dir, file, &[], || write(dir, "artisan", "#!/usr/bin/env php\n<?php\n// outra\n"));
     same_as_a_full_pass(dir);
 
-    only_the_census_is_redone(dir, file, || write(dir, "docs/notas.txt", "notas\n"));
+    only_the_census_is_redone(dir, file, &["docs/notas.txt"], || write(dir, "docs/notas.txt", "notas\n"));
     same_as_a_full_pass(dir);
 
-    only_the_census_is_redone(dir, file, || write(dir, "README.md", "# Demo\n\nOutra linha.\n"));
+    only_the_census_is_redone(dir, file, &["README.md"], || write(dir, "README.md", "# Demo\n\nOutra linha.\n"));
     same_as_a_full_pass(dir);
 
-    only_the_census_is_redone(dir, file, || std::fs::remove_file(dir.join("artisan")).unwrap());
+    only_the_census_is_redone(dir, file, &[], || std::fs::remove_file(dir.join("artisan")).unwrap());
     assert_eq!(laravel_marked(dir), (false, false), "the path marker left");
     same_as_a_full_pass(dir);
 }
@@ -614,7 +614,7 @@ fn a_path_marker_inside_test_fixtures_marks_no_stack_on_either_pass() {
     let dir = temp.path();
     assert_eq!(scan(dir, &[])["full"], json!(true));
 
-    only_the_census_is_redone(dir, "app/Models/User.php", || {
+    only_the_census_is_redone(dir, "app/Models/User.php", &[], || {
         write(dir, "tests/fixtures/artisan", "#!/usr/bin/env php\n<?php\n");
     });
     assert_eq!(laravel_marked(dir), (false, false), "the census-only pass");

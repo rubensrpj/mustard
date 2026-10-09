@@ -367,6 +367,17 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
     ]
 });
 
+/// Verbatim documentation/configuration/schema text. No executable symbols or
+/// inferred behavior are manufactured from these excerpts.
+pub const RESOURCES: MapBlock = block!("resources", version 1, {
+    "resource_files" at list(&["resources"]) => [
+        "path" Text, "blob" Text, "sha256" Text, "kind" Text, "issue" Text, "sections" Json
+    ]
+}, index ["resource_fts", "resource_positions", "resource_meta"]
+   "CREATE VIRTUAL TABLE resource_fts USING fts5(title, body, path, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
+    CREATE TABLE resource_positions(id INTEGER PRIMARY KEY, path TEXT NOT NULL, section INTEGER NOT NULL);\
+    CREATE TABLE resource_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+
 /// A história de cada declaração, lida do git na primeira pergunta sobre um
 /// arquivo e guardada por arquivo: a branch de partida, o commit mais novo do
 /// arquivo nela quando se leu, a marca do scan que leu, quantas mudanças de
@@ -487,7 +498,7 @@ const fn rebuilt_by(mut declared: MapBlock, rebuild: crate::io::map_db::Rebuild)
 
 /// Os blocos do mapa, na ordem em que se leem: os arquivos antes das
 /// declarações, das rotas e das ligações deles.
-pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY];
+pub const BLOCKS: [MapBlock; 7] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY, RESOURCES];
 
 /// Os blocos de que o índice de busca lê: os arquivos, as declarações e as
 /// ligações, onde moram as chamadas.
@@ -501,11 +512,11 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
 /// das specs, o do glossário e o das notas de sentido.
-const DECLARED: [&MapBlock; 12] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
+const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 12] =
-    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block];
+const DB_BLOCKS: [Block; 13] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -565,6 +576,15 @@ pub fn read_state_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal>
     stored_part(model, state_column)
 }
 
+/// Only non-code packs, for a resource update that must leave code/graph/Git
+/// blocks untouched. Reading a resource never needs the whole code model.
+pub fn resources_at(model: &Path) -> std::result::Result<Vec<crate::domain::knowledge::resources::File>, MapRefusal> {
+    let stored = stored_part(model, |table,_| RESOURCES.tables.iter().any(|resource| resource.name == table.name))?;
+    #[derive(serde::Deserialize)]
+    struct Packs { #[serde(default)] resources: Vec<crate::domain::knowledge::resources::File> }
+    Ok(serde_json::from_str::<Packs>(&stored.json).map_err(|err| MapRefusal::MapUnreadable {detail:err.to_string()})?.resources)
+}
+
 /// Quais colunas de cada tabela uma leitura do mapa em JSON traz.
 type Pick = fn(&Table, &Column) -> bool;
 
@@ -583,6 +603,7 @@ const STATE_FILE_COLUMNS: [&str; 3] = ["path", "blob", "signals"];
 fn state_column(table: &Table, column: &Column) -> bool {
     CENSUS.tables.iter().any(|census| census.name == table.name)
         || (FILES.tables.iter().any(|files| files.name == table.name) && STATE_FILE_COLUMNS.contains(&column.name))
+        || (RESOURCES.tables.iter().any(|files| files.name == table.name) && ["path", "blob", "kind", "issue"].contains(&column.name))
 }
 
 /// O mapa gravado em `model` com só as colunas que `pick` escolhe, e a marca
@@ -1861,6 +1882,14 @@ pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) ->
     save_rows(model, [(block, &fresh)], mark, None)
 }
 
+/// Replace selected scanner blocks and their derived indexes atomically.
+/// Used to update resource text and census without rebuilding the code graph.
+pub fn save_blocks_at(model: &Path, blocks: &[&MapBlock], map: &Value, mark: &str, languages: &Languages) -> Result<bool> {
+    let fresh: Vec<BlockRows> = blocks.iter().map(|block| block.tables.iter().map(|table| rows(table,map)).collect())
+        .collect::<std::result::Result<_,_>>().map_err(Error::Parse)?;
+    save_rows(model, blocks.iter().zip(&fresh).map(|(block,rows)|(*block,rows)), mark, Some(languages))
+}
+
 /// Grava a história das declarações de um arquivo, `lineage`, no mapa em
 /// `model`, que já tem de existir: troca só as linhas daquele arquivo, numa
 /// transação; as dos outros arquivos ficam como estavam. Os títulos dos
@@ -1967,6 +1996,9 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
                 Some(languages) => map_search::rebuild(tx, languages)?,
                 None => map_search::forget(tx)?,
             }
+        }
+        if changed.iter().any(|(block, _)| block.name() == RESOURCES.name()) {
+            crate::io::knowledge::resources::rebuild(tx, languages.unwrap_or(&Languages::new([])))?;
         }
         // Refeitas as declarações, a marca do glossário cuja declaração mudou
         // de nome ou sumiu sai junto.
@@ -2286,6 +2318,7 @@ mod tests {
         let mut expected = map;
         let Value::Object(top) = &mut expected else { unreachable!() };
         top.remove("shared_contracts");
+        top.insert("resources".into(), serde_json::json!([]));
         top["graph"].as_object_mut().unwrap().retain(|key, _| !["cyclic", "top_fan_out", "layers", "touchpoints"].contains(&key.as_str()));
         top["coverage"].as_object_mut().unwrap().retain(|key, _| key == "skipped_build_dirs");
         top["projects"][0].as_object_mut().unwrap().remove("dependencies");
@@ -2431,6 +2464,7 @@ mod tests {
                 "history_base",
                 "history_paths",
                 "commits",
+                "resource_files",
                 "lineage_files",
                 "lineage_commits",
                 "lineage_decls",

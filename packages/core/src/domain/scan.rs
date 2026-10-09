@@ -292,8 +292,16 @@ pub struct ScanReport {
     pub full: bool,
     pub read: Vec<String>,
     pub files: usize,
+    pub resources: usize,
+    pub resource_issues: Vec<ResourceIssue>,
     pub head: String,
     pub dictionary: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ResourceIssue {
+    pub file: String,
+    pub reason: String,
 }
 
 /// The last non-empty line of what a `--json` run printed, where the report

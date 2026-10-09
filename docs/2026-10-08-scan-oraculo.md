@@ -1,8 +1,59 @@
 # Scan como oráculo de recursos do projeto
 
-Estado em 08/10/2026. A orientação atual é esgotar alternativas nativas antes de considerar IA; a avaliação pontual do Jev em todo o Mustard está registrada ao final deste documento. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
+Estado em 09/10/2026. A orientação atual é esgotar alternativas nativas antes de considerar IA; a avaliação pontual do Jev em todo o Mustard está registrada ao final deste documento. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
 
-## Resultado atual: operação auxiliar nativa
+## Continuação de 09/10: documentos e configurações no banco
+
+A pesquisa foi aplicada parcialmente; não foi encerrada uma implementação de todos os motores/features consultados. A reconferência das fontes primárias de [ContextGraph](https://github.com/erenalpaslan/context-graph), [Codebase Memory MCP](https://github.com/DeusData/codebase-memory-mcp) e [SCIP](https://github.com/scip-code/scip) manteve a separação entre ingestão de evidência, navegação e resolução por compilador. Nesta continuação aplicamos a ingestão de textos de documentação/configuração/esquemas, com implementação própria e sem dependências novas.
+
+O banco guarda recursos textuais separados de declarações executáveis. O registro de formatos e exclusões é dado, não lógica de framework. Aceitamos Markdown/MDX, documentação textual, JSON/JSONC, TOML, YAML, INI e textos de esquemas/consultas/protocolos. Esses últimos são **texto da fonte**, não extração universal de tabelas nem configuração efetiva em execução. A cobertura estrutural de schemas pelo parser da etapa anterior continua separada.
+
+Cada trecho conserva arquivo, intervalo de linhas e SHA-256 do conteúdo realmente lido. O conteúdo integral dos arquivos aceitos permanece no banco; a resposta inicial mostra uma janela de até 600 caracteres em torno do termo encontrado, com indicação de compactação e expansão. Cabeçalhos dentro de exemplos cercados não criam seções. Um índice FTS5 local encontra os candidatos sem abrir/deserializar todo o mapa de código. A busca textual complementar exige correspondência em **todos os termos informativos** da consulta, com vocabulário/normalização nativos; busca por caminho exato também funciona. Sobreposição em poucas palavras comuns não acrescenta documentação ao contexto. Isso favorece precisão e pode omitir paráfrases ou termos distribuídos por trechos diferentes; não é compreensão semântica universal.
+
+`knowledge` retorna símbolos em `cards` e textos em `resources`. Use `--file <arquivo> --detail` para ampliar os trechos recuperados; `--all` permite exportação completa dos trechos correspondentes. Markdown inclui a evidência textual com origem e ressalva de comportamento não validado. Contexto preparado de componente de configuração/documentação também verifica a fonte na cópia real da onda; alteração além da janela visível invalida a versão. O runtime de scan mostra contagem de recursos e motivos de exclusão.
+
+Arquivo de recurso alterado, criado ou excluído atualiza censo/recursos numa transação sem reescrever código, rotas, grafo ou história quando estes continuam válidos. Arquivos de texto sem alteração são reutilizados por blob. O índice de recursos ainda é refeito como bloco quando seu conteúdo muda; a escrita não é uma atualização FTS individual por arquivo. Não chamamos isso de manutenção universalmente incremental. Sem mudança, o caminho rápido conserva os blocos. Alteração de manifesto/código ou mudança de histórico continua seguindo as invalidações do scanner.
+
+A caminhada respeita as exclusões existentes. O registro exclui ambiente, configuração interna `mustard.json`, arquivos de credenciais/segredos, locks e saídas comuns; arquivos acima de 256 KiB, binários, não UTF-8, inacessíveis ou com sinais conservadores de credenciais não fornecem trechos. Os motivos ficam no relatório. O filtro de conteúdo não é um detector universal de segredos e pode excluir referências a variáveis, como ocorreu em dois arquivos de CI do corpus. Ignorados e formatos sem suporte não são apresentados como cobertura completa. O texto de um documento, mesmo com hash atual, permanece uma declaração do autor, sem prova de que concorda com o código.
+
+### Resultado medido no Suzano
+
+Base `a5c0570a`, também sem IA auxiliar, versus esta continuação. Duas cópias isoladas do backend `a3fe37ab454c`; fonte original intacta e cópias removidas depois da conferência. Documento Puzzle, todos os Markdown e ambiente ficaram fora da ingestão. As perguntas de código são o conjunto conhecido anterior, sem novo gabarito independente. As cinco consultas adicionais conferem termos literais de configuração em `package.json`/`tsconfig.json`; não avaliam significado de negócio ou configuração efetiva.
+
+| Medida | Base nativa anterior | Continuação com recuperação textual precisa |
+| --- | --- | --- |
+| Arquivo de código esperado / símbolo | 16/21 · 10/21 | 16/21 · 10/21 |
+| Arquivo de configuração esperado nas cinco consultas adicionais | 0/5 | 5/5 |
+| Bytes somados das 21 respostas de código | 289.644 | 297.729 (+2,8%) |
+| Mediana de consulta observada | 1.184 ms | 1.216 ms |
+| Scan completo / sem alteração | 8.769 ms · 131 ms | 7.594 ms · 137 ms |
+| Banco em bytes | 67.686.400 | 67.960.832 |
+| Modelo auxiliar local/remoto | Zero | Zero |
+
+O primeiro ensaio desta continuação adicionava textos com apenas duas palavras coincidentes e elevava as respostas para 374.641 bytes (+29,3%). O critério mais estrito baixou esse total para 297.729, mantendo as cinco consultas de configuração. Ambos os registros são conservados; a alteração foi orientada por este conjunto conhecido, portanto não a tratamos como resultado de validação independente. O acerto de código não cresceu. **Não demonstramos economia de tokens faturados ou qualidade melhor de spec/código.** O ganho comprovado é recuperar mais tipos de fonte sem modelo auxiliar e conter o acréscimo de contexto. Tempos têm uma execução por consulta e ordem fixa; não sustentam aceleração estável.
+
+Uma prova adicional em nova cópia do mesmo backend inseriu um YAML de teste explicitamente identificado como fixture. A atualização leu apenas esse arquivo em 196 ms; hashes de todas as linhas de código, declarações, textos de código, rotas, relações, grafo e história permaneceram idênticos. A passada sem alteração leu zero arquivos em 129 ms. É prova do isolamento da atualização, não uma comparação de trabalho equivalente com um scan completo de 7.521 ms.
+
+Registros locais: `target/suzano-resources-20261009/benchmark.json` (primeiro critério), `target/suzano-resources-precise-20261009/benchmark.json` (critério final), respostas/gabaritos, inventário Markdown e `resource-update-proof.json`. Hashes identificam os executáveis medidos da árvore de trabalho anterior ao commit final; o pacote de revisão é recompilado do commit limpo.
+
+Verificação: suíte completa com **3.835 testes Rust aprovados**, zero falhas, dois ignorados herdados. Depois do ajuste final de correspondência, os seis testes específicos de recursos foram aprovados, incluindo o novo caso que exclui sobreposição genérica. Lint estrito de todos os alvos e build dos três programas aprovados após o ajuste. Prova real de instalação em pasta vazia, scan, consulta de documentos/configurações, navegação, exportação, fontes secundárias e configuração legada realizada com zero pedidos ao servidor HTTP de teste. Logs: `/tmp/mustard-resources-workspace-final.log`, `/tmp/mustard-resources-precision-test.log`, `/tmp/mustard-resources-precision-clippy.log` e `/tmp/mustard-resources-precision-build.log`.
+
+### Pesquisa aplicada e trabalho pendente
+
+| Conceito pesquisado | Estado no Mustard | Limite ou próximo trabalho |
+| --- | --- | --- |
+| Claude Code Setup | Detecção e perfil por evidências do projeto, comandos/hooks separados | Não equivale a entendimento de toda a aplicação. |
+| ContextGraph | Agora código e textos de documentação/configuração/esquemas são consultáveis; fonte e invalidação verificáveis | Falta ligar textos a símbolos por referências explícitas; PDF e entendimento semântico universal não foram implementados. |
+| Code Context Graph | Intenção/regras explicitamente anotadas em declarações e recuperáveis | Não inferimos regras de negócio que ninguém registrou. |
+| Codebase Memory MCP / Serena | Navegação por identidade e relações estáticas verificadas nos dois extremos | Falta resolver os casos ambíguos por tipos/compilador; seus motores não foram comparados em execução neste corpus. |
+| SCIP | Ambiguidade preservada, sem promover candidata a vínculo provado | Importação real de índices SCIP permanece pendente. |
+| ckg / CodeGraph-Rust | Persistência SQLite, consulta curta/expansão e mecânica no binário | Comparação controlada com os motores ainda pendente; índice textual novo é mantido em bloco. |
+| GitNexus | Inventário e relações existentes fornecem a base | Agrupamento de capacidades/fluxos por evidência ainda não entregue. |
+| DeepWiki Open | Exportação Markdown nativa de fontes e interpretações verificadas | Uma narrativa de negócio equivalente ao Puzzle ainda exige significado conferido; não introduzimos um gerador por IA. |
+
+A próxima prioridade é relacionar documentação/configuração e código por referências explícitas, organizar capacidades com evidência e medir recuperação em um conjunto novo. A resolução por compilador/SCIP e a comparação com outros motores devem ser avaliadas em escopo separado. A avaliação pontual do Jev em todo o Mustard, ao final deste documento, continua válida: nenhum ponto desta continuação precisou de chamadas pagas; futuros pilotos exigem ganho medido sobre o caminho nativo.
+
+## Medição anterior de 08/10: operação auxiliar nativa
 
 As operações auxiliares usam o caminho nativo por padrão. Credenciais, filtros antigos e banco com vetores não ativam inferência. O runtime não executa o gerador Ollama nem aceita `--enrich`; consulta, navegação, recibos, fila de revisão e Markdown permanecem disponíveis. A interface de julgamento existente foi preservada para uma exceção futura avaliada por finalidade.
 

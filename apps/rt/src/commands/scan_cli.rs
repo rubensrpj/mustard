@@ -19,7 +19,7 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
-    /// Retrieve current functions, static flows and versioned interpretations
+    /// Retrieve current functions, documents, configuration and interpretations
     /// without a model call. Export a report with `--markdown --out <file>`.
     #[command(display_order = 28)]
     Knowledge {

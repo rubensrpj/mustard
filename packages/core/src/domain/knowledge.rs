@@ -9,6 +9,7 @@ use super::normalize::{Languages, Normalizer};
 use super::project_map::{ProjectMap, UseSite, file_history};
 
 pub mod annotation;
+pub mod resources;
 mod retrieval;
 pub use annotation::Annotation;
 
@@ -479,6 +480,14 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
             );
         }
         text.push('\n');
+    }
+    for item in report["resources"].as_array().into_iter().flatten() {
+        let body = item["text"].as_str().unwrap_or_default();
+        let fence = "`".repeat(body.split(|c| c != '`').map(str::len).max().unwrap_or(0).max(2) + 1);
+        let source = &item["source"];
+        let _ = writeln!(text, "## Recurso / resource: {}\n\n`{}`:{}–{} · SHA-256 `{}`\n\nTexto da fonte, sem validação do comportamento / verbatim source, behavior unverified.\n\n{fence}text\n{body}\n{fence}\n",
+            item["title"].as_str().unwrap_or_default(), source["file"].as_str().unwrap_or_default(),
+            source["line"], source["end_line"], source["sha256"].as_str().unwrap_or_default());
     }
     for item in report["cards"].as_array().into_iter().flatten() {
         let Ok(card) = serde_json::from_value::<Card>(item.clone()) else {

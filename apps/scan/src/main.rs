@@ -19,6 +19,7 @@ mod model;
 mod path_aliases;
 mod quality;
 mod refresh;
+mod resources;
 mod routes;
 mod testmap;
 
@@ -188,7 +189,9 @@ fn main() -> Result<()> {
             };
             // Nothing changed → the file is left alone (same bytes, same date).
             let written = if analysis.census_only {
-                analysis.model.save_census(&out, refresh::FORMAT)?
+                if analysis.resources_changed {
+                    analysis.model.save_resources(&out, refresh::FORMAT, &Languages::of(&config))?
+                } else { analysis.model.save_census(&out, refresh::FORMAT)? }
             } else {
                 analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
             };
@@ -201,6 +204,9 @@ fn main() -> Result<()> {
                     "full": analysis.full,
                     "read": analysis.read,
                     "files": analysis.model.modules.len(),
+                    "resources": analysis.model.resources.len(),
+                    "resource_issues": analysis.model.resources.iter().filter(|file| !file.issue.is_empty()).map(|file|
+                        serde_json::json!({"file":file.path,"reason":file.issue})).collect::<Vec<_>>(),
                     "head": analysis.model.state.head,
                     "route_rules": analysis.route_rules,
                     "vectors": vectors,
@@ -302,18 +308,21 @@ struct Analysis {
     /// A passada só refez o censo: o modelo traz o censo e, de cada arquivo,
     /// o caminho, o blob e os sinais de código, e só o censo se grava.
     census_only: bool,
+    /// Resource packs/census changed while executable evidence stayed valid.
+    resources_changed: bool,
     /// As regras de rota que algum arquivo lido ligou, e que por isso
     /// compilaram a consulta, pelo nome (`framework/língua`), em ordem.
     route_rules: BTreeSet<String>,
 }
 
-/// A passada sem arquivo a reler, quando é o caso: o mapa em `out` é desta
+/// A passada sem código/manifesto a reler, quando é o caso: o mapa em `out` é desta
 /// versão do scan e do mesmo commit, nenhum arquivo que ele guarda mudou ou
 /// saiu, e não entrou arquivo de código nem manifesto. Ela lê do mapa só o
 /// estado, caminha pela pasta sem abrir arquivo e refaz o que depende dos
 /// caminhos: a marca da listagem, as pastas de compilação e as pilhas do
 /// projeto e de cada subprojeto, pela mesma conta da leitura inteira. As
-/// declarações, o grafo e a história ficam como estão. `None` com `all`,
+/// declarações, o grafo e a história ficam como estão. Texto de recurso mudado
+/// é relido e gravado com o censo numa transação separada desses blocos. `None` com `all`,
 /// quando há o que reler, ou quando o mapa ligou com outro teto do nome comum
 /// que `max_same_name`: aí a passada religa o projeto sem reler os arquivos.
 fn census_pass(root: &Path, out: &Path, all: bool, max_same_name: usize) -> Option<Analysis> {
@@ -340,7 +349,14 @@ fn census_pass(root: &Path, out: &Path, all: bool, max_same_name: usize) -> Opti
     model.detected_stacks = detected_stacks;
     model.projects = projects;
     model.coverage.skipped_build_dirs = walk.skipped_build_dirs;
-    Some(Analysis { model, read: Vec::new(), full: false, census_only: true, route_rules: BTreeSet::new() })
+    let resources_changed = !resources::unchanged(&walk.paths, &model.resources, &listing).ok()?;
+    let read = if resources_changed {
+        let previous = store::resources_at(out).ok()?;
+        let (resources,read) = resources::read(root, &walk.paths, &previous, Some(&listing)).ok()?;
+        model.resources = resources;
+        read
+    } else { Vec::new() };
+    Some(Analysis { model, read, full: false, census_only: true, resources_changed, route_rules: BTreeSet::new() })
 }
 
 /// The code-signature evidence of some modules, as the stack inference takes
@@ -668,6 +684,13 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
 
     let (detected_stacks, projects) = stacks(&ing.manifests, &ing.walk_paths, &modules);
 
+    let (resources, resource_read) = resources::read(&ing.root, &ing.walk_paths,
+        if full { &[] } else { previous.map_or(&[], |prev| prev.resources.as_slice()) }, listing.as_ref())?;
+    let mut read = ing.read;
+    read.extend(resource_read);
+    read.sort();
+    read.dedup();
+
     // What the next pass needs to read only what changed: this commit, the
     // mark of what git lists now and the blob of each file that decides a
     // reading without being code.
@@ -691,6 +714,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
             detected_stacks,
             skeleton,
             modules,
+            resources,
             graph: graph_stats,
             coverage: ing.coverage,
             projects,
@@ -698,9 +722,10 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
             history,
             marks: Default::default(),
         },
-        read: ing.read,
+        read,
         full,
         census_only: false,
+        resources_changed: false,
         route_rules,
     })
 }

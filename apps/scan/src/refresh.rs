@@ -21,7 +21,7 @@ use std::path::Path;
 use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::project_map::{History, NoHistory, RawCommit, MAX_COMMITS};
-use mustard_core::io::project_map::{Base, Listing, MapBlock, BLOCKS, CENSUS, DECLS, FILES, GRAPH};
+use mustard_core::io::project_map::{Base, Listing, MapBlock, BLOCKS, CENSUS, DECLS, FILES, GRAPH, RESOURCES};
 
 use crate::model::{Module, ProjectModel};
 
@@ -36,7 +36,7 @@ pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-", env!
 /// previous one: the state and the manifests, the files, their declarations
 /// and their links. The history is read on its own, from the commits after
 /// the one the previous pass stopped at.
-const REUSED: [&MapBlock; 4] = [&CENSUS, &FILES, &DECLS, &GRAPH];
+const REUSED: [&MapBlock; 5] = [&CENSUS, &FILES, &DECLS, &GRAPH, &RESOURCES];
 
 /// The block `block` of the previous map was filled by this scanner build.
 /// A block rebuilt because its format changed comes back empty and without a
@@ -102,6 +102,7 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>, listing: Option<&Li
         .modules
         .iter()
         .map(|m| (m.path.as_str(), m.blob.as_str()))
+        .chain(prev.resources.iter().map(|file| (file.path.as_str(), file.blob.as_str())))
         .chain(prev.manifests.iter().map(|m| (m.path.as_str(), stored_input(&m.path))))
         .chain(prev.state.non_utf8.iter().map(|path| (path.as_str(), stored_input(path))));
     let mut changed: BTreeSet<String> = stored
@@ -165,17 +166,21 @@ fn under_changed_manifests(
     again
 }
 
-/// A passada não tem arquivo a reler: todo bloco do mapa anterior `prev` é
+/// A passada não tem código/manifesto a reler: todo bloco do mapa anterior `prev` é
 /// desta versão do scan, o commit, a branch de partida e a ponta dela são
 /// os mesmos que ele leu — um commit novo na base muda a história e os
-/// testes que mudam juntos — e o plano não pede arquivo nenhum. Falta só conferir
+/// testes que mudam juntos. Recursos textuais podem ser atualizados à parte. Falta conferir
 /// que não entrou nem saiu arquivo de código ou manifesto (ver
 /// [`crate::ingest::same_sources`]).
 pub(crate) fn nothing_to_read(root: &Path, prev: &ProjectModel, listing: &Listing) -> bool {
     BLOCKS.iter().all(|block| fresh(prev, block))
         && prev.state.head == listing.head
         && (prev.state.base.as_str(), prev.state.base_tip.as_str()) == (listing.base.name.as_str(), listing.base.tip.as_str())
-        && plan(root, Some(prev), Some(listing)) == Plan::Only(BTreeSet::new())
+        && matches!(plan(root, Some(prev), Some(listing)), Plan::Only(changed) if changed.iter().all(|path|
+            prev.resources.iter().any(|file| file.path == *path)
+                && !prev.modules.iter().any(|module| module.path == *path)
+                && !prev.manifests.iter().any(|manifest| manifest.path == *path)
+                && !prev.state.non_utf8.contains(path)))
 }
 
 /// Os arquivos de `blobs` que, mudando, aparecendo ou sumindo, fazem a

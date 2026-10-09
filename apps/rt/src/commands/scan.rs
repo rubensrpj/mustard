@@ -109,6 +109,8 @@ pub(crate) fn scan_at(
             // responde: a lista fica no relatório da ferramenta.
             "read": report.read.len(),
             "files": report.files,
+            "resources": report.resources,
+            "resource_issues": report.resource_issues.iter().map(|issue|json!({"file":issue.file,"reason":issue.reason})).collect::<Vec<_>>(),
         }),
         Err(err) => {
             eprintln!("scan: grain failed: {err}");

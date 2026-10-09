@@ -28,6 +28,8 @@ pub struct ProjectModel {
     pub frameworks: Vec<String>,
     pub skeleton: Vec<SkeletonEntry>,
     pub modules: Vec<Module>,
+    /// Non-code excerpts, separate from executable declarations and links.
+    pub resources: Vec<mustard_core::domain::knowledge::resources::File>,
     pub graph: GraphStats,
     /// What the scan visited vs skipped — verifiable answer to "did you read it all?".
     #[serde(default)]
@@ -98,6 +100,10 @@ impl ProjectModel {
     /// resposta é `false`.
     pub fn save_census(&self, path: &Path, mark: &str) -> anyhow::Result<bool> {
         Ok(store::save_block_at(path, &store::CENSUS, &serde_json::to_value(self)?, mark)?)
+    }
+
+    pub fn save_resources(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
+        Ok(store::save_blocks_at(path, &[&store::CENSUS,&store::RESOURCES], &serde_json::to_value(self)?, mark, languages)?)
     }
 }
 

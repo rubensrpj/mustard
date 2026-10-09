@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -16,6 +16,7 @@ use crate::io::sha256::Sha256;
 pub mod enrichment;
 mod navigation;
 mod refresh;
+pub(crate) mod resources;
 pub use navigation::Direction;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,6 +296,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         return Ok((refresh::report(tree, &notes, query, file, limit, all, detail, &languages, &mut hashes), map));
     }
     let mut cards = packs(root)?;
+    let resources = resources::retrieve(root, tree, options, &mut hashes)?;
     let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| note.sources.iter().all(|source| current(tree, source, &mut hashes)));
     let mut selected = BTreeSet::new();
     let mut order = Vec::new();
@@ -501,8 +503,14 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     if result.iter().any(|card| card["unresolved_calls"].as_u64().unwrap_or(0) > 0) {
         gaps.push("Some common-name calls were not resolved by the scanner.".into());
     }
-    if result.is_empty() {
+    if result.is_empty() && resources.items.is_empty() {
         gaps.push("No current evidence found. Use exact search or scan; absence is not proof that the capability does not exist.".into());
+    }
+    if !resources.available {
+        gaps.push("Documentation/configuration/schema-text coverage is not indexed by this scan; refresh scan to include accepted resources.".into());
+    }
+    if resources.stale > 0 {
+        gaps.push(format!("{} matching resource excerpts excluded: their sources changed or disappeared; refresh scan.", resources.stale));
     }
     let interpretations: Vec<_> = matching
         .into_iter()
@@ -519,6 +527,9 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         json!({"entry":card["id"],"static_targets":card["outgoing"].as_array().into_iter().flatten().map(|edge|&edge["target"]).collect::<Vec<_>>(),"runtime_order":"unknown"})).collect();
     Ok((
         json!({"ok":true,"schema_version":knowledge::VERSION,"query":query,"cards":result,"interpretations":interpretations,
+        "resources":resources.items,"resource_coverage":{"indexed":resources.available,"files_at_scan":resources.indexed_files,
+            "issues_at_scan":resources.issues,"stale_excerpts":resources.stale,"has_more":resources.omitted>0,
+            "meaning":"verbatim text only; accepted formats and excluded paths declared by registry"},
         "flows":flows,"scan_snapshot":{"head":map.state.head,"projects":map.projects,"languages":map.languages,
             "skeleton":map.skeleton.iter().filter(|layer|all || result.iter().any(|card|card["source"]["file"].as_str().is_some_and(|file|file.starts_with(&format!("{}/",layer.dir))))).collect::<Vec<_>>(),
             "freshness":"catalog-at-last-scan; selected sources individually verified"},
@@ -539,9 +550,9 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
     let read = (|| -> Result<Value, MapRefusal> {
         let db = open_existing(&store::model_path(root))?;
         let analysis: Option<String> =
-            db.conn().query_row("SELECT analysis FROM texts WHERE path=?1", [file], |row| row.get(0)).map_err(|e| unreadable(e.into()))?;
+            db.conn().query_row("SELECT analysis FROM texts WHERE path=?1", [file], |row| row.get(0)).optional().map_err(|e| unreadable(e.into()))?.flatten();
         let Some(analysis) = analysis.and_then(|text| serde_json::from_str::<Value>(&text).ok()) else {
-            return Ok(Value::Null);
+            return resources::for_source(root, tree, file, name);
         };
         let mut hashes = BTreeMap::new();
         let cards: Vec<Card> = analysis["knowledge"]["cards"]

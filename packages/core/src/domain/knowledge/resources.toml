@@ -1,0 +1,28 @@
+# Source formats are data. These adapters index verbatim text, not effective
+# configuration, executed queries, or inferred business behavior.
+max_bytes = 262144
+sensitive_keys = ["private_key", "client_secret", "access_token", "api_key", "password", "secret", "secret_key"]
+sensitive_markers = ["-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----"]
+exclude = [
+  "**/.env*", "**/mustard.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/*.min.*",
+  "**/credentials*", "**/secrets*", "**/secret.*", "**/*private-key*",
+  "**/*.generated.*", "**/*.g.*", "**/grain.*", "**/node_modules/**",
+  "**/vendor/**", "**/target/**", "**/dist/**", "**/build/**"
+]
+
+[[format]]
+extensions = ["md", "markdown", "mdx"]
+kind = "documentation"
+outline = true
+
+[[format]]
+extensions = ["rst", "adoc", "txt"]
+kind = "documentation"
+
+[[format]]
+extensions = ["json", "jsonc", "toml", "yaml", "yml", "ini", "conf", "config", "properties"]
+kind = "configuration"
+
+[[format]]
+extensions = ["sql", "graphql", "gql", "proto"]
+kind = "schema-text"
