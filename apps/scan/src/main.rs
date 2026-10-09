@@ -194,7 +194,7 @@ fn main() -> Result<()> {
             };
             drop_legacy_map(&out)?;
             // O sentido de cada declaração e de cada palavra do mapa recém-gravado.
-            fill_meaning(&out, &path);
+            let vectors = fill_meaning(&out, &path);
             if json {
                 let report = serde_json::json!({
                     "ok": true,
@@ -203,6 +203,9 @@ fn main() -> Result<()> {
                     "files": analysis.model.modules.len(),
                     "head": analysis.model.state.head,
                     "route_rules": analysis.route_rules,
+                    "vectors": vectors,
+                    "vectors_enabled": config.ai_vectors_enabled(),
+                    "remote_model_calls": 0,
                 });
                 println!("{report}");
             } else {

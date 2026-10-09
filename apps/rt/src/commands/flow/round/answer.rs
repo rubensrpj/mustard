@@ -1539,7 +1539,11 @@ mod tests {
     /// guardando o arquivo, como o repositório de teste o guarda.
     fn work_with_the_project_file(root: &Path, config: &str) {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        std::fs::write(root.join("mustard.json"), config).unwrap();
+        let mut config: Value = serde_json::from_str(config).unwrap();
+        let filter = config["search"]["filter"].as_str().unwrap_or("jev").to_string();
+        config["ai"] = json!({"fallback": true});
+        config["judgement"] = json!({"wave-planning": {"filter": filter}, "context": {"filter": filter}});
+        std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
     }
 
     /// A única chave do Jev está no `mustard.json` que o git guarda: ela não

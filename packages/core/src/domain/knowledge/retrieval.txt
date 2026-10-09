@@ -1,0 +1,38 @@
+# Native retrieval vocabulary, not a learned model or a project glossary.
+# Equivalent words share one query slot; repetition never adds weight.
+# Roles use the scanner's neutral declaration kinds, never framework names.
+@executable function method procedure constructor
+@data struct enum enum_member field type
+@action calculate compute calcular calculo computation calculation
+@action validate verificar validar validation validacao
+@action create criar creation criacao
+@action update atualizar update atualizacao
+@action delete remove excluir apagar exclusao remocao
+@action copy duplicate copiar duplicar copia duplicacao
+@action send dispatch enviar envio despacho
+@action receive receber recebimento
+@action restore recover restaurar recuperar restauracao recuperacao
+@action recalculate recalcular recalculo
+@action authenticate autenticar autenticacao authentication
+@action authorize autorizar autorizacao authorization
+@definition schema esquema
+@definition table tabela
+@definition column coluna
+@definition field campo
+@definition enum enumeracao
+file arquivo
+function funcao
+method metodo
+test teste
+permission permissao
+configuration configuracao
+input entrada
+output saida
+date data
+initial inicial
+final end fim
+error erro
+report relatorio
+callback retorno
+metric indicador
+period periodo

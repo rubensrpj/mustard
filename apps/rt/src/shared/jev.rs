@@ -884,7 +884,7 @@ fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger
     purpose_filter(root, config, env, ledger, "wave-planning", None)
 }
 fn purpose_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger: Option<&Path>, purpose: &str, spec: Option<&str>) -> WavesJev {
-    if !jev_gate::setting_allows(config.judgement_filter(purpose)) {
+    if !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose)) {
         return WavesJev::default();
     }
     match key_in(root, config, env) {
@@ -2216,16 +2216,18 @@ mod tests {
         // (nome, mustard.json, git guarda o arquivo, ambiente, ligado?)
         let cases: Vec<(&str, Value, bool, Option<&str>, bool)> = vec![
             ("no key anywhere", json!({}), false, None, false),
-            ("environment only", json!({}), false, Some("from-env"), true),
-            ("jev.key only", json!({"jev": {"key": "from-file"}}), false, None, true),
+            ("environment only", json!({}), false, Some("from-env"), false),
+            ("jev.key only", json!({"jev": {"key": "from-file"}}), false, None, false),
             ("blank jev.key", json!({"jev": {"key": "  "}}), false, None, false),
-            ("blank environment with jev.key", json!({"jev": {"key": "from-file"}}), false, Some(" "), true),
+            ("blank environment with jev.key", json!({"jev": {"key": "from-file"}}), false, Some(" "), false),
             ("none with jev.key", json!({"search": {"filter": "none"}, "jev": {"key": "from-file"}}), false, None, false),
             ("none with the environment", json!({"search": {"filter": "none"}}), false, Some("from-env"), false),
-            ("jev with jev.key", json!({"search": {"filter": "jev"}, "jev": {"key": "from-file"}}), false, None, true),
+            ("legacy jev with jev.key", json!({"search": {"filter": "jev"}, "jev": {"key": "from-file"}}), false, None, false),
             ("invalid setting with jev.key", json!({"search": {"filter": "other"}, "jev": {"key": "from-file"}}), false, None, false),
             ("jev.key in a file git tracks", json!({"jev": {"key": "from-file"}}), true, None, false),
-            ("jev.key in a file git tracks with the environment", json!({"jev": {"key": "from-file"}}), true, Some("from-env"), true),
+            ("jev.key in a file git tracks with the environment", json!({"jev": {"key": "from-file"}}), true, Some("from-env"), false),
+            ("explicit fallback and search provider", json!({"ai":{"fallback": true},"search":{"filter":"jev"}}), false, Some("from-env"), true),
+            ("fallback without a provider", json!({"ai":{"fallback":true}}), false, Some("from-env"), false),
         ];
         for (name, config, tracked, env, expected) in cases {
             let root = tempfile::tempdir().unwrap();
@@ -2248,7 +2250,7 @@ mod tests {
             );
 
             assert_eq!(searched.is_some(), expected, "the search: {name}");
-            assert_eq!(waves_filter(root.path(), &loaded, env.clone(), None).filter.is_some(), expected, "the wave assembly: {name}");
+            assert!(waves_filter(root.path(), &loaded, env.clone(), None).filter.is_none(), "search never enables wave assembly: {name}");
         }
     }
 
@@ -2271,7 +2273,9 @@ mod tests {
             ("tracked file with a blank key", json!({"jev": {"key": "  "}}), true, None, false, false),
             ("tracked file without a key", json!({}), true, None, false, false),
         ];
-        for (name, config, tracked, env, filter, flagged) in cases {
+        for (name, mut config, tracked, env, filter, flagged) in cases {
+            config["ai"] = json!({"fallback":true});
+            config["judgement"] = json!({"wave-planning":{"filter":config.pointer("/search/filter").cloned().unwrap_or(json!("jev"))}});
             let root = tempfile::tempdir().unwrap();
             std::fs::write(root.path().join("mustard.json"), config.to_string()).unwrap();
             if tracked {
@@ -2625,11 +2629,19 @@ mod tests {
     #[test]
     fn spent_budget_preserves_the_adapter_for_cached_judgements() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 0}}"#).unwrap();
+        std::fs::write(
+            root.path().join("mustard.json"),
+            r#"{"ai":{"fallback":true},"judgement":{"wave-planning":{"filter":"jev"}},"jev": {"monthly_budget_usd": 0}}"#,
+        )
+        .unwrap();
         let spent = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
         assert!(spent.filter.is_some() && spent.over_budget && !spent.key_in_git);
 
-        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 5}}"#).unwrap();
+        std::fs::write(
+            root.path().join("mustard.json"),
+            r#"{"ai":{"fallback":true},"judgement":{"wave-planning":{"filter":"jev"}},"jev": {"monthly_budget_usd": 5}}"#,
+        )
+        .unwrap();
         let open = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
         assert!(open.filter.is_some());
     }

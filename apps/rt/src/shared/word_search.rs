@@ -1250,11 +1250,18 @@ pub(crate) mod fixture {
     /// módulo ganha o blob do arquivo como está em `root`. A raiz vem
     /// resolvida, como a do despachante.
     pub(crate) fn repo_with(config: &str, files: &[(&str, &str)], mut map: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+        // These fixtures exercise an explicitly supplied fake judge. Default
+        // production behavior is covered by the native installation proof.
+        let mut config: serde_json::Value = serde_json::from_str(config).unwrap();
+        config.as_object_mut().unwrap().entry("ai").or_insert(serde_json::json!({"fallback":true}));
+        let search = config.as_object_mut().unwrap().entry("search").or_insert(serde_json::json!({}));
+        search.as_object_mut().unwrap().entry("filter").or_insert(serde_json::json!("jev"));
+        let config = config.to_string();
         let dir = tempfile::tempdir().expect("tempdir");
         let root = PathBuf::from(crate::shared::paths::on_disk(dir.path()));
         let key = format!("word_search.repo_with:{config}:{files:?}");
         crate::shared::test_fixture::repo_from_template(&root, &key, |root| {
-            std::fs::write(root.join("mustard.json"), config).expect("config");
+            std::fs::write(root.join("mustard.json"), &config).expect("config");
             for (rel, text) in files {
                 let path = root.join(rel);
                 std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
@@ -2650,7 +2657,7 @@ mod tests {
         ] });
         let files =
             [("src/users.rs", "// people\npub struct UserRepository {\n    id: u32,\n}\n"), ("src/orders.rs", "pub struct OrderService {\n    id: u32,\n}\n")];
-        let config = r#"{"language": {"text": "en-US", "code": "en-US"}}"#;
+        let config = r#"{"ai":{"fallback":true,"vectors":true},"language": {"text": "en-US", "code": "en-US"}}"#;
         let judge = Judge::sure_of(&[("UserRepository", 0.9)]);
         let english = Languages::new(["en-US"]);
         let rg = (Dialect::Rust, Walk::Rg { unignored: false });

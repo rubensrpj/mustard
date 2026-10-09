@@ -278,64 +278,24 @@ fn query_sources(
     query_internal(root, tree, options, false)
 }
 
-fn query_internal(
-    root: &Path,
-    tree: &Path,
-    options: &Query<'_>,
-    include_interpretations: bool,
-) -> Result<(Value, ProjectMap), MapRefusal> {
-    let Query {
-        text: query,
-        file,
-        limit,
-        depth,
-        all,
-        detail,
-        symbol,
-        direction,
-        refresh,
-    } = *options;
-    if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh))
-        || (direction != Direction::Outgoing && symbol.is_none())
-    {
+fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool) -> Result<(Value, ProjectMap), MapRefusal> {
+    let Query { text: query, file, limit, depth, all, detail, symbol, direction, refresh } = *options;
+    if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh)) || (direction != Direction::Outgoing && symbol.is_none()) {
         return Err(invalid("knowledge-navigation-requires-exact-symbol"));
     }
     let detail = detail || all;
     let mut map = store::read_for(root, store::Need::Summary)?;
     map.skeleton = store::read_for(root, store::Need::Terrain)?.skeleton;
     let state = store::read_state_at(&store::model_path(root))?;
-    map.state = serde_json::from_str::<ProjectMap>(&state.json)
-        .map_err(|e| invalid(e.to_string()))?
-        .state;
+    map.state = serde_json::from_str::<ProjectMap>(&state.json).map_err(|e| invalid(e.to_string()))?.state;
     let mut hashes = BTreeMap::new();
-    let notes = if include_interpretations {
-        interpretations(root)?
-    } else {
-        vec![]
-    };
+    let notes = if include_interpretations { interpretations(root)? } else { vec![] };
     let languages = Languages::of_project(root);
     if refresh {
-        return Ok((
-            refresh::report(
-                tree,
-                &notes,
-                query,
-                file,
-                limit,
-                all,
-                detail,
-                &languages,
-                &mut hashes,
-            ),
-            map,
-        ));
+        return Ok((refresh::report(tree, &notes, query, file, limit, all, detail, &languages, &mut hashes), map));
     }
     let mut cards = packs(root)?;
-    let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| {
-        note.sources
-            .iter()
-            .all(|source| current(tree, source, &mut hashes))
-    });
+    let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| note.sources.iter().all(|source| current(tree, source, &mut hashes)));
     let mut selected = BTreeSet::new();
     let mut order = Vec::new();
     let mut reasons = BTreeMap::new();
@@ -346,8 +306,7 @@ fn query_internal(
         .filter(|i| {
             symbol.is_none()
                 && knowledge::interpretation_matches(&note_documents[*i], query, &languages)
-                && file
-                    .is_none_or(|file| fresh[*i].sources.iter().any(|source| source.file == file))
+                && file.is_none_or(|file| fresh[*i].sources.iter().any(|source| source.file == file))
         })
         .take(if all { usize::MAX } else { max })
         .collect();
@@ -360,10 +319,7 @@ fn query_internal(
                     && card.source.line <= source.end_line
                     && source.line <= card.source.end_line
             }) {
-                if selected.len() < max
-                    && current(tree, &card.source, &mut hashes)
-                    && selected.insert(n)
-                {
+                if selected.len() < max && current(tree, &card.source, &mut hashes) && selected.insert(n) {
                     order.push(n);
                     reasons.insert(n, "interpretation-source");
                 }
@@ -398,48 +354,28 @@ fn query_internal(
         None
     };
     if let Some(discovery) = discovery {
-        let by_place: BTreeMap<_, _> = cards
-            .iter()
-            .enumerate()
-            .map(|(i, card)| {
-                (
-                    (
-                        card.source.file.clone(),
-                        card.source.line,
-                        card.name.clone(),
-                    ),
-                    i,
-                )
-            })
-            .collect();
-        let indexed: Vec<_> = discovery
-            .places
-            .iter()
-            .filter_map(|place| by_place.get(place).copied())
-            .collect();
+        let by_place: BTreeMap<_, _> = cards.iter().enumerate().map(|(i, card)| ((card.source.file.clone(), card.source.line, card.name.clone()), i)).collect();
+        let indexed: Vec<_> = discovery.places.iter().filter_map(|place| by_place.get(place).copied()).collect();
         let mut ranked = BTreeSet::new();
         // Exact spelling precedes case-folded references (a type and its
         // injected field may otherwise compete). Preserve all card identities.
         for exact_case in [true, false] {
             for (i, card) in cards.iter().enumerate() {
-                if (if exact_case {
-                    card.name == query.trim()
-                } else {
-                    card.name.eq_ignore_ascii_case(query.trim())
-                }) && ranked.insert(i)
-                {
+                if (if exact_case { card.name == query.trim() } else { card.name.eq_ignore_ascii_case(query.trim()) }) && ranked.insert(i) {
                     ranking.push(i);
                 }
             }
         }
-        let indexed_files: BTreeSet<_> = indexed
-            .iter()
-            .map(|&i| cards[i].source.file.as_str())
-            .collect();
+        let indexed_files: BTreeSet<_> = indexed.iter().map(|&i| cards[i].source.file.as_str()).collect();
         let intent = knowledge::intent_cards(&cards, query, &languages);
         let mut purpose = BTreeMap::new();
         let mut purpose_files = Vec::new();
-        for i in intent {
+        let mut independently_supported = BTreeSet::new();
+        for candidate in intent {
+            let i = candidate.card;
+            if candidate.independent {
+                independently_supported.insert(i);
+            }
             if !purpose.contains_key(&cards[i].source.file) {
                 purpose.insert(cards[i].source.file.clone(), i);
                 purpose_files.push(cards[i].source.file.clone());
@@ -448,19 +384,11 @@ fn query_internal(
         // Alternate intent and hybrid discovery, retaining the winning symbol
         // within each file instead of substituting its first indexed member.
         for at in 0..purpose_files.len().max(discovery.files.len()) {
-            for path in [purpose_files.get(at), discovery.files.get(at)]
-                .into_iter()
-                .flatten()
-            {
-                let winner = purpose.get(path).copied().or_else(|| {
-                    indexed
-                        .iter()
-                        .find(|&&i| cards[i].source.file == *path)
-                        .copied()
-                });
+            for path in [purpose_files.get(at), discovery.files.get(at)].into_iter().flatten() {
+                let winner = purpose.get(path).copied().or_else(|| indexed.iter().find(|&&i| cards[i].source.file == *path).copied());
                 if file.is_none_or(|file| file == path)
-                    && indexed_files.contains(path.as_str())
                     && let Some(i) = winner
+                    && (indexed_files.contains(path.as_str()) || independently_supported.contains(&i))
                     && ranked.insert(i)
                 {
                     ranking.push(i);
@@ -469,10 +397,7 @@ fn query_internal(
         }
         // One entry per file first; supplementary symbols follow. A large
         // file's many matching declarations cannot crowd out other entries.
-        let mut seen_files: BTreeSet<_> = ranking
-            .iter()
-            .map(|&i| cards[i].source.file.clone())
-            .collect();
+        let mut seen_files: BTreeSet<_> = ranking.iter().map(|&i| cards[i].source.file.clone()).collect();
         for &i in &indexed {
             if seen_files.insert(cards[i].source.file.clone()) && ranked.insert(i) {
                 ranking.push(i);
@@ -488,24 +413,14 @@ fn query_internal(
     if symbol.is_none() && !local_hybrid_index && selected.len() < seed_limit {
         ranking = knowledge::ranked(&cards, query, &languages);
     }
-    for i in ranking
-        .into_iter()
-        .filter(|i| file.is_none_or(|file| cards[*i].source.file == file))
-    {
+    for i in ranking.into_iter().filter(|i| file.is_none_or(|file| cards[*i].source.file == file)) {
         if selected.len() >= seed_limit {
             break;
         }
         if current(tree, &cards[i].source, &mut hashes) {
             if selected.insert(i) {
                 order.push(i);
-                reasons.insert(
-                    i,
-                    if local_hybrid_index {
-                        "local-hybrid-index"
-                    } else {
-                        "lexical"
-                    },
-                );
+                reasons.insert(i, if local_hybrid_index { "native-index-and-vocabulary" } else { "lexical" });
             }
         } else {
             stale_cards += 1;
@@ -515,14 +430,7 @@ fn query_internal(
     let omitted_edges = walk.omitted;
     let stale_navigation = walk.stale;
     for &i in &walk.order {
-        reasons.insert(
-            i,
-            if direction == Direction::Callers {
-                "static-caller"
-            } else {
-                "static-relation"
-            },
-        );
+        reasons.insert(i, if direction == Direction::Callers { "static-caller" } else { "static-relation" });
     }
     order.extend(walk.order);
     let mut result = Vec::new();
@@ -549,19 +457,9 @@ fn query_internal(
         });
         let outgoing = card.outgoing.len();
         let callers = card.callers.len();
-        ambiguous_relations += card
-            .outgoing
-            .iter()
-            .chain(&card.callers)
-            .filter(|edge| edge["resolution"] == "ambiguous")
-            .count();
-        let mut item = if detail {
-            serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))?
-        } else {
-            knowledge::summary(card)
-        };
-        compacted_relations += outgoing - item["outgoing"].as_array().map_or(0, Vec::len) + callers
-            - item["callers"].as_array().map_or(0, Vec::len);
+        ambiguous_relations += card.outgoing.iter().chain(&card.callers).filter(|edge| edge["resolution"] == "ambiguous").count();
+        let mut item = if detail { serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))? } else { knowledge::summary(card) };
+        compacted_relations += outgoing - item["outgoing"].as_array().map_or(0, Vec::len) + callers - item["callers"].as_array().map_or(0, Vec::len);
         item["retrieval"] = json!(reasons[&i]);
         if !card.annotations.is_empty() {
             item["annotation_status"] = json!("author-assertion; not semantic proof");
@@ -570,7 +468,7 @@ fn query_internal(
         item["current_caller_count"] = json!(callers);
         result.push(item);
     }
-    let mut gaps=vec!["Static relations do not prove runtime order, authorization, business rules or test coverage.".to_string()];
+    let mut gaps = vec!["Static relations do not prove runtime order, authorization, business rules or test coverage.".to_string()];
     if index_unavailable {
         gaps.push("Local discovery index unavailable; lexical fallback used. Refresh scan for full retrieval.".into());
     }
@@ -578,18 +476,15 @@ fn query_internal(
         gaps.push(format!("{ambiguous_relations} ambiguous static relations remain candidates; they do not expand the initial graph. Use --detail to inspect possible targets."));
     }
     if !stale.is_empty() {
-        gaps.push(format!(
-            "{} interpretations excluded: at least one source changed or disappeared.",
-            stale.len()
-        ));
+        gaps.push(format!("{} interpretations excluded: at least one source changed or disappeared.", stale.len()));
     }
     if stale_cards > 0 {
-        gaps.push(format!(
-            "{stale_cards} matching declarations excluded: run scan to refresh changed sources."
-        ));
+        gaps.push(format!("{stale_cards} matching declarations excluded: run scan to refresh changed sources."));
     }
     if stale_relations > 0 {
-        gaps.push(format!("{stale_relations} static relations excluded: caller or target source changed, disappeared or is invalid; absence is not proof of no consumers."));
+        gaps.push(format!(
+            "{stale_relations} static relations excluded: caller or target source changed, disappeared or is invalid; absence is not proof of no consumers."
+        ));
     }
     if stale_navigation > 0 {
         gaps.push(format!("{stale_navigation} graph destinations excluded: their sources changed; refresh scan before assessing impact."));
@@ -603,10 +498,7 @@ fn query_internal(
     if result.iter().any(|card| card["parse_complete"] != true) {
         gaps.push("Some selected sources have partial or unknown parse coverage.".into());
     }
-    if result
-        .iter()
-        .any(|card| card["unresolved_calls"].as_u64().unwrap_or(0) > 0)
-    {
+    if result.iter().any(|card| card["unresolved_calls"].as_u64().unwrap_or(0) > 0) {
         gaps.push("Some common-name calls were not resolved by the scanner.".into());
     }
     if result.is_empty() {
@@ -617,10 +509,7 @@ fn query_internal(
         .map(|i| {
             let mut note = json!(fresh[i]);
             if !detail && fresh[i].text.chars().count() > 600 {
-                note["text"] = json!(format!(
-                    "{}…",
-                    fresh[i].text.chars().take(600).collect::<String>()
-                ));
+                note["text"] = json!(format!("{}…", fresh[i].text.chars().take(600).collect::<String>()));
                 note["text_compacted"] = json!(true);
             }
             note
@@ -637,7 +526,9 @@ fn query_internal(
         "navigation":{"symbol":symbol,"direction":direction,"max_depth":depth.min(4),"paths":if symbol.is_some(){walk.paths}else{vec![]},"omitted_destinations":omitted_edges,"stale_destinations":stale_navigation,"impact_completeness":"unknown; static links only"},
         "expand":{"detail":"Repeat the query with --detail; --symbol <id> selects one exact declaration.","source":"run map slice --file <source.file> --name <name>","relations":"run knowledge --symbol <id> --direction callers --detail; both ends checked, static resolution is not runtime proof.","refresh":"run knowledge --refresh to inspect stale interpretations without regenerating them."},
         "stale_interpretations":stale.iter().map(|note|&note.id).collect::<Vec<_>>(),"gaps":gaps,
-        "origin":"scan-and-versioned-interpretations","remote_model_calls":0}),
+        "origin":"scan-and-versioned-interpretations","remote_model_calls":0,
+        "retrieval_method":"native-index-and-vocabulary","vectors_enabled":crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(),
+        "local_model_calls":if crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(){Value::Null}else{json!(0)}}),
         map,
     ))
 }
@@ -647,14 +538,9 @@ fn query_internal(
 pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
     let read = (|| -> Result<Value, MapRefusal> {
         let db = open_existing(&store::model_path(root))?;
-        let analysis: Option<String> = db
-            .conn()
-            .query_row("SELECT analysis FROM texts WHERE path=?1", [file], |row| {
-                row.get(0)
-            })
-            .map_err(|e| unreadable(e.into()))?;
-        let Some(analysis) = analysis.and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        else {
+        let analysis: Option<String> =
+            db.conn().query_row("SELECT analysis FROM texts WHERE path=?1", [file], |row| row.get(0)).map_err(|e| unreadable(e.into()))?;
+        let Some(analysis) = analysis.and_then(|text| serde_json::from_str::<Value>(&text).ok()) else {
             return Ok(Value::Null);
         };
         let mut hashes = BTreeMap::new();
@@ -663,9 +549,7 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
             .into_iter()
             .flatten()
             .filter_map(|v| serde_json::from_value::<Card>(v.clone()).ok())
-            .filter(|card| {
-                (name.is_empty() || card.name == name) && current(tree, &card.source, &mut hashes)
-            })
+            .filter(|card| (name.is_empty() || card.name == name) && current(tree, &card.source, &mut hashes))
             .take(2)
             .collect();
         let notes = interpretations(root)?;
@@ -674,18 +558,10 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
             .filter(|note| {
                 note.sources.iter().any(|source| {
                     source.file == file
-                        && (name.is_empty()
-                            || cards.iter().any(|card| {
-                                card.source.line <= source.end_line
-                                    && source.line <= card.source.end_line
-                            }))
+                        && (name.is_empty() || cards.iter().any(|card| card.source.line <= source.end_line && source.line <= card.source.end_line))
                 })
             })
-            .filter(|note| {
-                note.sources
-                    .iter()
-                    .all(|source| current(tree, source, &mut hashes))
-            })
+            .filter(|note| note.sources.iter().all(|source| current(tree, source, &mut hashes)))
             .take(2)
             .collect();
         let edges: Vec<_> = cards
@@ -699,33 +575,36 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
             .take(6)
             .cloned()
             .collect();
-        let annotations: Vec<_>=cards.iter().filter(|card|!card.annotations.is_empty())
-            .map(|card|json!({"symbol":card.id,"annotations":card.annotations,"source":card.source})).collect();
+        let annotations: Vec<_> = cards
+            .iter()
+            .filter(|card| !card.annotations.is_empty())
+            .map(|card| json!({"symbol":card.id,"annotations":card.annotations,"source":card.source}))
+            .collect();
         if edges.is_empty() && notes.is_empty() && annotations.is_empty() {
             Ok(Value::Null)
         } else {
             // Fingerprint full evidence before projection: even an edit past
             // the visible excerpt invalidates a prepared component's cache.
             let mut version = Sha256::new();
-            version.update(
-                json!({"edges":edges,"notes":notes,"annotations":annotations})
-                    .to_string()
-                    .as_bytes(),
-            );
-            let annotations: Vec<_>=cards.iter().filter(|card|!card.annotations.is_empty()).map(|card|{
-                let projection=knowledge::summary(card);
-                json!({"symbol":card.id,"annotations":projection["annotations"],"compacted":projection["annotations_compacted"],"count":card.annotations.len(),"status":"author-assertion"})
+            version.update(json!({"edges":edges,"notes":notes,"annotations":annotations}).to_string().as_bytes());
+            let annotations: Vec<_>=cards.iter().filter(|card|!card.annotations.is_empty())
+            .map(|card|{
+                let projection=knowledge::summary(card);json!({"symbol":card.id,"annotations":projection["annotations"],"compacted":projection["annotations_compacted"],"count":card.annotations.len(),"status":"author-assertion"})
             }).collect();
             let edge_count = edges.len();
-            let edges:Vec<_>=edges.iter().map(|edge|json!({"target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"]})).collect();
-            let notes:Vec<_>=notes.iter().map(|note|json!({"id":note.id,"title":note.title,
+            let edges: Vec<_> =
+                edges.iter().map(|edge| json!({"target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"]})).collect();
+            let notes: Vec<_> = notes
+                .iter()
+                .map(|note| {
+                    json!({"id":note.id,"title":note.title,
                 "text":note.text.chars().take(500).collect::<String>(),"text_compacted":note.text.chars().count()>500,
-                "status":note.status,"origin":note.origin,"source_count":note.sources.len()})).collect();
-            Ok(
-                json!({"candidate_edges":edges,"interpretations":notes,"annotations":annotations,"semantic_proof":false,
-                "evidence_version":version.hex_digest(),"current_edge_count":edge_count,
-                "expand":"run knowledge --file <source file> --detail"}),
-            )
+                "status":note.status,"origin":note.origin,"source_count":note.sources.len()})
+                })
+                .collect();
+            Ok(json!({"candidate_edges":edges,"interpretations":notes,"annotations": annotations,"semantic_proof":false,
+                "evidence_version": version.hex_digest(),"current_edge_count": edge_count,
+                "expand":"run knowledge --file <source file> --detail"}))
         }
     })();
     read.unwrap_or(Value::Null)

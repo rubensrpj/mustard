@@ -2754,7 +2754,9 @@ mod tests {
     fn search_project(map: &str, search: &Value) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         store::write_text(dir.path(), map).unwrap();
-        let config = json!({"language": {"text": "pt-BR", "code": "pt-BR"}, "search": search});
+        let mut search = search.clone();
+        search.as_object_mut().unwrap().entry("filter").or_insert(json!("jev"));
+        let config = json!({"ai":{"fallback":true},"language": {"text": "pt-BR", "code": "pt-BR"}, "search": search});
         std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
         dir
     }
@@ -3135,6 +3137,7 @@ mod tests {
     fn only_the_search_question_assembles_the_filter() {
         let dir = tempdir().unwrap();
         store::write_text(dir.path(), EVERY_PART).unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"fallback":true},"search":{"filter":"jev"}}"#).unwrap();
         let assembled = std::cell::Cell::new(0);
         let counting = |_: &Path, _: &mustard_core::ProjectConfig| {
             assembled.set(assembled.get() + 1);
@@ -3463,6 +3466,8 @@ mod tests {
         let path = root.join("mustard.json");
         let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         config["jev"] = json!({"key": PROJECT_KEY});
+        config["ai"] = json!({"fallback": true});
+        config.as_object_mut().unwrap().entry("search").or_insert_with(|| json!({}))["filter"] = json!("jev");
         std::fs::write(&path, config.to_string()).unwrap();
     }
 
@@ -3663,6 +3668,7 @@ mod tests {
     fn declarations_emptied_by_a_format_change_are_read_again_and_the_search_sends_all_its_candidates() {
         let (dir, map) = scanned_repo(&many_orders(120));
         let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"ai":{"fallback":true},"search":{"filter":"jev"}}"#).unwrap();
         opened_by_an_older_scan(root);
         let passes = std::cell::Cell::new(0);
         let same_build = |root: &Path, _: &Path| {

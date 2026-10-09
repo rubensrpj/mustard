@@ -137,6 +137,7 @@ fn the_scan_pass_writes_a_vector_for_each_declaration_and_each_word() {
     let temp = tempfile::Builder::new().prefix("scan-map-vectors-").tempdir().unwrap();
     let dir = temp.path();
     small_project(dir);
+    write(dir, "mustard.json", r#"{"ai":{"vectors":true}}"#);
     let folder = dir.join(".claude");
     model::scan(dir, &folder, &[]);
 

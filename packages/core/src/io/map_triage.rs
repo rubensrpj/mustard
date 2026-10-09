@@ -245,7 +245,7 @@ fn triaged(
     // nunca acha o que as palavras não acham.
     let mut found = !ordered.files.is_empty();
     let mut files = ordered.files;
-    if triage::mark(grade, lead) != triage::Mark::Pinned {
+    if triage::mark(grade, lead) != triage::Mark::Pinned && root.is_some_and(|root| crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled()) {
         let sense = Sense::read(conn, languages, (query, intent), false)?;
         if sense.changes_words() {
             let sensed = map_order::ordered_in(conn, check, &sense, (query, intent), (languages, scope))?;

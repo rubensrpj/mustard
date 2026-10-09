@@ -9,6 +9,7 @@ use super::normalize::{Languages, Normalizer};
 use super::project_map::{ProjectMap, UseSite, file_history};
 
 pub mod annotation;
+mod retrieval;
 pub use annotation::Annotation;
 
 pub const VERSION: u64 = 1;
@@ -247,7 +248,8 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
         return (0..cards.len()).collect();
     }
     let mut normalizer = Normalizer::new(languages);
-    let asked = normalizer.query(query);
+    let terms = retrieval::Terms::of(query, languages);
+    let asked = &terms.asked;
     let documents: Vec<BTreeSet<String>> = cards
         .iter()
         .map(|card| {
@@ -272,10 +274,7 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
     let weights: Vec<f64> = asked
         .iter()
         .map(|forms| {
-            let n = documents
-                .iter()
-                .filter(|document| forms.iter().any(|form| document.contains(form)))
-                .count();
+            let n = documents.iter().filter(|document| forms.iter().any(|form| document.contains(form))).count();
             ((cards.len() + 1) as f64 / (n + 1) as f64).ln() + 1.0
         })
         .collect();
@@ -283,13 +282,8 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
         .iter()
         .enumerate()
         .map(|(i, document)| {
-            let score = asked
-                .iter()
-                .zip(&weights)
-                .filter(|(forms, _)| forms.iter().any(|form| document.contains(form)))
-                .map(|(_, weight)| weight)
-                .sum::<f64>();
-            (i, score)
+            let score = asked.iter().zip(&weights).filter(|(forms, _)| forms.iter().any(|form| document.contains(form))).map(|(_, weight)| weight).sum::<f64>();
+            (i, score * terms.weight(&cards[i].kind))
         })
         .filter(|(_, score)| query.trim().is_empty() || *score > 0.0)
         .collect();
@@ -300,28 +294,24 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
 /// Rank responsibility evidence while keeping the winning declaration's identity.
 /// Repeated file headers count once; a declaration's own evidence carries
 /// more weight. File selection must not replace that winner with its first field.
-pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> {
+pub struct IntentCandidate {
+    pub card: usize,
+    pub independent: bool,
+}
+
+pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<IntentCandidate> {
     let mut normalizer = Normalizer::new(languages);
-    let asked = normalizer.query(query);
+    let terms = retrieval::Terms::of(query, languages);
+    let asked = &terms.asked;
     if asked.is_empty() {
         return vec![];
     }
     let documents: Vec<_> = cards
         .iter()
         .map(|card| {
-            let header: BTreeSet<_> = normalizer
-                .forms(&format!("{} {}", card.source.file, card.file_documentation))
-                .into_iter()
-                .flatten()
-                .collect();
+            let header: BTreeSet<_> = normalizer.forms(&format!("{} {}", card.source.file, card.file_documentation)).into_iter().flatten().collect();
             let own: BTreeSet<_> = normalizer
-                .forms(&format!(
-                    "{} {} {} {}",
-                    card.name,
-                    card.documentation,
-                    card.body_comment,
-                    annotation_text(card)
-                ))
+                .forms(&format!("{} {} {} {}", card.name, card.documentation, card.body_comment, annotation_text(card)))
                 .into_iter()
                 .flatten()
                 .collect();
@@ -335,11 +325,7 @@ pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<u
             let seen: BTreeSet<_> = documents
                 .iter()
                 .enumerate()
-                .filter(|(_, (header, own))| {
-                    forms
-                        .iter()
-                        .any(|form| header.contains(form) || own.contains(form))
-                })
+                .filter(|(_, (header, own))| forms.iter().any(|form| header.contains(form) || own.contains(form)))
                 .map(|(i, _)| &cards[i].source.file)
                 .collect();
             ((files.len() + 1) as f64 / (seen.len() + 1) as f64).ln() + 1.0
@@ -362,28 +348,23 @@ pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<u
                     }
                 })
                 .sum::<f64>();
-            (i, score)
+            (i, score * terms.weight(&cards[i].kind))
         })
         .filter(|(_, score)| *score > 0.0)
         .collect();
     scored.sort_by(|(a, x), (b, y)| {
         y.total_cmp(x)
             .then_with(|| cards[*a].source.file.cmp(&cards[*b].source.file))
-            .then_with(|| {
-                cards[*a]
-                    .source
-                    .end_line
-                    .saturating_sub(cards[*a].source.line)
-                    .cmp(
-                        &cards[*b]
-                            .source
-                            .end_line
-                            .saturating_sub(cards[*b].source.line),
-                    )
-            })
+            .then_with(|| cards[*a].source.end_line.saturating_sub(cards[*a].source.line).cmp(&cards[*b].source.end_line.saturating_sub(cards[*b].source.line)))
             .then_with(|| cards[*a].id.cmp(&cards[*b].id))
     });
-    scored.into_iter().map(|(i, _)| i).collect()
+    scored
+        .into_iter()
+        .map(|(card, _)| {
+            let matches = asked.iter().filter(|slot| slot.iter().any(|form| documents[card].1.contains(form))).count();
+            IntentCandidate { card, independent: asked.len() >= 2 && matches >= 2 }
+        })
+        .collect()
 }
 
 /// Interpretations assert one topic. Require all informative query terms in
@@ -394,16 +375,9 @@ pub fn interpretation_matches(card: &Card, query: &str, languages: &Languages) -
         return true;
     }
     let mut normalizer = Normalizer::new(languages);
-    let asked = normalizer.query(query);
-    let own: BTreeSet<_> = normalizer
-        .forms(&format!("{} {}", card.name, card.documentation))
-        .into_iter()
-        .flatten()
-        .collect();
-    !asked.is_empty()
-        && asked
-            .iter()
-            .all(|forms| forms.iter().any(|form| own.contains(form)))
+    let asked = retrieval::Terms::of(query, languages).asked;
+    let own: BTreeSet<_> = normalizer.forms(&format!("{} {}", card.name, card.documentation)).into_iter().flatten().collect();
+    !asked.is_empty() && asked.iter().all(|forms| forms.iter().any(|form| own.contains(form)))
 }
 
 /// Native report from evidence, not fabricated business prose. A model or a
@@ -666,7 +640,7 @@ mod tests {
         enrich(&mut raw);
         let map: ProjectMap = serde_json::from_value(raw).unwrap();
         let cards = cards(&map);
-        let ranking = intent_cards(&cards, "restore order backup", &Languages::new(["en-US"]));
+        let ranking: Vec<_> = intent_cards(&cards, "restore order backup", &Languages::new(["en-US"])).into_iter().map(|item| item.card).collect();
         assert_eq!(cards[ranking[0]].name, "persist");
     }
 

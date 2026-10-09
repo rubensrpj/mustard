@@ -52,9 +52,9 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, Statement};
 
-use crate::domain::normalize::{plain_words, Languages, Normalizer};
-use crate::io::map_meaning::{quantized_vector, ranked_declarations, Neighbor, ProjectWords};
+use crate::domain::normalize::{Languages, Normalizer,plain_words};
 use crate::io::map_index::{as_indexed, is_read};
+use crate::io::map_meaning::{Neighbor, ProjectWords, quantized_vector, ranked_declarations};
 use crate::platform::error::Result;
 
 /// Quantas palavras do projeto perto de uma palavra da pergunta viram formas
@@ -142,7 +142,9 @@ impl Near {
             }
             #[cfg(test)]
             tuning::count_encoding();
-            let Some(vector) = quantized_vector(&word) else { continue };
+            let Some(vector) = quantized_vector(&word) else {
+                continue;
+            };
             let neighbors = project.near(&word, &vector, floor);
             if neighbors.is_empty() {
                 continue;
@@ -369,7 +371,9 @@ impl Meaning {
     pub(super) fn of(conn: &Connection, text: &str, file_of: &HashMap<i64, i64>, depth: usize) -> Result<Self> {
         let mut out = Self::default();
         for similar in ranked_declarations(conn, text)? {
-            let Some(&file) = file_of.get(&similar.id) else { continue };
+            let Some(&file) = file_of.get(&similar.id) else {
+                continue;
+            };
             if out.decls.len() < depth {
                 out.decls.push(similar.id);
             }
@@ -392,15 +396,15 @@ impl Meaning {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::search::{fuse, VECTOR_WEIGHT};
+    use crate::domain::search::{VECTOR_WEIGHT,fuse};
     use crate::domain::triage::Mark;
-    use crate::io::map_meaning::fill_at;
-    use crate::io::map_order::{ordered, ordered_with, Check};
     use crate::io::map_lists::{decl_files, ranked_files_near, sources_near};
+    use crate::io::map_meaning::fill_at;
+    use crate::io::map_order::{Check, ordered, ordered_with};
     use crate::io::map_search::{any_path, candidates_at};
     use crate::io::map_triage::triage_at;
     use crate::io::project_map::{self as store, model_path, open_existing};
-    use serde_json::{json, Value};
+    use serde_json::{Value,json};
     use tempfile::TempDir;
 
     fn both() -> Languages {
@@ -440,6 +444,7 @@ mod tests {
     /// O mesmo, com os vetores do sentido gravados.
     fn filled(modules: Vec<Value>, languages: &Languages) -> TempDir {
         let dir = saved(modules, languages);
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"vectors":true}}"#).unwrap();
         fill_at(&model_path(dir.path()), dir.path()).unwrap();
         dir
     }

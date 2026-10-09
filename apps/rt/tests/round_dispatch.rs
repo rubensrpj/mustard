@@ -72,6 +72,9 @@ impl Project {
         std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\ntarget/\n").expect("exclude");
         let config = json!({
             "language": {"text": "pt-BR"},
+            "ai": {"fallback": true},
+            "search": {"filter": "jev"},
+            "judgement": {"wave-planning": {"filter": "jev"}, "context": {"filter": "jev"}},
             "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
             "lintCommand": "git --version",
         });
@@ -857,6 +860,8 @@ fn a_defect_leaves_before_a_cleanup_even_with_the_lower_number() {
         project.root.join("mustard.json"),
         json!({
         "language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
+        "ai": {"fallback": true}, "search": {"filter": "jev"},
+        "judgement": {"wave-planning": {"filter": "jev"}, "context": {"filter": "jev"}},
         "lintCommand": "git --version", "maxCompilingWaves": 1})
         .to_string(),
     )
@@ -979,6 +984,8 @@ fn one_slot(project: &Project) {
         project.root.join("mustard.json"),
         json!({
         "language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
+        "ai": {"fallback": true}, "search": {"filter": "jev"},
+        "judgement": {"wave-planning": {"filter": "jev"}, "context": {"filter": "jev"}},
         "lintCommand": "git --version", "maxCompilingWaves": 1})
         .to_string(),
     )
@@ -1699,4 +1706,21 @@ fn rejecting_a_committed_wave_is_refused_in_both_languages() {
         assert_eq!(out["hint"], json!(hint), "{out}");
     }
     assert_eq!(recorded(&project), before, "nada gravado");
+}
+
+/// Existing credentials and provider selections never authorize inference alone.
+#[test]
+fn native_defaults_ignore_legacy_jev_in_search_wave_planning_and_context() {
+    let jev = FakeJev::start(|_| (500, json!({})));
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["a.rs"], &["c.rs"]], &jev);
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config.as_object_mut().unwrap().remove("ai");
+    std::fs::write(path, config.to_string()).unwrap();
+    let out = project.command(&["run", "map", "search", "--query", "texto da saudação"], "");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]]);
+    assert!(jev.requests().is_empty(), "native defaults must make no HTTP requests");
+    assert!(assembly_calls(&project).is_empty());
 }

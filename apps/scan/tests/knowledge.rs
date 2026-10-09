@@ -19,6 +19,33 @@ fn options() -> knowledge::Query<'static> {
 }
 
 #[test]
+fn native_retrieval_finds_actions_and_preserves_exact_data_symbols_without_vectors() {
+    let dir = seed();
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"},"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#)
+        .unwrap();
+    std::fs::write(
+        root.join("src/metrics.ts"),
+        "/** Calculate the metric after validation. */\nexport function calculateMetric(value: number) { return value * 2; }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/storage.prisma"), "/// Calculate metric storage.\nmodel MetricRecord {\n  id Int @id\n  metric Int\n}\n").unwrap();
+    let (_, scan) = model::scan(root, &root.join(".claude"), &[]);
+    assert_eq!(scan["vectors"], 0, "{scan}");
+    let report = knowledge::query(root, "calcular indicador", None, 8, 0, false).unwrap().0;
+    assert_eq!(report["cards"][0]["name"], "calculateMetric", "{report}");
+    assert_eq!(report["cards"][0]["source"]["file"], "src/metrics.ts");
+    assert_eq!(report["local_model_calls"], 0);
+    assert_eq!(report["remote_model_calls"], 0);
+    assert_eq!(report["vectors_enabled"], false);
+    assert_eq!(knowledge::query(root, "MetricRecord", None, 8, 0, false).unwrap().0["cards"][0]["name"], "MetricRecord");
+    assert!(knowledge::query(root, "UnknownQuantumIdentifier", None, 8, 0, false).unwrap().0["cards"].as_array().unwrap().is_empty());
+    std::fs::write(root.join("src/metrics.ts"), "export function calculateMetric(value: number) { return value * 3; }\n").unwrap();
+    let stale = knowledge::query(root, "calcular indicador", None, 8, 0, false).unwrap().0;
+    assert!(!stale["cards"].as_array().unwrap().iter().any(|card| card["name"] == "calculateMetric"));
+}
+
+#[test]
 fn attached_annotations_are_grounded_across_grammars_and_survive_incremental_scan() {
     let dir = seed();
     let root = dir.path();

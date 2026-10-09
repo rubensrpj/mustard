@@ -51,9 +51,6 @@ pub enum ScanCmd {
         detail: bool,
         #[arg(long, conflicts_with = "record")]
         out: Option<PathBuf>,
-        /// Explicit optional local explanation; reuses a current, model-specific cache.
-        #[arg(long, conflicts_with_all = ["record", "all", "detail", "symbol", "direction", "refresh"])]
-        enrich: bool,
         /// Explicit multi-source interpretation receipt, as a `.json` file.
         #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out", "symbol", "direction", "refresh"])]
         record: Option<PathBuf>,
@@ -169,11 +166,28 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Knowledge {root,query,file,symbol,direction,refresh,limit,depth,all,markdown,detail,out,record,enrich} => {
-            super::knowledge::run(&root,&mustard_core::io::knowledge::Query {
-                text:&query,file:file.as_deref(),symbol:symbol.as_deref(),refresh,limit,depth,all,detail:detail || markdown,
-                direction:match direction.as_deref(){Some("callers")=>mustard_core::io::knowledge::Direction::Callers,Some("both")=>mustard_core::io::knowledge::Direction::Both,_=>mustard_core::io::knowledge::Direction::Outgoing},
-            },markdown,out.as_deref(),record.as_deref(),enrich);
+        ScanCmd::Knowledge { root, query, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record } => {
+            super::knowledge::run(
+                &root,
+                &mustard_core::io::knowledge::Query {
+                    text: &query,
+                    file: file.as_deref(),
+                    symbol: symbol.as_deref(),
+                    refresh,
+                    limit,
+                    depth,
+                    all,
+                    detail: detail || markdown,
+                    direction: match direction.as_deref() {
+                        Some("callers") => mustard_core::io::knowledge::Direction::Callers,
+                        Some("both") => mustard_core::io::knowledge::Direction::Both,
+                        _ => mustard_core::io::knowledge::Direction::Outgoing,
+                    },
+                },
+                markdown,
+                out.as_deref(),
+                record.as_deref(),
+            );
         }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),

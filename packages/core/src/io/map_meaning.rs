@@ -1,5 +1,6 @@
 //! `map_meaning` — o sentido de cada declaração e de cada palavra do projeto,
-//! guardado no mapa como vetores.
+//! guardado no mapa como vetores somente com `ai.vectors: true`.
+//! O padrão retorna antes de abrir o banco ou carregar o modelo.
 //!
 //! O modelo é estático e mora dentro do programa (`assets/meaning/`): uma
 //! tabela de vetores por pedaço de palavra, e o vetor de um texto é a média
@@ -28,10 +29,10 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use model2vec_rs::model::StaticModel;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension,params};
 
-use crate::domain::normalize::{plain_words, split_identifier, Languages, Normalizer};
-use crate::io::map_db::{table_exists, Block, Kind, MapDb};
+use crate::domain::normalize::{Languages, Normalizer,plain_words, split_identifier};
+use crate::io::map_db::{Block, Kind, MapDb,table_exists};
 use crate::io::map_notes_fresh;
 use crate::io::map_revision;
 use crate::platform::error::Result;
@@ -177,7 +178,9 @@ pub fn ranked_declarations(conn: &Connection, text: &str) -> Result<Vec<Similar>
     if !table_exists(conn, "decl_vectors")? {
         return Ok(Vec::new());
     }
-    let Some(asked) = quantized_vector(text) else { return Ok(Vec::new()) };
+    let Some(asked) = quantized_vector(text) else {
+        return Ok(Vec::new());
+    };
     let norm = norm_of(&asked);
     if norm == 0.0 {
         return Ok(Vec::new());
@@ -283,6 +286,9 @@ struct Declaration {
 ///
 /// Mapa sem declarações, ou sem o modelo carregado, fica como está.
 pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
+    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled() {
+        return Ok(Report::default());
+    }
     let mut db = MapDb::open(map, root, &[BLOCK])?;
     if !table_exists(db.conn(), "decls")? {
         return Ok(Report::default());
@@ -290,14 +296,8 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
     let languages = Languages::of_project(root);
     let language_mark = languages.codes().join(",");
     let stamp = map_revision::stamp(db.conn())?;
-    if stored_stamp(db.conn())?.as_deref() == Some(stamp.as_str())
-        && stored_language_mark(db.conn())?.as_deref() == Some(language_mark.as_str())
-    {
-        return Ok(Report {
-            declarations: count_rows(db.conn(), "decl_vectors")?,
-            computed: 0,
-            words: count_rows(db.conn(), "word_vectors")?,
-        });
+    if stored_stamp(db.conn())?.as_deref() == Some(stamp.as_str()) && stored_language_mark(db.conn())?.as_deref() == Some(language_mark.as_str()) {
+        return Ok(Report { declarations: count_rows(db.conn(), "decl_vectors")?, computed: 0, words: count_rows(db.conn(), "word_vectors")? });
     }
     let declarations = read_declarations(db.conn())?;
     let known = stored_hashes(db.conn())?;
@@ -307,18 +307,16 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
             known.get(&(d.file.clone(), d.name.clone(), d.nth)) != Some(&fingerprint(&d.text))
         })
         .collect();
-    let present: HashSet<(&str, &str, i64)> =
-        declarations.iter().map(|d| (d.file.as_str(), d.name.as_str(), d.nth)).collect();
-    let gone: Vec<&(String, String, i64)> =
-        known.keys().filter(|(file, name, nth)| !present.contains(&(file.as_str(), name.as_str(), *nth))).collect();
-    let words_stale = !changed.is_empty()
-        || !gone.is_empty()
-        || stored_language_mark(db.conn())?.as_deref() != Some(language_mark.as_str());
+    let present: HashSet<(&str, &str, i64)> = declarations.iter().map(|d| (d.file.as_str(), d.name.as_str(), d.nth)).collect();
+    let gone: Vec<&(String, String, i64)> = known.keys().filter(|(file, name, nth)| !present.contains(&(file.as_str(), name.as_str(), *nth))).collect();
+    let words_stale = !changed.is_empty() || !gone.is_empty() || stored_language_mark(db.conn())?.as_deref() != Some(language_mark.as_str());
 
     let vectors = if changed.is_empty() {
         Vec::new()
     } else {
-        let Some(model) = model() else { return Ok(Report::default()) };
+        let Some(model) = model() else {
+            return Ok(Report::default());
+        };
         encode(model, changed.iter().map(|at| declarations[*at].text.as_str()))
     };
     let plan = if words_stale { Some(plan_words(db.conn(), &declarations, &languages)?) } else { None };
@@ -328,9 +326,7 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
         for (file, name, nth) in gone {
             drop_declaration.execute(params![file, name, nth])?;
         }
-        let mut put = tx.prepare(
-            "INSERT OR REPLACE INTO decl_vectors(file, name, nth, hash, vector) VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
+        let mut put = tx.prepare("INSERT OR REPLACE INTO decl_vectors(file, name, nth, hash, vector) VALUES (?1, ?2, ?3, ?4, ?5)")?;
         for (at, vector) in changed.iter().zip(&vectors) {
             let d = &declarations[*at];
             put.execute(params![d.file, d.name, d.nth, fingerprint(&d.text), to_blob(vector)])?;
@@ -349,10 +345,7 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
             for ((word, forms), vector) in plan.fresh.iter().zip(&plan.fresh_vectors) {
                 insert.execute(params![word, forms, to_blob(vector)])?;
             }
-            tx.execute(
-                "INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('languages', ?1)",
-                params![language_mark],
-            )?;
+            tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('languages', ?1)", params![language_mark])?;
         }
         tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('stamp', ?1)", params![stamp])?;
         Ok(())
@@ -566,7 +559,9 @@ fn owned_texts(conn: &Connection) -> Result<HashMap<(String, String), Vec<String
     for row in rows {
         let (path, json) = row?;
         let Some(json) = json else { continue };
-        let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&json) else { continue };
+        let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&json) else {
+            continue;
+        };
         for entry in entries {
             let owner = entry.get("owner").and_then(serde_json::Value::as_str);
             let value = entry.get("value").and_then(serde_json::Value::as_str);
@@ -591,16 +586,18 @@ fn newest_titles_by_file(conn: &Connection) -> Result<HashMap<String, Vec<String
         rows.collect::<std::result::Result<_, _>>()?
     };
     let mut statement = conn.prepare("SELECT title, added, changed FROM commits ORDER BY at DESC")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?))
-    })?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?)))?;
     for row in rows {
         let (title, added, changed) = row?;
         for list in [added, changed].into_iter().flatten() {
-            let Ok(ids) = serde_json::from_str::<Vec<i64>>(&list) else { continue };
+            let Ok(ids) = serde_json::from_str::<Vec<i64>>(&list) else {
+                continue;
+            };
             for id in ids {
                 // O número no commit conta de 0; o `rowid` da tabela, de 1.
-                let Some(path) = paths.get(&(id + 1)) else { continue };
+                let Some(path) = paths.get(&(id + 1)) else {
+                    continue;
+                };
                 let titles = out.entry(path.clone()).or_default();
                 if titles.len() < FILE_TITLES && !titles.contains(&title) {
                     titles.push(title.clone());
@@ -620,21 +617,23 @@ fn lineage_titles(conn: &Connection) -> Result<HashMap<(String, String, i64), Ve
     }
     let titles: HashMap<(String, String), String> = {
         let mut statement = conn.prepare("SELECT path, id, title FROM lineage_commits")?;
-        let rows = statement
-            .query_map([], |row| Ok(((row.get::<_, String>(0)?, row.get::<_, String>(1)?), row.get::<_, String>(2)?)))?;
+        let rows = statement.query_map([], |row| Ok(((row.get::<_, String>(0)?, row.get::<_, String>(1)?), row.get::<_, String>(2)?)))?;
         rows.collect::<std::result::Result<_, _>>()?
     };
     let mut statement = conn.prepare("SELECT path, name, nth, commits FROM lineage_decls")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?))
-    })?;
+    let rows =
+        statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?)))?;
     for row in rows {
         let (path, name, nth, commits) = row?;
         let Some(commits) = commits else { continue };
-        let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&commits) else { continue };
+        let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&commits) else {
+            continue;
+        };
         let mut found: Vec<String> = Vec::new();
         for entry in entries {
-            let Some(id) = entry.get("id").and_then(serde_json::Value::as_str) else { continue };
+            let Some(id) = entry.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
             if let Some(title) = titles.get(&(path.clone(), id.to_string()))
                 && !found.contains(title)
             {
@@ -652,12 +651,13 @@ fn lineage_titles(conn: &Connection) -> Result<HashMap<(String, String, i64), Ve
 mod tests {
     use super::*;
     use crate::io::project_map;
-    use serde_json::{json, Value};
+    use serde_json::{Value,json};
     use tempfile::TempDir;
 
     /// Um projeto com este mapa, gravado como o scan grava.
     fn saved(modules: &Value) -> TempDir {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"vectors":true}}"#).unwrap();
         let map = project_map::model_path(dir.path());
         project_map::save_at(&map, &json!({ "modules": modules }), "scan 1", &Languages::of_project(dir.path())).unwrap();
         dir
@@ -843,16 +843,12 @@ mod tests {
         let dir = saved(&json!([{"path": "src/a.rs", "declarations": [
             function("charge", 1, "Charging the invoices and faturamentos")]}]));
         let map = map_of(&dir);
-        let forms_of = |word: &str| -> String {
-            opened(&dir)
-                .conn()
-                .query_row("SELECT forms FROM word_vectors WHERE word = ?1", [word], |row| row.get(0))
-                .unwrap()
-        };
+        let forms_of =
+            |word: &str| -> String { opened(&dir).conn().query_row("SELECT forms FROM word_vectors WHERE word = ?1", [word], |row| row.get(0)).unwrap() };
         let words = ["invoices", "charging", "faturamentos"];
         fill_at(&map, dir.path()).unwrap();
         let before: Vec<String> = words.iter().map(|word| forms_of(word)).collect();
-        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"en-US","code":"en-US"}}"#).unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"vectors":true},"language":{"text":"en-US","code":"en-US"}}"#).unwrap();
         let report = fill_at(&map, dir.path()).unwrap();
         assert_eq!(report.computed, 0, "no declaration changed");
         let mut normalizer = Normalizer::new(&Languages::of_project(dir.path()));

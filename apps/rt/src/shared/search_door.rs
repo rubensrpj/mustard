@@ -234,8 +234,8 @@ pub(crate) fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bo
 }
 
 /// O filtro da busca, escolhido num ponto só: desligado (`none`) ou com nome
-/// desconhecido, nenhum; ausente ou `jev`, o que `assemble` monta, se há
-/// chave para o projeto; sem ela, nenhum, com o aviso do motivo. O aviso da
+/// desconhecido ou ausente, nenhum. Só `ai.fallback: true` e `jev` explícito
+/// autorizam `assemble`; sem chave, nenhum, com o aviso do motivo. O aviso da
 /// chave do `mustard.json` que o git guarda sai também com o filtro montado.
 /// Cada aviso sai uma vez por sessão.
 pub(crate) fn chosen_filter(
@@ -250,7 +250,7 @@ pub(crate) fn chosen_filter(
     if setting == FilterSetting::Invalid && first_warning(root, session, "search.filter") {
         warnings.push(translate("map.search.bad_filter", lang).to_string());
     }
-    let assembled = if jev_gate::setting_allows(setting) {
+    let assembled = if config.ai_fallback_enabled() && jev_gate::setting_allows(setting) {
         match assemble(root, config) {
             Ok(assembled) => Some(assembled),
             Err(error) => {
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn the_budget_warning_comes_once_per_session() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 0}}"#).unwrap();
+        std::fs::write(root.path().join("mustard.json"), r#"{"ai":{"fallback":true},"search":{"filter":"jev"},"jev": {"monthly_budget_usd": 0}}"#).unwrap();
         let config = ProjectConfig::load(root.path());
         let assemble = |at: &Path, config: &ProjectConfig| assembled(at, config, Some("from-env".to_string()), None);
         let mut warnings = Vec::new();

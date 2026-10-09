@@ -317,9 +317,8 @@ pub const MAX_SAME_NAME: usize = 8;
 /// mesmos números com ou sem a resposta.
 pub const SEARCH_ANSWER: bool = true;
 
-/// O filtro da busca por assunto como o `mustard.json` o escolhe. Ausente, a
-/// montagem decide pela chave da máquina; o inválido não filtra e pede o
-/// aviso.
+/// The explicit judgement provider. Missing configuration uses native rules;
+/// an environment key is a credential, never permission to start inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterSetting {
     Absent,
@@ -598,10 +597,10 @@ pub struct Commands {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectConfig {
-    /// Optional, explicit-only semantic generation. Search and scan never
-    /// start this provider automatically.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<EnrichmentConfig>,
+    /// Optional assistance after native investigation. Empty by default, even
+    /// for existing projects with credentials or a legacy provider setting.
+    #[serde(skip_serializing_if = "AiConfig::is_empty")]
+    pub ai: AiConfig,
     /// Explicit snapshot hosting. Credentials are read only from the process
     /// environment, never from this project configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -672,8 +671,7 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::history_commits`].
     #[serde(skip_serializing_if = "MapConfig::is_empty")]
     pub map: MapConfig,
-    /// Per-purpose judgement configuration. Absent entries preserve the
-    /// explicit legacy switch; a purpose can be disabled independently.
+    /// Explicit per-purpose fallback. One purpose never enables another.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub judgement: std::collections::BTreeMap<String, Value>,
     /// A busca por assunto do mapa — veja [`SearchConfig`]. Lida só por
@@ -743,30 +741,24 @@ pub struct PublicationConfig {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EnrichmentConfig {
-    pub provider: String,
-    pub endpoint: String,
-    pub model: String,
-    pub context_tokens: u32,
-    pub output_tokens: u32,
-    pub timeout_seconds: u64,
+pub struct AiConfig {
+    /// Must be explicitly true before a configured judgement fallback may run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Value>,
+    /// Optional embedded vectors. Native lexical retrieval is the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vectors: Option<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-impl Default for EnrichmentConfig {
-    fn default() -> Self {
-        Self {
-            provider: String::new(),
-            endpoint: "http://127.0.0.1:11434".into(),
-            model: String::new(),
-            context_tokens: 8192,
-            output_tokens: 1536,
-            timeout_seconds: 120,
-            extra: Map::new(),
-        }
+impl AiConfig {
+    #[must_use]
+    pub
+    fn is_empty(&self) -> bool {
+        self.fallback.is_none() && self.vectors.is_none() && self.extra.is_empty()
     }
 }
 
@@ -903,7 +895,22 @@ impl ProjectConfig {
 
     #[must_use]
     pub fn judgement_filter(&self, purpose: &str) -> FilterSetting {
-        self.judgement.get(purpose).and_then(|v| v.get("filter")).map_or_else(|| self.search_filter(), |v| FilterSetting::of(Some(v)))
+        self.judgement.get(purpose).and_then(|v| v.get("filter")).map_or_else(
+            || {
+                if purpose == "search" { self.search_filter() } else { FilterSetting::Absent }
+            },
+            |v| FilterSetting::of(Some(v)),
+        )
+    }
+
+    #[must_use]
+    pub fn ai_fallback_enabled(&self) -> bool {
+        self.ai.fallback.as_ref() == Some(&Value::Bool(true))
+    }
+
+    #[must_use]
+    pub fn ai_vectors_enabled(&self) -> bool {
+        self.ai.vectors.as_ref() == Some(&Value::Bool(true))
     }
 
     /// `search.cut_share`: que parte da maior chance, em pontos percentuais
@@ -1127,6 +1134,34 @@ pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn native_defaults_ignore_legacy_providers_and_preserve_explicit_fallback_options() {
+        let dir = tempdir().unwrap();
+        for text in
+            ["{}", r#"{"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#, r#"{"ai":{"fallback":"true","vectors":1}}"#, r#"{"ai":{"fallback":null}}"#]
+        {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            let config = ProjectConfig::load(dir.path());
+            assert!(!config.ai_fallback_enabled());
+            assert!(!config.ai_vectors_enabled());
+        }
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"ai":{"fallback":true,"vectors":true,"future":"kept"},"search":{"filter":"jev"},"knowledge":{"provider":"retired","future":"kept"}}"#,
+        )
+        .unwrap();
+        let config = ProjectConfig::load(dir.path());
+        assert!(config.ai_fallback_enabled());
+        assert!(config.ai_vectors_enabled());
+        assert_eq!(config.judgement_filter("search"), FilterSetting::Jev);
+        assert_eq!(config.judgement_filter("wave-planning"), FilterSetting::Absent);
+        assert_eq!(config.judgement_filter("context"), FilterSetting::Absent);
+        config.write(dir.path()).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(saved["ai"]["future"], "kept");
+        assert_eq!(saved["knowledge"]["future"], "kept");
+    }
 
     #[test]
     fn native_publication_configuration_survives_installation_config_writes() {

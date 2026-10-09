@@ -1,6 +1,33 @@
 # Scan como oráculo de recursos do projeto
 
-Estado em 08/10/2026. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
+Estado em 08/10/2026. A orientação atual é esgotar alternativas nativas antes de considerar IA; a avaliação pontual do Jev em todo o Mustard está registrada ao final deste documento. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
+
+## Resultado atual: operação auxiliar nativa
+
+As operações auxiliares usam o caminho nativo por padrão. Credenciais, filtros antigos e banco com vetores não ativam inferência. O runtime não executa o gerador Ollama nem aceita `--enrich`; consulta, navegação, recibos, fila de revisão e Markdown permanecem disponíveis. A interface de julgamento existente foi preservada para uma exceção futura avaliada por finalidade.
+
+Comparativo no backend Suzano, commit `a3fe37ab454c`, branch `develop`. As duas versões foram executadas em cópias isoladas idênticas; o projeto original continuou intacto. O documento Puzzle e todos os Markdown foram excluídos da ingestão. Reutilizamos as 22 perguntas/gabaritos congelados do ensaio anterior; N11 continua registrada e excluída do aceite pela premissa falsa de uma interface de tempo real. É um conjunto conhecido, não um novo teste independente. Nenhuma nota semântica foi acrescentada.
+
+| Medida | Versão anterior (`63bcfe66`, vetores ativos) | Caminho nativo atual |
+| --- | --- | --- |
+| Arquivo esperado entre até oito resultados | 16/21 | 16/21 |
+| Função/símbolo esperado | 10/21 | 10/21 |
+| Perguntas naturais / literais | 12/17 · 4/4 | 12/17 · 4/4 |
+| Mediana observada de consulta | 1.851 s | 1.162 s |
+| Scan completo / sem mudança | 12.898 s · 0.732 s | 9.292 s · 0.138 s |
+| Bytes somados das 21 respostas válidas | 276,546 | 289,644 |
+| Banco em bytes | 72,019,968 | 67,686,400 |
+| Modelo auxiliar | Modelo estático embarcado | Zero modelo local/remoto |
+
+O acerto não aumentou: os mesmos cinco destinos continuam ausentes (N03, N04, N09, N13, N15). O ganho demonstrado neste conjunto é preservar localização ao retirar o modelo; não provar entendimento de negócio completo. As respostas cresceram **4.7% em bytes**, portanto não há ganho comprovado de tamanho de contexto ou tokens. Tempo é uma execução por pergunta, com a versão anterior primeiro e a nativa depois; caches e ordem impedem prometer a mesma aceleração em todas as máquinas. Não foi realizado teste de criação de spec/código pelo modelo principal nem comparação paga com Jev.
+
+Arquivos locais: `target/suzano-native-20261008/benchmark.json`, perguntas congeladas, respostas por versão e `puzzle-inventario-nativo.md`. Os hashes identificam os executáveis medidos, compilados da árvore de trabalho anterior ao commit final. O inventário Markdown tem símbolos, comentários e recibos; não é apresentado como narrativa de negócio equivalente ao documento Puzzle.
+
+Verificação: **3.825 testes Rust aprovados**, zero falhas, dois ignorados herdados; lint estrito e compilação dos três programas aprovados. A única alteração posterior à suíte no teste de vocabulário foi comparar números de ponto flutuante com tolerância; o teste específico e o lint foram aprovados depois. A revisão de formatação preservou o Rust canônico (mesma saída normalizada do formatador), com conferência de compilação. Logs: `/tmp/mustard-native-final-workspace.log`, `/tmp/mustard-native-final-vocabulary-test.log`, `/tmp/mustard-native-final-clippy.log`, `/tmp/mustard-native-final-check.log` e `/tmp/mustard-native-final-build.log`.
+
+Aceite com executáveis reais: instalação em pasta vazia, scan sem tabelas de vetores, busca nativa/exata, consumidores por identidade, consulta inexistente vazia, exportação Markdown, recusa de destino inválido e de `--enrich`, reutilização de interpretação e invalidação por fonte secundária. Servidor HTTP local registrou **zero pedidos**, mesmo com chave/filtros antigos e configuração legada do gerador. A integração de rodada também comprovou zero pedidos de busca, planejamento e contexto. Testes dos caminhos opcionais usam serviços falsos ou vetores embarcados habilitados explicitamente; não representam uso automático do produto. Recibo em `target/suzano-native-20261008/native-acceptance.json`.
+
+A avaliação do Jev em **todo o Mustard** está ao fim deste documento. Nenhuma necessidade de inferência foi demonstrada nesta continuação. Interfaces futuras não ligam chamadas automaticamente.
 
 ## O resultado que buscamos
 
@@ -30,10 +57,10 @@ As recomendações acima são inferências para o Mustard. Não instalamos esses
 ## O que está implementado nesta continuação
 
 - O scan grava pacotes de evidência no mesmo banco SQLite: assinatura, documentação, comentários, textos literais, contratos, rotas, testes candidatos e relações entre declarações. A origem guarda arquivo, intervalo e SHA-256 do texto que o parser efetivamente recebeu.
-- A recuperação usa o índice local já existente de palavras e vetores estáticos embarcados. Esse modelo local não redige explicações nem chama serviço pago. Interpretações registradas também podem localizar funções pelo vocabulário de negócio.
+- A recuperação usa palavras, vocabulário explícito e relações estruturais por padrão. Os vetores estáticos embarcados são uma opção desligada; só entram com `ai.vectors: true`. Interpretações registradas e atuais também localizam funções pelo vocabulário de negócio.
 - Relações são conferidas dos dois lados: uma função intacta não mantém como atual um chamador cujo arquivo mudou. A cópia de onda é verificada contra seu próprio conteúdo.
 - Interpretações têm várias fontes. Mudança em qualquer fonte exclui a interpretação das consultas atuais. Atualização do scan não renova silenciosamente uma interpretação antiga.
-- A consulta informa a origem da recuperação: índice híbrido local, termo no fallback, fonte de interpretação ou relação estática. Parsing parcial, relações ambíguas, resultados omitidos e fontes antigas permanecem visíveis como lacunas.
+- A consulta informa a origem da recuperação: índice nativo e vocabulário, termo no fallback, fonte de interpretação ou relação estática. Parsing parcial, relações ambíguas, resultados omitidos e fontes antigas permanecem visíveis como lacunas.
 - Consultas comuns compactam relações volumosas; contagens preservam a indicação do que foi omitido. O banco conserva os vínculos e a exportação explícita permite expandi-los. Não há chamada Jev para renderizar ou exportar.
 - O levantamento recebe evidência recuperada sem fechar automaticamente seus pontos. O contexto preparado das ondas incorpora relações/interpretações pertinentes, com invalidação do cache quando uma fonte secundária muda. Isso não substitui leitura obrigatória de itens da spec.
 - O binário gera Markdown diretamente desse conteúdo. Esse levantamento distingue extração e interpretação; não inventa jornadas ou regras ausentes.
@@ -87,7 +114,7 @@ Use `hypothesis` para interpretação ainda não conferida. `reviewed` é uma de
 
 Conforme a [documentação do Jev](https://docs.typesafe.ai/introduction), ele avalia questões tipadas sobre estado; não é o gerador do documento. O uso correto aqui é uma ambiguidade delimitada: qual candidato é pertinente, se duas tarefas interferem ou se um vínculo proposto deve ser aceito. Extração, hashes, catálogo, busca exata, cálculo e Markdown são nativos.
 
-Não acrescentamos chamada paga à consulta `knowledge` nem um varrimento de todo o projeto pelo Jev. As portas de julgamento do plano B continuam independentes do provedor, com cache por evidência/pergunta/revisão, exclusão entre processos e medição de tentativas físicas. Não confundir essa interface de julgamento com a interface de geração de texto, agora disponível como etapa local explícita.
+Não acrescentamos chamada paga à consulta `knowledge` nem um varrimento de todo o projeto pelo Jev. As portas de julgamento do plano B continuam independentes do provedor, com cache por evidência/pergunta/revisão, exclusão entre processos e medição de tentativas físicas. A interface de geração de texto é outro contrato de biblioteca; não há adaptador gerador ativo no runtime nesta entrega.
 
 Para enriquecer descrições de negócio, a sequência proposta é:
 
@@ -226,47 +253,43 @@ Aceite específico: testes de anotações em documentação de três gramáticas
 Suíte desta continuação: **3.815 testes Rust aprovados**, sem falhas, mais os dois ignorados herdados. Log `/tmp/mustard-concepts-workspace.log`; lint estrito aprovado em `/tmp/mustard-concepts-clippy.log`. Mapas de sessão com 2.468/2.500 bytes preservam a retomada e o estilo; os detalhes novos ficam disponíveis sob demanda. Build e aceite operacional dos executáveis são registrados em `/tmp/mustard-concepts-build.log` e `/tmp/mustard-concepts-native-acceptance.log`, com resultado JSON em `/tmp/mustard-concepts-native-acceptance-result.json`. Validação do pacote em `/tmp/mustard-concepts-package-validate.log`; versão/hash dos programas no manifesto de revisão. Nenhuma dependência dos motores consultados foi acrescentada.
 
 
-## Continuação: geração local opcional e cobertura de esquemas
+## Continuação: cobertura de esquemas e retirada da geração local
 
 Implementado na mesma branch `codex/mustard-plano-completo`. O motor continua agnóstico: Prisma entrou como gramática MIT (`tree-sitter-prisma-io =1.6.0`), registro de linguagem, queries e fixture. Nenhuma condição com nome de linguagem/framework foi adicionada ao motor. Ao contrário das etapas anteriores que apenas aproveitaram conceitos de projetos pesquisados, esta etapa acrescenta uma dependência de parser de terceiros, com licença MIT; não incorpora aqueles motores de grafo/wiki.
 
 A seleção conserva a identidade da declaração que ganhou a classificação local de responsabilidade. A grafia exata de um identificador precede referências com outra capitalização. Notas exigem os termos informativos da consulta em seu próprio texto; um termo genérico ou caminho compartilhado não basta. A ordenação ainda pode escolher uma classe abrangente em vez do método desejado.
 
-### Três papéis de modelo
+### Operação nativa como padrão
 
-- **Vetores:** o Model2Vec embarcado continua recuperando significado localmente. Ele não escreve documentos.
-- **Jev:** classificar e escolher sobre evidência relevante, nas etapas de levantamento, plano, preparação de contexto, ondas e revisão em que exista uma decisão tipada. Busca, contexto e planejamento de ondas já têm portas de julgamento. Não se deve chamar Jev para inventariar cada função, montar páginas, somar consumo, verificar hashes ou redigir explicações. Uma futura decisão de tipo de recurso (função que calcula versus entidade que guarda resultados) deve usar a mesma interface, pergunta curta e candidatos reais, com cache; ainda não foi integrada à consulta `knowledge`.
-- **Gerador local:** `SemanticEnrichmentProvider`, separado do `JudgementProvider`. O primeiro adaptador usa a API local do Ollama. Recebe trechos atuais selecionados pelo binário e devolve JSON com título, explicação e IDs de fontes. Outros geradores podem implementar a porta; Jev permanece na porta de julgamento.
+A orientação posterior do usuário descarta Ollama e prioriza todas as operações auxiliares sem IA e sem Jev. O adaptador local, a opção `--enrich` e a configuração executável desse gerador foram retirados. A porta de geração independente permanece como contrato de biblioteca para uma eventual alternativa futura; o runtime não possui gerador ativo. Configurações antigas `knowledge` são preservadas como dados desconhecidos, sem execução.
 
-Configuração opcional no `mustard.json`:
+A chave `TYPESAFE_API_KEY`, um antigo `search.filter: "jev"` ou o cache de vetores não ligam mais IA por conta própria. O padrão do scan e da recuperação é lexical/estrutural. A decisão de usar uma assistência excepcional fica explícita em `mustard.json`; nenhum instalador grava essas autorizações automaticamente:
 
 ```json
 {
-  "knowledge": {
-    "provider": "ollama",
-    "endpoint": "http://127.0.0.1:11434",
-    "model": "qwen3.5:4b",
-    "context_tokens": 8192,
-    "output_tokens": 1536,
-    "timeout_seconds": 120
+  "ai": {
+    "fallback": false,
+    "vectors": false
   }
 }
 ```
 
-O modelo é exemplo para avaliação, não requisito nem recomendação já validada no backend. A máquina inspecionada tem 15 GiB de RAM e RTX 2060 com 6 GiB de VRAM. O [pacote Ollama de Qwen3.5:4b](https://ollama.com/library/qwen3.5:4b) consultado ocupa aproximadamente 4 GB. Contexto e runtime também consomem memória; desempenho e qualidade ainda precisam de inferência real. Não instalamos Ollama nem baixamos pesos nesta etapa.
+Omitir o bloco produz o mesmo comportamento. Valores ausentes, inválidos ou diferentes do booleano `true` não autorizam inferência. O modo excepcional de julgamento exige `ai.fallback: true` e um filtro `jev` explícito na finalidade; `search.filter` só pertence à busca, e não ativa julgamento de contexto ou de ondas. Essa autorização permite o adaptador existente; não constitui prova de que uma alternativa nativa é insuficiente. A decisão de adotá-lo deve vir da avaliação por etapa. `ai.vectors: true` autoriza separadamente o modelo estático já embarcado; vetores existentes não são consultados sem essa escolha. A opção é preservada para comparação, sem recomendação de ativação.
 
-Com servidor e modelo já instalados pelo usuário, o comando nativo é:
+A recuperação nativa usa vocabulário explícito em `packages/core/src/domain/knowledge/retrieval.txt`, formas morfológicas e tipos neutros de declaração. Equivalências ocupam o mesmo espaço da palavra original, sem multiplicar seu peso. Uma pergunta de ação favorece funções/métodos; uma pergunta de estrutura pode favorecer campos/tipos. As regras não incluem termos do Suzano, nomes de frameworks ou nomes de linguagens. Um candidato com evidência própria em vários termos pode competir mesmo quando o índice geral não o trouxe; caminho e cabeçalho herdado sozinhos não sustentam essa inclusão. Busca por identificador exato mantém prioridade. São heurísticas para localizar fontes, não certificação de significado.
+
+Consulta, navegação, revisão de fontes antigas e documento continuam disponíveis:
 
 ```text
-mustard-rt run knowledge --query "<capacidade delimitada>" --enrich --markdown --out explicacao.md
-mustard-rt run knowledge --query "<capacidade delimitada>" --markdown --out explicacao.md
+mustard-rt run knowledge --query "<capacidade delimitada>"
+mustard-rt run knowledge --symbol "<id>" --direction callers
+mustard-rt run knowledge --refresh
+mustard-rt run knowledge --query "<capacidade delimitada>" --markdown --out levantamento.md
 ```
 
-A primeira execução explica o tópico, registra uma **hipótese** e exporta essa mesma explicação com as fontes, nunca uma revisão aprovada. Destino inválido é recusado antes de inferência. A segunda exporta conhecimento vigente; não gera novamente e não publica. `scan`, consultas comuns, hooks, instalação e painel não acionam esse gerador automaticamente. Não há instalação/download automático nem fallback para modelo pago.
+Não há geração de texto escondida numa consulta sem resultado, num hook, numa rodada ou na exportação. Lacunas continuam visíveis. Interpretações já conferidas por uma pessoa/agente podem ser registradas com `--record`; aproveitar uma interpretação atual não inicia outra inferência. Regras obrigatórias e dependências explícitas das ondas são conservadas pelo caminho nativo, sem depender de exclusão semântica de itens por Jev.
 
-O binário fornece no máximo oito fontes e 12.000 bytes de trechos, com cortes somente entre linhas e indicação de truncamento. Esses bytes são um controle de tamanho, não uma medição exata de tokens. A geração segue o [contrato oficial de JSON estruturado](https://docs.ollama.com/api/generate). A resposta só pode citar IDs fornecidos; caminhos, linhas e hashes são montados nativamente. JSON inválido, citação inventada, resposta incompleta ou alteração em qualquer fonte apresentada recusam o registro. Fonte atual não demonstra que a interpretação é correta.
-
-O cache considera prompt/schema, tópico, trechos, hashes completos dos arquivos, identidade/digest do modelo e opções. Guardar uma interpretação não altera sua própria seleção de evidências. Repetir a consulta reaproveita a resposta; editar fonte ou substituir o modelo invalida a chave. Há exclusão por chave entre processos. Contadores de tokens são os informados pelo servidor, quando presentes. O adaptador consulta metadados locais em acessos ao cache, sem inferência. URLs externas, redirecionamentos, proxy e modelos declarados remotos/cloud são recusados pelo adaptador local.
+O documento recebido de referência combina fatos e interpretação. A montagem do Markdown é nativa; uma narrativa de negócio completa só poderá afirmar o que suas fontes e interpretações sustentarem. Ausência de IA não autoriza fabricar jornadas ou transformar relação estática em prova de execução.
 
 ### Evidência medida e limite atual
 
@@ -277,3 +300,32 @@ O conjunto de 22 perguntas permaneceu congelado; excluindo a pergunta N11 cuja p
 Os testes do gerador utilizam respostas simuladas. A suíte completa passou com 3.824 testes e dois ignorados herdados; as últimas mudanças de exportação também passaram por aceitação nativa e análise estática sem avisos. A aceitação executa os binários reais, instala em pasta vazia e testa geração explícita, exportação Markdown sem geração adicional, destino inválido antes de inferência, reaproveitamento, recusa de fonte alterada, mudança de digest, bloqueio de modelo remoto, citações inválidas e concorrência com uma única geração. Isso comprova o contrato e a mecânica; não comprova qualidade, latência ou custo de um modelo real. O projeto original ficou intacto; não houve chamada paga ou publicação.
 
 Artefatos desta rodada ficam em `target/suzano-oracle-20261008-v2/`; a avaliação anterior foi preservada. Próximas prioridades: separar intenção de consultar dados de intenção de localizar implementação, preservar recall ao ampliar linguagens e avaliar o gerador real com perguntas novas, fontes conferidas e métricas de resposta. Um documento completo do Puzzle ainda exige vários tópicos, evidência suficiente e revisão das hipóteses. A integração atual não promete produzir essa análise completa em uma única chamada.
+
+
+## Avaliação pontual do Jev em todo o Mustard
+
+Orientação do usuário: concluir primeiro as alternativas nativas e avaliar Jev ao final, incluindo o projeto inteiro. A tabela é uma recomendação baseada no código e nos contratos; não habilita um provedor nem demonstra ganho de julgamento pago. Nesta continuação, nenhuma alternativa demonstrou precisar de Jev para funcionar.
+
+A documentação consultada em 08/10/2026 recomenda decisões pequenas sobre evidência relevante e combinação das respostas no código. [Choice](https://docs.typesafe.ai/primitives/choice) escolhe uma opção; [Noul](https://docs.typesafe.ai/primitives/noul) expressa uma probabilidade para uma afirmação; [Score](https://docs.typesafe.ai/primitives/score) exige uma escala definida. Não há geração de prosa. Perguntas de uma chamada compartilham o mesmo estado, mas cada resposta é independente; uma pergunta não pode depender da resposta de outra nessa mesma chamada. [Introdução](https://docs.typesafe.ai/introduction), [estado](https://docs.typesafe.ai/concepts/state).
+
+| Etapa e local do código | Alternativa nativa ou decisão já disponível | Jev teria lugar? |
+| --- | --- | --- |
+| Scan: `apps/scan/src`, `domain/knowledge`, `io/knowledge` | Parser, símbolos, comentários, metadados, rotas, referências, Git e hashes; consulta/exibição/Markdown | Nenhum uso rotineiro. Um parser sem suporte ou uma relação sem evidência não ganha validade por julgamento. SCIP/LSP é uma investigação nativa para resolver tipos e referências. |
+| Busca: `shared/search_door.rs`, `shared/word_search.rs` | Identificador exato, busca textual com argumentos preservados, ranking e navegação | Candidato para experimento: pertinência entre resultados que já foram encontrados, quando a intenção permanece ambígua. Pergunta por candidato com evidência própria e tarefa relevante. Jev não recupera função ausente da lista nem cria uma tradução de negócio que o banco desconhece. |
+| Levantamento e criação da spec: eventos/`run read`/`run write`, `flow/grill.rs` | Estado de perguntas, decisões, itens e aprovação; modelo principal raciocina sobre necessidade e registra conclusão | Classificação auxiliar só teria interesse numa ambiguidade recorrente mensurada. A conversa já exige o raciocínio do responsável: pagar de novo para classificar cada mensagem, redigir spec ou descobrir regras do sistema não se justifica. |
+| Contexto das ondas: `flow/round/item_choice.rs`, `domain/wave_prompt`, `io/wave_prompt/prepared.rs` | Regras obrigatórias, arquivos/itens vinculados, dependências e evidência atual; reutilização por componente | É o candidato mais plausível a um piloto: decidir se um item **opcional** não resolvido por vínculos governa uma tarefa. Estado restrito ao item, tarefa e fontes pertinentes. Nunca remover regra obrigatória por probabilidade. Medir se reduz leituras sem perder aceites. |
+| Formação de ondas: `shared/judgement.rs`, `shared/dag.rs`, `flow/round/backlog.rs` | Dependências declaradas, reservas de escrita, padrões de arquivo, leituras/critério/afinidade e prioridades | Não perguntar por conflito já conhecido. Um possível piloto seria interferência semântica residual entre dois recursos com evidência concreta. Pasta em comum, sozinha, é insuficiente para justificar chamadas. Se decidir exige análise extensa, cabe ao responsável/LLM principal. |
+| Tipo e tamanho de tarefa: perfis em `shared/jev.rs` | Tipo pode ser declarado pelo autor da tarefa; tamanho do pedido/contexto é calculável; incerteza recebe tratamento conservador | Não recomendo ativar o perfil pago para toda tarefa. A estimativa semântica de tokens de implementação não é medição. Primeiro exigir metadado explícito e usar conteúdo/consumo observado; não há ganho real comprovado para as notas atuais. |
+| Validação leve e fechamento: `flow/round/checks.rs`, `flow/close.rs`, recibos/provas | Comandos reais, saída/status, conteúdo/configuração/ambiente e autoria | Jev não comprova execução, cobertura, ausência de regressão ou cumprimento da spec. Leitura/raciocínio da revisão final continua necessário; o binário prepara evidências e verifica contratos. |
+| Gasto, statusline, Mods, páginas e publicação: `spec/measure`, `commands/panel`, `commands/statusline`, `io/publication` | Eventos e dados observados, cálculos, projeção, layout, sanitização e transporte explícito | Nenhuma chamada para atualizar a tela, contar tokens, gerar gráfico, publicar, montar Markdown ou escolher automaticamente periodicidade. |
+| Registro e revisão do conhecimento: `io/knowledge::record`, `knowledge/refresh.rs` | Reaproveitar interpretações atuais, listar fontes alteradas e conferir recibos | Jev não redige a nova interpretação e hash não prova o significado. O responsável/LLM principal confere apenas o trecho afetado e registra o que concluiu. |
+
+### Critério para um piloto excepcional
+
+Primeiro registrar a falha nativa em casos com resultado esperado independente. Distinguir ausência de candidato de ambiguidade entre candidatos: somente a segunda é adequada a classificação. Testar regras/metadados/navegação adicionais antes de introduzir inferência. Comparar o fluxo nativo e o assistido no mesmo código e nas mesmas tarefas, mantendo modelo principal e esforço.
+
+O piloto precisaria medir acerto/omissões, leituras adicionais, tokens totais do modelo principal, chamadas e tokens físicos do Jev, latência e custo total. Uma chamada menor não basta se aumentar correções ou omitir uma regra. Probabilidade intermediária e resposta inválida devem conservar incerteza e o fluxo nativo; não significam ausência de recurso ou aprovação de paralelismo.
+
+Se houver benefício, manter finalidade explícita e independente (`search`, `context` ou `wave-planning`), a porta `JudgementProvider`, cache por pergunta/fontes/configuração/revisão de provedor, exclusão entre processos e diário de tentativas físicas. Mudança nas fontes invalida reaproveitamento. Agrupar apenas perguntas que de fato precisam do mesmo estado, sem repetir o repositório/transcript inteiro. Relevância e evidência, não um teto arbitrário de gastos, devem determinar a necessidade.
+
+Recomendação atual: manter o padrão nativo. Investigar primeiro seleção de **contexto opcional**; em seguida, pertinência de candidatos ambíguos. Interferência semântica residual exige prova mais forte. Não existe evidência para reativar Jev em todo o fluxo, nem para prometer que qualquer um desses pilotos reduzirá custo total.

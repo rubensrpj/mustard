@@ -25,7 +25,7 @@ flowchart LR
 2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e preparam trechos atuais com referências. Dependências e testes candidatos orientam a descoberta; não provam comportamento ou cobertura.
 3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 
-> O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. Jev só julga ambiguidades pertinentes depois da recuperação local, por uma interface de provedor e cache versionado. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
+> O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. As operações auxiliares funcionam sem IA por padrão. Jev exige `ai.fallback: true` e um filtro explícito por finalidade; vetores exigem `ai.vectors: true`. Credenciais/configurações antigas não ativam inferência. A interface de provedor e o cache versionado permanecem disponíveis para uma exceção avaliada. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
 
 ---
 
