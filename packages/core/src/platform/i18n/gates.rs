@@ -29,7 +29,7 @@ pub(super) const PREFIXES: &[&str] = &[
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
-        ("search.gateway.route", Locale::PtBr) => "[Mustard] Use `mcp__mustard__search` com {request:{tool,input,intent,purpose,choose?}}, preservando os argumentos originais. Para investigar, diga em intent a pergunta específica e declare purpose (understand/spec/implement/validate); locate mantém a busca literal. Alternativa: {command}. Se faltar uma opção na nova busca, use a ferramenta de antes.",
+        ("search.gateway.route", Locale::PtBr) => "[Mustard] Busque por `mcp__mustard__search` com {request:{tool,input,intent,purpose,choose?}}. Use os mesmos argumentos. Diga em intent o que quer saber. Em purpose, use understand, spec, implement ou validate. Para só achar texto, use locate. Outra opção: {command}. Se a opção faltar, use a busca de antes.",
         ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with {request:{tool,input,intent,purpose,choose?}}, preserving original arguments. For investigation, state the specific question in intent and set purpose (understand/spec/implement/validate); locate keeps literal lookup. Alternative: {command}. If the new search lacks an option, use the original tool.",
         // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
@@ -559,7 +559,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             72,
-            0xcbd8_540c_1149_1641,
+            0x261f_0028_3e6c_043f,
         );
     }
 

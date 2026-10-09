@@ -1,33 +1,30 @@
 # Mustard neste projeto
 
-Fluxo: levantamento, plano, aprovação, ondas, revisão, fechamento e PR. Binário: estado, busca e cálculos. Modelo: raciocínio e código.
+Binário busca/calcula; LLM implementa.
 
-## Pedido e levantamento
+## Levantamento
 
-- Abra mudanças com `mustard-rt run open`, grave o objetivo em `context` e sugira `/clear`; a linha de retomada mostra o estado. Pergunta, leitura e status não abrem spec. Branch alheia não bloqueia.
-- Explique na ordem de explicar do estilo de resposta. Confira código e histórico antes de remover.
-- Grave cada resposta com `mustard-rt run answer`.
-- Busque/leia código por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`. Preserve argumentos e escopo. Em `intent`, escreva a pergunta específica desta busca; numa spec, o objetivo geral já está em `context`. Declare `purpose`: `locate`, `understand`, `spec`, `implement` ou `validate`. Investigação exige intenção; localização literal aceita intenção vazia. `Read` mantém o resultado original.
-- Sem a ferramenta: `mustard-rt run search --shell-output --intent "<pergunta específica>" --purpose spec -- rg -n "<padrão>" .`. Em Bash nativo, a descrição `mustard:spec: <pergunta>` preserva a finalidade pelo hook. Sem anotação, a busca é `locate`. Expanda faixas incompletas; `--raw` devolve bytes nativos. `choose:true`/`--choose` permite Jev para alternativas de responsabilidade ainda ambíguas, sem ativá-lo em toda busca.
-- Reaproveite corpos completos já recebidos. Ao achar um arquivo, investigue a declaração pertinente com finalidade e pergunta; não abra o arquivo inteiro por padrão. Para trechos incompletos, leia as faixas faltantes indicadas; sem coordenadas, use `run map summary --file <arquivo>` antes de escolher `Read` com `offset` e `limit`. Amplie quando a decisão depender de código omitido.
+- Abra mudanças por `mustard-rt run open`, grave o objetivo em `context`, sugira `/clear`; a linha de retomada mostra o estado. Consultas não abrem spec; branch alheia não bloqueia.
+- Explique na ordem de explicar do estilo de resposta. Confira código/histórico antes de remover. Grave respostas por `mustard-rt run answer`.
+- Busque/leia por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`. Preserve argumentos/escopo. `intent`: pergunta desta busca. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`. Só `locate` aceita intenção vazia.
+- CLI: `mustard-rt run search --shell-output --intent "<pergunta>" --purpose spec -- rg -n "<padrão>" .`. Bash: `mustard:spec: <pergunta>`; sem anotação: `locate`. `--raw`: nativo. `choose:true`/`--choose`: Jev só em responsabilidade ambígua.
+- Reaproveite corpos completos; ao achar arquivo, investigue a declaração. Sem faixa: `run map summary --file <arquivo>`, depois `Read` com `offset`/`limit`. Expanda faltantes; fonte mudou: releia.
 - `mustard-rt run knowledge`: dossiê.
 
 ## Spec aberta
 
+- Leia/grave a spec por `mustard-rt run read`/`run write`; nunca edite `spec.*` à mão.
+
 - Em spec fechada ou com pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes de `write request`. PR reprovado pelo servidor: `mustard-rt run reopen --fix --reason "<motivo>"`.
 - Erro, ajuste ou melhoria do mesmo assunto entra na mesma spec por `write request`, nunca como pendência. Registre e informe o que for certo; na dúvida, proponha e pergunte uma vez. Outro assunto entra por `mustard-rt run pending --add`; se o usuário quiser fazer já, sugira outra conversa.
 - Mudança fora do autorizado exige o sim do usuário. Correção do funcionamento do Mustard vira ajuste no produto, não só memória.
-- Leia a spec por `mustard-rt run read <bloco>` e grave por `write`; nunca edite `spec.*` à mão.
-- Delegue a investigação que abre muitos arquivos; confira um ponto único. Peça a todo agente achados na spec por `mustard-rt run write` e retorno em duas linhas.
+- Delegue a investigação que abre muitos arquivos. Peça a todo agente achados na spec por `mustard-rt run write` e retorno em duas linhas.
 
 ## Acompanhamento
 
-- `/mustard-panel`: projeto, specs, execução e consumo local; consulta e renderização não chamam modelo nem Jev.
-- `/mustard-pages` só sob pedido: snapshot datado. Exportação local não confirma publicação; atualizar exige nova ação.
-- Sem Mods: `mustard-rt run panel --root <projeto> --spec <spec>`. Exportar: `mustard-rt run publish --spec <spec>`; `--include-consumption` autoriza compartilhar consumo.
-- Página avulsa: `mustard-rt run page` recebe markdown.
-- `mustard-rt run spend` mede localmente; `--publish` só sob pedido.
+- `/mustard-panel`: projeto/specs/execução/consumo, sem IA; CLI: `run panel`.
+- `/mustard-pages` só sob pedido; exportar não confirma publicação. Atualize só por pedido. `run publish --spec <spec>`; `--include-consumption`: autoriza consumo. `mustard-rt run page`: markdown.
 
 ## Retomar
 
-Retome com `mustard-rt run resume`. Commit/PR não levam nomes de clientes, e-mail ou caminho local.
+`mustard-rt run resume`. Commit/PR não levam cliente, e-mail ou caminho local.

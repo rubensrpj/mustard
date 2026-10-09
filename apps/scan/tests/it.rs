@@ -48,3 +48,5 @@ mod skip_dirs_excludes_claude;
 mod stack_detection_e2e;
 mod stack_evidence_excludes;
 mod use_in_every_language;
+
+mod search_operations;

@@ -713,7 +713,7 @@ mod tests {
                 let parsed=segments(rewritten);
                 let args=&parsed[0].args;
                 let at=args.iter().position(|arg|arg.text=="--request").unwrap();
-                let request:mustard_core::domain::code_search::Request=serde_json::from_str(&args[at+1].text).unwrap();
+                let request:mustard_core::domain::code_search::Request=mustard_core::domain::code_search::Request::from_json(&args[at+1].text).unwrap();
                 let original=segments(command);
                 assert_eq!(request.tool,original[0].program.text);
                 assert_eq!(request.input["args"],serde_json::json!(original[0].args.iter().map(|arg|&arg.text).collect::<Vec<_>>()));

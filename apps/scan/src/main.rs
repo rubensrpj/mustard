@@ -126,6 +126,14 @@ enum Command {
     /// mapa é de outra compilação compara a marca dele com esta, sem rodar a
     /// passada.
     Format,
+    /// Search the syntax tree of one current file using a Tree-sitter query.
+    Structure {
+        path: PathBuf,
+        #[arg(long)]
+        file: String,
+        #[arg(long)]
+        query: String,
+    },
 }
 
 /// A prioridade com que a leitura da história roda em segundo plano: 10 é
@@ -177,6 +185,15 @@ fn drop_legacy_map(out: &Path) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Structure { path, file, query } => {
+            let registry = mustard_core::domain::knowledge::resources::Registry::load()
+                .map_err(anyhow::Error::msg)?;
+            let text =
+                mustard_core::io::knowledge::investigation::safe_read(&path, &file, &registry)
+                    .ok_or_else(|| anyhow::anyhow!("structure-source-excluded-or-unreadable"))?;
+            let report = extract::structural_matches(&file, &text, &query)?;
+            println!("{}", report);
+        }
         Command::Scan { path, out, all, native, json } => {
             // O `mustard.json` da pasta lida: as línguas da busca e o teto do
             // nome comum da ligação. O valor inválido já vale o padrão aqui;
@@ -1044,7 +1061,7 @@ mod tests {
         use clap::CommandFactory;
         let tree = Cli::command();
         let names: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
-        assert_eq!(names, ["scan", "history", "history-all", "format"], "the check reached every command");
+        assert_eq!(names, ["scan", "history", "history-all", "format", "structure"], "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

@@ -25,7 +25,12 @@ pub enum ScanCmd {
         #[arg(long,default_value=".")]
         root: PathBuf,
         /// Versioned JSON: {schema_version:1,request:{tool,input,intent,purpose,choose?}}.
-        /// The original CLI request shape remains supported.
+        /// Original `CLI` shape is supported. Additional tool/input pairs:
+        /// Symbol {file_path,symbol}; Trace adds direction?,depth?,target?,limit?.
+        /// Structure {file_path,query}: Tree-sitter syntax query.
+        /// References {file_path,line,column,relation?,limit?}: current `SCIP` or `LSP`;
+        /// one-based line, zero-based UTF-8 byte column; relation is definitions,
+        /// references (default) or implementations. No model calls.
         #[arg(long,conflicts_with="args")]
         request: Option<String>,
         /// Specific question to establish; required for investigation or Choice.
@@ -49,6 +54,8 @@ pub enum ScanCmd {
     /// Retrieve current functions, documents, configuration and interpretations
     /// natively, with optional configured Choice for ambiguous responsibility.
     /// Export a report with `--markdown --out <file>`.
+    /// Optional precise index: `mustard-rt run knowledge --import-scip <index>`;
+    /// add `--source-manifest <receipt>` when source text is not embedded.
     #[command(display_order = 28)]
     Knowledge {
         #[arg(long, default_value = ".")]
@@ -88,6 +95,12 @@ pub enum ScanCmd {
         /// Explicit multi-source interpretation receipt, as a `.json` file.
         #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out", "symbol", "direction", "refresh"])]
         record: Option<PathBuf>,
+        /// Import an optional `SCIP` Protobuf index, without invoking an indexer.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "record", "refresh", "coverage", "topics", "evaluate", "intent", "purpose", "out", "all", "detail", "markdown", "responsibility"])]
+        import_scip: Option<PathBuf>,
+        /// Source hashes produced alongside that exact index (`JSON`).
+        #[arg(long, requires = "import_scip")]
+        source_manifest: Option<PathBuf>,
         /// Report indexed scope, parser gaps and exclusions without inference.
         #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "topics", "evaluate", "markdown", "all", "detail"])]
         coverage: bool,
@@ -214,8 +227,13 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args}=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output),
-        ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility } => {
+        ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
+        }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
+        ),
+        ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
+            import_scip,
+            source_manifest,
+        } => {
             super::knowledge::run(
                 &root,
                 &mustard_core::io::knowledge::Query {
@@ -236,11 +254,16 @@ pub fn dispatch(cmd: ScanCmd) {
                 markdown,
                 out.as_deref(),
                 record.as_deref(),
-                super::knowledge::Modes { coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,
+                super::knowledge::Modes {
+                    import_scip: import_scip.as_deref(),
+                    source_manifest: source_manifest.as_deref(),
+                    coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,
                     task: mustard_core::domain::knowledge::investigation::Task {
                         intent: intent.as_deref().unwrap_or_default(),
-                        purpose: purpose.as_deref().and_then(mustard_core::domain::knowledge::investigation::Purpose::parse).unwrap_or_default(),
-                    } },
+                        purpose: purpose.as_deref().and_then(mustard_core::domain::knowledge::investigation::Purpose::parse,
+                            ).unwrap_or_default(),
+                    },
+                },
             );
         }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
@@ -312,7 +335,8 @@ mod tests {
         for args in [vec!["--coverage","--topics","topics.json"],vec!["--evaluate","eval.json","--query","quartz"],
             vec!["--topics","topics.json","--symbol","a.rs:1:run"],vec!["--coverage","--markdown"],
             vec!["--purpose","implement","--topics","topics.json"],vec!["--intent","quartz","--responsibility"],
-            vec!["--purpose","guess"],vec!["--symbol","a.rs:1:run","--intent","quartz"]] {
+            vec!["--purpose","guess"],vec!["--symbol","a.rs:1:run","--intent","quartz"],
+        ] {
             let mut line=vec!["probe","knowledge"];line.extend(args);
             assert!(Probe::try_parse_from(line).is_err());
         }
@@ -323,19 +347,22 @@ mod tests {
     fn opts_of(args: &[&str]) -> crate::commands::map::MapOpts {
         let mut line = vec!["probe", "map"];
         line.extend_from_slice(args);
-        map_opts(Probe::try_parse_from(line).expect("the command line parses").cmd)
+        map_opts(Probe::try_parse_from(line).expect("the command line parses").cmd,
+        )
     }
 
     /// `--described` e `--said` da linha de comando chegam às opções da busca,
     /// com `--query` e com o texto do `Grep`, e sem eles ficam vazios.
     #[test]
     fn the_description_and_the_speech_of_the_command_line_reach_the_search_options() {
-        let with_query = opts_of(&["search", "--query", "frete", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        let with_query = opts_of(&["search", "--query", "frete", "--described", "Procura o frete", "--said", "Vou olhar",
+        ]);
         assert_eq!(with_query.query.as_deref(), Some("frete"));
         assert_eq!(with_query.described.as_deref(), Some("Procura o frete"));
         assert_eq!(with_query.said.as_deref(), Some("Vou olhar"));
 
-        let with_pattern = opts_of(&["search", "frete", ".", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        let with_pattern = opts_of(&["search", "frete", ".", "--described", "Procura o frete", "--said", "Vou olhar",
+        ]);
         assert_eq!(with_pattern.grep.as_ref().map(|grep| grep.pattern.as_str()), Some("frete"));
         assert_eq!(with_pattern.described.as_deref(), Some("Procura o frete"));
         assert_eq!(with_pattern.said.as_deref(), Some("Vou olhar"));
@@ -348,7 +375,8 @@ mod tests {
     /// linha de comando não vira pasta, e a linha com o alvo segue valendo.
     #[test]
     fn examples_takes_the_target_by_file_and_never_a_task_text() {
-        let refused = Probe::try_parse_from(["probe", "map", "examples", "--task", "adicionar um comando run"]);
+        let refused = Probe::try_parse_from(["probe", "map", "examples", "--task", "adicionar um comando run",
+        ]);
         assert!(refused.is_err(), "a task text is no longer an option of the question");
         let by_file = opts_of(&["examples", "--file", "apps/rt/src/commands/pay"]);
         assert_eq!(by_file.file.as_deref(), Some("apps/rt/src/commands/pay"));

@@ -3,7 +3,9 @@ use std::path::Path;
 
 mod evaluation;
 
-pub struct Modes<'a> { pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
+pub struct Modes<'a> { pub import_scip: Option<&'a Path>,
+    pub source_manifest: Option<&'a Path>,
+    pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
 
 fn read_manifest<T:serde::de::DeserializeOwned>(path:&Path)->Result<T,String> {
@@ -20,6 +22,15 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         tree.as_path()
     } else {anchor.as_path()};
     let answer: Result<String, String> = (|| {
+        if let Some(index) = modes.import_scip {
+            return mustard_core::io::knowledge::precise::import(
+                root,
+                &tree,
+                index,
+                modes.source_manifest,
+            )
+            .map(|v| v.to_string());
+        }
         if let Some(record) = record {
             let metadata = std::fs::metadata(record).map_err(|e| e.to_string())?;
             if metadata.len() > 1_000_000 {

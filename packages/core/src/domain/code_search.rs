@@ -13,6 +13,15 @@ pub struct Invocation {
     pub request: Request,
 }
 
+/// Written identifiers in a native pattern; anchors still require an actual
+/// occurrence owned by a current declaration, never an inferred regex match.
+pub fn pattern_names(pattern: &str) -> std::collections::BTreeSet<&str> {
+    pattern
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 impl Invocation {
     pub fn new(request: Request) -> Self {
         Self {
@@ -99,6 +108,10 @@ impl Request {
         if !matches!(
             self.tool.as_str(),
             "rg" | "grep" | "git" | "Grep" | "Glob" | "Read"
+                | "Symbol"
+                | "Trace"
+                | "Structure"
+                | "References"
         ) {
             return Err("search-tool-unsupported; use the original host tool".into());
         }

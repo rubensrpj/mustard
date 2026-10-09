@@ -455,3 +455,44 @@ fn source_changes_during_selection_discard_task_evidence_but_keep_native_matches
         "current-task-evidence"
     );
 }
+
+#[test]
+fn exact_named_anchor_defers_generic_unindexed_mocks_but_preserves_native_hits() {
+    let dir = fixture();
+    let root = dir.path();
+    std::fs::write(
+        root.join("src/allowed/noise.test.rs"),
+        "// create a file for an unrelated snapshot\nfn dummy_mock() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/allowed/actual.test.rs"),
+        "// entry is exercised here\nfn exercise() { entry(); }\n",
+    )
+    .unwrap();
+    let mut req = request();
+    req.intent = "create a file for snapshot".into();
+    for pattern in ["entry", "entry|restore"] {
+        req.input = json!({"args":["-n","--with-filename",pattern,"src/allowed"]});
+        let answer = run(root, &req, None);
+        let native = String::from_utf8_lossy(&answer.stdout);
+        assert!(native.contains("actual.test.rs"));
+        let investigation = &answer.report["task_context"]["investigation"];
+        assert!(investigation["live_matches"].is_array(), "{investigation}");
+        assert!(
+            investigation["phases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|phase| phase["weak_complements_deferred"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)),
+            "{investigation}"
+        );
+        let live = investigation["live_matches"].to_string();
+        assert!(!live.contains("noise.test.rs"), "{live}");
+        assert_eq!(answer.report["remote_model_calls"], 0);
+        let locate = code_search::execute_native(root, &req).unwrap();
+        assert_eq!(answer.stdout, locate.stdout);
+    }
+}

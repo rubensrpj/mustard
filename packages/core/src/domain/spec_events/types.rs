@@ -837,6 +837,8 @@ pub const TYPES: &[TypeSpec] = &[
             // As provas dos testes de nome novo, cada uma com o critério e o
             // comando (`criterion`, `proof`).
             opt("proofs", Kind::Objects),
+            // Optional reusable conclusions with exact current source receipts.
+            opt("knowledge", Kind::Objects),
             // As ondas que um conserto fecha.
             opt("fixes", Kind::Ints),
             // O que o agente achou fora da tarefa e não é dele consertar, cada

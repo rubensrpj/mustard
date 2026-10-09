@@ -146,7 +146,7 @@ pub(super) fn investigate(
             return Err("task-source-changed-before-selection".into());
         }
     }
-    let pattern_names:BTreeSet<_>=scope.clues.split(|c:char|!c.is_alphanumeric() && c!='_' && c!='$').filter(|s|!s.is_empty()).collect();
+    let pattern_names = crate::domain::code_search::pattern_names(&scope.clues);
     let anchors:BTreeSet<_>=cards.iter().filter(|card|seeds.contains(&card.id) && pattern_names.iter().any(|name|name.eq_ignore_ascii_case(&card.name))).map(|card|card.id.clone()).collect();
     let literal_name=!scope.clues.is_empty() && scope.clues.chars().all(|c|c.is_alphanumeric() || c=='_');
     let crossing_complete=answer.report["evidence"]["unmapped_occurrences"]==0

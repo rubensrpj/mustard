@@ -19,11 +19,13 @@ pub mod coverage;
 pub mod dossier;
 pub mod investigation;
 pub mod observations;
+pub mod precise;
 pub(crate) mod catalog;
 pub(crate) mod references;
 mod navigation;
 mod refresh;
 pub(crate) mod resources;
+pub mod waves;
 pub use navigation::Direction;
 
 /// Inventory evidence for search diagnostics, never a completeness guarantee.
@@ -173,6 +175,20 @@ pub fn record_at(root: &Path, tree: &Path, note: &Interpretation) -> Result<Valu
     }
     let payload = serde_json::to_string(note).map_err(|e| invalid(e.to_string()))?;
     let mut db = open_existing(&store::model_path(root))?;
+    let existing: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT payload FROM knowledge_notes WHERE id=?1",
+            [&note.id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| unreadable(e.into()))?;
+    if existing.as_deref() == Some(&payload) {
+        return Ok(
+            json!({"ok":true,"recorded":note.id,"status":note.status,"reused":true,"semantic_validation":"origin-review-only"}),
+        );
+    }
     db.write(|tx| {
         tx.execute("DELETE FROM knowledge_notes WHERE id=?1", params![note.id])?;
         tx.execute(

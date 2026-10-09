@@ -518,8 +518,9 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
 
 /// Os mesmos blocos, como o banco os abre.
-pub(crate) const DB_BLOCKS: [Block; 15] =
-    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK];
+pub(crate) const DB_BLOCKS: [Block; 16] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
+    crate::io::knowledge::precise::BLOCK];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];

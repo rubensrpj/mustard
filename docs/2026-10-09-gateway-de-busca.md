@@ -2,6 +2,75 @@
 
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
+## Ampliação entregue em 09/10: símbolos, caminhos, estrutura e referências
+
+As novas operações usam o mesmo contrato versionado do gateway e exigem arquivo explícito. São ferramentas determinísticas, sem chamadas a modelos, mesmo com `choose:true`. O Jev continua atrás da interface de escolha de responsabilidades; resolução de identidade pertence ao índice/compilador.
+
+| Operação | Entrada em `input` | Evidência e limite |
+| --- | --- | --- |
+| `Symbol` | `file_path`, `symbol` | Declaração atual pelo ID exato recebido na busca; assinatura, faixa/hash e interpretações atribuídas. Fonte alterada exige nova localização. |
+| `Trace` | `file_path`, `symbol`, `direction?`, `depth?`, `limit?`, `target?` | Navegação estática existente, até quatro níveis; alvo opcional conserva o caminho encontrado. `target_reached:false` significa não alcançado na exploração delimitada, não inexistência. Não demonstra ordem de execução nem fluxo de dados. |
+| `Structure` | `file_path`, `query` | Consulta Tree-sitter sobre a fonte atual. Mesmo catálogo de gramáticas do scan; sem outro parser. Retorna capturas, linhas/bytes, hash e flags de incompletude. |
+| `References` | `file_path`, `line`, `column`, `relation?`, `limit?` | Definições, referências ou implementações pelo índice SCIP atual ou servidor LSP instalado. Sem provedor/resultado, inclui busca textual nativa e ressalva de que ocorrências não são referências comprovadas. |
+
+`line` começa em 1; `column` é deslocamento UTF-8 em bytes, começando em 0. O adaptador converte para a codificação negociada pelo LSP. `relation` aceita `definitions`, `references` (padrão) e `implementations`. Todos os achados com recibo atual alimentam fatos locais e são cruzados com proprietários do scan. Quando um arquivo novo pede atualização, o resultado já executado é reutilizado após o scan; não se repete o parser/servidor para obter o cruzamento. Acesso, exclusões, segredos e isolamento do checkout continuam aplicados.
+
+Exemplo da chamada enviada pelo Claude através do Mods:
+
+```json
+{"request":{"tool":"References","input":{"file_path":"src/controller.ts","line":42,"column":18,"relation":"definitions"},"intent":"Qual declaração atende esta chamada no escopo atual de tipos e imports?","purpose":"understand","choose":false}}
+```
+
+O CLI recebe esse pedido envolvido em `{"schema_version":1,"request":{...}}`. O arquivo e as coordenadas são exemplos de contrato; devem vir de uma ocorrência real. Os IDs de `Symbol`/`Trace` vêm de `cards[].id` ou `owners.symbols[].id` atuais, nunca de adivinhação do agente. `references[].symbol` pertence ao provedor de precisão e não é o ID de cartão do scan.
+
+### Catálogo existente e importação opcional
+
+Os servidores não têm um cadastro paralelo: argumentos/opções de inicialização entram em `platform/code_tools.rs`, já usado por instalação, atualização e diagnóstico. Rust, TypeScript/JavaScript, C#, Go, Python e PHP reutilizam esse catálogo. TSX/JSX usam os identificadores apropriados do protocolo. Linguagem sem servidor cadastrado conserva o fallback; presença de gramática não implica suporte LSP. A resolução real nesta etapa foi conferida em TypeScript; os demais servidores dependem de instalação e configuração do projeto.
+
+A consulta LSP abre uma sessão com prazo total de 15 segundos e fecha os processos ao terminar. Não instala servidores nem guarda conclusões do compilador entre consultas. No TypeScript, `useSyntaxServer:"never"` habilita a resolução semântica, com aquisição automática de tipos desabilitada. Essa escolha foi conferida no [servidor oficial](https://github.com/typescript-language-server/typescript-language-server/blob/master/src/utils/configuration.ts) e testada no backend. Uma consulta fria pode ser mais lenta que grep; use-a quando a identidade da chamada exigir verificação.
+
+SCIP é alternativa opcional, pela interface `PreciseSymbols`:
+
+```sh
+mustard-rt run knowledge --import-scip index.scip --source-manifest receipt.json
+```
+
+O Mustard importa o formato [SCIP](https://github.com/scip-code/scip) com `prost`; nenhum indexador ou projeto completo foi incorporado. O manifesto liga `index_sha256`, `position_encoding` e `sources` (caminho relativo → SHA-256). Texto atual embutido também comprova o documento. Inclua configuração do compilador e lockfiles no manifesto para invalidar o índice quando mudarem. Entradas externas omitidas não ficam atestadas automaticamente. Importação é atômica; uma fonte vinculada alterada invalida a geração inteira antes de usar suas referências. Índices antigos não viram certeza por terem sido produzidos por compilador. Símbolos externos sem fonte admitida não são lidos silenciosamente.
+
+A consulta estrutural aplica as gramáticas existentes, com até 128 resultados, 64 capturas por resultado, 2.000 caracteres por captura e 128 KiB de saída, além do orçamento do cursor. Os avisos distinguem erro de parse, busca interrompida, capturas/corpos abreviados e limites. Isso controla trabalho local e torna lacunas visíveis; não remove ocorrências da busca tradicional original.
+
+### Relevância, memória e decisões de arquitetura
+
+Uma âncora nominal atual agora vale também para expressões com vários nomes, como `createXlsxStream|createXlsxBuffer`. Complementos não indexados que só coincidem com palavras genéricas da intenção deixam de entrar no pacote inicial; ocorrências da pesquisa original continuam preservadas. Sem âncora, a descoberta complementar continua disponível. O diagnóstico contabiliza `weak_complements_deferred`; a mudança não comprova compreensão semântica geral.
+
+Entregas de ondas podem incluir `knowledge` com título, conclusão e todos os recibos de fonte que a sustentam. O binário valida na cópia da onda, transporta para a entrega oficial e registra somente após aceitação. Registros têm origem de spec/entrega e status `hypothesis`; não são fatos comportamentais certificados. Repetições não duplicam anotações nem alteram a geração sem necessidade. Edição/formatação que muda o hash invalida a conclusão, sem recalcular um recibo para fazê-la parecer atual. Não há chamada adicional de IA para escrever esse conhecimento.
+
+A inspeção dos planos de consulta confirmou índices para símbolo exato, chamadas e consumidores no SQLite. Mantido o banco atual; migrar para outro motor não corrigiria complementos fracos nem identidades ambíguas. Não foi instalado banco vetorial nem modelo local. A busca por significado continua dependendo das palavras/documentação disponíveis, das interpretações atribuídas e, pontualmente, da escolha autorizada do Jev.
+
+Os conceitos foram aplicados em código próprio: [Serena](https://github.com/oraios/serena) para símbolos e expansão sob demanda; [ast-grep](https://ast-grep.github.io/guide/introduction.html) para consulta estrutural, implementada com o Tree-sitter já existente; [GitNexus](https://github.com/abhigyanpatwari/GitNexus) como referência de resolução por escopo e navegação; [SCIP](https://github.com/scip-code/scip) e [LSP](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) como contratos de interoperabilidade. Código/licenciamento dos projetos completos não foi incorporado. O protocolo SCIP e a dependência Protobuf são acréscimos desta ampliação; afirmações de ausência de novas dependências nas etapas históricas abaixo referem-se àquelas etapas.
+
+Os moldes PT/EN foram compactados para preservar o contrato e a orientação das ondas dentro dos limites existentes, sem remover as verificações de autorização, provas e revisão. O painel Mods e a publicação explícita continuam com o funcionamento já entregue. A integração instalada para Codex permanece futura.
+
+### Medições da ampliação
+
+Mesmo snapshot Florestal `a3fe37ab454c`, com 12.832 declarações; backend original preservado.
+
+| Caso conhecido | Antes | Agora |
+| --- | ---: | ---: |
+| Busca ampla `createXlsxStream`: retorno ao agente | 7.700 bytes | 5.966 bytes (**−22,52%**) |
+| Complementos não indexados sem o identificador original | 12 | 0 |
+| Complementos com o identificador original | 0 | 1 trecho atual de teste |
+| Corpos completos das duas declarações homônimas | 2/2 | 2/2 |
+| Definições de chamadas reais, por LSP | Sem essa operação | **3/3 destinos esperados**, Puzzle/CEM/MLPlan |
+
+A busca ampla conserva os mesmos registros nativos (2.605 bytes); a ordem de duas execuções físicas de `rg` sem ordenação pode diferir. Seu pacote ainda é maior que grep isolado porque inclui os dois corpos e referências. Remover os complementos fracos melhora este caso; não mede precisão semântica geral. As três consultas LSP frias demoraram **5,37–6,16 s**, com retornos de **1.835–1.950 bytes**, incluindo proprietários do scan. O grafo estático anterior já resolvia essas três chamadas; o ganho é a verificação explícita pelo compilador, não corrigir três erros antigos inventados. Outros servidores não foram medidos em projetos reais nesta etapa. Importação SCIP foi validada por fixtures do protocolo; não executamos um indexador externo no backend.
+
+O replay das 34 consultas do prompt Excel V3 mantém **65.025 bytes, 8/8 corpos conhecidos completos e paridade nativa em 34/34**. O fluxo guiado de 36 consultas mantém **58.326 bytes, 25/25 declarações completas, 682 linhas únicas conferidas e uma leitura explícita de 100 linhas**. Não houve ganho adicional nesses dois números frente à etapa anterior; os ganhos de 1,90%/12,01% apresentados abaixo continuam históricos e não se somam ao ganho de 22,52% da consulta ampla. O fluxo guiado levou aproximadamente 4,36 s nesta passagem, sem aceleração demonstrada.
+
+Todos esses testes usaram **zero chamadas locais/remotas a modelos e US$ 0 de Jev**. Isso testa o caminho nativo, não avalia a qualidade do Jev nem o consumo completo de uma sessão. Repetição guiada continua sem um Claude autônomo implementando o prompt. Logs, pedidos, recibos e hashes locais: `target/search-expanded-20261009/{relevance-comparison,precise-comparison}.json`; replay Excel em `target/simulation-excel-db-v3-focused-20261009/`.
+
+Validação: **3.931 testes Rust aprovados**, dois ignorados herdados; análise estática estrita sem avisos; **14 testes do SDK Mods** e validação do plugin aprovados. A instalação nativa em pasta realmente vazia passou, incluindo descoberta estrutural nova, atualização do banco e cruzamento do mesmo resultado, sem HTTP/inferência. Mudanças finais nos moldes também são conferidas pelas suítes de contratos, orçamento e contexto da sessão. Falta a sessão real autenticada do Claude para medir encaminhamento, decisões de consulta, custo total e qualidade de uma implementação.
+
 ## Contrato de busca: Claude Code primeiro
 
 O Mods exige `{request:{tool,input,intent,purpose,choose?}}`. `purpose` é explícito; `intent` contém a pergunta específica que a consulta deve esclarecer. Investigação ou seleção sem pergunta é recusada antes de executar a pesquisa. Localização literal admite intenção vazia. O erro orienta corrigir o pedido, sem apresentar uma quebra de contrato como motivo para contornar o gateway.
@@ -160,7 +229,7 @@ Conceitos reaproveitados em implementação própria, sem adicionar motores ou d
 | Referência inspecionada | Aplicação |
 | --- | --- |
 | [Codebase Memory: resolução de chamadas](https://github.com/DeusData/codebase-memory-mcp/blob/92b2dd13d796f22f8001ef70f078e633fd9ec93a/src/pipeline/pass_calls.c) | Separar candidata de vínculo demonstrado; conservar estratégia/incerteza. Nosso seletor não transforma uma pista lexical ou relação estática em certeza. Não incorporamos seu resolvedor de tipos. |
-| [Serena: ferramentas de símbolos](https://github.com/oraios/serena/blob/1de556f71569f3acfc0743e526dd60aca40a545e/src/serena/tools/symbol_tools.py) | Identidade por símbolo e expansão de corpo sob demanda, evitando abrir arquivos inteiros por padrão. Não incorporamos servidores LSP. |
+| [Serena: ferramentas de símbolos](https://github.com/oraios/serena/blob/1de556f71569f3acfc0743e526dd60aca40a545e/src/serena/tools/symbol_tools.py) | Identidade por símbolo e expansão de corpo sob demanda, evitando abrir arquivos inteiros por padrão. A ampliação acima consulta os servidores já cadastrados no Mustard; o projeto Serena não foi incorporado. |
 | [ckg: recuperação e contexto de tarefa](https://github.com/phins-group/ckg/blob/0895461d16b0d028a67e792757a047536de7df0b/src/retrieval.rs) | Separação entre busca, símbolos, relações e contexto da tarefa; seleção de evidência em vez de anexar todo o banco. |
 | [Jev Choice](https://docs.typesafe.ai/primitives/choice) e [State](https://docs.typesafe.ai/concepts/state) | Pergunta atômica sobre alternativas conhecidas, critérios que as diferenciam e evidência factual relevante; abstenção explícita e reutilização de cache. |
 

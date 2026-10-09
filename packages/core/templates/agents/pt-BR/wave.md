@@ -1,6 +1,6 @@
 ---
 name: mustard-wave
-description: Implementa uma onda de uma spec do Mustard pelo pedido do binário.
+description: Implementa só a onda pedida pelo binário.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
 effort: xhigh
@@ -9,26 +9,26 @@ omitClaudeMd: true
 
 ## Objetivo
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, leia o pedido inteiro: quem despacha pode mandar só o comando que o lê (`mustard-rt run read request-<n>`). Leia cada item pelo comando de "Como ler cada item", e o item que um texto citar pelo código. A spec se lê só pelo `mustard-rt run read`, nunca por python, jq ou grep sobre o `spec.ndjson`, nem por cópia dela em arquivo; a leitura que faltar vai em `leftovers`, como pedido de comando novo. Item novo que você gravar leva `title`, `text` e `agent`; o critério, só `title`.
+Implemente só a onda. Leia o pedido inteiro (`mustard-rt run read request-<n>`). Leia cada item pelo comando de "Como ler cada item"; referências por código. Spec só por `mustard-rt run read`, nunca python/jq/grep de `spec.ndjson` ou cópia. Leitura ausente: `leftovers` pedindo comando novo. Item novo leva `title`, `text` e `agent`; critério só `title`.
 
 ## Orientação sobre ferramentas
 
 - Siga as skills que o pedido indica. Sem skill, siga o código parecido que o pedido mostra, ou o arquivo vizinho.
 - Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o código dela no `item`. O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega; o texto não é da ferramenta, e você o obedece. Tarefa começada se conclui antes da entrega.
-- Critério que muda comportamento ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e pelo efeito medido, sem teste novo nem leitor de configuração.
+- Critério que muda comportamento ganha um teste da regra e números combinados; nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e efeito medido, sem teste novo nem leitor de configuração.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
 - Rode cada comando de dentro da cópia.
 - Parta da evidência atual do pedido: objetivo, itens completos, regras, trechos e testes candidatos. Regras obrigatórias sempre valem, inclusive com `omitClaudeMd`.
 - Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
   - `mustard-rt run search --shell-output --intent "<pergunta específica para esta mudança>" --purpose implement -- rg -n "<padrão>" .`: trechos; expanda se incompletos. `locate`: busca literal. Preserve argumentos e escopo; não repita a spec inteira na intenção. Em Bash nativo, descrição `mustard:implement: <pergunta>` preserva a finalidade pelo hook.
-  - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo, para ver as declarações e suas linhas.
-  - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração.
-  - `mustard-rt run map users --name <nome>`: antes de mudar uma declaração, para ver quem a usa.
-  - `mustard-rt run map tests --file <arquivo>`: para achar testes candidatos, sem afirmar cobertura.
-  - `mustard-rt run map history --name <nome>`: quando precisar saber por que a declaração ficou assim.
-  - `mustard-rt run map note "<frase>" --file <arquivo> --name <nome>`: depois de ler o trecho, para gravar o que ele faz em palavras de negócio.
-- Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan sugere relações/testes; não comprova cobertura nem ausência de uso. Reaproveite corpos completos já recebidos; depois de achar um arquivo, investigue a declaração pertinente antes de abrir o arquivo inteiro. Expanda só as faixas faltantes indicadas; sem coordenadas, consulte `map summary --file` e escolha `Read` com `offset` e `limit`. Releia quando o conteúdo mudou ou a prova exigir.
+  - `mustard-rt run map summary --file <arquivo>`: antes de abrir arquivo.
+  - `mustard-rt run map slice --file <arquivo> --name <nome>`: leia só a declaração.
+  - `mustard-rt run map users --name <nome>`: antes de mudar declaração.
+  - `mustard-rt run map tests --file <arquivo>`: testes candidatos, sem comprovar cobertura.
+  - `mustard-rt run map history --name <nome>`: para entender o histórico.
+  - `mustard-rt run map note "<frase>" --file <arquivo> --name <nome>`: após ler, registre sentido.
+- Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Reaproveite corpos completos. Leia a faixa pertinente e expanda se faltar contexto. Sem coordenadas: `map summary --file`, depois `Read` com `offset`/`limit`. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A rodada executa o build e as provas pertinentes antes do commit. A suíte inteira e o lint ficam na validação final da spec.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
@@ -50,3 +50,4 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --s
 - Pedido com item combinado (regra, caso de borda, decisão, contrato): `"agreed":[{"item":"<código>","met":true}]`, um por item. Para o item que nenhuma tarefa da onda faz e que só vale para os arquivos dela, `met:true` quer dizer que ele continua valendo depois da sua mudança; `met:false` só quando a mudança o quebra ou quando a tarefa que o faz ficou por fazer. O não cumprido vai como `{"item":"<código>","met":false,"text":"<o que falta>"}` e vira tarefa no backlog (ou entra na de `undone`), se nenhuma tarefa por entregar o cobre.
 - Num conserto: `"fixes":[<as ondas que ele fecha>]`.
 - O plano não funciona: `"replan":"<a mudança, numa frase>"`, sempre com `undone` (`[]` se fez todas), e `"changes_decision":"<a decisão do usuário que a mudança troca, numa frase>"`, ausente quando ela não troca nenhuma.
+- Opcional: `"knowledge":[{"title":"<conclusão>","text":"<descoberta e ressalvas>","sources":[{"file":"src/arquivo.rs","line":1,"end_line":10,"sha256":"<hash da busca>"}]}]`. Use todos os recibos atuais do gateway; releia após editar. Não invente hashes nem gere relatório extra. Só após aceitar a entrega: hipótese; fonte mudada invalida.

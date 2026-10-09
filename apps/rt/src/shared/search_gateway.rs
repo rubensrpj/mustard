@@ -23,6 +23,37 @@ pub(crate) fn answer(
     };
     let tree = tree.canonicalize().map_err(|e| e.to_string())?;
     guard(&root, &cwd, request)?;
+    if mustard_core::io::code_search::operations::requested(request) {
+        let index_root = if mustard_core::io::project_map::model_path(&tree).is_file() {
+            &tree
+        } else {
+            &root
+        };
+        let mut answer =
+            mustard_core::io::code_search::operations::execute(index_root, &tree, &cwd, request)?;
+        let learning = answer.report["learning"].clone();
+        if learning["needs_scan"] == true {
+            match mustard_core::Scan::locate()
+                .scan_native(&tree, &mustard_core::io::project_map::model_path(&tree))
+            {
+                Ok(report) => {
+                    let saved = mustard_core::io::knowledge::observations::scanned(
+                        index_root, &tree, &learning,
+                    );
+                    answer.report["learning"]["scan"] = json!({"status":"refreshed-native","files_read":report.read.len(),"acknowledged":saved.is_ok(),"local_model_calls":0,"remote_model_calls":0});
+                    if saved.is_ok() {
+                        answer.report["learning"]["needs_scan"] = json!(false);
+                    }
+                    mustard_core::io::code_search::operations::recross(&tree, &tree, &mut answer)?;
+                }
+                Err(error) => {
+                    answer.report["learning"]["scan"] =
+                        json!({"status":"pending","reason":error.to_string()});
+                }
+            }
+        }
+        return Ok(answer);
+    }
     let selector = if request.choose && !request.intent.trim().is_empty() {
         super::knowledge_selection::KnowledgeSelector::configured(&root)
     } else {
@@ -91,7 +122,12 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
         config: mustard_core::ProjectConfig::load(root),
         ..Ctx::default()
     };
-    let input = if request.tool == "Read" {
+    let file_operation =
+        request.tool == "Read" || mustard_core::io::code_search::operations::requested(request);
+    let input = if file_operation {
+        if request.input["file_path"].as_str().is_none() {
+            return Err("search-missing-file_path".into());
+        }
         HookInput {
             tool_name: Some("Read".into()),
             tool_input: {
@@ -118,7 +154,7 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
             ..HookInput::default()
         }
     };
-    let verdict = if request.tool == "Read" {
+    let verdict = if file_operation {
         crate::hooks::write::write_gate::file_verdict(
             root.to_str().unwrap_or_default(),
             &input,

@@ -271,7 +271,7 @@ fn scoped(file: &str, scope: Option<&str>) -> bool {
     scope.is_none_or(|scope| scope == file)
 }
 
-pub(crate) fn safe_read(
+pub fn safe_read(
     tree: &Path,
     path: &str,
     registry: &knowledge::resources::Registry,
@@ -321,6 +321,17 @@ pub(super) fn prepare(
     .map_err(invalid)?;
     let registry = knowledge::resources::Registry::load().map_err(invalid)?;
     let mut phases = vec![json!({"operation":"indexed-discovery","candidates":cards.len()})];
+    let pattern_names = crate::domain::code_search::pattern_names(query.text);
+    let anchor_names: BTreeSet<_> = cards
+        .iter()
+        .filter(|card| {
+            scope.is_some_and(|scope| scope.seeds.contains(&card.id))
+                && pattern_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&card.name))
+        })
+        .map(|card| card.name.to_lowercase())
+        .collect();
     let mut intent_omitted = false;
     if !task.intent.trim().is_empty() && query.symbol.is_none() && !query.all {
         // A separate reservoir preserves original query candidates when the
@@ -541,6 +552,7 @@ pub(super) fn prepare(
         .map(|card| card.source.file.as_str())
         .collect();
     let mut live_only = Vec::new();
+    let mut weak_complements = 0;
     for (path, file) in &files {
         if indexed.contains(path.as_str()) || file.hits.is_empty() {
             continue;
@@ -548,8 +560,24 @@ pub(super) fn prepare(
         let line = file
             .hits
             .iter()
+            .filter(|(line, _)| {
+                anchor_names.is_empty()
+                    || file
+                        .text
+                        .lines()
+                        .nth(line.saturating_sub(1) as usize)
+                        .is_some_and(|text| {
+                            crate::domain::code_search::pattern_names(text)
+                                .iter()
+                                .any(|name| anchor_names.contains(&name.to_lowercase()))
+                        })
+            })
             .max_by_key(|(_, slots)| slots.len())
-            .map_or(1, |(line, _)| *line);
+            .map(|(line, _)| *line);
+        let Some(line) = line else {
+            weak_complements += 1;
+            continue;
+        };
         let source = Source {
             file: path.clone(),
             line,
@@ -563,7 +591,7 @@ pub(super) fn prepare(
     omitted |= live_only_count > live_only.len();
     phases.push(json!({"operation":"current-source-search","files_read":files.len(),"bytes_read":bytes,"skipped_or_unavailable":skipped,
         "fallback":fallback,"repository_listing":repository_listing,"partial":omitted}));
-    phases.push(json!({"operation":"cross-check","intent_promotions":promotions,"alternative_groups":alternatives.len(),"unindexed_matches":live_only_count}));
+    phases.push(json!({"operation":"cross-check","intent_promotions":promotions,"alternative_groups":alternatives.len(),"unindexed_matches":live_only_count,"weak_complements_deferred":weak_complements}));
     let report = json!({"purpose":task.purpose,"intent":task.intent,"phases":phases,"live_matches":live_only,
         "partial":omitted,"source_scope":"indexed candidate files plus current changes; repository fallback only without indexed destinations",
         "stop_reason":if omitted {"partial-evidence-expand-or-use-original-search"} else {"available-evidence-returned"},

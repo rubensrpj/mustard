@@ -221,6 +221,13 @@ try {
   const expandedRanges=JSON.parse(successful('mustard-rt',['run','map','summary','--root',root,'--file','src/focused.rs']).stdout);
   assert.ok(expandedRanges.parts.some(part=>part.name==='fetch'));
   assert.ok(expandedRanges.parts.some(part=>part.name==='archive'));
+  fs.writeFileSync(path.join(root, 'src/structural.rs'), 'pub fn discovered_by_structure() { revised(); }\n');
+  const structure = search(['--request', JSON.stringify({schema_version:1,request:{tool:'Structure',
+    input:{file_path:'src/structural.rs',query:'(call_expression) @call'},intent:'Find current call owners',purpose:'understand',choose:false}})]);
+  assert.equal(structure.learning.scan.status, 'refreshed-native');
+  assert.ok(structure.result.owners.symbols.some(symbol => symbol.name === 'discovered_by_structure'));
+  assert.equal(structure.remote_model_calls, 0);
+
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(httpRequests, 0, 'Neither ordinary gateway nor native learning may call inference');
   const report = { ok: true, commit: successful('git', ['rev-parse', 'HEAD'], checkout).stdout.toString().trim(),
@@ -230,7 +237,7 @@ try {
     automatic_output_does_not_append_reports: true, typed_agent_pagination: true,
     typed_tools: true, native_search_unavailable_passes_host_tool: true,
     task_evidence_visible_to_agent:true, complementary_new_source_refreshes_natively:true,
-    named_declaration_without_inference:true, deferred_candidates_expand_via_binary:true,
+    named_declaration_without_inference:true, structural_result_recrossed_after_refresh:true, deferred_candidates_expand_via_binary:true,
     real_classic_hook_handoff_and_rewrite: true, original_read_guard: true,
     checkout_isolation: true, default_http_requests: httpRequests, local_model_calls: 0, remote_model_calls: 0,
     binaries: ['mustard', 'mustard-rt', 'scan'].map(name => ({ name,

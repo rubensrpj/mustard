@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Stdio;
 
+pub mod operations;
 pub mod presentation;
 mod quality;
 mod scope;
@@ -27,6 +28,9 @@ pub fn execute(
     request: &Request,
     selector: Option<&dyn SymbolSelector>,
 ) -> Result<Answer, String> {
+    if operations::requested(request) {
+        return operations::execute(root, tree, cwd, request);
+    }
     let mut answer = execute_native(cwd, request)?;
     enrich(root, tree, cwd, request, &mut answer, selector);
     Ok(answer)

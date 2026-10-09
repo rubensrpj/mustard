@@ -212,6 +212,21 @@ impl Scan {
         (!mark.is_empty()).then(|| mark.to_string())
     }
 
+    /// Query the parsed syntax tree of one current, explicitly scoped file.
+    /// No model, index rebuild or language-specific dependency in the client.
+    pub fn structure(&self, root: &Path, file: &str, query: &str) -> Result<serde_json::Value> {
+        let stdout = self.run(&[
+            "structure".into(),
+            root.to_string_lossy().into_owned(),
+            "--file".into(),
+            file.into(),
+            "--query".into(),
+            query.into(),
+        ])?;
+        serde_json::from_str(&stdout)
+            .map_err(|e| Error::check_failed(format!("scan structure: {e}")))
+    }
+
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
     /// stderr) to [`Error::CheckFailed`].
     fn run(&self, args: &[String]) -> Result<String> {

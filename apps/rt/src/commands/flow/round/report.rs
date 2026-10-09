@@ -461,6 +461,7 @@ fn take_returns(
         drop(timing);
         warnings.extend(rebuilt);
     }
+    knowledge::capture(root, spec, &mut recorded, &mut warnings);
     // O arquivo de conversa da onda pode não ser achado, e nunca em silêncio:
     // sem ele o envio da onda fica sem o consumo dela, e a página mostra um
     // gasto menor que o real. A entrega fica gravada do mesmo jeito — o
@@ -653,6 +654,18 @@ pub(crate) fn check_return(start: &Path, spec: &str, event_type: &str, draft: &m
     let Some(sent) = open_sends(&log).get(&wave).copied() else {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
     };
+    if let Some(knowledge) = draft.get("knowledge") {
+        let copy = wave_prompt::recorded_copy(&log, wave);
+        let tree = copy
+            .as_ref()
+            .map_or(project.root.as_path(), |copy| Path::new(&copy.path));
+        mustard_core::io::knowledge::waves::validate(tree, knowledge).map_err(|reason| {
+            RoundRefusal::Refused(Refusal::MissingField {
+                event_type: "delivered".into(),
+                field: format!("knowledge: {reason}"),
+            })
+        })?;
+    }
     let mut report = wave_report_of(&log, draft)?;
     // O título sai como a rodada o monta para esta onda sozinha — com mais de
     // uma onda no commit, o escopo cita todas e o resumo encolhe até caber,
@@ -820,6 +833,7 @@ fn match_usage(log: &SpecLog, report: &mut Report, held: &[HeldReturn]) -> Resul
 
 /// Os trechos entre `<tag>` e `</tag>` de `raw`, na ordem.
 mod input;
+mod knowledge;
 pub(crate) use input::parse_report;
 pub(super) use input::{line_object, tagged};
 
@@ -1024,6 +1038,17 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
             let mut draft = Map::new();
             draft.insert("wave".into(), json!(wave));
             draft.insert("text".into(), json!(report.delivered));
+            if wave == report.wave
+                && let Some(knowledge) = check
+                    .log()
+                    .unassumed_returns()
+                    .into_iter()
+                    .rfind(|event| event.event_type == "delivered" && event.wave() == Some(wave))
+                    .and_then(|event| event.fields.get("knowledge"))
+                    .cloned()
+            {
+                draft.insert("knowledge".into(), knowledge);
+            }
             let files: Vec<String> = report.files.iter().map(|file| own_copy_relative(check.log(), wave, file)).collect();
             draft.insert("files".into(), json!(files));
             if let Some(replan) = &report.replan {
@@ -1269,17 +1294,28 @@ mod tests {
         let copy = |wave: u64| slot_of(root, wave);
         std::fs::write(copy(1).join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         std::fs::write(copy(2).join("src/b.rs"), "fn one() {}\n// A dobra saiu.\n").unwrap();
+        let mut hash = mustard_core::io::sha256::Sha256::new();
+        hash.update(&std::fs::read(copy(1).join("src/a.rs")).unwrap());
         let one = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "knowledge":[{"title":"A soma", "text":"A função one mantém a soma.","sources":[{"file":"src/a.rs","line":1,"end_line":1,"sha256":hash.hex_digest()}]}],
             "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --version"}]});
         let two = json!({"wave": 2, "text": "A dobra saiu.", "files": ["src/b.rs"], "commit": "a dobra sai",
             "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --help"}]});
         assert_eq!(returned(root, one)["ok"], json!(true));
         assert_eq!(returned(root, two)["ok"], json!(true));
+        assert!(
+            mustard_core::io::knowledge::interpretations(root)
+                .map_or(true, |notes| notes.is_empty())
+        );
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
 
         let entries = delivered_entries(&out);
         assert_eq!(entries.len(), 2, "{out}");
+        let notes = mustard_core::io::knowledge::interpretations(root).unwrap();
+        assert_eq!(notes.len(), 1, "{out}");
+        assert_eq!(notes[0].status, "hypothesis");
+        assert!(notes[0].origin.starts_with("spec:x/delivery:"));
         let entry = |wave: u64| entries.iter().find(|e| e["wave"] == json!(wave)).cloned().unwrap();
         assert_eq!(entry(1)["text"], json!("A soma saiu."), "{out}");
         assert_eq!(entry(1)["files"], json!(["src/a.rs"]), "{out}");

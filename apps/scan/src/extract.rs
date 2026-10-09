@@ -2302,6 +2302,88 @@ fn simple_type_name(txt: &str) -> Option<String> {
     if name.len() >= 2 { Some(name) } else { None }
 }
 
+/// Explicit syntax query: the same registry and grammars as the scan, with
+/// current source receipts. Captures are syntax, never inferred behavior.
+pub fn structural_matches(
+    file: &str,
+    text: &str,
+    pattern: &str,
+) -> anyhow::Result<serde_json::Value> {
+    use serde_json::json;
+    use std::ops::ControlFlow;
+    use tree_sitter::QueryCursorOptions;
+    anyhow::ensure!(pattern.len() <= 16_384, "structure-query-too-large");
+    let language = detect_language(Path::new(file))
+        .ok_or_else(|| anyhow::anyhow!("structure-language-unsupported"))?;
+    let raw = raw_langs()
+        .into_iter()
+        .find(|raw| raw.name == language)
+        .ok_or_else(|| anyhow::anyhow!("structure-grammar-unavailable"))?;
+    let mut parser = Parser::new();
+    parser.set_language(&raw.language)?;
+    let tree = parser
+        .parse(text, None)
+        .ok_or_else(|| anyhow::anyhow!("structure-parse-failed"))?;
+    let query = Query::new(&raw.language, pattern)?;
+    let mut cursor = QueryCursor::new();
+    cursor.set_match_limit(10_000);
+    let started = std::time::Instant::now();
+    let mut timed_out = false;
+    let mut progress = |_: &tree_sitter::QueryCursorState| {
+        if started.elapsed() > std::time::Duration::from_secs(2) {
+            timed_out = true;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let mut matches = cursor.matches_with_options(
+        &query,
+        tree.root_node(),
+        text.as_bytes(),
+        QueryCursorOptions::new().progress_callback(&mut progress),
+    );
+    let mut results = Vec::new();
+    let mut omitted = false;
+    let mut output_bytes = 0;
+    while let Some(found) = matches.next() {
+        if results.len() >= 128 {
+            omitted = true;
+            break;
+        }
+        let captures: Vec<_> = found.captures.iter().take(64).map(|capture| {
+            let node = capture.node;
+            let content = &text[node.byte_range()];
+            let excerpt: String = content.chars().take(2000).collect();
+            json!({"capture":query.capture_names()[capture.index as usize],"kind":node.kind(),
+                "line":node.start_position().row+1,"end_line":node.end_position().row+1,
+                "start_column_bytes":node.start_position().column,"end_column_bytes":node.end_position().column,
+                "start_byte":node.start_byte(),"end_byte":node.end_byte(),"text":excerpt,
+                "text_complete":excerpt.len()==content.len()})
+        }).collect();
+        let item = json!({"pattern":found.pattern_index,"captures":captures,
+            "captures_complete":found.captures.len()<=64});
+        output_bytes += item.to_string().len();
+        if output_bytes > 128 * 1024 {
+            omitted = true;
+            break;
+        }
+        results.push(item);
+    }
+    drop(matches);
+    let limit_exceeded = cursor.did_exceed_match_limit();
+    let mut hash = mustard_core::io::sha256::Sha256::new();
+    hash.update(text.as_bytes());
+    Ok(
+        json!({"file":file,"sha256":hash.hex_digest(),"language":language,
+        "parse_complete":!tree.root_node().has_error(),"matches":results,
+        "search_complete":!omitted && !timed_out && !limit_exceeded,
+        "timed_out":timed_out,"match_limit_exceeded":limit_exceeded,
+        "output_partial":omitted,"range_end":"exclusive; expand using start/end byte or line coordinates",
+        "local_model_calls":0,"remote_model_calls":0}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -91,6 +91,17 @@ pub(crate) fn language_of_path(path: &str) -> Option<&'static str> {
         .map(|(_, lang)| *lang)
 }
 
+/// LSP document IDs for extension variants, separate from server selection.
+pub(crate) fn lsp_language_of_path(path: &str) -> Option<&'static str> {
+    const VARIANTS: &[(&str, &str)] = &[("tsx", "typescriptreact"), ("jsx", "javascriptreact")];
+    let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    VARIANTS
+        .iter()
+        .find(|(name, _)| *name == ext)
+        .map(|(_, id)| *id)
+        .or_else(|| language_of_path(path))
+}
+
 /// The languages the repo model DETECTED for the projects enclosing `paths` —
 /// each path attributed to the project whose `dir` is a path-prefix of it, that
 /// project's `detected_stacks` mapped to a language via the stack registry
