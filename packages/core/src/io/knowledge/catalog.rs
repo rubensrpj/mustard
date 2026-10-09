@@ -149,9 +149,6 @@ pub(super) fn scoped_candidates(root: &Path, options: &Query<'_>, scope: &super:
     let total: i64 = conn.query_row("SELECT count(*) FROM knowledge_symbols WHERE path IN (SELECT value FROM json_each(?1))", [&inventory], |r| r.get(0)).map_err(|e| unreadable(e.into()))?;
     let mut ids = BTreeSet::new();
     let mut omitted = false;
-    for id in scope.seeds {
-        add_ids(conn, "SELECT id FROM knowledge_symbols WHERE id=?1 AND path IN (SELECT value FROM json_each(?2))", params![id, inventory], &mut ids, 512, &mut omitted)?;
-    }
     if let Some(id) = options.symbol {
         add_ids(conn, "SELECT id FROM knowledge_symbols WHERE id=?1 AND path IN (SELECT value FROM json_each(?2))", params![id, inventory], &mut ids, 512, &mut omitted)?;
     } else {
@@ -165,6 +162,11 @@ pub(super) fn scoped_candidates(root: &Path, options: &Query<'_>, scope: &super:
             }
         }
     }
+    // Source owners are a reservoir, not a prefix allowed to consume the
+    // whole hydration budget before the question has contributed candidates.
+    for id in scope.seeds {
+        add_ids(conn, "SELECT id FROM knowledge_symbols WHERE id=?1 AND path IN (SELECT value FROM json_each(?2))", params![id, inventory], &mut ids, 512, &mut omitted)?;
+    }
     let cards = hydrate(conn, &ids).map_err(unreadable)?;
     Ok(Pool { cards, total: usize::try_from(total).unwrap_or(0), omitted, outdated: 0 })
 }
@@ -177,16 +179,25 @@ pub(super) fn unindexed_files(root: &Path, scope: &super::EvidenceScope<'_>) -> 
 }
 
 pub(super) fn intent_weights(root: &Path, query: &str, languages: &Languages) -> std::result::Result<Vec<f64>, MapRefusal> {
+    corpus_weights(root,query,languages,false)
+}
+
+pub(super) fn task_weights(root:&Path,query:&str,languages:&Languages)->std::result::Result<Vec<f64>,MapRefusal> {
+    corpus_weights(root,query,languages,true)
+}
+
+fn corpus_weights(root:&Path,query:&str,languages:&Languages,symbols:bool)->std::result::Result<Vec<f64>,MapRefusal> {
     let db = store::open_existing(&store::model_path(root))?;
     let conn = db.conn();
-    let files: i64 = conn.query_row("SELECT count(DISTINCT path) FROM knowledge_symbols", [], |r| r.get(0)).map_err(|e| unreadable(e.into()))?;
+    let count=if symbols{"count(*)"}else{"count(DISTINCT path)"};
+    let files:i64=conn.query_row(&format!("SELECT {count} FROM knowledge_symbols"),[],|r|r.get(0)).map_err(|e|unreadable(e.into()))?;
     query_terms(query, languages)
         .into_iter()
         .map(|slot| {
             let expression = format!("{{name intent own path header}} : {}", fts_query(&[slot], "OR"));
             let seen: i64 = conn
                 .query_row(
-                    "SELECT count(DISTINCT s.path) FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1",
+                    &format!("SELECT {} FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1",if symbols{"count(*)"}else{"count(DISTINCT s.path)"}),
                     [expression],
                     |r| r.get(0),
                 )
@@ -382,18 +393,25 @@ pub(super) fn expand_files(root:&Path,cards:&mut Vec<Card>,files:&[String],query
 }
 
 pub(super) fn hydrate(conn: &Connection, ids: &BTreeSet<String>) -> Result<Vec<Card>> {
-    let mut statement = conn.prepare(
-        "SELECT json_extract(t.analysis,'$.knowledge.cards['||s.position||']') FROM knowledge_symbols s JOIN texts t ON t.path=s.path WHERE s.id=?1",
-    )?;
+    // Parse a file's evidence pack once, rather than asking SQLite to parse
+    // the entire JSON again for every matching declaration in that file.
+    let mut statement=conn.prepare("SELECT path,position,id FROM knowledge_symbols WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY path,position")?;
+    let inventory=serde_json::to_string(ids).map_err(|e|Error::Parse(e.to_string()))?;
+    let rows=statement.query_map([inventory],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?)))?;
+    let mut files=std::collections::BTreeMap::<String,Vec<(usize,String)>>::new();
+    for row in rows {let (path,position,id)=row?;let position=usize::try_from(position).map_err(|e|Error::Parse(e.to_string()))?;files.entry(path).or_default().push((position,id));}
     let mut cards = Vec::new();
-    for id in ids {
-        let text: Option<String> = statement.query_row([id], |r| r.get(0)).optional()?.flatten();
+    for (path,positions) in files {
+        let text:Option<String>=conn.query_row("SELECT analysis FROM texts WHERE path=?1",[path],|row|row.get(0)).optional()?.flatten();
         if let Some(text) = text {
-            let card: Card = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
-            if card.id != *id {
-                return Err(Error::Parse("knowledge-catalog-identity-mismatch; refresh scan".into()));
+            let mut pack:Value=serde_json::from_str(&text).map_err(|e|Error::Parse(e.to_string()))?;
+            for (position,id) in positions {
+                let value=pack["knowledge"]["cards"].as_array_mut().and_then(|cards|cards.get_mut(position)).map(Value::take)
+                    .ok_or_else(||Error::Parse("knowledge-catalog-position-mismatch; refresh scan".into()))?;
+                let card:Card=serde_json::from_value(value).map_err(|e|Error::Parse(e.to_string()))?;
+                if card.id != id {return Err(Error::Parse("knowledge-catalog-identity-mismatch; refresh scan".into()));}
+                cards.push(card);
             }
-            cards.push(card);
         }
     }
     cards.sort_by(|a, b| (&a.source.file, a.source.line, &a.id).cmp(&(&b.source.file, b.source.line, &b.id)));

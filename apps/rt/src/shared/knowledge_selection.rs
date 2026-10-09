@@ -25,15 +25,17 @@ impl KnowledgeSelector {
 impl SymbolSelector for KnowledgeSelector {
     fn select(&self, query: &str, groups: &[Ambiguity]) -> Decisions {
         let mut state = Vec::new();
+        let mut sources=std::collections::BTreeMap::new();
         let mut questions = serde_json::Map::new();
         let usable: Vec<_> = groups.iter().filter(|g| (2..=253).contains(&g.candidates.len())).collect();
         for (at, group) in usable.iter().enumerate() {
+            for card in &group.candidates {sources.insert(card.source.file.clone(),card.source.sha256.clone());}
             let witnesses:Vec<_>=group.candidates.iter().map(|card|evidence::witnesses(card,query,&self.languages)).collect();
             let candidates:Vec<_>=group.candidates.iter().enumerate().map(|(n,c)|json!({"option":format!("s{n}"),"id":c.id,"name":c.name,
                 "kind":c.kind,"signature":c.signature.chars().take(320).collect::<String>(),"documentation":c.documentation.chars().take(400).collect::<String>(),
-                "source":c.source,
-                "excerpt":group.excerpts.get(&c.id),"routes":c.routes,
-                "calls":c.outgoing.iter().take(6).collect::<Vec<_>>() })).collect();
+                "source":{"file":c.source.file,"line":c.source.line,"end_line":c.source.end_line},
+                "excerpt":group.excerpts.get(&c.id).map(|e|json!({"text":e.text,"complete":e.complete})),"routes":c.routes,
+                "calls":c.outgoing.iter().take(6).map(|edge|json!({"target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"]})).collect::<Vec<_>>() })).collect();
             state.push(json!({"group":format!("f{at}"),"scope":group.key,"candidates":candidates}));
             let mut criteria: serde_json::Map<String, Value> = group
                 .candidates
@@ -51,7 +53,7 @@ impl SymbolSelector for KnowledgeSelector {
         if usable.is_empty() {
             return Decisions { usage: json!({"status":"native; candidate-group-too-large","remote_model_calls":0}), ..Decisions::default() };
         }
-        let payload = json!({"model":JEV_MODEL,"state":{"revision":"knowledge-choice-v3","query":query,"groups":state,
+        let payload = json!({"model":JEV_MODEL,"state":{"revision":"knowledge-choice-v4","query":query,"groups":state,"source_hashes":sources,
             "relations_status":"static parser candidates; target source and runtime behavior not established"},"questions":questions}).to_string();
         let doc = match (self.invoke)(&payload) {
             Ok(doc) => doc,
@@ -136,6 +138,8 @@ mod tests {
                 let request: Value = serde_json::from_str(payload).unwrap();
                 assert_eq!(request["questions"].as_object().unwrap().len(), 2);
                 assert_eq!(request["state"]["groups"].as_array().unwrap().len(), 2);
+                assert!(request["state"]["source_hashes"].get("a.rs").is_some());
+                assert!(request["state"]["groups"][0]["candidates"][0]["source"].get("sha256").is_none());
                 assert!(request["questions"]["f0"]["criteria"].get("none").is_some());
                 assert!(request["questions"]["f0"]["criteria"].get("insufficient").is_some());
                 Ok(json!({"model":JEV_MODEL,"usage":{"input_tokens":1000},"answers":{

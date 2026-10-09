@@ -14,6 +14,21 @@ pub struct Ranked {
     pub own_matches: usize,
 }
 
+/// A broad lexical OR is not an intentional list of symbol identities merely
+/// because one word happens to be a function name. Every written name must
+/// resolve to a current native owner before it can focus body expansion.
+pub fn nominal_anchors(cards:&[Card],pattern:&str,seeds:&[String])->BTreeSet<String> {
+    let names=crate::domain::code_search::pattern_names(pattern);
+    let owners:Vec<_>=cards.iter().filter(|card|seeds.contains(&card.id)).collect();
+    let prefixes:BTreeSet<_>=owners.iter().filter(|card|names.iter().any(|name|name.eq_ignore_ascii_case(&card.name)))
+        .flat_map(|card|crate::domain::code_search::pattern_names(card.signature.split_once(&card.name).map_or("",|(prefix,_)|prefix)))
+        .map(str::to_lowercase).collect();
+    // Accept declaration modifiers from the actual signatures, rather than a
+    // hard-coded list of language keywords (e.g. a typed declaration pattern).
+    if names.is_empty() || !names.iter().all(|name|prefixes.contains(&name.to_lowercase()) || owners.iter().any(|card|name.eq_ignore_ascii_case(&card.name))) {return BTreeSet::new();}
+    owners.into_iter().filter(|card|names.iter().any(|name|name.eq_ignore_ascii_case(&card.name))).map(|card|card.id.clone()).collect()
+}
+
 pub fn within_files(cards: &[Card], query: &str, languages: &Languages, weights: &[f64]) -> BTreeMap<String, Vec<Ranked>> {
     let terms = Terms::of(query, languages);
     let mut normalizer = Normalizer::new(languages);
@@ -154,23 +169,32 @@ pub fn responsibility(cards: &[Card], query: &str, languages: &Languages) -> Pla
     }
 }
 
-/// One responsibility-bearing declaration per file precedes supplementary
-/// symbols. This is a reading plan, not a semantic recommendation.
+/// Rank the question before applying a soft cost for repeated files. A strong
+/// second declaration can precede a weak first member of another file. Only
+/// explicit nominal anchors get identity priority; native hits are not meaning.
 pub fn task_order(cards:&[Card],query:&str,languages:&Languages,weights:&[f64],anchors:&[String])->Vec<usize> {
-    let groups=within_files(cards,query,languages,weights);
-    let mut ranked:Vec<_>=groups.values().flatten().cloned().collect();
-    // Explicit acronym identifiers may be shorter than lexical stems. An
-    // exact path component is a useful navigation clue, never a domain rule.
+    let mut ranked:Vec<_>=within_files(cards,query,languages,weights).into_values().flatten().collect();
+    let mut normalizer=Normalizer::new(languages);
+    let lengths:Vec<_>=cards.iter().map(|card|normalizer.forms(&evidence::own_text(card)).len() as f64).collect();
+    let average=lengths.iter().sum::<f64>()/(lengths.len().max(1) as f64);
+    // BM25's document-length component prevents a large implementation from
+    // winning merely because it contains more of the question's vocabulary.
+    // Names, signatures and source witnesses still determine the numerator.
+    for rank in &mut ranked {rank.score/=0.25+0.75*lengths[rank.card]/average.max(1.0);}
     let identifiers:BTreeSet<_>=query.split(|c:char|!c.is_alphanumeric()).filter(|word|word.len()>=2 && word.chars().any(char::is_uppercase) && word.chars().all(|c|c.is_uppercase() || c.is_ascii_digit())).map(str::to_lowercase).collect();
     let path_clues=|i:usize|cards[i].source.file.split(|c:char|!c.is_alphanumeric()).filter(|part|identifiers.contains(&part.to_lowercase())).count();
-    ranked.sort_by(|a,b|anchors.contains(&cards[b.card].id).cmp(&anchors.contains(&cards[a.card].id))
-        .then_with(||path_clues(b.card).cmp(&path_clues(a.card))).then_with(||b.score.total_cmp(&a.score)).then_with(||b.own_matches.cmp(&a.own_matches)).then_with(||cards[a.card].id.cmp(&cards[b.card].id)));
-    let mut files=BTreeSet::new();
-    let mut leaders=Vec::new();let mut additional=Vec::new();
-    for rank in ranked {
-        if files.insert(&cards[rank.card].source.file) {leaders.push(rank.card);} else {additional.push(rank.card);}
+    let mut files=BTreeMap::<&str,usize>::new();let mut order=Vec::new();
+    while !ranked.is_empty() {
+        let score=|r:&Ranked|r.score/(1.0+*files.get(cards[r.card].source.file.as_str()).unwrap_or(&0) as f64).sqrt();
+        let (at,_)=ranked.iter().enumerate().max_by(|(_,a),(_,b)|
+            anchors.contains(&cards[a.card].id).cmp(&anchors.contains(&cards[b.card].id))
+            .then_with(||path_clues(a.card).cmp(&path_clues(b.card)))
+            .then_with(||score(a).total_cmp(&score(b)))
+            .then_with(||a.own_matches.cmp(&b.own_matches))
+            .then_with(||cards[b.card].id.cmp(&cards[a.card].id))).expect("nonempty ranking");
+        let rank=ranked.remove(at);*files.entry(&cards[rank.card].source.file).or_default()+=1;order.push(rank.card);
     }
-    leaders.extend(additional);leaders
+    order
 }
 
 /// Bodies add new written clues; other candidates remain expandable ranges.
@@ -305,6 +329,39 @@ mod tests {
         let order=task_order(&cards,"QZ quartz beacon",&Languages::new(["en-US"]),&[],&anchors);
         assert_eq!(order[0],1);
         assert!(responsibility(&cards,"QZ quartz beacon",&Languages::new(["en-US"])).recommendations.is_empty());
+    }
+
+    #[test]
+    fn broad_search_words_do_not_turn_a_coincidental_name_into_an_exclusive_anchor() {
+        let mut cards=cards();let seeds=cards.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
+        assert_eq!(nominal_anchors(&cards,"process",&seeds),BTreeSet::from([cards[1].id.clone()]));
+        assert_eq!(nominal_anchors(&cards,"process|archive",&seeds),BTreeSet::from([cards[1].id.clone(),cards[2].id.clone()]));
+        assert!(nominal_anchors(&cards,"process|request|payload|rollback",&seeds).is_empty());
+        assert!(nominal_anchors(&cards,"process",&[]).is_empty());
+        cards[1].signature="pub async fn process()".into();
+        assert_eq!(nominal_anchors(&cards,"pub async process",&seeds),BTreeSet::from([cards[1].id.clone()]));
+    }
+
+    #[test]
+    fn a_strong_second_function_precedes_a_weak_representative_of_another_file() {
+        let mut cards=cards();
+        for (i,card) in cards.iter_mut().enumerate() {
+            card.kind="function".into();card.name=format!("f{i}");card.signature=String::new();card.identifiers=String::new();card.body_comment=String::new();
+        }
+        cards[0].documentation="ledger rollback".into();cards[1].documentation="ledger revision".into();cards[2].documentation="ledger".into();cards[2].source.file="other.rs".into();
+        let order=task_order(&cards,"ledger rollback revision",&Languages::new(["en-US"]),&[],&[]);
+        assert_eq!(order.last(),Some(&2));
+    }
+
+    #[test]
+    fn broad_implementations_do_not_win_by_accumulating_common_question_words() {
+        let mut cards=cards();
+        for card in &mut cards {card.kind="function".into();card.signature=String::new();card.body_comment=String::new();card.documentation=String::new();}
+        cards[0].name="wide".into();cards[0].identifiers=format!("ledger revision checkpoint {}",(0..400).map(|n|format!("unrelated_{n}")).collect::<Vec<_>>().join(" "));
+        cards[1].name="restore_checkpoint".into();cards[1].identifiers="ledger revision".into();
+        cards[2].name="other".into();cards[2].identifiers="ledger".into();
+        let order=task_order(&cards,"restore revision ledger checkpoint",&Languages::new(["en-US"]),&[],&[]);
+        assert_eq!(order[0],1);
     }
 
     #[test]

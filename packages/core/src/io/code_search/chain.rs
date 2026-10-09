@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: &[Card],
-    items: &mut Vec<Value>, matcher: &mut Matcher, purpose: Purpose) -> Result<Value, String> {
+    items: &mut Vec<Value>, matcher: &mut Matcher, purpose: Purpose, intent:&str) -> Result<Value, String> {
     let registry = Registry::load()?;
     let visible: BTreeSet<_> = items.iter().filter_map(|item| item["id"].as_str().map(str::to_string)).collect();
     let seed_ids: BTreeSet<_> = seeds.iter().take(4).map(|c| c.id.as_str()).collect();
@@ -19,6 +19,9 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
     let mut hashes = BTreeMap::new();
     let mut steps = Vec::new();
     let mut appended = 0;
+    let names=crate::domain::code_search::pattern_names(intent);
+    let covered:BTreeSet<_>=items.iter().filter(|item|item["initial_source_excerpt"]==true)
+        .flat_map(|item|matcher.matched(item["source_excerpt"]["text"].as_str().unwrap_or_default())).collect();
     for card in candidates.iter().filter(|c| files.contains(&c.source.file)) {
         if steps.len()>=8 {break;}
         if !knowledge::current(tree, &card.source, &mut hashes) { continue; }
@@ -35,27 +38,30 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
             "call_source":Source{file:seed.source.file.clone(),line:call_line,end_line:call_line,sha256:seed.source.sha256.clone()},
             "call_text":call,"target_source":card.source,"signature":card.signature,"syntax":card.syntax,
             "meaning":"single written call line and declared signature/types; arguments may continue; not proven values or persistence effects"}));
-        if appended >= 2 { continue; }
+        let excerpt = investigation::current_excerpt(card, &text, matcher, purpose);
+        let written=format!("{} {} {}",card.signature,card.documentation,excerpt["text"].as_str().unwrap_or_default());
+        let introduces_clue=matcher.matched(&written).iter().any(|slot|!covered.contains(slot));
+        let expand=appended<2 && (names.iter().any(|name|name==&card.name) || introduces_clue);
         if visible.contains(&card.id) {
-            if let Some(item)=items.iter_mut().find(|item|item["id"]==card.id && item["initial_source_excerpt"]!=true) {
-                item["initial_source_excerpt"]=json!(true);
-                item["source_excerpt"]=investigation::current_excerpt(card,&text,matcher,purpose);
-                item["follow_up_reason"]=json!("unique-static-dependency");
-                appended+=1;
+            if let Some(item)=items.iter_mut().find(|item|item["id"]==card.id) {
+                item["initial_reference"]=json!(true);
+                if expand && item["initial_source_excerpt"]!=true {
+                    item["initial_source_excerpt"]=json!(true);item["source_excerpt"]=excerpt;
+                    item["follow_up_reason"]=json!("dependency-adds-written-question-evidence");appended+=1;
+                }
             }
             continue;
         }
-        let excerpt = investigation::current_excerpt(card, &text, matcher, purpose);
         let mut item = crate::domain::knowledge::summary(card);
         item["source_excerpt"] = excerpt;
-        item["initial_source_excerpt"] = json!(true);
+        item["initial_source_excerpt"] = json!(expand);
         item["initial_reference"] = json!(true);
         item["recommended"] = json!(false);
         item["retrieval"] = json!("unique-static-dependency");
         item["read"] = json!({"tool":"Read","input":{"file_path":card.source.file,"offset":card.source.line,"limit":card.source.end_line-card.source.line+1}});
         item["tests"] = json!(card.tests);
         items.push(item);
-        appended += 1;
+        appended += usize::from(expand);
     }
     let mut tests = Vec::new();
     let mut checked = BTreeSet::new();
@@ -70,8 +76,9 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
             }
         }
     }
+    let partial=targets.len()>steps.len();
     Ok(json!({"steps":steps,"test_mentions":tests,"appended_bodies":appended,
-        "partial":targets.len()>candidates.len() || targets.len()>8,"local_model_calls":0,"remote_model_calls":0,
+        "partial":partial,"local_model_calls":0,"remote_model_calls":0,
         "meaning":"bounded source-backed follow-ups within original inventory; no semantic completeness claim"}))
 }
 fn digest(text: &str) -> String {

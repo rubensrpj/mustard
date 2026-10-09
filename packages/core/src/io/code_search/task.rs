@@ -121,6 +121,10 @@ pub(super) fn investigate(
         }
     }
     cards.extend(knowledge::cards_for_ids(root, &alternative_ids).map_err(|e| format!("{e:?}"))?);
+    let decision_candidates=report.as_object_mut().and_then(|report|report.remove("task_candidates")).unwrap_or(json!([]));
+    let decision_candidates:Vec<Card>=serde_json::from_value(decision_candidates).map_err(|e|e.to_string())?;
+    let decision_ids:BTreeSet<_>=decision_candidates.iter().map(|card|card.id.clone()).collect();
+    cards.extend(decision_candidates);
     let mut seen = BTreeSet::new();
     cards.retain(|card| seen.insert(card.id.clone()) && scope.files.contains(&card.source.file));
     let targets: BTreeSet<_> = cards
@@ -136,23 +140,26 @@ pub(super) fn investigate(
         .map(|card|json!({"id":card.id,"name":card.name,"source":card.source,"signature":card.signature,"status":"static target candidate; source current, runtime behavior unverified"})).collect::<Vec<_>>();
     report["static_references"] = json!(references);
     report["static_references_partial"] = json!(targets.len() > 128);
+    let mut unavailable=BTreeSet::new();
     for card in &cards {
         if !source_text.contains_key(&card.source.file) {
-            let text = investigation::safe_read(tree, &card.source.file, &registry)
-                .ok_or("task-source-unavailable")?;
-            source_text.insert(card.source.file.clone(), text);
+            if unavailable.contains(&card.source.file) {continue;}
+            if let Some(text)=investigation::safe_read(tree,&card.source.file,&registry) {
+                source_text.insert(card.source.file.clone(),text);
+            } else {unavailable.insert(card.source.file.clone());continue;}
         }
         if !knowledge::current(tree, &card.source, &mut source_hashes) {
             return Err("task-source-changed-before-selection".into());
         }
     }
-    let pattern_names = crate::domain::code_search::pattern_names(&scope.clues);
-    let anchors:BTreeSet<_>=cards.iter().filter(|card|seeds.contains(&card.id) && pattern_names.iter().any(|name|name.eq_ignore_ascii_case(&card.name))).map(|card|card.id.clone()).collect();
+    cards.retain(|card|!unavailable.contains(&card.source.file));
+    report["unavailable_sources"]=json!({"files":unavailable.len(),"meaning":"Candidates excluded from task evidence; native result remains available. No excluded source is supplied to the selector."});
+    if !unavailable.is_empty() {report["investigation"]["partial"]=json!(true);}
+    let anchors=selection::nominal_anchors(&cards,&scope.clues,&seeds);
     let literal_name=!scope.clues.is_empty() && scope.clues.chars().all(|c|c.is_alphanumeric() || c=='_');
     let crossing_complete=answer.report["evidence"]["unmapped_occurrences"]==0
         && answer.report["evidence"]["omitted_occurrences"]==0
         && answer.report["result"]["truncated"]!=true
-        && super::occurrences(tree,cwd,request,&answer.report["result"],&answer.stdout).len()<256
         && seeds.iter().all(|id|cards.iter().any(|card|card.id==*id));
     let identities:Vec<_>=cards.iter().filter(|card|literal_name && crossing_complete && anchors.contains(&card.id) && scope.clues.eq_ignore_ascii_case(&card.name)).collect();
     // A literal name with one current declaration is identity resolution,
@@ -160,6 +167,13 @@ pub(super) fn investigate(
     // comparative judgement. Homonyms and responsibility queries stay open.
     let identity=if let [card]=identities.as_slice() {Some(card.id.as_str())} else {None};
     let mut plan = selection::responsibility(&cards, identity.unwrap_or(&request.intent), &languages);
+    if identity.is_none() && !decision_ids.is_empty() {
+        // Compare the ranked reservoir, not arbitrary per-file alternatives
+        // or the graph neighbours included for presentation. Keep them in the
+        // response for expansion, but do not enlarge the paid decision.
+        for group in &mut plan.groups {group.candidates.retain(|card|decision_ids.contains(&card.id));}
+        plan.groups.retain(|group|group.candidates.len()>1);
+    }
     for group in &mut plan.groups {
         for card in &group.candidates {
             if let Some(text) = source_text.get(&card.source.file) {
@@ -310,7 +324,7 @@ pub(super) fn investigate(
     );
     for (i, item) in items.iter_mut().enumerate() {
         item["initial_source_excerpt"] = json!(bodies.contains(&i));
-        item["initial_reference"] = json!(seeds.contains(&cards[i].id) || recommendations.contains(&cards[i].id) || cards.iter().enumerate().any(|(parent,card)|bodies.contains(&parent) && card.outgoing.iter().any(|edge|edge["target"]==cards[i].id)));
+        item["initial_reference"] = json!((anchors.is_empty() && (primary.contains(&cards[i].id) || decision_ids.contains(&cards[i].id))) || seeds.contains(&cards[i].id) || recommendations.contains(&cards[i].id) || cards.iter().enumerate().any(|(parent,card)|bodies.contains(&parent) && card.outgoing.iter().any(|edge|edge["target"]==cards[i].id)));
         let missing:Vec<_>=item["source_excerpt"]["missing_ranges"].as_array().into_iter().flatten().map(|range|json!({"tool":"Read","input":{"file_path":cards[i].source.file,"offset":range["line"],"limit":range["end_line"].as_u64().unwrap_or(0).saturating_sub(range["line"].as_u64().unwrap_or(0))+1}})).collect();
         item["missing_source_reads"] = json!(missing);
         if bodies.contains(&i) {
@@ -341,7 +355,7 @@ pub(super) fn investigate(
     report["cards"] = json!(items);
     let chain_seeds: Vec<_> = cards.iter().filter(|card| anchors.contains(&card.id) || recommendations.contains(&card.id)).cloned().collect();
     let mut chained_items = report["cards"].as_array().cloned().unwrap_or_default();
-    report["chain"] = super::chain::expand(root,tree,&scope.files,&chain_seeds,&mut chained_items,&mut matcher,request.purpose)?;
+    report["chain"] = super::chain::expand(root,tree,&scope.files,&chain_seeds,&mut chained_items,&mut matcher,request.purpose,&request.intent)?;
     report["cards"] = json!(chained_items);
     for step in report["chain"]["steps"].as_array().into_iter().flatten() {
         if let (Some(file),Some(line),Some(text))=(step["call_source"]["file"].as_str(),step["call_source"]["line"].as_u64(),step["call_text"].as_str()) {
@@ -362,6 +376,7 @@ pub(super) fn investigate(
     report["selection_stages"] = json!(stages);
     report["recommended_symbols"] = json!(recommendations);
     report["selection_basis"] = json!(plan.basis);
+    report["decision_candidates"]=json!({"count":decision_ids.len(),"method":"ranked before presentation/graph cuts; current source required","semantic_completeness":"unknown"});
     report["source_focus"] = json!({"named_native_anchors":anchors,"native_crossing_complete":crossing_complete,"meaning":"exact names in the original pattern guide source expansion; not semantic recommendations"});
     report["remote_model_calls"] = report["selection"]["remote_model_calls"].clone();
     report["written_clues"] = json!({"covered_slots":covered.len(),"slots":matcher.slots.len(),"uncovered":uncovered,"meaning":"written clue coverage only; not semantic completeness or proof of absence"});

@@ -370,18 +370,13 @@ fn occurrences(
     stdout: &[u8],
 ) -> Vec<(String, u64, String)> {
     let mut hits = Vec::new();
+    let mut paths = std::collections::BTreeMap::<String, Option<String>>::new();
     let mut push = |file: &str, line: u64, text: &str| {
-        if hits.len() >= 256 {
-            return;
-        }
-        let Ok(path) = cwd.join(file).canonicalize() else {
-            return;
-        };
-        let Ok(relative) = path.strip_prefix(tree) else {
-            return;
-        };
+        let relative=paths.entry(file.into()).or_insert_with(||cwd.join(file).canonicalize().ok()
+            .and_then(|path|path.strip_prefix(tree).ok().map(|path|path.to_string_lossy().replace('\\',"/"))));
+        let Some(relative)=relative else {return;};
         hits.push((
-            relative.to_string_lossy().replace('\\', "/"),
+            relative.clone(),
             line,
             text.to_string(),
         ));

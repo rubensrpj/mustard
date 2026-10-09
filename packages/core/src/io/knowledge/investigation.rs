@@ -8,7 +8,6 @@ use crate::domain::knowledge::{
 use crate::domain::normalize::Languages;
 use crate::domain::project_map::MapRefusal;
 use crate::io::sha256::Sha256;
-use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
@@ -18,6 +17,7 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LIVE_FILES: usize = 96;
 const MAX_LIVE_BYTES: usize = 12 * 1024 * 1024;
 const LIVE_TIME: Duration = Duration::from_secs(2);
+mod crossing;
 
 pub struct Occurrence<'a> {
     pub file: &'a str,
@@ -56,57 +56,7 @@ fn cross(
     let before = super::generation(root)?;
     let db = super::open_existing(&super::store::model_path(root))?;
     let registry = knowledge::resources::Registry::load().map_err(invalid)?;
-    let mut files = BTreeMap::new();
-    let mut ids = BTreeSet::new();
-    let mut matched = BTreeMap::<String, Vec<u64>>::new();
-    let mut unmatched = 0;
-    let mut processed = 0;
-    let mut bytes = 0;
-    let started = Instant::now();
-    for hit in hits.iter().take(256) {
-        if started.elapsed() >= LIVE_TIME {
-            break;
-        }
-        if !files.contains_key(hit.file) {
-            if files.len() >= MAX_LIVE_FILES || bytes >= MAX_LIVE_BYTES {
-                break;
-            }
-            let Some(text) = safe_read(tree, hit.file, &registry) else {
-                if rich {
-                    unmatched += 1;
-                    processed += 1;
-                    continue;
-                }
-                return Err(invalid("knowledge-live-source-unavailable"));
-            };
-            bytes += text.len();
-            files.insert(hit.file.to_string(), (hash(text.as_bytes()), text));
-        }
-        let Some((digest, text)) = files.get(hit.file) else {
-            continue;
-        };
-        if hit.line == 0 || text.lines().nth(hit.line.saturating_sub(1) as usize) != Some(hit.text)
-        {
-            if rich {
-                unmatched += 1;
-                processed += 1;
-                continue;
-            }
-            return Err(invalid("knowledge-executed-hit-changed"));
-        }
-        let line =
-            i64::try_from(hit.line).map_err(|_| invalid("knowledge-occurrence-line-invalid"))?;
-        let id:Option<String>=db.conn().query_row(
-            "SELECT id FROM knowledge_symbols WHERE path=?1 AND line<=?2 AND end_line>=?2 AND sha256=?3 ORDER BY end_line-line,line DESC LIMIT 1",
-            rusqlite::params![hit.file,line,digest],|row|row.get(0)).optional().map_err(|err|super::unreadable(err.into()))?;
-        if let Some(id) = id {
-            ids.insert(id.clone());
-            matched.entry(id).or_default().push(hit.line);
-        } else {
-            unmatched += 1;
-        }
-        processed += 1;
-    }
+    let crossing::Crossed {files,ids,matched,unmatched,processed}=crossing::collect(db.conn(),tree,hits,&registry,rich)?;
     let mut cards = catalog::hydrate(db.conn(), &ids).map_err(super::unreadable)?;
     // Do not pay for a choice over a scan/source snapshot already invalidated.
     if before != super::generation(root)?
@@ -321,14 +271,11 @@ pub(super) fn prepare(
     .map_err(invalid)?;
     let registry = knowledge::resources::Registry::load().map_err(invalid)?;
     let mut phases = vec![json!({"operation":"indexed-discovery","candidates":cards.len()})];
-    let pattern_names = crate::domain::code_search::pattern_names(query.text);
+    let anchor_ids=scope.map(|scope|knowledge::selection::nominal_anchors(cards,query.text,scope.seeds)).unwrap_or_default();
     let anchor_names: BTreeSet<_> = cards
         .iter()
         .filter(|card| {
-            scope.is_some_and(|scope| scope.seeds.contains(&card.id))
-                && pattern_names
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(&card.name))
+            anchor_ids.contains(&card.id)
         })
         .map(|card| card.name.to_lowercase())
         .collect();
@@ -359,9 +306,11 @@ pub(super) fn prepare(
             json!({"operation":"intent-discovery","added_candidates":count,"partial":pool.omitted}),
         );
     }
-    if let Some(scope)=scope {
-        let weights=catalog::intent_weights(root,&phrase,&languages)?;
-        let mut order=knowledge::selection::task_order(cards,&phrase,&languages,&weights,scope.seeds);
+    if scope.is_some() {
+        let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
+        let weights=catalog::task_weights(root,question,&languages)?;
+        let anchors:Vec<_>=cards.iter().filter(|card|anchor_names.contains(&card.name.to_lowercase())).map(|card|card.id.clone()).collect();
+        let mut order=knowledge::selection::task_order(cards,question,&languages,&weights,&anchors);
         for &i in ranking.iter() {if !order.contains(&i) {order.push(i);}}
         *ranking=order;
     }
@@ -476,6 +425,12 @@ pub(super) fn prepare(
         );
     }
     omitted |= skipped > 0 || (fallback && !repository_listing);
+    if scope.is_some() {
+        // Apply source admission before the display cut. An inadmissible
+        // candidate must not displace readable evidence and then abort the
+        // whole task after hydration. Original native occurrences stay intact.
+        ranking.retain(|&i|files.contains_key(&cards[i].source.file));
+    }
     let mut alternatives = BTreeMap::new();
     let mut promotions = 0;
     let mut ranked_paths = BTreeSet::new();

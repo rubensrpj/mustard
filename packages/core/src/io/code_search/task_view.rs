@@ -169,10 +169,11 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         );
     }
     for step in context["chain"]["steps"].as_array().into_iter().flatten() {
-        let _=writeln!(text,"# Native follow-up: {} -> {} at {}:{}; declared signature: {}. Static target, values/effects unverified.",
-            step["from"].as_str().unwrap_or_default(),step["to"].as_str().unwrap_or_default(),
-            step["call_source"]["file"].as_str().unwrap_or_default(),step["call_source"]["line"],
-            step["signature"].as_str().unwrap_or_default().replace(['\r','\n']," "));
+        let from=step["from"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
+        let to=step["to"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
+        let _=writeln!(text,"# Native follow-up: {from}:{} -> {to} {}:{}-{} (static; effects unverified)",
+            step["call_source"]["line"],step["target_source"]["file"].as_str().unwrap_or_default(),
+            step["target_source"]["line"],step["target_source"]["end_line"]);
     }
     for test in context["chain"]["test_mentions"].as_array().into_iter().flatten() {
         let _=writeln!(text,"@ {}\n{} | {}\n# Associated test mention; coverage/execution unverified.",

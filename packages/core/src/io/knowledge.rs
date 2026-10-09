@@ -552,6 +552,13 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         Some(investigation::prepare(root,tree,options,task,&mut cards,&mut ranking,&mut hashes,scope)?)
     } else {None};
     if let Some(native)=&investigation {candidates_omitted|=native.omitted;}
+    // Decision candidates precede the presentation/graph budget. A short
+    // declaration must remain available to the selector even when a neighbour
+    // would otherwise consume the last visible card. This is internal to the
+    // gateway and removed before its final report is emitted.
+    let task_candidates:Vec<_>=if scope.is_some() {
+        ranking.iter().copied().filter(|&i|current(tree,&cards[i].source,&mut hashes)).take(24).map(|i|cards[i].clone()).collect()
+    }else{Vec::new()};
     for i in ranking.into_iter().filter(|i| file.is_none_or(|file| cards[*i].source.file == file)) {
         if selected.len() >= seed_limit {
             break;
@@ -699,6 +706,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         report["investigation"]=native.report;
         report["retrieval_method"]=json!("native-index-and-current-source");
     }
+    if scope.is_some() {report["task_candidates"]=json!(task_candidates);}
     Ok((report,map))
 }
 

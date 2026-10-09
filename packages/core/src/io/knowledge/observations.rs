@@ -39,7 +39,7 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
     let registry = Registry::load()?;
     let mut sources = BTreeMap::new();
     let mut bytes = 0;
-    for (file, _, _) in hits.iter().take(256) {
+    for (file, _, _) in hits {
         if sources.contains_key(file) {
             continue;
         }
@@ -50,6 +50,19 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             bytes += text.len();
             sources.insert(file.clone(), (hash(text.as_bytes()), text));
         }
+    }
+    // Remember source versions from the whole result, then distribute stored
+    // line witnesses across files instead of spending them on an early file.
+    let mut by_file=BTreeMap::<&str,Vec<_>>::new();
+    for hit in hits {if sources.contains_key(&hit.0) {by_file.entry(&hit.0).or_default().push(hit);}}
+    let mut witnesses=Vec::new();let mut at=0;
+    while witnesses.len()<256 {
+        let mut added=false;
+        for group in by_file.values() {
+            if witnesses.len()>=256 {break;}
+            if let Some(hit)=group.get(at) {witnesses.push(*hit);added=true;}
+        }
+        if !added {break;}at+=1;
     }
     let mut db = MapDb::open_waiting(
         &store::model_path(root),
@@ -74,7 +87,7 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             let learned:bool=tx.query_row("SELECT indexed=sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0))?;
             if !structure_ready || !indexed && !learned {pending.push(file.clone());}
         }
-        for (file,line,text) in hits.iter().take(256) {
+        for (file,line,text) in &witnesses {
             let Some((digest,source))=sources.get(file) else {continue};
             if *line==0 || text.len()>4000 || source.lines().nth(line.saturating_sub(1) as usize)!=Some(text) {continue;}
             let Ok(line)=i64::try_from(*line) else{continue};
@@ -86,7 +99,7 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
         Ok(())
     }).map_err(|e|e.to_string())?;
     Ok(
-        json!({"status":"stored-current-source-facts","new_facts":added,"reused_facts":reused,"needs_scan":!pending.is_empty(),"pending_paths":pending,
+        json!({"status":"stored-current-source-facts","new_facts":added,"reused_facts":reused,"needs_scan":!pending.is_empty(),"pending_paths":pending,"omitted_line_witnesses":hits.len().saturating_sub(witnesses.len()),
         "tree":key,"source_hashes":sources.iter().map(|(file,(digest,_))|(file,digest)).collect::<BTreeMap<_,_>>(),"interpretations_recorded":0}),
     )
 }

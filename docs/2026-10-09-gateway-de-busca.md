@@ -2,7 +2,97 @@
 
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
-## Continuação concluída: investigação, contrato e reutilização
+## Triagem da recuperação e uso pontual do Jev — 09/10
+
+Esta etapa compara o código com o commit `7c72ceaedab4a3e361c3bedbf9184600545aa70c`. As alterações anteriores permanecem abaixo como histórico; seus percentuais não devem ser somados aos desta etapa.
+
+### O que mudou
+
+- O cruzamento nativo agrupa ocorrências por arquivo, lê/hashifica a fonte e carrega os intervalos dos proprietários uma vez. Sai o corte das primeiras 256 ocorrências. Permanecem os limites explícitos de arquivos, bytes e tempo; ocorrências omitidas são contabilizadas e o resultado nativo original continua disponível.
+- Recuperação, decisão e apresentação agora têm conjuntos distintos. Até 24 candidatos atuais da ordem de leitura são preservados antes do corte de cartões/vizinhos. O Jev compara esse conjunto, em vez de alternativas acidentais da apresentação; referências ao conjunto continuam expansíveis sem acrescentar todos os corpos. Um teste coloca a função desejada depois dos oito primeiros cartões e confere sua presença no seletor e na resposta quando escolhida.
+- A pergunta contribui com candidatos antes de proprietários de uma busca ampla consumirem o orçamento de hidratação. A descoberta pelos termos originais e pela intenção conserva reservatórios separados. Isso não garante incluir todo proprietário no pacote inicial; o diagnóstico informa candidatos omitidos.
+- A ordem de leitura usa a intenção local, frequência dos termos entre declarações e o componente de normalização de comprimento do BM25. A diversidade entre arquivos passa a ser uma penalização suave: a segunda função relevante de um arquivo pode preceder uma função fraca de outro. Essa combinação é uma heurística própria, não uma implementação completa de BM25 nem compreensão semântica certificada. Uma palavra comum que coincide com um nome de função dentro de um OR amplo não vira âncora exclusiva. Listas nominais e padrões de declaração são reconhecidos com proprietários atuais e prefixos das assinaturas reais, sem lista fixa de palavras de linguagem. Nomes exatos do pedido continuam prioritários.
+- A admissão da fonte ocorre antes do corte de apresentação. Um arquivo indisponível deixa a investigação parcial e não derruba as outras evidências atuais. Fontes excluídas não são fornecidas ao seletor. O fallback conserva a resposta original.
+- Corpos de dependências entram quando a pergunta menciona seu nome ou quando acrescentam uma pista escrita ainda ausente dos corpos iniciais. Outras dependências permanecem como referências expansíveis. A projeção reduz dados repetidos das relações. Perguntas com uma âncora nominal continuam adiando declarações laterais; perguntas abertas conservam referências aos candidatos principais mesmo quando seus corpos foram adiados.
+- A hidratação lê/decodifica cada pacote de arquivo uma vez por operação, em vez de pedir ao SQLite que decodifique o mesmo JSON para cada função. SQLite, FTS e as gramáticas existentes permanecem; não foram acrescentados banco vetorial, modelo local ou projeto de terceiros.
+- O aprendizado considera versões de fontes além das primeiras 256 linhas. Até 256 testemunhos persistidos são distribuídos entre arquivos admitidos; esse limite de amostragem não é um limite de funções do índice estrutural. Uma fonte nova após 600 ocorrências de outro arquivo solicita reconstrução nativa e passa a ter proprietário no banco.
+- O estado Choice v4 guarda hashes uma vez por arquivo e reduz chamadas estáticas a alvo, linha e tipo de resolução. Trechos atuais e sua completude permanecem explícitos. Critérios distinguem opções; identidade exata, descoberta, cruzamento, armazenamento e apresentação continuam determinísticos. A interface `SymbolSelector` preserva a separação do provedor.
+
+O uso mantém as recomendações de [perguntas atômicas e estado compartilhado do Jev](https://docs.typesafe.ai/introduction). Uma distribuição aceita continua sendo uma recomendação, não prova de comportamento. A escolha não pode recuperar uma função que o motor descartou.
+
+### Comparação de recuperação — diagnóstico conhecido
+
+Mesmas 40 descrições públicas, mesma consulta `rg --sort=path` nos dois braços, sem rótulos na pesquisa e sem IA. O critério de localização exige arquivo, nome e intervalo da declaração esperada; referências visíveis e corpos completos são contados separadamente.
+
+| Medição | `7c72ceaedab4` | Esta etapa |
+| --- | ---: | ---: |
+| Declaração esperada no conjunto devolvido | 18/40 (45%) | 25/40 (62,5%): +17,5 pontos percentuais |
+| Declaração esperada visível ao agente | 13/40 | 24/40 |
+| Corpo esperado completo no pacote inicial | 7/40 | 17/40 |
+| Proprietário esperado identificado no cruzamento nativo | 12/40 | 24/40 |
+| Bytes de conteúdo devolvido | 589.201 | 352.359: −40,20% |
+| Paridade dos registros nativos / chamadas a modelos | 40/40 / 0 | 40/40 / 0 |
+
+O ganho de localização é **38,89% relativo**, de 18 para 25, não 38,89 pontos percentuais. Este conjunto já foi usado para diagnóstico; ele não demonstra generalização. A seleção mais ampla vem acompanhada de referências verificadas, e não da inclusão de todos os corpos no contexto. Todos os corpos emitidos permanecem acompanhados de hash/intervalo; fonte truncada exige leitura das faixas ausentes.
+
+No replay Excel do mesmo snapshot Florestal, o fluxo guiado mantém **25/25** evidências completas: **68.679 → 62.911 bytes (−8,40%)** em relação à etapa anterior. Com confirmações simuladas de entrega, devolve 62.144 bytes. Frente ao baseline histórico de 58.326 bytes, ainda há aumento; não é uma redução acumulada desde o início. As 34 consultas fixadas preservam **8/8** evidências completas, com 65.342 bytes frente a 65.718 na etapa anterior. Esses dois replays não executam um Claude autônomo.
+
+### Confirmação independente — 40 perguntas novas
+
+A seleção `repoqa-selection-decision-20261009.json` foi congelada antes da correção que separa candidatos de decisão e apresentação: `mlc-ai/mlc-llm`, `xenova/transformers.js`, `huggingface/candle` e `lima-vm/lima`, dez descrições por repositório. Não foram usadas para ajustar parâmetros de recuperação ou limiares do Jev. Não há nome/caminho esperado nos pedidos enviados ao binário.
+
+| Medição independente, sem IA | `7c72ceaedab4` | Esta etapa |
+| --- | ---: | ---: |
+| Declaração esperada devolvida | 16/40 (40%) | 31/40 (77,5%): +37,5 pontos percentuais |
+| Declaração esperada visível, com intervalo conferido no texto do agente | 15/40 | 31/40 |
+| Corpo esperado completo, conferido no texto do agente | 11/40 | 25/40 |
+| Bytes devolvidos | 970.073 | 468.762: −51,68% |
+| Paridade nativa / chamadas a modelos | 40/40 / 0 | 40/40 / 0 |
+
+O aumento relativo de alvos devolvidos é **93,75%**, de 16 para 31; a recuperação final é **77,5%**, não 93,75%. **Nove alvos continuam ausentes**. Esses números medem recuperação do alvo rotulado, não precisão de todas as referências emitidas, sucesso de implementação ou economia de tokens faturados. O bootstrap lexical é fixo e cego ao gabarito; não é uma sessão autônoma do Claude nem a pontuação oficial de RepoQA. Ambos os conjuntos finais tiveram suas referências e corpos conferidos contra o texto efetivamente emitido, sem divergência em relação aos contadores do relatório.
+
+Os baselines foram reutilizados somente após conferir hashes do dataset, da seleção e do executável, preservando os quarenta registros e pedidos. Todas as quarenta consultas do código final foram executadas novamente, incluindo paridade nativa. Os ensaios rodaram com tarefas concorrentes; seus tempos não sustentam uma afirmação de aceleração em produção.
+
+### Primeiro piloto Jev externo, usado como diagnóstico
+
+Oito descrições públicas, as duas primeiras de cada repositório da seleção `repoqa-selection-triage-20261009.json`, foram fixadas antes da avaliação. Os rótulos esperados são usados somente pelo avaliador. O provedor recebe perguntas e candidatos de código público; não recebeu código privado do Florestal.
+
+- O alvo esperado estava no pacote nativo em **3/8** perguntas; o primeiro candidato nativo era correto em **0/8**.
+- O Jev selecionou corretamente esses **3/3** alvos disponíveis: **3/8 no total**. Aceitou **duas escolhas erradas** quando o alvo esperado não estava disponível e absteve-se nos outros três casos. Confiança alta e a política numérica atual não eliminaram esses erros.
+- Foram **oito chamadas físicas**, **134.451 tokens de entrada**, custo estimado de **US$ 0,005647** pelo preço configurado. As oito repetições usaram cache: **zero chamadas adicionais**. O registro de tentativas confirma esses totais; não é uma fatura do provedor.
+- Um ensaio anterior foi interrompido por uma asserção que confundia uso desconhecido com zero chamadas. Foi corrigido para separar falha, abstenção e cache, não repetir automaticamente falhas de transporte e preservar os registros físicos mesmo em caso de erro. Nesse ensaio interrompido, apenas 29.466 tokens estão comprovados pelos resultados parciais salvos; o uso total não foi preservado. O valor do piloto completo acima não representa todo o gasto desta conversa.
+
+**O Jev demonstrou utilidade para escolher entre candidatos disponíveis, mas não confiabilidade suficiente para ampliar seu uso automático.** `choose` continua sendo autorização explícita e a resposta conserva as alternativas e a necessidade de conferir o código. A próxima melhoria de acerto deve recuperar candidatos ausentes e avaliar abstenções em outra seleção, sem ajustar limiares sobre estes oito rótulos e chamar isso de calibração geral.
+
+### Jev após separar decisão e apresentação
+
+No mesmo diagnóstico de oito perguntas, os alvos disponíveis continuaram em **3/8**, com **três escolhas corretas, duas erradas e três abstenções**. A separação não resolveu a recuperação desses cinco alvos ausentes. O estado deixou de gastar entrada com alternativas incidentais da apresentação: **134.451 → 70.707 tokens de entrada (−47,41%)**, mantendo os mesmos totais de acerto. Foram oito chamadas e custo estimado agregado por chamada de **US$ 0,002971**, com oito repetições sem HTTP adicional. Essa redução compara os mesmos oito pedidos, não toda uma sessão Claude nem somente a mudança isolada de serialização v4.
+
+Uma seleção independente, congelada antes dessa correção, trouxe oito novas descrições de `mlc-ai/mlc-llm`, `xenova/transformers.js`, `huggingface/candle` e `lima-vm/lima` (duas primeiras de cada repositório):
+
+| Medição independente do Jev | Resultado |
+| --- | ---: |
+| Alvo disponível no conjunto nativo | 4/8 |
+| Primeiro candidato nativo correto | 3/8 (37,5%) |
+| Recomendações corretas do Jev | 4/8 (50%); 4/4 dos alvos disponíveis |
+| Recomendações erradas / abstenções | 1 / 3 |
+| Precisão entre recomendações aceitas | 4/5 (80%), amostra pequena |
+| Chamadas físicas / repetições pagas | 8 / 0 |
+| Tokens de entrada / custo estimado agregado | 93.732 / US$ 0,003937 |
+
+A escolha acertou um caso além do primeiro candidato nativo, mas ainda aceitou um alvo errado. Não equivale a acertar 100% das pesquisas, nem demonstra calibração geral. Não foram ajustados limiares com base nesses rótulos. Os dois pilotos após a separação registraram 16 chamadas, estimativa agregada de US$ 0,006908 e zero chamadas nas 16 repetições. Os logs físicos por repositório ficam preservados junto aos artefatos, inclusive em caso de falha do executor.
+
+### Validação e artefatos
+
+**3.948 testes Rust aprovados**, dois ignorados herdados, análise estática estrita sem avisos, **16 testes do SDK Mods** e validação do plugin aprovados. A instalação do próprio binário em pasta realmente vazia passou, incluindo descoberta após 600 ocorrências, reconstrução nativa, fallback bruto, contrato tipado, dependências e recibos de contexto; zero HTTP/inferência nesse caminho.
+
+Os binários de cada ensaio foram congelados antes de executá-lo. Resultados finais, pedidos, fonte/linhas, saídas ao agente e hashes: `target/search-triage-20261009/{complete-diagnostic,complete-independent,complete-backend}`. Pilotos pagos e logs físicos: `beam-jev-diagnostic/` e `beam-jev-independent/`. Auditoria de entrega: `actual-agent-visibility.json`; manifesto: `manifest.json`. Os registros das tentativas intermediárias permanecem com seus próprios hashes; não são resultados acumulados nem substituem a comparação final. Logs de verificação: `target/triage-complete-{workspace-tests,clippy,mods,plugin,native}.log`.
+
+### Prova que ainda falta
+
+A execução autônoma de Claude permanece indisponível neste ambiente sem autenticação. Os replays medem conteúdo devolvido por consultas fixadas, não decisões reais de um agente, tokens totais faturados ou qualidade de código implementado. O executor de sessões pareadas entregue anteriormente continua sendo a prova necessária para afirmar economia de uma tarefa completa. Nenhuma publicação, instalação pessoal ou alteração do backend original faz parte desta etapa.
+
+## Histórico: investigação, contrato e reutilização (`7c72ceaedab4`)
 
 Esta continuação amplia o mesmo gateway; não cria outro motor de busca. O baseline da comparação é `64c7549768b0deefc897fe1fa6d7750cf2046ea0`. O núcleo segue independente de Claude/Codex; a integração instalada e os eventos de contexto desta versão são do Claude Code.
 
@@ -50,7 +140,7 @@ Artefatos locais em `target/search-next-20261009/`: `heldout-ordered/comparison.
 
 Verificação desta continuação: **3.941 testes Rust aprovados**, dois ignorados herdados; **16 testes do SDK Mods** e validação do plugin aprovados. Os totais menores nas etapas abaixo são históricos. A sessão real autenticada do Claude continua pendente; os testes locais não substituem essa medição.
 
-### O que falta para atingir acerto e economia
+### Diagnóstico que motivou a triagem seguinte
 
 A triagem dos 22 alvos ausentes do ensaio ordenado encontrou 14 com ocorrência nativa dentro do intervalo esperado. Em cinco desses casos, `evidence.current_owner_ids` já identificava a função esperada, mas ela não aparecia em `task_context.cards`. Os outros oito não tinham ocorrência no corpo esperado; não é possível atribuir todos à mesma causa sem conferir cobertura e vocabulário. Artefato: `heldout-ordered/failure-native-audit.json`. Essa triagem usa o gabarito somente para avaliar o retorno, nunca como pista de pesquisa.
 

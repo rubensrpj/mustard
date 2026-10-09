@@ -252,6 +252,14 @@ try {
   assert.ok(structure.result.owners.symbols.some(symbol => symbol.name === 'discovered_by_structure'));
   assert.equal(structure.remote_model_calls, 0);
 
+  fs.writeFileSync(path.join(root,'src/a-many-hits.rs'),'pub fn unrelated() {\n'+Array.from({length:600},(_,i)=>`let item_${i}=\"late-sentinel\";\n`).join('')+'}\n');
+  fs.writeFileSync(path.join(root,'src/z-late-hit.rs'),'/// Persists the revision snapshot.\npub fn late_owner() { let marker=\"late-sentinel\"; }\n');
+  const late=search(['--request',JSON.stringify({schema_version:1,request:{tool:'rg',input:{args:['--sort=path','-n','--with-filename','late-sentinel','src']},intent:'persist revision snapshot',purpose:'implement',choose:false}})]);
+  assert.equal(late.learning.scan.status,'refreshed-native');
+  assert.equal(late.evidence.omitted_occurrences,0);
+  assert.ok(late.evidence.current_owner_ids.some(id=>id.endsWith(':late_owner')));
+  assert.ok(late.task_context.cards.some(card=>card.name==='late_owner'));
+
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(httpRequests, 0, 'Neither ordinary gateway nor native learning may call inference');
   const report = { ok: true, commit: successful('git', ['rev-parse', 'HEAD'], checkout).stdout.toString().trim(),
@@ -259,7 +267,7 @@ try {
     changed_and_new_sources: true, failed_scan_keeps_native_and_retries_later: true,
     raw_stdout_stderr_status_parity: true, native_fallback_parity: true,
     automatic_output_does_not_append_reports: true, typed_agent_pagination: true,
-    typed_tools: true, migrated_index_refreshes_after_empty_native_search:true, native_search_unavailable_passes_host_tool: true,
+    typed_tools: true, late_occurrence_source_learned_and_crossed:true, migrated_index_refreshes_after_empty_native_search:true, native_search_unavailable_passes_host_tool: true,
     task_evidence_visible_to_agent:true, complementary_new_source_refreshes_natively:true,
     named_declaration_without_inference:true, typed_operation_contract:true, acknowledged_body_reuse_and_compaction_reset:true, native_dependency_body:true,
     delivery_bytes:{initial:Buffer.byteLength(firstVisible),repeated:Buffer.byteLength(reused),initial_transport:Buffer.byteLength(firstBody),reduction_percent:100*(Buffer.byteLength(firstVisible)-Buffer.byteLength(reused))/Buffer.byteLength(firstVisible)}, structural_result_recrossed_after_refresh:true, deferred_candidates_expand_via_binary:true,
