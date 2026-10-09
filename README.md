@@ -23,7 +23,9 @@ flowchart LR
 
 1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Roda na instalação, ao abrir a spec e depois de commits da rodada; `mustard-rt run scan` atualiza explicitamente. Limites de parse e origem das relações ficam visíveis.
 2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e preparam trechos atuais com referências. Dependências e testes candidatos orientam a descoberta; não provam comportamento ou cobertura.
-3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
+3. Objetivo: **economia de contexto** — o mapa acha *onde olhar*, e o modelo confere os trechos necessários. Economia de tokens faturados deve ser medida no fluxo real.
+
+`mustard-rt run knowledge --query "<assunto>"` recupera símbolos e trechos de documentação/configuração com linhas e hash, usando índices locais; `--detail` expande a evidência e mostra grupos estruturais, e `--all --markdown --out levantamento.md` exporta o inventário. Referências explícitas podem conectar um documento ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade, consistência dos índices e planos de consulta sem modelo auxiliar.
 
 > O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. As operações auxiliares funcionam sem IA por padrão. Jev exige `ai.fallback: true` e um filtro explícito por finalidade; vetores exigem `ai.vectors: true`. Credenciais/configurações antigas não ativam inferência. A interface de provedor e o cache versionado permanecem disponíveis para uma exceção avaliada. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
 

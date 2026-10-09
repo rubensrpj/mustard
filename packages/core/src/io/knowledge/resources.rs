@@ -17,29 +17,47 @@ fn words(normalizer: &mut Normalizer, text: &str) -> String {
     normalizer.forms(text).into_iter().flatten().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" ")
 }
 
-/// Called within the same scan transaction as the source packs. The index
-/// can also be rebuilt locally when the query's normalization changes.
+/// Synchronize only changed files inside the source transaction. A change
+/// of normalization rebuilds the derived index, preserving source packs.
 pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
-    conn.execute("DELETE FROM resource_fts", [])?;
-    conn.execute("DELETE FROM resource_positions", [])?;
-    conn.execute("DELETE FROM resource_meta", [])?;
+    let codes = languages.codes().join(",");
+    let previous: Option<String> = conn.query_row("SELECT value FROM resource_meta WHERE key='languages'", [], |row|row.get(0)).optional()?;
+    if previous.as_deref() != Some(&codes) {
+        conn.execute_batch("DELETE FROM resource_fts; DELETE FROM resource_positions; DELETE FROM resource_index_files;")?;
+    }
+    let mut previous_files = conn.prepare("SELECT path FROM resource_index_files")?;
+    let old = previous_files.query_map([], |row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for path in old {
+        let current: Option<String> = conn.query_row("SELECT sha256 FROM resource_files WHERE path=?1 AND issue=''",[&path],|r|r.get(0)).optional()?;
+        if current.is_none() { remove(conn,&path)?; }
+    }
     let mut normalizer = Normalizer::new(languages);
-    let mut select = conn.prepare("SELECT path, sections FROM resource_files WHERE issue='' ORDER BY path")?;
-    let rows = select.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut select = conn.prepare("SELECT path,sha256,sections FROM resource_files WHERE issue='' ORDER BY path")?;
+    let rows = select.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_,String>(1)?, row.get::<_, String>(2)?)))?;
     let mut insert = conn.prepare("INSERT INTO resource_fts(rowid,title,body,path) VALUES (?1,?2,?3,?4)")?;
-    let mut locate = conn.prepare("INSERT INTO resource_positions(id,path,section) VALUES (?1,?2,?3)")?;
-    let mut id: i64 = 0;
+    let mut locate = conn.prepare("INSERT INTO resource_positions(path,section) VALUES (?1,?2)")?;
     for row in rows {
-        let (path, sections) = row?;
+        let (path,hash,sections) = row?;
+        let old: Option<String> = conn.query_row("SELECT sha256 FROM resource_index_files WHERE path=?1",[&path],|r|r.get(0)).optional()?;
+        if old.as_deref() == Some(&hash) { continue; }
+        remove(conn,&path)?;
         let sections: Vec<Section> = serde_json::from_str(&sections).map_err(|err| Error::Parse(err.to_string()))?;
         for (n, section) in sections.iter().enumerate() {
-            id += 1;
+            let at = i64::try_from(n).map_err(|err| Error::Parse(err.to_string()))?;
+            locate.execute(params![path,at])?;
+            let id = conn.last_insert_rowid();
             insert.execute(params![id, words(&mut normalizer, &section.title), words(&mut normalizer, &section.text), words(&mut normalizer, &path)])?;
-            let section = i64::try_from(n).map_err(|err| Error::Parse(err.to_string()))?;
-            locate.execute(params![id, path, section])?;
         }
+        conn.execute("INSERT INTO resource_index_files(path,sha256) VALUES (?1,?2)",params![path,hash])?;
     }
-    conn.execute("INSERT INTO resource_meta(key,value) VALUES ('languages',?1)", [languages.codes().join(",")])?;
+    conn.execute("INSERT OR REPLACE INTO resource_meta(key,value) VALUES ('languages',?1)", [codes])?;
+    Ok(())
+}
+
+fn remove(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute("DELETE FROM resource_fts WHERE rowid IN (SELECT id FROM resource_positions WHERE path=?1)",[path])?;
+    conn.execute("DELETE FROM resource_positions WHERE path=?1",[path])?;
+    conn.execute("DELETE FROM resource_index_files WHERE path=?1",[path])?;
     Ok(())
 }
 
@@ -50,6 +68,7 @@ pub(super) struct Retrieved {
     pub omitted: usize,
     pub indexed_files: i64,
     pub issues: Vec<Value>,
+    pub issue_count: i64,
     pub available: bool,
 }
 
@@ -75,6 +94,7 @@ pub(super) fn retrieve(
     }
     result.indexed_files =
         db.conn().query_row("SELECT count(*) FROM resource_files WHERE issue=''", [], |row| row.get(0)).map_err(|err| unreadable(err.into()))?;
+    result.issue_count = db.conn().query_row("SELECT count(*) FROM resource_files WHERE issue!=''",[],|row|row.get(0)).map_err(|err|unreadable(err.into()))?;
     let mut issues = db.conn().prepare("SELECT path,issue FROM resource_files WHERE issue!='' ORDER BY path LIMIT 20").map_err(|err| unreadable(err.into()))?;
     result.issues = issues
         .query_map([], |row| Ok(json!({"file":row.get::<_,String>(0)?,"reason":row.get::<_,String>(1)?})))
@@ -85,29 +105,27 @@ pub(super) fn retrieve(
         return Ok(result);
     }
     let terms = query_terms(opts.text, &languages);
-    let match_text = terms
-        .iter()
-        .flatten()
-        .take(128)
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join(" OR ");
+    let expression = super::catalog::fts_query(&terms,"AND");
+    let match_text = if expression.is_empty() {expression} else {format!("{{title body}} : ({expression})")};
     if !opts.text.trim().is_empty() && match_text.is_empty() {
         return Ok(result);
     }
-    let sql = if match_text.is_empty() {
+    let exact_path: Option<String> = db.conn().query_row("SELECT path FROM resource_files WHERE issue='' AND ?1!='' AND (path=?1 OR substr(path,-length(?1)-1)='/'||?1) LIMIT 1",
+        [opts.text.trim()],|row|row.get(0)).optional().map_err(|err|unreadable(err.into()))?;
+    let sql = if exact_path.is_some() {
+        "SELECT path,section FROM resource_positions WHERE (path=?3 OR substr(path,-length(?3)-1)='/'||?3) AND (?2 IS NULL OR path=?2) ORDER BY path,section"
+    } else if match_text.is_empty() {
         "SELECT path,section FROM resource_positions WHERE (?2 IS NULL OR path=?2) AND ?1='' ORDER BY path,section"
     } else {
         "SELECT p.path,p.section FROM resource_fts JOIN resource_positions p ON p.id=resource_fts.rowid WHERE resource_fts MATCH ?1 AND (?2 IS NULL OR p.path=?2) ORDER BY bm25(resource_fts,4,1,0.25),p.id"
     };
     let mut select = db.conn().prepare(sql).map_err(|err| unreadable(err.into()))?;
-    let rows =
-        select.query_map(params![match_text, opts.file], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(|err| unreadable(err.into()))?;
+    // Bind the optional exact-path slot only for the corresponding query.
+    let mut bound = vec![rusqlite::types::Value::Text(match_text),opts.file.map_or(rusqlite::types::Value::Null,|file|file.to_string().into())];
+    if exact_path.is_some() {bound.push(opts.text.trim().to_string().into());}
+    let rows = select.query_map(rusqlite::params_from_iter(bound), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(|err| unreadable(err.into()))?;
     let max = if opts.all { usize::MAX } else { opts.limit.clamp(1, 4) };
     let mut seen = BTreeSet::new();
-    let mut cache = BTreeMap::<String, (String, String, Vec<Section>)>::new();
     // Inspect only a bounded candidate set for ordinary discovery. --all
     // remains an explicit full export of matching source excerpts.
     for (n, row) in rows.enumerate() {
@@ -116,7 +134,7 @@ pub(super) fn retrieve(
             break;
         }
         let (path, at) = row.map_err(|err| unreadable(err.into()))?;
-        let at = usize::try_from(at).map_err(|err| super::invalid(err.to_string()))?;
+        if at<0 {return Err(super::invalid("knowledge-resource-position-invalid"));}
         if !opts.all && opts.file.is_none() && seen.contains(&path) {
             continue;
         }
@@ -124,15 +142,11 @@ pub(super) fn retrieve(
             result.omitted += 1;
             break;
         }
-        if !cache.contains_key(&path) {
-            let (hash, kind, sections): (String, String, String) = db
+        let (hash, kind, section): (String, String, String) = db
                 .conn()
-                .query_row("SELECT sha256,kind,sections FROM resource_files WHERE path=?1", [&path], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .query_row("SELECT sha256,kind,json_extract(sections,'$['||?2||']') FROM resource_files WHERE path=?1", params![path,at], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .map_err(|err| unreadable(err.into()))?;
-            cache.insert(path.clone(), (hash, kind, serde_json::from_str(&sections).map_err(|err| super::invalid(err.to_string()))?));
-        }
-        let Some((hash, kind, sections)) = cache.get(&path) else { continue };
-        let Some(section) = sections.get(at) else { return Err(super::invalid("knowledge-resource-position-invalid")) };
+        let section: Section = serde_json::from_str(&section).map_err(|err|super::invalid(err.to_string()))?;
         let source = Source { file: path.clone(), line: section.line, end_line: section.end_line, sha256: hash.clone() };
         if !super::current(tree, &source, hashes) {
             result.stale += 1;
@@ -151,7 +165,7 @@ pub(super) fn retrieve(
         let (excerpt, excerpt_line, compact) = if opts.detail || opts.all {
             (section.text.clone(), section.line, false)
         } else {
-            crate::domain::knowledge::resources::preview(section, &terms, &languages)
+            crate::domain::knowledge::resources::preview(&section, &terms, &languages)
         };
         result.items.push(json!({"id":format!("resource:{path}:{}",section.line),"title":section.title,"kind":kind,
             "source":source,"text":excerpt,"excerpt_line":excerpt_line,"text_compacted":compact,"text_chars":section.text.chars().count(),

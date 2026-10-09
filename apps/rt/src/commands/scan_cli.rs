@@ -89,7 +89,8 @@ pub enum ScanCmd {
     /// summary of the project map, up to 3 kB; with `--file`, the parts of that
     /// file: each declaration with its kind, name and lines, and the line
     /// where its tests start), `dump` (the map database table by
-    /// table, in a fixed order, for debugging) or `note "<sentence>" --file
+    /// table, in a fixed order, for debugging), `audit` (native checks of
+    /// database/index consistency and query plans), or `note "<sentence>" --file
     /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
     /// file, or declaration, in business words, so the search finds it by
     /// them; it stays valid until the file changes, and `slice` shows it, as

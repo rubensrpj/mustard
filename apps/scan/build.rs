@@ -848,7 +848,8 @@ fn source_digest(crate_root: &Path) -> String {
     collect_files(&crate_root.join("queries"), &mut files);
     collect_files(&crate_root.join("routes"), &mut files);
     for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES, CORE_KNOWLEDGE, CORE_ANNOTATIONS,
-        "../../packages/core/src/domain/knowledge/resources.rs", "../../packages/core/src/domain/knowledge/resources.toml"] {
+        "../../packages/core/src/domain/knowledge/resources.rs", "../../packages/core/src/domain/knowledge/resources.toml",
+        "../../packages/core/src/domain/knowledge/references.rs"] {
         let core_data = crate_root.join(core_data);
         println!("cargo:rerun-if-changed={}", relative_to(crate_root, &core_data));
         files.push(core_data);

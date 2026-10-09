@@ -2,7 +2,54 @@
 
 Estado em 09/10/2026. A orientação atual é esgotar alternativas nativas antes de considerar IA; a avaliação pontual do Jev em todo o Mustard está registrada ao final deste documento. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
 
-## Continuação de 09/10: documentos e configurações no banco
+## Continuação atual: catálogo, referências e auditoria nativos
+
+SQLite com FTS5 continua adequado ao produto: armazenamento local, transações de fontes/índices e busca lexical mais navegação dirigida. A reconferência encontrou problemas de acesso e cobertura, não uma necessidade demonstrada de banco vetorial ou serviço externo. Referência técnica: [SQLite FTS5](https://www.sqlite.org/fts5.html).
+
+Correções implementadas:
+
+- Catálogo derivado de endereços/nomes/linhas/hashes, índice de nomes e FTS5 próprios. Consulta hidrata somente os cartões candidatos; não carrega todos os pacotes JSON. Evidência canônica permanece em `texts.analysis`, sem duplicá-la no catálogo.
+- Correspondência de todos os termos informativos precede a seleção ampla de candidatos. Documentação/configuração também aplica o critério completo dentro do SQL, antes do corte. Frequência das palavras é calculada no corpus completo pelo índice; limitar candidatos não deve alterar a raridade que escolhe a função dentro de um arquivo.
+- Índices de cartões e de recursos mantêm entradas de arquivos sem mudança. A fonte canônica ainda pode ser regravada como bloco pelo scanner, e as referências documentais são reconstruídas quando código/recursos mudam. Não se trata de escrita universalmente incremental.
+- Nomes exatos usam índice próprio. Navegação dirigida consulta relações indexadas e verifica recibos nos dois extremos. Identidades de declarações de mesmo nome/linha agora distinguem colisões; pacotes antigos pedem novo scan. Notas revisadas não são apagadas.
+- Configuração executável/scripts sem declarações reconhecidas recebem evidência `source-file`, com identificadores do parser, textos, linhas e hash. Essa entrada representa um arquivo; não inventa uma função nem comprova seu comportamento.
+- Markdown pode apontar para código por link relativo/linhas ou identificador entre crases. Só nome único/endereço válido cria vínculo. Exemplos cercados, nome ambíguo, destino externo ou âncora desconhecida não viram prova. A consulta encontra código pela documentação e a navegação recupera documentos ligados ao símbolo, com ambas as fontes atuais.
+- `--detail`, `--all` e Markdown incluem grupos estruturais do subgrafo selecionado. Entradas candidatas e ciclos têm justificativa; regra de negócio e ordem em execução continuam desconhecidas.
+- Consulta confere a geração do banco antes/depois e repete uma vez se outro scan modificar as fontes; nova concorrência produz recusa explícita. Isso evita combinar gerações diferentes numa mesma resposta.
+- `mustard-rt run map audit` verifica SQLite/FTS, presença das entradas, correspondência com a fonte canônica, endereços de recursos e vínculos, além de mostrar planos de consulta. Não atualiza silenciosamente o scan para mascarar problemas. Integridade do banco não equivale a fonte atual nem a entendimento semântico.
+
+Consulta inicial conserva até oito resultados e compactação; `--file`, `--symbol`, `--detail` e `--all` expandem a evidência. O conjunto amplo de candidatos tem limite explícito de hidratação, com aviso de omissão e possibilidade de consulta exaustiva. A busca lexical ainda pode omitir paráfrases: não substitui investigação por critérios/diff quando é necessário provar completude.
+
+### Medição desta continuação
+
+Base anterior `ecc71222`, sem IA, comparada ao catálogo desta continuação. Backend Suzano `a3fe37ab454c`; cópias isoladas, original intacto. Todos os Markdown, incluindo Puzzle, e arquivos de ambiente foram excluídos. Não foram inseridos vocabulários ou regras específicas do backend.
+
+| Medida | Antes | Catálogo atual |
+| --- | --- | --- |
+| Arquivo esperado, conjunto conhecido | 16/21 | 17/21 |
+| Símbolo esperado, perguntas com símbolo definido | 10/20 | 11/20 |
+| Arquivo esperado, 16 perguntas novas | 11/16 | 13/16 |
+| Símbolo esperado, 13 perguntas novas com símbolo definido | 7/13 | 7/13 |
+| Bytes das respostas conhecidas | 297.729 | 285.002 (-4,3%) |
+| Bytes das respostas novas | 213.719 | 210.962 (-1,3%) |
+| Banco | 67.960.832 bytes | 76.218.368 bytes (+12,2%) |
+| Scan completo, uma execução | 11.659 ms | 11.935 ms |
+| Scan sem alteração, uma execução | 203 ms | 141 ms |
+| Chamadas a modelos auxiliares/Jev | 0 | 0 |
+
+A mediana de uma prova adicional com cinco consultas fixas, três repetições e ordem baseline/atual alternada foi **1.046 → 279 ms**. São 15 leituras por versão em uma máquina, executáveis de desenvolvimento e cache aquecido; não é vazão universal nem tempo de spec. As medianas da primeira passada não servem de comparação justa: parte da baseline coincidiu com compilação/testes.
+
+O [ckg](https://github.com/phins-group/ckg), commit `0895461d16b0d028a67e792757a047536de7df0b`, foi compilado e executado separadamente no mesmo snapshot. Encontrou 13/16 arquivos e 3/13 símbolos esperados. Seus oito resultados misturam arquivos/símbolos e têm outro formato: os 43.982 bytes, banco de 29.720.576 bytes e mediana de 37 ms não equivalem a um contexto/produto idêntico ao Mustard. Não concluímos superioridade geral. Nenhum motor/dependência desse projeto foi adicionado ao produto.
+
+As 16 perguntas foram formuladas pelo implementador a partir das fontes antes da execução, e passaram a ser conhecidas durante as correções. Não é validação cega ou independente. O primeiro catálogo preservou 16/21 arquivos conhecidos, mas caiu de 7 para 6 símbolos no conjunto novo. A conferência encontrou cálculo de raridade sobre candidatos, corrigido para frequência global. Outra lacuna era a ausência de evidência para módulos sem declarações; depois de adicioná-la, uma seleção ampla ainda podia ocupar todos os candidatos antes da correspondência completa. O critério completo passou a preceder essa seleção. Os registros intermediários foram conservados.
+
+A auditoria nativa do backend passou: 12.832 entradas (12.770 declarações e 62 evidências de arquivo), 10.336 relações estáticas, 67 recursos aceitos, dois excluídos e 192 trechos. Todos os cinco planos de consulta conferidos usaram índices. O corpus de comparação não contém documentos Markdown, portanto os vínculos documentação↔código foram exercitados em fixtures reais separadas. Índices/catálogo aumentam espaço e o scan completo não ficou mais rápido nesta medida; o benefício observado foi cobertura e recuperação seletiva. **Não foi demonstrada economia faturada de tokens nem melhor qualidade final de spec/código.**
+
+Artefatos: `target/suzano-catalog-20261009/` contém perguntas/respostas, `native.json`, `native-database-audit.json`, `interleaved-latency.json` e `csrf-inventario.md`; comparativos anteriores estão em `target/suzano-catalog-before-ranking-20261009/` e `target/suzano-catalog-after-idf-20261009/`. Hashes dos executáveis identificam a árvore pré-commit medida. O ajuste posterior de validação de âncoras documentais não afeta esse corpus sem Markdown; o pacote final é recompilado do commit limpo e passa pela instalação nativa temporária.
+
+Verificação final: **3.849 testes Rust aprovados**, zero falhas e dois ignorados herdados; lint estrito de todos os alvos e build dos três programas aprovados. Instalação real do binário em pasta temporária vazia, scan, consulta, navegação, vínculo documental/reverso, grupos, auditoria e Markdown aprovados com zero pedidos ao servidor HTTP de teste, inclusive com chave/filtros legados. Logs: `/tmp/mustard-catalog-workspace-accepted.log`, `/tmp/mustard-catalog-clippy-accepted.log`, `/tmp/mustard-catalog-build-accepted.log`, `/tmp/mustard-catalog-native-acceptance.log`. Prova de instalação e pacote são atualizados para identificar o commit final limpo.
+
+## Histórico de 09/10: primeira ingestão de documentos e configurações
 
 A pesquisa foi aplicada parcialmente; não foi encerrada uma implementação de todos os motores/features consultados. A reconferência das fontes primárias de [ContextGraph](https://github.com/erenalpaslan/context-graph), [Codebase Memory MCP](https://github.com/DeusData/codebase-memory-mcp) e [SCIP](https://github.com/scip-code/scip) manteve a separação entre ingestão de evidência, navegação e resolução por compilador. Nesta continuação aplicamos a ingestão de textos de documentação/configuração/esquemas, com implementação própria e sem dependências novas.
 
@@ -12,7 +59,7 @@ Cada trecho conserva arquivo, intervalo de linhas e SHA-256 do conteúdo realmen
 
 `knowledge` retorna símbolos em `cards` e textos em `resources`. Use `--file <arquivo> --detail` para ampliar os trechos recuperados; `--all` permite exportação completa dos trechos correspondentes. Markdown inclui a evidência textual com origem e ressalva de comportamento não validado. Contexto preparado de componente de configuração/documentação também verifica a fonte na cópia real da onda; alteração além da janela visível invalida a versão. O runtime de scan mostra contagem de recursos e motivos de exclusão.
 
-Arquivo de recurso alterado, criado ou excluído atualiza censo/recursos numa transação sem reescrever código, rotas, grafo ou história quando estes continuam válidos. Arquivos de texto sem alteração são reutilizados por blob. O índice de recursos ainda é refeito como bloco quando seu conteúdo muda; a escrita não é uma atualização FTS individual por arquivo. Não chamamos isso de manutenção universalmente incremental. Sem mudança, o caminho rápido conserva os blocos. Alteração de manifesto/código ou mudança de histórico continua seguindo as invalidações do scanner.
+Arquivo de recurso alterado, criado ou excluído atualiza censo/recursos numa transação sem reescrever código, rotas, grafo ou história quando estes continuam válidos. Arquivos de texto sem alteração são reutilizados por blob. Nesta primeira etapa o índice de recursos era refeito como bloco quando seu conteúdo mudava. A continuação abaixo substitui isso por atualização das entradas FTS de cada arquivo alterado. Não chamamos isso de manutenção universalmente incremental. Sem mudança, o caminho rápido conserva os blocos. Alteração de manifesto/código ou mudança de histórico continua seguindo as invalidações do scanner.
 
 A caminhada respeita as exclusões existentes. O registro exclui ambiente, configuração interna `mustard.json`, arquivos de credenciais/segredos, locks e saídas comuns; arquivos acima de 256 KiB, binários, não UTF-8, inacessíveis ou com sinais conservadores de credenciais não fornecem trechos. Os motivos ficam no relatório. O filtro de conteúdo não é um detector universal de segredos e pode excluir referências a variáveis, como ocorreu em dois arquivos de CI do corpus. Ignorados e formatos sem suporte não são apresentados como cobertura completa. O texto de um documento, mesmo com hash atual, permanece uma declaração do autor, sem prova de que concorda com o código.
 
@@ -38,20 +85,20 @@ Registros locais: `target/suzano-resources-20261009/benchmark.json` (primeiro cr
 
 Verificação: suíte completa com **3.835 testes Rust aprovados**, zero falhas, dois ignorados herdados. Depois do ajuste final de correspondência, os seis testes específicos de recursos foram aprovados, incluindo o novo caso que exclui sobreposição genérica. Lint estrito de todos os alvos e build dos três programas aprovados após o ajuste. Prova real de instalação em pasta vazia, scan, consulta de documentos/configurações, navegação, exportação, fontes secundárias e configuração legada realizada com zero pedidos ao servidor HTTP de teste. Logs: `/tmp/mustard-resources-workspace-final.log`, `/tmp/mustard-resources-precision-test.log`, `/tmp/mustard-resources-precision-clippy.log` e `/tmp/mustard-resources-precision-build.log`.
 
-### Pesquisa aplicada e trabalho pendente
+### Cobertura dos conceitos pesquisados — atualizada nesta continuação
 
-| Conceito pesquisado | Estado no Mustard | Limite ou próximo trabalho |
+| Conceito pesquisado | Aplicação no Mustard | Limite explícito |
 | --- | --- | --- |
-| Claude Code Setup | Detecção e perfil por evidências do projeto, comandos/hooks separados | Não equivale a entendimento de toda a aplicação. |
-| ContextGraph | Agora código e textos de documentação/configuração/esquemas são consultáveis; fonte e invalidação verificáveis | Falta ligar textos a símbolos por referências explícitas; PDF e entendimento semântico universal não foram implementados. |
-| Code Context Graph | Intenção/regras explicitamente anotadas em declarações e recuperáveis | Não inferimos regras de negócio que ninguém registrou. |
-| Codebase Memory MCP / Serena | Navegação por identidade e relações estáticas verificadas nos dois extremos | Falta resolver os casos ambíguos por tipos/compilador; seus motores não foram comparados em execução neste corpus. |
-| SCIP | Ambiguidade preservada, sem promover candidata a vínculo provado | Importação real de índices SCIP permanece pendente. |
-| ckg / CodeGraph-Rust | Persistência SQLite, consulta curta/expansão e mecânica no binário | Comparação controlada com os motores ainda pendente; índice textual novo é mantido em bloco. |
-| GitNexus | Inventário e relações existentes fornecem a base | Agrupamento de capacidades/fluxos por evidência ainda não entregue. |
-| DeepWiki Open | Exportação Markdown nativa de fontes e interpretações verificadas | Uma narrativa de negócio equivalente ao Puzzle ainda exige significado conferido; não introduzimos um gerador por IA. |
+| Claude Code Setup | Perfil/detecção por evidências; mecânica no binário; instruções curtas por finalidade | Não compreende automaticamente toda a aplicação. |
+| ContextGraph | Código, documentação/configuração/esquemas textuais, referências explícitas entre documentação e símbolos, origem e invalidação | Não há ingestão PDF nem associação semântica automática entre qualquer texto e código. |
+| Code Context Graph | Anotações de intenção/regras recuperáveis como afirmações do autor | Não inferimos regras que ninguém registrou. |
+| Codebase Memory MCP / Serena | Consulta indexada, identidade, navegação dirigida, expansão seletiva e fonte conferida nos dois extremos | Não incorporamos seus motores; resolução por tipos/compilador não foi implementada. |
+| SCIP | Separação entre definição, referência e candidata; ambiguidades conservadas | Não foi implementada importação SCIP. Ela requer índice produzido por ferramenta da linguagem, posição/encoding e versão da fonte conferidos. |
+| ckg / CodeGraph-Rust | SQLite/FTS5, catálogo derivado, índice incremental por arquivo, consulta compacta; ckg executado no backend isolado | Comparação exploratória com ckg, não avaliação independente de todos os motores. Nenhuma biblioteca/motor externo foi incorporado ao produto. |
+| GitNexus | Componentes do subgrafo estático, possíveis entradas, direção e fontes, exportados nativamente | Grupos estruturais da evidência selecionada; não são jornadas de negócio nem ordem de execução comprovada. |
+| DeepWiki Open | Inventário Markdown nativo, referências, anotações e interpretações conferíveis | A narrativa completa do Puzzle continua exigindo raciocínio/revisão. Não foi introduzido gerador IA. |
 
-A próxima prioridade é relacionar documentação/configuração e código por referências explícitas, organizar capacidades com evidência e medir recuperação em um conjunto novo. A resolução por compilador/SCIP e a comparação com outros motores devem ser avaliadas em escopo separado. A avaliação pontual do Jev em todo o Mustard, ao final deste documento, continua válida: nenhum ponto desta continuação precisou de chamadas pagas; futuros pilotos exigem ganho medido sobre o caminho nativo.
+Os conceitos úteis ao caminho nativo acima foram aplicados. Isso não significa implementar todos os recursos de cada projeto pesquisado. PDF, índices de compilador e narrativa semântica são extensões diferentes, sem benefício comprovado que justifique introduzi-las automaticamente. A avaliação pontual do Jev ao final deste documento permanece: nenhuma operação desta continuação precisou de inferência paga.
 
 ## Medição anterior de 08/10: operação auxiliar nativa
 

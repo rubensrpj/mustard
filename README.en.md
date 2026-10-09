@@ -23,9 +23,11 @@ flowchart LR
 
 1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It runs at initialization, when a spec opens and after round commits; `mustard-rt run scan` refreshes it explicitly. Parsing limits and relation origins remain visible.
 2. The flow's commands query that model through the **map** (`mustard-rt run map`) and prepare current excerpts with references. Dependencies and candidate tests guide discovery; they do not prove behavior or coverage.
-3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
+3. Goal: **context economy** — the map finds *where to look*, and the model checks the necessary excerpts. Billed token savings must be measured in the actual workflow.
 
-> The binary handles state, retrieval, context, orchestration, validation, calculations and page generation. The model reasons and implements. Jev only judges pertinent ambiguities after local recovery, behind a provider interface and a versioned cache. Literal Grep/rg preserve their arguments and do not call Jev routinely.
+`mustard-rt run knowledge --query "<subject>"` retrieves symbols and documentation/configuration excerpts with lines and hashes through local indexes; `--detail` expands the evidence and shows structural groups, and `--all --markdown --out inventory.md` exports the inventory. Explicit references can connect a document to code; a mention does not validate the described rule. `mustard-rt run map audit` checks database/index consistency and query plans without an auxiliary model.
+
+> The binary handles state, retrieval, context, orchestration, validation, calculations and page generation. The model reasons and implements. Auxiliary operations work without AI by default. Jev requires `ai.fallback: true` and an explicit purpose-specific filter; vectors require `ai.vectors: true`. Credentials and legacy settings do not enable inference. The provider interface and versioned cache remain available for an evaluated exception. Literal Grep/rg preserve their arguments and do not call Jev routinely.
 
 ---
 

@@ -10,10 +10,12 @@ use super::project_map::{ProjectMap, UseSite, file_history};
 
 pub mod annotation;
 pub mod resources;
+pub mod references;
+pub mod capabilities;
 mod retrieval;
 pub use annotation::Annotation;
 
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
@@ -34,6 +36,8 @@ pub struct Card {
     pub documentation: String,
     #[serde(default)]
     pub body_comment: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub identifiers: String,
     #[serde(default)]
     pub literals: Vec<Value>,
     #[serde(default)]
@@ -90,6 +94,10 @@ pub fn summary(card: &Card) -> Value {
                     .iter()
                     .any(|item| item.text.chars().count() > 240)
         );
+    }
+    if !card.identifiers.is_empty() {
+        projection["identifiers"]=json!(short(&card.identifiers,320));
+        projection["identifiers_compacted"]=json!(card.identifiers.chars().count()>320);
     }
     projection
 }
@@ -166,6 +174,7 @@ pub fn enrich(raw: &mut Value) {
                 signature:short(declaration["signature"].as_str().unwrap_or_default(),1200),
                 documentation:short(declaration["doc"].as_str().unwrap_or_default(),800),
                 body_comment:short(declaration["body_comment"].as_str().unwrap_or_default(),600),
+                identifiers:String::new(),
                 literals:module["texts"].as_array().into_iter().flatten().filter(|text|
                     text["owner"].as_str()==Some(name) && text["line"].as_u64().is_some_and(|at|line<=at && at<=end_line))
                     .map(|text|json!({"line":text["line"],"kind":text["kind"],"value":short(text["value"].as_str().unwrap_or_default(),400)})).take(12).collect(),
@@ -180,6 +189,39 @@ pub fn enrich(raw: &mut Value) {
                 inline_tests:module["has_tests"].as_bool().unwrap_or(false),outgoing:Vec::new(),callers,
                 unresolved_calls:declaration["common_calls"].as_u64().unwrap_or(0) as usize,
             });
+        }
+        // Executable configuration and scripts may have no grammar-recognized
+        // declarations. Keep file evidence addressable without inventing one.
+        if module["declarations"].as_array().is_some_and(Vec::is_empty)
+            && module["analysis"]["origin"]=="tree-sitter" && !super::ast::is_test_path(file) {
+            let end_line=module["analysis"]["end_line"].as_u64().unwrap_or(0);
+            if end_line>0 {
+                cards.entry(file.into()).or_default().push(Card {
+                    id:format!("{file}:1:@file"), name:std::path::Path::new(file).file_name().and_then(|name|name.to_str()).unwrap_or(file).into(),
+                    kind:"source-file".into(),signature:String::new(),documentation:String::new(),
+                    body_comment:short(module["file_comment"].as_str().unwrap_or_default(),600),
+                    identifiers:module["analysis"]["file_identifiers"].as_str().unwrap_or_default().into(),
+                    literals:module["texts"].as_array().into_iter().flatten().take(12).cloned().collect(),
+                    file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),annotations:vec![],
+                    source:Source{file:file.into(),line:1,end_line,sha256:sha256.into()},
+                    parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:vec![],routes:vec![],tests:vec![],inline_tests:false,
+                    outgoing:vec![],callers:vec![],unresolved_calls:0,
+                });
+            }
+        }
+    }
+    // Distinct declarations can share file, line and name (for example,
+    // two type members on one line). Keep every declaration addressable.
+    for entries in cards.values_mut() {
+        let mut counts=BTreeMap::<String,usize>::new();
+        for card in entries.iter() {*counts.entry(card.id.clone()).or_default()+=1;}
+        let mut ordinals=BTreeMap::<String,usize>::new();
+        for card in entries.iter_mut() {
+            if counts.get(&card.id).copied().unwrap_or(0)>1 {
+                let base=format!("{}:{}:{}",card.id,card.kind,card.source.end_line);
+                let ordinal=ordinals.entry(base.clone()).or_default();
+                card.id=format!("{base}:{ordinal}");*ordinal+=1;
+            }
         }
     }
     // Reverse the scanner's edges once. Select the narrowest containing
@@ -197,16 +239,19 @@ pub fn enrich(raw: &mut Value) {
     for (target, source, site) in edges {
         if let Some(callers) = cards.get_mut(site["file"].as_str().unwrap_or_default()) {
             let at = site["line"].as_u64().unwrap_or(0);
-            if let Some(caller) = callers
-                .iter_mut()
-                .filter(|card| {
+            let candidates: Vec<_> = callers
+                .iter().enumerate()
+                .filter(|(_,card)| {
                     Some(card.name.as_str()) == site["from"].as_str()
                         && card.source.line <= at
                         && at <= card.source.end_line
                 })
-                .min_by_key(|card| card.source.end_line - card.source.line)
-            {
-                caller.outgoing.push(json!({"target":target,"source":source,"call_line":at,"resolution":site["resolution"]}));
+                .map(|(i,card)|(i,card.source.end_line-card.source.line)).collect();
+            let narrowest=candidates.iter().map(|(_,width)|*width).min();
+            let candidates: Vec<_>=candidates.into_iter().filter(|(_,width)|Some(*width)==narrowest).map(|(i,_)|i).collect();
+            for &i in &candidates {
+                callers[i].outgoing.push(json!({"target":target,"source":source,"call_line":at,
+                    "resolution":if candidates.len()==1 {site["resolution"].clone()}else{json!("ambiguous")}}));
             }
         }
     }
@@ -256,7 +301,7 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
         .map(|card| {
             normalizer
                 .forms(&format!(
-                    "{} {} {} {} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {} {}",
                     card.name,
                     card.source.file,
                     card.signature,
@@ -265,7 +310,7 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
                     card.file_documentation,
                     serde_json::to_string(&card.routes).unwrap_or_default(),
                     serde_json::to_string(&card.literals).unwrap_or_default(),
-                    annotation_text(card)
+                    annotation_text(card), card.identifiers
                 ))
                 .into_iter()
                 .flatten()
@@ -301,6 +346,12 @@ pub struct IntentCandidate {
 }
 
 pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<IntentCandidate> {
+    intent_cards_with_weights(cards,query,languages,None)
+}
+
+/// Indexed retrieval supplies corpus-wide frequencies so candidate pruning
+/// cannot change the meaning of rarity within a declaration's evidence.
+pub fn intent_cards_with_weights(cards: &[Card], query: &str, languages: &Languages, corpus_weights: Option<&[f64]>) -> Vec<IntentCandidate> {
     let mut normalizer = Normalizer::new(languages);
     let terms = retrieval::Terms::of(query, languages);
     let asked = &terms.asked;
@@ -320,7 +371,7 @@ pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<I
         })
         .collect();
     let files: BTreeSet<_> = cards.iter().map(|card| &card.source.file).collect();
-    let weights: Vec<_> = asked
+    let weights: Vec<_> = corpus_weights.filter(|weights|weights.len()==asked.len()).map(<[f64]>::to_vec).unwrap_or_else(||asked
         .iter()
         .map(|forms| {
             let seen: BTreeSet<_> = documents
@@ -331,7 +382,7 @@ pub fn intent_cards(cards: &[Card], query: &str, languages: &Languages) -> Vec<I
                 .collect();
             ((files.len() + 1) as f64 / (seen.len() + 1) as f64).ln() + 1.0
         })
-        .collect();
+        .collect());
     let mut scored: Vec<_> = documents
         .iter()
         .enumerate()
@@ -379,6 +430,17 @@ pub fn interpretation_matches(card: &Card, query: &str, languages: &Languages) -
     let asked = retrieval::Terms::of(query, languages).asked;
     let own: BTreeSet<_> = normalizer.forms(&format!("{} {}", card.name, card.documentation)).into_iter().flatten().collect();
     !asked.is_empty() && asked.iter().all(|forms| forms.iter().any(|form| own.contains(form)))
+}
+
+/// A file without declarations can still provide all requested lexical
+/// evidence. It remains file evidence, never a synthesized function.
+pub fn source_file_matches(card:&Card,query:&str,languages:&Languages)->bool {
+    if card.kind!="source-file" || query.trim().is_empty() {return false;}
+    let mut normalizer=Normalizer::new(languages);
+    let own:BTreeSet<_>=normalizer.forms(&format!("{} {} {} {} {}",card.source.file,card.identifiers,card.file_documentation,card.body_comment,
+        serde_json::to_string(&card.literals).unwrap_or_default())).into_iter().flatten().collect();
+    let asked=retrieval::Terms::of(query,languages).asked;
+    !asked.is_empty() && asked.iter().all(|slot|slot.iter().any(|form|own.contains(form)))
 }
 
 /// Native report from evidence, not fabricated business prose. A model or a
@@ -478,6 +540,16 @@ pub fn markdown(report: &Value, map: &ProjectMap) -> String {
                 source["end_line"],
                 source["sha256"].as_str().unwrap_or_default()
             );
+        }
+        text.push('\n');
+    }
+    for group in report["capability_candidates"].as_array().into_iter().flatten() {
+        let _=writeln!(text,"## Grupo estrutural / structural group: {}\n\nSubgrafo das fontes selecionadas; significado de negócio e ordem de execução não inferidos.\n",group["label"].as_str().unwrap_or_default());
+        for entry in group["entry_candidates"].as_array().into_iter().flatten() {
+            let _=writeln!(text,"- Entrada candidata / candidate entry: `{}` · {}",entry["symbol"].as_str().unwrap_or_default(),entry["reason"].as_str().unwrap_or_default());
+        }
+        for edge in group["static_edges"].as_array().into_iter().flatten() {
+            let _=writeln!(text,"- `{}` → `{}` · linha / line {} · vínculo estático único.",edge["from"].as_str().unwrap_or_default(),edge["to"].as_str().unwrap_or_default(),edge["line"]);
         }
         text.push('\n');
     }
@@ -610,6 +682,23 @@ fn annotation_text(card: &Card) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn corpus_frequencies_keep_the_winner_when_the_candidate_subset_changes() {
+        let mut raw=json!({"modules":[{"path":"main.rs","declarations":[
+            {"name":"first","kind":"function","line":1,"end_line":1,"doc":"cobalt"},
+            {"name":"second","kind":"function","line":2,"end_line":2,"doc":"quartz"}]}]});
+        for n in 0..30 {raw["modules"].as_array_mut().unwrap().push(json!({"path":format!("noise{n}.rs"),
+            "declarations":[{"name":"noise","kind":"function","line":1,"end_line":1,"doc":"cobalt"}]}));}
+        enrich(&mut raw);let map:ProjectMap=serde_json::from_value(raw).unwrap();let cards=cards(&map);
+        let language=Languages::new(["en-US"]);
+        let whole=intent_cards(&cards,"cobalt quartz",&language);
+        assert_eq!(cards[whole[0].card].name,"second");
+        let subset:Vec<_>=cards.iter().filter(|c|c.source.file=="main.rs").cloned().collect();
+        assert_eq!(subset[intent_cards(&subset,"cobalt quartz",&language)[0].card].name,"first");
+        let weights=[1.0,16.0_f64.ln()+1.0];
+        let indexed=intent_cards_with_weights(&subset,"cobalt quartz",&language,Some(&weights));
+        assert_eq!(subset[indexed[0].card].name,"second");
+    }
     #[test]
     fn calls_remain_ambiguous_and_test_declarations_stay_out() {
         let mut raw = json!({"modules":[{"path":"service.rs","analysis":{"content_sha256":"hash","parse_complete":true},"test_lines":[[20,50]],

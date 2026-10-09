@@ -89,6 +89,7 @@ pub enum Question {
     Users,
     History,
     Dump,
+    Audit,
     Note,
 }
 
@@ -104,6 +105,7 @@ impl Question {
             Self::Users => "users",
             Self::History => "history",
             Self::Dump => "dump",
+            Self::Audit => "audit",
             Self::Note => "note",
         }
     }
@@ -181,6 +183,9 @@ pub(crate) type Trace<'t> = dyn Fn(&Path, &Path, &str, usize) -> mustard_core::p
 /// a configuração não o desliga.
 pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Value {
     let project = crate::commands::spec_events::project(&opts.root);
+    if opts.question==Question::Audit {
+        return mustard_core::io::knowledge::audit::run(&project.root).unwrap_or_else(|error|refused(&error,project.lang));
+    }
     crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
     let _ = map_specs::sync(&project.root, &project.languages);
     let lang = project.lang;
@@ -325,6 +330,7 @@ fn answer_from(
         Question::History => history(opts, root, lang, read, trace),
         Question::Examples => examples(opts, root, lang, read, trace),
         Question::Dump => dump(root),
+        Question::Audit => mustard_core::io::knowledge::audit::run(root),
         Question::Note => note(opts, root, read),
     }
 }
@@ -975,6 +981,14 @@ mod tests {
     use mustard_core::domain::map_filter::{FilterError, FilterRequest, Filtered, MapFilter};
     use mustard_core::domain::project_map::{DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText};
     use tempfile::tempdir;
+
+    #[test]
+    fn audit_inspects_the_stored_database_without_invoking_the_scanner() {
+        let dir=tempdir().unwrap();
+        store::save_at(&store::model_path(dir.path()),&json!({"modules":[]}),"test",&Languages::new([])).unwrap();
+        let report=map_at(&ask(dir.path(),Question::Audit),&|_,_|panic!("audit must inspect before any refresh"),&|_,_,_,_|panic!("audit never requests history"));
+        assert_eq!(report["ok"],true,"{report}");assert_eq!(report["question"],"audit");
+    }
 
     /// A resposta de um projeto sem a chave do filtro: a busca é a do banco.
     fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Value {

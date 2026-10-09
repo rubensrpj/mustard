@@ -45,6 +45,8 @@ mod typed;
 #[derive(Default)]
 pub(crate) struct Extracted {
     pub parse_complete: Option<bool>,
+    /// Addressable file evidence when the grammar finds no declaration.
+    pub file_identifiers: String,
     pub imports: Vec<String>,
     /// The imports the language puts in sight of more files than the one that
     /// writes them (`@import.global`).
@@ -1038,6 +1040,9 @@ impl Analyzer {
                 (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
             }
             (out.file_doc, out.file_comment, out.file_doc_in_body) = written_text.of_file(&out.declarations);
+            if out.declarations.is_empty() {
+                out.file_identifiers = written_text.lines(1, root.end_position().row + 1).1;
+            }
         }
         if keep.texts_and_routes {
             out.texts = fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);

@@ -369,13 +369,16 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
 
 /// Verbatim documentation/configuration/schema text. No executable symbols or
 /// inferred behavior are manufactured from these excerpts.
-pub const RESOURCES: MapBlock = block!("resources", version 1, {
+pub const RESOURCES: MapBlock = block!("resources", version 2, {
     "resource_files" at list(&["resources"]) => [
         "path" Text, "blob" Text, "sha256" Text, "kind" Text, "issue" Text, "sections" Json
     ]
-}, index ["resource_fts", "resource_positions", "resource_meta"]
+}, index ["resource_fts", "resource_positions", "resource_meta", "resource_index_files"]
    "CREATE VIRTUAL TABLE resource_fts USING fts5(title, body, path, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
     CREATE TABLE resource_positions(id INTEGER PRIMARY KEY, path TEXT NOT NULL, section INTEGER NOT NULL);\
+    CREATE INDEX resource_by_path ON resource_positions(path,section);\
+    CREATE INDEX resource_source_path ON resource_files(path);\
+    CREATE TABLE resource_index_files(path TEXT PRIMARY KEY, sha256 TEXT NOT NULL);\
     CREATE TABLE resource_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
 
 /// A história de cada declaração, lida do git na primeira pergunta sobre um
@@ -515,8 +518,8 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 13] =
-    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block];
+const DB_BLOCKS: [Block; 14] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -1999,6 +2002,12 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
         }
         if changed.iter().any(|(block, _)| block.name() == RESOURCES.name()) {
             crate::io::knowledge::resources::rebuild(tx, languages.unwrap_or(&Languages::new([])))?;
+        }
+        if changed.iter().any(|(block,_)| block.name() == DECLS.name()) {
+            crate::io::knowledge::catalog::sync(tx,languages.unwrap_or(&Languages::new([])))?;
+        }
+        if changed.iter().any(|(block,_)| [DECLS.name(),RESOURCES.name()].contains(&block.name())) {
+            crate::io::knowledge::references::rebuild(tx)?;
         }
         // Refeitas as declarações, a marca do glossário cuja declaração mudou
         // de nome ou sumiu sai junto.

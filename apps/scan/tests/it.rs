@@ -39,6 +39,7 @@ mod php_laravel_fixture;
 mod quality;
 mod retired_search_commands;
 mod resources;
+mod catalog;
 mod routes;
 mod skip_dirs_excludes_claude;
 mod stack_detection_e2e;
