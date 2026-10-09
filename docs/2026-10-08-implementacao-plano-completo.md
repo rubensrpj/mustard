@@ -6,7 +6,17 @@ Contrato de entrada: `2026-10-07-prompt-implementacao-mustard.md`. O escopo abra
 
 Esclarecimento do usuário em 08/10: suporte ao Codex é futuro. A preparação atual conserva interfaces de julgamento e projeção de estado independentes dos adaptadores do Claude. Não será implementada integração Codex nesta entrega; não haverá alteração da configuração pessoal desse cliente.
 
-## Continuação do scan em 09/10
+## Continuação mais recente do scan em 09/10
+
+Evidência dentro das funções agora participa da busca: identificadores do corpo, assinaturas e textos fixos completos, sem cortes anteriores à indexação nem limite dos primeiros 12 textos. A seleção ampla combina índice dos cartões e descoberta geral, com filtro de arquivo antecipado. Respostas iniciais oferecem pequenos trechos correspondentes; expansão mantém a evidência completa sem duplicação. Pacotes versão 3 exigem novo scan de bancos anteriores. O motor continua agnóstico e sem modelo auxiliar/Jev por padrão.
+
+Contra `1ccae2c6`, no Florestal: primeira lista preservou **17/21 arquivos e 11/20 símbolos**; segunda lista passou de **13/16 para 15/16 arquivos**, e de **7/13 para 10/13 símbolos**. Respostas aumentaram 11,2% e 7,7%, banco 3,4%, e a mediana alternada passou de 284 para 329 ms. Não há economia total de tokens demonstrada.
+
+Avaliação externa adaptada do RepoQA, com seleção/60 descrições congeladas antes dos resultados: **31/60 arquivos em ambas as versões; 7/60 → 11/60 símbolos**. Só 38/60 símbolos estão presentes nos cartões: faltam gramáticas C++/Java, e duas funções Go são de testes excluídos pelo contrato. Houve regressões individuais. Não é pontuação oficial, revisão independente nem aceite de oráculo completo; o motor não foi reajustado a partir dessas respostas.
+
+**3.854 testes Rust aprovados**, zero falhas e dois ignorados herdados; suíte do scan repetida após a última correção, lint estrito e build aprovados. Instalação nativa real em pasta vazia, expansão, navegação, auditoria e Markdown conferidos, com zero HTTP. Relatórios reproduzíveis, comparativo com o Puzzle, limites e próximos critérios de avaliação: [scan como oráculo](2026-10-08-scan-oraculo.md). Os números e provas abaixo descrevem etapas anteriores.
+
+## Histórico do catálogo do scan em 09/10
 
 Catálogo indexado com hidratação seletiva, nomes exatos, frequências globais e correspondência completa antes do corte; manutenção dos índices por arquivo alterado; evidência de arquivos sem declarações; vínculos explícitos documentação↔código; grupos estruturais e exportação; consulta consistente entre gerações; auditoria nativa do banco e planos de consulta. SQLite/FTS5 permanece adequado. Fonte canônica ainda pode ser regravada como bloco e referências documentais são reconstruídas; não declaramos manutenção universalmente incremental.
 

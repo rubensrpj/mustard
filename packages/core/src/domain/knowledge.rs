@@ -12,10 +12,11 @@ pub mod annotation;
 pub mod resources;
 pub mod references;
 pub mod capabilities;
+pub mod evidence;
 mod retrieval;
 pub use annotation::Annotation;
 
-pub const VERSION: u64 = 2;
+pub const VERSION: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
@@ -95,10 +96,11 @@ pub fn summary(card: &Card) -> Value {
                     .any(|item| item.text.chars().count() > 240)
         );
     }
-    if !card.identifiers.is_empty() {
+    if !card.identifiers.is_empty() && card.kind=="source-file" {
         projection["identifiers"]=json!(short(&card.identifiers,320));
         projection["identifiers_compacted"]=json!(card.identifiers.chars().count()>320);
     }
+    projection["detail_counts"]["identifiers"]=json!(card.identifiers.split_whitespace().count());
     projection
 }
 
@@ -174,10 +176,10 @@ pub fn enrich(raw: &mut Value) {
                 signature:short(declaration["signature"].as_str().unwrap_or_default(),1200),
                 documentation:short(declaration["doc"].as_str().unwrap_or_default(),800),
                 body_comment:short(declaration["body_comment"].as_str().unwrap_or_default(),600),
-                identifiers:String::new(),
+                identifiers:declaration["body_names"].as_str().unwrap_or_default().to_string(),
                 literals:module["texts"].as_array().into_iter().flatten().filter(|text|
                     text["owner"].as_str()==Some(name) && text["line"].as_u64().is_some_and(|at|line<=at && at<=end_line))
-                    .map(|text|json!({"line":text["line"],"kind":text["kind"],"value":short(text["value"].as_str().unwrap_or_default(),400)})).take(12).collect(),
+                    .map(evidence::source_literal).collect(),
                 file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),
                 annotations:declaration["annotations"].as_array().into_iter().flatten()
                     .filter_map(|item|serde_json::from_value(item.clone()).ok()).collect(),
@@ -201,7 +203,7 @@ pub fn enrich(raw: &mut Value) {
                     kind:"source-file".into(),signature:String::new(),documentation:String::new(),
                     body_comment:short(module["file_comment"].as_str().unwrap_or_default(),600),
                     identifiers:module["analysis"]["file_identifiers"].as_str().unwrap_or_default().into(),
-                    literals:module["texts"].as_array().into_iter().flatten().take(12).cloned().collect(),
+                    literals:module["texts"].as_array().into_iter().flatten().map(evidence::source_literal).collect(),
                     file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),annotations:vec![],
                     source:Source{file:file.into(),line:1,end_line,sha256:sha256.into()},
                     parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:vec![],routes:vec![],tests:vec![],inline_tests:false,
@@ -300,18 +302,7 @@ pub fn ranked(cards: &[Card], query: &str, languages: &Languages) -> Vec<usize> 
         .iter()
         .map(|card| {
             normalizer
-                .forms(&format!(
-                    "{} {} {} {} {} {} {} {} {} {}",
-                    card.name,
-                    card.source.file,
-                    card.signature,
-                    card.documentation,
-                    card.body_comment,
-                    card.file_documentation,
-                    serde_json::to_string(&card.routes).unwrap_or_default(),
-                    serde_json::to_string(&card.literals).unwrap_or_default(),
-                    annotation_text(card), card.identifiers
-                ))
+                .forms(&evidence::searchable_text(card))
                 .into_iter()
                 .flatten()
                 .collect()
@@ -367,7 +358,8 @@ pub fn intent_cards_with_weights(cards: &[Card], query: &str, languages: &Langua
                 .into_iter()
                 .flatten()
                 .collect();
-            (header, own)
+            let written:BTreeSet<_>=normalizer.forms(&evidence::secondary_text(card)).into_iter().flatten().collect();
+            (header, own,written)
         })
         .collect();
     let files: BTreeSet<_> = cards.iter().map(|card| &card.source.file).collect();
@@ -377,7 +369,7 @@ pub fn intent_cards_with_weights(cards: &[Card], query: &str, languages: &Langua
             let seen: BTreeSet<_> = documents
                 .iter()
                 .enumerate()
-                .filter(|(_, (header, own))| forms.iter().any(|form| header.contains(form) || own.contains(form)))
+                .filter(|(_, (header, own,written))| forms.iter().any(|form| header.contains(form) || own.contains(form) || written.contains(form)))
                 .map(|(i, _)| &cards[i].source.file)
                 .collect();
             ((files.len() + 1) as f64 / (seen.len() + 1) as f64).ln() + 1.0
@@ -386,13 +378,15 @@ pub fn intent_cards_with_weights(cards: &[Card], query: &str, languages: &Langua
     let mut scored: Vec<_> = documents
         .iter()
         .enumerate()
-        .map(|(i, (header, own))| {
+        .map(|(i, (header, own,written))| {
             let score = asked
                 .iter()
                 .zip(&weights)
                 .map(|(forms, weight)| {
                     if forms.iter().any(|form| own.contains(form)) {
                         weight * 2.0
+                    } else if forms.iter().any(|form| written.contains(form)) {
+                        weight * 1.25
                     } else if forms.iter().any(|form| header.contains(form)) {
                         *weight
                     } else {
@@ -413,7 +407,7 @@ pub fn intent_cards_with_weights(cards: &[Card], query: &str, languages: &Langua
     scored
         .into_iter()
         .map(|(card, _)| {
-            let matches = asked.iter().filter(|slot| slot.iter().any(|form| documents[card].1.contains(form))).count();
+            let matches = asked.iter().filter(|slot| slot.iter().any(|form| documents[card].1.contains(form) || documents[card].2.contains(form))).count();
             IntentCandidate { card, independent: asked.len() >= 2 && matches >= 2 }
         })
         .collect()
@@ -437,8 +431,7 @@ pub fn interpretation_matches(card: &Card, query: &str, languages: &Languages) -
 pub fn source_file_matches(card:&Card,query:&str,languages:&Languages)->bool {
     if card.kind!="source-file" || query.trim().is_empty() {return false;}
     let mut normalizer=Normalizer::new(languages);
-    let own:BTreeSet<_>=normalizer.forms(&format!("{} {} {} {} {}",card.source.file,card.identifiers,card.file_documentation,card.body_comment,
-        serde_json::to_string(&card.literals).unwrap_or_default())).into_iter().flatten().collect();
+    let own:BTreeSet<_>=normalizer.forms(&evidence::searchable_text(card)).into_iter().flatten().collect();
     let asked=retrieval::Terms::of(query,languages).asked;
     !asked.is_empty() && asked.iter().all(|slot|slot.iter().any(|form|own.contains(form)))
 }

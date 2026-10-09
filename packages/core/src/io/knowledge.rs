@@ -464,6 +464,10 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         let mut item = if detail { serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))? } else { knowledge::summary(card) };
         compacted_relations += outgoing - item["outgoing"].as_array().map_or(0, Vec::len) + callers - item["callers"].as_array().map_or(0, Vec::len);
         item["retrieval"] = json!(reasons[&i]);
+        if !detail {
+            let witnesses = knowledge::evidence::compact_witnesses(card, query, &languages);
+            if !witnesses.is_null() { item["matched_evidence"] = witnesses; }
+        }
         if !card.annotations.is_empty() {
             item["annotation_status"] = json!("author-assertion; not semantic proof");
         }

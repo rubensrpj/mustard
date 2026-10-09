@@ -81,6 +81,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn technical_plural_aliases_keep_native_accents_and_do_not_require_project_specific_words() {
+        let language=Languages::new(["pt-BR","en-US"]);
+        let mut normalizer=Normalizer::new(&language);
+        for (question,code) in [("requisições","request"),("cabeçalhos","header"),("durações","duration"),("exceções","exception")] {
+            let terms=Terms::of(question,&language);
+            let forms=normalizer.forms(code);
+            assert!(terms.asked.iter().any(|slot|forms.iter().flatten().any(|form|slot.contains(form))),"{question}: {:?}",terms.asked);
+        }
+    }
+
+    #[test]
     fn morphology_and_equivalent_words_keep_one_slot_and_do_not_chain_aliases() {
         let languages = Languages::new(["pt-BR", "en-US"]);
         let mut normalizer = Normalizer::new(&languages);

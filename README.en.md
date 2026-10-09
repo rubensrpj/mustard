@@ -27,6 +27,8 @@ flowchart LR
 
 `mustard-rt run knowledge --query "<subject>"` retrieves symbols and documentation/configuration excerpts with lines and hashes through local indexes; `--detail` expands the evidence and shows structural groups, and `--all --markdown --out inventory.md` exports the inventory. Explicit references can connect a document to code; a mention does not validate the described rule. `mustard-rt run map audit` checks database/index consistency and query plans without an auxiliary model.
 
+Search also uses identifiers inside functions and complete fixed text values. Initial responses show short matching witnesses; `--detail` retrieves the full evidence. Banks with evidence packs older than version 3 need a new scan.
+
 > The binary handles state, retrieval, context, orchestration, validation, calculations and page generation. The model reasons and implements. Auxiliary operations work without AI by default. Jev requires `ai.fallback: true` and an explicit purpose-specific filter; vectors require `ai.vectors: true`. Credentials and legacy settings do not enable inference. The provider interface and versioned cache remain available for an evaluated exception. Literal Grep/rg preserve their arguments and do not call Jev routinely.
 
 ---

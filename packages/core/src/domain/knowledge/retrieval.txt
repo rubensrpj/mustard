@@ -36,3 +36,11 @@ report relatorio
 callback retorno
 metric indicador
 period periodo
+# General programming vocabulary; aliases help locate sources, not prove behavior.
+header cabeçalho cabeçalhos cabecalho
+request requisição requisições requisicao
+response resposta
+duration duração durações duracao
+exception exceção exceções excecao
+@action log logging logger registro registrar
+@action transform convert transformar converter conversão conversao transformation conversion

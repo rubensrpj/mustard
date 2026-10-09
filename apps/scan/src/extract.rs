@@ -1713,7 +1713,7 @@ fn one_line(text: &str, max: usize) -> String {
     joined[..cut].trim_end().to_string()
 }
 
-/// O valor mais longo que se guarda de um texto fixo, em caracteres.
+/// The compact first-read value. The full value remains separately searchable.
 const TEXT_MAX_CHARS: usize = 300;
 
 /// Quantos nós acima do literal a marca do texto é procurada: o bastante
@@ -1744,13 +1744,15 @@ fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declara
         .filter(|(node, _)| !overlaps(node))
         .filter_map(|(node, plain)| {
             let written = node.utf8_text(bytes).ok()?;
-            let value = one_line(if *plain { written } else { literal_value(written) }, TEXT_MAX_CHARS);
-            if !reads_as_text(&value) {
+            let complete = if *plain { written } else { literal_value(written) }.split_whitespace().collect::<Vec<_>>().join(" ");
+            let value = one_line(&complete, TEXT_MAX_CHARS);
+            if !reads_as_text(&complete) {
                 return None;
             }
             let line = node.start_position().row + 1;
             let owner = crate::graph::enclosing(declarations, line).map(|at| declarations[at].name.clone());
-            Some(Text { line, kind: mark_of(*node, bytes, logs, errors).to_string(), value, owner: owner.unwrap_or_default() })
+            let full_value = if complete.chars().count() > TEXT_MAX_CHARS { complete } else { String::new() };
+            Some(Text { line, kind: mark_of(*node, bytes, logs, errors).to_string(), value, full_value, owner: owner.unwrap_or_default() })
         })
         .collect();
     texts.sort();

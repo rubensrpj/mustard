@@ -2,7 +2,84 @@
 
 Estado em 09/10/2026. A orientação atual é esgotar alternativas nativas antes de considerar IA; a avaliação pontual do Jev em todo o Mustard está registrada ao final deste documento. Implementação na branch `codex/mustard-plano-completo`, isolada da instalação pessoal. A continuação e a aplicação da pesquisa ao scan foram autorizadas nesta data. Este documento amplia a trilha C do plano; não declara concluído um entendimento completo das regras de negócio.
 
-## Continuação atual: catálogo, referências e auditoria nativos
+## Continuação atual: evidência dentro das funções e seleção de candidatos
+
+A recuperação agora considera identificadores usados no corpo das declarações, assinaturas e valores de textos fixos. Antes, esses identificadores já existiam no parser, mas não chegavam aos cartões de função. Os textos também eram cortados antes da indexação, e somente os primeiros 12 chegavam aos cartões. A versão 3 do pacote conserva todos os textos aceitos e seus valores normalizados completos, inclusive palavras depois da prévia de 300 caracteres; a própria decisão de aceitar um texto examina seu conteúdo completo. Pacotes anteriores precisam de novo scan; interpretações registradas permanecem preservadas.
+
+A indexação pesquisa valores da fonte, sem promover chaves JSON ou números de linha a palavras do código. Nome/comentário/anotação têm maior peso que assinatura/identificadores/textos; evidência herdada do caminho tem menor peso. Termos técnicos e plurais ficam no vocabulário declarativo, sem nomes do backend, frameworks ou linguagens no motor. Isso localiza candidatos por pistas escritas, sem deduzir o significado de uma constante externa ou provar execução.
+
+Correspondências completas e identificadores exatos mantêm prioridade. Na seleção ampla, o índice dos cartões e a descoberta geral passam a contribuir alternadamente; um deles não ocupa sozinho a lista antes de o outro entrar. O filtro de arquivo é aplicado antes dessa contribuição. O limite de hidratação permanece explícito e pode ser expandido com `--all`.
+
+A resposta inicial continua compacta: `matched_evidence` fornece até três identificadores/textos correspondentes por cartão, com janela de até 180 caracteres em textos longos e linha da fonte. Identificadores já visíveis não são repetidos. `detail_counts` informa a evidência disponível; `--detail` expande os valores completos sem duplicar esses pequenos trechos. Mais evidência disponível não significa despejar corpos de funções na resposta inicial.
+
+### Medição da evidência ampliada
+
+Baseline `1ccae2c6`, mesma fonte Suzano `a3fe37ab454c`, duas cópias novas isoladas e sem Markdown/ambiente. As perguntas foram preservadas; ambas as listas já são conhecidas pelo implementador. Comparação sem modelo auxiliar:
+
+| Medida | Baseline | Evidência ampliada |
+| --- | --- | --- |
+| Arquivo esperado, 21 perguntas conhecidas válidas | 17/21 | 17/21 |
+| Símbolo esperado, 20 perguntas com símbolo definido | 11/20 | 11/20 |
+| Arquivo esperado, segunda lista de 16 perguntas | 13/16 | 15/16 |
+| Símbolo esperado, 13 perguntas da segunda lista | 7/13 | 10/13 |
+| Bytes das respostas da primeira lista | 285.002 | 316.880 (+11,2%) |
+| Bytes das respostas da segunda lista | 210.962 | 227.116 (+7,7%) |
+| Banco | 76.218.368 bytes | 78.778.368 bytes (+3,4%) |
+| Mediana, cinco consultas fixas em três rodadas alternadas | 284 ms | 329 ms |
+| Scan completo, uma execução | 12.048 ms | 11.668 ms |
+| Scan sem alteração, uma execução | 140 ms | 121 ms |
+| Chamadas auxiliares locais/remotas/Jev | 0 | 0 |
+
+Foram recuperados o arquivo do cabeçalho CSRF e o interceptor de duração; também melhorou a localização de símbolos de migração e conexão. A pergunta sobre transformar validação em resposta 400 ainda não encontra a fonte esperada. O índice não deduz que uma constante de biblioteca significa 400. Nenhum termo específico desse projeto foi acrescentado ao motor/vocabulário. Ganho de localização não comprova a resposta de negócio.
+
+A primeira tentativa enviava mais metadados dos trechos correspondentes; os registros intermediários foram conservados. A projeção compacta reduziu esse acréscimo, mas o resultado final continua maior. O banco e a mediana aquecida também cresceram. São executáveis de desenvolvimento em uma máquina, sem inferência de desempenho universal. **Não há demonstração de economia total de tokens, custo faturado ou melhor código final.** A evidência adicional pode evitar leituras posteriores, mas isso ainda precisa ser medido numa spec real.
+
+Artefatos em `target/scan-evidence-20261009/suzano-final/`: perguntas, respostas por versão, `benchmark.json`, auditoria, `interleaved-latency.json` e `csrf-inventario.md`. Hashes identificam os executáveis efetivamente medidos. `pre-external-freeze.json` registra a árvore/executáveis antes da avaliação externa; o pacote final é recompilado do commit limpo. O original permanece intacto.
+
+### Avaliação externa congelada: RepoQA
+
+Foi executado um teste adaptado a partir do corpus público [RepoQA](https://github.com/evalplus/repoqa), edição [2024-06-23](https://github.com/evalplus/repoqa_release/releases/tag/2024-06-23). Não é a pontuação oficial, nem revisão independente do implementador. As descrições foram produzidas por terceiros; não houve inferência para executar esta avaliação. Os comentários originais foram mantidos, e foram usados os subconjuntos de fontes distribuídos no corpus, sem executar/buildar seus projetos.
+
+Antes dos resultados, congelamos um repositório por linguagem: menor SHA-256 do nome entre os que têm até 400 arquivos, até 3 MiB de fonte fornecida e exatamente dez alvos. As 60 descrições foram consultadas sem alteração. Cada resposta usa até oito cartões. Arquivo, símbolo/nome/intervalo e presença do símbolo no índice são medidos separadamente; os alvos ausentes não foram descartados do denominador.
+
+| Linguagem / repositório | Símbolos presentes no índice | Arquivos baseline → atual | Símbolos baseline → atual |
+| --- | --- | --- | --- |
+| Python / ethereum/web3.py | 10/10 | 9 → 9 | 1 → 1 |
+| C++ / sass/node-sass | 0/10 | 0 → 0 | 0 → 0 |
+| Java / karatelabs/karate | 0/10 | 0 → 0 | 0 → 0 |
+| TypeScript / umami-software/umami | 10/10 | 9 → 8 | 2 → 4 |
+| Rust / seanmonstar/warp | 10/10 | 6 → 7 | 2 → 1 |
+| Go / jesseduffield/lazydocker | 8/10 | 7 → 7 | 2 → 5 |
+| **Total** | **38/60** | **31/60 → 31/60** | **7/60 → 11/60** |
+
+O registro atual não contém gramáticas C++/Java: o scan dessas duas cópias retorna zero arquivos, portanto são lacunas de suporte, não candidatos que um classificador resolveria. Os dois alvos Go ausentes são funções em arquivos de teste, excluídas dos cartões pelo contrato atual. A auditoria do banco passou nos seis projetos, inclusive nos vazios; isso reforça que integridade não prova cobertura.
+
+O ganho agregado de quatro símbolos inclui seis ganhos e duas regressões de símbolo; a localização de arquivos tem um ganho e uma regressão. Respostas somadas passaram de 589.164 para 641.250 bytes (+8,8%). Não ajustamos o motor após ver essas respostas. **Esta avaliação não confirma um oráculo geral**, nem mostra ganho de arquivos fora do corpus conhecido. Próximas melhorias devem distinguir suporte/exclusões, ausência de evidência, classificação e expansão, com novas perguntas congeladas para evitar ajustar os mesmos gabaritos indefinidamente.
+
+Reprodução, depois de obter e descompactar o JSON oficial (o script confere seu SHA-256):
+
+```text
+node apps/scan/benchmarks/repoqa.mjs \
+  --dataset /tmp/mustard-repoqa-2024-06-23.json \
+  --selection apps/scan/benchmarks/repoqa-selection-20261009.json \
+  --baseline target/scan-evidence-baseline \
+  --current target/debug \
+  --out target/scan-evidence-20261009/repoqa
+```
+
+O baseline contém os programas `scan` e `mustard-rt` compilados de `1ccae2c6`; `target/debug` contém os atuais. O JSON de seleção versionado registra revisão de cada projeto e hash do dataset. O executor é ferramenta de desenvolvimento, sem dependências, rede ou execução das fontes; não entra no binário instalado. Relatório/respostas estão em `target/scan-evidence-20261009/repoqa/`.
+
+### Comparação com o documento Puzzle
+
+O documento recebido organiza atores, jornadas PI/PCP, estados, autenticação, rotas, validações, armazenamento, cálculos e divergências de negócio. A exportação nativa produz inventário rastreável: símbolos, contratos/rotas extraídos, comentários, textos, relações estáticas, grupos, referências documentais, Git e lacunas. Ter mais linhas nesse inventário não equivale à análise do Puzzle.
+
+O banco pode conservar e exportar interpretações revisadas com múltiplas fontes; isso permite reaproveitar raciocínio já feito. Não transforma nomes de variáveis em narrativa comprovada nem deduz sozinho os atores, a ordem real da jornada, a regra de autorização ou uma divergência entre intenção e implementação. O caminho econômico continua sendo preparar evidência por tópico, expandir somente as lacunas e pedir ao modelo principal raciocínio pontual, registrando suas conclusões com fontes para reutilização. Essa preparação funciona sem inferência auxiliar; a equivalência de conteúdo com o Puzzle não foi atingida.
+
+### Verificação desta etapa
+
+Suíte completa: **3.854 testes aprovados**, zero falhas e dois ignorados herdados (`/tmp/mustard-evidence-tests-accepted.log`). Após o ajuste final da aceitação de textos longos, a suíte do scan foi repetida e aprovada (`/tmp/mustard-evidence-scan-final-tests.log`); lint estrito de todos os alvos e build dos três programas passaram (`/tmp/mustard-evidence-clippy-final.log`, `/tmp/mustard-evidence-build-final.log`). A aceitação nativa instala o binário absoluto em pasta realmente vazia e verifica corpo de função, cauda de texto, expansão sem duplicação, auditoria, fontes alteradas, referências/reverso e Markdown, com zero pedidos HTTP apesar de chave/filtros legados. Prova e pacote local são identificados pelo commit final limpo. Isso não substitui uma sessão real do Claude ou uma spec acompanhada de ponta a ponta.
+
+## Histórico de 09/10: catálogo, referências e auditoria nativos
 
 SQLite com FTS5 continua adequado ao produto: armazenamento local, transações de fontes/índices e busca lexical mais navegação dirigida. A reconferência encontrou problemas de acesso e cobertura, não uma necessidade demonstrada de banco vetorial ou serviço externo. Referência técnica: [SQLite FTS5](https://www.sqlite.org/fts5.html).
 

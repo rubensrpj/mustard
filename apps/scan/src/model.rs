@@ -439,6 +439,9 @@ pub struct Text {
     pub line: usize,
     pub kind: String,
     pub value: String,
+    /// Full normalized source text when the first-read value was compacted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub full_value: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
 }

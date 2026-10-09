@@ -78,16 +78,7 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
                     params![card.id, path, card.name, integer(card.source.line)?, integer(card.source.end_line)?, card.source.sha256, position as i64],
                 )?;
                 let rowid = conn.last_insert_rowid();
-                let own = format!(
-                    "{} {} {} {} {} {} {}",
-                    card.signature,
-                    card.documentation,
-                    card.body_comment,
-                    serde_json::to_string(&card.annotations).unwrap_or_default(),
-                    serde_json::to_string(&card.routes).unwrap_or_default(),
-                    serde_json::to_string(&card.literals).unwrap_or_default(),
-                    card.identifiers
-                );
+                let own = knowledge::evidence::own_text(&card);
                 conn.execute(
                     "INSERT INTO knowledge_fts(rowid,name,own,path,header,intent) VALUES (?1,?2,?3,?4,?5,?6)",
                     params![
@@ -155,7 +146,7 @@ pub(super) fn intent_weights(root: &Path, query: &str, languages: &Languages) ->
     query_terms(query, languages)
         .into_iter()
         .map(|slot| {
-            let expression = format!("{{name intent path header}} : {}", fts_query(&[slot], "OR"));
+            let expression = format!("{{name intent own path header}} : {}", fts_query(&[slot], "OR"));
             let seen: i64 = conn
                 .query_row(
                     "SELECT count(DISTINCT s.path) FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1",
@@ -247,16 +238,22 @@ pub(super) fn candidates(
                     &mut omitted,
                 )?;
             }
+            let mut discovered=BTreeSet::new();
+            let mut discovery_order=Vec::new();
             if let Some(discovery) = discovery {
                 for (path, line, name) in &discovery.places {
+                    if options.file.is_some_and(|file|file!=path) {continue;}
+                    let mut located=BTreeSet::new();
                     add_ids(
                         conn,
                         "SELECT id FROM knowledge_symbols WHERE path=?1 AND line=?2 AND name=?3",
                         params![path, integer(*line).map_err(unreadable)?, name],
-                        &mut ids,
+                        &mut located,
                         budget,
                         &mut omitted,
                     )?;
+                    for id in located {if discovered.insert(id.clone()){discovery_order.push(id);}}
+                    if discovery_order.len()>=budget {omitted=true;break;}
                 }
             }
             let expression = fts_query(&terms, "OR");
@@ -270,14 +267,23 @@ pub(super) fn candidates(
                     &mut omitted,
                 )?;
             } else if !expression.is_empty() {
-                add_ids(
-                    conn,
-                    "SELECT s.id FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND (?2 IS NULL OR s.path=?2) ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.path,s.line",
-                    params![expression, options.file],
-                    &mut ids,
-                    budget,
-                    &mut omitted,
-                )?;
+                let mut statement=conn.prepare("SELECT s.id FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND (?2 IS NULL OR s.path=?2) ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.path,s.line").map_err(|e|unreadable(e.into()))?;
+                let rows=statement.query_map(params![expression,options.file],|r|r.get::<_,String>(0)).map_err(|e|unreadable(e.into()))?;
+                let mut lexical=Vec::new();
+                for row in rows {if lexical.len()>=budget {omitted=true;break;}lexical.push(row.map_err(|e|unreadable(e.into()))?);}
+                // Neither reservoir can consume the entire hydration budget
+                // before the other contributes its source evidence.
+                for at in 0..lexical.len().max(discovery_order.len()) {
+                    for id in [lexical.get(at),discovery_order.get(at)].into_iter().flatten() {
+                        if !ids.contains(id) && ids.len()>=budget {omitted=true;continue;}
+                        ids.insert(id.clone());
+                    }
+                }
+            } else {
+                for id in discovery_order {
+                    if !ids.contains(&id) && ids.len()>=budget {omitted=true;continue;}
+                    ids.insert(id);
+                }
             }
         }
     }

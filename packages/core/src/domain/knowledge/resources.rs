@@ -152,9 +152,13 @@ pub fn query_terms(query: &str, languages: &crate::domain::normalize::Languages)
 /// Center compact previews on the most specific matching word, rather than
 /// hiding a relevant option behind the beginning of a long excerpt.
 pub fn preview(section: &Section, terms: &[Vec<String>], languages: &crate::domain::normalize::Languages) -> (String, u64, bool) {
-    const MAX: usize = 600;
+    preview_bounded(section,terms,languages,600)
+}
+
+pub fn preview_bounded(section: &Section, terms: &[Vec<String>], languages: &crate::domain::normalize::Languages,max:usize) -> (String,u64,bool) {
+    let max=max.max(1);
     let chars: Vec<_> = section.text.char_indices().collect();
-    if chars.len() <= MAX {
+    if chars.len() <= max {
         return (section.text.clone(), section.line, false);
     }
     let mut normalizer = crate::domain::normalize::Normalizer::new(languages);
@@ -174,8 +178,8 @@ pub fn preview(section: &Section, terms: &[Vec<String>], languages: &crate::doma
         word_start = end + ch.len_utf8();
     }
     let anchor = chars.partition_point(|(at, _)| *at < best.1);
-    let start = anchor.saturating_sub(100).min(chars.len() - MAX);
-    let end = start + MAX;
+    let start = anchor.saturating_sub(100.min(max/3)).min(chars.len() - max);
+    let end = start + max;
     let from = chars[start].0;
     let to = chars.get(end).map_or(section.text.len(), |(at, _)| *at);
     let line = section.line + section.text[..from].bytes().filter(|byte| *byte == b'\n').count() as u64;

@@ -27,6 +27,8 @@ flowchart LR
 
 `mustard-rt run knowledge --query "<assunto>"` recupera símbolos e trechos de documentação/configuração com linhas e hash, usando índices locais; `--detail` expande a evidência e mostra grupos estruturais, e `--all --markdown --out levantamento.md` exporta o inventário. Referências explícitas podem conectar um documento ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade, consistência dos índices e planos de consulta sem modelo auxiliar.
 
+A busca também usa identificadores dentro das funções e textos fixos completos. A resposta inicial mostra pequenos trechos correspondentes; `--detail` recupera a evidência completa. Bancos anteriores à versão 3 dos pacotes precisam de novo scan.
+
 > O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. As operações auxiliares funcionam sem IA por padrão. Jev exige `ai.fallback: true` e um filtro explícito por finalidade; vetores exigem `ai.vectors: true`. Credenciais/configurações antigas não ativam inferência. A interface de provedor e o cache versionado permanecem disponíveis para uma exceção avaliada. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
 
 ---
