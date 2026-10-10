@@ -9,15 +9,8 @@ on:
   # run that tests the combined tree before it reaches `main`.
   pull_request:
     branches: [main, dev]
-  # The push runs are here for another job: they are the ONLY runs that save
-  # the compiled build (`save-if` on the cache step below). GitHub lets a run
-  # restore a cache saved on its own branch, on the base branch of its pull
-  # request, or on the default branch — nothing else. A cache saved inside a
-  # pull request stays in that pull request, so the next one compiled from
-  # zero. Saved by a push to `dev`, it is restored by every pull request aimed
-  # at `dev`; saved on `main`, by the release too, since a tag run can only
-  # reach the default branch. No other branch: a work branch would save a
-  # cache nobody else can read.
+  # A verified, unchanged PR merge only warms a reusable branch cache.
+  # Direct pushes and unavailable validation proof still run the full suite.
   push:
     branches: [main, dev]
   # Manual runs (any branch) — lets a fix branch prove itself on all 3 OSes
@@ -30,8 +23,72 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
 jobs:
+  route:
+    name: Select validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      validate: ${{ steps.route.outputs.validate }}
+      warm_cache: ${{ steps.route.outputs.warm_cache }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test validation routing
+        run: python3 -m unittest discover -s .github/scripts -p 'test_ci_validation_route.py'
+      - name: Verify prior PR validation
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/ci-validation-route.py
+      - name: Record the tree checked by this PR run
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-tested-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-tested-tree.json
+          if-no-files-found: error
+          retention-days: 7
+
+  cache:
+    name: Cache (${{ matrix.os }})
+    needs: route
+    if: needs.route.outputs.warm_cache == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: 0
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
+      - name: Restore reusable branch cache
+        id: cargo-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: mustard-workspace
+          save-if: ${{ github.event_name == 'push' }}
+      # rust-cache stores dependencies by default. An existing exact cache
+      # needs no repeated compilation; a missing cache is warmed without
+      # executing the test suite already approved in the PR.
+      - name: Compile missing test dependencies
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        run: cargo test --locked --no-fail-fast --no-run -p mustard-core -p mustard-cli -p mustard-rt -p scan
+
   mods:
+    needs: route
+    if: needs.route.outputs.validate == 'true'
     name: Mods (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -54,6 +111,8 @@ jobs:
         run: claude plugin test ./plugin
 
   test:
+    needs: route
+    if: needs.route.outputs.validate == 'true'
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Without a cap a hung step holds the runner for GitHub's six-hour default,
