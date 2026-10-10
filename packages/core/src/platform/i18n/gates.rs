@@ -253,11 +253,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // o arquivo inteiro, já sem o valor da chave.
         ("config_key.hidden", Locale::PtBr) => {
             "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
-             arquivo, com a chave trocada por ***:\n{text}"
+             arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original."
         }
         ("config_key.hidden", Locale::EnUs) => {
             "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
-             the file, with the key replaced by ***:\n{text}"
+             the file, with the key replaced by ***:\n{text}\nReading {file} was blocked. The requested command was not executed, including chained test steps. Run the test separately; the hook preserves the original command's order and conditions."
         }
         // A busca do terminal em pastas que passaria pelo arquivo com a
         // chave volta com a opção que o deixa de fora. `{fix}` vem do
@@ -559,7 +559,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             72,
-            0x261f_0028_3e6c_043f,
+            0x6646_063f_5bfc_3410,
         );
     }
 

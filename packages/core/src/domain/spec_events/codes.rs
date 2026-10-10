@@ -43,6 +43,9 @@ impl SpecLog {
                 codes.insert(event.id, code);
                 continue;
             }
+            if event.event_type=="point" && let Some(code)=event.int("closes").and_then(|id|codes.get(&id)).cloned() {
+                codes.insert(event.id,code);continue;
+            }
             let mut n = *top + 1;
             while taken.contains(&(spec.code, n)) {
                 n += 1;
@@ -118,6 +121,12 @@ fn pending_return_code(
 pub fn code_after(log: &SpecLog, event: &Map<String, Value>) -> Option<String> {
     let spec = type_spec(event.get("type").and_then(Value::as_str)?)?;
     let codes = log.codes();
+    if spec.name == "point"
+        && let Some(id) = event.get("closes").and_then(Value::as_u64)
+        && log.get(id).is_some_and(|point| point.event_type == "point")
+    {
+        return codes.get(&id).cloned();
+    }
     let replaced = match event.get("replaces") {
         Some(Value::Array(list)) => list.iter().filter_map(Value::as_u64).collect(),
         Some(other) => other.as_u64().into_iter().collect(),
@@ -156,6 +165,16 @@ mod tests {
             assert!(!t.code.is_empty() && t.code.bytes().all(|b| b.is_ascii_uppercase()), "{}", t.name);
             assert!(mustard_id::is_id(&mustard_id::format(t.code, 1)), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn closing_a_point_keeps_its_identity_without_rewriting_historical_codes() {
+        let log=parse_log(&[line(1,"point",",\"status\":\"open\""),line(2,"point",",\"status\":\"closed\",\"closes\":1")].concat());
+        assert_eq!(log.codes()[&1],log.codes()[&2]);
+        assert_eq!(code_after(&log,&obj(json!({"type":"point","closes":1}))),Some("MSTD-POINT-0001".into()));
+        assert_eq!(code_after(&log,&obj(json!({"type":"point","status":"open"}))),Some("MSTD-POINT-0002".into()));
+        let old=parse_log(&[line(1,"point",",\"code\":\"MSTD-POINT-0001\""),line(2,"point",",\"closes\":1,\"code\":\"MSTD-POINT-0002\"")].concat());
+        assert_eq!(old.codes()[&2],"MSTD-POINT-0002","recorded historical identifiers do not change");
     }
 
     /// Os códigos contam por tipo, na ordem do arquivo; a versão nova herda o

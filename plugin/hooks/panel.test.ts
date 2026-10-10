@@ -1,4 +1,69 @@
 import { test, expect, mock } from 'claude-code/testing';
+import {contentPage} from './panel-content.js';
+
+test('dark panel preserves definitions and exact wave inputs even with a light host theme',async ($,on)=>{
+  const clock=mock.clock(on);mock.env(on,{});
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
+  on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{}}));
+  on('config.list',()=>({value:[{key:'theme',value:'light',kind:'choice',label:'Theme'}]}));
+  on('ui.open',()=>({value:null}));on('ui.close',()=>({value:null}));
+  let turns=0,details=0;
+  on('prompt.submit',()=>{turns++;return {};});
+  const input='Começo do pedido.\n'+ 'A'.repeat(8000)+'\nFim exato do pedido.';
+  const snapshot:any={ok:true,schema_version:1,at:'2026-10-10T12:00:00Z',project:{name:'fixture',language:'pt-BR'},
+    selected_spec:'demo',jev:{},specs:[{name:'demo',phase:'running',goal:'Baixar o arquivo original.',
+      waves:[{wave:1,status:'running'}],stages:[],undeclared_commands:[],usage:{},
+      definitions:{rule:[{code:'MSTD-RULE-0001',title:'Formato original',text:'O arquivo mantém o formato original.',
+        example:'As colunas permanecem na ordem.',agent:'Parte técnica.\n'+'B'.repeat(8000)+'\nFim técnico.'}],
+        task:[{code:'MSTD-TASK-0001',title:'Gerar arquivo',text:'Entregar a cópia.'}]}}]};
+  on('process.run',($,e)=>{
+    const result={...snapshot};
+    if(e.argv.includes('--wave')) {
+      details++;
+      expect(e.argv[e.argv.indexOf('--wave')+1]).toBe('1');
+      result.wave_detail={spec:'demo',wave:1,plan:{text:'Onda para gerar o arquivo.',done_when:'Arquivo conferido.'},
+        request:input,delivery:{text:'Retorno real registrado.'},delivery_integrated:false,
+        steps:[{item:'MSTD-TASK-0001',text:'Teste mínimo aprovado.'}]};
+    }
+    return {value:{exitCode:0,stdout:JSON.stringify(result),stderr:''}};
+  });
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  await $.command.run({command:'mustard-panel',args:''});
+  const pane=await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  expect((await pane.drawn()).props.backgroundColor).toBe('#292735');
+  await pane.press({key:'tab-Definições'});
+  expect((await pane.find({type:'Text',text:/O arquivo mantém o formato original/})).props.color).toBe('#f5f1fa');
+  await pane.press({key:'technical-MSTD-RULE-0001'});
+  await pane.press({key:'definition-technical-next'});
+  await pane.press({key:'definition-technical-next'});
+  expect(await pane.find({type:'Text',text:/Fim técnico/})).toBeDefined();
+  await pane.press({key:'tab-Ondas'});
+  expect(details).toBe(0);
+  await pane.press({key:'wave-1'});await clock.advance(2000);
+  expect(await pane.find({type:'Text',text:/Onda para gerar o arquivo/})).toBeDefined();
+  await pane.press({key:'wave-view-Pedido'});
+  const parts=[];
+  parts.push((await pane.find({type:'Text',text:contentPage(input,0).text})).text);
+  await pane.press({key:'content-next'});parts.push((await pane.find({type:'Text',text:contentPage(input,1).text})).text);
+  await pane.press({key:'content-next'});parts.push((await pane.find({type:'Text',text:contentPage(input,2).text})).text);
+  expect(parts.join('')).toBe(input);
+  await pane.press({key:'wave-view-Entrega'});
+  expect(await pane.find({type:'Text',text:'Retorno real registrado.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:/aguardando validação/})).toBeDefined();
+  await pane.press({key:'wave-view-Testes'});
+  expect(await pane.find({type:'Text',text:/Teste mínimo aprovado/})).toBeDefined();
+  expect(turns).toBe(0);await pane.press({key:'close'});
+});
+
+test('content pagination preserves all Unicode text within the official surface size limit',()=>{
+  const original='🟡'.repeat(10001)+'\nFinal';
+  const first=contentPage(original,0),parts=[];
+  for(let n=0;n<first.pages;n++) {
+    const page=contentPage(original,n);expect(page.text.length).toBeLessThanOrEqual(10000);parts.push(page.text);
+  }
+  expect(parts.join('')).toBe(original);
+});
 
 test('panel updates locally, preserves unknown usage, and stops on close', async ($, on) => {
   const clock = mock.clock(on);

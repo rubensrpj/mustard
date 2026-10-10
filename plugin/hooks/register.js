@@ -1,9 +1,13 @@
 import searchSchema from './search-schema.js';
 import {completeDelivery} from './delivery-check.js';
+import {definitionNames,definitionText,waveText,contentPage} from './panel-content.js';
+import design from '../ui/theme.js';
 // Local observation only. Runtime events remain the source of truth; the
 // poller coalesces overlapping reads and never calls a model or search tool.
 let timer, eventTimer, busy = false, opened = false, data, problem, selected, usage, revision = 0;
 let tab = 'Projeto';
+let definitionGroup='context', definitionPage=0, selectedWave, waveView='Plano', contentOffset=0;
+let selectedDefinition, technicalOffset=0, showTechnical=false;
 let publishing = false, publicationMessage;
 let runtimeBinary;
 let consumptionMeasuredAt;
@@ -64,7 +68,8 @@ async function refresh($) {
       try { session = await $.session.id(); } catch { /* Session observation may be unavailable. */ }
       const measure = consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000;
       const result = await $.process.run(
-        [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : []), ...(session ? ['--session', session] : []), ...(measure ? ['--refresh-consumption'] : [])],
+        [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : []), ...(session ? ['--session', session] : []),
+          ...(tab==='Ondas' && selectedWave!==undefined ? ['--wave',String(selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
         { cwd, timeoutMs: measure ? 30000 : 10000 });
       if (result.exitCode !== 0) throw new Error(result.stderr || 'Consulta local falhou');
       const next = JSON.parse(result.stdout);
@@ -246,6 +251,8 @@ export function register(on) {
     resetEvidence();
     stopPanel();
     data = undefined;
+    selected=selectedWave=selectedDefinition=usage=problem=undefined;
+    tab='Projeto';definitionGroup='context';definitionPage=contentOffset=technicalOffset=0;showTechnical=false;
     consumptionMeasuredAt = undefined;
     publicationMessage = undefined;
     return next(e);
@@ -253,10 +260,16 @@ export function register(on) {
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== id) return next(e);
     const { Box, Text, Button } = await $.ui.resolve(e);
-    const accent = '#E1AD01';
+    const theme=design.dark, accent=theme.accentText;
     const clean = value => String(value ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
-    const text = (value, props = {}) => Text({ children: clean(value), wrap: 'wrap', ...props });
-    const button = (key, label, action, props = {}) => Button({ key, label: clean(label), onPress: action, ...props });
+    const text = (value, props = {}) => {
+      const {dimColor,...styles}=props;
+      return Text({children:clean(value),wrap:'wrap',color:dimColor?theme.muted:theme.ink,...styles});
+    };
+    const button = (key, label, action, props = {}) => {
+      const {disabled,...styles}=props;
+      return disabled ? text(label,{dimColor:true}) : Button({key,label:clean(label),onPress:action,...styles});
+    };
     const redraw = () => $.ui.invalidate('ui.render');
     const fmt = n => n === null || n === undefined ? t('desconhecido','unknown') : Number(n).toLocaleString(data?.project?.language || 'pt-BR');
     const money = n => n == null ? t('desconhecido','unknown') : '$' + (n / 1000000).toFixed(4);
@@ -271,10 +284,23 @@ export function register(on) {
       };
       return names[name] ? t(...names[name]) : clean(name || t('desconhecido','unknown'));
     };
-    const section = (title, children) => Box({ flexDirection:'column', borderStyle:'round', borderDimColor:true,
-      paddingX:1, children:[text(title,{bold:true,color:accent}), ...children] });
+    const section = (title, children) => Box({ flexDirection:'column', paddingX:1,rowGap:1,
+      children:[text(title,{bold:true}), ...children] });
+    // Markdown uses the host's reply palette and exposes no color override.
+    // Native Text keeps content legible in our fixed dark panel even when
+    // the host uses a light theme. Raw agent inputs/returns stay exact.
+    const content = (value, raw=false) => raw ? text(value) : Box({flexDirection:'column',rowGap:1,
+      children:clean(value).split('\n\n').map(paragraph=>{
+        const label=paragraph.match(/^\*\*([^\n]+)\*\*\n([\s\S]*)$/);
+        return label ? Box({flexDirection:'column',children:[text(label[1],{bold:true}),text(label[2])]}) : text(paragraph);
+      })});
+    const pageControls = (prefix,page,change) => page.pages>1 ? [Box({flexDirection:'row',columnGap:1,children:[
+      button(`${prefix}-prev`,t('Anterior','Previous'),()=>{change(page.page-1);redraw();},{disabled:page.page===0}),
+      text(`${page.page+1}/${page.pages}`),
+      button(`${prefix}-next`,t('Próxima parte','Next part'),()=>{change(page.page+1);redraw();},{disabled:page.page+1>=page.pages}),
+    ]})] : [];
     const card = (label, value, detail) => Box({ flexDirection:'column', flexGrow:1, flexShrink:1, minWidth:16,
-      borderStyle:'round', borderDimColor:true, paddingX:1, children:[text(label,{dimColor:true}),
+      backgroundColor:theme.surface, paddingX:2,paddingY:1, children:[text(label,{dimColor:true}),
       text(value,{bold:true}), ...(detail ? [text(detail,{dimColor:true})] : [])] });
     const progress = (done, total) => {
       if (!total) return t('Nenhuma onda planejada','No planned waves');
@@ -282,19 +308,24 @@ export function register(on) {
       return `${'━'.repeat(filled)}${'─'.repeat(12-filled)} ${done}/${total}`;
     };
     const spec = data?.specs.find(s => s.name === selected);
-    const tabs = ['Projeto','Specs','Execução','Consumo'];
+    const tabs = ['Projeto','Specs','Definições','Ondas','Execução','Consumo'];
     const rows = [Box({flexDirection:'column',children:[
       text('MUSTARD',{bold:true,color:accent}),
-      text(t('Projeto · especificações · execução','Project · specifications · execution'),{dimColor:true}),
-    ]}), Box({flexDirection:'row',flexWrap:'wrap',columnGap:2,children:tabs.map((name,i) =>
-      button(`tab-${name}`, t(name,({Projeto:'Project',Specs:'Specs',Execução:'Execution',Consumo:'Usage'})[name]),
-        () => {tab=name;redraw();},{plain:true,dimColor:tab!==name,hotkey:String(i+1)}))})];
+      text(t('Seu projeto, do combinado à entrega','Your project, from agreement to delivery'),{dimColor:true}),
+    ]}), Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,backgroundColor:theme.sidebar,children:tabs.map((name,i) =>
+      Box({key:`nav-${name}`,paddingX:1,backgroundColor:tab===name?theme.accentSoft:theme.sidebar,children:[
+        button(`tab-${name}`, `${tab===name?'● ':''}${t(name,({Projeto:'Project',Specs:'Specs',Definições:'Definitions',Ondas:'Waves',Execução:'Execution',Consumo:'Usage'})[name])}`,
+          () => {tab=name;contentOffset=0;redraw();if(name==='Ondas' && selectedWave!==undefined)void refresh($);},{plain:true,dimColor:tab!==name,hotkey:String(i+1)})]}) )})];
     if (problem) rows.push(section(t('Consulta indisponível','Query unavailable'),[
       text(problem),text(`${t('Último estado','Last state')}: ${data?.at || t('nenhum','none')}.`,{dimColor:true})]));
     if (!data) return Box({flexDirection:'column',rowGap:1,children:[...rows,text(t('Aguardando estado local…','Waiting for local state…'))]});
     rows.push(text(`${data.project.name || 'Mustard'} · ${data.project.branch || t('sem branch','no branch')}`,{bold:true}));
-    if (data.project.version) rows.push(text(`Mustard ${data.project.version}`,{dimColor:true}));
-    rows.push(text(`${t('Atualização local','Local update')} · ${data.at}`,{dimColor:true}));
+    const updated=new Date(data.at);
+    rows.push(text(`Mustard ${data.project.version || ''} · ${t('Atualizado','Updated')} ${Number.isNaN(updated.valueOf())?data.at:updated.toLocaleString(data.project.language || 'pt-BR')}`,{dimColor:true}));
+    if(spec && !['Projeto','Specs'].includes(tab)) rows.push(Box({flexDirection:'column',children:[
+      text(`${spec.name} · ${state(spec.phase)}`,{bold:true,color:accent}),text(spec.goal || ''),
+      button('change-spec',t('Trocar especificação','Change specification'),()=>{tab='Specs';redraw();},{plain:true}),
+    ]}));
     if (tab === 'Projeto') {
       if (data.statusline) rows.push(section(t('Statusline da sessão','Session statusline'),[
         text(`${t('Modelo','Model')}: ${data.statusline.model || fmt(null)} · ${t('duração','duration')}: ${data.statusline.duration_ms == null ? fmt(null) : Math.round(data.statusline.duration_ms/60000)+' min'}`),
@@ -306,18 +337,25 @@ export function register(on) {
       rows.push(Box({flexDirection:'row',flexWrap:'wrap',children:[
         card('Specs',fmt(data.specs.length)),card(t('Ondas concluídas','Completed waves'),progress(done,waves.length)),
       ]}));
+      if(spec) rows.push(section(t('Spec deste checkout','Current checkout spec'),[
+        text(`${spec.name} · ${state(spec.phase)}`,{bold:true}),text(spec.goal || ''),
+        button('open-current-definitions',t('Ver o que foi definido','Read specification'),()=>{tab='Definições';redraw();},{plain:true}),
+        button('open-current-waves',t('Ver ondas e pedidos enviados','Read waves and sent inputs'),()=>{tab='Ondas';redraw();if(selectedWave!==undefined)void refresh($);},{plain:true}),
+      ]));
       rows.push(section(t('Especificações do projeto','Project specifications'), data.specs.length
         ? data.specs.map(s => button(`project-${s.name}`,`${s.name} · ${state(s.phase)}`,() => {
-          selected=s.name;revision++;tab='Execução';redraw();void refresh($);
+          selected=s.name;selectedWave=selectedDefinition=undefined;definitionPage=contentOffset=0;revision++;tab='Definições';redraw();void refresh($);
         },{plain:true})) : [text(t('Nenhuma spec registrada','No recorded specs'),{dimColor:true})]));
     }
-    if (tab === 'Specs' || tab === 'Execução') {
+    if (tab === 'Specs') {
       rows.push(section(t('Selecionar spec','Select a spec'),data.specs.length ? data.specs.map(s =>
         button(`spec-${s.name}`,`${s.name===selected?'●':'○'} ${s.name} · ${state(s.phase)}`,() => {
-          selected=s.name;revision++;tab='Execução';redraw();void refresh($);
+          selected=s.name;selectedWave=selectedDefinition=undefined;definitionPage=contentOffset=0;revision++;tab='Definições';redraw();void refresh($);
         },{plain:true})) : [text(t('Nenhuma spec registrada','No recorded specs'),{dimColor:true})]));
+    }
+    if (tab === 'Execução') {
       if (spec) {
-        rows.push(section(spec.name,[text(spec.goal || spec.name),
+        rows.push(section(t('Validações da spec','Spec validation'),[
           text(`${t('Validação final','Final validation')}: ${spec.final_validation_valid == null ? t('desconhecida','unknown') : spec.final_validation_valid ? t('válida','valid') : t('pendente','pending')}`),
           text(`${t('Revisão','Review')}: ${spec.review_approved ? t('aprovada','approved') : t('pendente','pending')}`)]));
         if (spec.scheduling) {
@@ -346,6 +384,62 @@ export function register(on) {
         if (spec.undeclared_commands.length) rows.push(text(`${t('Comandos não declarados','Undeclared commands')}: ${spec.undeclared_commands.join(', ')}`,{dimColor:true}));
       }
     }
+    if (tab==='Definições' && spec) {
+      const definitions=spec.definitions || {};
+      const groups=Object.keys(definitionNames).filter(key=>definitions[key]?.length);
+      if(!definitions[definitionGroup]?.length)definitionGroup=groups[0] || 'context';
+      rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:groups.map(key=>
+        button(`definition-${key}`,`${t(...definitionNames[key])} (${definitions[key].length})`,()=>{
+          definitionGroup=key;definitionPage=contentOffset=technicalOffset=0;selectedDefinition=undefined;showTechnical=false;redraw();
+        },{plain:true,dimColor:definitionGroup!==key}))}));
+      const items=definitions[definitionGroup] || [], pages=Math.max(1,Math.ceil(items.length/8));
+      definitionPage=Math.max(0,Math.min(definitionPage,pages-1));
+      if(!items.length)rows.push(text(t('Nenhuma definição registrada nesta spec.','No definitions recorded in this spec.')));
+      const visibleItems=items.slice(definitionPage*8,definitionPage*8+8);
+      if(!visibleItems.some(item=>(item.code || item.id)===selectedDefinition))selectedDefinition=visibleItems[0]?.code || visibleItems[0]?.id;
+      rows.push(Box({flexDirection:'column',children:visibleItems.map(item=>button(`item-${item.code || item.id}`,
+        `${(item.code || item.id)===selectedDefinition?'●':'○'} ${item.title || item.gap || item.code || item.id}`,
+        ()=>{selectedDefinition=item.code || item.id;contentOffset=technicalOffset=0;showTechnical=false;redraw();},{plain:true}))}));
+      const item=visibleItems.find(item=>(item.code || item.id)===selectedDefinition);
+      if(item) {
+        const page=contentPage(definitionText(item,data.project.language==='en-US'),contentOffset);
+        const technical=contentPage(item.agent,technicalOffset);
+        rows.push(section(`${item.title || t(...definitionNames[definitionGroup])} · ${item.code || item.id}`,[
+          content(page.text),...pageControls('definition-body',page,value=>{contentOffset=value;}),
+          ...(item.agent ? [button(`technical-${item.code}`,t(showTechnical?'Ocultar detalhes técnicos':'Ver detalhes técnicos',showTechnical?'Hide technical details':'Show technical details'),()=>{
+            showTechnical=!showTechnical;technicalOffset=0;redraw();
+          },{plain:true}),...(showTechnical?[content(technical.text,true),...pageControls('definition-technical',technical,value=>{technicalOffset=value;})]:[])] : []),
+        ]));
+      }
+      if(pages>1)rows.push(Box({flexDirection:'row',columnGap:1,children:[
+        button('definitions-prev',t('Itens anteriores','Previous items'),()=>{definitionPage--;contentOffset=0;showTechnical=false;redraw();},{disabled:definitionPage===0}),
+        text(`${definitionPage+1}/${pages}`),button('definitions-next',t('Próximos itens','Next items'),()=>{definitionPage++;contentOffset=0;showTechnical=false;redraw();},{disabled:definitionPage+1>=pages}),
+      ]}));
+    }
+    if(tab==='Ondas' && spec) {
+      if(!spec.waves.length) rows.push(text(t('As ondas ainda não foram agrupadas. Consulte as tarefas e os critérios em Definições.','Waves have not been grouped yet. See tasks and acceptance criteria in Definitions.')));
+      rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:spec.waves.map(w=>
+        button(`wave-${w.wave}`,`${t('Onda','Wave')} ${w.wave} · ${state(w.status)}`,()=>{
+          selectedWave=w.wave;waveView='Plano';contentOffset=0;revision++;redraw();void refresh($);
+        },{plain:true,dimColor:selectedWave!==w.wave}))}));
+      if(selectedWave!==undefined) {
+        rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:['Plano','Pedido','Entrega','Testes'].map(view=>
+          button(`wave-view-${view}`,t(view,({Plano:'Plan',Pedido:'Sent input',Entrega:'Return',Testes:'Tests'})[view]),()=>{
+            waveView=view;contentOffset=0;redraw();
+          },{plain:true,dimColor:waveView!==view}))}));
+        const detail=data.wave_detail?.spec===selected && data.wave_detail.wave===selectedWave?data.wave_detail:undefined;
+        if(!detail)rows.push(text(t('Carregando conteúdo da onda…','Loading wave content…')));
+        else {
+          const page=contentPage(waveText(detail,waveView,data.project.language==='en-US'),contentOffset);
+          if(waveView==='Entrega' && detail.delivery && !detail.delivery_integrated)rows.push(text(t('Retorno recebido · aguardando validação do orquestrador','Return received · awaiting orchestrator validation'),{color:accent}));
+          rows.push(content(page.text,waveView!=='Plano'));
+          if(page.pages>1)rows.push(Box({flexDirection:'row',columnGap:1,children:[
+            button('content-prev',t('Anterior','Previous'),()=>{contentOffset--;redraw();},{disabled:page.page===0}),
+            text(`${page.page+1}/${page.pages}`),button('content-next',t('Próxima parte','Next part'),()=>{contentOffset++;redraw();},{disabled:page.page+1>=page.pages}),
+          ]}));
+        }
+      }
+    }
     if (tab === 'Consumo') {
       rows.push(section(t('Consumo geral','Overall usage'),[
         text(`${t('Projeto','Project')}: ${data.consumption?.available ? fmt(data.consumption.project_tokens) : fmt(null)} tokens · ${t('máquina','machine')}: ${data.consumption?.available ? fmt(data.consumption.machine_tokens) : fmt(null)} tokens`),
@@ -366,6 +460,15 @@ export function register(on) {
         ...(spec.usage.known_wave_breakdown ? [text(`${t('Entrada','Input')}: ${fmt(spec.usage.known_wave_breakdown.input_tokens)} · ${t('saída','output')}: ${fmt(spec.usage.known_wave_breakdown.output_tokens)} · ${t('cache criado/lido','cache written/read')}: ${fmt(spec.usage.known_wave_breakdown.cache_creation_input_tokens)}/${fmt(spec.usage.known_wave_breakdown.cache_read_input_tokens)}`),
           text(`${fmt(spec.usage.waves_with_unknown_breakdown)} ${t('ondas sem detalhamento','waves without usage details')} · ${fmt(spec.usage.known_wave_breakdown.responses_with_partial_usage)} ${t('respostas com uso parcial','responses with partial usage')}`,{dimColor:true})] : []),
       ]));
+      if(spec?.operations)rows.push(section(t('Uso do Mustard nesta spec','Mustard usage in this spec'),[
+        text(`${fmt(spec.operations.calls)} ${t('chamadas','calls')} · ${fmt(spec.operations.refusals)} ${t('recusas','refusals')}`),
+        text(`${t('Entrada/saída estimadas das chamadas medidas','Estimated input/output in measured calls')}: ${fmt(spec.operations.estimated_input_tokens)}/${fmt(spec.operations.estimated_output_tokens)} tokens`),
+        text(`${fmt(spec.operations.calls_without_payload_measurement)} ${t('chamadas sem medida de conteúdo','calls without payload measurements')}`,{dimColor:true}),
+        text(t('Estimativa pelo tamanho do texto; não mede cobrança nem economia do modelo.','Text-size estimate; does not measure model billing or savings.'),{dimColor:true}),
+        ...(spec.operations.search?.calls ? [text(`${t('Buscas','Searches')}: ${fmt(spec.operations.search.calls)} · ${fmt(spec.operations.search.enriched)} ${t('cruzadas com o índice','crossed with the index')} · ${fmt(spec.operations.search.task_evidence)} ${t('com evidência para a tarefa','with task evidence')} · ${fmt(spec.operations.search.fallback)} ${t('com retorno nativo de reserva','with native fallback')}`),
+          text(t('Encontrar referências não comprova que elas resolveram a tarefa. Economia real exige comparação com uma sessão equivalente.','Finding references does not prove they solved the task. Real savings require an equivalent session comparison.'),{dimColor:true})] : []),
+        ...Object.entries(spec.operations.by_command || {}).map(([command,value])=>text(`${command}: ${fmt(value.calls)} · ${fmt(value.refusals)} ${t('recusas','refusals')}`)),
+      ]));
       const session = [];
       if (usage?.context) session.push(text(`${t('Contexto da sessão','Session context')}: ${fmt(usage.context.percent ?? usage.context.percentUsed)}% · ${fmt(usage.context.tokens)}/${fmt(usage.context.window)} tokens`));
       if (usage?.cost?.usd != null) session.push(text(`${t('Custo estimado informado pelo Claude','Estimated cost reported by Claude')}: $${usage.cost.usd}`));
@@ -385,6 +488,6 @@ export function register(on) {
       button('publish-project',t('Publicar projeto','Publish project'),async ()=>{await publishPage($,'project');},{disabled:publishing}),
       button('close',t('Fechar','Close'),async () => {stopPanel();await $.ui.close({id});},{hotkey:'q'}),
     ]}));
-    return Box({flexDirection:'column',rowGap:1,children:rows});
+    return Box({flexDirection:'column',rowGap:1,padding:1,backgroundColor:theme.paper,children:rows});
   });
 }

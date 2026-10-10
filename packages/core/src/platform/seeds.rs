@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn the_session_map_no_longer_delegates_every_code_run() {
         for (text, code_run, investigation) in [
-            (Locale::PtBr, "toda execução de código", "a investigação que abre muitos arquivos"),
+            (Locale::PtBr, "toda execução de código", "investigação extensa"),
             (Locale::EnUs, "every code run", "any investigation that opens many files"),
         ] {
             let map = session_map(text);
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn the_session_map_asks_every_agent_to_record_in_the_spec_and_come_back_in_two_lines() {
         for (text, investigation, every_agent, in_the_spec, two_lines) in [
-            (Locale::PtBr, "a investigação que abre muitos arquivos", "todo agente", "na spec", "duas linhas"),
+            (Locale::PtBr, "investigação extensa", "todo agente", "na spec", "duas linhas"),
             (Locale::EnUs, "any investigation that opens many files", "every agent", "in the spec", "two lines"),
         ] {
             let map = session_map(text);

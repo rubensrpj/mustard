@@ -55,6 +55,8 @@ pub struct AnswerOpts {
     pub event_type: Option<String>,
     /// Os campos do item da resposta, num objeto JSON, como no `run write`.
     pub json: Option<String>,
+    /// Verified facts for the point being closed, as a JSON array.
+    pub facts: Option<String>,
     /// Os itens já gravados que respondem o ponto, por número ou código,
     /// separados por vírgula.
     pub result: Option<String>,
@@ -109,6 +111,7 @@ struct Asked {
     item: Option<(String, Map<String, Value>)>,
     /// Os itens já gravados, como vieram: número ou código.
     result: Vec<String>,
+    facts: Option<Value>,
     reason: Option<String>,
     not_applicable: bool,
 }
@@ -124,6 +127,7 @@ pub(crate) fn answer_for(opts: &AnswerOpts, session: Option<&str>) -> Value {
     let project = spec_events::project(&opts.root);
     match answer_in(&project, opts, session) {
         Ok(report) => report,
+        Err(AnswerRefusal::Spec(refusal)) => spec_events::refused(&refusal, project.lang),
         Err(refusal) => json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(project.lang) }),
     }
 }
@@ -172,7 +176,9 @@ fn asked(opts: &AnswerOpts) -> Result<Asked, AnswerRefusal> {
     if !opts.not_applicable && item.is_none() && result.is_empty() {
         return Err(AnswerRefusal::Options);
     }
-    Ok(Asked { item, result, reason: filled(opts.reason.as_deref()), not_applicable: opts.not_applicable })
+    let facts = opts.facts.as_deref().map(serde_json::from_str::<Value>).transpose()
+        .map_err(|_| Refusal::InvalidValue { event_type: "point".into(), field: "facts".into(), expected: mustard_core::domain::spec_events::Kind::Objects })?;
+    Ok(Asked { item, result, facts, reason: filled(opts.reason.as_deref()), not_applicable: opts.not_applicable })
 }
 
 /// As gravações sob a trava do arquivo de eventos: confere o ponto e os itens
@@ -192,6 +198,7 @@ fn answer_locked(
         None => *open.first().ok_or_else(|| AnswerRefusal::NoOpenPoint { spec: spec.to_string() })?,
     };
     let mut result = asked.result.iter().map(|raw| recorded(&before, raw)).collect::<Result<Vec<u64>, _>>()?;
+    let reused = result.clone();
     let saved = locked.content().to_string();
     let mut report = json!({ "ok": true, "spec": spec });
     let mut origin = None;
@@ -205,7 +212,11 @@ fn answer_locked(
         }
         result.insert(0, item.id);
     }
-    let draft = closing(point, &result, asked.reason, asked.not_applicable, origin);
+    let mut draft = closing(point, &result, asked.reason, asked.not_applicable, origin);
+    if !reused.is_empty() { draft.insert("reused_results".into(), json!(reused)); }
+    if let Some(facts) = asked.facts {
+        draft.insert("facts".into(), facts);
+    }
     let closed = match write::record_locked_by_model(locked, &opts.root, spec, "point", draft) {
         Ok(closed) => closed.written,
         Err(refusal) => {
@@ -259,7 +270,7 @@ fn chosen<'a>(log: &'a SpecLog, open: &[&'a SpecEvent], raw: &str) -> Result<&'a
 /// [`Refusal::UnknownTarget`] quando a spec não tem o item.
 fn recorded(log: &SpecLog, raw: &str) -> Result<u64, Refusal> {
     let target = reference(raw).unwrap_or_else(|| EventRef::Code(raw.trim().to_string()));
-    newest(log, &target).ok_or(Refusal::UnknownTarget { target })
+    newest(log, &target).and_then(|id| log.current(id)).map(|event| event.id).ok_or(Refusal::UnknownTarget { target })
 }
 
 /// Como `raw` aponta um evento: um número ou um código; `None` para outra
@@ -364,6 +375,7 @@ mod tests {
             point: None,
             event_type: None,
             json: None,
+            facts: None,
             result: None,
             not_applicable: false,
             reason: None,
@@ -472,6 +484,49 @@ mod tests {
         assert_eq!(report["reason"], json!("point-without-facts"), "{report}");
         assert_eq!(snapshot(root), before, "the item went back out");
         assert_eq!(open_ids(root), vec![point.written.id]);
+    }
+
+    #[test]
+    fn answer_attaches_verified_facts_and_closes_the_same_point_atomically() {
+        let dir=tempdir().unwrap();let root=dir.path();surveyed(root,"rules",0);
+        let point=record(root,"x","point",json!({"block":"rules","gap":"Lacuna sem fato","from":"gap","status":"open","author":"binary"}).as_object().unwrap().clone(),PhaseWriter::Binary).unwrap();
+        let code=log_of(root).codes()[&point.written.id].clone();
+        let asked=AnswerOpts {point:Some(code.clone()),facts:Some(json!([{"text":GOAL,"source":"mensagem 2"}]).to_string()),..with_item(root,DECISION)};
+        let report=answer(&asked);
+        assert_eq!(report["ok"],true,"{report}");
+        assert_eq!(report["closed"]["code"],code);
+        let log=log_of(root);
+        assert!(open_ids(root).is_empty());
+        assert_eq!(log.events.iter().filter(|event|event.event_type=="point").count(),2,"no manual fact revision is necessary");
+        let closed=log.events.iter().rev().find(|event|event.event_type=="point").unwrap();
+        assert_eq!(closed.fields["facts"][0]["source"],"mensagem 2");
+    }
+
+    #[test]
+    fn a_bad_inline_fact_rolls_back_both_the_answer_and_the_closure() {
+        let dir=tempdir().unwrap();let root=dir.path();surveyed(root,"rules",0);
+        record(root,"x","point",json!({"block":"rules","gap":"Lacuna sem fato","from":"gap","status":"open","author":"binary"}).as_object().unwrap().clone(),PhaseWriter::Binary).unwrap();
+        for facts in [json!([{"text":GOAL}]),json!([{"text":GOAL,"source":"src/missing.rs:900"}]),json!({"text":GOAL})] {
+            let before=snapshot(root);
+            let report=answer(&AnswerOpts {facts:Some(facts.to_string()),..with_item(root,DECISION)});
+            assert_eq!(report["ok"],false,"{report}");
+            assert_eq!(snapshot(root),before,"a bad fact cannot leave an orphan answer");
+        }
+    }
+
+    #[test]
+    fn reusing_a_record_across_three_single_point_blocks_does_not_repeat_block_review() {
+        let dir=tempdir().unwrap();let root=dir.path();
+        let mut points=surveyed(root,"rules",1);
+        for block in ["limits","contracts"] {
+            points.push(id_of(&write(root,"point",json!({"block":block,"gap":format!("Lacuna {block}"),"from":"gap","status":"open",
+                "facts":[{"text":GOAL,"source":"mensagem 2"}]}))));
+        }
+        let decided=decided(root);
+        for point in points {
+            let report=answer(&AnswerOpts {point:Some(point.to_string()),..with_result(root,&decided.to_string())});
+            assert_eq!(report["ok"],true,"{report}");assert!(report.get("review").is_none(),"no new result in this block: {report}");
+        }
     }
 
     /// O ponto fecha com resposta ou como não se aplica. Sem resposta, com os

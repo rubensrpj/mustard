@@ -78,7 +78,7 @@ impl Registry {
         }
         text.lines().any(|line| {
             let Some((key, value)) = line.split_once(':').or_else(|| line.split_once('=')) else { return false };
-            self.sensitive_key(key.trim().trim_matches(['\"', '\''])) && !value.trim().trim_matches(['\"', '\'']).is_empty()
+            self.sensitive_key(key.trim().trim_matches(['\"', '\''])) && credential_value(value.trim().trim_matches(['\"', '\'']))
         })
     }
 
@@ -91,11 +91,27 @@ impl Registry {
         match value {
             serde_json::Value::Object(object) => object
                 .iter()
-                .any(|(key, value)| self.sensitive_key(key) && value.as_str().is_some_and(|text| !text.trim().is_empty()) || self.sensitive_value(value)),
+                .any(|(key, value)| self.sensitive_key(key) && value.as_str().is_some_and(credential_value) || self.sensitive_value(value)),
             serde_json::Value::Array(values) => values.iter().any(|value| self.sensitive_value(value)),
             _ => false,
         }
     }
+}
+
+// A whole environment reference contains no credential. Defaults, mixed
+// literals and arbitrary expressions remain excluded conservatively.
+fn credential_value(text: &str) -> bool {
+    let text=text.trim();
+    let identifier=|name:&str| !name.is_empty() && name.bytes().enumerate().all(|(at,byte)|byte==b'_' || byte.is_ascii_alphabetic() || (at>0 && byte.is_ascii_digit()));
+    let reference=if let Some(inner)=text.strip_prefix("${{").and_then(|text|text.strip_suffix("}}")) {
+        let mut parts=inner.trim().split('.');
+        matches!(parts.next(),Some("secrets"|"env"|"vars")) && parts.next().is_some_and(identifier) && parts.next().is_none()
+    } else if let Some(inner)=text.strip_prefix("${").and_then(|text|text.strip_suffix('}')) {
+        identifier(inner)
+    } else if let Some(inner)=text.strip_prefix("$(").and_then(|text|text.strip_suffix(')')) {
+        identifier(inner)
+    } else {false};
+    !text.is_empty() && !reference
 }
 
 /// Bound an excerpt at a line boundary, retaining the whole accepted file in
@@ -194,6 +210,20 @@ pub fn preview_bounded(section: &Section, terms: &[Vec<String>], languages: &cra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_environment_references_do_not_hide_resources_but_literal_credentials_still_do() {
+        let registry=Registry::load().unwrap();
+        for value in ["${CLIENT_SECRET}","$(CLIENT_SECRET)","${{ secrets.CLIENT_SECRET }}","${{ env.CLIENT_SECRET }}","${{ vars.CLIENT_SECRET }}"] {
+            assert!(!registry.sensitive(&format!("client_secret: {value}\n")),"{value}");
+            assert!(!registry.sensitive(&serde_json::json!({"nested":{"client_secret":value}}).to_string()),"{value}");
+        }
+        for value in ["literal", "${CLIENT_SECRET:-literal}", "prefix-${CLIENT_SECRET}", "$(cat key)", "${{ secrets.CLIENT_SECRET || 'literal' }}"] {
+            assert!(registry.sensitive(&format!("client_secret: {value}\n")),"{value}");
+        }
+        assert!(registry.sensitive("client_secret: ${CLIENT_SECRET}\npassword: literal\n"));
+        assert!(registry.sensitive("client_secret: ${CLIENT_SECRET}\narbitrary: -----BEGIN PRIVATE KEY-----\n"));
+    }
 
     #[test]
     fn registry_keeps_format_rules_and_sensitive_or_generated_paths_out_of_the_engine() {

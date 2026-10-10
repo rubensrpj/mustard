@@ -202,6 +202,9 @@ fn session_start_core(
     let source = input.raw.get("source").and_then(|v| v.as_str()).unwrap_or_default();
     let compacted = source.eq_ignore_ascii_case("compact");
     let refreshed = compacted || source.eq_ignore_ascii_case("clear");
+    if refreshed {
+        super::conversation_size::reset_conductor_notice(input, root);
+    }
     // O merge feito por outra pessoa age antes de qualquer aviso: com a spec
     // entregue e a branch arrumada, a retomada já lê o estado novo.
     let landing = spec_merged_elsewhere(root, session.as_deref());

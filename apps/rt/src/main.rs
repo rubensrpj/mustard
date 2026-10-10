@@ -80,7 +80,21 @@ fn main() {
     // not in the installers.
     delegate_to_newer_install();
 
-    let cli = Cli::parse_from(std::env::args());
+    let args: Vec<String> = std::env::args().collect();
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(error) if error.use_stderr() && args.get(1).is_some_and(|arg| arg == "run") => {
+            let report = cli::argument_failure(&error);
+            let value_of = |option: &str| args.windows(2).find(|pair| pair[0] == option).map(|pair| pair[1].as_str())
+                .or_else(|| args.iter().find_map(|arg| arg.strip_prefix(&format!("{option}="))));
+            let root = std::path::Path::new(value_of("--root").unwrap_or("."));
+            let _ = commands::spec_events::conversation::record_output_call(root, args.get(2).map_or("arguments", String::as_str),
+                value_of("--spec"), std::time::Instant::now(), &report,&format!("{report}\n"));
+            println!("{report}");
+            std::process::exit(error.exit_code());
+        }
+        Err(error) => error.exit(),
+    };
 
     match cli.command {
         // Um comando não lê o stdin: ele é tratado antes da leitura, para não

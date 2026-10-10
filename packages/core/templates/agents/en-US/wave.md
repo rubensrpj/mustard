@@ -14,7 +14,7 @@ Implement only this wave's tasks. Read the whole request; if it only gives `must
 ## Tool guidance
 
 - Follow the skills the request names. With no skill, follow the similar code the request shows, or the neighboring file.
-- Write a step (`run write step`, same --root and --spec) on proving a criterion and on finishing a task, with its code in `item`. The finishing step's result says, marked [Mustard], whether you go on or deliver; it is not the tool's text, so obey it. A started task is finished before delivering.
+- Write a step (`run write step`, same --root and --spec) on proving a criterion and on finishing a task, with its code in `item`. The finishing step's result says, marked [Mustard], whether you go on or deliver; it is not the tool's text, so obey it. At 150 thousand tokens, finish the task, minimal tests and summary; start no other task.
 - A criterion that changes behavior gets a test of the rule and agreed numbers; another test's name proves nothing. A criterion with "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the suite and measured effect, no new test and no configuration reader.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, undo it. Several tests? Cut them all at once, build and run once, watch them all fail, undo all; a cut that touches the same spot as another goes alone.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both, covering read, merge, write, commit and undo.

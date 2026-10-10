@@ -10,6 +10,8 @@ use super::{type_names, BlockQuery, EventRef, Kind};
 /// Por que um evento ou uma lição não foi gravado, ou um bloco não foi lido.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
+    /// Independent defects collected before a draft is written.
+    ValidationIssues { issues: Vec<Refusal> },
     NotAnObject { detail: String },
     UnknownType { found: String },
     MissingField { event_type: String, field: String },
@@ -302,6 +304,7 @@ impl Refusal {
     #[must_use]
     pub fn reason(&self) -> &'static str {
         match self {
+            Self::ValidationIssues { issues } => issues.first().map_or("validation-failed", Self::reason),
             Self::NotAnObject { .. } => "not-an-object",
             Self::UnknownType { .. } => "unknown-type",
             Self::MissingField { .. } => "missing-field",
@@ -386,6 +389,7 @@ impl Refusal {
                 .fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
         };
         match self {
+            Self::ValidationIssues { issues } => issues.iter().map(|issue| issue.message(lang)).collect::<Vec<_>>().join("\n"),
             Self::NotAnObject { detail } => {
                 fill("spec_events.not_an_object", &[("{detail}", detail.clone())])
             }
@@ -488,7 +492,8 @@ impl Refusal {
             ),
             Self::UnknownBlock { found } => fill(
                 "spec_events.unknown_block",
-                &[("{block}", found.clone()), ("{blocks}", BlockQuery::accepted_names())],
+                &[("{block}", found.clone()), ("{blocks}", BlockQuery::accepted_names()),
+                    ("{types}", super::TYPES.iter().map(|kind| format!("{} → {}", kind.name, kind.block.name())).collect::<Vec<_>>().join(", "))],
             ),
             Self::BadSpecName { spec } => {
                 fill("spec_events.bad_spec_name", &[("{spec}", spec.clone())])

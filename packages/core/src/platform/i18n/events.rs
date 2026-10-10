@@ -363,14 +363,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.point_without_facts", Locale::PtBr) => {
             "O ponto {code} não tem fato nenhum, e ponto sem fato não fecha com resposta (`result`). \
-             Some os fatos que você conferiu no código ou na conversa numa versão nova dele, só com \
-             `replaces` e `facts`, ou feche-o como `not_applicable`, com o motivo. Nada foi gravado."
+             Inclua os fatos conferidos no próprio `answer`, com `--facts` (lista JSON com `text` e `source`). \
+             Ou feche-o como `not_applicable`, com o motivo. Nada foi gravado."
         }
         ("spec_events.point_without_facts", Locale::EnUs) => {
-            "Point {code} has no fact, so it does not close with an answer (`result`). Add the facts \
-             you checked in the code or in the conversation. Write them in a new version of the \
-             point, with only `replaces` and `facts`. Or close it as `not_applicable`, with the \
-             reason. Nothing was written."
+            "Point {code} has no fact, so it does not close with an answer (`result`). \
+             Include verified facts in `answer` itself, with `--facts` (JSON array with `text` and `source`). \
+             Or close it as `not_applicable`, with the reason. Nothing was written."
         }
         ("spec_events.open_point_removed", Locale::PtBr) => {
             "O ponto {code} está aberto e não sai com `remove`. Se ele não se aplica, feche-o com \
@@ -550,8 +549,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.filter_matches_nothing", Locale::EnUs) => {
             "No {type} event between {from} and {to}. Nothing was written."
         }
-        ("spec_events.unknown_block", Locale::PtBr) => "O bloco {block} não existe. Blocos: {blocks}.",
-        ("spec_events.unknown_block", Locale::EnUs) => "There is no {block} block. Blocks: {blocks}.",
+        ("spec_events.unknown_block", Locale::PtBr) => "O bloco {block} não existe. Blocos: {blocks}. Tipos: {types}. Para qualquer item, use `mustard-rt run read item-<código>`.",
+        ("spec_events.unknown_block", Locale::EnUs) => "There is no {block} block. Blocks: {blocks}. Types: {types}. Read any item by its code, for example `mustard-rt run read item-MSTD-RULE-0001`.",
         ("spec_events.bad_spec_name", Locale::PtBr) => {
             "{spec} não serve como nome de spec: use um nome sem barra e sem \"..\"."
         }
@@ -960,7 +959,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             123,
-            0x8203_21c3_de92_c9f5,
+            0x24d0_d2e6_f1a4_ec77,
         );
     }
 
@@ -1041,7 +1040,7 @@ mod tests {
             ("spec_events.replaces_removed", &["{id}", "{by}"][..]),
             ("spec_events.depends_outside_wave", &["{wave}", "{missing}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
-            ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
+            ("spec_events.unknown_block", &["{block}", "{blocks}", "{types}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
             ("spec_events.spec_not_open", &["{spec}"][..]),

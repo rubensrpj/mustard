@@ -123,6 +123,37 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     check_fact_sources(event, spec.name)
 }
 
+/// All independent schema defects. Dependent conditions are checked only
+/// after the fields they read are complete and well typed.
+#[must_use]
+pub fn validation_issues(event: &Map<String, Value>) -> Vec<Refusal> {
+    let mut issues: Vec<Refusal> = validate(event).err().into_iter().collect();
+    let Some(spec) = event.get("type").and_then(Value::as_str).and_then(type_spec) else { return issues };
+    let mut add = |issue: Refusal| { if !issues.contains(&issue) { issues.push(issue); } };
+    for field in REFUSED_FIELDS.iter().filter(|field| event.contains_key(**field)) {
+        add(Refusal::BinaryOnlyField { field: (*field).into() });
+    }
+    let fields = checked_fields(event, spec);
+    let mut absent: Vec<String> = fields.iter()
+        .filter(|field| field.required && event.get(field.name).is_none_or(is_empty))
+        .map(|field| field.name.to_string()).collect();
+    absent.extend(nested_absent(event, spec.name));
+    if !absent.is_empty() { add(missing(spec.name, &absent.join(", "))); }
+    let mut malformed = false;
+    for field in fields {
+        if field.required && event.get(field.name).is_none_or(is_empty) { continue; }
+        if let Err(issue) = check_field(event, spec.name, field) { malformed = true; add(issue); }
+    }
+    for key in event.keys().filter(|key| !accepts_field(spec, key)) {
+        add(Refusal::UnknownField { event_type: spec.name.into(), field: key.clone(), accepted: accepted_fields(spec) });
+    }
+    if absent.is_empty() && !malformed {
+        if let Err(issue) = check_conditions(event, spec.name) { add(issue); }
+        if let Err(issue) = check_fact_sources(event, spec.name) { add(issue); }
+    }
+    issues
+}
+
 /// Os campos que a conferência olha num evento do tipo `spec`, na ordem em
 /// que a recusa os cita: o autor, a origem, o envelope, os comuns que o tipo
 /// não declara de novo e os do tipo.

@@ -156,8 +156,37 @@ pub(crate) fn record_injection(root: &Path, session: Option<&str>, hook: &str, t
 /// certo, e a razão da recusa (`reason`, ou o `error` das portas do pull
 /// request). A spec é a do relatório, a que a chamada nomeou, ou a atual.
 pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, started: Instant, report: &Value) -> Option<u64> {
+    let output=serde_json::to_string_pretty(report).unwrap_or_default()+"\n";
+    record_output_call(root,command,named,started,report,&output)
+}
+
+/// Record the actual output when a command returns plain text or compact
+/// JSON. Do not substitute a synthetic JSON object for a byte measurement.
+pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>, started: Instant, report: &Value, output:&str) -> Option<u64> {
     let session = crate::shared::spec_state::session_from_env();
-    record_measured_call(root, command, named, session.as_deref(), started, report, Map::new())
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut measured=transport_metrics(&args,output);
+    measured.insert("invocation".into(),json!(true));
+    if command=="search" {
+        measured.insert("search_enriched".into(),json!(report["crossing_status"]=="enriched"));
+        measured.insert("search_task_evidence".into(),json!(report["task_context"]["cards"].as_array().is_some_and(|cards|!cards.is_empty())));
+        measured.insert("search_fallback".into(),json!(report["task_context"]["status"]=="native-fallback" || report["crossing_status"]!="enriched"));
+    }
+    record_measured_call(root, command, named, session.as_deref(), started, report, measured)
+}
+
+fn transport_metrics(args:&[String],output:&str)->Map<String,Value> {
+    let mut measured=Map::new();
+    // Count the transport, never persist arguments or response contents.
+    // Four characters per token is an explicitly labelled approximation.
+    if args.first().is_some_and(|arg| arg == "run") {
+        let input = args.join(" ");
+        measured.insert("input_bytes".into(), json!(input.len()));
+        measured.insert("output_bytes".into(), json!(output.len()));
+        measured.insert("estimated_input_tokens".into(), json!(input.chars().count().div_ceil(4)));
+        measured.insert("estimated_output_tokens".into(), json!(output.chars().count().div_ceil(4)));
+    }
+    measured
 }
 
 /// A chamada de [`record_call`], da sessão `session`, com os campos da
@@ -175,8 +204,9 @@ pub(crate) fn record_measured_call(
     session: Option<&str>,
     started: Instant,
     report: &Value,
-    measured: Map<String, Value>,
+    mut measured: Map<String, Value>,
 ) -> Option<u64> {
+    measured.entry("invocation").or_insert(json!(false));
     let tokens = measured.get("tokens").and_then(Value::as_u64);
     let cost = measured.get("cost_micro_usd").and_then(Value::as_u64);
     let recorded = record_in_call_spec(root, command, named, session, started, report, measured);
@@ -185,6 +215,18 @@ pub(crate) fn record_measured_call(
         let _ = spend::record_loose_call(&dir, root, tokens.unwrap_or(0), cost.unwrap_or(0));
     }
     recorded
+}
+
+/// Transport observations must not consume item IDs, change a refused
+/// write, or masquerade as an agent's required reading receipt.
+fn operations_path(root:&Path,spec:&str)->Option<std::path::PathBuf> {
+    let canonical=mustard_core::io::spec_events::spec_file(root,spec).ok()?;
+    let name=canonical.parent()?.file_name()?;
+    Some(mustard_core::io::spec_events::spec_root(root).join(".claude/mustard/operations").join(name).with_extension("ndjson"))
+}
+
+pub(crate) fn recorded_operations(root:&Path,spec:&str)->mustard_core::domain::spec_events::SpecLog {
+    operations_path(root,spec).and_then(|path|mustard_core::io::spec_events::read(&path).ok().flatten()).unwrap_or_default()
 }
 
 /// A gravação de [`record_measured_call`] na spec do relatório, na que a
@@ -222,6 +264,11 @@ fn record_in_call_spec(
     }
     let mut fields = draft(fields);
     fields.extend(measured);
+    let argument_failure = !ok && matches!(reason,Some("duplicate-option"|"invalid-arguments"));
+    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search")) || argument_failure {
+        let path=operations_path(root,&spec)?;
+        return mustard_core::io::spec_events::write(&path,"call",fields,&[]).ok().map(|recorded|recorded.id);
+    }
     record_in_spec(root, &spec, "call", fields)
 }
 
@@ -230,6 +277,44 @@ mod tests {
     use super::*;
     use crate::commands::spec_events::write::record_open;
     use crate::shared::spec_state::stand_on_spec_branch;
+
+    #[test]
+    fn transport_counts_use_real_utf8_output_and_store_no_content_or_credentials() {
+        let args:Vec<String>=["run","answer","--json","secret-value"].into_iter().map(str::to_string).collect();
+        let output="Pedido exato 🟡\n";
+        let measure=transport_metrics(&args,output);
+        assert_eq!(measure["output_bytes"],output.len());
+        assert_eq!(measure["estimated_output_tokens"],output.chars().count().div_ceil(4));
+        assert!(!json!(measure).to_string().contains("secret-value"));
+        assert!(transport_metrics(&[],output).is_empty(),"library calls have unknown CLI payloads");
+    }
+
+    #[test]
+    fn transport_observations_are_separate_and_required_reading_receipts_stay_in_the_spec() {
+        let dir=project_on("medicao");
+        let root=dir.path();
+        let path=mustard_core::io::spec_events::spec_file(root,"medicao").unwrap();
+        let original=std::fs::read(&path).unwrap();
+        let refused=json!({"ok":false,"spec":"medicao","reason":"invalid-value"});
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| assert!(record_output_call(root,"write",Some("medicao"),Instant::now(),&refused,"refused\n").is_some()));
+            }
+        });
+        assert_eq!(std::fs::read(&path).unwrap(),original,"observations cannot change spec items or consume IDs");
+        let observed=recorded_operations(root,"medicao");
+        assert_eq!(observed.events.len(),8,"concurrent observations use the locked writer");
+        assert!(observed.events.iter().all(|e|e.fields["invocation"]==true && e.str_field("result")==Some("refused")));
+        let receipt=draft(json!({"request":"request-1","item":"MSTD-RULE-0001"}));
+        assert!(record_measured_call(root,"read",Some("medicao"),None,Instant::now(),&json!({"ok":true}),receipt).is_some());
+        let receipts=events_of(root,"medicao","call");
+        assert_eq!(receipts.len(),1);
+        assert_eq!(receipts[0]["request"],"request-1");
+        assert_eq!(recorded_operations(root,"medicao").events.len(),8);
+        assert!(record_call(root,"open",Some("medicao"),Instant::now(),&json!({"ok":true,"kind":"feature"})).is_some());
+        assert_eq!(events_of(root,"medicao","call").len(),2,"the domain's work kind is not a CLI parse error");
+        assert_eq!(recorded_operations(root,"medicao").events.len(),8);
+    }
 
     /// Um projeto com a spec `spec` aberta e o checkout na branch dela.
     fn project_on(spec: &str) -> tempfile::TempDir {

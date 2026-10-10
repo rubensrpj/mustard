@@ -30,6 +30,9 @@ pub enum PanelCmd {
         /// Select the host session's statusline observation.
         #[arg(long)]
         session: Option<String>,
+        /// Load the selected wave's plan, exact recorded input and delivery.
+        #[arg(long)]
+        wave: Option<u64>,
     },
     /// Record a host measurement from standard input, without a model turn.
     #[command(display_order = 29)]
@@ -67,7 +70,7 @@ pub fn dispatch(cmd: PanelCmd) {
                 name.map_or_else(||serde_json::json!({"ok":false,"reason":"no-current-spec","hint":"Use --project para publicar o projeto sem spec aberta."}),|name|super::publication::publish(&root,&name,include_consumption))
             }
         ),
-        PanelCmd::Panel { root, spec, refresh_consumption, session } => {
+        PanelCmd::Panel { root, spec, refresh_consumption, session, wave } => {
             let refresh=refresh_consumption.then(||{
                 let machine=crate::commands::spec::spend::Machine::here();
                 let mut refresh=crate::commands::spec::spend::spend_at(
@@ -76,6 +79,10 @@ pub fn dispatch(cmd: PanelCmd) {
                 refresh
             });
             let mut result=super::snapshot_session(&root,spec.as_deref(),session.as_deref());
+            if let (Some(wave), Some(name)) = (wave, result["selected_spec"].as_str()) {
+                let detail = super::wave_detail(&root, name, wave);
+                result["wave_detail"] = detail;
+            }
             if let Some(refresh)=refresh {result["consumption_refresh"]=serde_json::json!({"ok":refresh["ok"],"reason":refresh["reason"],"project":refresh["project"]});}
             println!("{result}");
         },
