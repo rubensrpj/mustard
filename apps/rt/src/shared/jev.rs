@@ -2720,6 +2720,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("attempts.ndjson")).unwrap(), before);
     }
     #[test]
+    fn a_global_criterion_does_not_spend_an_interference_request_and_profiles_reuse_cache() {
+        let service=FakeService::start(|_,_|Reply::json(200,&judged_answer()));
+        let dir=tempfile::tempdir().unwrap();let mut filter=service.filter();filter.cache=Some(dir.path().into());
+        let mut candidate=board_task(11,&["one/writer.rs"]);candidate.criteria.insert(90);
+        let mut running=board_task(5,&["two/reader.rs"]);running.criteria.insert(90);
+        let mut board=Board{backlog:vec![candidate],running:vec![BoardWave{n:7,tasks:vec![running]}]};
+        let first=filter.judge_backlog(&board).unwrap();
+        assert_eq!(first.usage.requests,1,"only the intrinsic profile is needed");
+        assert_eq!(service.received().len(),1);
+        let replay=filter.judge_backlog(&board).unwrap();assert_eq!(replay.usage.requests,0);
+        board.running[0].tasks[0].reads.push("one/writer.rs".into());
+        let conflict=filter.judge_backlog(&board).unwrap();assert_eq!(conflict.usage.requests,1,"a real read/write relation needs its own decision");
+        assert_eq!(service.received().len(),2);
+    }
+
+    #[test]
     fn shared_reading_never_becomes_a_conflict_but_flow_and_read_write_get_separate_evidence() {
         let mut first = board_task(11, &["writer.rs"]);
         let mut other = board_task(5, &["reader.rs"]);

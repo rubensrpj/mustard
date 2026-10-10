@@ -180,10 +180,10 @@ mod tests {
         assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
     }
 
-    /// A onda que continua um resumo que vale sai mesmo pequena, com outra
-    /// onda em andamento; a outra tarefa pequena, sem resumo, espera.
+    /// Summary continuation keeps its own wave; independent small work can
+    /// use another free slot.
     #[test]
-    fn a_summary_wave_leaves_small_while_another_wave_runs_and_a_small_one_without_a_summary_waits() {
+    fn summary_continuation_and_independent_small_work_use_free_slots() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -196,9 +196,9 @@ mod tests {
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2]));
-        assert_eq!(wave_order(root, 2), vec![left], "o resumo sai pequeno");
-        assert_eq!(spec_now(root).current(other).and_then(|task| task.wave()), None, "a sem resumo espera");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2, 3]));
+        assert_eq!(wave_order(root, 2), vec![left], "summary stays attached");
+        assert_eq!(wave_order(root, 3), vec![other], "independent small work uses a slot");
     }
 
     /// A entrega da onda que continua um resumo é recusada, com o código dele,

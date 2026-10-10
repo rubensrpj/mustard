@@ -317,6 +317,21 @@ export function register(on) {
         rows.push(section(spec.name,[text(spec.goal || spec.name),
           text(`${t('Validação final','Final validation')}: ${spec.final_validation_valid == null ? t('desconhecida','unknown') : spec.final_validation_valid ? t('válida','valid') : t('pendente','pending')}`),
           text(`${t('Revisão','Review')}: ${spec.review_approved ? t('aprovada','approved') : t('pendente','pending')}`)]));
+        if (spec.scheduling) {
+          const queue=spec.scheduling;
+          const reasons={ready:['Pronta para agrupamento','Ready for grouping'],dependencies:['Aguarda dependências','Waiting for dependencies'],
+            'file-reservation':['Arquivo reservado','File reserved'],capacity:['Aguarda vaga','Waiting for capacity'],
+            'missing-criteria':['Falta vínculo com critério','Missing acceptance criterion'],
+            'cleanup-last':['Limpeza aguarda implementação','Cleanup waits for implementation'],
+            'spec-not-running':['Spec fora de execução','Spec is not running']};
+          rows.push(section(t('Fila de trabalho','Work queue'),[
+            text(`${fmt(queue.backlog)} ${t('tarefas no backlog','backlog tasks')} · ${fmt(queue.ready)} ${t('prontas','ready')}`),
+            text(`${t('Vagas de ondas','Wave slots')}: ${fmt(queue.occupied_wave_slots)}/${fmt(queue.capacity)}`,{dimColor:true}),
+            ...queue.tasks.map(item=>text(`${item.task} · ${item.title || ''} · ${reasons[item.reason] ? t(...reasons[item.reason]) : clean(item.reason)}${item.dependencies?.length ? ': '+item.dependencies.join(', ') : ''}${item.holding_waves?.length ? ': '+item.holding_waves.join(', ') : ''}`)),
+            ...(queue.omitted_tasks ? [text(`${fmt(queue.omitted_tasks)} ${t('outras tarefas','other tasks')}`,{dimColor:true})] : []),
+            text(t('Relações do código são conferidas ao despachar.','Code relationships are verified at dispatch.'),{dimColor:true}),
+          ]));
+        }
         const done=spec.waves.filter(w => ['integrated','committed'].includes(w.status)).length;
         rows.push(section(t('Ondas','Waves'),[text(progress(done,spec.waves.length),{color:accent}),
           ...spec.waves.map(w => Box({flexDirection:'column',marginBottom:1,children:[

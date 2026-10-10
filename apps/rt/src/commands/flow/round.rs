@@ -1,8 +1,8 @@
 //! `mustard-rt run round [--spec <nome>]` — uma rodada de ondas.
 //!
 //! É a porta única da execução, e cada rodada é uma chamada só. Sem relatório,
-//! a rodada despacha: escolhe as ondas que podem sair juntas — duas no mesmo
-//! arquivo inclusive —, prepara no commit atual a vaga de cada uma, a cópia
+//! a rodada despacha: escolhe as ondas que podem sair juntas, preservando as
+//! reservas de arquivos, e prepara no commit atual a vaga de cada uma, a cópia
 //! fixa em que ela compila, monta o pedido de cada uma com a cópia dela,
 //! grava o envio com o pedido exato como foi injetado e marca a spec como em
 //! execução na primeira rodada. Com a entrega que uma onda gravou na spec e
@@ -13,8 +13,8 @@
 //! **A onda nasce quando sai.** Só existe a onda que está rodando; as outras
 //! tarefas ficam no backlog, sem número de onda. A cada rodada, a montagem
 //! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
-//! tarefas do mesmo tipo de trabalho, que o Jev julga numa chamada só sobre o
-//! backlog inteiro, ou que dividem arquivo quando não há Jev. A onda montada
+//! tarefas do mesmo tipo de trabalho, com decisões tipadas do Jev em cache,
+//! ou por arquivos e relações atuais do scan quando não há Jev. A onda montada
 //! que não saiu se desfaz, e as tarefas dela voltam ao backlog e entram na
 //! conta.
 //!
@@ -116,14 +116,16 @@
 //! postas e tiradas e os arquivos mudados —, que sai na resposta como aviso
 //! `wave-size` e no corpo do commit. O tamanho nunca recusa a onda.
 //!
-//! A página da spec e a do projeto são refeitas no fim da rodada, e a resposta
-//! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço
-//! é impresso na conversa.
+//! O painel local acompanha os eventos. Publicação externa só existe sob
+//! pedido explícito, pela porta de publicação.
 
 mod agreed;
 mod answer;
 mod backlog;
 mod checks;
+mod evidence;
+mod scheduling;
+pub(crate) use scheduling::snapshot as scheduling_snapshot;
 mod commit;
 mod unused_evidence;
 pub(crate) use commit::final_unused;

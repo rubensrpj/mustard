@@ -13,6 +13,8 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
     project: {name:'fixture',branch:'feature/demo'}, selected_spec:'demo',
     specs:[{name:'demo',phase:'running',goal:'Demo',waves:[],stages:[],
       final_validation_valid:false,review_approved:false,undeclared_commands:[],
+      scheduling:{backlog:2,ready:1,capacity:4,occupied_wave_slots:1,free_wave_slots:3,omitted_tasks:0,
+        tasks:[{task:"T-2",title:"Consumer",reason:"file-reservation",dependencies:[],holding_waves:[1]},{task:"T-3",title:"Docs",reason:"ready",dependencies:[],holding_waves:[]}]},
       usage:{wave_tokens:null,conductor_tokens:null}}],
     jev:{physical_requests:0,known_input_tokens:0,requests_with_unknown_usage:0,cost_micro_usd:null},
   };
@@ -34,6 +36,9 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   await $.command.run({command:'mustard-panel',args:''});
   expect(reads).toBe(1);
   const pane = await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await pane.press({key:'tab-Execução'});
+  expect(await pane.find({type:'Text',text:'2 tarefas no backlog · 1 prontas'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'T-2 · Consumer · Arquivo reservado: 1'})).toBeDefined();
   await pane.press({key:'tab-Consumo'});
   expect(await pane.find({type:'Text',text:'desconhecido'})).toBeDefined();
   await clock.advance(2000);

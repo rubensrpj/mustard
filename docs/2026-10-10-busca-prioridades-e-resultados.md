@@ -1,8 +1,72 @@
-# Busca do Mustard: prioridades implementadas e resultados — 10/10/2026
+# Busca, ondas e Mods do Mustard: implementação e resultados — 10/10/2026
 
 Implementação na branch `codex/mustard-plano-completo`, em uma cópia isolada. Baseline da revisão de recuperação: `e29ec6f3a750109f64b23d976e7a03c660b0338b`. O ajuste posterior de entrega/comportamento do modelo compara com `f7c80415a5a9c772f24fd93942af6c110b9b684e`, sem misturar os dois pontos de partida. A branch pessoal em alteração e os projetos de aplicação originais não foram modificados. Este documento substitui o estado corrente dos relatórios de 08/10 e 09/10, preservados como histórico.
 
-**Estado final:** a etapa anterior elevou os alvos entregues de 55/80 para 72/80. A revisão de entrega preservou exatamente esses 72 alvos e 49 corpos completos, reduzindo a apresentação de 1.356.648 para 1.228.267 bytes (**−9,46% adicional**). O modelo local fica habilitado por padrão nas pesquisas por intenção; Jev continua pontual e separado. Esses resultados medem evidência efetivamente entregue, com arquivo/faixa/hash conferidos; não medem precisão de todos os candidatos, implementação correta ou tokens faturados.
+**Histórico até `4947a105`:** a etapa anterior elevou os alvos entregues de 55/80 para 72/80. A revisão de entrega preservou exatamente esses 72 alvos e 49 corpos completos, reduzindo a apresentação de 1.356.648 para 1.228.267 bytes (**−9,46% adicional**). O modelo local fica habilitado por padrão nas pesquisas por intenção; Jev continua pontual e separado. Esses resultados medem evidência efetivamente entregue, com arquivo/faixa/hash conferidos; não medem precisão de todos os candidatos, implementação correta ou tokens faturados.
+
+**Estado atual:** ondas usam evidências atuais do scan e vagas livres; Mods explica a fila; Jev evita decisões sem motivo concreto e reutiliza o cache; revisão final aproveita recibos sem reler saídas extensas. Recuperação preservada, sem ganho adicional de alvos nesta revisão. Uma tentativa de acelerar o ranking vetorial foi retirada por não demonstrar benefício.
+
+## Revisão de ondas, scan e Mods sobre `4947a105`
+
+Esta revisão usa `4947a105f60ffa8301ef33462976423b2a54700c` como baseline, com binários dos dois braços compilados com o perfil de desenvolvimento otimizado. Não mistura esse ponto de partida com os ganhos históricos abaixo. A implementação continua na branch `codex/mustard-plano-completo`, na cópia isolada; a branch pessoal `feature/validacao-leve-por-trecho` permanece intacta.
+
+### Alterações implementadas
+
+- **Agrupamento nativo informado pelo scan.** Uma consulta indexada carrega somente as importações dos arquivos declarados no quadro. A relação só entra quando os dois arquivos atuais coincidem com os blobs registrados no scan. Importador ou destino alterado invalida a relação; mapa ausente mantém o agrupamento pelos arquivos declarados, sem criar banco nem invocar modelo. Grupos relacionados podem compartilhar uma onda dentro da estimativa de tamanho. Grupos que escrevem o mesmo arquivo continuam atômicos. A estimativa usa a tabela existente de 35/65/95/125 mil tokens por tarefa, associando faixas ao número de arquivos: essa associação é heurística, não uma previsão calibrada desta revisão nem uma medição de consumo.
+- **Vagas livres utilizadas.** Saiu a exigência de seis arquivos para uma onda pequena sair enquanto outra executa. Dependências, prioridade, critérios, limpeza por último, capacidade configurada, continuação de resumo e exclusividade da árvore inteira permanecem. Uma relação atual de leitura/escrita pode segurar um consumidor enquanto outra onda altera seu contrato; leitura compartilhada não bloqueia. Também se conferem relações entre ondas escolhidas na mesma rodada, incluindo continuação de resumo. No teste controlado, duas tarefas ligadas pelo scan saem em uma onda, e trabalho pequeno independente usa uma vaga livre. Isso não demonstra economia percentual de tokens: liberar trabalho independente pode aumentar o número de agentes simultâneos em relação à espera anterior.
+- **Jev com motivo e cache.** Um critério global compartilhado, sozinho, deixou de provocar uma pergunta de interferência entre tarefas. Dependência explícita, leitura/escrita e vizinhança pertinente continuam como sinais. Se todas as tarefas estão impedidas por reservas nativas, o despachante nem chama o avaliador. Estados enriquecidos são reutilizados entre o agrupamento e o quadro pago; não há uma segunda leitura do scan para isso. Os perfis intrínsecos e decisões tipadas continuam com cache. Em quadros mistos ainda pode haver perfis de tarefas bloqueadas; esta revisão não declara ter eliminado toda pergunta evitável.
+- **Validação final com recibo consolidado.** O pedido do revisor inclui, como leitura obrigatória, somente o recibo consolidado da validação final aprovada, identificado pelo conteúdo e pelas entradas validadas. Saídas completas de suítes já aprovadas não entram novamente no pedido. Um novo ensaio de validação sem conclusão ou uma falha posterior impede a reutilização do recibo antigo. Registros individuais continuam acessíveis. Os agentes em português e inglês orientam aproveitar a execução vigente e repetir verificações afetadas, incertas ou alteradas; preservam leitura independente, cortes que precisam falhar, prova manual e revisão final obrigatória.
+- **Fila no Mods.** As abas de specs/execução mostram backlog, tarefas prontas, ocupação/capacidade e motivos declarados de espera: dependências, arquivo reservado, falta de vaga, critério ausente, limpeza e fase da spec. A lista mostra até 40 tarefas e informa o excedente. A observação é somente leitura, sem scan, banco novo ou modelo. Relações atuais de código são verificadas no despacho: a tela deixa explícito que sua prontidão descreve a fila declarada, não uma nova análise de fonte a cada atualização. Publicação externa permanece explícita.
+- **Comentários e avaliação coerentes.** Foram corrigidas descrições que ainda prometiam publicação automática e retirada uma duplicação de teste. O runner de recuperação agora registra e imprime a configuração vetorial de ambos os braços; reutilização de baseline exige a mesma configuração registrada. Desligar o modelo no benchmark é uma ablação explícita, não o padrão do produto.
+
+O uso do Jev segue decisões fechadas com critérios curtos e fatos estruturados, preservando abstenção e validação de resposta. Compartilhar o estado entre perguntas pertinentes continua útil, mas não torna perguntas adicionais gratuitas. Referências: [Choice](https://docs.typesafe.ai/primitives/choice), [State](https://docs.typesafe.ai/concepts/state) e [perguntas paralelas](https://docs.typesafe.ai/cookbooks/parallel_questions). Nesta validação não houve chamada paga ao Jev.
+
+### Recuperação preservada e amostra nova
+
+Foram repetidos os mesmos pedidos nos braços anterior e experimental da revisão, com inferência externa desabilitada. O braço experimental ainda continha a otimização de ranking posteriormente retirada; o pacote final restaura o ranking do baseline e recebe a conferência separada nos projetos abaixo. Os 240 pares de apresentações abaixo permaneceram idênticos byte a byte: 120 perguntas, testadas com e sem o modelo local. As coordenadas/hash do código e a paridade do resultado nativo foram conferidas. Os tempos dessas rodadas concorrentes não são usados como prova de desempenho.
+
+| Amostra e configuração | Alvos antes → atual | Corpos completos antes → atual | Bytes antes → atual |
+| --- | ---: | ---: | ---: |
+| 80 casos anteriores, modelo local ligado | 72/80 → 72/80 (90%) | 49 → 49 | 1.228.267 → 1.228.267 |
+| 80 casos anteriores, modelo desligado | 64/80 → 64/80 (80%) | 41 → 41 | 1.284.141 → 1.284.141 |
+| 40 casos novos, modelo local ligado | 34/40 → 34/40 (85%) | 27 → 27 | 693.421 → 693.421 |
+| 40 casos novos, modelo desligado | 31/40 → 31/40 (77,5%) | 24 → 24 | 728.293 → 728.293 |
+
+Os 40 casos novos foram selecionados depois de congelar os binários de recuperação, sem ajustar o algoritmo pelas respostas: primeiro repositório de cada linguagem ainda ausente das 80 perguntas anteriores, dez perguntas por repositório. São `psf/black`, `xenova/transformers.js`, `rust-bakery/nom` e `junegunn/fzf`, nos commits fixados na seleção versionada. O modelo local recuperou três alvos adicionais nessa amostra, sem perder alvos da ablação nativa: Python 8/10 → 9/10, TypeScript 9/10 → 10/10, Rust 5/10 → 5/10 e Go 9/10 → 10/10. Isso sustenta manter o canal local por intenção; não demonstra ganho adicional de recuperação desta revisão sobre `4947a105`, que já usava esse canal.
+
+São testes diagnósticos adaptados com descrições públicas e bootstrap lexical fixo, não buscas autônomas de um agente nem a pontuação oficial do RepoQA. Sobreposição do treino do modelo com esses repositórios não foi auditada. Alvo entregue não mede precisão de todos os candidatos ou implementação correta. Os seis alvos ausentes nos casos novos, incluindo cinco em Rust, continuam lacunas reais.
+
+O pacote final foi reconstruído depois do ajuste do recibo e repetiu as quinze consultas dos projetos, sem qualquer diferença de texto em relação ao baseline:
+
+| Projeto | Alvos antes → atual | Corpos completos | Retorno inicial, antes → atual |
+| --- | ---: | ---: | ---: |
+| Sialia | 10/12 → 10/12 | 3 → 3 | 149.834 → 149.834 bytes |
+| Florestal | 8/8 → 8/8 | 3 → 3 | 54.388 → 54.388 bytes |
+
+No Sialia, tokenização (`RequestTokenizationAsync`) e desativação de subconta (`DisableSubAccountAsync`) continuam fora dos alvos entregues pelos pedidos medidos. Nenhum pagamento, aplicação ou exportação real de planilha foi executado. A passagem dos testes de recuperação não certifica esses fluxos de negócio.
+
+### Experimento de tempo retirado
+
+A tentativa de reduzir cópias, recalcular menos normas e selecionar o top K exato manteve as respostas, mas não demonstrou benefício de ponta a ponta. Depois de terminar a compilação, testes e rodadas de recuperação, quatro pedidos aquecidos receberam três repetições por braço, alternadas, no mesmo snapshot. As 24 saídas foram determinísticas e iguais entre braços. A mediana agregada passou de 4.036 para 4.179 ms (**+3,54%**).
+
+| Consulta | Baseline | Experimento | Variação |
+| --- | ---: | ---: | ---: |
+| Sialia: visão do fluxo | 6.121 ms | 6.407 ms | +4,68% |
+| Sialia: cobranças | 8.052 ms | 8.052 ms | −0,01% |
+| Florestal: descoberta de XLSX | 2.005 ms | 1.971 ms | −1,69% |
+| Florestal: entradas do input | 432 ms | 431 ms | −0,22% |
+
+Essa amostra pequena não prova uma regressão geral, mas tampouco justifica manter a complexidade adicional. **O experimento foi removido** e o pacote final voltou ao cálculo/ranking anterior. Esses tempos pertencem ao experimento, não ao pacote final. Não se afirma aceleração final da busca nesta revisão. Artefatos preservados: `latency-experiment.json`, `latency-experiment-manifest.json` e `experiment-bin/`; hashes distinguem esse binário do pacote entregue. O manifesto original registra os caminhos usados na medição; `latency-reproduce-experiment-manifest.json` aponta para o binário congelado, preservado depois da retirada.
+
+### Verificações e limites
+
+Passaram **3.995 testes Rust**, com dois ignorados já existentes, Clippy com `-D warnings`, construção otimizada e **16 testes oficiais do Mods no pacote final**, além da validação do plugin. Os testes novos conferem frescor dos dois lados da relação, reserva de consumidor, leitura compartilhada, agrupamento transitivo/orçamento, fila sem escrita e recibo. No serviço Jev simulado, o quadro com somente critério global compartilhado fez um perfil e zero perguntas de interferência; repetição idêntica fez zero chamadas, e acrescentar uma relação real exigiu apenas a decisão ainda ausente. Um teste do despachante recusa qualquer chamada ao avaliador quando tudo já está bloqueado nativamente.
+
+O preflight gratuito do pacote final passou nas duas tarefas autorais, incluindo teste independente do gabarito e localização pelo gateway; **nenhum modelo de host executou as tarefas**. O CLI segue `loggedIn:false`. Tokens faturados, custo de uma spec completa, qualidade do código produzido e tempo total de implementação continuam sem medição. A revisão também não elimina limites de dependências dinâmicas ou de arquivos declarados incorretamente nas tarefas.
+
+O próximo trabalho no scan deve atacar lacunas de recuperação e custo de inventário/hidratação antes de acrescentar canais indiscriminadamente. Um perfil diagnóstico da visão geral do Sialia, com índice de cerca de 478 MB, mostrou muitas leituras SQLite e resoluções de caminhos; não há base para atribuir todo o custo ao cálculo vetorial. Qualquer cache de caminhos precisa preservar a verificação de escopo, links e código atual. A outra prioridade de validação é uma trajetória real do Claude, com acerto da tarefa e consumo medidos nos dois braços. Não se apresenta uma porcentagem única de melhoria para misturar esses resultados.
+
+Artefatos locais desta revisão ficam em `target/waves-scan-mods-20261010/`: `vector-{known,heldout,new-cases}/comparison.json`, ablações em `{known,heldout,new-cases}/`, `*-delivered-labels.json`, `session-delivered/`, logs e binários congelados. `corpus-bin/` preserva o executável dos 120 casos; `current-bin/` e `target/review-plugin/` contêm o pacote final com o recibo consolidado. O experimento de otimização vetorial preservou a recuperação, mas foi retirado por não demonstrar aceleração; o pacote final usa novamente o mesmo ranking do baseline. A repetição dos quinze pedidos dos projetos confere o pacote entregue. Manifestos/hashes distinguem essas versões. Os resumos numéricos ficam em [measurements/2026-10-10-waves-scan-mods.json](measurements/2026-10-10-waves-scan-mods.json). Nenhuma instalação pessoal ou publicação foi alterada.
 
 ## Prioridades e alterações mantidas
 
@@ -205,7 +269,7 @@ node apps/scan/benchmarks/gateway-heldout.mjs \
   --dataset /caminho/repoqa.json \
   --selection apps/scan/benchmarks/repoqa-selection-local-code-20261010.json \
   --baseline /caminho/bin-anterior --current /caminho/bin-final \
-  --vectors true --out /caminho/resultados
+  --vectors true --baseline-vectors true --out /caminho/resultados
 ```
 
 Trocar `--vectors true` por `false` compara o caminho nativo. Para comparar ambos os braços com modelo, usar também `--baseline-vectors true`. O runner remove credenciais e exige zero chamadas externas. O piloto Jev é separado e exige `--jev`, configuração habilitada e credencial; nunca salvar a chave nos relatórios. A latência usa `gateway-latency.mjs`, roots já escaneadas por seus próprios binários e manifesto de cópias descartáveis, com aquecimento e braços alternados.

@@ -424,6 +424,15 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
         .find_map(|e| e.str_field("sha").map(str::to_string))
 }
 
+fn final_validation_receipts(log: &SpecLog) -> Vec<&SpecEvent> {
+    let Some(receipt)=log.events.iter().rev().find(|event| event.event_type=="stage_run" && event.str_field("stage")==Some("final-validation")) else {return vec![];};
+    if receipt.str_field("result")!=Some("pass") || log.events.iter().any(|event| event.id>receipt.id
+        && event.event_type=="stage_run" && event.str_field("phase")==Some("final")
+        && (event.str_field("scope")==Some("leaf") || (event.str_field("stage")==Some("machine") && event.str_field("result")!=Some("pass")))) {return vec![];}
+    vec![receipt]
+}
+
+
 /// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
 /// a toda obra, mesmo a de uma onda só, no lugar da revisão de cada onda: as
 /// ondas do plano com as tarefas, as emendas gravadas para elas, a entrega
@@ -477,6 +486,9 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
     let changes: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
     let commit = final_review_commit(root, log);
     let execution = Execution { commit, copy: Some(WaveCopy { path: shown(&final_copy_path(root, spec, log)), reused: None }), ..project_execution(root) };
+    // The consolidated receipt avoids rereading successful test logs. Detailed
+    // executions remain available through the event-reading port.
+    let validation = final_validation_receipts(log);
     let material = Material {
         spec: spec.to_string(),
         block,
@@ -484,6 +496,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
         agreed,
         own_delivered,
         changes,
+        validation,
         since_verdict: wave_prompt::since_last_verdict(log),
         execution,
         codes: log.codes(),
@@ -820,6 +833,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         task_reads,
         file_tests,
         changes: Vec::new(),
+        validation: Vec::new(),
         since_verdict: Vec::new(),
         codes,
         task_patterns,
@@ -1126,6 +1140,26 @@ mod tests {
             content.push('\n');
         }
         parse_log(&content)
+    }
+
+    #[test]
+    fn final_review_lists_current_completed_receipts_and_hides_a_failed_later_attempt() {
+        let mut events=vec![
+            ("stage_run",json!({"phase":"final","stage":"testCommand","result":"pass","ms":1,"scope":"leaf","command":"old"})),
+            ("stage_run",json!({"phase":"final","stage":"final-validation","result":"pass","ms":0,"scope":"receipt","fingerprint":"old"})),
+            ("stage_run",json!({"phase":"final","stage":"machine","result":"pass","ms":1,"scope":"inclusive"})),
+            ("stage_run",json!({"phase":"final","stage":"testCommand","result":"pass","ms":1,"scope":"leaf","command":"new"})),
+            ("stage_run",json!({"phase":"final","stage":"criterion:C-1","result":"pass","ms":1,"scope":"leaf","command":"specific"})),
+            ("stage_run",json!({"phase":"final","stage":"final-validation","result":"pass","ms":0,"scope":"receipt","fingerprint":"new"})),
+            ("stage_run",json!({"phase":"final","stage":"machine","result":"pass","ms":1,"scope":"inclusive"})),
+        ];
+        let log=log_of(&events);let receipts=final_validation_receipts(&log);
+        assert_eq!(receipts.iter().map(|event|event.id).collect::<Vec<_>>(),[6]);
+        let root=tempdir().unwrap();let request=final_review(root.path(),"test",&log,Locale::EnUs);
+        assert!(request.text.contains("Recorded final-validation receipts"));
+        for event in receipts {assert!(request.listed.contains(&log.codes()[&event.id]));}
+        events.push(("stage_run",json!({"phase":"final","stage":"testCommand","result":"fail","ms":1,"scope":"leaf","command":"new"})));
+        assert!(final_validation_receipts(&log_of(&events)).is_empty(),"never reuse an older green receipt after another attempt");
     }
 
     fn plan_log() -> SpecLog {

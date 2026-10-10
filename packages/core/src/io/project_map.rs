@@ -714,6 +714,8 @@ pub enum Need<'a> {
     Terrain,
     /// Os caminhos dos arquivos, e nada mais deles.
     Paths,
+    /// Importações apenas dos caminhos pedidos, em uma consulta indexada.
+    Imports(&'a [&'a str]),
     /// Quem importa o arquivo: ele e os arquivos que o importam, com as
     /// importações de cada um.
     Importers(&'a str),
@@ -832,6 +834,7 @@ pub(crate) fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
         Need::Paths => {
             map.modules = file_rows(conn, &["path"], None)?.into_iter().map(module_of).collect::<Result<_>>()?;
         }
+        Need::Imports(paths) => map.modules = imports_of(conn, paths)?,
         Need::Importers(file) => map.modules = importers(conn, &clean_path(file))?,
         Need::Tests(file) => map.modules = tests_of(conn, &clean_path(file))?,
         Need::Parts(file) => map.modules = parts_of(conn, &clean_path(file))?,
@@ -1276,8 +1279,21 @@ pub(crate) fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<
     Ok(files)
 }
 
-/// O arquivo `file` e os que o importam, na ordem do mapa, cada um com as
-/// importações dele.
+/// Importações dos caminhos pedidos, sem carregar seus importadores.
+fn imports_of(conn: &Connection, paths: &[&str]) -> Result<Vec<MapModule>> {
+    let files = table_name("files")?;
+    let links = table_name("links")?;
+    let (path, link_path) = (column_names("files", &["path"])?, column_names("links", &["path"])?);
+    let deps = column_names("links", &["deps"])?;
+    let inventory = serde_json::to_string(&paths.iter().map(|path| crate::domain::project_map::clean_path(path)).collect::<Vec<_>>())
+        .map_err(|error| Error::Parse(error.to_string()))?;
+    let sql = format!("SELECT {path}, {deps} FROM {files} LEFT JOIN {links} ON {link_path} = {path} WHERE {path} IN (SELECT value FROM json_each(?1)) ORDER BY {path}");
+    let mut query = conn.prepare(&sql)?;
+    query.query_map([inventory], |row| Ok((row.get::<_, Sql>(0)?, row.get::<_, Sql>(1)?)))?
+        .map(|row| {let (path,deps)=row?; Ok(MapModule{path:text_cell(&path),deps:json_cell(&deps)?,..MapModule::default()})}).collect()
+}
+
+/// O arquivo e os que o importam, com as importações de cada um.
 fn importers(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
     let files = table_name("files")?;
     let links = table_name("links")?;
@@ -2313,6 +2329,17 @@ mod tests {
         assert_eq!(blobs["src/a.rs"], "a1");
         assert!(blobs_of(&model, &[]).unwrap().is_empty());
         assert!(blobs_of(&dir.path().join("nada.db"), &["src/a.rs"]).is_err(), "sem mapa, recusa");
+    }
+
+    #[test]
+    fn batched_imports_only_load_the_requested_paths_and_preserve_missing_map_refusal() {
+        let dir=tempdir().unwrap();let root=dir.path();
+        assert!(read_for(root,Need::Imports(&["src/a.rs"])).is_err());assert!(!model_path(root).exists());
+        save_at(&model_path(root),&scan_map(),"imports fixture",&languages()).unwrap();
+        let selected=read_for(root,Need::Imports(&["src/a.rs","missing.rs","src/a.rs"])).unwrap();
+        assert_eq!(selected.modules.len(),1);assert_eq!(selected.modules[0].path,"src/a.rs");
+        assert_eq!(selected.modules[0].deps,["src/b.rs"]);
+        assert!(read_for(root,Need::Imports(&[])).unwrap().modules.is_empty());
     }
 
     /// O mapa do scan volta do banco igual, fora as chaves que nenhuma coluna

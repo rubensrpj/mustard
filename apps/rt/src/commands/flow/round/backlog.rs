@@ -2,9 +2,9 @@
 //! agora, no máximo uma por vaga livre, cada uma com um assunto só, e a
 //! desmontagem da onda de lote que ficou montada e não saiu. Só existe a onda
 //! que está rodando; o resto das tarefas fica no backlog, sem número de onda.
-//! O assunto é o tipo de trabalho que o Jev julga numa chamada só sobre o
-//! backlog inteiro; sem o Jev, ou com a chamada falhando, é o arquivo que as
-//! tarefas dividem.
+//! O assunto combina tipo de trabalho, arquivos e relações atuais do scan.
+//! O Jev responde decisões tipadas não atendidas pelo cache; na falha,
+//! o agrupamento segue pelas evidências nativas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -31,7 +31,7 @@ use crate::shared::dag::{BacklogTask, Reserved, pack_by_affinity, pack_by_kind, 
 use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
 use crate::shared::task_size::wave_budget;
 
-/// Quem julga o backlog para a montagem: uma chamada só, com o quadro inteiro
+/// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
 /// ([`Board`]), que volta com o tipo de trabalho de cada tarefa, o tamanho
 /// dela e o quanto ela pode mudar o mesmo que uma onda em andamento
 /// ([`Judged`]). A chamada que falha deixa a montagem pelo arquivo, como sem o
@@ -46,8 +46,9 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// que uma vaga abrir. A limpeza ([`is_cleanup`]) só entra quando nada mais
 /// resta ([`backlog_ready`]).
 ///
-/// O assunto vem do Jev (`judge`), numa chamada só por montagem, feita só
-/// quando há vaga livre e tarefa pronta: o quadro leva as ondas em andamento
+/// O assunto pode vir do Jev (`judge`), avaliando apenas decisões tipadas
+/// ainda não atendidas pelo cache, quando há vaga livre e tarefa elegível.
+/// O quadro leva as ondas em andamento
 /// e o backlog pronto, e a resposta diz o tipo de trabalho de cada tarefa, o
 /// tamanho dela e o quanto ela muda o mesmo que cada onda em andamento. A onda
 /// junta as tarefas do mesmo tipo, tenham ou não arquivo em comum, até a soma
@@ -60,9 +61,9 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// ([`pack_by_kind`]). Duas ondas com arquivo em comum nunca saem juntas, de
 /// tipos diferentes ou não: a que perde a vez fica no backlog. A chamada grava um evento `call` com os tokens, o custo e
 /// o modelo, como a busca. Sem `judge` (sem chave, ou o Jev desligado), ou com
-/// a chamada falhando, o assunto é o arquivo: as tarefas que dividem arquivo,
-/// direto ou por uma corrente de outras, e a de código mais baixo sai
-/// primeiro ([`pack_batches`](crate::shared::dag::pack_batches)). Em qualquer
+/// a chamada falhando, o assunto combina os arquivos declarados e as relações
+/// atuais do scan, dentro da estimativa de tamanho. Os grupos que dividem
+/// arquivo continuam atômicos ([`pack_by_local_evidence`](crate::shared::dag::pack_by_local_evidence)). Em qualquer
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
 ///
@@ -74,15 +75,10 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// ou não. O Jev não a julga: ela é lida do evento, e o quadro mandado a ele
 /// não muda.
 ///
-/// A onda pequena espera juntar trabalho: o lote com menos de
-/// [`MIN_WAVE_FILES`](crate::shared::dag::MIN_WAVE_FILES) arquivos declarados
-/// não sai enquanto houver onda em andamento ([`waves_in_progress`]). Sai
-/// quando chega a esse tamanho — com as tarefas do mesmo tipo que o Jev juntou
-/// nele — ou quando nada roda. A onda que continua um resumo que vale, a que
-/// leva uma tarefa marcada como prioridade e a tarefa do curinga da árvore
-/// inteira não esperam. O lote que espera reserva
-/// os arquivos dele, como a tarefa bloqueada: a que vem depois e os divide
-/// também espera.
+/// Uma onda pequena independente pode usar uma vaga livre. Relações de
+/// leitura/escrita verificadas no scan ajudam o agrupamento e impedem que
+/// consumidores concorram com contratos em mudança. Leitura compartilhada
+/// sozinha não bloqueia. Arquivos reservados e dependências continuam exatos.
 ///
 /// A tarefa que não cobre item nenhum ([`covers_nothing`]) fica de fora das
 /// duas montagens, como pronta e como a que espera: a onda leva os critérios
@@ -155,7 +151,7 @@ pub(crate) fn dispatch_backlog(
     limit: usize,
     judge: Option<&Judge<'_>>,
 ) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
-    use crate::shared::dag::{Batch, pack_batches};
+    use crate::shared::dag::{Batch, pack_by_local_evidence};
 
     let log = locked;
     let running = waves_in_progress(log);
@@ -204,10 +200,24 @@ pub(crate) fn dispatch_backlog(
     let by_summary = summary_waves(log, &order, &population);
     let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
     let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
-    // O Jev julga o backlog pronto numa chamada só, e só quando há vaga para
-    // uma onda nova: sem vaga ou sem tarefa pronta nada se pergunta.
+    let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).copied().collect();
+    let mut affinity_board = board_of(log, &by_id, &population, &candidates, &open_waves);
+    if free > 0 && (!order.is_empty() || !claimed.is_empty()) {super::evidence::augment(start, &mut affinity_board);}
+    // A consumer cannot read a contract another running wave is changing.
+    // Shared reading remains harmless. The actual source verified above,
+    // rather than semantic similarity, establishes this reservation.
+    let mut busy = busy;
+    for task in &affinity_board.backlog {
+        if affinity_board.running.iter().flat_map(|wave| &wave.tasks).any(|other| task.relation(other).read_write) {
+            busy.extend(task.files.iter().cloned());
+        }
+    }
+    // Only uncached typed decisions are delegated when a slot is available.
+    // Native source relationships are reused in the paid board.
+    let eligible = order.iter().filter_map(|id| population.iter().find(|task| task.id == *id))
+        .any(|task| !sets_cross(&task.files, &busy) && (!touches_whole_tree(&task.files) || alone));
     let judging = match judge {
-        Some(judge) if free > 0 && !order.is_empty() => {
+        Some(judge) if free > 0 && eligible => {
             // Only dependent candidates that can become eligible in this
             // batch need a profile. Their intrinsic cache key is independent
             // of the running board, just like already-ready tasks.
@@ -224,19 +234,24 @@ pub(crate) fn dispatch_backlog(
                     break;
                 }
             }
-            let board = board_of(log, &by_id, &population, &candidates.into_iter().collect::<Vec<_>>(), &open_waves);
+            let mut board = board_of(log, &by_id, &population, &candidates.into_iter().collect::<Vec<_>>(), &open_waves);
+            for task in &mut board.backlog {
+                if let Some(known) = affinity_board.backlog.iter().find(|known| known.id == task.id) {task.reads.clone_from(&known.reads);}
+            }
+            board.running.clone_from(&affinity_board.running);
             let called = Instant::now();
             Some((board.backlog.len(), called, judge(&board)))
         }
         _ => None,
     };
-    let affinity_board = board_of(log, &by_id, &population, &order, &[]);
     let affinity = affinity_board.affinities();
     let batches = match &judging {
         Some((_, _, Ok(judged))) if affinity.is_empty() => pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of, wave_budget(WAVE_LIMIT)),
         Some((_, _, Ok(judged))) => pack_by_affinity(&population, &order, &waiting, &busy, &judged.tasks, &code_of, (wave_budget(WAVE_LIMIT), &affinity)),
         _ => {
-            let mut batches = if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, &waiting, &busy) };
+            let mut batches = if order.is_empty() { Vec::new() } else {
+                pack_by_local_evidence(&population, &order, &waiting, &busy, &super::evidence::links(&affinity_board), wave_budget(WAVE_LIMIT))
+            };
             // O lote com a tarefa marcada como prioridade primeiro; depois o
             // curinga da árvore inteira; os outros pela tarefa de código mais
             // baixo, e a ordem de prontidão do motor desempata.
@@ -258,7 +273,10 @@ pub(crate) fn dispatch_backlog(
             break;
         }
         let taken: Vec<&String> = chosen.iter().flat_map(|(picked, _)| &picked.files).collect();
-        let held = sets_cross(&batch.files, &busy) || sets_cross(&batch.files, taken.iter().copied());
+        let clash = batch.tasks.iter().filter_map(|id| affinity_board.backlog.iter().find(|task| task.id == *id)).any(|task|
+            chosen.iter().flat_map(|(picked, _)| &picked.tasks)
+                .filter_map(|id| affinity_board.backlog.iter().find(|other| other.id == *id)).any(|other| task.relation(other).read_write));
+        let held = clash || sets_cross(&batch.files, &busy) || sets_cross(&batch.files, taken.iter().copied());
         if touches_whole_tree(&batch.files) {
             // O curinga da árvore inteira cruza com todos: só sai sozinho, sem
             // nada em andamento. Ele não reserva nada, senão parava todo o
@@ -269,11 +287,8 @@ pub(crate) fn dispatch_backlog(
             }
             continue;
         }
-        // A onda pequena espera enquanto outra roda, salvo a que continua um
-        // resumo e a que leva uma tarefa marcada como prioridade. Ela
-        // reserva os arquivos como a bloqueada.
-        let waits = summary.is_none() && !running.is_empty() && batch.waits_to_grow() && !batch.holds_any(&marked);
-        if reserved.lets_out(&batch.files, held || waits) {
+        // Small independent batches do not wait for a file-count threshold.
+        if reserved.lets_out(&batch.files, held) {
             chosen.push((batch, summary));
         }
     }

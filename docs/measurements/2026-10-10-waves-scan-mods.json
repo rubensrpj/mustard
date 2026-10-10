@@ -1,0 +1,801 @@
+{
+  "date": "2026-10-10",
+  "branch": "codex/mustard-plano-completo",
+  "baseline_commit": "4947a105f60ffa8301ef33462976423b2a54700c",
+  "local_artifact_directory": "target/waves-scan-mods-20261010",
+  "retained_changes": [
+    "Fresh scan imports inform native wave grouping and read/write reservations.",
+    "Independent small waves use configured free slots.",
+    "Global criteria alone no longer trigger interference questions; fully blocked boards do not call the judge.",
+    "Final reviewer reads a consolidated receipt; independent checks and cuts remain required.",
+    "Mods displays declared readiness, holding reasons and capacity without scanning or inference.",
+    "Recovery runner verifies per-arm local-model configuration."
+  ],
+  "quality_runs": {
+    "known": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "5bde8e49ff69e8b7aecd5a515db7e1a453d483da11dec4e941dcba42e3518227",
+      "binary_sha256": {
+        "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+        "current": "23d7b746a504ca1846818601b65d695673d551ed4d411ac110b7e765a90879c3"
+      },
+      "baseline_vectors": false,
+      "current_vectors": false,
+      "baseline_configuration_provenance": "Both native arms explicitly disabled vectors; measured before per-arm metadata instrumentation.",
+      "method": "Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.",
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 32,
+          "visible_found": 31,
+          "native_owner_found": 17,
+          "complete_bodies": 24,
+          "bytes": 806549,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 32,
+          "visible_found": 31,
+          "native_owner_found": 17,
+          "complete_bodies": 24,
+          "bytes": 806549,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      },
+      "byte_identical_pairs": 40,
+      "delivered_view_sha256": [
+        "431b1330efddb2690f4a9f38efd702e1aa9f627f5acb13b1cb9590c829a6c20d",
+        "c4f7266dd47b878e03397395b094f20197d641e0557053a7117cc8cd470826a9",
+        "a91c538722dd8c2747f5c5c4f6ca6f7478ffaf2858f6522d2f5eede1de335a87",
+        "adc51afb50f62f11d41e273f0c286b7f11a3030ed793d4de64b41a7d0a3c5dfb",
+        "9296d4a67a60c4a88f1af19dd76e1bb10201496e3af7f7ce72db21a0fcf91c5a",
+        "d180d1a9b9b6dd6cf1fa0d5d5267b5318a81c7d57c8f6f82161ba530b1f7e948",
+        "fa726ca294ec18ee20fe23a7d5ea6a41ae524ab162a94cc0276fecfb79c9b7fc",
+        "6389b00bcf213df0a3870983ae5c54a796771517ddbdfb43e4e79dc079625ab9",
+        "a5a78c9ec415204f2015d5765a9f037f8d16a8b0de6eabdd464cb0a77ecfd2d5",
+        "f0a221f5571f16da4b5bfede2bcf77ec16f21c82db6d2f0de082de456489e925",
+        "887571ffe61938a9eeb8d2cd7e38a8e1339117ce955f788e899860d6cb952629",
+        "df6c60a2aa749c2410ffb0dac5033c7b2817ab642030bfb0e39d0a8f35d62e6b",
+        "76dcaab271788396913e64a7fdbf3dc8301f909a644766dab6588d338f2a0ba6",
+        "7d2aa023add50f3aef64683a7ef1c0df0e60a34a6ddedf099ef41352ddc943fa",
+        "ec982c730f1b6cb268c82c81059187e86f0afef39d3493cde18cce2a132d13bc",
+        "7608cc45578cd64bf7ac83e4c53199397ddb1d685c17dbaa35e83f4cf767b22f",
+        "5f1a4420f3b28647956624c263566363f9a3d983a453b5b931a598b08a76982e",
+        "a9e57031f8f615231deece26fd7912b07d2d605efb8db8ada516f65a1fceda3d",
+        "43ee222b0f7abd633ff5ec365c29bfb0416b149d6e14e75b5c29eeeb99a378e6",
+        "eba865c3686c1003855ba4489aa5958a3c4a5f5296ee5b81fe713374439fa404",
+        "5b652f8c00824abd6c9710334f38ed18c58b918050b6f6522beadb574582f259",
+        "35ecc4d58c63c8376a182dab9c7d48b94eac1488038e106920a61a0806c27b09",
+        "20f75a090bcb58e9c12c15187e7c84bcc474915617594ecd0c079882149b9403",
+        "31eb2f4627876a55dad9d2cd27e4990888e825ba5d4f3f9ae47db6da6e39d134",
+        "99ac166e509fa68f67a8061c4f94040dde292c888e10f661c9044df143cd4d7a",
+        "0a996aca1d5da8e70cd94806468c5caef2f45fe91c1a2dd0cd899c1c9b78e66c",
+        "e0f4a4e4fd0afc98593af070c97f646b49034533098237c2f453f1a2e6a62cbe",
+        "e17b2f13c7cc979a30103bb3920989b4de8f1bccd278061105b1aa46ac8c848d",
+        "e5abda24909cfa386659262e6cf1eeddf5ae5c686ad8c6260cefd8b86750629d",
+        "800a57f61035cc16bbbe1e7223f7a27fc5e61dc80aaef71785c5b9297c24f2cf",
+        "d726706f40ac7a4d52f1cda28e15f98eea7c51c476ffad39c0e034f3da62eb2e",
+        "d6aa45bcbed6fa8e013cf4abc1286cf9d9ef69f8b3f1ab25cb413a9ad9da1891",
+        "27744058bd670aec2118cf6f21797c471004776f45dcad24b6dd7d2c97155335",
+        "9407df8e1cf037c729a9ffb163a7ca992e97e7be8f6db0f00001fb95f6a9c737",
+        "a9aff44043126ae5112a37fb3b50c8bd3c2b1da164e426dda76f999e819c9434",
+        "5575076cb882176f2beadf3acba5f7b2ecff08cd9876756e12797960dc0e3d11",
+        "58da5d73ead48921dd04606f9e31d4a002779948986f48f957eb1dc169f2da43",
+        "2e33abb66c7397d76eb52fb84bf73cf4f19e5f71454ca1f5f09e2055a6142796",
+        "2d39ccdc47c5be94c5542c26e6af9fcb591e0396f35556387f15547e34621430",
+        "4458996a9644c2c8c2a1d61b3f62abb9e109b2218163ab6e6647630fd03b800a"
+      ],
+      "limits": [
+        "Output bytes are not billed tokens.",
+        "Complete expected declaration is not sufficient evidence of implementation correctness.",
+        "No host LLM ran; tool-call reduction and whole-task success remain unmeasured."
+      ]
+    },
+    "heldout": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "f8a6af52e61fe7cd56b7b2f88232491ecb6d3468e409de37688941a43be8f7f2",
+      "binary_sha256": {
+        "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+        "current": "23d7b746a504ca1846818601b65d695673d551ed4d411ac110b7e765a90879c3"
+      },
+      "baseline_vectors": false,
+      "current_vectors": false,
+      "baseline_configuration_provenance": "Both native arms explicitly disabled vectors; measured before per-arm metadata instrumentation.",
+      "method": "Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.",
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 33,
+          "visible_found": 33,
+          "native_owner_found": 21,
+          "complete_bodies": 17,
+          "bytes": 477592,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 33,
+          "visible_found": 33,
+          "native_owner_found": 21,
+          "complete_bodies": 17,
+          "bytes": 477592,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      },
+      "byte_identical_pairs": 40,
+      "delivered_view_sha256": [
+        "0dbf06287fb55ea365e391287562087e04753f7aeb4a87ddd6fcecdab95583b5",
+        "a65c066cc8d3896e46bfc977482f5731ea8fe8efe484ef81c6b90681927268c6",
+        "8fa628bb2d37039ddf5e10b93262343142bef3835b8b8f6f66a424f10e2ccf55",
+        "cd1e06faa9fcbe18f45922d851b19dbb61fb522905d8312c47758f6852162110",
+        "d57cdc1b4636d70b3d92da72214672df59595b2c2993a2e8f4ac76270261a574",
+        "5315d965e326e9ab7d0359afe016a8941ed98dcb1e7a491473137976cc4f36b7",
+        "5fc74adea8b2aecca2b993c0636d18070e6cf5b7b3b38eccaac937ab7a134650",
+        "c1e1cbcc319691942461264af1e50231aab5795fda1b62255d8ebfc90b6fabe5",
+        "c413b9689b417aa3fbdb419ee6bd889b6709018b63b119dd0fc250e2233949dc",
+        "26788cf0fab50f65624f60ea0fefcbea0a91cff86acb1454d2387dc6149ea809",
+        "0acb737a4559ff8f6793a8d26a809e474699f0ae0821a56c230716e6dea580d7",
+        "31a69d7cd7b39e58fe3438c560eebe92fe1f47ca424b1283abf048b208b86ea5",
+        "7520b10c3e90b37704dcce96cbe9b3900d017918b5fbd0fbf14b7de74b2553c6",
+        "8f5643c62d0170743431e0df2403ff42d0463fc2ac8b10c0730550e172bb1011",
+        "f30618177cd5d61da9b2537b736ad6ec5d1fb59d88691a83d28f58f4c322fb07",
+        "1df1d956bd42b9eefa1dca0586ae0e44069ed9cd0b8f19f75fd485197d66aef0",
+        "1b4cdfaa0192afd2c1a2fa047a7f58e9d94ba89be440f8894a044f8714b45855",
+        "6ed2ac27acaaa38d16c338297af3408c710f25092bb05c1bb3aa455bfaa6dfde",
+        "9a09ff4f86ad23bce4390e3716b663a079236c490a8659e0ce70739eded98a68",
+        "7c5ab1e7ce4e491e8d412fe328361f2be56891faca488cdb30751233c62eae80",
+        "1efb63f31f4b5b6560775158689de7738588929692df54f422e55af33db72ae6",
+        "1dbe58ffb147bb8e5ed2a64faa8b0081c886507b9d1d94d0f1d63800cad4e90b",
+        "48c8c23d10e254fcaa58bb204f681dba6bc3c40a7c7dddf06b3fa5a90c23267b",
+        "4f147f44d8420d0eff78a32ec5520a67ffa2b50d66b479a03378b9f0a0202a2d",
+        "09fb0c62a89798ef423edc34959ea7b5db921e1c0f04d1386bf15a4d7106c802",
+        "ae78d809f4a02c7be6ed6ba8ecd26132c37107d242b21838259b5035f046cd6c",
+        "3045cda814fdf7e9882562e9d68c5c946872fa19aa2d799a56a7df9eac114c15",
+        "719fe68edd18120a8fe1fa88e45696ef1f41c5531e9b1d5b7e08743c4d95436f",
+        "36644601b0400a39bf101c6a97858387d44442259782b0883e748454b5ca8f8a",
+        "725823f8eab3c97cf0cafd224a055e32f1e3e265db5b7f642d724ae900e3a93a",
+        "b8df5532a208a020167ea2f43f30d32a942bf40c964cf74d4f7efeb49efce856",
+        "83764fbec7b10084660ba6d5a94859c495965486666d392428fd65e41717596f",
+        "f6661c02498c0a68fda36358e8aa25a2e11ece6f35b6d701737ef9351239808c",
+        "293251e6c406d828a5ac419a2bceeff56cffbc4b1fccff09b794527a505bae9a",
+        "6dd69421c422953af2f5a48d74e795e3eec22ff4c636ac31d2dd2110462f87c1",
+        "e7954e4867cc1cacd8eb8f84902b4822eda3cd8dfe014a35eb69d4de7587157e",
+        "a204ec7c13978f23d2c775b5203f80b2f86b15b80b82ccb4d2b7cd842f971f1c",
+        "a0fb2e1363b6c218d6f2d890dd24c73bbb0d24bd71fb815079b2248348d84d1d",
+        "216f42383c72f0504c4faa190a9a148ed280eecd058c15c3f4d5aedbe644bbc8",
+        "1aff826433677fb132b08b418fa6761a3dc5a14783bacec8c4898a3b23713a78"
+      ],
+      "limits": [
+        "Output bytes are not billed tokens.",
+        "Complete expected declaration is not sufficient evidence of implementation correctness.",
+        "No host LLM ran; tool-call reduction and whole-task success remain unmeasured."
+      ]
+    },
+    "new-cases": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "8505080b10c095cb9bb7a381eda82e1472406b9da704f69f220b8e03da2e3767",
+      "binary_sha256": {
+        "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+        "current": "23d7b746a504ca1846818601b65d695673d551ed4d411ac110b7e765a90879c3"
+      },
+      "baseline_vectors": false,
+      "current_vectors": false,
+      "baseline_configuration_provenance": "Both native arms explicitly disabled vectors; measured before per-arm metadata instrumentation.",
+      "method": "Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.",
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 31,
+          "visible_found": 31,
+          "native_owner_found": 33,
+          "complete_bodies": 24,
+          "bytes": 728293,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 31,
+          "visible_found": 31,
+          "native_owner_found": 33,
+          "complete_bodies": 24,
+          "bytes": 728293,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      },
+      "byte_identical_pairs": 40,
+      "delivered_view_sha256": [
+        "b3926d165f3e090324a46ab3b0d3e1160d479d5fcfc208d14c629279dd4be012",
+        "eb617145a745029fc18a7b930b08181af5072aba6a0c9cd91de294226baacdf6",
+        "ab7765b31604cd537e993099d2b1730e99695da959526085830288371aada8d0",
+        "8dfff62df0fb7cc1007c005cf66ee128456ef0413569fb11075e7983e1e62ad2",
+        "e54b8de33c155953628371d7aceab1eb41f7aeea740e78a6b4fccf07de36d037",
+        "b4cf014b2767e63cd93b95b5c2b9918e389439eb1500d42a358018f0f318763b",
+        "3de214c4cf4307fc646cdc8847a509591b6d6547d4e47f0e4323d047ec0bbbbb",
+        "f3f41f5e4b590fe90192a9fb893130567db180ab2c4085fed1d580e30ea130c3",
+        "1ea4ff1d99864c45787bad2f5900f169d62eb0100d925b62ef5be62750d62824",
+        "2e5b7a5dc3721a4649539f2ab6c4b20f6702de9de502799bbdff35d3e65e212a",
+        "6ddbea01e87b525e9880532421b7acd6c349e40059c7709c86654f3f828920db",
+        "1c3e85d41077d974fb1beabeb25ca8e271d628efb8ff7af8e35bfe671ca3d61d",
+        "214fef128694343aed56f9b83499b54bbbed2338b87940c310b392d39e5b2bb1",
+        "dccd37804e45f34d3d2c3fb3b6f222d834802d2999c56467a61954b806f156c0",
+        "1b6e7f8719b692909de83339d8be562c0fa210eb24bc369f5038f2231fe4f811",
+        "5b577a34f1a0d05e5b2a2041263aa1690c046db5072388425d1d071ef267d904",
+        "6bf5f73adf488df105be5779b3988181336c3d22bedac336029da4d1649798d6",
+        "2edb580821eae81e45cbf9ce406711460cde539dddc7338940ce090033743342",
+        "66b4a8913d4bb08a00bd32101614780c34c2fad3dda9232044b859fbe6c5f0e7",
+        "25a4b8b1440b946d1a1e9c36fdb1528e7a6d105045c97587814e0ea9fdf5ed74",
+        "22fd2fa2bc5bf6941e5cfa59349bbad94305532fc6f35ba453f900d2cf8028e2",
+        "d718f293e62328e050638963ce3ebf094851a5eae8865eb420a43e95806ad6f1",
+        "710ee8e8101cadb77da458d8c1fe81b7a057515f2ae473a6348f3a5e992ffbee",
+        "339ef6a0e83a1f99e65e7c02dc8eb2fbd2811b21feabbc12033dfc20ae60e260",
+        "c040c10e9901f9fec7bfef2a4ac8eb11b964ec726003f59481e2bf6b02081b5b",
+        "14245b888ab78e1ee9a3e2161f9007dbf93286a18c5a1357de8ab23d404f90ae",
+        "2485399f0051210673e9bb9d446a0ef8dc540af32f67dcfefd4b25c8ca983340",
+        "f393bb5265db3229345c5fe2c151e4f078b68af77ecd8829105a13f73a927422",
+        "2e7ca712da29fad646df2cece443b154fccbed6a9ae347c47e0e204a7b1b883c",
+        "c0c5656ea641910afbd9f80d1fb8391ed148f4467d0137193f04c60f243b8e83",
+        "04bd3aa2f34fd061737879475db7a4ec8b3288f3a223066878b55a27f218d13e",
+        "ad6de5a178e9079b38b9e5156865c0ecc1ec9dee34b07100fa476c487abcad1f",
+        "40e4ce4a16bf0ca046e63aceb0d1a1016820e8c9cfa27720673497f51919ad15",
+        "81e07f32af65433d1b0804d35e79636aefe35d36d9c3233ab0ed8878cdbacb2b",
+        "689aa9ca01617ebc19f3a6d2d546e7d0274596cfe03365afadbf3235e46426e9",
+        "1cbeebdc6d9b47692cf94255dd112a8777a4cdabb9ddebbeae2835890ed0662c",
+        "f55ff1210d35219ed2a2abfaf3d8d21899f6033bc77a52151175f376d10c432d",
+        "eac1eddfc155bdf7c61cf03497b9f635d08472eea6deaffb907ee91be12a5d74",
+        "8a0b213ace352125949f7eab3359192bd69b815cf797886316124ace4922dd99",
+        "4c857e08f65179194b657bda93b84aca2507a7d4bc6d838a61a669539a9c0549"
+      ],
+      "limits": [
+        "Output bytes are not billed tokens.",
+        "Complete expected declaration is not sufficient evidence of implementation correctness.",
+        "No host LLM ran; tool-call reduction and whole-task success remain unmeasured."
+      ]
+    },
+    "vector-known": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "5bde8e49ff69e8b7aecd5a515db7e1a453d483da11dec4e941dcba42e3518227",
+      "binary_sha256": {
+        "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+        "current": "5283ca64ede93f63c5498df234e5cdf98592155cc8b849a72b323d39122faa0b"
+      },
+      "baseline_vectors": true,
+      "current_vectors": true,
+      "baseline_configuration_provenance": "Recorded in artifact",
+      "method": "Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.",
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 36,
+          "visible_found": 36,
+          "native_owner_found": 17,
+          "complete_bodies": 27,
+          "bytes": 777514,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 36,
+          "visible_found": 36,
+          "native_owner_found": 17,
+          "complete_bodies": 27,
+          "bytes": 777514,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      },
+      "byte_identical_pairs": 40,
+      "delivered_view_sha256": [
+        "df4dc79f20812124ec3e5008d6387ff0422b8c26f32ceaebd123f44b8f2f4605",
+        "08524880208050495884faad3e71e587569530481ea7303d926fcc9a1dc02ea5",
+        "d427020851688e5bebcc3f8e775953425da5faea00d0b4ab2625603744a3256a",
+        "097c1d331ae43f9ca93883fe2d5cf747b3407c2d1468c2717547a5f1f3fa72f4",
+        "825c3083ee290da3e92ee56f9cda9c6ba215fce2fd68c5a4e4ab49c99a23cada",
+        "6265e45b6120b32306d1f721feb600e7da4cc3740250e2eb9a46aa9bac697468",
+        "ee51e435f886b80234a6845afe47a904b13166b2328cd3ea59cd7215b1f88e83",
+        "6404ca52d713dcbeda37cad2e404499eec1e6bc5cf7fcbb996c7ec3579b3d13c",
+        "94c512caa06f1cbcab65d5afee25fd4c690f7509ea760c3f22d70090e2a77da5",
+        "b759ab3214fb157ff2791086ffda1e905ba9d27708d053c6a67b0c7eae49f7ad",
+        "ec674b7f1fe3e7dcba48869a874b80e3478becf73717341b343a8390da4b79b3",
+        "c74b198de2cf826572c0f6ff297f58590731650dfc2493c65bb31e6087b66f53",
+        "4ba44c8559055610cff5d750b543a4874b5da589a7ff26fe18b93510af9d383f",
+        "aef064b09b098598adcd36d384b7beb1240e19f35f121346e29f435164dc241b",
+        "adad6ec2a4d405890f8f1545ebb9120c04c44e3c2259608094db03ea5a8d9dad",
+        "f3527a4149172655867d6b030a5d1c659809f95816bc0415a0d06305e892f2d8",
+        "e3d88e489deaeb7b2f7225b9f1875af8e7e4c001ff9ee9943d8cdc447f5f1ef1",
+        "32fae2e5f5c9e159aa5c5eadfed849277c140401a446ef514fb193b7b85539a0",
+        "30324808bbbf48ecfeddf7a03ef75a1b187c71b9ddadc09690170d015b4bbd30",
+        "55967ce2b2d763e89ed7afa118f6ce85e3f6fc853a261ed9cd6e715d39483ba3",
+        "0c51246e20867520a866228328d4d3dad6662ea856e319eb6001526e10ff3baf",
+        "75c195b401b4fb32cff88241053a9925e5f9e0d568ea4e8a36bb2794f148a93f",
+        "e946bf6f033c1fcea735826b4eda9f5418993868333e13b15c033cf362bf4f98",
+        "4b7a307815d4d7ffbe173ec59c759316762dcd880adebc6230cf0f1cc4c29424",
+        "10979fa8e8b8108c5859b21445161d7fc9f60c3e19bc2640845cfa96e570ad5d",
+        "3f7983ac955c3f79a69430e4c711bff6a9c29b1b448b6adf9f920b6808a8a30c",
+        "f43672efae38e17f3116f1c29e3ec7133becafce5eff9ece73aa95138f1547cd",
+        "5fc901dec21098ff5e4785c18e5146a8fbc4322400058f51605346e3c1e9f9d9",
+        "64c9b56f61677830803409450568d42b31bdefadb3bfeb2e1ad96118829a2464",
+        "f98919dda90d5e4e3763357ae7ea67f4520e73e99c80a55337019a4c454e6004",
+        "b3624f6cbe0dd75a37ad21a27cf0603d98d72e36fe87528c5740d0eb75e75886",
+        "a5b2a34029e3b369e17b84e5cb21a948e6e999e3fb5497ff1106dcec6e7caaa6",
+        "628de258adaa1ac7ecce60b0ecd6047ce62767c7df8b8537022a947ff2af769b",
+        "6d7fe9f02846f34144f76ef98f9c25c1c5e8b1d2b25bc741cc97537b1f4091b8",
+        "c51d7f6dff1bc4351c198b7191ccc1ff413fc8af975a4afae9aa42f988454af6",
+        "f0a30e9729b293175ccd8a23574b5cd4111518f0443eb937e08f6db4f7cb6c04",
+        "6c3dc489f64e24604154c4719684944ee816bef7bbda9b86d77aa6ffa9bfac0b",
+        "28480ea3ee0c5c974b7764b2c56c0211d3d72eec53f03bdb52a221c60ade43f1",
+        "6e77e4833f9f92c4f9b2d0584f3c4140b4059a94a54e4b268443c08780da3e75",
+        "5ac6b57b76868a6285c1549bf4223039c292fbc179403afac13072594960635c"
+      ],
+      "limits": [
+        "Output bytes are not billed tokens.",
+        "Complete expected declaration is not sufficient evidence of implementation correctness.",
+        "No host LLM ran; tool-call reduction and whole-task success remain unmeasured."
+      ]
+    },
+    "vector-heldout": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "f8a6af52e61fe7cd56b7b2f88232491ecb6d3468e409de37688941a43be8f7f2",
+      "binary_sha256": {
+        "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+        "current": "5283ca64ede93f63c5498df234e5cdf98592155cc8b849a72b323d39122faa0b"
+      },
+      "baseline_vectors": true,
+      "current_vectors": true,
+      "baseline_configuration_provenance": "Recorded in artifact",
+      "method": "Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.",
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 36,
+          "visible_found": 36,
+          "native_owner_found": 21,
+          "complete_bodies": 22,
+          "bytes": 450753,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 36,
+          "visible_found": 36,
+          "native_owner_found": 21,
+          "complete_bodies": 22,
+          "bytes": 450753,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      },
+      "byte_identical_pairs": 40,
+      "delivered_view_sha256": [
+        "2a3b77e6c40ae9c2c6dacc3c03a2b2c89c909bbda78ae1555330f5913739233a",
+        "05788132a243ff5b70bb93cd91e28392e225b054f64ba877c8dc6f30822e26d1",
+        "30095b73b0b6376416fe6554be9f21a5410d0a92fea6f3124b6c07896c23ae05",
+        "356505d426796e113a82be2e5fce53000b0d78f63c93aadd55bf9c867099c82d",
+        "4acdabfc20db76679231d546f091817852bf48b12ca13b9c0701f70db7e9cf7d",
+        "7331eda4c60929e4a88a2e34dc7982caf3b63f2761d33d828d6b853cd4295922",
+        "27796a03f687e50b0b260efdd5b6f2885859a33a960ba1f1bb502f6fc4d9bfcb",
+        "39a5a1c65aed20baba547de612130b64db44290ff177d41c38a95b20f51f821d",
+        "5b3c1fe6f7a1f39ff0ebe8c1322780a92f4474a3f37743ce179d920173eb5f71",
+        "90f21e742b3f6ba5a2a1eb7bb42fa02d44a028934383ba4d09b04632cc78db1f",
+        "aa4c2b19601df1bc90e76c1382baa779d91909cbe0f5a1bf19bdb6f0b7388ccd",
+        "162329ebade868b2f673ad9643ed9417991b69288dd2356fd623c57a5b9e5e63",
+        "496350938bcb27a87606ff5e17cc8e12d0699ad3e8f818ca9d2c7cbade7801fa",
+        "3d50ce10e92ecb509f9df63cf70c83a26615881236b91deccb18b1003cd4ec54",
+        "f9901e12d5dc945c0a197d2d9e1cfc1da50afb25988cbef235c4c9d8dc4d409d",
+        "fa54deabf1482175a9af6c526210ba21c67251814562824b3db9ea484aa0369e",
+        "6f2f4f0d9dda6093e42c07571cc19e9c1e7cd1f41aa3de2bac9154dd726a2ac2",
+        "069d8256b6fa8abb196ca96a120911c544ab3d3791a69edbcc6aaa703f111be0",
+        "2ae02c6da5a561c7b7dfb49a393ab1bfe63c69ae89c9c4a7064c6d73cc795d68",
+        "1510a345a72d52e1e271976e2f80fef505c3488f2f8261abf085ed7465d99302",
+        "fa2ab5bf65c5edd3d901d7682fe2e53aa1dabdc70db849212bc5807802c681fe",
+        "9bee4e606a5f30c2e4239fe948b7ad198c916bcd6226900700783d27e83a9b3d",
+        "833fc1e9f3fd9d0ed4c50056dc849cfd66c7fb2228e0c76b42c6d96d2bce6389",
+        "78770a71cba4c914f54f00ab43e9df7db2afae2734c3b4e54897b9a73b2cc5ca",
+        "139269b98e53fbcdc33687872d3d0f7d1e41b6d9ec5e779ace59a6f10ed16bb3",
+        "13859ed4e28b8bb75a68993c77fc9a2d0ae0bb9240d212fc4396a58a54685b98",
+        "e82b21bf9021e63d2acc05290a500c90031ea094b9e582ca90c3ec014205d3b2",
+        "f9f6eab0a3ff425cc3278c77db174757900c95ffdb8388aa6b3598144745f816",
+        "5850850be158bb86fb830136117116c640398d1f0c61a062560a75d341ae1682",
+        "fc8a721e4ca5fbe7a551bf29042c95aa7c6a48b7295644aafd8f9cdf42a95c52",
+        "06e5bb5fd5cb4ce50065b85dd00c35a3bd44ba62a99121f3a901beea4e943df7",
+        "fc4baa7e96ad1c1ebccc0d1ca0615746ea0579cf3fcf168d32ed9a04a66d32ba",
+        "f7ad686d5d024b8df31da9db7a514a5f56d1e2972994b49bef061566c53d6371",
+        "9da6cbc1a65da879b3761d0344eb05b040a576222a0dd438d8b417521324a127",
+        "99a20965bfa94f9d4d1eda689453ec1b82c3b957a5ab04f7c82b7f3d577d3410",
+        "0f9fe5a46ef93689870014a6c7be03388be784da61e18f893926f7ec6448912a",
+        "3b4fa51304a4b430a6639c248ac62bbc7a12521de85a9360175e6be9fd67fb2b",
+        "ba893ab8887073b931dbbcb21fc6bdd9b9995574f7177f01d3717cc611917ded",
+        "1e0d7dc1c8cc6c90a56db2d383193de03db265db21bf2c6e5ad4b2d7ed2254b1",
+        "67c90514d91106b498eb887ce9bee1e295e02c2bd5b597d4acd9b97d383615db"
+      ],
+      "limits": [
+        "Output bytes are not billed tokens.",
+        "Complete expected declaration is not sufficient evidence of implementation correctness.",
+        "No host LLM ran; tool-call reduction and whole-task success remain unmeasured."
+      ]
+    },
+    "vector-new-cases": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "8505080b10c095cb9bb7a381eda82e1472406b9da704f69f220b8e03da2e3767",
+      "binary_sha256": {
+        "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+        "current": "5283ca64ede93f63c5498df234e5cdf98592155cc8b849a72b323d39122faa0b"
+      },
+      "baseline_vectors": true,
+      "current_vectors": true,
+      "baseline_configuration_provenance": "Recorded in artifact",
+      "method": "Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.",
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 34,
+          "visible_found": 34,
+          "native_owner_found": 33,
+          "complete_bodies": 27,
+          "bytes": 693421,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 34,
+          "visible_found": 34,
+          "native_owner_found": 33,
+          "complete_bodies": 27,
+          "bytes": 693421,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      },
+      "byte_identical_pairs": 40,
+      "delivered_view_sha256": [
+        "bd19acf79d0a723d2990775812a4a874891a05fbcdecdfda9b53dce08ebb27a6",
+        "d6d764a7d9086de52e2b46425451e33c317d11309b9274b8e0e5c15914b0c215",
+        "8ec974a089da68c199a1415b3b590e5fad11bcd07f388072afdb1a3332e8f97d",
+        "5d95e8c79d9a896f0e1d6f8aa8bc15c9f54cef1d9e5f31ac698457e7177a5276",
+        "a56cef6d10af56b529f7d5c7de6e81bd998242ae86f11349452a4ffd1c7a637a",
+        "64216ef3963bb44daf261250a178ab331b09ce05d2aee2f50fdba881a0a5d407",
+        "b12f44f84a15a98ae3a55fdb6429eaab34f89b4eb67613de7fe5659cb5670059",
+        "b8b5f7a6100a554021eab25090bf24462488a4bb9d09ac94fbdb5010b19835d7",
+        "3f9fc36e6adc9a885ead09d5cfd432a8b7d91619d22b6b9472c7e87c16f7247b",
+        "8171b853284f5e17c69302caa79e8a63c229c49ae15831769dc787ec89035296",
+        "efc54246db3def6058b891e2a48b467ce03d463b2ee4e86db376cae163992d44",
+        "214a8146ddaad27b58c036355b2791b86681bfd30b1a87f4d3c2c2a5a8488cea",
+        "970f9ffb2be4667590f4449ee8ad1bbdacf595b9b45de6c7768b4879c68443ad",
+        "40c449769ac00a19701d06b54d430c28135d5fd7eb26e4ada0e41f2d3a332b8d",
+        "8538a45c97bb4e238178dfd3f9c20877199c8eda96b011630bc3c3e6b03ecc56",
+        "2e6e926a98554560cb8cde1bf92aac6174f72b92691eac9e30bc5704694057a5",
+        "35c81962b555b5af7827f946777b2342f5b5a97ca2ddd276fa12ba927df2d87a",
+        "3980184121d8fa1824a5d9ae3ce0b4e5651029a00ceac7249dc270dfaddfd125",
+        "f2ca6e30d65c5bc9ddbffa6121c847305a4f8655807e4410c495f5edd590371b",
+        "60d31161bf3e195e89c680425307769ba31b206a49f4eea92b6d548f5b9c0ce0",
+        "ede1d0a113e8101ef025ceccf762ad7c9c4fa2963d4f227b514804acd1405c81",
+        "b278af3448af97ed9895c7932488f7c22660bebe56f9954766a28bd0a13a3fc0",
+        "399b1bb090ea44e0a16a8f4cb71d7a80898027fc10d6f02e8d90cf5f06ea3b36",
+        "09352a705c66153164e216f2a4f1b136a460d2e521c4b2b951440697d407dfd0",
+        "014f98fec949f236d1f0563d7a08b06e9549c58cba21300e3507354b7cc6390f",
+        "4f8bc9a471ba66a3293199e59cda56b7a926038cd02543cac602b877ca69a034",
+        "3581ddeb604fda35d0e5ba1e94d447c4b4c48582488f3fadf5c8420be44b632f",
+        "7360693311f96cc0d98d921cb2975652b22ac67f65c069bf1b477cce3bc551f7",
+        "b88fb53a4936b278f9242ec385c2054156e436680d881134c90c6d966cf85419",
+        "a54f58d3c976be4f488b9b03a2d4cc97f1c8b40489499ef3e4b6e831205e764e",
+        "f201e0ff9183c07f0ea0f6331d7d6be3b35bce26f394b5c256c0e9e21458745b",
+        "b60e6da35369bbe54753fb741e948992157408759f5991161bd9c7acbeec3641",
+        "d005da9e5985fde20e89fd6f7a5807b7959e550b6ee2f49a08754da1785e34f5",
+        "d3ef6d9e2f7affdb3fd1dab23d5eddb26aa5ecbb6922cf36f7bbd6514e602573",
+        "8adf89d8cc86e86734b756a5f86406b61361f281ae6d18d1fcfe92a1fc3e81d3",
+        "3d3753289fdf2f2b7528000de428455c4aaa37fe32ad7ec2fbb732566dd1b977",
+        "e9f7d0af3653c9bb3918e17f77a51043781bfd111d2149183fe692f17db715e3",
+        "ea4e56d2b28b5fbb112887ade56474cca7fabf6e929c909da38b67b99057b7b9",
+        "5d2a7e60ca70d70ff44ad542e66d90a44ce286947015e5660fe775567ef1bde9",
+        "50dc95eb8379cf0eed905aa1644ffeb0d8ef192384bfae4f1ed5dd69fd96e163"
+      ],
+      "limits": [
+        "Output bytes are not billed tokens.",
+        "Complete expected declaration is not sufficient evidence of implementation correctness.",
+        "No host LLM ran; tool-call reduction and whole-task success remain unmeasured."
+      ]
+    }
+  },
+  "quality_provenance": "Corpus runs measured frozen corpus-bin with an exact ranking optimization later removed. All paired views were identical. Final delivery restores baseline vector code and independently replays all 15 project requests; corpus-bin is not the final packaged binary.",
+  "final_projects": {
+    "sialia": {
+      "labels_sha256": "5cb633a6bb9ef6b9ee9e4820b47a2f6f2d22f367f5c572de6fee97b69eaf9f53",
+      "requests_sha256": "b39cdf3d4b80be45a26b9a16d4f986b67e37f2c474bae18f4a6a9b55e8b723ff",
+      "baseline": {
+        "targets": 12,
+        "visible": 10,
+        "complete_bodies": 3,
+        "view_bytes": 149834,
+        "native_parity": 7,
+        "requests": 7
+      },
+      "current": {
+        "targets": 12,
+        "visible": 10,
+        "complete_bodies": 3,
+        "view_bytes": 149834,
+        "native_parity": 7,
+        "requests": 7
+      },
+      "byte_identical_pairs": [
+        {
+          "id": "overview",
+          "sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "id": "charging",
+          "sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "id": "webhook",
+          "sha256": "53340ad4e5b009e900a11b33b83d9d878aca1bba3dca79f68e81411c0fcd04c9"
+        },
+        {
+          "id": "subscription",
+          "sha256": "398cae484c62846409379f8a1e72bdb7965a8431a8310df26f34473a62aa30cd"
+        },
+        {
+          "id": "marketplace",
+          "sha256": "f463483d88e1925ee35474ddd168ecac61abce06e145bbbc8bfe4b9ffb126b86"
+        },
+        {
+          "id": "replacement",
+          "sha256": "2d83998d90c1f1c9dae58cf9bf3eba9652dc44a5af073ed3557f4c77efce55b0"
+        },
+        {
+          "id": "frontend",
+          "sha256": "8e45c275a22c50f5784916f5b41c8bae7fdbaa13b291c8cf71d71f569f9b4cf7"
+        }
+      ],
+      "gains": [],
+      "regressions": [],
+      "missing_targets": [
+        "tokenization",
+        "subaccount-disable"
+      ],
+      "limits": [
+        "Task-guided known targets, not an independent accuracy evaluation.",
+        "Visible source ranges are not proof of behavior or complete implementation context.",
+        "Output bytes are not billed tokens; no host model ran."
+      ]
+    },
+    "florestal": {
+      "labels_sha256": "3f29997b96105b2be53c1f482394bd5d9c438448c0f3a9a58783d8799519510d",
+      "requests_sha256": "471de6ef0edcfad297125f489c36daec94cc845958d0aa3df9226566fbc3af5d",
+      "baseline": {
+        "targets": 8,
+        "visible": 8,
+        "complete_bodies": 3,
+        "view_bytes": 54388,
+        "native_parity": 8,
+        "requests": 8
+      },
+      "current": {
+        "targets": 8,
+        "visible": 8,
+        "complete_bodies": 3,
+        "view_bytes": 54388,
+        "native_parity": 8,
+        "requests": 8
+      },
+      "byte_identical_pairs": [
+        {
+          "id": "01-discover-xlsx",
+          "sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "id": "02-find-input-entrypoints",
+          "sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "id": "04-download-flow",
+          "sha256": "05aba656092bf8e7bbf4d36abd64fc9ba0fc2e42b5163c1571a624580b3f97f5"
+        },
+        {
+          "id": "07-discover-input-and-copy",
+          "sha256": "9af6e92fde1cccea4ec1767b773273b82be772b47e2bf3879217509bb50f6ff3"
+        },
+        {
+          "id": "09-optimize-input-entry",
+          "sha256": "ad0779d28101244849c5578d4e4fe772bad6c6fb8278a92a59cb6b4d1a02e7e1"
+        },
+        {
+          "id": "12-workbook-and-copy-details",
+          "sha256": "9e4b433956e943f3b727a2b20ef66cdf5efb24d873eb018466b1ca7b01edceca"
+        },
+        {
+          "id": "17-input-contracts",
+          "sha256": "f6ad1e7fcab44d52a13e816589b72c33428070055647416ff7c9234e9a9801be"
+        },
+        {
+          "id": "23-follow-plan-input-sources",
+          "sha256": "b3d98bf6b4a9be04e01ab667c936a523fc64c8e1b682bed977c30f6cf1a6098f"
+        }
+      ],
+      "gains": [],
+      "regressions": [],
+      "missing_targets": [],
+      "limits": [
+        "Task-guided known targets, not an independent accuracy evaluation.",
+        "Visible source ranges are not proof of behavior or complete implementation context.",
+        "Output bytes are not billed tokens; no host model ran."
+      ]
+    }
+  },
+  "binary_sha256": {
+    "baseline-bin": {
+      "mustard": "a8f9379e147fc8cac68751f293f7edeae0a8b3933b6c65316ae2b059b0758047",
+      "mustard-rt": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+      "scan": "f9d4dfbf478ffdb491cb5b8f6338f65d7363965cde4336d996825f2ceb32598a"
+    },
+    "corpus-bin": {
+      "mustard": "4fb8fe8ff023271944df30e151ecb37c7d4687cb06453f40e910e9c8d48948d3",
+      "mustard-rt": "5283ca64ede93f63c5498df234e5cdf98592155cc8b849a72b323d39122faa0b",
+      "scan": "8c03872a51fb76d628a28b0ebde10c31eeeaf34211beafb283c8d70f49eeb1c2"
+    },
+    "experiment-bin": {
+      "mustard": "343af0668ee78f638ee125458e02db5a6d72bd564d21e57d3bc9666c19dc7121",
+      "mustard-rt": "abd843071a55640e46d1523fdf398b64d9f729c062fb5f95908d48ab5f1ed460",
+      "scan": "12b7d0b25d20a42188ffbcae2e585cf7b9ba7686d6b38962706aacc36c581ee7"
+    },
+    "current-bin": {
+      "mustard": "40779a787f4a8644c141697aa6a6fc29d5bbc73f88de26c743ba218432523ea6",
+      "mustard-rt": "e58698953858aa993a6d6bcb82b79718b01d69e2c55bcec9d429cb3be6d7a461",
+      "scan": "120a5ee0b85f7b88dbda74d6ca3d531290661c2aaece91d469b7948bd3d13108"
+    }
+  },
+  "final_vector_source_sha256": "b5fb2b1a65f56200060802ad21558dbea36525a9567573bbaf8d283349efd646",
+  "final_vector_source_identical_to_baseline": true,
+  "wave_fixture_observations": {
+    "related_ready_tasks": 2,
+    "native_waves_after_grouping": 1,
+    "paid_calls": 0,
+    "current_scan_required_at_both_endpoints": true,
+    "independent_small_work_can_use_a_free_slot": true,
+    "shared_reading_alone_does_not_reserve_writes": true,
+    "token_savings_measured": false
+  },
+  "jev_mock_observations": {
+    "global_criterion_only": {
+      "intrinsic_profile_requests": 1,
+      "interference_requests": 0
+    },
+    "identical_replay_requests": 0,
+    "additional_real_relation_requests": 1,
+    "fully_natively_blocked_dispatch_judge_calls": 0,
+    "real_paid_requests_in_this_validation": 0,
+    "note": "Fake provider contract checks, not live cost or semantic accuracy. Mixed eligible/blocked boards can still profile blocked candidates."
+  },
+  "rejected_ranking_optimization": {
+    "retained": false,
+    "decision": "No convincing end-to-end latency benefit; reverted.",
+    "binary_sha256": {
+      "baseline": "dd5d6a7ae8bbb7ab3633ba4ae342ddd9b671eab933ee9c05ea4d25f792632048",
+      "current": "abd843071a55640e46d1523fdf398b64d9f729c062fb5f95908d48ab5f1ed460"
+    },
+    "manifest_sha256": "93ee63a71db5724c36242d8c2c106017687fbbc809d1e042bb8d51fd5eff1ff9",
+    "repeat": 3,
+    "method": "One unmeasured warm-up per case/arm, then alternating arms; actual --shell-output, diagnostics disabled, no parallel work within this runner.",
+    "summary": {
+      "baseline": {
+        "samples": 12,
+        "median_ms": 4036.0541539999977,
+        "per_case": {
+          "sialia-overview": {
+            "median_ms": 6121.267535000006,
+            "deterministic_output": true,
+            "bytes": 19937
+          },
+          "sialia-charging": {
+            "median_ms": 8052.375518999994,
+            "deterministic_output": true,
+            "bytes": 22274
+          },
+          "florestal-01-discover-xlsx": {
+            "median_ms": 2004.9253000000026,
+            "deterministic_output": true,
+            "bytes": 8957
+          },
+          "florestal-02-find-input-entrypoints": {
+            "median_ms": 431.82588899999973,
+            "deterministic_output": true,
+            "bytes": 3349
+          }
+        }
+      },
+      "current": {
+        "samples": 12,
+        "median_ms": 4178.934813999993,
+        "per_case": {
+          "sialia-overview": {
+            "median_ms": 6407.4919669999945,
+            "deterministic_output": true,
+            "bytes": 19937
+          },
+          "sialia-charging": {
+            "median_ms": 8051.652231,
+            "deterministic_output": true,
+            "bytes": 22274
+          },
+          "florestal-01-discover-xlsx": {
+            "median_ms": 1971.1030449999962,
+            "deterministic_output": true,
+            "bytes": 8957
+          },
+          "florestal-02-find-input-entrypoints": {
+            "median_ms": 430.89046500000404,
+            "deterministic_output": true,
+            "bytes": 3349
+          }
+        }
+      }
+    },
+    "aggregate_median_change_percent": 3.540107603818732,
+    "limits": [
+      "Small known query sample, warm filesystem cache, one machine.",
+      "No autonomous host model, billing, application execution or end-to-end task time measured.",
+      "Models/configurations must be recorded by the caller; each root must already be scanned by its own binary."
+    ],
+    "final_package_latency_claim": null
+  },
+  "verification": {
+    "rust_passed": 3995,
+    "rust_failed": 0,
+    "rust_ignored": 2,
+    "mods_passed": 16,
+    "clippy_warnings_denied": true,
+    "plugin_validation_passed": true,
+    "free_preflight": [
+      {
+        "task": "copy-input-export",
+        "source_file_located": true,
+        "native_result_preserved": true,
+        "remote_model_calls": 0,
+        "agent_view_bytes": 1251,
+        "host_model_ran": false
+      },
+      {
+        "task": "idempotent-cancellation",
+        "source_file_located": true,
+        "native_result_preserved": true,
+        "remote_model_calls": 0,
+        "agent_view_bytes": 1299,
+        "host_model_ran": false
+      }
+    ],
+    "cli_logged_in": false,
+    "log_sha256": {
+      "workspace-final-tests.log": "c31324343319bc2165025d311906dadfbec45e559e23f5fff0d3a73991e491ea",
+      "clippy-final.log": "27609e2faffc4f516891ec6ded9625d686f54c163e503d41c6b464d1cb1fa131",
+      "build-final.log": "d5f7568d83e88eaffd0e4cb9e826a0c233f75e6cf63b7e7e331014eb753332cf",
+      "mods-final-tests.log": "2f65a6a189ecf827ffbd381c2d33f6b48e3e39202c8a345b0b555df998939406",
+      "plugin-final-validation.log": "601fae4fa2b29d74a190b3e333cbdb114d8e65a94244249eff6ea72ebf81cf08"
+    }
+  },
+  "whole_session_tokens": null,
+  "whole_session_cost": null,
+  "whole_task_implementation_success": null,
+  "limits": [
+    "Target recall and delivered bytes do not measure billed tokens, overall candidate precision or correct implementation.",
+    "No autonomous Claude/Codex task session ran.",
+    "No application, payment or real XLSX export was executed.",
+    "New selection was not tuned after evaluation; training overlap was not audited.",
+    "Declared files and static imports cannot prove all dynamic dependencies.",
+    "Mods displays declared queue state; source relationships are verified at dispatch.",
+    "No final retrieval speedup or single overall improvement percentage is claimed."
+  ],
+  "next_scan_priorities": [
+    "Missing targets, particularly Rust and two Sialia targets.",
+    "Index/inventory/hydration I/O while preserving scope, symlink and freshness checks.",
+    "Authenticated paired host sessions with correct tasks and whole-session usage."
+  ]
+}

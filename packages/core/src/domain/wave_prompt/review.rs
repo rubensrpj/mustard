@@ -28,6 +28,7 @@ impl<'m, 'a> ReviewListing<'m, 'a> {
                 ("prompt.part.agreed", material.agreed.as_slice()),
                 ("prompt.part.each_delivered", material.own_delivered.as_slice()),
                 ("prompt.part.criteria", material.criteria.as_slice()),
+                ("prompt.part.validation", material.validation.as_slice()),
                 ("prompt.part.branch_changes", material.changes.as_slice()),
             ],
         }

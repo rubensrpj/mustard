@@ -2360,7 +2360,7 @@ mod tests {
     /// A rodada que recebe a entrega da onda 1 junta, comita e grava a
     /// entrega, e só depois, ao escolher as ondas seguintes, acha as ondas 4 e
     /// 7 em círculo. A recusa não troca a resposta: ela vem junto do que foi
-    /// gravado, do commit e das instruções de cópia da página, e nomeia só as
+    /// gravado, do commit e da indicação do painel local, e nomeia só as
     /// ondas do ciclo — a 1, entregue, fica fora dela. A prova atravessa
     /// `round`, o comando de verdade.
     #[test]
@@ -2417,7 +2417,7 @@ mod tests {
         let subject = Command::new("git").args(["log", "-1", "--format=%s"]).current_dir(root).output().unwrap();
         assert!(String::from_utf8_lossy(&subject.stdout).contains("a onda 1 saiu"), "{out}");
 
-        // As instruções de cópia da página, com a recusa como o passo seguinte.
+        // The refusal keeps the recorded result and the local panel entry point.
         let next = out["next"].as_str().unwrap_or_default();
         assert!(next.ends_with(WAVE_LOOP_4_7), "{next}");
         assert!(out.get("copy").is_none() && out.get("publish").is_none());
@@ -2945,8 +2945,7 @@ mod tests {
     }
 
     /// Uma tarefa do backlog em vários arquivos, gravada pela porta do modelo.
-    /// Seis arquivos declarados: o tamanho com que um lote sai ao lado de
-    /// outra onda em andamento.
+    /// Six distinct declared files for overlap and packing fixtures.
     pub(crate) const SIX_FILES: [&str; 6] = ["lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"];
 
     /// Um pedido aberto da onda `n`, com o processo deste teste por trás: a
@@ -3162,12 +3161,9 @@ mod tests {
         assert_eq!(spec_now(root).current(two).and_then(SpecEvent::wave), None, "a segunda espera no backlog");
     }
 
-    /// A espera de seis arquivos continua: duas tarefas do mesmo tipo de três
-    /// arquivos cada somam seis num lote só e saem ao lado de outra onda; do
-    /// maior tamanho elas não cabem juntas, e cada lote, de três arquivos,
-    /// espera.
+    /// Size budgets split batches; independent small batches can use free slots.
     #[test]
-    fn the_wait_for_six_files_holds_the_batches_the_size_budget_split() {
+    fn size_split_batches_can_use_free_slots_without_a_file_count_threshold() {
         use crate::shared::dag::TaskKind;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3181,18 +3177,17 @@ mod tests {
 
         let big = judging_sized(|_| TaskKind::Feature, |_| 3.0);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&big)), Ok(vec![]), "dois lotes de três");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&big)), Ok(vec![2, 3]), "independent size-split batches use free slots");
 
         let small = judging_sized(|_| TaskKind::Feature, |_| 0.0);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&small)), Ok(vec![2]));
-        assert_eq!(wave_order(root, 2), vec![one, two], "um lote de seis arquivos sai");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&small)), Ok(vec![4]));
+        assert_eq!(wave_order(root, 4), vec![log.current(one).unwrap().id, log.current(two).unwrap().id], "unsent smaller profiles can still be repacked together");
     }
 
-    /// O grupo de três arquivos não sai enquanto outra onda está em andamento:
-    /// fica no backlog, sem onda, e nenhuma onda nova nasce.
+    /// Independent small work uses a free slot while another wave runs.
     #[test]
-    fn a_group_of_three_files_does_not_leave_while_another_wave_runs() {
+    fn an_independent_small_group_uses_a_free_slot_while_another_wave_runs() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3203,8 +3198,8 @@ mod tests {
         let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "o de três espera");
-        assert_eq!(spec_now(root).current(small).and_then(SpecEvent::wave), None, "e segue no backlog, sem onda");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2]));
+        assert_eq!(spec_now(root).current(small).and_then(SpecEvent::wave), Some(2));
     }
 
     /// O mesmo grupo de três arquivos sai quando nenhuma onda está em
@@ -3221,11 +3216,9 @@ mod tests {
         assert_eq!(wave_order(root, 1), vec![small]);
     }
 
-    /// Dois grupos do mesmo tipo que somam seis arquivos saem juntos, numa onda
-    /// só, ao lado de outra em andamento; de tipos diferentes eles não somam, e
-    /// nenhum dos dois sai.
+    /// Independent kinds use separate slots; compatible kinds can pack together.
     #[test]
-    fn two_groups_of_one_kind_that_add_up_to_six_files_leave_together_while_another_wave_runs() {
+    fn independent_kinds_use_slots_and_one_kind_can_pack_together() {
         use crate::shared::dag::TaskKind;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3239,19 +3232,17 @@ mod tests {
 
         let apart = judging(|id| if id == one { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&apart)), Ok(vec![]), "tipos diferentes");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&apart)), Ok(vec![2, 3]), "different independent types can use separate slots");
 
         let together = judging(|_| TaskKind::Feature);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&together)), Ok(vec![2]));
-        assert_eq!(wave_order(root, 2), vec![one, two], "as duas, do mesmo tipo, numa onda só");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&together)), Ok(vec![4]));
+        assert_eq!(wave_order(root, 4), vec![log.current(one).unwrap().id, log.current(two).unwrap().id], "as duas, do mesmo tipo, numa onda só");
     }
 
-    /// O grupo pequeno que espera reserva os arquivos dele: o grupo de seis
-    /// arquivos que vem depois e divide um deles também espera, em vez de
-    /// tomar a vez.
+    /// Small work leaves and keeps later conflicting work reserved.
     #[test]
-    fn a_waiting_small_group_keeps_a_later_group_that_shares_its_files_from_leaving() {
+    fn a_small_group_leaves_and_keeps_a_later_conflicting_group_reserved() {
         use crate::shared::dag::TaskKind;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3265,7 +3256,7 @@ mod tests {
 
         let judge = judging(|id| if id == small { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![2]));
         assert_eq!(spec_now(root).current(later).and_then(SpecEvent::wave), None, "o de seis espera atrás do reservado");
     }
 

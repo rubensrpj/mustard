@@ -75,6 +75,7 @@ impl BoardTask {
         let left_reads: BTreeSet<String> = self.reads.iter().cloned().collect();
         let right_reads: BTreeSet<String> = other.reads.iter().cloned().collect();
         TaskRelation {
+            dependency: self.depends_on.contains(&other.title) || other.depends_on.contains(&self.title),
             flow: self.depends_on.contains(&other.title) || other.depends_on.contains(&self.title)
                 || !self.criteria.is_disjoint(&other.criteria),
             shared_read: !left_reads.is_disjoint(&right_reads),
@@ -90,6 +91,7 @@ impl BoardTask {
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub(crate) struct TaskRelation {
+    pub(crate) dependency: bool,
     pub(crate) flow: bool,
     pub(crate) shared_read: bool,
     pub(crate) read_write: bool,
@@ -101,7 +103,7 @@ impl TaskRelation {
     pub(crate) fn semantic_interference(self) -> bool {
         // Write overlap is already an exact reservation. Do not ask Jev to
         // rediscover it, and do not confuse common read context with a race.
-        !self.write_overlap && (self.flow || self.read_write || self.neighborhood)
+        !self.write_overlap && (self.dependency || self.read_write || self.neighborhood)
     }
 }
 

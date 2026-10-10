@@ -112,7 +112,7 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         })
         .collect();
     json!({"name":name,"goal":mustard_core::domain::spec_index::goal_of(log),"phase":State::from_log(log).phase,
-        "waves":waves,"usage":{"wave_tokens":tokens,"conductor_tokens":caller,"waves_with_unknown_usage":unknown,
+        "waves":waves,"scheduling":super::flow::round::scheduling_snapshot(root,log),"usage":{"wave_tokens":tokens,"conductor_tokens":caller,"waves_with_unknown_usage":unknown,
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},
         "stages":stages,"final_validation_valid":if selected {Some(super::flow::validation::reusable(root,log))} else {None},
         "counted_waves":wave_counts(log),

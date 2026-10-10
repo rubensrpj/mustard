@@ -1670,8 +1670,7 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
         let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
-        // A tarefa um declara seis arquivos: o lote tem o tamanho com que sai
-        // ao lado da onda 1, que segue em andamento.
+        // The first task declares six distinct files for this fixture.
         let t1 = write(
             root,
             "x",
@@ -4411,8 +4410,7 @@ fn main() { sum_by_the_new_name(); }
         assert!(log.unassumed_returns().is_empty(), "nenhuma volta espera mais");
     }
 
-    /// A volta que a onda grava nunca vai para a cópia da página: a rodada
-    /// que a assume manda copiar a entrega oficial, e a volta fica de fora.
+    /// The local projection counts the official delivery once and publishes nothing.
     #[test]
     fn the_projection_counts_the_official_delivery_without_creating_a_publication() {
         let dir = tempdir().unwrap();

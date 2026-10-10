@@ -5,9 +5,9 @@
 //! lint e a suíte inteira, o `lintCommand` e o `testCommand` do
 //! `mustard.json` — em ambiente limpo, roda cada critério uma vez e grava a
 //! execução de cada um, e então fecha — grava a fase `closed`, que arma a
-//! cobrança das pendências pela mesma porta, solta a spec da sessão e prepara
-//! a cópia para o banco de dados da página. A pasta de uma spec fechada fica
-//! com o arquivo de eventos e a pasta da cópia (`copy/`), e nenhuma página.
+//! cobrança das pendências pela mesma porta, solta a spec da sessão e atualiza
+//! o estado local observado pelo painel. A pasta da spec mantém os eventos
+//! e dados locais de validação. Publicação externa é explícita.
 //!
 //! **O agente de teste dedicado.** Nenhuma spec fecha sem ele — nem a de uma
 //! onda só —, e a rodada não pede a revisão de onda nenhuma: com a máquina
@@ -34,8 +34,8 @@
 //! fosse o da obra é pior do que parar.
 //!
 //! **A pasta de compilação.** No fim, a obra fechada apaga da pasta principal
-//! a pasta de compilação que o projeto declarou descartável no `mustard.json`
-//! (`buildOutput`), e nada mais dela; a resposta diz o que saiu.
+//! as pastas descartáveis declaradas em `buildOutput` que ultrapassam 15 GB;
+//! as menores são preservadas para reutilizar o cache. A resposta informa o resultado.
 //!
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
@@ -463,8 +463,7 @@ fn run_close(
     // Por último, a pasta de compilação que o projeto declarou descartável
     // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
     let build_output = remove_build_output(root, lang);
-    // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
-    // fase fechada na linha da spec da página do projeto.
+    // Closing updates local state only; external pages require an explicit request.
 
     // O pull request é o passo seguinte, e a linha dele sai pronta, com a base
     // e a branch tiradas do estado — pela mesma tabela que a retomada usa.
@@ -1535,8 +1534,8 @@ mod tests {
 
     /// O pedido que o fechamento daria ao revisor final sai antes de valer
     /// pela leitura `request-review-preview`, sem gravar nada na spec: nem
-    /// envio, nem leitura. O texto é o mesmo que o fechamento grava no envio
-    /// logo depois.
+    /// envio, nem leitura. Após a validação nativa, inclui os recibos novos
+    /// e coincide com o pedido gravado pelo fechamento.
     #[test]
     fn the_review_preview_prints_the_request_the_close_records_and_records_nothing() {
         use crate::commands::spec_events::read::{ReadOpts, read_for};
@@ -1554,7 +1553,12 @@ mod tests {
 
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        assert_eq!(review_prompt(&asked), preview, "the close records the request the preview printed");
+        let after=std::fs::read(&path).unwrap();
+        let validated_preview=read_for(&opts,None,root).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(),after,"reading new receipts still records nothing");
+        assert_eq!(review_prompt(&asked),validated_preview,"the preview of the validated state matches the recorded request");
+        assert!(!preview.contains("## Recibos da validação final registrada"));
+        assert!(validated_preview.contains("## Recibos da validação final registrada"));
     }
 
     /// O pedido do agente de revisão final vira evento de envio no

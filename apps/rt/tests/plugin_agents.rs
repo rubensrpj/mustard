@@ -1008,7 +1008,7 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
         assert!(wave.contains(wave_phase) && wave.contains(final_phase), "{lang}: validation phases");
         let review = template(lang, "review");
         assert!(review.contains("`testCommand`") && review.contains("lint") && review.contains("`rtk`"));
-        assert!(review.contains(if lang=="pt-BR" { "conteúdo, comando ou execução ficarem incertos" } else { "content, command or execution is uncertain" }));
+        assert!(review.contains(if lang=="pt-BR" { "conteúdo, comando ou execução ficarem incertos" } else { "content, commands or execution become uncertain" }));
         assert!(!review.contains("the close already ran it") && !review.contains("o fechamento já a rodou"));
     }
 }
@@ -1301,6 +1301,12 @@ fn every_flow_command_answers_its_next_step() {
     // Mesmo sem onda nenhuma, o fechamento pede o agente de teste dedicado.
     let asked = run_returned(&root, &home, &round);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let log=store::read(&file).unwrap().unwrap();
+    let sent=log.visible().into_iter().rfind(|event|event.event_type=="send" && event.str_field("role")==Some("review")).unwrap();
+    let copy=PathBuf::from(sent.str_field("copy").unwrap());
+    for code in sent.fields["read_items"].as_array().unwrap().iter().filter_map(Value::as_str) {
+        rt(&copy,&home,&["run","read",&format!("item-{code}"),"--root",root.to_str().unwrap(),"--spec","passo"],None);
+    }
     let approved = json!({"final": true, "result": "approved", "text": "Está pronto."});
     let written = rt(&root, &home, &["run", "write", "verdict", "--spec", "passo", "--json", &approved.to_string()], None);
     assert_eq!(written["ok"], json!(true), "{written}");

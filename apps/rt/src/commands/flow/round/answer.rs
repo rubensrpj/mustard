@@ -49,7 +49,7 @@ pub(crate) enum RoundRefusal {
     /// defeito que passou por outra porta, não uma segunda conta à parte.
     /// O ciclo aparece depois de a rodada já ter juntado, comitado e gravado
     /// o relatório: `answered` é a resposta do que ela já fez — o que foi
-    /// gravado, o commit e as instruções de cópia da página —, e a recusa sai
+    /// gravado, o commit e a indicação do painel local —, e a recusa sai
     /// junto dela, em vez de trocá-la.
     WaveLoop { cycle: Vec<u64>, answered: Value },
     /// A entrega de uma onda conflita com o repositório principal: os
@@ -1051,18 +1051,8 @@ pub(crate) fn read_command(root: &Path, spec: &str, block: &str) -> String {
     format!("mustard-rt run read {block} --root {main} --spec {spec}")
 }
 
-/// O fim de toda resposta da rodada, a que despacha e a que recusa um ciclo
-/// depois de gravar: a cópia para o banco da página sai uma vez, e a rodada
-/// manda copiá-la, menos quando ela não pôde ser preparada; e, com o pull
-/// request aberto, o corpo dele é refeito do mesmo arquivo de eventos que
-/// acabou de mudar — um corpo que descreve a rodada anterior é pior do que
-/// nenhum, e foi por isso que existiu um portão só para reparar que ele tinha
-/// envelhecido.
-///
-/// A ordem por extenso vai para a pasta da cópia antes de soltar a trava em
-/// que a cópia foi preparada: a rodada que roda ao mesmo tempo começa a
-/// preparação dela apagando essa pasta, e acharia ali o arquivo sendo
-/// gravado.
+/// Finish every round answer with the local panel entry point. An open PR
+/// receives the current event-log projection; no page or database is published.
 fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
     out["next"] = json!(then);
     out["panel"] = json!("/mustard-panel");
@@ -1826,30 +1816,9 @@ mod tests {
         assert_eq!(send_of(&read("wave-1"))["text"], json!(prompt), "the wave shows the whole request");
     }
 
-    /// A instrução de publicar e copiar a página, por extenso, fica só no
-    /// arquivo sob a pasta de lotes da spec: a resposta da rodada leva uma
-    /// linha curta que manda lê-lo, sem o texto que cita a ferramenta
-    /// `ArtifactData` nem a lista dos lotes. A resposta inteira fica bem
-    /// menor do que o texto que foi para o arquivo.
+    /// Round answers point to the local panel and create no publication artifacts.
     #[test]
-    fn the_round_response_moves_the_publish_order_to_a_file() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let out = round(root, "x", None);
-        assert_eq!(out["ok"], true, "{out}");
-        assert!(out.get("copy").is_none() && out.get("publish").is_none());
-        assert_eq!(out["panel"], "/mustard-panel");
-        assert!(!out["next"].as_str().unwrap().contains("copy/next.md"));
-        assert!(!root.join(".claude/spec/x/copy").exists());
-        assert!(!root.join(".claude/mustard/publications").exists());
-    }
-
-    /// Sem página a publicar, a ordem da cópia é curta e fica na própria
-    /// resposta da rodada: nenhum arquivo a ler antes de mandar os lotes, e
-    /// o `copy/next.md` nem nasce.
-    #[test]
-    fn without_a_page_to_publish_the_copy_order_stays_in_the_response() {
+    fn round_points_to_the_panel_without_creating_publication_artifacts() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);

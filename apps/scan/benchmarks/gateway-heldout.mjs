@@ -1,5 +1,6 @@
 // New public RepoQA repositories. Same deterministic, answer-blind requests in
-// both arms. No code execution, AI, hidden filename hints, or host installation.
+// both arms. No code execution, remote inference, filename hints or host installation.
+// Local embeddings require explicit per-arm --vectors/--baseline-vectors flags.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,8 @@ const options=new Map();for(let at=2;at<process.argv.length;at+=2)options.set(pr
 const required=name=>{assert.ok(options.get(name),`Missing ${name}`);return path.resolve(options.get(name));};
 const datasetPath=required('--dataset'),selectionPath=required('--selection'),out=required('--out');
 const bins={baseline:required('--baseline'),current:required('--current')};
+for(const key of ['--vectors','--baseline-vectors'])assert.ok(!options.has(key)||['true','false'].includes(options.get(key)),`${key} must be true or false`);
+console.log(JSON.stringify({configuration:{baseline_vectors:options.get('--baseline-vectors')==='true',current_vectors:options.get('--vectors')==='true',paid_inference:false}}));
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const bytes=fs.readFileSync(datasetPath),dataset=JSON.parse(bytes),selection=JSON.parse(fs.readFileSync(selectionPath));
 assert.equal(sha(bytes),selection.dataset_json_sha256);
@@ -18,6 +21,7 @@ const previous=options.has('--reuse-baseline')?JSON.parse(fs.readFileSync(path.j
 if(previous){
  assert.equal(previous.dataset_sha256,sha(bytes));assert.equal(previous.selection_sha256,sha(fs.readFileSync(selectionPath)));
  assert.equal(previous.binary_sha256.baseline,sha(fs.readFileSync(path.join(bins.baseline,'mustard-rt'))));
+ assert.equal(previous.baseline_vectors,options.get('--baseline-vectors')==='true','Reused baseline must have the same recorded local-model configuration');
  assert.equal(previous.rows.filter(r=>r.version==='baseline').length,selection.repositories.length*10);
 }
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'mustard-heldout-'));fs.mkdirSync(out,{recursive:true});
@@ -85,6 +89,7 @@ try {
     total_ms:arm.reduce((n,r)=>n+r.ms,0),native_parity:arm.filter(r=>r.native_parity).length,remote_model_calls:0}];}));
   const result={dataset_sha256:sha(bytes),selection_sha256:sha(fs.readFileSync(selectionPath)),
     current_vectors:options.get('--vectors')==='true',
+    baseline_vectors:options.get('--baseline-vectors')==='true',
     diagnostics:options.get('--trace')==='full'?'full-candidate-trace':'projection-only; no per-candidate trace',
     baseline_reused:previous!==null,
     binary_sha256:Object.fromEntries(Object.entries(bins).map(([name,dir])=>[name,sha(fs.readFileSync(path.join(dir,'mustard-rt')))])),rows,summary,

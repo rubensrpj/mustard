@@ -388,6 +388,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
         ("prompt.part.agreed", Locale::PtBr) => "Requisitos acordados",
         ("prompt.part.agreed", Locale::EnUs) => "Agreed requirements",
+        ("prompt.part.validation", Locale::PtBr) => "Recibos da validação final registrada",
+        ("prompt.part.validation", Locale::EnUs) => "Recorded final-validation receipts",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
@@ -611,7 +613,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 101, 0x73f1_6443_b62c_97ef);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 102, 0x9d07_8283_e244_ee9b);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

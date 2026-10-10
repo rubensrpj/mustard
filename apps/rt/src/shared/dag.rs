@@ -52,11 +52,9 @@
 //! reserva os arquivos dela ([`Reserved`]): a que vem depois na ordem de
 //! prioridade e divide arquivo com ela não toma a vaga que ela deixa livre.
 //!
-//! O lote pequeno — menos de [`MIN_WAVE_FILES`] arquivos declarados — espera
-//! juntar trabalho antes de sair ([`Batch::waits_to_grow`]): [`pack_by_kind`]
-//! já põe no mesmo lote as tarefas do mesmo tipo, e quem solta o lote só o deixa
-//! sair pequeno quando nada roda. Os arquivos de um lote que espera ficam
-//! reservados como os de uma tarefa bloqueada.
+//! Lotes independentes podem ocupar uma vaga livre qualquer que seja seu
+//! número de arquivos. Relações locais podem agrupá-los antes do despacho;
+//! somente dependências, conflitos e capacidade justificam espera.
 //!
 //! Dois arquivos "se cruzam" ([`files_cross`]) quando são o mesmo caminho,
 //! ou quando um deles é padrão (tem `*`, `?` ou `[`) e casa o outro. O `**`
@@ -191,22 +189,6 @@ impl<N: Ord> Batch<N> {
 pub(crate) struct Batch<N> {
     pub(crate) tasks: Vec<N>,
     pub(crate) files: BTreeSet<String>,
-}
-
-/// Quantos arquivos declarados um lote precisa ter para sair enquanto outra
-/// onda roda. Toda onda paga um custo fixo para ler o pedido e entender o
-/// código, e em onda pequena esse custo pesa mais por arquivo: o lote com menos
-/// arquivos espera juntar trabalho do mesmo tipo ou a hora em que nada roda.
-pub(crate) const MIN_WAVE_FILES: usize = 6;
-
-impl<N> Batch<N> {
-    /// `true` quando o lote declara menos de [`MIN_WAVE_FILES`] arquivos e, por
-    /// isso, espera enquanto outra onda roda. O lote do curinga da árvore
-    /// inteira nunca espera: ele sai sozinho, e quem o segura é a rodada, por
-    /// haver onda em andamento.
-    pub(crate) fn waits_to_grow(&self) -> bool {
-        !touches_whole_tree(&self.files) && self.files.len() < MIN_WAVE_FILES
-    }
 }
 
 /// As tarefas prontas — todas as dependências entregues ou aprovadas —, na
@@ -352,6 +334,39 @@ pub(crate) fn pack_batches<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]
     batches.extend(groups);
     batches.sort_by_key(|batch| !batch.holds_any(&marked));
     chain_dependents(tasks, &mut batches, waiting, busy, None);
+    batches
+}
+
+/// Merge native file groups only when local evidence connects them. The
+/// calibrated size table estimates packing cost, not semantic complexity.
+/// Same-file groups stay atomic and occupied groups retain their reservations.
+pub(crate) fn pack_by_local_evidence<N: Ord + Clone>(
+    tasks: &[BacklogTask<N>], order: &[N], waiting: &[N], busy: &BTreeSet<String>,
+    links: &BTreeSet<(N, N)>, budget: u64,
+) -> Vec<Batch<N>> {
+    let mut batches = pack_batches(tasks, order, waiting, busy);
+    let sizes: BTreeMap<_, _> = tasks.iter().map(|task| {
+        let level = match task.files.len() { 1 => 0.0, 2..=3 => 1.0, 4..=6 => 2.0, _ => 3.0 };
+        (task.id.clone(), task_size::growth_tokens(level))
+    }).collect();
+    let weight = |batch: &Batch<N>| batch.tasks.iter().map(|id| sizes[id]).fold(0u64, u64::saturating_add);
+    let mut at = 0;
+    while at < batches.len() {
+        if touches_whole_tree(&batches[at].files) || sets_cross(&batches[at].files, busy) {at += 1; continue;}
+        let mut other = at + 1;
+        while other < batches.len() {
+            let related = batches[at].tasks.iter().any(|left| batches[other].tasks.iter().any(|right|
+                links.contains(&(left.clone(), right.clone())) || links.contains(&(right.clone(), left.clone()))));
+            if related && !touches_whole_tree(&batches[other].files) && !sets_cross(&batches[other].files, busy)
+                && weight(&batches[at]).saturating_add(weight(&batches[other])) <= budget {
+                let merged = batches.remove(other);
+                batches[at].tasks.extend(merged.tasks);
+                batches[at].files.extend(merged.files);
+                other=at+1; // A new member may connect a group previously skipped.
+            } else {other += 1;}
+        }
+        at += 1;
+    }
     batches
 }
 
@@ -1128,21 +1143,9 @@ mod tests {
     // binário, num repositório temporário, e não em chamar `pack_batches`
     // duas vezes.
 
-    /// O lote com menos de seis arquivos declarados espera; com seis, sai; o do
-    /// curinga da árvore inteira nunca espera, tenha o tamanho que tiver.
+    /// Work kinds form separate batches independently of file count.
     #[test]
-    fn a_batch_under_six_declared_files_waits_to_grow_and_the_wildcard_never_does() {
-        let batch = |files: &[&str]| Batch { tasks: vec![1u32], files: files.iter().map(|f| (*f).to_string()).collect() };
-        assert!(batch(&["a", "b", "c", "d", "e"]).waits_to_grow());
-        assert!(!batch(&["a", "b", "c", "d", "e", "f"]).waits_to_grow());
-        assert!(!batch(&["**"]).waits_to_grow());
-    }
-
-    /// Duas tarefas de três arquivos do mesmo tipo formam um lote de seis, que
-    /// não espera; a de outro tipo, com dois arquivos, fica no lote dela, que
-    /// espera.
-    #[test]
-    fn two_tasks_of_one_kind_with_three_files_each_form_a_batch_that_does_not_wait() {
+    fn tasks_of_one_kind_form_a_batch_and_the_other_kind_stays_separate() {
         let tasks = [task_with(1, &[], &own_files("a", 3)), task_with(2, &[], &own_files("b", 3)), task_with(3, &[], &own_files("c", 2))];
         let judged = BTreeMap::from([
             (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
@@ -1153,8 +1156,22 @@ mod tests {
         let batches = pack_by_kind(&tasks, &[1, 2, 3], &[], &BTreeSet::new(), &judged, &|id| u64::from(*id), BUDGET);
 
         assert_eq!(batch_tasks(&batches), vec![vec![3], vec![1, 2]]);
-        assert!(batches[0].waits_to_grow(), "dois arquivos esperam");
-        assert!(!batches[1].waits_to_grow(), "seis arquivos saem");
+        assert_eq!(batches[0].files.len(), 3);
+        assert_eq!(batches[1].files.len(), 7);
+    }
+
+    #[test]
+    fn local_relationships_pack_within_budget_and_keep_occupied_groups_separate() {
+        let tasks=[task(1,&[],&["a.rs"],false),task(2,&[],&["b.rs"],false),task(3,&[],&["c.rs"],false)];
+        let links=BTreeSet::from([(1,2),(2,3)]);
+        let packed=pack_by_local_evidence(&tasks,&[1,2,3],&[],&BTreeSet::new(),&links,70_000);
+        assert_eq!(batch_tasks(&packed),vec![vec![1,2],vec![3]]);
+        let occupied=pack_by_local_evidence(&tasks,&[1,2,3],&[],&BTreeSet::from(["b.rs".into()]),&links,110_000);
+        assert_eq!(batch_tasks(&occupied),vec![vec![1],vec![2],vec![3]]);
+        let unrelated=pack_by_local_evidence(&tasks,&[1,2,3],&[],&BTreeSet::new(),&BTreeSet::new(),110_000);
+        assert_eq!(batch_tasks(&unrelated),vec![vec![1],vec![2],vec![3]]);
+        let transitive=pack_by_local_evidence(&tasks,&[1,2,3],&[],&BTreeSet::new(),&BTreeSet::from([(1,3),(2,3)]),110_000);
+        assert_eq!(batch_tasks(&transitive),vec![vec![1,3,2]],"new evidence joins previously skipped groups");
     }
 
     /// Uma tarefa certa do tipo `kind` e do tamanho `size` (a nota de 0 a 3).

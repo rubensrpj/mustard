@@ -243,6 +243,8 @@ pub struct Material<'a> {
     /// Os commits da rodada: as mudanças que já entraram na branch, que o
     /// agente de teste dedicado confere no pedido da revisão final.
     pub changes: Vec<&'a SpecEvent>,
+    /// Native final-validation receipts, listed for independent verification.
+    pub validation: Vec<&'a SpecEvent>,
     /// O que mudou desde o veredito final que reprovou
     /// ([`since_last_verdict`]): com ele, o pedido da revisão final é o da
     /// revisão de volta. Vazio na primeira revisão.
@@ -2848,12 +2850,12 @@ mod tests {
             (
                 Locale::PtBr,
                 ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "verificação do vermelho (o que foi cortado"],
-                ["rode a verificação gravada", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
+                ["confira o recibo vigente", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
             ),
             (
                 Locale::EnUs,
                 ["is born red", "the command or the hook event", "not only in the helper function", "red verification (what was cut"],
-                ["run its recorded verification", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
+                ["check the current receipt", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
             ),
         ] {
             let agents = crate::platform::seeds::agent_texts(lang);

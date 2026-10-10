@@ -1018,10 +1018,10 @@ fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev()
 }
 
 /// A tarefa marcada pequena, de um arquivo só, sai ao lado de uma onda em
-/// andamento sem arquivo em comum; a não marcada do mesmo tamanho espera
-/// juntar trabalho.
+/// andamento sem arquivo em comum; a não marcada independente usa outra
+/// vaga, mantendo a prioridade de despacho.
 #[test]
-fn a_small_marked_task_leaves_while_another_wave_runs() {
+fn independent_small_tasks_leave_with_priority_preserved() {
     let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
     let (_, out) = dispatch_ready(&project);
     assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
@@ -1030,8 +1030,8 @@ fn a_small_marked_task_leaves_while_another_wave_runs() {
 
     let (_, out) = dispatch_ready(&project);
     let wave = wave_of(&project, marked).expect("a marcada pequena vira onda");
-    assert_eq!(out, vec![wave], "só a marcada sai ao lado da onda em andamento");
-    assert_eq!(wave_of(&project, plain), None, "a não marcada pequena espera juntar trabalho");
+    let plain_wave=wave_of(&project,plain).expect("independent small work uses the other slot");
+    assert_eq!(out, vec![wave,plain_wave], "priority is preserved while both free slots get independent work");
 }
 
 /// A marcada que espera uma tarefa ainda aberta fica no backlog: a marca não
