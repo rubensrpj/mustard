@@ -77,7 +77,7 @@ impl Matcher {
     }
 
     pub fn matched(&mut self, text: &str) -> BTreeSet<usize> {
-        let forms: BTreeSet<_> = self.normalizer.forms(text).into_iter().flatten().collect();
+        let forms = self.normalizer.written_forms(text);
         self.slots
             .iter()
             .enumerate()
@@ -112,5 +112,14 @@ mod tests {
         assert!(!inflected.matched("study notes").is_empty());
         assert_eq!(Purpose::parse("implement"), Some(Purpose::Implement));
         assert_eq!(Purpose::parse("guess"), None);
+    }
+
+    #[test]
+    fn lowercase_names_match_written_compounds_without_joining_prose_or_substrings() {
+        let mut matcher=Matcher::new("quartzpay",&Languages::new(["en-US"])).unwrap();
+        assert_eq!(matcher.matched("QuartzPayClient"),BTreeSet::from([0]));
+        assert_eq!(matcher.matched("quartz_pay_client"),BTreeSet::from([0]));
+        assert!(matcher.matched("quartz pay client").is_empty());
+        assert!(matcher.matched("quartzpayite").is_empty());
     }
 }

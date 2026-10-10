@@ -83,7 +83,12 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             let old:Option<String>=tx.query_row("SELECT sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0)).optional()?;
             if old.as_ref().is_some_and(|old|old!=digest) {tx.execute("DELETE FROM search_facts WHERE tree=?1 AND path=?2",params![key,file])?;}
             tx.execute("INSERT INTO search_files(tree,path,sha256) VALUES(?1,?2,?3) ON CONFLICT(tree,path) DO UPDATE SET sha256=excluded.sha256",params![key,file,digest])?;
-            let indexed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM knowledge_symbols WHERE path=?1 AND sha256=?2)",params![file,digest],|row|row.get(0))?;
+            // A scanned document or a code file with zero declarations is
+            // still a current snapshot. Requiring a symbol causes a complete
+            // scan on the first hit in every such file, despite identical bytes.
+            let indexed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM knowledge_symbols WHERE path=?1 AND sha256=?2)
+                OR EXISTS(SELECT 1 FROM resource_index_files WHERE path=?1 AND sha256=?2)
+                OR EXISTS(SELECT 1 FROM texts WHERE path=?1 AND CASE WHEN json_valid(analysis) THEN json_extract(analysis,'$.content_sha256') END=?2)",params![file,digest],|row|row.get(0))?;
             let learned:bool=tx.query_row("SELECT indexed=sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0))?;
             if !structure_ready || !indexed && !learned {pending.push(file.clone());}
         }

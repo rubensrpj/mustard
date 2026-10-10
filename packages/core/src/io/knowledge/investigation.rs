@@ -309,7 +309,10 @@ pub(super) fn prepare(
     if scope.is_some() {
         let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
         let weights=catalog::task_weights(root,question,&languages)?;
-        let anchors:Vec<_>=cards.iter().filter(|card|anchor_names.contains(&card.name.to_lowercase())).map(|card|card.id.clone()).collect();
+        let mut anchors:Vec<_>=cards.iter().filter(|card|anchor_names.contains(&card.name.to_lowercase())).map(|card|card.id.clone()).collect();
+        if matches!(task.purpose,Purpose::Spec|Purpose::Understand) && let Some(scope)=scope {
+            anchors.extend(knowledge::selection::area_anchors(cards,query.text,scope.seeds));
+        }
         let mut order=knowledge::selection::task_order(cards,question,&languages,&weights,&anchors);
         for &i in ranking.iter() {if !order.contains(&i) {order.push(i);}}
         *ranking=order;
@@ -430,6 +433,21 @@ pub(super) fn prepare(
         // candidate must not displace readable evidence and then abort the
         // whole task after hydration. Original native occurrences stay intact.
         ranking.retain(|&i|files.contains_key(&cards[i].source.file));
+        let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
+        let weights=catalog::task_weights(root,question,&languages)?;
+        let mut anchors:Vec<_>=anchor_ids.iter().cloned().collect();
+        if matches!(task.purpose,Purpose::Spec|Purpose::Understand) && let Some(scope)=scope {
+            anchors.extend(knowledge::selection::area_anchors(cards,query.text,scope.seeds));
+        }
+        // File expansion may discover a better declaration after the initial
+        // order was computed. Rank the complete admitted pool before cutting
+        // the decision reservoir, rather than appending those discoveries.
+        let admitted:Vec<_>=cards.iter().enumerate().filter(|(_,card)|files.contains_key(&card.source.file)
+            && current(tree,&card.source,hashes)).map(|(i,_)|i).collect();
+        let candidates:Vec<_>=admitted.iter().map(|&i|cards[i].clone()).collect();
+        *ranking=knowledge::selection::task_order(&candidates,question,&languages,&weights,&anchors).into_iter().map(|i|admitted[i]).collect();
+        phases.push(json!({"operation":"rank-after-source-expansion","admitted_candidates":admitted.len(),"ranked_candidates":ranking.len(),
+            "native_owners":scope.map_or(0,|scope|scope.seeds.len()),"ranking_method":"length-normalized distinct written clues; soft file diversification"}));
     }
     let mut alternatives = BTreeMap::new();
     let mut promotions = 0;

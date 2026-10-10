@@ -14,7 +14,7 @@ const paid=args.includes('--jev');
 const env={...process.env,MUSTARD_RT_DELEGATED:'1'};
 if(paid) assert.ok(env.TYPESAFE_API_KEY,'--jev requires TYPESAFE_API_KEY');
 else {delete env.TYPESAFE_API_KEY;delete env.MUSTARD_JEV_URL;}
-const binary=path.join(checkout,'target/debug/mustard-rt');
+const binary=path.join(args.includes('--bin')?path.resolve(option('--bin')):path.join(checkout,'target/debug'),'mustard-rt');
 const fixture=JSON.parse(fs.readFileSync(path.join(checkout,'apps/scan/tests/fixtures/gateway-task-20261009.json')));
 const revision=()=>cp.execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 assert.equal(revision(),fixture.source_commit,'Use the frozen source commit');

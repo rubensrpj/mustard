@@ -29,10 +29,25 @@ pub fn nominal_anchors(cards:&[Card],pattern:&str,seeds:&[String])->BTreeSet<Str
     owners.into_iter().filter(|card|names.iter().any(|name|name.eq_ignore_ascii_case(&card.name))).map(|card|card.id.clone()).collect()
 }
 
+/// For an area survey, written identifier components in the original
+/// search identify the area to read before generic verbs elsewhere. This
+/// is reading priority only; it is never an exact identity or recommendation.
+pub fn area_anchors(cards:&[Card],pattern:&str,seeds:&[String])->BTreeSet<String> {
+    let names=crate::domain::code_search::pattern_names(pattern);
+    // Keep literal identifier spelling here: no stemming, synonyms or joined
+    // prose. CreateCharge matches CreateChargeAsync, but not DischargeAsync.
+    let mut normalizer=Normalizer::new(&Languages::new([]));
+    cards.iter().filter(|card|seeds.contains(&card.id) && {
+        let written=normalizer.written_forms(&format!("{} {}",card.source.file,card.name));
+        names.iter().any(|name|written.contains(&name.to_lowercase()))
+    })
+        .map(|card|card.id.clone()).collect()
+}
+
 pub fn within_files(cards: &[Card], query: &str, languages: &Languages, weights: &[f64]) -> BTreeMap<String, Vec<Ranked>> {
     let terms = Terms::of(query, languages);
     let mut normalizer = Normalizer::new(languages);
-    let mut forms = |text: &str| -> BTreeSet<String> { normalizer.forms(text).into_iter().flatten().collect() };
+    let mut forms = |text: &str| -> BTreeSet<String> { normalizer.written_forms(text) };
     let names: Vec<_> = cards.iter().map(|c| forms(&c.name)).collect();
     let signatures: Vec<_> = cards.iter().map(|c| forms(&c.signature)).collect();
     let docs: Vec<_> = cards.iter().map(|c| forms(&format!("{} {}", c.documentation, super::annotation_text(c)))).collect();
@@ -171,16 +186,27 @@ pub fn responsibility(cards: &[Card], query: &str, languages: &Languages) -> Pla
 
 /// Rank the question before applying a soft cost for repeated files. A strong
 /// second declaration can precede a weak first member of another file. Only
-/// explicit nominal anchors get identity priority; native hits are not meaning.
+/// supplied reading anchors get priority; native hits are not meaning.
 pub fn task_order(cards:&[Card],query:&str,languages:&Languages,weights:&[f64],anchors:&[String])->Vec<usize> {
     let mut ranked:Vec<_>=within_files(cards,query,languages,weights).into_values().flatten().collect();
+    // A current declaration explicitly located by the original tool survives
+    // even if its name is absent from the user's broader intent vocabulary.
+    for (i,_) in cards.iter().enumerate().filter(|(_,card)|anchors.contains(&card.id)) {
+        if !ranked.iter().any(|r|r.card==i){ranked.push(Ranked{card:i,score:0.0,own_matches:0});}
+    }
     let mut normalizer=Normalizer::new(languages);
     let lengths:Vec<_>=cards.iter().map(|card|normalizer.forms(&evidence::own_text(card)).len() as f64).collect();
     let average=lengths.iter().sum::<f64>()/(lengths.len().max(1) as f64);
-    // BM25's document-length component prevents a large implementation from
-    // winning merely because it contains more of the question's vocabulary.
-    // Names, signatures and source witnesses still determine the numerator.
-    for rank in &mut ranked {rank.score/=0.25+0.75*lengths[rank.card]/average.max(1.0);}
+    // Length-normalized distinct written clues, not a full BM25 model.
+    // Preserve the reading order measured before adding native discovery;
+    // long implementations must not crowd out small, specific helpers.
+    let terms=Terms::of(query,languages);
+    for rank in &mut ranked {
+        // A tiny field/type is not a tiny implementation. Reserve the short
+        // source advantage for callables unless the question asks definitions.
+        let length=if !terms.definition() && !terms.callable(&cards[rank.card].kind) {lengths[rank.card].max(average)} else {lengths[rank.card]};
+        rank.score/=0.25+0.75*length/average.max(1.0);
+    }
     let identifiers:BTreeSet<_>=query.split(|c:char|!c.is_alphanumeric()).filter(|word|word.len()>=2 && word.chars().any(char::is_uppercase) && word.chars().all(|c|c.is_uppercase() || c.is_ascii_digit())).map(str::to_lowercase).collect();
     let path_clues=|i:usize|cards[i].source.file.split(|c:char|!c.is_alphanumeric()).filter(|part|identifiers.contains(&part.to_lowercase())).count();
     let mut files=BTreeMap::<&str,usize>::new();let mut order=Vec::new();
@@ -332,6 +358,16 @@ mod tests {
     }
 
     #[test]
+    fn survey_priority_matches_written_identifier_components_only() {
+        let mut cards=cards();cards[0].name="CreateChargeAsync".into();cards[1].name="DischargeAsync".into();cards[2].name="Other".into();
+        let seeds=cards.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
+        assert_eq!(area_anchors(&cards,"CreateCharge|charge",&seeds),BTreeSet::from([cards[0].id.clone()]));
+        assert!(area_anchors(&cards,"CreateCharge",&[]).is_empty());
+        let order=task_order(&cards,"unseen_question_word",&Languages::new(["en-US"]),&[],std::slice::from_ref(&cards[0].id));
+        assert_eq!(order,vec![0]);assert!(responsibility(&cards,"unseen_question_word",&Languages::new(["en-US"])).recommendations.is_empty());
+    }
+
+    #[test]
     fn broad_search_words_do_not_turn_a_coincidental_name_into_an_exclusive_anchor() {
         let mut cards=cards();let seeds=cards.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
         assert_eq!(nominal_anchors(&cards,"process",&seeds),BTreeSet::from([cards[1].id.clone()]));
@@ -362,6 +398,16 @@ mod tests {
         cards[2].name="other".into();cards[2].identifiers="ledger".into();
         let order=task_order(&cards,"restore revision ledger checkpoint",&Languages::new(["en-US"]),&[],&[]);
         assert_eq!(order[0],1);
+    }
+
+    #[test]
+    fn a_short_generic_field_cannot_displace_specific_callable_evidence() {
+        let mut cards=cards();
+        for (i,card) in cards.iter_mut().enumerate(){card.source.file=format!("file{i}.rs");card.signature.clear();card.documentation.clear();card.body_comment.clear();card.identifiers.clear();}
+        cards[0].kind="field".into();cards[0].name="metadata".into();cards[0].documentation="record output".into();
+        cards[1].kind="function".into();cards[1].name="serialize_response".into();cards[1].identifiers=format!("record output {}",(0..40).map(|i|format!("element_{i}")).collect::<Vec<_>>().join(" "));
+        cards[2].kind="function".into();cards[2].name="unrelated".into();cards[2].identifiers=(0..60).map(|i|format!("noise_{i}")).collect::<Vec<_>>().join(" ");
+        assert_eq!(task_order(&cards,"record output serialize response",&Languages::new(["en-US"]),&[1.0,1.0,2.0,2.0],&[])[0],1);
     }
 
     #[test]

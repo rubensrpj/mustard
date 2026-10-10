@@ -93,6 +93,7 @@
 ; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
 ; declaração, o mesmo nome escrito sozinho é deles.
 (variable_declarator name: (identifier) @local)
+(local_function_statement name: (identifier) @name) @definition.method
 (parameter name: (identifier) @local)
 (lambda_expression parameters: (implicit_parameter) @local)
 (foreach_statement left: (identifier) @local)

@@ -2,7 +2,80 @@
 
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
-## Triagem da recuperação e uso pontual do Jev — 09/10
+## Continuação: evidência localizada antes do julgamento — 09/10
+
+Esta continuação parte de `0f857a215dfd6fd31e059c289e91bd95b9b2c99d`, na mesma branch isolada. Os resultados das etapas anteriores são históricos: não se somam percentuais nem se compara um corpus com outro como se fossem o mesmo teste. O trabalho principal continua sendo o gateway e o scan; o Sialia foi utilizado somente para testar recuperação, sem alterar sua aplicação.
+
+### Alterações
+
+1. **Diagnosticar a perda de candidatos.** `candidate_flow` conta proprietários nativos, candidatos hidratados e candidatos admitidos para decisão. `MUSTARD_SEARCH_TRACE=1` registra IDs/faixas/hashes e posição após expansão, sem enviar esse diagnóstico ao provedor ou à apresentação comum. A expansão de arquivos passa por novo ranqueamento antes do corte: uma declaração encontrada depois não fica simplesmente no fim da lista.
+2. **Indexar funções internas com escopo.** Consultas Tree-sitter incluem funções nomeadas internas em Python, Rust, TypeScript/JavaScript e C#, incluindo funções locais e variáveis com funções em TS. O scan registra o callable que as contém e impede ligações fora desse escopo nas linguagens que declaram essa regra em `languages.toml`. PHP conserva sua semântica global. Isso não resolve integralmente sombreamento, funções na mesma linha ou todas as formas de função anônima.
+3. **Pesquisar a intenção no código.** Pistas escritas raras recebem uma reserva no catálogo, dentro do inventário da ferramenta original. O binário usa os destinos do índice para executar uma busca complementar nativa; confirma os termos normalizados na fonte atual, cruza linhas com declarações e registra fatos com hash. Prefixos são somente pré-filtro. Há limites explícitos de 96 arquivos/12 MiB, com incompletude informada; a resposta nativa original permanece disponível. Não se pressupõe que todo código do projeto esteja indexado ou possa ser recuperado nessa exploração.
+4. **Preservar a área solicitada.** Em `spec` e `understand`, proprietários nativos cujo nome/caminho contém componentes escritos do padrão original têm prioridade de leitura. `CreateCharge` pode localizar `CreateChargeAsync` por componentes de identificador, sem aceitar uma substring arbitrária. O achado permanece na ordem mesmo quando a intenção usa verbos genéricos. Essa prioridade não cria identidade exata, recomendação, sinônimo ou certeza de comportamento. As demais finalidades conservam sua política de área anterior.
+5. **Jev somente para escolher entre evidências.** A interface `SymbolSelector` continua separando o domínio do provedor. `knowledge-choice-v5` exige suporte no próprio código para entrada, saída e restrições da pergunta; distingue `none`, evidência insuficiente e candidatos indistinguíveis. Não presume que a resposta esteja no conjunto. Identidade, busca nativa, aprendizado, painel e scan não ganham inferência paga de rotina. `choose:true` e a configuração do provedor continuam necessários no gateway. Os limiares de aceitação não foram alterados nem são tratados como calibração geral.
+
+Dois problemas adicionais apareceram no teste C#/React: nomes em minúsculas não encontravam componentes concatenados como `QuartzPayClient`, e documentos já escaneados podiam solicitar um scan completo por não possuírem símbolos. A normalização da fonte agora conserva componentes contíguos de identificadores, sem juntar palavras comuns da prosa; o índice lexical migra para a versão 3. A atualização reconhece documentos e arquivos sem declarações pelo hash atual. Fonte modificada ainda exige atualização. A cadeia também deixa de gastar outro corpo somente para repetir uma pista já coberta.
+
+### Método de validação
+
+`gateway-audit.mjs` separa os rótulos do pedido de busca e confere arquivo, nome, intervalo, referências visíveis e corpos realmente presentes na saída. Expõe ganhos e regressões; um JSON que contém um candidato não basta para dizer que o agente o recebeu. A seleção `repoqa-selection-quality-20261009.json` foi congelada antes das primeiras alterações, com dez descrições por repositório, quatro linguagens e pedidos lexicais fixos. Não é uma sessão autônoma de Claude nem a avaliação oficial do RepoQA. Depois da primeira execução, as repetições passaram a ser diagnóstico conhecido.
+
+Uma primeira estratégia de normalização de comprimento piorou os resultados: no diagnóstico conhecido, 31/40 passaram a 30/40; na seleção nova, houve 25/40 nos dois lados e 16,6% mais texto. Essa estratégia foi descartada. A versão mantida preserva a vantagem de funções curtas específicas e evita conceder a mesma vantagem a campos/tipos genéricos; não implementa um BM25 completo.
+
+Os resultados finais desta continuação e do teste Sialia constam no fechamento de validação abaixo. Não há prova de economia de tokens faturados, melhora do código implementado ou substituição universal de ferramentas de busca.
+
+### Jev: piloto real separado da recuperação
+
+Oito casos curtos com fonte, preparados antes das chamadas, tiveram 4/4 resultados corretos no grupo de desenvolvimento e 4/4 no grupo reservado: quatro escolhas, dois `none` e duas abstenções esperadas, sem escolha errada aceita. Foram oito chamadas, 8.014 tokens conhecidos e custo estimado de US$ 0,000336. Repetições usaram cache sem HTTP. É uma amostra construída pequena, sem generalização estatística.
+
+Nos oito pedidos públicos, a primeira versão teve quatro escolhas corretas, quatro abstenções e nenhuma errada aceita, com nove chamadas e 151.735 tokens conhecidos. A repetição depois das correções de recuperação manteve quatro escolhas corretas e quatro abstenções, sem escolha errada aceita: oito chamadas, 102.000 tokens conhecidos e US$ 0,004284 estimados. O alvo estava disponível em cinco dos oito conjuntos nativos; uma abstenção ainda deixou de selecionar um alvo disponível. A primeira posição correta passou de 1/8 na ordem nativa para 4/8 na escolha. As oito repetições reutilizaram o cache. O teste não enviou código do Sialia ao Jev.
+
+Somando os três pilotos executados nesta continuação: US$ 0,010993 estimados pela tarifa configurada. São recibos de uso e estimativas, não a fatura do provedor. As versões dos binários e hashes ficam nos relatórios; a última repetição paga antecede a ampliação final da prioridade de leitura de `spec`/`understand`. Essa ampliação não altera os critérios do Jev. Os princípios de perguntas atômicas, critérios que distinguem opções e estado compartilhado seguem a documentação de [Choice](https://docs.typesafe.ai/primitives/choice) e [State](https://docs.typesafe.ai/concepts/state).
+
+### Tarefa completa
+
+O preflight gratuito agora também executa o gateway real em duas tarefas JavaScript, localiza os arquivos e verifica preservação nativa/zero inferência. O avaliador pareado confere os recibos de ferramentas: uma execução Mustard com busca direta bem-sucedida conhecida fora do gateway, ou sem recibo que a esclareça, não vale como prova de roteamento. Programas arbitrários de shell ainda exigem revisão dos eventos. A sessão autônoma permanece pendente de autenticação/API e modelo fixo; o preflight não executou um modelo.
+
+### Teste Sialia: utilidade do prompt e lacunas
+
+Pergunta do usuário: “Validar se todo o fluxo da safe2pay está pronto e verificar a viabilidade de usar o assas”. Foi tratada como levantamento, interpretando o fornecedor pretendido como Asaas. A chamada inicial usou a intenção integral e o padrão `safe2pay|asaas|assas`, com `purpose:spec`, `choose:false`. Seis buscas complementares cobriram cobrança, webhook, assinatura, marketplace, contratos de provedor e frontend. Essas chamadas foram preparadas durante a investigação; não se afirma que o Claude as gerou automaticamente.
+
+O teste utilizou uma cópia descartável do Sialia principal em `810c7937081d7a3fd2a7db8332ec488dcaeb0635`, com backend no commit adicionado pelo usuário, `1ff44e04de2fe0d112f66eee89d38f8a902a7f4b`. A execução anterior com o submódulo remoto antigo não serve como comparação dessa versão. Nenhum código da aplicação foi alterado, nenhuma API de pagamento foi chamada e nenhum código do projeto foi enviado ao Jev. A descoberta de candidatos de teste não significa que esses testes tenham sido executados.
+
+| Medida do diagnóstico orientado à tarefa | Primeiro diagnóstico isolado | Versão final |
+| --- | ---: | ---: |
+| Pontos de código visíveis, entre 12 escolhidos durante a análise | 0/12 | 7/12 |
+| Corpos completos desses pontos na apresentação inicial | 0/12 | 1/12 |
+| Referências/corpos da área de pagamentos nas primeiras dez posições da busca inicial | 0/10 | 10/10 |
+| Bytes totais devolvidos nas sete buscas | 78.781 | 101.016 (+28,2%) |
+| Resultados originais preservados | 7/7 | 7/7 |
+| Chamadas a modelos | 0 | 0 |
+
+Os doze pontos foram identificados no código durante o diagnóstico e não entraram nos pedidos do gateway. São critérios conhecidos, sem percentual independente de acurácia. O primeiro diagnóstico usa o binário intermediário `revised-bin`, não o baseline `0f857` das baterias públicas. O ganho de relevância não comprova economia: aumentou a saída, e seis dos sete pontos localizados ainda exigem expansão para conferir sua implementação.
+
+O retorno final localiza criação/cancelamento de cobrança, filtro de assinatura de webhook, criação de assinatura, contrato de provedor, um acoplamento da sincronização de contratos e descritor de frontend. Ainda não expõe nesse pacote os cinco pontos restantes: consulta de estado, tokenização, processamento de negócio do webhook, desativação de subconta e roteamento de provedor. Eles exigem buscas mais dirigidas; a resposta nativa original continua disponível. Logo, a pergunta é um ponto de partida útil, mas **o pacote atual não é suficiente para declarar todo o fluxo pronto nem para elaborar sozinho uma migração de provedor**.
+
+Artefatos locais: `target/search-quality-20261009/sialia/requests.json`, `assessment-labels.json`, `assessment.json` e `survey/comparison.json`. O avaliador verifica nomes/faixas/hash e a apresentação efetivamente entregue. Tempos são exploratórios: caches, estado do índice e outras execuções simultâneas diferiram; não há percentual causal de aceleração.
+
+### Recuperação nas baterias públicas
+
+No diagnóstico conhecido, **31/40 → 33/40** declarações visíveis (77,5% → 82,5%, +5 pontos percentuais), com dois ganhos e nenhuma regressão. Corpos completos permaneceram em 25/40. Bytes **468.951 → 436.489 (−6,9%)**; recall nas primeiras cinco posições 60% → 62,5%, e nas primeiras dez 67,5% → 70%. O resultado original foi conservado em 40/40 casos, com zero modelos. Tempos agregados foram 176,6 s → 229,8 s, sob condições exploratórias e baseline reutilizado. Relatórios em `target/search-quality-20261009/final-diagnostic/`.
+
+A primeira execução da seleção nova não melhorou a cobertura e aumentou o texto, conforme registrado acima. Depois de inspecioná-la, a repetição final passou a ser um teste conhecido: **25/40 → 25/40** declarações visíveis (62,5% nos dois lados), corpos completos **16 → 17**, bytes **471.370 → 434.019 (−7,9%)**. Houve **dois ganhos e duas regressões**, não preservação de todos os acertos anteriores. Recall nas primeiras cinco posições foi 40% → 42,5%; nas primeiras dez, 47,5% → 45%. `_display_complete_info` do Poetry e `handleTriangle` do Three.js são perdas que permanecem no relatório. O resultado nativo original foi conservado em 40/40 casos; zero chamadas a modelos.
+
+Os tempos dessa repetição foram maiores: 155,3 s agregados no baseline reutilizado e 201,9 s no atual. Cache, concorrência e estado de execução não foram controlados para uma comparação de latência; os números não provam o tamanho da penalidade, mas também não sustentam prometer uma busca mais rápida. A versão final ainda precisa de uma nova amostra não inspecionada e de sessões completas para demonstrar ganho geral.
+
+Relatórios: `target/search-quality-20261009/fresh/` registra a primeira execução nova; `final-recheck/` registra a repetição conhecida, com `comparison.json`, `audit.json`, fontes identificadas por hash e a apresentação de cada caso. As respostas esperadas não foram fornecidas ao gateway ou ao Jev.
+
+### Regressão Florestal e verificações locais
+
+O replay de oito buscas foi repetido com o binário baseline congelado em uma nova cópia do mesmo commit do backend e configuração nativa equivalente. Ambos localizaram 7/8 pontos exigidos; corpos completos passaram de 1/8 para 2/8. A saída caiu de 49.343 para 48.810 bytes (−1,1%). `processPlanBackground` continua ausente nesse pacote e requer consulta dirigida. Os 356 números de linha completos conferidos na nova saída não significam que toda a tarefa tenha sido coberta. As quatro buscas de preservação nativa da suíte de responsabilidade também passaram, sem Jev.
+
+Foram aprovados 3.958 testes da suíte Rust, o teste unitário adicional de componentes literais de identificador, Clippy sem avisos, os 16 testes do SDK Mods e a validação do plugin. O preflight de tarefa completa continuou gratuito. A aceitação a partir de uma pasta vazia passou com o `mustard init` e os binários desta cópia: atualização nativa, aprendizado, hashes, fallback, paginação, encaminhamento clássico e zero HTTP/modelos.
+
+Uma execução anterior da aceitação, durante testes simultâneos, encontrou `database is locked` na gravação de fatos, que usa espera curta. A repetição passou. O fallback conserva a pesquisa, mas o aprendizado pode ficar sem gravação quando há disputa; não há garantia de persistência imediata sob concorrência. A falha está preservada em `target/quality-native-survey.log`, e o resultado da repetição em `quality-native-survey-retry.log`. Não se atribui uma causa específica ao processo concorrente sem rastreamento de locks.
+
+## Histórico: triagem da recuperação e uso pontual do Jev — 09/10
 
 Esta etapa compara o código com o commit `7c72ceaedab4a3e361c3bedbf9184600545aa70c`. As alterações anteriores permanecem abaixo como histórico; seus percentuais não devem ser somados aos desta etapa.
 

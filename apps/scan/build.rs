@@ -121,6 +121,7 @@ fn main() {
     // objeto. OPCIONAL: sem o campo, `false`.
     let mut implicit_table = String::new();
     implicit_table.push_str("pub(crate) static LANG_IMPLICIT_SELF: &[(&str, bool)] = &[\n");
+    let mut lexical_table=String::from("pub(crate) static LANG_LEXICAL_FUNCTIONS: &[(&str, bool)] = &[\n");
 
     // (name, single_part_paths) — se o import não relativo de uma parte só
     // pode nomear um arquivo do projeto. OPCIONAL: sem o campo, `false`.
@@ -262,6 +263,7 @@ fn main() {
             .get("implicit_self")
             .map(|v| v.as_bool().expect("language.implicit_self must be true or false"))
             .unwrap_or(false);
+        let lexical_functions=tbl.get("lexical_functions").map(|v|v.as_bool().expect("language.lexical_functions must be true or false")).unwrap_or(false);
         let single_part_paths = tbl
             .get("single_part_paths")
             .map(|v| v.as_bool().expect("language.single_part_paths must be true or false"))
@@ -357,6 +359,7 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(implicit_table, "    ({name:?}, {implicit_self}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(lexical_table,"    ({name:?}, {lexical_functions}),").expect("generated String");
         writeln!(single_part_table, "    ({name:?}, {single_part_paths}),")
             .expect("the generated table is a String, which never fails to write");
         writeln!(global_namespace_table, "    ({name:?}, {global_namespace}),")
@@ -401,6 +404,7 @@ fn main() {
         &mut member_table,
         &mut self_table,
         &mut implicit_table,
+        &mut lexical_table,
         &mut single_part_table,
         &mut global_namespace_table,
         &mut family_table,

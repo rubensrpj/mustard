@@ -19,7 +19,7 @@ use crate::platform::error::{Error, Result};
 
 pub(crate) const BLOCK: Block = Block {
     name: "knowledge_index",
-    version: 2,
+    version: 3,
     tables: &["knowledge_fts", "knowledge_links", "knowledge_symbols", "knowledge_files", "knowledge_meta", "knowledge_resource_refs", "knowledge_ref_issues"],
     schema: "CREATE TABLE knowledge_symbols(id TEXT PRIMARY KEY,path TEXT NOT NULL,name TEXT NOT NULL,line INTEGER NOT NULL,end_line INTEGER NOT NULL,sha256 TEXT NOT NULL,position INTEGER NOT NULL);\
         CREATE INDEX knowledge_by_path ON knowledge_symbols(path,line);\
@@ -41,7 +41,7 @@ fn initialize(conn: &Connection, root: &Path) -> Result<()> {
 }
 
 fn words(normalizer: &mut Normalizer, text: &str) -> String {
-    normalizer.forms(text).into_iter().flatten().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" ")
+    normalizer.written_forms(text).into_iter().collect::<Vec<_>>().join(" ")
 }
 
 /// Runs in the source transaction. Unchanged files retain their index rows.
@@ -153,6 +153,13 @@ pub(super) fn scoped_candidates(root: &Path, options: &Query<'_>, scope: &super:
         add_ids(conn, "SELECT id FROM knowledge_symbols WHERE id=?1 AND path IN (SELECT value FROM json_each(?2))", params![id, inventory], &mut ids, 512, &mut omitted)?;
     } else {
         let terms = query_terms(options.text, &Languages::of_project(root));
+        // A long question's common words must not consume the reservoir before
+        // its rare, written clues contribute. Each clue remains scoped by the
+        // original native inventory; no project glossary or guessed synonyms.
+        for (_,expression,_) in scoped_clues(conn,&terms,&inventory,total).map_err(unreadable)? {
+            add_ids(conn,"SELECT s.id FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path IN (SELECT value FROM json_each(?2)) ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.path,s.line LIMIT 12",
+                params![expression,inventory],&mut ids,512,&mut omitted)?;
+        }
         for join in ["AND", "OR"] {
             let expression = fts_query(&terms, join);
             if !expression.is_empty() {
@@ -176,6 +183,39 @@ pub(super) fn unindexed_files(root: &Path, scope: &super::EvidenceScope<'_>) -> 
     let inventory=serde_json::to_string(scope.files).map_err(|e|super::invalid(e.to_string()))?;
     let mut statement=db.conn().prepare("SELECT value FROM json_each(?1) WHERE NOT EXISTS(SELECT 1 FROM knowledge_symbols s WHERE s.path=value) ORDER BY value").map_err(|e|unreadable(e.into()))?;
     statement.query_map([inventory],|row|row.get(0)).map_err(|e|unreadable(e.into()))?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|unreadable(e.into()))
+}
+
+/// The same scoped frequency calculation drives hydration and native probes.
+/// A clue's frequency locates evidence; it does not prove its responsibility.
+fn scoped_clues(conn:&Connection,terms:&[Vec<String>],inventory:&str,total:i64)->Result<Vec<(i64,String,Vec<String>)>> {
+    let mut statement=conn.prepare("SELECT count(*) FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path IN (SELECT value FROM json_each(?2))")?;
+    let mut rare=Vec::new();let mut seen_expressions=BTreeSet::new();
+    for slot in terms {
+        let expression=fts_query(std::slice::from_ref(slot),"OR");
+        if expression.is_empty() || !seen_expressions.insert(expression.clone()){continue;}
+        let seen:i64=statement.query_row(params![expression,inventory],|r|r.get(0))?;
+        if seen>0 && seen*2<=total {rare.push((seen,expression,slot.clone()));}
+    }
+    rare.sort();rare.truncate(8);Ok(rare)
+}
+
+/// Native probe destinations derived from the question's written, rare clues.
+/// FTS only chooses destinations; current source must substantiate every hit.
+pub(crate) fn discovery_probe(root:&Path,question:&str,files:&BTreeSet<String>)->std::result::Result<(Vec<String>,Vec<String>),MapRefusal> {
+    let db=store::open_existing(&store::model_path(root))?;let conn=db.conn();
+    let inventory=serde_json::to_string(files).map_err(|e|super::invalid(e.to_string()))?;
+    let total:i64=conn.query_row("SELECT count(*) FROM knowledge_symbols WHERE path IN (SELECT value FROM json_each(?1))",[&inventory],|r|r.get(0)).map_err(|e|unreadable(e.into()))?;
+    let terms=query_terms(question,&Languages::of_project(root));
+    let rare=scoped_clues(conn,&terms,&inventory,total).map_err(unreadable)?;
+    let mut clues=BTreeSet::new();let mut paths=Vec::new();let mut seen=BTreeSet::new();
+    for (_,expression,slot) in rare {
+        clues.extend(slot.into_iter().filter(|form|form.chars().count()>=3).map(|form|form.chars().take(3).collect::<String>()));
+        let mut statement=conn.prepare("SELECT s.path FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path IN (SELECT value FROM json_each(?2)) ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.path,s.line").map_err(|e|unreadable(e.into()))?;
+        let rows=statement.query_map(params![expression,inventory],|r|r.get::<_,String>(0)).map_err(|e|unreadable(e.into()))?;
+        for path in rows {let path=path.map_err(|e|unreadable(e.into()))?;if seen.insert(path.clone()){paths.push(path);}}
+    }
+    for path in unindexed_files(root,&super::EvidenceScope{files,seeds:&[]})? {if seen.insert(path.clone()){paths.push(path);}}
+    Ok((clues.into_iter().collect(),paths))
 }
 
 pub(super) fn intent_weights(root: &Path, query: &str, languages: &Languages) -> std::result::Result<Vec<f64>, MapRefusal> {

@@ -680,7 +680,15 @@ fn resolve_declaration_links(
                 Before::Nothing => renamed(&brought_from, &site.name).unwrap_or(&site.name),
                 _ => site.name.as_str(),
             };
-            let Some(all) = by_name.get(looked) else { continue };
+            let Some(named) = by_name.get(looked) else { continue };
+            // A named local declaration is visible only within its enclosing
+            // callable. Indexing it must not manufacture cross-scope edges.
+            let visible:Vec<_>=named.iter().copied().filter(|&(mi,di)| {
+                let scope=&modules[mi].declarations[di].syntax["lexical_scope"];
+                !crate::extract::lexical_functions(&modules[mi].language) || scope.is_null() || (mi==src && scope["line"].as_u64().is_some_and(|line|line<=site.line as u64)
+                    && scope["end_line"].as_u64().is_some_and(|line|site.line as u64<=line))
+            }).collect();
+            let all=&visible;
             // O membro escrito sozinho, dentro da desestruturação de um
             // objeto (`const { total } = pedido`), é lido do objeto e não do
             // próprio tipo: vale como o membro escrito depois de um nome que
@@ -695,7 +703,8 @@ fn resolve_declaration_links(
                 Before::Nothing => all
                     .iter()
                     .copied()
-                    .filter(|&(mi, di)| mi == src && modules[mi].declarations[di].owner.is_empty())
+                    .filter(|&(mi, di)| mi == src && (modules[mi].declarations[di].owner.is_empty()
+                        || modules[mi].declarations[di].syntax.get("lexical_scope").is_some()))
                     .collect(),
                 _ => Vec::new(),
             };

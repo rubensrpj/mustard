@@ -14,6 +14,7 @@ mod chain;
 mod quality;
 mod scope;
 mod task;
+mod discovery;
 mod task_view;
 
 pub struct Answer {

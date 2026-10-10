@@ -52,8 +52,9 @@
 ; child of a class body's `block`. A node has one parent, so the two patterns
 ; are mutually exclusive and the recorded kind never depends on match order —
 ; the hazard that once justified recording every def as @definition.function.
-; A function nested inside another function is neither: a local closure is not
-; an architectural unit.
+; Named local functions also need their own searchable ranges. The general
+; fallback below follows these context-specific patterns, so methods keep
+; their kind regardless of query match order.
 (module (function_definition name: (identifier) @name) @definition.function)
 (class_definition
   body: (block (function_definition name: (identifier) @name) @definition.method))
@@ -110,6 +111,14 @@
 ; declaration it adorns: the engine passes over it to find the comment above
 ; and reads no call out of it.
 (decorator) @decoration
+
+; General fallback includes named functions inside functions and control-flow
+; blocks. Earlier method patterns retain precedence; declarations are deduped
+; by node/name. Lexical containment is recorded by the shared extractor.
+(function_definition name: (identifier) @name) @definition.function
+(function_definition
+  name: (identifier) @name
+  body: (block . (expression_statement (string (string_content) @doc)))) @definition.function
 
 ; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
 ; declaração, o mesmo nome escrito sozinho é deles.

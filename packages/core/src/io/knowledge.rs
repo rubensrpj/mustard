@@ -559,6 +559,12 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let task_candidates:Vec<_>=if scope.is_some() {
         ranking.iter().copied().filter(|&i|current(tree,&cards[i].source,&mut hashes)).take(24).map(|i|cards[i].clone()).collect()
     }else{Vec::new()};
+    let rank_trace=if scope.is_some() && std::env::var_os("MUSTARD_SEARCH_TRACE").is_some_and(|value|value=="1") {
+        Some(cards.iter().enumerate().map(|(i,card)|json!({"id":card.id,"source":card.source,
+            "rank":ranking.iter().position(|ranked|*ranked==i).map(|at|at+1),
+            "source_current":current(tree,&card.source,&mut hashes),
+            "decision_retained":task_candidates.iter().any(|candidate|candidate.id==card.id)})).collect::<Vec<_>>())
+    }else{None};
     for i in ranking.into_iter().filter(|i| file.is_none_or(|file| cards[*i].source.file == file)) {
         if selected.len() >= seed_limit {
             break;
@@ -706,7 +712,14 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         report["investigation"]=native.report;
         report["retrieval_method"]=json!("native-index-and-current-source");
     }
-    if scope.is_some() {report["task_candidates"]=json!(task_candidates);}
+    if let Some(scope)=scope {
+        report["candidate_flow"]=json!({"native_owners":scope.seeds.len(),"hydrated_candidates":cards.len(),
+            "decision_candidates":task_candidates.len(),"decision_candidates_before_presentation":true,
+            "native_owners_in_decision":task_candidates.iter().filter(|card|scope.seeds.contains(&card.id)).count(),
+            "meaning":"Stage counts describe retrieval and source admission, not semantic correctness."});
+        report["task_candidates"]=json!(task_candidates);
+        if let Some(trace)=rank_trace {report["retrieval_trace"]=json!({"method":"explicit MUSTARD_SEARCH_TRACE=1; metadata only; absent rank does not establish absence in source","candidates":trace});}
+    }
     Ok((report,map))
 }
 

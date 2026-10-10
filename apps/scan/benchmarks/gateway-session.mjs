@@ -33,12 +33,16 @@ const tasks=[
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'mustard-session-pair-'));
 const env={...process.env,MUSTARD_RT_DELEGATED:'1',PATH:bin+path.delimiter+process.env.PATH};
 for(const key of ['TYPESAFE_API_KEY','MUSTARD_JEV_URL','CLAUDE_PLUGIN_ROOT','CLAUDE_PROJECT_DIR','MUSTARD_WORKSPACE_ROOT','MUSTARD_ACTIVE_SPEC'])delete env[key];
-const rows=[];
+const rows=[],gatewayPreflight=[];
 function create(root){fs.mkdirSync(root,{recursive:true});for(const [file,text] of Object.entries(fixture)){fs.mkdirSync(path.dirname(path.join(root,file)),{recursive:true});fs.writeFileSync(path.join(root,file),text);}}
 function grade(root,task){const r=cp.spawnSync(process.execPath,['--input-type=module','-e',`import assert from 'node:assert/strict';import path from 'node:path';import {pathToFileURL} from 'node:url';const root=process.env.FIXTURE_ROOT;${task.grade}`],{cwd:temp,env:{...env,FIXTURE_ROOT:root},timeout:10000});return {passed:r.status===0,error:r.status===0?null:r.stderr.toString().slice(0,3000)};}
 function metrics(events){
   const result=events.filter(e=>e.type==='result').at(-1);
   const tools=events.filter(e=>e.type==='assistant').flatMap(e=>e.message?.content||[]).filter(b=>b.type==='tool_use');
+  const receipts=new Map(events.flatMap(e=>e.type==='user'?(e.message?.content||[]):[]).filter(b=>b.type==='tool_result').map(b=>[b.tool_use_id,b]));
+  const codeSearch=t=>['Read','Grep','Glob'].includes(t.name)||t.name==='Bash'&&/(^|[\s;|&])(rg|grep|git\s+grep|find|cat|sed|awk|head|tail)(\s|$)/.test(t.input?.command||'');
+  const direct=tools.filter(codeSearch),bypassed=direct.filter(t=>receipts.has(t.id)&&receipts.get(t.id).is_error!==true);
+  const unknown=direct.filter(t=>!receipts.has(t.id));
   const read=tools.filter(t=>t.name==='Read'||t.name==='mcp__mustard__search'&&t.input?.request?.tool==='Read');
   const names=new Map();let repeated=0;
   for(const t of read){const key=JSON.stringify(t.input?.request?.input||t.input);if(names.has(key))repeated++;names.set(key,true);}
@@ -46,11 +50,22 @@ function metrics(events){
     estimated_cost_usd:result?.total_cost_usd??null,model_usage:result?.modelUsage??null,
     tool_calls:tools.length,read_calls:read.length,repeated_identical_reads:repeated,
     gateway_calls:tools.filter(t=>t.name==='mcp__mustard__search').length,
+    successful_direct_searches:bypassed.map(t=>({name:t.name,id:t.id})),unresolved_direct_search_receipts:unknown.length,
+    gateway_routing_verified:bypassed.length===0&&unknown.length===0,
     limitations:'Tool counts describe model-issued calls; internal native calls and overlapping read ranges are not inferred. Client cost is an estimate.'};
 }
 try{
   for(const [at,task] of tasks.entries()){
     const dry=path.join(temp,task.id+'-grader');create(dry);assert.equal(grade(dry,task).passed,false,'Original must fail the independent behavior checks');
+    fs.writeFileSync(path.join(dry,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:false,vectors:false},search:{filter:'none'}}));
+    const scan=cp.spawnSync(path.join(bin,'scan'),['scan',dry,'--native','--out',path.join(dry,'.claude/grain.db'),'--json'],{cwd:dry,env});assert.equal(scan.status,0,scan.stderr.toString());
+    const request={schema_version:1,request:{tool:'rg',input:{args:['--sort=path','-n','--with-filename','download|cancel|input|csv','src']},intent:task.prompt,purpose:'implement',choose:false}};
+    const searchArgs=['run','search','--root',dry,'--request',JSON.stringify(request)];
+    const query=cp.spawnSync(path.join(bin,'mustard-rt'),searchArgs,{cwd:dry,env,maxBuffer:16*1024*1024});assert.equal(query.status,0,query.stderr.toString());
+    const report=JSON.parse(query.stdout);assert.equal(report.remote_model_calls,0);assert.equal(report.native_result_preserved,true);
+    assert.ok(report.task_context?.cards?.some(c=>c.source.file===task.file),'Gateway preflight did not locate the task file');
+    const delivered=cp.spawnSync(path.join(bin,'mustard-rt'),[...searchArgs,'--shell-output'],{cwd:dry,env,maxBuffer:16*1024*1024});assert.equal(delivered.status,0,delivered.stderr.toString());
+    gatewayPreflight.push({task:task.id,source_file_located:true,native_result_preserved:true,remote_model_calls:0,agent_view_bytes:delivered.stdout.length,host_model_ran:false});
     fs.writeFileSync(path.join(dry,task.file),task.reference);assert.equal(grade(dry,task).passed,true,'Reference must satisfy behavior checks');
     if(!execute)continue;
     for(const arm of at%2?['mustard','baseline']:['baseline','mustard']){
@@ -68,7 +83,7 @@ try{
       const r=cp.spawnSync('claude',argv,{cwd:root,env:childEnv,stdio:['ignore',stream,errors],timeout:20*60*1000});fs.closeSync(stream);fs.closeSync(errors);
       const events=fs.readFileSync(path.join(armOut,'events.jsonl'),'utf8').split('\n').filter(Boolean).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
       const measured=metrics(events),grading=grade(root,task);
-      const valid=r.status===0&&measured.result_received&&measured.host_success&&(arm!=='mustard'||measured.gateway_calls>0);
+      const valid=r.status===0&&measured.result_received&&measured.host_success&&(arm!=='mustard'||measured.gateway_calls>0&&measured.gateway_routing_verified);
       rows.push({task:task.id,arm,model,prompt_sha256:crypto.createHash('sha256').update(task.prompt).digest('hex'),exit_code:r.status,ms:performance.now()-start,
         valid_host_run:valid,grading,...measured});
       fs.cpSync(path.join(root,'src'),path.join(armOut,'source'),{recursive:true});
@@ -86,8 +101,9 @@ try{
       estimated_cost_reduction_percent:valid?reduction(baseline.estimated_cost_usd,mustard.estimated_cost_usd):null,
       tool_call_reduction_percent:valid?reduction(baseline.tool_calls,mustard.tool_calls):null};
   });
-  const result={executed:execute,grader_self_checks:true,rows,pairs,whole_session_savings:null,
+  const result={executed:execute,grader_self_checks:true,gateway_preflight:gatewayPreflight,rows,pairs,whole_session_savings:null,
+    host_execution_pending:!execute,host_execution_requirement:!execute?'Explicit ANTHROPIC_API_KEY and pinned full model ID for --bare paired runs':null,
     interpretation:execute?'Compare tokens including cache categories and behavior success per paired task. No generic savings percentage is inferred.':'Free preflight passed. Real paired sessions are pending; no model tokens, costs or success measured.',
-    limits:['Two authored JavaScript tasks; not a broad coding benchmark.','Bare API runs differ from subscription interactive sessions.','Mustard arm is invalid unless the registered gateway was actually called.','Jev disabled in both arms to isolate deterministic gateway overhead; its paid responsibility pilot is separate.']};
+    limits:['Two authored JavaScript tasks; not a broad coding benchmark.','Bare API runs differ from subscription interactive sessions.','Mustard arm is invalid unless the gateway was called and known successful direct searches are absent.','Shell bypass detection covers named search programs; arbitrary programs require manual event review.','Jev disabled in both arms to isolate deterministic gateway overhead; its paid responsibility pilot is separate.']};
   fs.writeFileSync(path.join(out,'comparison.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
 }finally{fs.rmSync(temp,{recursive:true,force:true});}

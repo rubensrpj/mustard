@@ -69,6 +69,7 @@ pub(super) fn investigate(
         }
         follow_up = json!({"operation":"file-discovery-to-native-content","occurrences_crossed":hits.len(),"source_bytes":found.stdout.len(),"native_original_preserved":true});
     }
+    let complementary=super::discovery::probe(root,tree,request,&scope,&mut seeds);
     let opts = Query {
         text: if scope.clues.trim().is_empty() {
             &request.intent
@@ -99,6 +100,7 @@ pub(super) fn investigate(
         },
     )
     .map_err(|e| format!("{e:?}"))?;
+    report["complementary_discovery"]=complementary;
     if !knowledge::generation(root).is_ok_and(|now| now == generation) {
         return Err("task-scan-changed-during-discovery".into());
     }

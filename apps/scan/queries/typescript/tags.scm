@@ -174,6 +174,9 @@
 ; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
 ; declaração, o mesmo nome escrito sozinho é deles.
 (variable_declarator name: (identifier) @local)
+; Named callable values inside functions also have addressable source ranges.
+; Earlier top-level declarations retain their established kinds.
+(variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @definition.function
 (object_pattern (shorthand_property_identifier_pattern) @local)
 (object_assignment_pattern left: (shorthand_property_identifier_pattern) @local)
 (pair_pattern value: (identifier) @local)

@@ -1,0 +1,61 @@
+{
+  "method": "Eight authored source-backed adversarial cases, frozen before calls. Four development and four reserved; unchanged acceptance thresholds. Absent behavior and indistinguishable alternatives are intentional. Not general calibration.",
+  "cases": [
+    {
+      "id": "csv-delivery",
+      "split": "calibration",
+      "source": "export function buildCsv(rows: string[]) { return rows.join(\",\"); }\nexport function deliverCsv(rows: string[], response: any) { response.write(rows.join(\",\")); response.end(); }\n",
+      "intent": "Which function directly writes the CSV rows into the HTTP response and completes that response, rather than returning a string?",
+      "expected": "deliverCsv"
+    },
+    {
+      "id": "copy-without-write",
+      "split": "calibration",
+      "source": "export function replaceRows(store: any, rows: number[]) { store.rows=rows; return store; }\nexport function copyRows(rows: number[]) { return rows.slice(); }\n",
+      "intent": "Which function returns a copy of the rows array without updating a store?",
+      "expected": "copyRows"
+    },
+    {
+      "id": "absent-escaping",
+      "split": "calibration",
+      "source": "export function csvJoin(rows: string[]) { return rows.join(\",\"); }\nexport function csvLines(rows: string[]) { return rows.join(\"\\n\"); }\n",
+      "intent": "Which CSV function escapes embedded double quotes and wraps values containing commas? Joining rows without escaping does not satisfy this requirement.",
+      "expected": "none"
+    },
+    {
+      "id": "identical-serializers",
+      "split": "calibration",
+      "source": "export function csvAlpha(rows: string[]) { return rows.join(\",\"); }\nexport function csvBeta(rows: string[]) { return rows.join(\",\"); }\n",
+      "intent": "Which function should be uniquely selected to turn the rows into a comma-separated string? There is no caller or route information distinguishing the alternatives.",
+      "expected": "abstain"
+    },
+    {
+      "id": "reject-empty",
+      "split": "holdout",
+      "source": "export function validateRows(rows: string[]) { if(rows.length===0) throw new Error(\"empty rows\"); return rows; }\nexport function normalizeRows(rows: string[]) { return rows.map(value=>value.trim()); }\n",
+      "intent": "Which function rejects an empty rows array with an exception and otherwise returns the original rows unchanged?",
+      "expected": "validateRows"
+    },
+    {
+      "id": "download-current",
+      "split": "holdout",
+      "source": "export function originalRows(plan: any) { return plan.original.rows; }\nexport function currentRows(plan: any) { return plan.rows; }\n",
+      "intent": "Which function returns the current plan rows rather than the original plan rows?",
+      "expected": "currentRows"
+    },
+    {
+      "id": "absent-ordering",
+      "split": "holdout",
+      "source": "export function formatRows(rows: string[]) { return rows.join(\",\"); }\nexport function copyRows(rows: string[]) { return rows.slice(); }\n",
+      "intent": "Which rows function sorts the rows alphabetically before returning them? Neither merely copying nor formatting the rows counts as sorting.",
+      "expected": "none"
+    },
+    {
+      "id": "unseen-persistence",
+      "split": "holdout",
+      "source": "export function persistAlpha(store: any, rows: any[]) { return store.persistAlpha(rows); }\nexport function persistBeta(store: any, rows: any[]) { return store.persistBeta(rows); }\n",
+      "intent": "Which function guarantees that persisting rows uses an atomic database transaction and rolls it back on failure? The implementations of the store methods are not supplied.",
+      "expected": "abstain"
+    }
+  ]
+}

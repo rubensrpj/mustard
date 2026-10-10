@@ -1,0 +1,26 @@
+{
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "method": "Frozen before changes: first alphabetically unused repository per language with <=500 files and <=4MiB UTF-8 source; all ten descriptions. Larger eligibility bounds declared before results; no labels in requests.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "python-poetry/poetry",
+      "commit": "21ffd99274d299bd6d2b7b0cdd7ba273fdd941be"
+    },
+    {
+      "language": "typescript",
+      "repo": "mrdoob/three.js",
+      "commit": "df4fb14945c896fdf628981dde31b31ef7e2e0cc"
+    },
+    {
+      "language": "rust",
+      "repo": "rust-bakery/nom",
+      "commit": "e87c7da9fa2ddb943306369f6c6d9e914256edbc"
+    },
+    {
+      "language": "go",
+      "repo": "projectdiscovery/nuclei",
+      "commit": "3dfcec0a36dbf5ebc529ce0478076279cb975b71"
+    }
+  ]
+}

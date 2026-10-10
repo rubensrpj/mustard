@@ -20,7 +20,7 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
     let mut steps = Vec::new();
     let mut appended = 0;
     let names=crate::domain::code_search::pattern_names(intent);
-    let covered:BTreeSet<_>=items.iter().filter(|item|item["initial_source_excerpt"]==true)
+    let mut covered:BTreeSet<_>=items.iter().filter(|item|item["initial_source_excerpt"]==true)
         .flat_map(|item|matcher.matched(item["source_excerpt"]["text"].as_str().unwrap_or_default())).collect();
     for card in candidates.iter().filter(|c| files.contains(&c.source.file)) {
         if steps.len()>=8 {break;}
@@ -40,7 +40,8 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
             "meaning":"single written call line and declared signature/types; arguments may continue; not proven values or persistence effects"}));
         let excerpt = investigation::current_excerpt(card, &text, matcher, purpose);
         let written=format!("{} {} {}",card.signature,card.documentation,excerpt["text"].as_str().unwrap_or_default());
-        let introduces_clue=matcher.matched(&written).iter().any(|slot|!covered.contains(slot));
+        let written_slots=matcher.matched(&written);
+        let introduces_clue=written_slots.iter().any(|slot|!covered.contains(slot));
         let expand=appended<2 && (names.iter().any(|name|name==&card.name) || introduces_clue);
         if visible.contains(&card.id) {
             if let Some(item)=items.iter_mut().find(|item|item["id"]==card.id) {
@@ -48,6 +49,7 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
                 if expand && item["initial_source_excerpt"]!=true {
                     item["initial_source_excerpt"]=json!(true);item["source_excerpt"]=excerpt;
                     item["follow_up_reason"]=json!("dependency-adds-written-question-evidence");appended+=1;
+                    covered.extend(written_slots);
                 }
             }
             continue;
@@ -62,6 +64,7 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
         item["tests"] = json!(card.tests);
         items.push(item);
         appended += usize::from(expand);
+        if expand {covered.extend(written_slots);}
     }
     let mut tests = Vec::new();
     let mut checked = BTreeSet::new();

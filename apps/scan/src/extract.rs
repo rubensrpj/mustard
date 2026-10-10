@@ -271,6 +271,12 @@ pub fn implicit_self(lang: &str) -> bool {
     LANG_IMPLICIT_SELF.iter().any(|&(name, on)| name == lang && on)
 }
 
+/// Named functions contained in callables bind within that lexical scope.
+/// Undeclared language semantics remain unknown instead of assuming locality.
+pub fn lexical_functions(lang:&str)->bool {
+    LANG_LEXICAL_FUNCTIONS.iter().any(|&(name,on)|name==lang && on)
+}
+
 /// O arquivo que não declara namespace fica à vista dos arquivos da mesma
 /// família no mesmo projeto (`global_namespace` em languages.toml). `false`
 /// sem o campo.
@@ -1312,6 +1318,19 @@ fn owners_in_file(decls: &mut [Decl]) {
             }
         }
         decl.owner = owners;
+    }
+    // Local functions are search resources too. Keep their enclosing callable
+    // as source evidence, independently of the programming-language grammar.
+    let scopes:Vec<_>=decls.iter().map(|decl|decls.iter().filter(|outer|
+        matches!(outer.kind.as_str(),"function"|"method"|"procedure"|"constructor")
+        && outer.line<decl.line && decl.end_line<=outer.end_line)
+        .min_by_key(|outer|outer.end_line-outer.line)
+        .map(|outer|serde_json::json!({"name":outer.name,"line":outer.line,"end_line":outer.end_line}))).collect();
+    for (decl,scope) in decls.iter_mut().zip(scopes) {
+        if let Some(scope)=scope {
+            if !decl.syntax.is_object(){decl.syntax=serde_json::json!({});}
+            decl.syntax["lexical_scope"]=scope;
+        }
     }
 }
 

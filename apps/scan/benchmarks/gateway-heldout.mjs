@@ -20,7 +20,7 @@ if(previous){
  assert.equal(previous.rows.filter(r=>r.version==='baseline').length,selection.repositories.length*10);
 }
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'mustard-heldout-'));fs.mkdirSync(out,{recursive:true});
-const env={...process.env,MUSTARD_RT_DELEGATED:'1',CLAUDE_CONFIG_DIR:path.join(temp,'host'),MUSTARD_SPEND_DIR:path.join(temp,'usage')};
+const env={...process.env,MUSTARD_RT_DELEGATED:'1',MUSTARD_SEARCH_TRACE:'1',CLAUDE_CONFIG_DIR:path.join(temp,'host'),MUSTARD_SPEND_DIR:path.join(temp,'usage')};
 for(const key of ['TYPESAFE_API_KEY','MUSTARD_JEV_URL','CLAUDE_PLUGIN_ROOT','MUSTARD_ACTIVE_SPEC'])delete env[key];
 function run(program,args,root){const start=performance.now();const r=cp.spawnSync(program,args,{cwd:root,env,maxBuffer:32*1024*1024,timeout:60000});assert.ok([0,1].includes(r.status),r.stderr.toString());return {bytes:r.stdout,ms:performance.now()-start};}
 const rows=previous?previous.rows.filter(r=>r.version==='baseline'):[];

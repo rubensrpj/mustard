@@ -6,6 +6,127 @@ use mustard_core::io::code_search;
 use serde_json::json;
 
 #[test]
+fn an_area_survey_keeps_the_native_named_area_before_unrelated_validation_verbs() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
+    std::fs::create_dir(root.join("QuartzPay")).unwrap();
+    std::fs::write(root.join("QuartzPay/service.cs"),"class QuartzPayClient {\n public void Create() {}\n}\n").unwrap();
+    std::fs::write(root.join("unrelated.cs"),"class PasswordService { public bool ValidatePassword() { return true; } }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","-i","quartzpay|absentvendor","."]}),intent:"Validar todo o fluxo do quartzpay e a viabilidade de outro provedor".into(),purpose:Purpose::Spec,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();let ctx=&answer.report["task_context"];
+    assert!(ctx["cards"][0]["source"]["file"].as_str().unwrap().starts_with("QuartzPay/"),"{ctx}");
+    assert_eq!(ctx["recommended_symbols"],json!([]));assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+}
+
+#[test]
+fn an_area_survey_keeps_named_native_functions_when_intent_uses_generic_verbs() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("provider.cs"),"class Provider {\n public void CreateChargeAsync() {}\n public void CancelChargeAsync() {}\n public void DischargeAsync() {}\n}\n").unwrap();
+    std::fs::write(root.join("unrelated.cs"),"class PasswordService { public bool ValidatePassword() { return true; } }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","CreateCharge|CancelCharge","."]}),intent:"validate readiness".into(),purpose:Purpose::Spec,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();let ctx=&answer.report["task_context"];
+    for name in ["CreateChargeAsync","CancelChargeAsync"] {assert!(ctx["cards"].as_array().unwrap().iter().any(|card|card["name"]==name && card["initial_reference"]==true),"{ctx}");}
+    assert_ne!(ctx["cards"][0]["name"],"ValidatePassword");
+    assert_eq!(ctx["recommended_symbols"],json!([]));assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+}
+
+#[test]
+fn current_scanned_resources_and_empty_declaration_files_do_not_request_another_scan() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("guide.md"),"# Guide\nquartz snapshot\n").unwrap();
+    std::fs::write(root.join("empty.ts"),"// quartz snapshot\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    for (file,line,text) in [("guide.md",2,"quartz snapshot"),("empty.ts",1,"// quartz snapshot")] {
+        let result=mustard_core::io::knowledge::observations::record(root,root,&[(file.into(),line,text.into())]).unwrap();
+        assert_eq!(result["new_facts"],1);assert_eq!(result["needs_scan"],false,"{result}");
+    }
+    std::fs::write(root.join("empty.ts"),"// changed quartz snapshot\n").unwrap();
+    let changed=mustard_core::io::knowledge::observations::record(root,root,&[("empty.ts".into(),1,"// changed quartz snapshot".into())]).unwrap();
+    assert_eq!(changed["needs_scan"],true,"{changed}");
+}
+
+#[test]
+fn lowercase_compound_name_is_indexed_ranked_and_located_from_current_source() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("provider.cs"),"class QuartzPayClient {\n  public void Send() {}\n}\nclass Unrelated { public void Validate() {} }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","-i","quartzpay","."]}),intent:"inspect quartzpay".into(),purpose:Purpose::Spec,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();
+    assert!(answer.report["task_context"]["cards"].as_array().unwrap().iter().any(|c|c["name"]=="QuartzPayClient" && c["initial_reference"]==true),"{}",answer.report);
+    assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+    assert_eq!(answer.report["remote_model_calls"],0);
+}
+
+#[test]
+fn named_internal_functions_are_searchable_without_cross_scope_edges() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    for (file,source) in [
+        ("a.py","def factory():\n    def inner(value: int) -> int:\n        \"\"\"quartz transformation\"\"\"\n        return value + 1\n    return inner(3)\ndef unrelated():\n    return inner(7)\n"),
+        ("b.ts","export function factory() {\n  function inner(value: number): number { return value + 1; }\n  return inner(3);\n}\nexport function unrelated() { return inner(7); }\n"),
+        ("c.rs","pub fn factory() -> i32 {\n  fn inner(value: i32) -> i32 { value + 1 }\n  inner(3)\n}\nfn unrelated() -> i32 { inner(7) }\n"),
+        ("d.cs","class Example {\n  int factory() {\n    int inner(int value) { return value + 1; }\n    return inner(3);\n  }\n  int unrelated() { return inner(7); }\n}\n"),
+    ] {std::fs::write(root.join(file),source).unwrap();}
+    let (map,_)=model::scan(root,&root.join(".claude"),&[]);
+    for file in ["a.py","b.ts","c.rs","d.cs"] {
+        let module=map["modules"].as_array().unwrap().iter().find(|m|m["path"]==file).unwrap();
+        let cards=module["analysis"]["knowledge"]["cards"].as_array().unwrap();
+        let inner=cards.iter().find(|c|c["name"]=="inner").unwrap_or_else(||panic!("named local function indexed in {file}: {module}"));
+        assert_eq!(inner["syntax"]["lexical_scope"]["name"],"factory");
+        assert!(!cards.iter().find(|c|c["name"]=="unrelated").unwrap()["outgoing"].as_array().unwrap().iter().any(|e|e["target"]==inner["id"]),"local helper leaked: {module}");
+        let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","inner",file]}),intent:"inspect inner transformation".into(),purpose:Purpose::Implement,choose:false};
+        let answer=code_search::execute(root,root,root,&request,None).unwrap();
+        assert!(answer.report["task_context"]["cards"].as_array().unwrap().iter().any(|c|c["id"]==inner["id"] && c["initial_source_excerpt"]==true),"{}",answer.report);
+        assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+        assert_eq!(answer.report["remote_model_calls"],0);
+    }
+}
+
+#[test]
+fn named_arrow_values_are_indexed_and_global_function_semantics_are_preserved() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("a.ts"),"function factory() {\n  const callback = (value: number) => value + 1;\n  return callback(1);\n}\n").unwrap();
+    std::fs::write(root.join("b.php"),"<?php\nfunction factory() {\n  function inner($value) { return $value + 1; }\n}\nfunction use_global() { factory(); return inner(7); }\n").unwrap();
+    let (map,_)=model::scan(root,&root.join(".claude"),&[]);let modules=map["modules"].as_array().unwrap();
+    let arrow=modules.iter().find(|m|m["path"]=="a.ts").unwrap()["analysis"]["knowledge"]["cards"].as_array().unwrap().iter().find(|c|c["name"]=="callback").unwrap();
+    assert_eq!(arrow["syntax"]["lexical_scope"]["name"],"factory");
+    let cards=modules.iter().find(|m|m["path"]=="b.php").unwrap()["analysis"]["knowledge"]["cards"].as_array().unwrap();
+    let inner=cards.iter().find(|c|c["name"]=="inner").unwrap();
+    assert!(cards.iter().find(|c|c["name"]=="use_global").unwrap()["outgoing"].as_array().unwrap().iter().any(|e|e["target"]==inner["id"]));
+}
+
+#[test]
+fn dependency_expansion_does_not_repeat_an_already_delivered_question_clue() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("a.rs"),"pub fn entry(value: i32) -> i32 { first(value) + second(value) }\nfn first(value: i32) -> i32 { value.saturating_add(1) }\nfn second(value: i32) -> i32 { value.saturating_add(2) }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&[]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","entry","a.rs"]}),intent:"inspect entry saturating_add".into(),purpose:Purpose::Implement,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();let ctx=&answer.report["task_context"];
+    assert_eq!(ctx["chain"]["appended_bodies"],1);
+    assert_eq!(ctx["chain"]["steps"].as_array().unwrap().len(),2);
+}
+
+#[test]
+fn complementary_native_search_uses_the_question_and_respects_original_file_scope() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::create_dir_all(root.join("allowed")).unwrap();std::fs::create_dir_all(root.join("outside")).unwrap();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("allowed/a.rs"),"fn ordinary_request() {}\nfn restore_quartz_revision() { reconcile_quartz(); }\n").unwrap();
+    std::fs::write(root.join("outside/a.rs"),"fn restore_quartz_revision() { forbidden_source(); }\n").unwrap();
+    for at in 0..12 {std::fs::write(root.join(format!("allowed/noise{at}.rs")),format!("fn ordinary_request{at}() {{}}\n")).unwrap();}
+    model::scan(root,&root.join(".claude"),&[]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["--sort=path","-n","--with-filename","ordinary","allowed"]}),intent:"restore quartz revision".into(),purpose:Purpose::Implement,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();let ctx=&answer.report["task_context"];
+    assert_eq!(ctx["complementary_discovery"]["status"],"native-question-probe");
+    assert!(ctx["complementary_discovery"]["added_owners"].as_u64().unwrap()>0);
+    assert!(ctx["cards"].as_array().unwrap().iter().any(|c|c["name"]=="restore_quartz_revision"));
+    assert!(ctx["cards"].as_array().unwrap().iter().all(|c|c["source"]["file"].as_str().unwrap().starts_with("allowed/")));
+    assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+    assert_eq!(answer.report["remote_model_calls"],0);
+}
+
+#[test]
 fn migrated_structural_index_requires_refresh_even_for_previously_learned_sources_or_empty_hits() {
     for empty_hits in [false,true] {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
