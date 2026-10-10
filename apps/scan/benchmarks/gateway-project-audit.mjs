@@ -4,23 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
+import {completeBody,visibleReference as visible} from './source-evidence.mjs';
 const flags=new Map();for(let at=2;at<process.argv.length;at+=2)flags.set(process.argv[at],process.argv[at+1]);
 const required=name=>{assert.ok(flags.get(name),`Missing ${name}`);return path.resolve(flags.get(name));};
 const labelsPath=required('--labels'),source=required('--source'),out=required('--out');
 const labelsRaw=fs.readFileSync(labelsPath),labels=JSON.parse(labelsRaw).checks;
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 for(const label of labels)assert.equal(sha(fs.readFileSync(path.join(source,label.file))),label.sha256,'The labelled source changed');
-function visible(card,view){
- let file=null;
- for(const line of view.split('\n')){
-  if(line.startsWith('@ '))file=line.slice(2);
-  if(file!==card.source.file)continue;
-  if(line.startsWith(`# ${card.name} ${card.source.line}-${card.source.end_line} [`))return true;
-  if(line.startsWith('# References (expand source/responsibility): ')&&line.slice('# References (expand source/responsibility): '.length)
-   .split('; ').includes(`${card.name} ${card.source.line}-${card.source.end_line}`))return true;
- }
- return false;
-}
+
 const arms={};
 for(const arm of ['baseline','current']){
  const directory=required(`--${arm}`),comparison=JSON.parse(fs.readFileSync(path.join(directory,'comparison.json')));
@@ -30,9 +21,9 @@ for(const arm of ['baseline','current']){
    &&card.source.line<=label.line&&card.source.end_line>=label.end_line;
   const delivered=[],complete=[];let bestTrace=null;
   for(const item of cases){
-   for(const card of item.report.task_context?.cards||[])if(matches(card)&&(card.initial_source_excerpt||card.initial_reference)&&visible(card,item.view)){
+   for(const card of [...(item.report.task_context?.cards||[]),...(item.report.task_context?.static_references||[])])if(matches(card)&&(card.initial_source_excerpt||card.initial_reference)&&visible(card,item.view)){
     delivered.push(item.id);
-    if(card.initial_source_excerpt&&card.source_excerpt?.truncated===false&&item.view.includes(card.source_excerpt.text))complete.push(item.id);
+    if(completeBody(card,item.view))complete.push(item.id);
    }
    for(const trace of item.report.task_context?.retrieval_trace?.candidates||[])if(trace.source?.file===label.file&&trace.id.endsWith(':'+label.name)){
     if(!bestTrace||(trace.rank??Infinity)<(bestTrace.rank??Infinity))bestTrace={case:item.id,...trace};

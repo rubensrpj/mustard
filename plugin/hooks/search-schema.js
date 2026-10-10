@@ -24,7 +24,7 @@ export default {
         },
         "intent": {
           "type": "string",
-          "description": "Local question naming the resource/provider and operation being investigated; do not repeat the whole project goal. For 2–8 questions use explicit '- question' bullets, with resource and constraints in each. Required for investigation or choose."
+          "description": "Local question naming the resource/provider and operation being investigated; do not repeat the whole project goal. For 2–8 independent questions use '- question' bullets or sequential '1. question?' lines ending in ?, with resource/constraints in each. Purpose/input/output lists describe one question. Choose purpose by the evidence needed: locate for matches, spec/understand for design, implement for code changes, validate for verification. Required for investigation or choose."
         },
         "purpose": {
           "type": "string",

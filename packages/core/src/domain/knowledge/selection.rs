@@ -215,7 +215,14 @@ pub fn explicit_questions(query:&str)->Vec<&str> {
     let lines:Vec<_>=query.lines().map(str::trim).filter(|line|!line.is_empty()).collect();
     let bullets:Option<Vec<_>>=lines.iter().map(|line|line.strip_prefix("- ").or_else(||line.strip_prefix("* "))
         .map(str::trim).filter(|line|!line.is_empty())).collect();
-    if let Some(bullets)=bullets && (2..=8).contains(&bullets.len()) {bullets} else {vec![query]}
+    if let Some(bullets)=bullets && (2..=8).contains(&bullets.len()) {return bullets;}
+    let numbered:Option<Vec<_>>=lines.iter().enumerate().map(|(at,line)| {
+        line.strip_prefix(&format!("{}. ",at+1)).or_else(||line.strip_prefix(&format!("{}) ",at+1)))
+            // Numbered descriptions often contain purpose/input/output steps,
+            // not separate questions. Require an explicit interrogative list.
+            .map(str::trim).filter(|line|line.ends_with('?'))
+    }).collect();
+    if let Some(numbered)=numbered && (2..=8).contains(&numbered.len()) {numbered} else {vec![query]}
 }
 
 /// Rank the question before applying a soft cost for repeated files. A strong
@@ -424,16 +431,21 @@ mod tests {
     }
 
     #[test]
-    fn only_explicit_bullets_become_independent_responsibility_questions() {
+    fn only_explicit_lists_become_independent_responsibility_questions() {
         let cards=cards();let languages=Languages::new(["en-US"]);
         let intent="- Which method processes the quartz beacon?\n- Which method archives the beacon?";
         let plan=responsibility(&cards,intent,&languages);
         assert_eq!(plan.groups.len(),2);
         assert_eq!(plan.groups[0].key,"responsibility-1");
         assert_eq!(plan.groups[1].question.as_deref(),Some("Which method archives the beacon?"));
+        assert_eq!(explicit_questions("1. recover quartz?\n2. archive quartz?"),["recover quartz?","archive quartz?"]);
+        assert_eq!(explicit_questions("1) recover quartz?\n2) archive quartz?"),["recover quartz?","archive quartz?"]);
         for prose in ["Create and archive the beacon", "Question: recover quartz.\nConstraint: avoid writes."] {
             assert_eq!(explicit_questions(prose),[prose]);
         }
+        assert_eq!(explicit_questions("1. first\n3. constraint"),["1. first\n3. constraint"]);
+        let description="1. Purpose: recover quartz\n2. Input: identifier\n3. Output: archive\n4. Procedure: select then recover";
+        assert_eq!(explicit_questions(description),[description]);
     }
 
     #[test]

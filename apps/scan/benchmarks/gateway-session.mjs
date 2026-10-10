@@ -10,9 +10,10 @@ assert.ok(args.includes('--out'),'Supply --out');
 assert.ok(args.includes('--dry-run')!==args.includes('--execute'),'Choose --dry-run or --execute');
 const out=path.resolve(option('--out'));fs.mkdirSync(out,{recursive:true});
 const execute=args.includes('--execute'),model=args.includes('--model')?option('--model'):null;
+const vectors=!args.includes('--vectors')||option('--vectors')!=='false';
 if(execute){assert.ok(model,'Pin the same full --model ID for both arms');assert.ok(process.env.ANTHROPIC_API_KEY,'Bare paired runs require ANTHROPIC_API_KEY; subscription OAuth is not loaded');}
 const plugin=path.resolve(args.includes('--plugin')?option('--plugin'):path.join(checkout,'target/review-plugin'));
-const bin=path.join(checkout,'target/debug');
+const bin=path.resolve(args.includes('--bin')?option('--bin'):path.join(checkout,'target/debug'));
 const fixture={
   'package.json':JSON.stringify({type:'module',scripts:{test:'node --test'}}),
   'src/storage.js':`export function findPlan(store,id) { const plan=store.plans.find(p=>p.id===id); if(!plan) throw new Error('Unknown plan'); return plan; }\n`,
@@ -45,20 +46,30 @@ function metrics(events){
   const unknown=direct.filter(t=>!receipts.has(t.id));
   const read=tools.filter(t=>t.name==='Read'||t.name==='mcp__mustard__search'&&t.input?.request?.tool==='Read');
   const names=new Map();let repeated=0;
+  const ranges=new Map();let requestedLines=0,repeatedLines=0;
   for(const t of read){const key=JSON.stringify(t.input?.request?.input||t.input);if(names.has(key))repeated++;names.set(key,true);}
+  for(const t of read){
+    const input=t.input?.request?.input||t.input;
+    if(!Number.isSafeInteger(input?.offset)||input.offset<1||!Number.isSafeInteger(input?.limit)||input.limit<1||input.limit>100000)continue;
+    const seen=ranges.get(input.file_path)||new Set();
+    for(let line=input.offset;line<input.offset+input.limit;line++){requestedLines++;if(seen.has(line))repeatedLines++;seen.add(line);}
+    ranges.set(input.file_path,seen);
+  }
+  const toolResultBytes=[...receipts.values()].reduce((n,r)=>n+Buffer.byteLength(typeof r.content==='string'?r.content:JSON.stringify(r.content||[])),0);
   return {result_received:!!result,host_success:result?.is_error===false,usage:result?.usage??null,
     estimated_cost_usd:result?.total_cost_usd??null,model_usage:result?.modelUsage??null,
     tool_calls:tools.length,read_calls:read.length,repeated_identical_reads:repeated,
+    requested_explicit_range_lines:requestedLines,repeated_requested_explicit_range_lines:repeatedLines,tool_result_bytes:toolResultBytes,
     gateway_calls:tools.filter(t=>t.name==='mcp__mustard__search').length,
     successful_direct_searches:bypassed.map(t=>({name:t.name,id:t.id})),unresolved_direct_search_receipts:unknown.length,
     gateway_routing_verified:bypassed.length===0&&unknown.length===0,
-    limitations:'Tool counts describe model-issued calls; internal native calls and overlapping read ranges are not inferred. Client cost is an estimate.'};
+    limitations:'Read/range counts describe model-issued requests, including failed or repeated requests; actual partial reads and internal native calls are not inferred. Client cost is an estimate.'};
 }
 try{
   for(const [at,task] of tasks.entries()){
     const dry=path.join(temp,task.id+'-grader');create(dry);assert.equal(grade(dry,task).passed,false,'Original must fail the independent behavior checks');
-    fs.writeFileSync(path.join(dry,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:false,vectors:false},search:{filter:'none'}}));
-    const scan=cp.spawnSync(path.join(bin,'scan'),['scan',dry,'--native','--out',path.join(dry,'.claude/grain.db'),'--json'],{cwd:dry,env});assert.equal(scan.status,0,scan.stderr.toString());
+    fs.writeFileSync(path.join(dry,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:false,vectors},search:{filter:'none'}}));
+    const scan=cp.spawnSync(path.join(bin,'scan'),['scan',dry,...(vectors?[]:['--native']),'--out',path.join(dry,'.claude/grain.db'),'--json'],{cwd:dry,env});assert.equal(scan.status,0,scan.stderr.toString());
     const request={schema_version:1,request:{tool:'rg',input:{args:['--sort=path','-n','--with-filename','download|cancel|input|csv','src']},intent:task.prompt,purpose:'implement',choose:false}};
     const searchArgs=['run','search','--root',dry,'--request',JSON.stringify(request)];
     const query=cp.spawnSync(path.join(bin,'mustard-rt'),searchArgs,{cwd:dry,env,maxBuffer:16*1024*1024});assert.equal(query.status,0,query.stderr.toString());
@@ -74,7 +85,7 @@ try{
       const childEnv={...env,CLAUDE_CONFIG_DIR:host,MUSTARD_SPEND_DIR:path.join(armOut,'provider-usage')};
       if(arm==='mustard'){
         const init=cp.spawnSync(path.join(bin,'mustard'),['init','--yes'],{cwd:root,env:childEnv,maxBuffer:16*1024*1024});assert.equal(init.status,0,init.stderr.toString());
-        const configFile=path.join(root,'mustard.json'),config=JSON.parse(fs.readFileSync(configFile));config.ai={fallback:false,vectors:false};fs.writeFileSync(configFile,JSON.stringify(config));
+        const configFile=path.join(root,'mustard.json'),config=JSON.parse(fs.readFileSync(configFile));config.ai={fallback:false,vectors};fs.writeFileSync(configFile,JSON.stringify(config));
       }
       const argv=['--bare','-p',task.prompt,'--model',model,'--output-format','stream-json','--verbose','--permission-mode','acceptEdits',
         '--allowedTools','Read,Grep,Glob,Edit,Write,Bash,mcp__mustard__search'];
@@ -101,7 +112,7 @@ try{
       estimated_cost_reduction_percent:valid?reduction(baseline.estimated_cost_usd,mustard.estimated_cost_usd):null,
       tool_call_reduction_percent:valid?reduction(baseline.tool_calls,mustard.tool_calls):null};
   });
-  const result={executed:execute,grader_self_checks:true,gateway_preflight:gatewayPreflight,rows,pairs,whole_session_savings:null,
+  const result={executed:execute,local_vectors:vectors,grader_self_checks:true,gateway_preflight:gatewayPreflight,rows,pairs,whole_session_savings:null,
     host_execution_pending:!execute,host_execution_requirement:!execute?'Explicit ANTHROPIC_API_KEY and pinned full model ID for --bare paired runs':null,
     interpretation:execute?'Compare tokens including cache categories and behavior success per paired task. No generic savings percentage is inferred.':'Free preflight passed. Real paired sessions are pending; no model tokens, costs or success measured.',
     limits:['Two authored JavaScript tasks; not a broad coding benchmark.','Bare API runs differ from subscription interactive sessions.','Mustard arm is invalid unless the gateway was called and known successful direct searches are absent.','Shell bypass detection covers named search programs; arbitrary programs require manual event review.','Jev disabled in both arms to isolate deterministic gateway overhead; its paid responsibility pilot is separate.']};

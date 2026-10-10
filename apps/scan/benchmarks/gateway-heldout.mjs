@@ -6,6 +6,7 @@ import path from 'node:path';
 import cp from 'node:child_process';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
+import {completeBody} from './source-evidence.mjs';
 const options=new Map();for(let at=2;at<process.argv.length;at+=2)options.set(process.argv[at],process.argv[at+1]);
 const required=name=>{assert.ok(options.get(name),`Missing ${name}`);return path.resolve(options.get(name));};
 const datasetPath=required('--dataset'),selectionPath=required('--selection'),out=required('--out');
@@ -50,7 +51,7 @@ try {
         const destination=path.resolve(root,file);assert.ok(destination.startsWith(root+path.sep));
         fs.mkdirSync(path.dirname(destination),{recursive:true});fs.writeFileSync(destination,text);
       }
-      const vectors=version==='current'&&options.get('--vectors')==='true';
+      const vectors=options.get(version==='current'?'--vectors':'--baseline-vectors')==='true';
       fs.writeFileSync(path.join(root,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:false,vectors},search:{filter:'none'}}));
       run(path.join(bins[version],'scan'),['scan',root,...(vectors?[]:['--native']),'--out',path.join(root,'.claude/grain.db'),'--json'],root);
       for(const [at,needle] of repo.needles.entries()){
@@ -71,7 +72,7 @@ try {
           expected:{file:needle.path,name:needle.name},symbol_found:found.length>0,
           visible_symbol_found:found.some(c=>(c.initial_source_excerpt||c.initial_reference)&&visible(c,delivered)),
           native_owner_found:(report.evidence?.current_owner_ids||[]).some(id=>id.startsWith(needle.path+':')&&id.endsWith(':'+needle.name)),
-          complete_body:found.some(c=>c.initial_source_excerpt&&c.source_excerpt?.truncated===false&&c.source_excerpt.text&&delivered.includes(c.source_excerpt.text)),
+          complete_body:found.some(c=>completeBody(c,delivered)),
           output_bytes:view.bytes.length,ms:query.ms,chain_steps:report.task_context?.chain?.steps?.length||0,
           remote_model_calls:report.remote_model_calls,native_parity:true});
         fs.writeFileSync(path.join(out,`${repoAt}-${at}-${version}.json`),JSON.stringify({invocation,report,view:view.bytes.toString()}));

@@ -9,7 +9,7 @@ fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("docs")).unwrap();
     std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
-    std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
+    std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"},"ai":{"vectors":false}}"#).unwrap();
     std::fs::write(
         dir.path().join("docs/rules.md"),
         "# Inventory\nUnrelated document introduction.\n## Recuperar pedido\nPreserva tarefas concluídas antes de recuperar o pedido.\n",

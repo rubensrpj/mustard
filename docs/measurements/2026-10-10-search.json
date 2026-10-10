@@ -3,7 +3,7 @@
   "branch": "codex/mustard-plano-completo",
   "baseline_commit": "e29ec6f3a750109f64b23d976e7a03c660b0338b",
   "build_profile": "CARGO_PROFILE_DEV_OPT_LEVEL=3; workspace opt-level=3, dependency override=1; identical baseline/current flags",
-  "method": "Adapted RepoQA target retrieval over 80 fixed descriptions, labels excluded from gateway/provider input, actual agent projection verified, current file SHA-256 checked; not official RepoQA or autonomous host execution.",
+  "method": "Prior retrieval revision (baseline e29ec6f) is preserved below as history. Current delivery_revision compares against f7c80415 with local vectors on in both arms.",
   "summary": {
     "baseline": {
       "cases": 80,
@@ -1044,11 +1044,135 @@
       "config.json": "148e5691a6fcc553437156859701fba017a1ba5d340b170f17e0f3668fb861a7"
     },
     "payload_bytes": 33514471,
-    "default_enabled": false,
+    "default_enabled": true,
     "runtime_downloads": false,
-    "new_production_inference_dependency": false
+    "new_production_inference_dependency": false,
+    "previous_default_enabled": false
   },
   "checks": {
+    "rust_passed": 3987,
+    "rust_failed": 0,
+    "rust_ignored_inherited": 2,
+    "clippy_warnings_as_errors": true,
+    "mods_sdk_passed": 16,
+    "plugin_validation": true,
+    "native_acceptance": {
+      "ok": true,
+      "commit": "f7c80415a5a9c772f24fd93942af6c110b9b684e",
+      "truly_empty_native_install": true,
+      "automatic_native_refresh": true,
+      "repeat_deduplicates_without_rescan": true,
+      "changed_and_new_sources": true,
+      "failed_scan_keeps_native_and_retries_later": true,
+      "raw_stdout_stderr_status_parity": true,
+      "native_fallback_parity": true,
+      "automatic_output_does_not_append_reports": true,
+      "typed_agent_pagination": true,
+      "typed_tools": true,
+      "late_occurrence_source_learned_and_crossed": true,
+      "migrated_index_refreshes_after_empty_native_search": true,
+      "native_search_unavailable_passes_host_tool": true,
+      "task_evidence_visible_to_agent": true,
+      "complementary_new_source_refreshes_natively": true,
+      "named_declaration_without_inference": true,
+      "typed_operation_contract": true,
+      "acknowledged_body_reuse_and_compaction_reset": true,
+      "native_dependency_body": true,
+      "delivery_bytes": {
+        "initial": 1266,
+        "repeated": 457,
+        "initial_transport": 1373,
+        "reduction_percent": 63.90205371248025
+      },
+      "structural_result_recrossed_after_refresh": true,
+      "deferred_candidates_expand_via_binary": true,
+      "real_classic_hook_handoff_and_rewrite": true,
+      "original_read_guard": true,
+      "checkout_isolation": true,
+      "default_http_requests": 0,
+      "local_model_calls": 0,
+      "remote_model_calls": 0,
+      "binaries": [
+        {
+          "name": "mustard",
+          "sha256": "0de0e0024381d36d5ddab362cf45b0c0131d5f692923c48eae77c5405a91a5df"
+        },
+        {
+          "name": "mustard-rt",
+          "sha256": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9"
+        },
+        {
+          "name": "scan",
+          "sha256": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+        }
+      ]
+    },
+    "local_model_acceptance": {
+      "ok": true,
+      "default_local_vectors": true,
+      "first_semantic_request_builds_index": true,
+      "unchanged_documents_not_reembedded": true,
+      "raw_native_parity_without_vector_refresh": true,
+      "changed_source_receipts_refreshed": true,
+      "explicit_opt_out": true,
+      "remote_model_calls": 0,
+      "binaries": {
+        "mustard-rt": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9",
+        "scan": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+      }
+    },
+    "session_preflight": {
+      "executed": false,
+      "grader_self_checks": true,
+      "gateway_preflight": [
+        {
+          "task": "copy-input-export",
+          "source_file_located": true,
+          "native_result_preserved": true,
+          "remote_model_calls": 0,
+          "agent_view_bytes": 1251,
+          "host_model_ran": false
+        },
+        {
+          "task": "idempotent-cancellation",
+          "source_file_located": true,
+          "native_result_preserved": true,
+          "remote_model_calls": 0,
+          "agent_view_bytes": 1299,
+          "host_model_ran": false
+        }
+      ],
+      "host_execution_pending": true
+    },
+    "syntax_and_assets": {
+      "syntax_files": [
+        "apps/scan/benchmarks/gateway-acceptance.mjs",
+        "apps/scan/benchmarks/gateway-heldout.mjs",
+        "apps/scan/benchmarks/gateway-project-audit.mjs",
+        "apps/scan/benchmarks/gateway-project.mjs",
+        "apps/scan/benchmarks/gateway-session.mjs",
+        "apps/scan/benchmarks/gateway-task.mjs",
+        "plugin/hooks/search-schema.js",
+        "apps/scan/benchmarks/gateway-evidence-cost.mjs",
+        "apps/scan/benchmarks/gateway-local-model.mjs",
+        "apps/scan/benchmarks/source-evidence.mjs"
+      ],
+      "syntax_passed": 10,
+      "model_hashes_verified": true
+    }
+  },
+  "limitations": [
+    "Target recovery is not precision across every returned candidate.",
+    "Final fixed selections were reused for diagnosis; not an independent blind final evaluation.",
+    "Seven previously complete expected bodies became partial/references with the local model; targets remain visible.",
+    "Latency rises relative to baseline, and the index grows.",
+    "No billed Claude/Codex token savings or whole-task implementation improvement measured.",
+    "Packaged post-commit binaries get distinct hashes in the local review manifest.",
+    "Current delivery revision preserved all 72 visible targets and 49 complete expected bodies individually; retrieval accuracy did not increase in this step.",
+    "Current four-query latency sample improved in aggregate, but XLSX discovery grew about 28.5%; no uniform speedup claimed.",
+    "Real autonomous Claude sessions remain unauthenticated/pending; known-range evidence cost is a lower bound, not billed tokens."
+  ],
+  "prior_checks": {
     "rust_passed": 3982,
     "rust_failed": 0,
     "rust_ignored_inherited": 2,
@@ -1106,12 +1230,880 @@
       ]
     }
   },
-  "limitations": [
-    "Target recovery is not precision across every returned candidate.",
-    "Final fixed selections were reused for diagnosis; not an independent blind final evaluation.",
-    "Seven previously complete expected bodies became partial/references with the local model; targets remain visible.",
-    "Latency rises relative to baseline, and the index grows.",
-    "No billed Claude/Codex token savings or whole-task implementation improvement measured.",
-    "Packaged post-commit binaries get distinct hashes in the local review manifest."
-  ]
+  "delivery_revision": {
+    "baseline_commit": "f7c80415a5a9c772f24fd93942af6c110b9b684e",
+    "baseline_runtime_sha256": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681",
+    "measured_before_commit": true,
+    "binary_sha256": {
+      "mustard": "0de0e0024381d36d5ddab362cf45b0c0131d5f692923c48eae77c5405a91a5df",
+      "mustard-rt": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9",
+      "scan": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+    },
+    "summary": {
+      "baseline": {
+        "cases": 80,
+        "visible_found": 72,
+        "complete_bodies": 49,
+        "bytes": 1356648,
+        "native_parity": 80,
+        "remote_model_calls": 0
+      },
+      "current": {
+        "cases": 80,
+        "visible_found": 72,
+        "complete_bodies": 49,
+        "bytes": 1228267,
+        "native_parity": 80,
+        "remote_model_calls": 0
+      }
+    },
+    "differences": [],
+    "per_language": {
+      "python": {
+        "baseline": {
+          "cases": 20,
+          "visible": 19,
+          "complete": 13,
+          "bytes": 379671
+        },
+        "current": {
+          "cases": 20,
+          "visible": 19,
+          "complete": 13,
+          "bytes": 338837
+        }
+      },
+      "typescript": {
+        "baseline": {
+          "cases": 20,
+          "visible": 17,
+          "complete": 11,
+          "bytes": 376507
+        },
+        "current": {
+          "cases": 20,
+          "visible": 17,
+          "complete": 11,
+          "bytes": 345774
+        }
+      },
+      "rust": {
+        "baseline": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 13,
+          "bytes": 358597
+        },
+        "current": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 13,
+          "bytes": 328245
+        }
+      },
+      "go": {
+        "baseline": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 12,
+          "bytes": 241873
+        },
+        "current": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 12,
+          "bytes": 215411
+        }
+      }
+    },
+    "byte_reduction_percent": 9.463103177832421,
+    "projects": {
+      "sialia": {
+        "baseline": {
+          "targets": 12,
+          "visible": 10,
+          "complete_bodies": 3,
+          "view_bytes": 169562,
+          "native_parity": 7,
+          "requests": 7
+        },
+        "current": {
+          "targets": 12,
+          "visible": 10,
+          "complete_bodies": 3,
+          "view_bytes": 149834,
+          "native_parity": 7,
+          "requests": 7
+        },
+        "gains": [],
+        "regressions": [],
+        "equivalent_evidence": {
+          "labels_sha256": "5cb633a6bb9ef6b9ee9e4820b47a2f6f2d22f367f5c572de6fee97b69eaf9f53",
+          "requests_sha256": "002cd6881075b006b5d73257d55c2b5fd8f7050ca493e2675cbbaa9b27703d4a",
+          "required_targets": 12,
+          "comparable_targets": [
+            "charge",
+            "cancel",
+            "status",
+            "webhook-business",
+            "webhook-security",
+            "subscription",
+            "provider-routing",
+            "contract-coupling",
+            "provider-contract",
+            "frontend-provider"
+          ],
+          "baseline": {
+            "located_targets": [
+              "charge",
+              "cancel",
+              "status",
+              "webhook-business",
+              "webhook-security",
+              "subscription",
+              "provider-routing",
+              "contract-coupling",
+              "provider-contract",
+              "frontend-provider"
+            ],
+            "unlocated_targets": [
+              "tokenization",
+              "subaccount-disable"
+            ],
+            "bootstrap_bytes": 169562,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 8,
+            "missing_source_lines": 538,
+            "additional_read_bytes": 26051,
+            "equivalent_evidence_bytes": 195613,
+            "reads": [
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 68,
+                "limit": 19,
+                "bytes": 1624
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 102,
+                "limit": 47,
+                "bytes": 2644
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayWebhookService.cs",
+                "offset": 129,
+                "limit": 113,
+                "bytes": 5891
+              },
+              {
+                "file": "backend/Sialia.Backend/Backend/Modules/v1/PaymentGateway/Providers/Safe2Pay/Filters/Safe2PaySignatureValidationFilter.cs",
+                "offset": 31,
+                "limit": 81,
+                "bytes": 3439
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PaySubscriptionService.cs",
+                "offset": 59,
+                "limit": 134,
+                "bytes": 6776
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Services/PaymentGatewayService.cs",
+                "offset": 119,
+                "limit": 23,
+                "bytes": 961
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Contracts/IPaymentGatewayProvider.cs",
+                "offset": 10,
+                "limit": 86,
+                "bytes": 3677
+              },
+              {
+                "file": "packages/sialia-core/src/client/gateway/provider-descriptor.ts",
+                "offset": 114,
+                "limit": 35,
+                "bytes": 1039
+              }
+            ]
+          },
+          "current": {
+            "located_targets": [
+              "charge",
+              "cancel",
+              "status",
+              "webhook-business",
+              "webhook-security",
+              "subscription",
+              "provider-routing",
+              "contract-coupling",
+              "provider-contract",
+              "frontend-provider"
+            ],
+            "unlocated_targets": [
+              "tokenization",
+              "subaccount-disable"
+            ],
+            "bootstrap_bytes": 149834,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 8,
+            "missing_source_lines": 538,
+            "additional_read_bytes": 26051,
+            "equivalent_evidence_bytes": 175885,
+            "reads": [
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 68,
+                "limit": 19,
+                "bytes": 1624
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 102,
+                "limit": 47,
+                "bytes": 2644
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayWebhookService.cs",
+                "offset": 129,
+                "limit": 113,
+                "bytes": 5891
+              },
+              {
+                "file": "backend/Sialia.Backend/Backend/Modules/v1/PaymentGateway/Providers/Safe2Pay/Filters/Safe2PaySignatureValidationFilter.cs",
+                "offset": 31,
+                "limit": 81,
+                "bytes": 3439
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PaySubscriptionService.cs",
+                "offset": 59,
+                "limit": 134,
+                "bytes": 6776
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Services/PaymentGatewayService.cs",
+                "offset": 119,
+                "limit": 23,
+                "bytes": 961
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Contracts/IPaymentGatewayProvider.cs",
+                "offset": 10,
+                "limit": 86,
+                "bytes": 3677
+              },
+              {
+                "file": "packages/sialia-core/src/client/gateway/provider-descriptor.ts",
+                "offset": 114,
+                "limit": 35,
+                "bytes": 1039
+              }
+            ]
+          },
+          "equivalent_evidence_byte_reduction_percent": 10.085219285016844,
+          "whole_session_tokens": null,
+          "whole_session_cost": null,
+          "host_model_ran": false,
+          "limits": [
+            "Known source-evidence targets; not a blind evaluation.",
+            "Expansions are answer-informed and identical required ranges are graded in both arms; this is a delivery-cost lower bound, not an autonomous tool trajectory.",
+            "Unlocated targets are explicit and excluded from the common-evidence cost; they are not declared solved.",
+            "Bytes include actual Read responses, not billed tokens or correctness of a complete implementation."
+          ]
+        }
+      },
+      "florestal": {
+        "baseline": {
+          "targets": 8,
+          "visible": 8,
+          "complete_bodies": 3,
+          "view_bytes": 59453,
+          "native_parity": 8,
+          "requests": 8
+        },
+        "current": {
+          "targets": 8,
+          "visible": 8,
+          "complete_bodies": 3,
+          "view_bytes": 54388,
+          "native_parity": 8,
+          "requests": 8
+        },
+        "gains": [],
+        "regressions": [],
+        "equivalent_evidence": {
+          "labels_sha256": "3f29997b96105b2be53c1f482394bd5d9c438448c0f3a9a58783d8799519510d",
+          "requests_sha256": "471de6ef0edcfad297125f489c36daec94cc845958d0aa3df9226566fbc3af5d",
+          "required_targets": 8,
+          "comparable_targets": [
+            "processPlanBackground",
+            "listData",
+            "duplicateLineage",
+            "copyPlanFiles",
+            "createXlsxStream",
+            "toMenuRow",
+            "listMenu",
+            "plantioCurveToDownload"
+          ],
+          "baseline": {
+            "located_targets": [
+              "processPlanBackground",
+              "listData",
+              "duplicateLineage",
+              "copyPlanFiles",
+              "createXlsxStream",
+              "toMenuRow",
+              "listMenu",
+              "plantioCurveToDownload"
+            ],
+            "unlocated_targets": [],
+            "bootstrap_bytes": 59453,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 5,
+            "missing_source_lines": 181,
+            "additional_read_bytes": 7678,
+            "equivalent_evidence_bytes": 67131,
+            "reads": [
+              {
+                "file": "src/puzzle/pi/services/pi-auxiliar.service.ts",
+                "offset": 28,
+                "limit": 50,
+                "bytes": 2654
+              },
+              {
+                "file": "src/puzzle/services/plantio-download-orchestrator.service.ts",
+                "offset": 29,
+                "limit": 40,
+                "bytes": 1711
+              },
+              {
+                "file": "src/common/services/excel.service.ts",
+                "offset": 11,
+                "limit": 34,
+                "bytes": 1355
+              },
+              {
+                "file": "src/puzzle/pi/services/plan-input/optimizer-output-source.service.ts",
+                "offset": 446,
+                "limit": 29,
+                "bytes": 1090
+              },
+              {
+                "file": "src/puzzle/pi/services/menu/search-menu.service.ts",
+                "offset": 18,
+                "limit": 28,
+                "bytes": 868
+              }
+            ]
+          },
+          "current": {
+            "located_targets": [
+              "processPlanBackground",
+              "listData",
+              "duplicateLineage",
+              "copyPlanFiles",
+              "createXlsxStream",
+              "toMenuRow",
+              "listMenu",
+              "plantioCurveToDownload"
+            ],
+            "unlocated_targets": [],
+            "bootstrap_bytes": 54388,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 5,
+            "missing_source_lines": 181,
+            "additional_read_bytes": 7678,
+            "equivalent_evidence_bytes": 62066,
+            "reads": [
+              {
+                "file": "src/puzzle/pi/services/pi-auxiliar.service.ts",
+                "offset": 28,
+                "limit": 50,
+                "bytes": 2654
+              },
+              {
+                "file": "src/puzzle/services/plantio-download-orchestrator.service.ts",
+                "offset": 29,
+                "limit": 40,
+                "bytes": 1711
+              },
+              {
+                "file": "src/common/services/excel.service.ts",
+                "offset": 11,
+                "limit": 34,
+                "bytes": 1355
+              },
+              {
+                "file": "src/puzzle/pi/services/plan-input/optimizer-output-source.service.ts",
+                "offset": 446,
+                "limit": 29,
+                "bytes": 1090
+              },
+              {
+                "file": "src/puzzle/pi/services/menu/search-menu.service.ts",
+                "offset": 18,
+                "limit": 28,
+                "bytes": 868
+              }
+            ]
+          },
+          "equivalent_evidence_byte_reduction_percent": 7.544949427239278,
+          "whole_session_tokens": null,
+          "whole_session_cost": null,
+          "host_model_ran": false,
+          "limits": [
+            "Known source-evidence targets; not a blind evaluation.",
+            "Expansions are answer-informed and identical required ranges are graded in both arms; this is a delivery-cost lower bound, not an autonomous tool trajectory.",
+            "Unlocated targets are explicit and excluded from the common-evidence cost; they are not declared solved.",
+            "Bytes include actual Read responses, not billed tokens or correctness of a complete implementation."
+          ]
+        }
+      }
+    },
+    "checks": {
+      "rust_passed": 3987,
+      "rust_failed": 0,
+      "rust_ignored_inherited": 2,
+      "clippy_warnings_as_errors": true,
+      "mods_sdk_passed": 16,
+      "plugin_validation": true,
+      "native_acceptance": {
+        "ok": true,
+        "commit": "f7c80415a5a9c772f24fd93942af6c110b9b684e",
+        "truly_empty_native_install": true,
+        "automatic_native_refresh": true,
+        "repeat_deduplicates_without_rescan": true,
+        "changed_and_new_sources": true,
+        "failed_scan_keeps_native_and_retries_later": true,
+        "raw_stdout_stderr_status_parity": true,
+        "native_fallback_parity": true,
+        "automatic_output_does_not_append_reports": true,
+        "typed_agent_pagination": true,
+        "typed_tools": true,
+        "late_occurrence_source_learned_and_crossed": true,
+        "migrated_index_refreshes_after_empty_native_search": true,
+        "native_search_unavailable_passes_host_tool": true,
+        "task_evidence_visible_to_agent": true,
+        "complementary_new_source_refreshes_natively": true,
+        "named_declaration_without_inference": true,
+        "typed_operation_contract": true,
+        "acknowledged_body_reuse_and_compaction_reset": true,
+        "native_dependency_body": true,
+        "delivery_bytes": {
+          "initial": 1266,
+          "repeated": 457,
+          "initial_transport": 1373,
+          "reduction_percent": 63.90205371248025
+        },
+        "structural_result_recrossed_after_refresh": true,
+        "deferred_candidates_expand_via_binary": true,
+        "real_classic_hook_handoff_and_rewrite": true,
+        "original_read_guard": true,
+        "checkout_isolation": true,
+        "default_http_requests": 0,
+        "local_model_calls": 0,
+        "remote_model_calls": 0,
+        "binaries": [
+          {
+            "name": "mustard",
+            "sha256": "0de0e0024381d36d5ddab362cf45b0c0131d5f692923c48eae77c5405a91a5df"
+          },
+          {
+            "name": "mustard-rt",
+            "sha256": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9"
+          },
+          {
+            "name": "scan",
+            "sha256": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+          }
+        ]
+      },
+      "local_model_acceptance": {
+        "ok": true,
+        "default_local_vectors": true,
+        "first_semantic_request_builds_index": true,
+        "unchanged_documents_not_reembedded": true,
+        "raw_native_parity_without_vector_refresh": true,
+        "changed_source_receipts_refreshed": true,
+        "explicit_opt_out": true,
+        "remote_model_calls": 0,
+        "binaries": {
+          "mustard-rt": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9",
+          "scan": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+        }
+      },
+      "session_preflight": {
+        "executed": false,
+        "grader_self_checks": true,
+        "gateway_preflight": [
+          {
+            "task": "copy-input-export",
+            "source_file_located": true,
+            "native_result_preserved": true,
+            "remote_model_calls": 0,
+            "agent_view_bytes": 1251,
+            "host_model_ran": false
+          },
+          {
+            "task": "idempotent-cancellation",
+            "source_file_located": true,
+            "native_result_preserved": true,
+            "remote_model_calls": 0,
+            "agent_view_bytes": 1299,
+            "host_model_ran": false
+          }
+        ],
+        "host_execution_pending": true
+      },
+      "syntax_and_assets": {
+        "syntax_files": [
+          "apps/scan/benchmarks/gateway-acceptance.mjs",
+          "apps/scan/benchmarks/gateway-heldout.mjs",
+          "apps/scan/benchmarks/gateway-project-audit.mjs",
+          "apps/scan/benchmarks/gateway-project.mjs",
+          "apps/scan/benchmarks/gateway-session.mjs",
+          "apps/scan/benchmarks/gateway-task.mjs",
+          "plugin/hooks/search-schema.js",
+          "apps/scan/benchmarks/gateway-evidence-cost.mjs",
+          "apps/scan/benchmarks/gateway-local-model.mjs",
+          "apps/scan/benchmarks/source-evidence.mjs"
+        ],
+        "syntax_passed": 10,
+        "model_hashes_verified": true
+      }
+    },
+    "model_default_enabled": true,
+    "new_paid_jev_calls": 0,
+    "host_model_ran": false,
+    "whole_session_tokens": null,
+    "whole_session_cost": null,
+    "limits": [
+      "Known target searches, not a blind evaluation or autonomous coding sessions.",
+      "Public baseline presentations reused with original dataset, selection and runtime hashes; current replay repeated in full.",
+      "Bytes measure delivered text; not billed tokens.",
+      "Equivalent-evidence reads use known required ranges after retrieval, a lower bound, not autonomous model decisions."
+    ],
+    "latency": {
+      "manifest_sha256": "757bea3e6e8b4d67d6ba1d150dfb9e4b6114e151665d2583d096740b0e689818",
+      "binary_sha256": {
+        "baseline": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681",
+        "current": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9"
+      },
+      "method": "One unmeasured warm-up per case/arm, then alternating arms; actual --shell-output, diagnostics disabled, no parallel work within this runner.",
+      "repeat": 3,
+      "rows": [
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 7343.810932,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 6415.4998600000035,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 8458.211232999995,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 8634.318879999999,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2114.0292279999994,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2717.272813000003,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 475.1423189999914,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 467.5695699999924,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 8822.828651999997,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 11361.778848999995,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 18565.915615000005,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 9795.589016000013,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2063.2181869999913,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2077.346967999998,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 438.3098239999963,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 451.07612899999367,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 6884.3536090000125,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 7018.267656000011,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 8951.762774000003,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 9612.969267999986,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 3023.0766989999975,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2874.187230999989,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 870.6690479999816,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 655.9246700000076,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 6513.1790679999995,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 6496.385767999999,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 8198.399572,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 8452.237395,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2123.8764340000016,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2061.029211000001,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 474.51038100000005,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        },
+        {
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 499.5437759999986,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        }
+      ],
+      "summary": {
+        "baseline": {
+          "samples": 12,
+          "median_ms": 4953.715154000005,
+          "per_case": {
+            "sialia-overview": {
+              "median_ms": 7343.810932,
+              "deterministic_output": true,
+              "bytes": 22487
+            },
+            "sialia-charging": {
+              "median_ms": 9612.969267999986,
+              "deterministic_output": true,
+              "bytes": 27445
+            },
+            "florestal-01-discover-xlsx": {
+              "median_ms": 2114.0292279999994,
+              "deterministic_output": true,
+              "bytes": 9780
+            },
+            "florestal-02-find-input-entrypoints": {
+              "median_ms": 467.5695699999924,
+              "deterministic_output": true,
+              "bytes": 3537
+            }
+          }
+        },
+        "current": {
+          "samples": 12,
+          "median_ms": 4644.843545499996,
+          "per_case": {
+            "sialia-overview": {
+              "median_ms": 7018.267656000011,
+              "deterministic_output": true,
+              "bytes": 19937
+            },
+            "sialia-charging": {
+              "median_ms": 8951.762774000003,
+              "deterministic_output": true,
+              "bytes": 22274
+            },
+            "florestal-01-discover-xlsx": {
+              "median_ms": 2717.272813000003,
+              "deterministic_output": true,
+              "bytes": 8957
+            },
+            "florestal-02-find-input-entrypoints": {
+              "median_ms": 475.1423189999914,
+              "deterministic_output": true,
+              "bytes": 3349
+            }
+          }
+        }
+      },
+      "limits": [
+        "Small known query sample, warm filesystem cache, one machine.",
+        "No autonomous host model, billing, application execution or end-to-end task time measured.",
+        "Models/configurations must be recorded by the caller; each root must already be scanned by its own binary."
+      ]
+    },
+    "latency_change_percent": -6.235150768622666
+  }
 }

@@ -747,7 +747,8 @@ pub struct AiConfig {
     /// Must be explicitly true before a configured judgement fallback may run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<Value>,
-    /// Optional embedded vectors. Native lexical retrieval is the default.
+    /// Embedded local vectors are enabled when absent; explicit false opts out.
+    /// This never enables the separate paid fallback provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vectors: Option<Value>,
     #[serde(flatten)]
@@ -910,7 +911,7 @@ impl ProjectConfig {
 
     #[must_use]
     pub fn ai_vectors_enabled(&self) -> bool {
-        self.ai.vectors.as_ref() == Some(&Value::Bool(true))
+        self.ai.vectors.as_ref().is_none_or(|value| value == &Value::Bool(true))
     }
 
     /// `search.cut_share`: que parte da maior chance, em pontos percentuais
@@ -1136,15 +1137,17 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn native_defaults_ignore_legacy_providers_and_preserve_explicit_fallback_options() {
+    fn local_vectors_default_on_and_remote_fallback_stays_explicit() {
         let dir = tempdir().unwrap();
-        for text in
-            ["{}", r#"{"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#, r#"{"ai":{"fallback":"true","vectors":1}}"#, r#"{"ai":{"fallback":null}}"#]
+        for (text,vectors) in
+            [("{}",true), (r#"{"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#,true),
+             (r#"{"ai":{"fallback":"true","vectors":1}}"#,false), (r#"{"ai":{"fallback":null}}"#,true),
+             (r#"{"ai":{"vectors":false}}"#,false), (r#"{"ai":{"vectors":null}}"#,true)]
         {
             std::fs::write(dir.path().join("mustard.json"), text).unwrap();
             let config = ProjectConfig::load(dir.path());
             assert!(!config.ai_fallback_enabled());
-            assert!(!config.ai_vectors_enabled());
+            assert_eq!(config.ai_vectors_enabled(),vectors,"{text}");
         }
         std::fs::write(
             dir.path().join("mustard.json"),

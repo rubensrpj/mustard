@@ -8,7 +8,7 @@ Binário busca/calcula; LLM implementa.
 - Explique na ordem de explicar do estilo de resposta. Confira código/histórico antes de remover. Grave respostas por `mustard-rt run answer`.
 - Busque/leia por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve argumentos/escopo. `intent`: pergunta local com recurso/provedor + operação, sem repetir o objetivo geral; ou 2–8 itens `- pergunta` com recurso/restrições por item. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
 - CLI: `mustard-rt run search --shell-output --intent "<pergunta>" --purpose spec -- rg -n "<padrão>" .`. Bash: `mustard:spec: <pergunta>`, senão `locate`. `--raw`: nativo; `--choose`: Jev opcional.
-- Reaproveite corpos completos; expanda faixas faltantes com `Read` (`offset`/`limit`). Sem faixa: `run map summary --file <arquivo>`. Fonte mudou: releia. Referência não confirma comportamento.
+- Reuse linhas/corpos confirmados; leia faixas faltantes com `Read` (`offset`/`limit`). Sem faixa: `run map summary --file <arquivo>`. Fonte mudou: releia. Referência não prova comportamento.
 - `mustard-rt run knowledge`: dossiê.
 
 ## Spec aberta

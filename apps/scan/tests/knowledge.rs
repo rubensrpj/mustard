@@ -103,7 +103,7 @@ fn task_intent_refines_a_broad_investigation_but_preserves_an_exact_name() {
 fn native_retrieval_finds_actions_and_preserves_exact_data_symbols_without_vectors() {
     let dir = seed();
     let root = dir.path();
-    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"},"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#)
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"},"ai":{"vectors":false},"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#)
         .unwrap();
     std::fs::write(
         root.join("src/metrics.ts"),

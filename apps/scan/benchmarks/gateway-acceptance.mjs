@@ -49,7 +49,8 @@ try {
   const sessionMap=fs.readFileSync(path.join(root,'.claude/mustard/session-map.md'),'utf8');
   assert.ok(sessionMap.includes('{request:{tool,input,intent,purpose,choose?}}'));
   assert.ok(sessionMap.includes('mustard:spec:'));
-  assert.ok(sessionMap.includes('corpos completos') || sessionMap.includes('complete bodies'));
+  assert.ok(sessionMap.includes('linhas/corpos') || sessionMap.includes('lines/bodies'));
+  assert.ok(sessionMap.includes('offset') && sessionMap.includes('limit'));
   const configFile = path.join(root, 'mustard.json');
   const config = JSON.parse(fs.readFileSync(configFile));
   config.ai = { fallback: true, vectors: true };
@@ -118,6 +119,9 @@ try {
   assert.deepEqual(fallback.stderr, raw.stderr);
   assert.equal(fallback.status, raw.status);
 
+  // The user can now enable local intent retrieval by default. This suite
+  // deliberately verifies the explicit native-only configuration.
+  config.ai.vectors=false;fs.writeFileSync(configFile,JSON.stringify(config));
   const typed = { tool: 'Grep', input: { pattern: 'quartz', path: 'src', output_mode: 'content', '-n': true, head_limit: 1, offset: 1 }, intent: 'inspect persistence', purpose: 'implement' };
   const typedResult = search(['--request', JSON.stringify(typed)]);
   assert.equal(typedResult.result.numLines, 1);

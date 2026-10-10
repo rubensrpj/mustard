@@ -1,8 +1,8 @@
 # Busca do Mustard: prioridades implementadas e resultados — 10/10/2026
 
-Implementação na branch `codex/mustard-plano-completo`, na cópia isolada `/home/rubens/.cache/codex/worktrees/mustard-plano-completo-20261008`. Baseline desta revisão: `e29ec6f3a750109f64b23d976e7a03c660b0338b`. A branch pessoal em alteração e os projetos de aplicação originais não foram modificados. Este documento substitui o estado corrente dos relatórios de 08/10 e 09/10, preservados como histórico.
+Implementação na branch `codex/mustard-plano-completo`, em uma cópia isolada. Baseline da revisão de recuperação: `e29ec6f3a750109f64b23d976e7a03c660b0338b`. O ajuste posterior de entrega/comportamento do modelo compara com `f7c80415a5a9c772f24fd93942af6c110b9b684e`, sem misturar os dois pontos de partida. A branch pessoal em alteração e os projetos de aplicação originais não foram modificados. Este documento substitui o estado corrente dos relatórios de 08/10 e 09/10, preservados como histórico.
 
-**Resultado:** houve ganho mensurável na recuperação de referências úteis, acompanhado de menos texto no agregado. A busca nativa passou de 55/80 para 64/80 alvos entregues; com o modelo local opcional, chegou a 72/80. Isso mede referências à declaração esperada na apresentação efetivamente entregue ao agente, com arquivo/faixa/hash conferidos. Não é precisão sobre todos os candidatos, implementação correta ou economia de tokens faturados.
+**Estado final:** a etapa anterior elevou os alvos entregues de 55/80 para 72/80. A revisão de entrega preservou exatamente esses 72 alvos e 49 corpos completos, reduzindo a apresentação de 1.356.648 para 1.228.267 bytes (**−9,46% adicional**). O modelo local fica habilitado por padrão nas pesquisas por intenção; Jev continua pontual e separado. Esses resultados medem evidência efetivamente entregue, com arquivo/faixa/hash conferidos; não medem precisão de todos os candidatos, implementação correta ou tokens faturados.
 
 ## Prioridades e alterações mantidas
 
@@ -10,14 +10,71 @@ Implementação na branch `codex/mustard-plano-completo`, na cópia isolada `/ho
 2. **Admissão e fusão antes dos cortes.** Âncoras exatas permanecem prioritárias. Líderes dos canais independentes são preservados antes do consenso por RRF; vistas lexicais correlacionadas não ganham votos extras contra o canal de código apenas por serem mais numerosas. O reservatório interno de fontes foi separado do orçamento de apresentação. Continuam os limites de 96 arquivos, 12 MiB agregados e 2 MiB por arquivo; o corte dependente de dois segundos foi retirado porque alterava os candidatos conforme a carga da máquina. A investigação continua parcial e informa suas lacunas.
 3. **Trechos estruturais.** O parser registra faixas de bytes/linhas por fronteiras da AST, dividindo nós grandes e reunindo irmãos contíguos. Os trechos priorizam essas fronteiras, conservam os intervalos ainda não lidos e indicam folhas excessivas. Não há resumo inventado. Os conceitos de divisão/reunião estrutural foram adaptados de [cAST](https://aclanthology.org/2025.findings-emnlp.430/), usando o Tree-sitter já existente.
 4. **Encadeamento útil.** Âncoras explícitas e o primeiro destino elegível conservam prioridade; os demais pontos de partida favorecem dependências estáticas com alvo único. Vizinhos incidentais que não entraram na seleção da tarefa não consomem os espaços de investigação. Interfaces/tipos ainda podem levar aos seus membros e implementações. Isso recuperou o contexto do frontend e preservou o roteamento de provedor do Sialia.
-5. **Busca vetorial local opcional sobre código real.** Um canal independente consulta o índice inteiro dentro do escopo, antes do corte lexical de candidatos. Chunks são agrupados por símbolo antes do corte, evitando que uma classe grande ocupe todos os destinos. Só depois se hidratam os candidatos e se confere o código atual. Não há servidor de modelos, download em runtime, Ollama ou API paga nesse caminho.
+5. **Busca vetorial local sobre código real, habilitada por padrão.** Um canal independente consulta o índice inteiro dentro do escopo, antes do corte lexical de candidatos. Chunks são agrupados por símbolo antes do corte, evitando que uma classe grande ocupe todos os destinos. Só depois se hidratam os candidatos e se confere o código atual. Não há servidor de modelos, download em runtime, Ollama ou API paga nesse caminho.
 6. **Menos repetição na apresentação e no Jev.** Caminhos e qualificadores repetidos do grafo são agrupados, preservando as relações e coordenadas. `knowledge-choice-v7` retira campos vazios e assinaturas/documentação já presentes literalmente no trecho numerado; conserva documentação distinta, hashes, alternativas, abstenção e os critérios de aceitação anteriores. Candidatos/trechos continuam compartilhados entre perguntas quando idênticos, conforme os conceitos de [Choice](https://docs.typesafe.ai/primitives/choice) e [State](https://docs.typesafe.ai/concepts/state).
 7. **Medição da entrega real.** O avaliador confere a apresentação do agente, não apenas o JSON interno. Um modo diagnóstico de projeção evita o rastreamento caro de todos os candidatos; a primeira pergunta de cada repositório compara essa projeção byte a byte com a saída normal. O rastreamento completo continua disponível explicitamente.
 8. **Hidratação seletiva do banco.** A recuperação passa pelos campos e declarações não solicitados sem construir seus objetos em memória. Só desserializa os cards nas posições pedidas, mantendo validação do JSON e conferência de identidade/posição. Não acrescenta uma cópia persistente dos dados. A alteração foi mantida após preservar a saída e reduzir a latência da versão intermediária.
 
 Nenhuma regra de negócio, nome de fornecedor, projeto ou gabarito foi introduzido no algoritmo. A implementação reutiliza os parsers, SQLite e `model2vec-rs` existentes. O núcleo/contrato permanecem independentes do host; o adaptador instalado para Codex continua sendo uma etapa futura.
 
-## Recuperação e tamanho da saída
+## Revisão final: retorno que o agente consegue usar
+
+Comparação com a versão `f7c80415`, nos mesmos pedidos e snapshots; os dois braços usam o modelo local. As apresentações do baseline foram reutilizadas com conferência dos hashes do dataset, seleção e binário; a versão atual repetiu as 80 consultas. Não se compararam tempos dessas execuções concorrentes como desempenho.
+
+| Medida | Antes desta revisão | Atual |
+| --- | ---: | ---: |
+| Alvos com corpo/referência entregue | 72/80 | 72/80 |
+| Corpos esperados completos | 49/80 | 49/80 |
+| Bytes entregues nas 80 buscas | 1.356.648 | 1.228.267 (−9,46%) |
+| Alvos/corpos anteriores perdidos | — | 0 / 0 |
+| Paridade do resultado nativo | 80/80 | 80/80 |
+| Chamadas externas das consultas | 0 | 0 |
+
+As quatro frentes foram implementadas:
+
+1. **Retorno inicial navegável.** Caminhos de arquivos são agrupados; destinos estáticos conservam nome e faixa de linhas, com expansão sob demanda. Assinaturas extensas, documentação e metadados continuam no banco/diagnóstico. As referências não são apresentadas como prova de comportamento. Candidatos adiados indicam uma única instrução de expansão, seguida dos arquivos/contagens.
+2. **Modelo onde há busca por intenção.** O canal local deixa de ser ignorado por existir qualquer âncora nominal; identidade única resolvida, pesquisa literal e leitura exata conservam o caminho direto. Perguntas independentes explícitas recebem embeddings em lote e fusão por posição, preservando líderes de cada pergunta. Listas de objetivo/entrada/saída/procedimento continuam uma pergunta. Listas numeradas só se desdobram quando cada item é uma pergunta terminada em `?`; o schema do host orienta esse contrato.
+3. **Reutilização de linhas confirmadas.** Na mesma resposta, linhas idênticas do mesmo arquivo/hash aparecem uma vez quando a indicação de reutilização ocupa menos espaço. Entre respostas, somente fonte atual efetivamente confirmada pelo adaptador é reutilizada, com isolamento por checkout/sessão/agente/época. Linhas cortadas no meio não viram recibo completo. Mudança de código ou compactação invalida a reutilização; `Read` explícito continua devolvendo o trecho pedido. O armazenamento do controle é limitado; esquecer evidência resulta em entregá-la novamente.
+4. **Custo da evidência completa e trajetória preparada.** O avaliador confere as linhas realmente presentes na apresentação e executa leituras reais das faixas faltantes. O runner de sessões registra uso do modelo, resultados de ferramentas e intervalos solicitados repetidamente, exige conclusão correta de ambos os braços e verifica o uso do gateway antes de calcular economia.
+
+### Projetos do usuário: reduzir texto sem transferir o custo para a expansão
+
+| Medida | Sialia, antes → atual | Florestal, antes → atual |
+| --- | ---: | ---: |
+| Alvos localizados | 10/12 → 10/12 | 8/8 → 8/8 |
+| Corpos exigidos completos no retorno inicial | 3 → 3 | 3 → 3 |
+| Retorno inicial, bytes | 169.562 → 149.834 (−11,63%) | 59.453 → 54.388 (−8,52%) |
+| Leituras de faixas faltantes | 8 → 8 | 5 → 5 |
+| Retorno inicial + leituras, bytes | 195.613 → 175.885 (−10,09%) | 67.131 → 62.066 (−7,54%) |
+
+O custo expandido compara os **mesmos dez alvos localizados** do Sialia e os oito do Florestal. Os dois pontos ainda não localizados no Sialia ficam explícitos e não são declarados resolvidos. As faixas esperadas são conhecidas pelo avaliador somente depois da busca inicial: é um limite inferior de custo de entrega, orientado pelas respostas conhecidas, **não uma trajetória autônoma do Claude**. Não se executaram aplicações, pagamentos, geração/reimportação de planilhas ou bancos de negócio.
+
+Não houve ganho adicional de recuperação nesses replays. O ganho confirmado desta revisão é menos texto mantendo as referências e corpos anteriores; nenhuma economia de tokens faturados é inferida desses bytes. A reutilização entre turnos foi verificada por testes de recibo/isolamento; seu efeito em sessões reais ainda não foi medido.
+
+### Tempo: melhora agregada, custo desigual
+
+Depois dos testes e consultas de qualidade, sem compilação ou outro benchmark concorrente, foram feitos um aquecimento por pergunta/braço e três repetições alternadas de quatro consultas conhecidas. Os dois braços usam vetores locais no mesmo snapshot descartável. As 24 saídas medidas foram determinísticas por braço/pergunta. A mediana agregada passou de **4.954 para 4.645 ms (−6,24%)**.
+
+| Consulta | Antes, mediana | Atual, mediana | Variação |
+| --- | ---: | ---: | ---: |
+| Sialia: visão do fluxo | 7.344 ms | 7.018 ms | −4,43% |
+| Sialia: cobranças | 9.613 ms | 8.952 ms | −6,88% |
+| Florestal: descoberta de XLSX | 2.114 ms | 2.717 ms | +28,53% |
+| Florestal: entradas do input | 468 ms | 475 ms | +1,62% |
+
+A assistência local e a verificação/atualização do índice têm custo: não houve aceleração uniforme. A amostra pequena, caches aquecidos e uma só máquina não permitem extrapolar desempenho geral ou duração de uma tarefa completa. O primeiro preenchimento do índice local não está incluído nessa medição aquecida. Manifesto, binários e amostras ficam em `latency-manifest.json` e `latency-verified.json` na pasta local desta revisão.
+
+### Experimentos desta revisão
+
+Um canal lexical BM25 adicional foi testado junto com mudanças de decomposição: a combinação caiu de 36/40 para 34/40 referências na seleção conhecida. O canal foi retirado, sem alegar uma ablação isolada que provasse a causa. A revisão seguinte mostrou que listas descritivas numeradas também estavam sendo decompostas incorretamente; corrigida essa distinção, o resultado final preservou individualmente os 72 alvos e 49 corpos completos. O BM25/FTS já existente permanece; o protótipo de canal adicional não entrou no produto.
+
+### Limite da validação no host
+
+O preflight gratuito de duas tarefas completas, os testes do plugin e as verificações de transporte passaram. A execução autônoma pareada continua pendente: o CLI local informa `loggedIn:false`, e o runner `--bare` precisa de `ANTHROPIC_API_KEY` e do mesmo identificador completo de modelo nos dois braços. Não há valores medidos de tokens faturados, custo total ou qualidade de implementação produzida pelo Claude/Codex. O contrato é compartilhado com futuros adaptadores; esta revisão não instala integração do Codex.
+
+Artefatos locais da revisão: `target/search-delivery-20261010/delivery-summary.json`, `verified-{known,unseen}/comparison.json`, `verified-{sialia,florestal}-labels.json`, `verified-{sialia,florestal}-evidence-cost.json`, logs finais e binários congelados em `verified-bin/`. Os runners ficam versionados; nenhum artefato é publicado automaticamente.
+
+## Histórico da recuperação antes do ajuste final de entrega
 
 Mesmas 80 descrições e pedidos nos três braços, em oito repositórios, 20 casos por linguagem. Baseline e versão final foram compilados com `CARGO_PROFILE_DEV_OPT_LEVEL=3`, usando binários congelados distintos. A comparação de qualidade não usa tempos coletados sob concorrência/diagnóstico como comparação de desempenho.
 
@@ -82,7 +139,7 @@ Não houve aceleração frente ao baseline. O ganho de recuperação veio com ma
 
 Dados incorporados: [minishlab/potion-code-16M-v2](https://huggingface.co/minishlab/potion-code-16M-v2/tree/e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b), revisão fixa `e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b`, licença MIT declarada no model card. São embeddings estáticos de código com 256 dimensões; pesos/config/tokenizador somam **33.514.471 bytes (33,5 MB)**. Proveniência, hashes, model card e atribuição acompanham o repositório e o plugin. Foram incorporados os dados do modelo; a biblioteca de inferência Rust já era dependência do Mustard. Não foi incorporado o projeto Semble ou um novo framework de inferência.
 
-O bloco SQLite `code-meaning` armazena vetores int8 por símbolo/chunk, hash da fonte e impressão digital da análise/modelo. Atualiza somente arquivos alterados, remove arquivos desaparecidos e rejeita recibos antigos. A busca faz cosseno no índice escopado e não escreve vetores durante a consulta. O gateway continua revalidando a fonte atual depois da recuperação. A atualização estrutural automática é nativa: vetores de conteúdo alterado ficam inelegíveis até um scan normal com a opção habilitada.
+O bloco SQLite `code-meaning` armazena vetores int8 por símbolo/chunk, hash da fonte e impressão digital da análise/modelo. Atualiza somente arquivos alterados, remove arquivos desaparecidos e rejeita recibos antigos. A pontuação por cosseno lê o índice escopado. Antes da busca por intenção, o gateway atualiza incrementalmente os vetores dos documentos alterados; compara impressões digitais no SQL sem carregar todos os pacotes JSON inalterados. Os recibos são revalidados no código atual depois da recuperação. A atualização estrutural continua nativa e vetores antigos ficam inelegíveis; falha do índice local conserva a alternativa lexical. O diagnóstico registra todas as tentativas de atualização e a soma dos vetores calculados.
 
 No Sialia foram 39.167 vetores, com 10.026.752 bytes de componentes; o banco inteiro passou de aproximadamente 374,3 MB para 500,1 MB. No Florestal, 15.657 vetores, 4.008.192 bytes de componentes, banco de 78,0 MB para 108,3 MB. O aumento do banco inclui também testes agora indexados, fronteiras da AST, índices/IDs e o índice semântico genérico anterior que continua usado por outros comandos. Não é todo atribuído aos 256 bytes de cada vetor. O `mustard-rt` de desenvolvimento otimizado cresce cerca de 33,5 MB com os dados incorporados; não há serviço residente adicional.
 
@@ -90,19 +147,19 @@ O armazenamento vetorial em SQLite foi mantido: estes ensaios não justificaram 
 
 ### Ativação e contrato
 
-O padrão continua **sem modelo e sem chamada paga**. Para experimentar o canal local, mesclar no `mustard.json`:
+O padrão agora usa **o modelo local nas buscas por intenção, sem chamada paga**. `ai.vectors` ausente herda `true`; `false` desliga explicitamente. Jev permanece separado e precisa de habilitação e solicitação. Configuração explícita equivalente ao padrão:
 
 ```json
 {"ai":{"vectors":true,"fallback":false}}
 ```
 
-Executar o scan normal do projeto para preencher o índice. Na cópia de desenvolvimento, a entrada direta é:
+O scan normal prepara o índice; uma pesquisa por intenção também completa/atualiza o índice local já existente, após a atualização estrutural necessária. Na cópia de desenvolvimento, a entrada direta do scan é:
 
 ```sh
 target/debug/scan scan /caminho/do/projeto --out /caminho/do/projeto/.claude/grain.db --json
 ```
 
-`--native` conserva a atualização puramente estrutural; `ai.vectors:false` desliga o uso dos modelos locais. A chave do Jev não é necessária para embeddings. Pesquisa literal/identidade exata resolvida não ativa o canal novo automaticamente apenas porque existe um índice vetorial.
+`--native` conserva a atualização puramente estrutural; `ai.vectors:false` desliga o uso dos modelos locais. A chave do Jev não é necessária para embeddings. Pesquisa literal, leitura explícita e identidade exata única resolvida seguem pelo caminho direto. Perguntas com várias âncoras podem receber assistência vetorial. O modelo escolhe destinos prováveis; não produz conclusões sobre comportamento de negócio.
 
 O contrato do gateway continua `schema_version:1`, `request:{tool,input,intent,purpose,choose?}`. O resultado nativo permanece recuperável por `purpose:locate`/`--raw`, e falhas/ausência de evidência útil preservam o fallback. Mods executa a pesquisa pelo fluxo de ferramentas/permissões do host. Os limites dos hooks clássicos, comandos compostos e formatos não suportados permanecem documentados no relatório de 09/10; não há promessa de interceptar qualquer programa possível.
 
@@ -114,7 +171,7 @@ Na fixture de 12 comparações pequenas, seis de calibração e seis reservadas,
 
 O piloto público final usa as primeiras duas descrições de cada um dos quatro repositórios da seleção de 09/10, sem rótulos no pedido/provedor. Em oito perguntas, o alvo estava no conjunto de alternativas em sete: **sete escolhas corretas, zero erradas aceitas e uma abstenção**. O primeiro destino correto passou de 1/8 na ordem nativa para 7/8 após a escolha. Foram **nove chamadas físicas**, incluindo refinamento, **178.232 tokens de entrada conhecidos**, **US$ 0,007485 estimados**; oito repetições usaram cache com zero HTTP. Esse custo não é comparável aos 12 casos curtos, nem demonstra menor custo de sessão.
 
-Toda a revisão, contando a repetição de calibração anterior à recompilação e os dois pilotos públicos, registrou **54 chamadas**, **392.902 tokens conhecidos** e **US$ 0,016503 estimados**. Nenhuma tentativa foi apagada da conta. Valores seguem o preço configurado, não uma fatura verificada. O piloto público anterior à identificação explícita de testes teve o mesmo resultado qualitativo. A revisão final acrescentou a indicação `test_only` à evidência; por isso seus tokens diferem ligeiramente.
+A revisão anterior, contando a repetição de calibração anterior à recompilação e os dois pilotos públicos, registrou **54 chamadas**, **392.902 tokens conhecidos** e **US$ 0,016503 estimados**. Nenhuma tentativa foi apagada da conta. A revisão de entrega descrita acima acrescentou **zero chamadas pagas ao Jev**. Valores seguem o preço configurado, não uma fatura verificada. O piloto público anterior à identificação explícita de testes teve o mesmo resultado qualitativo. A revisão final acrescentou a indicação `test_only` à evidência; por isso seus tokens diferem ligeiramente.
 
 ## Ensaios retirados ou não incorporados
 
@@ -127,13 +184,14 @@ Toda a revisão, contando a repetição de calibração anterior à recompilaç�
 
 ## Verificação e reprodução
 
-Passaram **3.982 testes Rust**, com dois ignorados herdados, Clippy com `-D warnings`, **16 testes oficiais do plugin Mods**, validação do plugin, sintaxe dos runners e conferência dos SHA-256 dos dados do modelo. A aceitação ponta a ponta instala usando o binário absoluto desta cópia em uma pasta realmente vazia e verifica atualização, fallback, paridade, ferramentas tipadas, aprendizado, expansão, reutilização de corpos e zero HTTP/modelos no caminho padrão.
+Passaram **3.987 testes Rust**, com dois ignorados herdados, Clippy com `-D warnings`, **16 testes oficiais do plugin Mods**, validação do plugin, sintaxe dos runners e conferência dos SHA-256 dos dados do modelo. A aceitação ponta a ponta instala usando o binário absoluto desta cópia em uma pasta realmente vazia e verifica atualização, fallback, paridade, ferramentas tipadas, aprendizado, expansão, reutilização de corpos e zero HTTP no caminho literal e nativo; a aceitação separada `gateway-local-model.mjs` verifica o novo padrão local e a atualização dos recibos.
 
 ```sh
 CARGO_PROFILE_DEV_OPT_LEVEL=3 cargo build --workspace
 CARGO_PROFILE_DEV_OPT_LEVEL=3 cargo test --workspace
 CARGO_PROFILE_DEV_OPT_LEVEL=3 cargo clippy --workspace --all-targets -- -D warnings
 node apps/scan/benchmarks/gateway-acceptance.mjs
+node apps/scan/benchmarks/gateway-local-model.mjs
 claude plugin validate plugin
 claude plugin test plugin
 ```
@@ -150,6 +208,6 @@ node apps/scan/benchmarks/gateway-heldout.mjs \
   --vectors true --out /caminho/resultados
 ```
 
-Trocar `--vectors true` por `false` compara o caminho nativo. O runner remove credenciais e exige zero chamadas externas. O piloto Jev é separado e exige `--jev`, configuração habilitada e credencial; nunca salvar a chave nos relatórios. A latência usa `gateway-latency.mjs`, roots já escaneadas por seus próprios binários e manifesto de cópias descartáveis, com aquecimento e braços alternados.
+Trocar `--vectors true` por `false` compara o caminho nativo. Para comparar ambos os braços com modelo, usar também `--baseline-vectors true`. O runner remove credenciais e exige zero chamadas externas. O piloto Jev é separado e exige `--jev`, configuração habilitada e credencial; nunca salvar a chave nos relatórios. A latência usa `gateway-latency.mjs`, roots já escaneadas por seus próprios binários e manifesto de cópias descartáveis, com aquecimento e braços alternados.
 
 O painel/mods, statusline e publicação externa somente mediante solicitação explícita continuam com seus fluxos existentes. Não foi reintroduzida publicação automática. O que ainda depende de uso real é a ergonomia no Claude, redução de buscas/leituras, tokens totais faturados e qualidade da implementação produzida. Os ganhos demonstrados aqui são recuperação, tamanho da apresentação e escolhas pontuais, com os custos e regressões de completude descritos acima.

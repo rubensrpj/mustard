@@ -16,7 +16,9 @@ for(const q of requests.requests){
  const view=typeof report._trace_agent_view==='string'?{bytes:Buffer.from(report._trace_agent_view)}:run(path.join(bin,'mustard-rt'),[...argv,'--shell-output']);
  if(rows.length===0&&typeof report._trace_agent_view==='string')assert.deepEqual(view.bytes,run(path.join(bin,'mustard-rt'),[...argv,'--shell-output']).bytes);
  const native=run(path.join(bin,'mustard-rt'),['run','search','--root',root,'--request',JSON.stringify({...q.envelope,request:{...q.envelope.request,purpose:'locate'}})]);
- const original=JSON.parse(native.bytes);assert.deepEqual(report.result,original.result);assert.equal(report.exit_code,original.exit_code);assert.equal(report.remote_model_calls,0);
+ const original=JSON.parse(native.bytes);
+ const canonical=result=>result.mode==='files_with_matches'?{...result,filenames:[...result.filenames].sort()}:result;
+ assert.deepEqual(canonical(report.result),canonical(original.result));assert.equal(report.exit_code,original.exit_code);assert.equal(report.remote_model_calls,0);
  for(const c of report.task_context?.cards||[])assert.equal(sha(fs.readFileSync(path.join(root,c.source.file))),c.source.sha256);
  const row={id:q.id,ms:first.ms,view_bytes:view.bytes.length,native_bytes:Buffer.byteLength(report.result.stdout||report.result.content||''),native_parity:true,remote_model_calls:0,status:report.task_context?.status,
   cards:(report.task_context?.cards||[]).map(c=>({name:c.name,source:c.source,body:!!c.initial_source_excerpt,reference:!!c.initial_reference})),flow:report.task_context?.candidate_flow};

@@ -267,8 +267,8 @@ pub fn query_with(
     consistent_query(root, tree, opts, true, None, false, None)
 }
 
-/// Native task-aware retrieval. This port never selects a paid provider or a
-/// local sense model, including projects with legacy AI settings enabled.
+/// Task-aware retrieval with an optional embedded code channel. This port
+/// never selects a paid provider, including projects with legacy AI settings.
 pub fn query_for(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::investigation::Task<'_>) -> Result<(Value, ProjectMap), MapRefusal> {
     if task.intent.len()>4000 || opts.text.len()>4000 || (opts.symbol.is_some() && !task.intent.trim().is_empty()) {
         return Err(invalid("knowledge-invalid-investigation-context"));

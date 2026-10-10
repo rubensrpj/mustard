@@ -329,7 +329,9 @@ pub(super) fn prepare(
     let mut local_model_calls=0;
     if let Some(scope) = scope {
         let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
-        if query.symbol.is_none() && !query.all && !task.intent.trim().is_empty() && anchor_ids.is_empty() {
+        let exact_identity=anchor_ids.len()==1 && cards.iter().any(|card|anchor_ids.contains(&card.id)
+            && (query.text.trim()==card.name || query.text.trim()==card.id));
+        if query.symbol.is_none() && !query.all && !task.intent.trim().is_empty() && !exact_identity {
             let (extra,ids,calls)=catalog::code_candidates(root,question,scope.files)?;
             local_model_calls=calls;
             let mut present:BTreeSet<_>=cards.iter().map(|c|c.id.clone()).collect();

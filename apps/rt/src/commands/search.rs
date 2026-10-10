@@ -32,6 +32,10 @@ pub fn run(
         if raw && !matches!(request.tool.as_str(), "rg" | "grep" | "git") {
             return Err("search-raw-output-requires-native-tool".into());
         }
+        if raw {
+            request.purpose=mustard_core::domain::knowledge::investigation::Purpose::Locate;
+            request.choose=false;
+        }
         crate::shared::search_gateway::answer(root, &request).map(|answer| (answer, request))
     })();
     match result {

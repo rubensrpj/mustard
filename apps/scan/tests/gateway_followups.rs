@@ -6,6 +6,26 @@ use mustard_core::io::code_search;
 use serde_json::json;
 
 #[test]
+fn default_local_vectors_assist_intent_but_exact_names_and_explicit_opt_out_stay_native() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("source.rs"),"pub fn read_json_file() { let entry_sentinel=1; parse_json(read_file()); }\npub fn sort_numbers() { sort(); }\n").unwrap();
+    let (_,scan)=model::scan(root,&root.join(".claude"),&[]);
+    assert_eq!(scan["vectors_enabled"],true);assert!(scan["vectors"].as_u64().unwrap()>0);
+    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","entry_sentinel","."]}),intent:"read and parse JSON data from a file".into(),purpose:Purpose::Implement,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();
+    assert!(answer.report["task_context"]["investigation"]["local_model_calls"].as_u64().unwrap_or(0)>0,"{}",answer.report);
+    assert_eq!(answer.report["remote_model_calls"],0);
+    let exact=Request{input:json!({"args":["-n","--with-filename","read_json_file","."]}),..request.clone()};
+    let answer=code_search::execute(root,root,root,&exact,None).unwrap();
+    assert_eq!(answer.report["task_context"]["investigation"]["local_model_calls"],0);
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":false}}"#).unwrap();
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();
+    assert_eq!(answer.report["task_context"]["investigation"]["local_model_calls"],0);
+    assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+}
+
+#[test]
 fn test_declarations_are_searchable_and_remain_identified_in_the_host_view() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();
     std::fs::write(root.join("mustard.json"),"{}").unwrap();

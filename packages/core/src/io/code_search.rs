@@ -16,6 +16,7 @@ mod scope;
 mod task;
 mod discovery;
 mod task_view;
+mod source_view;
 
 pub struct Answer {
     pub report: Value,

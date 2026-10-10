@@ -45,7 +45,10 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         request.purpose
     );
     text.push_str("# Complete original result: repeat this request with purpose=locate; native CLI also supports --raw.\n");
-    text.push_str("# Reuse complete bodies below; read only missing ranges when further source is required.\n");
+    text.push_str("# Reuse delivered source; read only missing ranges when further source is required.\n");
+    if cards.iter().any(|card|card["test_only"]==true) {
+        text.push_str("# Test-only declarations are marked; execution/coverage unverified.\n");
+    }
     if request.tool == "Grep" {
         let _ = writeln!(
             text,
@@ -79,6 +82,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     let mut test_ranges = BTreeMap::<&str, Vec<String>>::new();
     let mut deferred = BTreeMap::<&str, usize>::new();
     let mut visible_ids = BTreeSet::new();
+    let mut source_view = super::source_view::View::default();
     for card in cards {
         let file = card["source"]["file"].as_str()?;
         let start = card["source"]["line"].as_u64()?;
@@ -91,7 +95,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         if card["initial_source_excerpt"] != true {
             if card["initial_reference"] == true {
                 ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));
-                if card["test_only"]==true {test_ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));}
+                if card["test_only"]==true {test_ranges.entry(file).or_default().push(format!("{start}-{end}"));}
                 visible_ids.insert(card["id"].as_str().unwrap_or_default());
             } else {*deferred.entry(file).or_default()+=1;}
             continue;
@@ -113,7 +117,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             } else {
                 ""
             },
-            if card["test_only"]==true {"; test-only, execution unverified"}else{""}
+            if card["test_only"]==true {"; test-only"}else{""}
         );
         let source = card["source_excerpt"]["text"].as_str().unwrap_or_default();
         for field in ["signature", "documentation", "body_comment"] {
@@ -147,7 +151,11 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             }
         }
         if !source.is_empty() {
-            text.push_str(source);
+            if let Some(ranges)=card["reused_source_ranges"].as_str() {
+                let _=writeln!(text,"# Source lines {ranges} already delivered in this context; current hash.");
+            }
+            let delivered=card["delivery_source_excerpt"].as_str().unwrap_or(source);
+            text.push_str(&source_view.render(file,card["source"]["sha256"].as_str().unwrap_or_default(),delivered));
             text.push('\n');
         }
         if card["source_excerpt"]["truncated"] == true {
@@ -164,13 +172,24 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             text.push_str("# Parse coverage partial or unknown.\n");
         }
     }
+    // Static dependencies need a destination, not every full signature before
+    // the agent has chosen to investigate it. Keep names and exact ranges in
+    // the same navigable representation as the other expandable references.
+    for reference in context["static_references"].as_array().into_iter().flatten()
+        .filter(|reference| reference["initial_reference"] == true)
+    {
+        let id=reference["id"].as_str().unwrap_or_default();
+        if !visible_ids.insert(id) {continue;}
+        ranges.entry(reference["source"]["file"].as_str()?).or_default().push(format!("{} {}-{}",
+            reference["name"].as_str().unwrap_or_default(),reference["source"]["line"],reference["source"]["end_line"]));
+    }
     for (file, candidates) in ranges {
         let _ = writeln!(
             text,
             "@ {file}\n# References (expand source/responsibility): {}",
             candidates.join("; ")
         );
-        if let Some(tests)=test_ranges.get(file) {let _=writeln!(text,"# Test-only declarations (execution unverified): {}",tests.join("; "));}
+        if let Some(tests)=test_ranges.get(file) {let _=writeln!(text,"# Test-only ranges: {}",tests.join("; "));}
     }
     graph(&mut text,context);
     for test in context["chain"]["test_mentions"].as_array().into_iter().flatten() {
@@ -181,8 +200,11 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         let _=writeln!(text,"# Question {}: {} — {} source references; behavior unverified",at+1,
             question["question"].as_str().unwrap_or_default(),question["references"].as_array().map_or(0,Vec::len));
     }
-    for (file,count) in deferred {
-        let _=writeln!(text,"# {count} additional candidates in {file}: mustard-rt run map summary --file {}",quote(file));
+    if !deferred.is_empty() {
+        text.push_str("# Deferred additional candidates: mustard-rt run map summary --file <file>\n");
+        for (file,count) in deferred {
+            let _=writeln!(text,"# {file}: {count}");
+        }
     }
     for edge in context["navigation"]["paths"]
         .as_array()
@@ -205,31 +227,6 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             resource["source"]["line"],
             resource["source"]["end_line"],
             resource["text"].as_str().unwrap_or_default()
-        );
-    }
-    let mut references = BTreeMap::<&str, Vec<String>>::new();
-    for reference in context["static_references"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|reference| reference["initial_reference"] == true && !visible_ids.contains(reference["id"].as_str().unwrap_or_default()))
-    {
-        references
-            .entry(reference["source"]["file"].as_str()?)
-            .or_default()
-            .push(format!(
-                "{} {}-{}: {}",
-                reference["name"].as_str().unwrap_or_default(),
-                reference["source"]["line"],
-                reference["source"]["end_line"],
-                reference["signature"].as_str().unwrap_or_default().replace(['\r','\n']," ")
-            ));
-    }
-    for (file, targets) in references {
-        let _ = writeln!(
-            text,
-            "# Static targets in {file}: {}. Expand to verify behavior.",
-            targets.join("; ")
         );
     }
     if context["static_references_partial"] == true {
@@ -266,11 +263,51 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         }
     }
     text.push_str("# Partial evidence; static links/tests are candidates. Expand before inferring absence.\n");
+    let text=coalesce_files(text,context);
     Some(Presentation {
         stdout: text.into_bytes(),
         representation: "current-task-evidence",
         owner_ranges: cards.len(),
     })
+}
+
+/// Keep one path header per source file. Only known, indexed headers qualify;
+/// opaque/verbatim resources keep their original ordering and representation.
+fn coalesce_files(text:String,context:&Value)->String {
+    if context["resources"].as_array().is_some_and(|items|!items.is_empty()) {return text;}
+    let mut files=BTreeSet::new();
+    for key in ["cards","static_references"] {
+        for item in context[key].as_array().into_iter().flatten() {
+            if let Some(file)=item["source"]["file"].as_str(){files.insert(file);}
+        }
+    }
+    for key in ["steps","test_mentions"] {
+        for item in context["chain"][key].as_array().into_iter().flatten() {
+            let source=if key=="steps" {"target_source"}else{"source"};
+            if let Some(file)=item[source]["file"].as_str(){files.insert(file);}
+        }
+    }
+    let mut header=String::new();let mut footer=String::new();
+    let mut blocks=BTreeMap::<&str,String>::new();let mut order=Vec::new();let mut current=None;let mut started=false;
+    for line in text.split_inclusive('\n') {
+        if let Some(file)=line.strip_prefix("@ ") {
+            let file=file.trim_end_matches('\n');
+            if !files.contains(file) {return text;}
+            if !blocks.contains_key(file) {order.push(file);}
+            blocks.entry(file).or_default();current=Some(file);started=true;continue;
+        }
+        if ["# Question ","# Deferred ", "# Gap:","# Partial evidence", "# Additional static target", "# Interpretation ", "# static relation: "]
+            .iter().any(|prefix|line.starts_with(prefix))
+            || line.starts_with("# ") && line.contains("; runtime unverified]: ") {
+            current=None;
+        }
+        if let Some(file)=current {blocks.get_mut(file).expect("known file block").push_str(line);}
+        else if started {footer.push_str(line);}else{header.push_str(line);}
+    }
+    let mut result=header;
+    for file in order {let _=writeln!(result,"@ {file}");result.push_str(&blocks[file]);}
+    result.push_str(&footer);
+    if result.len()<text.len() {result}else{text}
 }
 
 /// Group repeated paths and provenance labels without removing graph records.
@@ -296,6 +333,34 @@ fn graph(text:&mut String,context:&Value) {
 #[cfg(test)]
 mod graph_tests {
     use super::*;
+    #[test]
+    fn file_coalescing_keeps_source_context_references_and_global_gaps() {
+        let context=serde_json::json!({"cards":[{"source":{"file":"a.ext"}},{"source":{"file":"b.ext"}}]});
+        let text="# task evidence\n@ a.ext\n1 | first\n@ b.ext\n2 | other\n@ a.ext\n# References (expand source/responsibility): target 3-5\n# caller [ambiguous; runtime unverified]: entry -> target\n# Interpretation [reviewed; author assertion]: global hypothesis\n# Gap: unknown runtime\n".to_string();
+        let result=coalesce_files(text.clone(),&context);
+        assert_eq!(result.matches("@ a.ext").count(),1);
+        assert!(result.contains("@ a.ext\n1 | first\n# References"));
+        assert!(result.contains("@ b.ext\n2 | other\n# caller [ambiguous; runtime unverified]: entry -> target\n# Interpretation"));
+        assert!(result.ends_with("# Gap: unknown runtime\n"));
+        let mut opaque=context;opaque["resources"]=serde_json::json!([{"text":"@ a.ext"}]);
+        assert_eq!(coalesce_files(text.clone(),&opaque),text);
+    }
+    #[test]
+    fn dependency_destinations_keep_all_coordinates_without_repeating_unrequested_signatures() {
+        let context=serde_json::json!({"status":"current-task-evidence","written_clues":{"covered_slots":1},"cards":[
+            {"id":"entry","name":"entry","source":{"file":"entry.ext","line":1,"end_line":2,"sha256":"current"},
+                "initial_source_excerpt":true,"source_excerpt":{"text":"1 | entry()\n2 | call_target()","truncated":false}}],
+            "static_references":(0..50).map(|at|serde_json::json!({"id":format!("target-{at}"),"name":format!("target_{at}"),"initial_reference":true,
+                "source":{"file":"targets.ext","line":at+1,"end_line":at+2,"sha256":"current"},"signature":"VeryLongUnrequestedSignature".repeat(20)})).collect::<Vec<_>>()});
+        let answer=Answer{report:serde_json::json!({"task_context":context}),stdout:vec![],stderr:vec![],exit_code:0};
+        let request=Request{tool:"rg".into(),input:serde_json::json!({"args":["entry","."]}),intent:"inspect entry".into(),
+            purpose:crate::domain::knowledge::investigation::Purpose::Spec,choose:false};
+        let view=String::from_utf8(agent(&answer,&request).unwrap().stdout).unwrap();
+        for at in 0..50 {assert!(view.contains(&format!("target_{at} {}-{}",at+1,at+2)));}
+        assert!(!view.contains("VeryLongUnrequestedSignature"));
+        assert!(answer.report["task_context"]["static_references"][0]["signature"].as_str().unwrap().contains("VeryLongUnrequestedSignature"));
+        assert!(view.contains("1 | entry()"));assert!(view.contains("purpose=locate"));
+    }
     #[test]
     fn grouped_graph_keeps_each_source_range_and_each_resolution_without_repeating_paths() {
         let context=serde_json::json!({"chain":{"steps":[

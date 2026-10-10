@@ -1,6 +1,7 @@
-//! Optional, local code retrieval over actual AST ranges. Vectors choose
+//! Embedded local code retrieval over actual AST ranges. Vectors choose
 //! destinations; current source receipts still decide what may be returned.
-//! No HTTP, service, query-time writes, or dependency on lexical hydration.
+//! No HTTP/service or dependency on lexical hydration. Scoring is read-only;
+//! the gateway can incrementally refresh changed documents before scoring.
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::OnceLock};
 use model2vec_rs::model::StaticModel;
 use rusqlite::{Connection, params};
@@ -37,9 +38,15 @@ pub fn fill_at(path:&Path,root:&Path)->Result<usize> {
     if !table_exists(db.conn(),"texts")? {return Ok(0);}
     let known:BTreeMap<String,String>={let mut q=db.conn().prepare("SELECT path,fingerprint FROM code_vector_files WHERE model=?1")?;
         q.query_map([MODEL],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?};
-    let files:Vec<(String,String)>={let mut q=db.conn().prepare("SELECT path,analysis FROM texts WHERE analysis IS NOT NULL ORDER BY path")?;
-        q.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?};
-    let present:BTreeSet<_>=files.iter().map(|(path,_)|path.clone()).collect();
+    // Catalogue fingerprints use the same analysis hash. Avoid loading every
+    // unchanged JSON pack when a semantic request refreshes the local index.
+    let query=if table_exists(db.conn(),"knowledge_files")? {
+        "SELECT t.path,t.analysis FROM texts t LEFT JOIN code_vector_files f ON f.path=t.path AND f.model=?1 LEFT JOIN knowledge_files k ON k.path=t.path WHERE t.analysis IS NOT NULL AND (f.path IS NULL OR k.fingerprint IS NULL OR f.fingerprint!=k.fingerprint) ORDER BY t.path"
+    } else {"SELECT path,analysis FROM texts WHERE analysis IS NOT NULL AND ?1 IS NOT NULL ORDER BY path"};
+    let files:Vec<(String,String)>={let mut q=db.conn().prepare(query)?;
+        q.query_map([MODEL],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?};
+    let present:BTreeSet<String>={let mut q=db.conn().prepare("SELECT path FROM texts WHERE analysis IS NOT NULL")?;
+        q.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?};
     let registry=crate::domain::knowledge::resources::Registry::load().map_err(Error::config)?;
     let mut changes=Vec::new();let mut count=0;
     for (file,analysis) in files {
@@ -93,11 +100,30 @@ pub(crate) fn ranked(conn:&Connection,question:&str,files:&BTreeSet<String>,limi
     let available:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM code_vectors v JOIN code_vector_files f ON f.path=v.path AND f.model=?1 JOIN knowledge_symbols s ON s.id=v.id AND s.sha256=v.sha256 WHERE v.path IN (SELECT value FROM json_each(?2)))",params![MODEL,inventory],|r|r.get(0))?;
     if !available{return Ok(Ranked::default());}
     let Some(encoder)=model() else{return Ok(Ranked::default())};
-    let query=blob(&encoder.encode_with_args(&[question.to_string()],None,1)[0]);
-    let mut rows=q.query(params![MODEL,inventory])?;let mut scores=BTreeMap::<String,f64>::new();
-    while let Some(row)=rows.next()? {let id:String=row.get(0)?;let vector:Vec<u8>=row.get(1)?;let score=cosine(&query,&vector);if score>0.0 {scores.entry(id).and_modify(|s|*s=s.max(score)).or_insert(score);}}
-    let mut order:Vec<_>=scores.into_iter().collect();order.sort_by(|(a,x),(b,y)|y.total_cmp(x).then(a.cmp(b)));
-    Ok(Ranked{ids:order.into_iter().take(limit).map(|(id,_)|id).collect(),calls:1})
+    let questions=crate::domain::knowledge::selection::explicit_questions(question);
+    let vectors=encoder.encode_with_args(&questions.iter().map(|q|q.to_string()).collect::<Vec<_>>(),None,questions.len());
+    let queries:Vec<_>=vectors.iter().map(|vector|blob(vector)).collect();
+    let mut rows=q.query(params![MODEL,inventory])?;
+    let mut scores=vec![BTreeMap::<String,f64>::new();queries.len()];
+    while let Some(row)=rows.next()? {
+        let id:String=row.get(0)?;let vector:Vec<u8>=row.get(1)?;
+        for (query,scores) in queries.iter().zip(&mut scores) {
+            let score=cosine(query,&vector);
+            if score>0.0 {scores.entry(id.clone()).and_modify(|s|*s=s.max(score)).or_insert(score);}
+        }
+    }
+    let orders:Vec<Vec<String>>=scores.into_iter().map(|scores| {
+        let mut order:Vec<_>=scores.into_iter().collect();order.sort_by(|(a,x),(b,y)|y.total_cmp(x).then(a.cmp(b)));
+        order.into_iter().map(|(id,_)|id).collect()
+    }).collect();
+    if let [order]=orders.as_slice() {return Ok(Ranked{ids:order.iter().take(limit).cloned().collect(),calls:1});}
+    let mut fused=BTreeMap::<String,f64>::new();
+    for order in &orders {for (at,id) in order.iter().enumerate() {*fused.entry(id.clone()).or_default()+=1.0/(61.0+at as f64);}}
+    let mut combined:Vec<_>=fused.into_iter().collect();combined.sort_by(|(a,x),(b,y)|y.total_cmp(x).then(a.cmp(b)));
+    let mut ids=Vec::new();let mut seen=BTreeSet::new();
+    for at in 0..3 {for order in &orders {if let Some(id)=order.get(at) && seen.insert(id.clone()) {ids.push(id.clone());}}}
+    for (id,_) in combined {if seen.insert(id.clone()) {ids.push(id);}}
+    ids.truncate(limit);Ok(Ranked{ids,calls:1})
 }
 
 #[cfg(test)]
@@ -113,6 +139,7 @@ mod tests {
     #[test]
     fn optional_cache_refreshes_changed_bytes_removes_deleted_files_and_rejects_old_receipts() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();let path=root.join("grain.db");
+        std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":false}}"#).unwrap();
         assert_eq!(fill_at(&path,root).unwrap(),0);assert!(!path.exists());
         std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":true}}"#).unwrap();
         let db=MapDb::open(&path,root,&[]).unwrap();

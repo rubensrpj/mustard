@@ -88,6 +88,8 @@ pub(crate) fn answer(
     } else if tree != root && mustard_core::io::project_map::model_path(&tree).is_file() {
         index_root.clone_from(&tree);
     }
+    let mut local_refreshes=Vec::new();
+    if let Some(refresh)=refresh_code_vectors(&index_root,request) {local_refreshes.push(refresh);}
     mustard_core::io::code_search::enrich(
             &index_root,
             &tree,
@@ -106,13 +108,30 @@ pub(crate) fn answer(
         match mustard_core::Scan::locate().scan_native(&tree,&mustard_core::io::project_map::model_path(&tree)) {
             Ok(report)=>{
                 let saved=mustard_core::io::knowledge::observations::scanned(&index_root,&tree,&learning);
+                if let Some(refresh)=refresh_code_vectors(&tree,request) {local_refreshes.push(refresh);}
                 mustard_core::io::code_search::enrich(&tree,&tree,&cwd,request,&mut answer,selector.as_ref().map(|s|s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector));
                 answer.report["task_context"]["learning"]["scan"]=json!({"status":"refreshed-native","files_read":report.read.len(),"acknowledged":saved.is_ok(),"local_model_calls":0,"remote_model_calls":0});
             },
             Err(error)=>answer.report["task_context"]["learning"]["scan"]=json!({"status":"pending","reason":error.to_string()}),
         }
     }
+    if !local_refreshes.is_empty() {
+        let computed:u64=local_refreshes.iter().filter_map(|refresh|refresh["computed_vectors"].as_u64()).sum();
+        answer.report["local_index_refresh"]=json!({"attempts":local_refreshes,"computed_vectors":computed,"remote_model_calls":0});
+    }
     Ok(answer)
+}
+
+fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> {
+    use mustard_core::domain::knowledge::investigation::Purpose;
+    if request.purpose==Purpose::Locate || request.tool=="Read" || request.intent.trim().is_empty()
+        || !mustard_core::ProjectConfig::load(root).ai_vectors_enabled() {return None;}
+    let path=mustard_core::io::project_map::model_path(root);
+    if !path.is_file() {return None;}
+    Some(match mustard_core::io::code_vectors::fill_at(&path,root) {
+        Ok(count)=>json!({"status":"current-local-code-index","computed_vectors":count,"remote_model_calls":0}),
+        Err(reason)=>json!({"status":"unavailable; lexical fallback preserved","reason":reason.to_string(),"remote_model_calls":0}),
+    })
 }
 
 fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {

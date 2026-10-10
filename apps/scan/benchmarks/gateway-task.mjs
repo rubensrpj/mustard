@@ -5,6 +5,7 @@ import cp from 'node:child_process';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import {completeBody,visibleReference as visible} from './source-evidence.mjs';
 const checkout=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../..');
 const args=process.argv.slice(2);
 const option=name=>args[args.indexOf(name)+1];
@@ -42,18 +43,7 @@ function sourceLines(view) {
 const cases=[];
 const bodies=new Set();
 const declarations=new Set();
-function visible(card,view) {
-  let file='';
-  const reference=`${card.name} ${card.source.line}-${card.source.end_line}`;
-  for(const line of view.toString().split('\n')) {
-    if(line.startsWith('@ '))file=line.slice(2);
-    if(file===card.source.file && (line.startsWith(`# ${reference} [`)
-      || line.startsWith('# References (expand source/responsibility): ') && line.slice('# References (expand source/responsibility): '.length).split('; ').includes(reference)))return true;
-    const prefix=`# Static targets in ${card.source.file}: `;
-    if(line.startsWith(prefix)&&line.slice(prefix.length).split('; ').some(value=>value.startsWith(reference+': ')))return true;
-  }
-  return false;
-}
+
 for(const item of fixture.cases) {
   const result=run(item.request);const report=JSON.parse(result.stdout);
   assert.equal(report.remote_model_calls,0,item.id);
@@ -75,12 +65,12 @@ for(const item of fixture.cases) {
     const source=fs.readFileSync(path.join(root,card.source.file));
     assert.equal(crypto.createHash('sha256').update(source).digest('hex'),card.source.sha256);
     if(visible(card,view))declarations.add(`${card.source.file}:${card.name}`);
-    if(card.initial_source_excerpt && card.source_excerpt.truncated===false && visible(card,view) && view.toString().includes(card.source_excerpt.text)) {bodies.add(`${card.source.file}:${card.name}`);complete++;}
+    if(completeBody(card,view) && visible(card,view)) {bodies.add(`${card.source.file}:${card.name}`);complete++;}
   }
   for(const reference of context.static_references||[])if(reference.initial_reference&&visible(reference,view))declarations.add(`${reference.source.file}:${reference.name}`);
   cases.push({id:item.id,request:item.request,native_agent_bytes:native.length,task_agent_bytes:view.length,ms:result.ms,
     complete_bodies:complete,current_source_lines:sourceLines(view),native_result_preserved:true,
-    primary:context.cards.filter(card=>card.retrieval!=='alternative').map(card=>({name:card.name,source:card.source,visible:visible(card,view),complete:!!card.initial_source_excerpt&&!card.source_excerpt.truncated&&view.toString().includes(card.source_excerpt.text)})),
+    primary:context.cards.filter(card=>card.retrieval!=='alternative').map(card=>({name:card.name,source:card.source,visible:visible(card,view),complete:completeBody(card,view)})),
     clues:context.written_clues,scope:context.scope,remote_model_calls:report.remote_model_calls});
 }
 const required=[
