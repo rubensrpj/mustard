@@ -163,6 +163,9 @@ for b in $CLI_BINS; do
   cp "$CARGO_TARGET/release/$b" "$MERGE/usr/lib/mustard/bin/$b"
 done
 cp "$RTK" "$MERGE/usr/lib/mustard/bin/rtk"
+python3 "$REPO/packaging/fetch-ripgrep.py" --target x86_64-unknown-linux-musl --dest "$MERGE/usr/lib/mustard/bin"
+cp "$REPO/packages/core/assets/code-meaning/LICENSE" "$MERGE/usr/lib/mustard/bin/potion-code-LICENSE"
+cp "$REPO/plugin/third-party/potion-code-16M-v2-NOTICE.txt" "$MERGE/usr/lib/mustard/bin/potion-code-NOTICE"
 chmod 0755 "$MERGE"/usr/lib/mustard/bin/*
 
 # 4a-bis. o passo do plugin. Ele NÃO fica em bin/ de propósito: bin/ inteiro

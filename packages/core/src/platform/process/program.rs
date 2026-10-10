@@ -55,11 +55,29 @@ fn program_file_in<'a>(program: &str, windows: bool, dirs: impl IntoIterator<Ite
 /// rodar fica o de sempre.
 #[must_use]
 pub fn command(program: &str) -> Command {
-    let path_env = std::env::var("PATH").unwrap_or_default();
-    match program_file(program, cfg!(windows), &path_env) {
+    match program_location(program) {
         Some(file) => Command::new(file),
         None => Command::new(program),
     }
+}
+
+/// Preserve the caller's PATH choice; installed Mustard also carries rg next
+/// to its binaries so a fresh machine and plugin cache need no separate install.
+#[must_use]
+pub fn program_location(program: &str) -> Option<PathBuf> {
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    if let Some(file) = program_file(program, cfg!(windows), &path_env) {return Some(file);}
+    if program != "rg" {return None;}
+    let executable = std::env::current_exe().ok().and_then(|path| path.canonicalize().ok());
+    location(program, cfg!(windows), "", executable.as_deref())
+}
+
+fn location(program: &str, windows: bool, path_env: &str, executable: Option<&Path>) -> Option<PathBuf> {
+    program_file(program, windows, path_env).or_else(|| {
+        if program != "rg" {return None;}
+        let directory = executable?.parent()?;
+        program_file_in(program, windows, [directory.to_str()?])
+    })
 }
 
 #[cfg(test)]
@@ -77,6 +95,19 @@ mod tests {
 
     fn text(dir: &tempfile::TempDir) -> String {
         dir.path().to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn packaged_search_works_without_a_path_but_does_not_replace_a_callers_rg() {
+        for windows in [false, true] {
+            let name = if windows {"rg.exe"} else {"rg"};
+            let package = folder_with(&[name]);
+            let caller = folder_with(&[name]);
+            let executable = package.path().join("mustard-rt");
+            assert_eq!(location("rg", windows, "", Some(&executable)), Some(package.path().join(name)));
+            assert_eq!(location("rg", windows, &text(&caller), Some(&executable)), Some(caller.path().join(name)));
+            assert_eq!(location("git", windows, "", Some(&executable)), None);
+        }
     }
 
     #[test]

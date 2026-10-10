@@ -5,4 +5,4 @@
 
 pub mod program;
 
-pub use program::{command, program_file, program_file_names};
+pub use program::{command, program_file, program_file_names, program_location};

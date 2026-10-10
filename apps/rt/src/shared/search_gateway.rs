@@ -301,11 +301,7 @@ pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         return None;
     }
     if tool != "Read" {
-        use mustard_core::platform::code_tools::{MachineRunner, ToolRunner};
-        let path = std::env::var("PATH").unwrap_or_default();
-        if !MachineRunner::new(&path).on_path("rg") {
-            return None;
-        }
+        mustard_core::platform::process::program_location("rg")?;
     }
     if tool == "Read"
         && let Some(target) = super::paths::WriteTarget::classify(&ctx.project_dir, input)
