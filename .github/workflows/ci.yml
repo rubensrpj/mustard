@@ -31,6 +31,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  mods:
+    name: Mods (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # Pin the host that validates the Mods contract. No login or model turn
+      # is needed: the official test kit runs the hooks with local stubs.
+      - name: Install Claude Code test host
+        run: npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.296
+      - name: Validate plugin
+        run: claude plugin validate ./plugin
+      - name: Test Mods search and panel contracts
+        run: claude plugin test ./plugin
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
