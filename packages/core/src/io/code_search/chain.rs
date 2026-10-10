@@ -20,6 +20,11 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
     let mut steps = Vec::new();
     let mut appended = 0;
     let names=crate::domain::code_search::pattern_names(intent);
+    let body_policy=crate::domain::knowledge::selection::FollowUpPolicy::of(intent,&crate::domain::normalize::Languages::of_project(root));
+    // Behavioral follow-ups expand executable evidence. Data/contract targets
+    // remain exact ranges until the question asks for their definition; a new
+    // generic word in an interface is not a reason to dump all its members.
+    let body_eligible=|card:&Card|body_policy.expands(&card.kind);
     let mut covered:BTreeSet<_>=items.iter().filter(|item|item["initial_source_excerpt"]==true)
         .flat_map(|item|matcher.matched(item["source_excerpt"]["text"].as_str().unwrap_or_default())).collect();
     for card in candidates.iter().filter(|c| files.contains(&c.source.file)) {
@@ -43,7 +48,7 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
         let written=format!("{} {} {}",card.signature,card.documentation,excerpt["text"].as_str().unwrap_or_default());
         let written_slots=matcher.matched(&written);
         let introduces_clue=written_slots.iter().any(|slot|!covered.contains(slot));
-        let expand=appended<2 && (names.iter().any(|name|name==&card.name) || introduces_clue);
+        let expand=appended<2 && body_eligible(card) && (names.iter().any(|name|name==&card.name) || introduces_clue);
         if visible.contains(&card.id) {
             if let Some(item)=items.iter_mut().find(|item|item["id"]==card.id) {
                 item["initial_reference"]=json!(true);
@@ -91,7 +96,7 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
         let Some(text)=investigation::safe_read(tree,&card.source.file,&registry) else {related.partial=true;continue;};
         let excerpt=investigation::current_excerpt(card,&text,matcher,purpose);
         let slots=matcher.matched(excerpt["text"].as_str().unwrap_or_default());
-        let expand=related_body_count<2 && slots.iter().any(|slot|!covered.contains(slot));
+        let expand=related_body_count<2 && body_eligible(card) && slots.iter().any(|slot|!covered.contains(slot));
         if let Some(item)=items.iter_mut().find(|item|item["id"]==card.id) {
             item["initial_reference"]=json!(true);
             if expand && item["initial_source_excerpt"]!=true {

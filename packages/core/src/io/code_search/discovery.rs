@@ -12,7 +12,7 @@ pub(super) fn probe(root:&Path,tree:&Path,request:&Request,scope:&Scope,seeds:&m
     if names.len()==1 && seeds.iter().any(|id|id.rsplit(':').next().is_some_and(|name|names.iter().any(|asked|name.eq_ignore_ascii_case(asked)))) {
         return json!({"status":"exact-name; native discovery sufficient","remote_model_calls":0});
     }
-    let Ok((clues,paths))=knowledge::catalog::discovery_probe(root,&request.intent,&scope.files) else {
+    let Ok((clues,paths))=knowledge::catalog::discovery_probe(root,&request.intent,&scope.clues,&scope.files) else {
         return json!({"status":"catalog-unavailable; original retained","remote_model_calls":0});
     };
     if clues.is_empty() || paths.is_empty(){return json!({"status":"no-additional-written-clues","remote_model_calls":0});}
@@ -44,7 +44,7 @@ pub(super) fn probe(root:&Path,tree:&Path,request:&Request,scope:&Scope,seeds:&m
         }
     }
     let learning=knowledge::observations::record(root,tree,&hits).ok();
-    json!({"status":"native-question-probe","method":"rare indexed clues -> scoped rg -> full normalized source match -> current owners",
+    json!({"status":"native-question-probe","method":"native area + co-occurring rare question clues -> scoped rg -> full normalized source match -> current owners",
         "files":admitted.len(),"bytes_admitted":bytes,"candidate_files":paths.len(),"skipped_or_unavailable":skipped,
         "partial":admitted.len()<paths.len(),"verified_occurrences":hits.len(),"added_owners":seeds.iter().filter(|id|!before.contains(*id)).count(),
         "added_owner_ids":seeds.iter().filter(|id|!before.contains(*id)).collect::<Vec<_>>(),

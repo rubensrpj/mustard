@@ -201,19 +201,36 @@ fn scoped_clues(conn:&Connection,terms:&[Vec<String>],inventory:&str,total:i64)-
 
 /// Native probe destinations derived from the question's written, rare clues.
 /// FTS only chooses destinations; current source must substantiate every hit.
-pub(crate) fn discovery_probe(root:&Path,question:&str,files:&BTreeSet<String>)->std::result::Result<(Vec<String>,Vec<String>),MapRefusal> {
+pub(crate) fn discovery_probe(root:&Path,question:&str,pattern:&str,files:&BTreeSet<String>)->std::result::Result<(Vec<String>,Vec<String>),MapRefusal> {
     let db=store::open_existing(&store::model_path(root))?;let conn=db.conn();
     let inventory=serde_json::to_string(files).map_err(|e|super::invalid(e.to_string()))?;
     let total:i64=conn.query_row("SELECT count(*) FROM knowledge_symbols WHERE path IN (SELECT value FROM json_each(?1))",[&inventory],|r|r.get(0)).map_err(|e|unreadable(e.into()))?;
     let terms=query_terms(question,&Languages::of_project(root));
     let rare=scoped_clues(conn,&terms,&inventory,total).map_err(unreadable)?;
-    let mut clues=BTreeSet::new();let mut paths=Vec::new();let mut seen=BTreeSet::new();
-    for (_,expression,slot) in rare {
+    let mut clues=BTreeSet::new();let mut paths=Vec::new();let mut scores=std::collections::BTreeMap::<String,f64>::new();
+    // Join clues at file level before source admission. Concatenating the
+    // rarest term's destinations first can spend the entire read reservoir on
+    // an unrelated concern (e.g. authentication outside the requested area).
+    // This is a destination priority, never a filter or proof of behavior.
+    for (frequency,expression,slot) in rare {
         clues.extend(slot.into_iter().filter(|form|form.chars().count()>=3).map(|form|form.chars().take(3).collect::<String>()));
         let mut statement=conn.prepare("SELECT s.path FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path IN (SELECT value FROM json_each(?2)) ORDER BY bm25(knowledge_fts,5,2,0.25,1,0),s.path,s.line").map_err(|e|unreadable(e.into()))?;
         let rows=statement.query_map(params![expression,inventory],|r|r.get::<_,String>(0)).map_err(|e|unreadable(e.into()))?;
-        for path in rows {let path=path.map_err(|e|unreadable(e.into()))?;if seen.insert(path.clone()){paths.push(path);}}
+        let mut distinct=BTreeSet::new();
+        for path in rows {distinct.insert(path.map_err(|e|unreadable(e.into()))?);}
+        for path in distinct {*scores.entry(path).or_default()+=((total+1) as f64/(frequency+1) as f64).ln()+1.0;}
     }
+    let native=fts_query(&query_terms(pattern,&Languages::of_project(root)),"OR");
+    let mut native_files=BTreeSet::new();
+    if !native.is_empty() {
+        let expression=format!("{{name path header}} : ({native})");
+        let mut statement=conn.prepare("SELECT DISTINCT s.path FROM knowledge_fts JOIN knowledge_symbols s ON s.rowid=knowledge_fts.rowid WHERE knowledge_fts MATCH ?1 AND s.path IN (SELECT value FROM json_each(?2))").map_err(|e|unreadable(e.into()))?;
+        for path in statement.query_map(params![expression,inventory],|r|r.get::<_,String>(0)).map_err(|e|unreadable(e.into()))? {native_files.insert(path.map_err(|e|unreadable(e.into()))?);}
+    }
+    paths.extend(scores.keys().cloned());
+    paths.sort_by(|a,b|native_files.contains(b).cmp(&native_files.contains(a))
+        .then_with(||scores[b].total_cmp(&scores[a])).then_with(||a.cmp(b)));
+    let mut seen:BTreeSet<_>=paths.iter().cloned().collect();
     for path in unindexed_files(root,&super::EvidenceScope{files,seeds:&[]})? {if seen.insert(path.clone()){paths.push(path);}}
     Ok((clues.into_iter().collect(),paths))
 }

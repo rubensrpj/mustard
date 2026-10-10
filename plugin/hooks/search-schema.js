@@ -24,7 +24,7 @@ export default {
         },
         "intent": {
           "type": "string",
-          "description": "Specific local question, or 2–8 explicit '- question' bullets separated by newlines; keep constraints per question. Required for investigation or choose."
+          "description": "Local question naming the resource/provider and operation being investigated; do not repeat the whole project goal. For 2–8 questions use explicit '- question' bullets, with resource and constraints in each. Required for investigation or choose."
         },
         "purpose": {
           "type": "string",

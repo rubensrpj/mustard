@@ -2,6 +2,51 @@
 
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
+## Revisão de foco e conteúdo entregue — 09/10
+
+Esta revisão parte de `d4ec2ff1cd32aff50491c309d6665815ed862dc9`. Os resultados abaixo substituem a situação corrente descrita nas etapas anteriores, que permanecem como histórico.
+
+### Mudanças verificadas
+
+- A busca complementar ordena destinos pela área do padrão nativo e pela coocorrência das pistas da pergunta no mesmo arquivo, ponderadas pela frequência no catálogo. Antes, concatenava os destinos de cada palavra rara; o primeiro assunto podia ocupar toda a admissão de fontes. Isso prioriza arquivos, sem exigir que todas as pistas estejam na mesma função ou afirmar relação semântica.
+- Entre candidatos com a mesma força de correspondência nativa, recurso e operação da pergunta desempatarão a leitura. Um uso no corpo não passa à frente de uma declaração nomeada por repetir mais palavras da intenção. As visões de recuperação podem ser correlacionadas; RRF não transforma concordância lexical em certeza.
+- Uma faixa cujo conteúdo é somente a assinatura é reconhecida como declaração. Implementações recebem prioridade para os trechos iniciais; identidades exatas e escolhas explícitas são preservadas. A comparação não usa convenções de nomes de interfaces nem palavras de linguagens específicas. Formas não reconhecidas continuam sem classificação.
+- Encadeamentos sobre comportamento mantêm contratos e dados como referências com linhas, expandindo automaticamente funções e métodos. Perguntas sobre definições permitem expandir os dados. Isso evita abrir interfaces inteiras só por conterem uma palavra ainda não coberta. Nenhuma referência ou resultado original é apagado por essa política.
+- Schema da ferramenta, registro Mods, mapas de sessão e documentação orientam `intent` como **recurso/provedor + operação local**, com restrições pertinentes. O comando e seus filtros permanecem iguais. Responsabilidades distintas usam chamadas separadas ou perguntas explícitas com seu próprio recurso. O binário não infere essa decomposição de qualquer texto livre.
+
+A primeira tentativa de reordenar todos os proprietários nativos pela intenção ampla foi rejeitada: perdeu uma referência do frontend e aumentou o retorno do Sialia para 186.950 bytes. A versão final preserva a força do padrão original e usa o contexto para desempatar. Não houve aumento dos limites de candidatos, admissão ou instruções para obter estes resultados.
+
+### Comparação com a versão anterior
+
+| Reprodução conhecida, mesmos pedidos | Antes | Agora |
+| --- | ---: | ---: |
+| Sialia: alvos com referência entregue | 9/12 (75%) | 10/12 (83,3%); +8,3 pontos percentuais |
+| Sialia: corpos completos desses alvos | 3 | 3 |
+| Sialia: bytes nas sete buscas | 171.336 | 165.973; −3,1% |
+| Florestal: alvos entregues / corpos completos | 8/8 / 3 | 8/8 / 3 |
+| Florestal: bytes nas oito buscas | 64.852 | 66.616; +2,7% |
+| Python/TypeScript/Rust/Go: alvos entregues | 25/40 | 25/40 |
+| Python/TypeScript/Rust/Go: corpos completos | 20 | 20 |
+| Python/TypeScript/Rust/Go: bytes nas 40 buscas | 1.092.557 | 1.049.026; −4,0% |
+
+O Sialia ganhou a referência da implementação de negócio do webhook, sem perder referências anteriores. O corpo completo da consulta de estado passou a aparecer; o provedor do frontend passou de corpo completo a referência, podendo exigir uma leitura adicional. Tokenização e desativação de subconta continuam sem seus alvos exigidos na apresentação. No Florestal, os mesmos oito alvos e três corpos completos foram preservados; o texto aumentou 2,7%. Na bateria pública não houve ganho nem perda individual, inclusive de corpos completos. Go aumentou o texto em 5,1%; Python reduziu 8,6%, TypeScript 7,2% e Rust 2,2%. A economia não é uniforme.
+
+São alvos e descrições já conhecidos, com código atual conferido, não uma avaliação cega. O conjunto público usa os mesmos quatro repositórios e 40 descrições da seleção `repoqa-selection-fusion-20261009.json`, repetidos em pares por linguagem. A execução sequencial intermediária foi interrompida e não entra nos números finais. Resultado original preservado em 7/7 pedidos do Sialia, 8/8 do Florestal e 40/40 públicos; zero IA nessas buscas. Bytes não são tokens faturados, e uma referência não equivale a corpo entregue ou prontidão funcional. Não foi executada uma sessão autônoma do Claude nem feita comparação controlada de latência.
+
+Com a mesma pergunta local sobre webhooks, o retorno caiu de 17.450 para 16.254 bytes (−6,9%) e a implementação passou da posição 15 à 11; ainda voltou como referência. Esse ensaio muda a intenção em relação à pergunta ampla original e é separado da tabela de pedidos iguais. Uma pergunta adicional, formulada pelo investigador — “Onde o Safe2Pay processa notificações de pagamento e atualiza a situação da cobrança no banco?” — trouxe também um trecho de `ProcessWebhookAsync` sem IA. Não trouxe o corpo completo nem prova de que todo o fluxo esteja pronto.
+
+### Jev no caso real
+
+Para essa última pergunta, a comparação optativa fez **uma chamada** com 24 candidatos e trechos atuais: **21.220 tokens conhecidos, US$ 0,000891 estimados** pela tarifa configurada. Jev apontou `ProcessWebhookAsync`, com confiança 0,65 e probabilidade 0,66; a escolha ficou abaixo da política existente de probabilidade mínima 0,70. Não houve recomendação aceita, os mesmos três trechos continuaram entregues e o retorno cresceu de 21.691 para 21.762 bytes. A repetição usou cache, com zero HTTP.
+
+Portanto, **Jev não acrescentou ganho útil nesse caso**, que a pergunta local já havia resolvido para leitura. Não foram relaxados limiares nem houve segunda tentativa paga. Essa medição favorece chamadas somente diante de alternativas cuja responsabilidade ainda precise ser decidida depois da recuperação e leitura suficiente da fonte; não justifica usar Jev em todo comando. Um único caso conhecido também não calibra sua precisão geral. O modelo não gerou o índice nem realizou as buscas determinísticas.
+
+### Verificação e limites restantes
+
+Passaram **3.972 testes do workspace**, com dois ignorados já existentes, Clippy com avisos tratados como erro, 16 testes simulados do SDK Mods e validação do plugin. A aceitação nativa passou com instalação realmente vazia usando o binário desta cópia: atualização incremental, aprendizado, fallback, escopo, contrato de ferramentas, paridade e zero HTTP no caminho padrão. Os novos testes cobrem pistas combinadas antes da admissão, homônimos, declaração versus implementação e expansão conforme a pergunta.
+
+Artefatos: `target/search-focus-20261009/`, com binários anteriores/intermediários/finais separados, `sialia-final-assessment.json`, `public-combined.json`, comparações por linguagem, apresentações, piloto `jev-local/` e logs. O ganho desta revisão é modesto e verificável: melhora pontual de recuperação e menos texto nos agregados. **A cobertura pública não melhorou; o objetivo geral de acurácia e economia de uma sessão completa continua aberto.**
+
 ## Continuação: canais independentes, relações e perguntas explícitas — 09/10
 
 Esta etapa parte de `98351481520b620c5c27444f04610dc8a748440a`, em `codex/mustard-plano-completo`, na mesma cópia isolada. Implementa os cinco pontos autorizados após a avaliação do Sialia. As etapas abaixo permanecem como histórico; seus percentuais não são acumuláveis.

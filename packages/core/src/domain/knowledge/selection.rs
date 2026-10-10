@@ -8,6 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod policy;
 pub mod fusion;
 
+pub struct FollowUpPolicy(Terms);
+impl FollowUpPolicy {
+    pub fn of(query:&str,languages:&Languages)->Self {Self(Terms::of(query,languages))}
+    pub fn expands(&self,kind:&str)->bool {self.0.definition() || self.0.callable(kind) || kind=="source-file"}
+}
+
 #[derive(Clone, Debug)]
 pub struct Ranked {
     pub card: usize,
@@ -254,12 +260,18 @@ pub fn task_order(cards:&[Card],query:&str,languages:&Languages,weights:&[f64],a
 /// Bodies add new written clues; other candidates remain expandable ranges.
 /// Containing types cannot spend context repeating their callable children.
 pub fn task_bodies(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<String>,recommended:&[String],anchors:&BTreeSet<String>,query:&str,languages:&Languages)->BTreeSet<usize> {
+    task_bodies_with_declarations(cards,slots,primary,recommended,anchors,query,languages,&BTreeSet::new())
+}
+
+/// A declaration-only excerpt cannot spend the question's coverage before an
+/// implementation gets read. Exact identities and explicit choices still win.
+pub fn task_bodies_with_declarations(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<String>,recommended:&[String],anchors:&BTreeSet<String>,query:&str,languages:&Languages,declarations:&BTreeSet<usize>)->BTreeSet<usize> {
     let terms=Terms::of(query,languages);
     let mut covered=BTreeSet::new();let mut bodies=BTreeSet::new();
     let container=|card:&Card|!terms.definition() && !terms.callable(&card.kind) && cards.iter().any(|child|child.source.file==card.source.file && child.source.line>card.source.line && child.source.end_line<=card.source.end_line && terms.callable(&child.kind));
     let focused:BTreeSet<_>=cards.iter().filter(|card|anchors.contains(&card.id) && !container(card)).map(|card|card.id.as_str()).collect();
     let mut order:Vec<_>=(0..cards.len()).collect();
-    order.sort_by_key(|&i|(!focused.contains(cards[i].id.as_str()),!recommended.contains(&cards[i].id),i));
+    order.sort_by_key(|&i|(!focused.contains(cards[i].id.as_str()),!recommended.contains(&cards[i].id),!terms.definition() && declarations.contains(&i),!terms.definition() && !terms.callable(&cards[i].kind),i));
     for i in order {
         let card=&cards[i];
         let chosen=recommended.contains(&card.id);
@@ -272,6 +284,19 @@ pub fn task_bodies(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<Stri
         }
     }
     bodies
+}
+
+/// Recognize only a proven signature-only source range, including multiline
+/// signatures. No language keywords, filename conventions or guessed bodies.
+/// Unrecognized forms remain unknown; empty implementations are not signatures.
+pub fn declaration_only(card:&Card,source:&str)->bool {
+    if card.signature.trim().is_empty() || card.source.line==0 || card.source.end_line<card.source.line {return false;}
+    let count=(card.source.end_line-card.source.line+1) as usize;
+    let lines=source.lines().skip(card.source.line.saturating_sub(1) as usize).take(count).collect::<Vec<_>>();
+    if lines.len()!=count {return false;}
+    let range=lines.join(" ");
+    let normalize=|text:&str|text.trim().trim_end_matches(';').chars().filter(|ch|!ch.is_whitespace()).collect::<String>();
+    normalize(&range)==normalize(&card.signature)
 }
 
 /// Only candidates close to the native winner, with multiple written query
@@ -460,6 +485,33 @@ mod tests {
         assert_eq!(task_bodies(&cards, &slots, &primary, &[], &BTreeSet::new(), "quartz beacon", &languages), BTreeSet::from([1]));
         assert_eq!(task_bodies(&cards, &slots, &primary, &[cards[2].id.clone()], &BTreeSet::new(), "quartz beacon", &languages), BTreeSet::from([1, 2]));
         assert_eq!(task_bodies(&cards, &slots, &primary, &[cards[0].id.clone()], &BTreeSet::from([cards[0].id.clone()]), "quartz beacon", &languages), BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn signature_only_ranges_do_not_hide_implementations_with_the_same_clues() {
+        let mut cards=cards();cards.truncate(2);
+        for (i,card) in cards.iter_mut().enumerate() {card.id=format!("entry-{i}");card.kind="method".into();card.name="handle".into();card.signature="Task<bool> handle(Envelope value)".into();card.source.line=1;card.source.end_line=1;}
+        assert!(declaration_only(&cards[0],"Task<bool> handle(Envelope value);\n"));
+        assert!(!declaration_only(&cards[1],"Task<bool> handle(Envelope value) { return true; }\n"));
+        assert!(!declaration_only(&cards[1],"Task<bool> handle(Envelope value) {}\n"));
+        let primary=cards.iter().map(|c|c.id.clone()).collect();let slots=vec![BTreeSet::from([0,1]),BTreeSet::from([0,1])];
+        let languages=Languages::new(["en-US"]);let declarations=BTreeSet::from([0]);
+        assert_eq!(task_bodies_with_declarations(&cards,&slots,&primary,&[],&BTreeSet::new(),"quartz beacon",&languages,&declarations),BTreeSet::from([1]));
+        assert!(task_bodies_with_declarations(&cards,&slots,&primary,&[],&BTreeSet::from([cards[0].id.clone()]),"quartz beacon",&languages,&declarations).contains(&0));
+        cards[0].signature="fn handle(value: &Envelope)".into();cards[0].source.end_line=3;
+        assert!(declaration_only(&cards[0],"fn handle(\nvalue: &Envelope\n);\n"));
+        cards[0].signature="fn handle( value: &Envelope )".into();
+        assert!(!declaration_only(&cards[0],"fn handle(value: &Envelope) {}\n"));
+        assert!(!declaration_only(&cards[0],"fn handle( value: &Envelope );\n"));
+    }
+
+    #[test]
+    fn behavioral_followups_keep_data_as_ranges_until_its_definition_is_requested() {
+        let languages=Languages::new(["en-US"]);
+        let behavior=FollowUpPolicy::of("process archive records",&languages);
+        assert!(behavior.expands("method"));assert!(!behavior.expands("interface"));assert!(!behavior.expands("field"));
+        let definition=FollowUpPolicy::of("definition fields schema",&languages);
+        assert!(definition.expands("interface"));assert!(definition.expands("field"));
     }
 
     #[test]

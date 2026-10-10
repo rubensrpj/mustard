@@ -6,7 +6,7 @@ Binary searches/calculates; LLM implements.
 
 - Open changes with `mustard-rt run open`, record the goal in `context`, suggest `/clear`; the resume line shows the state. Queries open no spec; other branches do not block.
 - Explain in the order of explaining from the response style. Check code/history before removing. Record answers with `mustard-rt run answer`.
-- Search/read through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve arguments/scope. `intent`: one question or 2–8 explicit `- question` bullets, with constraints per question. `purpose`: `locate` (optional intent), `understand`, `spec`, `implement`, `validate`.
+- Search/read through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve arguments/scope. `intent`: local question with resource/provider + operation, not the whole goal; or 2–8 `- question` bullets with resource/constraints each. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
 - CLI: `mustard-rt run search --shell-output --intent "<question>" --purpose spec -- rg -n "<pattern>" .`. Bash: `mustard:spec: <question>`, otherwise `locate`. `--raw`: native; `--choose`: optional Jev.
 - Reuse complete bodies; expand missing ranges with `Read` (`offset`/`limit`). Without ranges: `run map summary --file <file>`. Changed source: reread. A reference does not confirm behavior.
 - `mustard-rt run knowledge`: investigation.

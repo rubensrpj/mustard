@@ -315,7 +315,10 @@ pub(super) fn investigate(
         .filter_map(|item| item["id"].as_str())
         .map(str::to_string)
         .collect();
-    let bodies = selection::task_bodies(
+    let declarations:BTreeSet<_>=cards.iter().enumerate()
+        .filter(|(_,card)|selection::declaration_only(card,&source_text[&card.source.file]))
+        .map(|(i,_)|i).collect();
+    let bodies = selection::task_bodies_with_declarations(
         &cards,
         &item_slots,
         &primary,
@@ -323,9 +326,11 @@ pub(super) fn investigate(
         &anchors,
         &request.intent,
         &languages,
+        &declarations,
     );
     for (i, item) in items.iter_mut().enumerate() {
         item["initial_source_excerpt"] = json!(bodies.contains(&i));
+        item["source_role"] = json!(if declarations.contains(&i){"declaration-only"}else{"implementation-or-unclassified"});
         item["initial_reference"] = json!((anchors.is_empty() && (primary.contains(&cards[i].id) || decision_ids.contains(&cards[i].id))) || seeds.contains(&cards[i].id) || recommendations.contains(&cards[i].id) || cards.iter().enumerate().any(|(parent,card)|bodies.contains(&parent) && card.outgoing.iter().any(|edge|edge["target"]==cards[i].id)));
         let missing:Vec<_>=item["source_excerpt"]["missing_ranges"].as_array().into_iter().flatten().map(|range|json!({"tool":"Read","input":{"file_path":cards[i].source.file,"offset":range["line"],"limit":range["end_line"].as_u64().unwrap_or(0).saturating_sub(range["line"].as_u64().unwrap_or(0))+1}})).collect();
         item["missing_source_reads"] = json!(missing);

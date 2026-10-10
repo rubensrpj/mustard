@@ -127,6 +127,43 @@ fn complementary_native_search_uses_the_question_and_respects_original_file_scop
 }
 
 #[test]
+fn complementary_probe_joins_native_area_and_question_before_source_admission() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::create_dir_all(root.join("z/QuartzPay")).unwrap();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    for n in 0..110 {
+        std::fs::write(root.join(format!("event_{n:03}.rs")),format!("/// Authenticate event.\nfn handle_event_{n}() {{ authenticate_account(); }}\n")).unwrap();
+    }
+    std::fs::write(root.join("z/QuartzPay/entry.rs"),"fn handle_event() { persist_checkpoint(); }\nfn persist_checkpoint() { store_quartz(); }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["--sort=path","-n","--with-filename","event","."]}),
+        intent:"authenticate QuartzPay event checkpoint".into(),purpose:Purpose::Implement,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();let ctx=&answer.report["task_context"];
+    assert!(ctx["complementary_discovery"]["partial"].as_bool().unwrap());
+    assert!(ctx["complementary_discovery"]["added_owner_ids"].as_array().unwrap().iter()
+        .any(|id|id.as_str().unwrap().ends_with(":persist_checkpoint")),"{}",ctx["complementary_discovery"]);
+    assert!(ctx["cards"].as_array().unwrap().iter().any(|card|card["name"]=="persist_checkpoint" && card["initial_source_excerpt"]==true));
+    assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+    assert_eq!(answer.report["remote_model_calls"],0);
+}
+
+#[test]
+fn declaration_ranges_remain_visible_but_cannot_spend_implementation_coverage() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("a.cs"),"public interface IReceiver {\n    bool ReceiveEvent(string envelope);\n}\n").unwrap();
+    std::fs::write(root.join("z.cs"),"public class Receiver : IReceiver {\n    public bool ReceiveEvent(string envelope) { return Persist(envelope); }\n    private bool Persist(string envelope) { return envelope.Length > 0; }\n}\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["--sort=path","-n","--with-filename","Event","."]}),
+        intent:"receive event envelope".into(),purpose:Purpose::Implement,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();let cards=answer.report["task_context"]["cards"].as_array().unwrap();
+    assert!(cards.iter().any(|c|c["name"]=="ReceiveEvent" && c["source"]["file"]=="a.cs" && c["source_role"]=="declaration-only" && c["initial_reference"]==true));
+    assert!(cards.iter().any(|c|c["name"]=="ReceiveEvent" && c["source"]["file"]=="z.cs" && c["initial_source_excerpt"]==true));
+    assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+    assert_eq!(answer.report["remote_model_calls"],0);
+}
+
+#[test]
 fn migrated_structural_index_requires_refresh_even_for_previously_learned_sources_or_empty_hits() {
     for empty_hits in [false,true] {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();

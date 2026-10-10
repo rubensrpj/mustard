@@ -1,4 +1,4 @@
-//! Independent reading channels, fused by rank rather than incompatible scores.
+//! Reading views of source evidence, fused by rank rather than incompatible scores.
 //! A position is a retrieval signal, never a semantic judgement or a source fact.
 use super::{Card, evidence, task_order};
 use crate::domain::knowledge::retrieval::Terms;
@@ -40,7 +40,7 @@ impl Order {
     }
 }
 
-/// Equal votes from genuinely different channels. A repeated candidate inside
+/// Equal votes from complementary, potentially correlated views. A repeated candidate inside
 /// one channel cannot add votes. Missing channels do not invent a zero score.
 pub fn reciprocal_ranks(channels: &[Vec<usize>]) -> BTreeMap<usize, f64> {
     let mut scores = BTreeMap::new();
@@ -57,6 +57,10 @@ pub fn reciprocal_ranks(channels: &[Vec<usize>]) -> BTreeMap<usize, f64> {
 }
 
 fn field_order(cards: &[Card], query: &str, role_query: &str, languages: &Languages, weights: &[f64]) -> (Vec<usize>, Vec<Value>) {
+    field_order_with_context(cards,query,role_query,languages,weights,&BTreeMap::new(),&BTreeMap::new())
+}
+
+fn field_order_with_context(cards: &[Card], query: &str, role_query: &str, languages: &Languages, weights: &[f64], context:&BTreeMap<usize,f64>, positions:&BTreeMap<usize,usize>) -> (Vec<usize>, Vec<Value>) {
     let terms = Terms::of(query, languages);
     let role = Terms::of(role_query, languages);
     let mut normalizer = Normalizer::new(languages);
@@ -86,7 +90,10 @@ fn field_order(cards: &[Card], query: &str, role_query: &str, languages: &Langua
         if score > 0.0 {scored.push((i, score));}
         fields.push(json!({"name":matches[0],"signature":matches[1],"documentation":matches[2],"body":matches[3],"path":matches[4]}));
     }
-    scored.sort_by(|(a, x), (b, y)| y.total_cmp(x).then_with(|| cards[*a].id.cmp(&cards[*b].id)));
+    scored.sort_by(|(a, x), (b, y)| y.total_cmp(x)
+        .then_with(||context.get(b).copied().unwrap_or(0.0).total_cmp(&context.get(a).copied().unwrap_or(0.0)))
+        .then_with(||positions.get(a).copied().unwrap_or(usize::MAX).cmp(&positions.get(b).copied().unwrap_or(usize::MAX)))
+        .then_with(|| cards[*a].id.cmp(&cards[*b].id)));
     (scored.into_iter().map(|(i, _)| i).collect(), fields)
 }
 
@@ -96,7 +103,22 @@ pub fn rank(cards: &[Card], pattern: &str, intent: &str, languages: &Languages,
     weights: &[f64], anchors: &[String], seeds: &[String]) -> Order {
     let question = if intent.trim().is_empty() {pattern} else {intent};
     let (fields_order, fields) = field_order(cards, question, question, languages, weights);
-    let (mut native, _) = field_order(cards, pattern, question, languages, &[]);
+    // A native occurrence and its question are a conjunction. Sorting native
+    // owners by spelling alone makes unrelated homonyms tie by path, even
+    // when current evidence distinguishes their requested responsibility.
+    let positions:BTreeMap<_,_>=fields_order.iter().enumerate().map(|(rank,&i)|(i,rank)).collect();
+    let mut literal=Normalizer::new(&Languages::new([]));
+    let native_words=literal.written_forms(pattern);
+    let context_words:BTreeSet<_>=literal.written_forms(question).difference(&native_words).cloned().collect();
+    let terms=Terms::of(question,languages);
+    let context:BTreeMap<_,_>=cards.iter().enumerate().map(|(i,card)| {
+        let written=literal.written_forms(&format!("{} {}",card.name,card.source.file));
+        let score=terms.asked.iter().enumerate().filter(|(_,slot)|slot.iter().any(|word|context_words.contains(word) && written.contains(word)))
+            .map(|(at,_)|weights.get(at).copied().unwrap_or(1.0)).sum();(i,score)
+    }).collect();
+    // Context resolves ties only: a body reference cannot displace a named
+    // declaration just because its unrelated body repeats more question words.
+    let (mut native, _)=field_order_with_context(cards,pattern,question,languages,&[],&context,&positions);
     native.retain(|&i| seeds.contains(&cards[i].id));
     let questions=super::explicit_questions(question);
     let mut channels=Vec::new();
@@ -109,7 +131,7 @@ pub fn rank(cards: &[Card], pattern: &str, intent: &str, languages: &Languages,
             channels.push((format!("question-{}-fields",at+1),field_order(cards,question,question,languages,&[]).0));
         }
     }
-    if !native.is_empty() {channels.push(("native-pattern".into(), native));}
+    if !native.is_empty() {channels.push(("native-with-question".into(), native));}
     let scores = reciprocal_ranks(&channels.iter().map(|(_, order)| order.clone()).collect::<Vec<_>>());
     let mut order: Vec<_> = scores.keys().copied().collect();
     order.sort_by(|&a, &b| anchors.contains(&cards[b].id).cmp(&anchors.contains(&cards[a].id))
@@ -154,5 +176,14 @@ mod tests {
         let language=Languages::new(["en-US"]);
         assert_eq!(field_order(&cards,"archive","validate archive",&language,&[]).0[0],1);
         assert_eq!(field_order(&cards,"archive","field archive",&language,&[]).0[0],0);
+    }
+    #[test]
+    fn native_homonyms_are_ordered_by_the_question_before_cutting_the_pool() {
+        let cards:Vec<Card>=[("a","authenticate request"),("z","persist quartz checkpoint")].into_iter()
+            .map(|(id,doc)|serde_json::from_value(json!({"id":id,"name":"handleEvent","kind":"method","documentation":doc,
+                "source":{"file":format!("{id}.ts"),"line":1,"end_line":4,"sha256":""}})).unwrap()).collect();
+        let order=rank(&cards,"event","persist quartz checkpoint",&Languages::new(["en-US"]),&[],&[],&["a".into(),"z".into()]);
+        assert_eq!(order.channels.iter().find(|(name,_)|name=="native-with-question").unwrap().1,vec![1,0]);
+        assert_eq!(order.cards[0],1);
     }
 }
