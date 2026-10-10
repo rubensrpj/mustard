@@ -78,13 +78,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: mustard-workspace
-          save-if: true
+          save-if: ${{ github.event_name == 'push' }}
       # rust-cache stores dependencies by default. An existing exact cache
       # needs no repeated compilation; a missing cache is warmed without
       # executing the test suite already approved in the PR.
       - name: Compile missing test dependencies
         if: steps.cargo-cache.outputs.cache-hit != 'true'
-        run: cargo test --locked --no-run -p mustard-core -p mustard-cli -p mustard-rt -p scan
+        run: cargo test --locked --no-fail-fast --no-run -p mustard-core -p mustard-cli -p mustard-rt -p scan
 
   mods:
     needs: route
