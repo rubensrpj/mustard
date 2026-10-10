@@ -79,10 +79,10 @@ pub fn summary(card: &Card) -> Value {
         "tag":item.tag,"text":short(&item.text,240),"line":item.line,"end_line":item.end_line,
     })).collect();
     let outgoing: Vec<_> = card.outgoing.iter().take(3).map(|edge| json!({
-        "target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"],
+        "target":edge["target"],"source":edge["source"],"call_line":edge["call_line"],"resolution":edge["resolution"],
     })).collect();
     let callers: Vec<_> = card.callers.iter().take(2).map(|edge| json!({
-        "file":edge["file"],"line":edge["line"],"from":edge["from"],"resolution":edge["resolution"],
+        "file":edge["file"],"line":edge["line"],"from":edge["from"],"source":edge["source"],"resolution":edge["resolution"],
         "candidate_count":edge["candidates"].as_array().map_or(0,Vec::len),
     })).collect();
     let mut projection = json!({"id":card.id,"name":card.name,"kind":card.kind,"source":card.source,

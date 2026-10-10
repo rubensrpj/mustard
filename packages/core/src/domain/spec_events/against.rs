@@ -28,6 +28,36 @@ use super::{is_empty, Block, BlockQuery, EventRef, Hidden, Refusal, SpecEvent, S
 /// tira só aquela versão. O evento sem código e sem tarefa a expandir sai
 /// como entrou.
 pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<(), Refusal> {
+    // Reference fields accept canonical codes uniformly. Numeric wave
+    // ordinals (waves, wave dependencies and order) remain ordinals.
+    if let Some(spec) = event.get("type").and_then(Value::as_str).and_then(super::type_spec) {
+        let codes = log.codes();
+        let resolve = |value: &Value| -> Result<Value, Refusal> {
+            let Some(EventRef::Code(code)) = EventRef::from_value(value) else { return Ok(value.clone()) };
+            log.events.iter().rev().find(|item| codes.get(&item.id) == Some(&code))
+                .and_then(|item| log.current(item.id)).map(|item| Value::from(item.id))
+                .ok_or(Refusal::UnknownTarget { target: EventRef::Code(code) })
+        };
+        for field in spec.fields.iter().filter(|field| !matches!(field.name, "targets" | "replaces" | "closes")) {
+            if field.kind == super::Kind::Refs {
+                if let Some(list) = event.get(field.name).and_then(Value::as_array) {
+                    let resolved = list.iter().map(|value| {
+                        match resolve(value) {
+                            // The runtime reports the established dependency refusal,
+                            // including the task context, for an unknown dependency.
+                            Err(Refusal::UnknownTarget { .. }) if spec.name=="task" && field.name=="depends_on" => Ok(value.clone()),
+                            resolved => resolved,
+                        }
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    event.insert(field.name.into(), Value::Array(resolved));
+                }
+            } else if field.kind == super::Kind::Ref
+                && let Some(value) = event.get(field.name) {
+                    let resolved = resolve(value)?;
+                    event.insert(field.name.into(), resolved);
+                }
+        }
+    }
     let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
     let replaces_list = event.get("replaces").and_then(Value::as_array).cloned();
     let replaces_code = event.get("replaces").is_some_and(is_code)
@@ -530,6 +560,25 @@ mod tests {
             checked("remove", json!({"targets": ["R2"], "reason": "r"})).unwrap_err(),
             Refusal::InvalidValue { ref field, expected: Kind::Refs, .. } if field == "targets"
         ));
+    }
+
+    #[test]
+    fn all_event_reference_fields_resolve_canonical_codes_to_current_versions() {
+        let log=parse_log(&[line(1,"contract",",\"code\":\"MSTD-CONTR-0001\""),
+            line(2,"contract",",\"code\":\"MSTD-CONTR-0001\",\"replaces\":1"),
+            line(3,"criterion",",\"code\":\"MSTD-CRIT-0001\""),line(4,"task",",\"code\":\"MSTD-TASK-0001\"")].concat());
+        for (kind,field,code,id) in [("criterion","contracts","MSTD-CONTR-0001",2),("wave","criteria","MSTD-CRIT-0001",3),
+            ("task","depends_on","MSTD-TASK-0001",4),("task","covers","MSTD-CRIT-0001",3),("point","result","MSTD-CONTR-0001",2)] {
+            let mut event=obj(json!({"type":kind,field:[code]}));resolve_codes(&log,&mut event).unwrap();
+            assert_eq!(event[field],json!([id]),"{kind}.{field}");
+        }
+        let mut wave=obj(json!({"type":"wave","criteria":["MSTD-CRIT-0001"],"depends_on":[1,2]}));
+        resolve_codes(&log,&mut wave).unwrap();assert_eq!(wave["depends_on"],json!([1,2]),"wave ordinals stay numeric");
+        let mut unknown=obj(json!({"type":"task","depends_on":["Consumer"]}));
+        assert!(crate::domain::spec_events::validate(&crate::domain::spec_events::normalize(unknown.clone(),"task")).is_err());
+        unknown.insert("depends_on".into(),json!(["MSTD-TASK-9999"]));
+        resolve_codes(&log,&mut unknown).unwrap();
+        assert_eq!(unknown["depends_on"],json!(["MSTD-TASK-9999"]),"unknown dependencies retain the task-specific refusal in the runtime");
     }
 
     /// Na remoção, o número de qualquer versão de uma tarefa vira todas as

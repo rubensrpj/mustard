@@ -54,6 +54,27 @@ fn stdout_json(out: &Output) -> Value {
         .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)))
 }
 
+#[test]
+fn repeated_options_return_one_json_error_before_any_item_is_written() {
+    let dir=tempfile::tempdir().expect("tempdir");
+    open_spec(dir.path());
+    for args in [
+        vec!["write","point","--spec","teste","--json","{}","--spec","teste"],
+        vec!["write","point","--spec=teste","--spec=teste","--json","{}"],
+    ] {
+        let output=rt(dir.path(),&args).output().expect("CLI");
+        assert_eq!(output.status.code(),Some(2));
+        let error=stdout_json(&output);
+        assert_eq!(error["reason"],"duplicate-option");
+        assert!(error["hint"].as_str().expect("clear error").contains("--spec"));
+    }
+    let log=mustard_core::io::spec_events::read(&dir.path().join(".claude/spec/teste/spec.ndjson")).expect("read").expect("spec");
+    assert!(log.events.is_empty(),"refusal measurements never change the canonical spec");
+    let panel=stdout_json(&rt(dir.path(),&["panel","--spec","teste"]).output().expect("panel"));
+    assert_eq!(panel["specs"][0]["operations"]["calls"],2);
+    assert_eq!(panel["specs"][0]["operations"]["refusals"],2);
+}
+
 fn write(root: &Path, event_type: &str, fields: &Value) -> u64 {
     let out = rt(root, &["write", event_type, "--spec", "teste", "--json", &fields.to_string()])
         .output()

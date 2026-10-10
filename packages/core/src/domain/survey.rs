@@ -546,6 +546,9 @@ pub enum SurveyStep<'a> {
     /// nenhum, a revisão manda rodar o revisor de fora (`outside_review`),
     /// uma vez: com algum ponto vindo dele, não manda de novo.
     ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64>, outside_review: bool },
+    /// Final independent review is still required when a block reuses
+    /// confirmed material and needs no repeated user question.
+    OutsideReview,
     /// Não sobra ponto aberto: as mensagens do usuário que nenhum registro
     /// aponta.
     Done { unrouted: Vec<&'a SpecEvent> },
@@ -584,7 +587,12 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
     if let Some(block) = emptied.into_iter().next() {
         let (closed, records) = block_review(after, &block);
         let over = now.is_empty() && unrecorded.is_empty();
-        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: over && !outside_reviewed(after) });
+        let outside_review = over && !outside_reviewed(after);
+        if review_changed(after, &block) {
+            steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review });
+        } else if outside_review {
+            steps.push(SurveyStep::OutsideReview);
+        }
     }
     if !unrecorded.is_empty() {
         steps.push(SurveyStep::Record(unrecorded));
@@ -612,6 +620,61 @@ fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
     ids.sort_unstable();
     let records: BTreeSet<u64> = closed.iter().filter_map(SurveyPoint::closing).flat_map(|c| c.ints("result")).collect();
     (ids, records.into_iter().collect())
+}
+
+/// A real witnessed answer to the block review is the checkpoint. Its
+/// prefix retains the exact record versions seen then, including removals.
+fn review_checkpoint(log: &SpecLog, block: &str) -> Option<SpecLog> {
+    log.events.iter().rev().filter(|event| event.event_type == "message").find_map(|message| {
+        let witness = message.fields.get("witness")?;
+        let question = witness.get("question")?.as_str()?;
+        let answer = witness.get("answer")?.as_str()?;
+        let accepted = [crate::platform::i18n::Locale::PtBr, crate::platform::i18n::Locale::EnUs].iter().any(|lang| {
+            question == crate::translate("survey.review_question", *lang) && answer == crate::translate("survey.continue_option", *lang)
+        });
+        if !accepted { return None; }
+        let prefix = SpecLog { events: log.events.iter().take_while(|event| event.id < message.id).cloned().collect(), skipped: Vec::new() };
+        let latest = prefix.events.iter().rev().find(|event| event.event_type == "point" && event.int("closes").is_some())?;
+        if latest.str_field("block") != Some(block) || open_points(&prefix).iter().any(|point| point.str_field("block") == Some(block)) { return None; }
+        Some(prefix)
+    })
+}
+
+fn review_changed(log: &SpecLog, block: &str) -> bool {
+    let checkpoint = review_checkpoint(log, block);
+    points(log).into_iter().filter(|point| !point.is_open() && point.block() == block)
+        .filter_map(|point| point.closing()).any(|closing| {
+            closing.ints("result").into_iter().any(|id| {
+                let current = log.current(id);
+                if let Some(checkpoint) = &checkpoint {
+                    return current.map(|event| event.id) != checkpoint.current(id).map(|event| event.id);
+                }
+                !closing.ints("reused_results").contains(&id) || current.is_none_or(|event| event.id != id)
+            })
+        })
+}
+
+/// Conservative coverage: only another answered point with the same gap,
+/// or an agreed item explicitly cited by the evidence. No semantic guess
+/// closes an open question.
+#[must_use]
+pub fn known_answers(log: &SpecLog, point: &SpecEvent) -> Vec<u64> {
+    let mut candidates = BTreeSet::new();
+    for previous in points(log).into_iter().filter(|previous| !previous.is_open() && previous.shown().id != point.id
+        && previous.shown().str_field("gap") == point.str_field("gap")) {
+        if let Some(closing) = previous.closing() { candidates.extend(closing.ints("result")); }
+    }
+    if let Some(facts) = point.fields.get("facts").and_then(Value::as_array) {
+        let codes = log.codes();
+        for source in facts.iter().filter_map(|fact| fact.get("source").and_then(Value::as_str)) {
+            for (start, end) in crate::domain::mustard_id::find(source) {
+                candidates.extend(codes.iter().filter_map(|(id, code)| (code == &source[start..end]).then_some(*id)));
+            }
+        }
+    }
+    candidates.into_iter().filter_map(|id| log.current(id))
+        .filter(|event| matches!(event.event_type.as_str(), "decision" | "rule" | "out_of_scope"))
+        .map(|event| event.id).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
 /// Algum ponto veio do revisor de fora, pela leitura dos pares: ele já
@@ -1714,6 +1777,7 @@ mod tests {
                 .iter()
                 .map(|step| match step {
                     SurveyStep::Record(_) => "Record",
+                    SurveyStep::OutsideReview => "OutsideReview",
                     SurveyStep::Point(_) => "Point",
                     SurveyStep::ReviewBlock { outside_review: true, .. } => "ReviewBlock+OutsideReview",
                     SurveyStep::ReviewBlock { .. } => "ReviewBlock",

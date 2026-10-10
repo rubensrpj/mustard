@@ -360,7 +360,10 @@ fn consistent_scoped_query(root: &Path, tree: &Path, options: &Query<'_>, includ
 #[allow(clippy::too_many_arguments)]
 fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
     let Query { text: query, file, limit, depth, all, detail, symbol, direction, refresh } = *options;
-    if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh)) || (direction != Direction::Outgoing && symbol.is_none() && scope.is_none()) {
+    // An explicit investigation may follow current callers of its discovery
+    // seeds. Literal lookup still requires an exact symbol for navigation.
+    let guided = task.is_some_and(|task| !task.intent.trim().is_empty() && task.purpose != knowledge::investigation::Purpose::Locate);
+    if (symbol.is_some() && (!query.trim().is_empty() || file.is_some() || refresh)) || (direction != Direction::Outgoing && symbol.is_none() && scope.is_none() && !guided) {
         return Err(invalid("knowledge-navigation-requires-exact-symbol"));
     }
     let detail = detail || all;
@@ -441,7 +444,10 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             stale_cards += 1;
         }
     }
-    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)} else {max};
+    // Reserve response slots for relationships; filling every slot with
+    // lexical seeds prevented the completion/entry caller from ever appearing.
+    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)}
+        else if guided && direction != Direction::Outgoing && depth > 0 {max.saturating_sub((max/3).max(1)).max(1)} else {max};
     let mut ranking = Vec::new();
     let mut local_hybrid_index = false;
     if let Some(discovery) = discovery {
@@ -641,6 +647,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         let mut item = if detail { serde_json::to_value(&*card).map_err(|e| invalid(e.to_string()))? } else { knowledge::summary(card) };
         compacted_relations += outgoing - item["outgoing"].as_array().map_or(0, Vec::len) + callers - item["callers"].as_array().map_or(0, Vec::len);
         item["retrieval"] = json!(reasons[&i]);
+        item["evidence_basis"] = json!({"source":"current-sha256", "selection":reasons[&i], "behavior":"not-proven-by-reference"});
         if let Some(scope)=scope {item["native_search_owner"]=json!(scope.seeds.contains(&card.id));}
         if !detail {
             let witnesses = knowledge::evidence::compact_witnesses(card, query, &languages);
@@ -721,7 +728,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             "freshness":"catalog-at-last-scan; selected sources individually verified"},
         "local_hybrid_index":local_hybrid_index,"projection":if detail {"detail"} else {"summary"},
         "catalog":{"symbols":indexed_symbols,"entries":indexed_symbols,"entry_kinds":"declarations and source-file evidence","hydrated_candidates":hydrated_candidates,"hydrated_with_neighbors":cards.len(),"has_more_candidates":candidates_omitted,"outdated_packs":outdated_packs},
-        "navigation":{"symbol":symbol,"direction":direction,"max_depth":depth.min(4),"paths":if symbol.is_some(){walk.paths}else{vec![]},"omitted_destinations":omitted_edges,"stale_destinations":stale_navigation,"stale_relations":stale_relations,"outside_scope_relations":outside_scope_relations,"ambiguous_relations":ambiguous_relations,"impact_completeness":"unknown; static links only"},
+        "navigation":{"symbol":symbol,"direction":direction,"max_depth":depth.min(4),"paths":if symbol.is_some() || guided {walk.paths}else{vec![]},"omitted_destinations":omitted_edges,"stale_destinations":stale_navigation,"stale_relations":stale_relations,"outside_scope_relations":outside_scope_relations,"ambiguous_relations":ambiguous_relations,"impact_completeness":"unknown; static links only"},
         "expand":{"detail":"Repeat the query with --detail; --symbol <id> selects one exact declaration.","source":"run map slice --file <source.file> --name <name>","relations":"run knowledge --symbol <id> --direction callers --detail; both ends checked, static resolution is not runtime proof.","refresh":"run knowledge --refresh to inspect stale interpretations without regenerating them."},
         "stale_interpretations":stale.iter().map(|note|&note.id).collect::<Vec<_>>(),"gaps":gaps,
         "origin":"scan-and-versioned-interpretations","remote_model_calls":selection_usage["remote_model_calls"],
@@ -828,6 +835,28 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
 #[cfg(test)]
 mod tests {
 use super::*;
+    #[test]
+    fn investigation_reserves_room_for_a_verified_completion_caller_without_enabling_literal_navigation() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::write(root.join("entry.rs"),"fn completed() { write_export(); }\n").unwrap();
+        std::fs::write(root.join("write.rs"),"fn write_export() {}\n").unwrap();
+        let mut raw=json!({"modules":[
+            {"path":"entry.rs","analysis":{"content_sha256":source(root,"entry.rs").sha256,"parse_complete":true},"declarations":[{"name":"completed","kind":"function","line":1,"end_line":1}]},
+            {"path":"write.rs","analysis":{"content_sha256":source(root,"write.rs").sha256,"parse_complete":true},"declarations":[{"name":"write_export","kind":"function","line":1,"end_line":1,
+                "used_by":["entry.rs:1:completed"]}]}]});
+        knowledge::enrich(&mut raw);store::write_text(root,&raw.to_string()).unwrap();
+        let opts=Query{text:"write_export",file:None,limit:2,depth:1,all:false,detail:false,symbol:None,direction:Direction::Both,refresh:false};
+        assert!(query_for(root,root,&opts,knowledge::investigation::Task::default()).is_err());
+        let task=knowledge::investigation::Task{intent:"Locate the completion caller that writes the export",purpose:knowledge::investigation::Purpose::Spec};
+        let report=query_for(root,root,&opts,task).unwrap().0;
+        assert!(report["cards"].as_array().unwrap().iter().any(|card|card["name"]=="completed"),"{report}");
+        assert!(!report["navigation"]["paths"].as_array().unwrap().is_empty(),"{report}");
+        assert!(report["cards"].as_array().unwrap().iter().all(|card|card["evidence_basis"]["source"]=="current-sha256"));
+        assert_eq!(report["remote_model_calls"],0);
+        std::fs::write(root.join("entry.rs"),"fn changed() {}\n").unwrap();
+        let report=query_for(root,root,&opts,task).unwrap().0;
+        assert!(!report["cards"].as_array().unwrap().iter().any(|card|card["name"]=="completed"));
+    }
     fn source(dir: &Path, file: &str) -> Source {
         let bytes = std::fs::read(dir.join(file)).unwrap();
         let mut hash = Sha256::new();

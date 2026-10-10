@@ -11,11 +11,10 @@
 //!   merece o bloco de novo, e não há como ele ficar velho.
 //! - [`SizeNotice`], nos dois lados de cada ferramenta, com a conversa que a
 //!   chamada mede. **Em quem conduz** (a sessão principal), depois da
-//!   ferramenta, a conversa que passa de [`CONDUCTOR_STEP`] tokens recebe, uma
-//!   vez por degrau, o aviso de limpar ou compactar, com o bloco de retomada
-//!   pronto para colar numa janela limpa; o degrau guardado acompanha a
-//!   conversa que encolheu, então um `/compact` de verdade não cala o aviso do
-//!   próximo degrau. Quem conduz nunca é recusado por tamanho. **No agente de
+//!   ferramenta, a conversa avisa aos 200 mil e depois a cada 100 mil tokens,
+//!   uma vez por faixa, com uma linha de retomada. Só um início confirmado
+//!   após `/clear` ou `/compact` reinicia as faixas; uma leitura menor não o
+//!   faz. Quem conduz nunca é recusado por tamanho. **No agente de
 //!   onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
 //!   a medida chega só no fim de cada tarefa: no resultado do passo de término
 //!   (`run write step` com o código de uma tarefa no `item`), o gancho de
@@ -27,7 +26,7 @@
 //!   entre dois passos de término seguidos, e a da primeira desde o começo.
 //!   A ordem de entregar fecha a trava: dali em diante, o gancho de antes da
 //!   ferramenta recusa tudo, menos `run read` e `run write` na spec e o
-//!   comando de compilar do projeto, cada um sem outro comando na mesma
+//!   comandos declarados de compilar, testar e verificar estilo, sem outro comando na mesma
 //!   linha. Enquanto a rodada espera o conserto da volta que recusou — o
 //!   trecho de conserto dela está em disco —, a trava fica aberta, e a
 //!   entrega nova a fecha de novo. Antes da ordem nada é recusado por
@@ -74,7 +73,8 @@ use crate::hooks::bash::lex::{segments, Segment};
 
 /// O degrau de tamanho da conversa de quem conduz, em tokens: a cada degrau
 /// novo, um aviso.
-pub(crate) const CONDUCTOR_STEP: u64 = 200_000;
+pub(crate) const CONDUCTOR_FIRST_NOTICE: u64 = 200_000;
+pub(crate) const CONDUCTOR_STEP: u64 = 100_000;
 
 /// O tamanho que a conversa do agente de onda pode ter, em tokens, sem contar
 /// o resumo da onda anterior que ele leu: o fim de tarefa que passou dele, ou
@@ -203,12 +203,6 @@ fn mark_path(root: &Path, session: Option<&str>, name: &str) -> Option<PathBuf> 
     Some(state_dir(root)?.join(session).join(name))
 }
 
-/// O número guardado em `path`, ou `None` sem arquivo ou com texto que não é
-/// um número.
-fn read_mark(path: &Path) -> Option<u64> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
 /// Guarda `value` em `path`. Falhar não derruba o gancho: o aviso volta na
 /// chamada seguinte, o que é melhor que calar.
 fn write_mark(path: &Path, value: u64) {
@@ -224,28 +218,40 @@ fn write_mark(path: &Path, value: u64) {
 /// de verdade): quando o tamanho atual já está abaixo do degrau avisado, a
 /// conta recomeça dali, para o próximo degrau avisar de novo. `None` sem
 /// degrau novo ou sem spec para retomar.
+fn conductor_mark(input: &HookInput, root: &Path) -> Option<PathBuf> {
+    mark_path(root, input.session_id.as_deref(), "size-step").or_else(|| {
+        let transcript = input.transcript_path()?;
+        let key = format!("transcript-{}", blake3::hash(transcript.as_bytes()).to_hex());
+        mark_path(root, Some(&key), "size-step")
+    })
+}
+
+/// Reset only after the host confirms a clear or completed compaction.
+pub(crate) fn reset_conductor_notice(input: &HookInput, root: &Path) {
+    if let Some(path) = conductor_mark(input, root)
+        && let Ok(mut mark) = mustard_core::io::fs::lock::LockedFile::exclusive(&path)
+    {
+        let _ = mark.replace(b"0");
+    }
+}
+
 fn conductor_text(input: &HookInput, root: &Path) -> Option<String> {
     let tokens = last_context(Path::new(input.transcript_path()?))?;
-    let step = tokens / CONDUCTOR_STEP;
-    let mark = mark_path(root, input.session_id.as_deref(), "size-step");
-    let warned = mark.as_deref().and_then(read_mark).unwrap_or(0);
-    if step < warned
-        && let Some(mark) = &mark
-    {
-        write_mark(mark, step);
-    }
-    if step == 0 || step <= warned {
-        return None;
-    }
-    let block = crate::commands::flow::resume::current_block(root, input.session_id.as_deref())?;
+    if tokens < CONDUCTOR_FIRST_NOTICE { return None; }
+    let threshold = tokens / CONDUCTOR_STEP * CONDUCTOR_STEP;
+    let line = crate::commands::flow::resume::current_line(root, input.session_id.as_deref())?;
+    let path = conductor_mark(input, root)?;
+    let mut mark = mustard_core::io::fs::lock::LockedFile::exclusive(&path).ok()?;
+    let warned = mark.read_to_string().ok()?.trim().parse::<u64>().unwrap_or(0);
+    // Older versions stored the number of 200k bands instead of tokens.
+    let warned = if warned > 0 && warned < CONDUCTOR_FIRST_NOTICE { warned.saturating_mul(200_000) } else { warned };
+    if threshold <= warned { return None; }
+    mark.replace(threshold.to_string().as_bytes()).ok()?;
     let lang = crate::commands::spec_events::project(root).lang;
-    if let Some(mark) = &mark {
-        write_mark(mark, step);
-    }
     Some(
         translate("conversation_size.notice", lang)
-            .replace("{tokens}", &(step * CONDUCTOR_STEP / 1000).to_string())
-            .replace("{block}", &block),
+            .replace("{tokens}", &(threshold / 1000).to_string())
+            .replace("{line}", &line),
     )
 }
 
@@ -449,7 +455,7 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
         .map(|pair| pair[1].saturating_sub(pair[0]))
         .max()
         .unwrap_or(0);
-    let deliver = order.exists() || counted > WAVE_LIMIT || WAVE_LIMIT.saturating_sub(counted) < largest;
+    let deliver = order.exists() || counted >= WAVE_LIMIT || WAVE_LIMIT.saturating_sub(counted) < largest;
     if deliver {
         write_mark(&order, counted);
     }
@@ -584,14 +590,16 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
     if !order.exists() {
         return None;
     }
-    let build = ctx.config.commands().build;
-    if passes_after_the_order(input, build.as_deref()) {
+    let commands = ctx.config.commands();
+    if [commands.build.as_deref(), commands.test.as_deref(), commands.lint.as_deref()]
+        .into_iter().any(|command| passes_after_the_order(input, command)) {
         return None;
     }
     if awaits_its_fix(input, root, lang) {
         return None;
     }
-    let build = build.map_or_else(String::new, |build| translate("conversation_size.wave_locked_build", lang).replace("{command}", &build));
+    let build = [commands.build, commands.test, commands.lint].into_iter().flatten()
+        .map(|command| translate("conversation_size.wave_locked_build", lang).replace("{command}", &command)).collect::<String>();
     Some(translate("conversation_size.wave_locked", lang).replace("{build}", &build))
 }
 
@@ -721,13 +729,20 @@ mod tests {
             for order in ["/clear", "/compact", "200"] {
                 assert!(notice.contains(order), "{lang:?}: {order} is missing: {notice}");
             }
-            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
-            assert!(notice.contains(&block), "{lang:?}: the notice carries the resume block: {notice}");
-            assert_eq!(at(399_999), None, "{lang:?}: the same step does not repeat");
+            let line = crate::commands::flow::resume::current_line(root, Some("s1")).expect("the line");
+            assert!(notice.contains(&line), "{lang:?}: the notice carries the resume line: {notice}");
+            assert!(notice.len()<700,"short notice: {notice}");
+            assert_eq!(at(299_999), None, "{lang:?}: the same step does not repeat");
+            assert!(at(300_000).is_some(), "{lang:?}: 300k is the next band");
+            assert_eq!(at(399_999), None, "{lang:?}: 300k does not repeat");
             let second = at(400_000).unwrap_or_else(|| panic!("{lang:?}: a new step warns again"));
             assert!(second.contains("400"), "{lang:?}: {second}");
             assert_eq!(at(70_000), None, "{lang:?}: a compacted conversation is below the step");
-            assert!(at(200_000).is_some(), "{lang:?}: after a compaction the step warns again");
+            assert_eq!(at(200_000),None,"a lower reading alone is not a compaction");
+            reset_conductor_notice(&call, root);
+            assert!(at(200_000).is_some(), "{lang:?}: after confirmed compaction the step warns again");
+            assert!(at(500_000).is_some(),"skipped bands emit only the latest notice");
+            assert_eq!(at(500_000),None);
         }
     }
 
@@ -751,6 +766,19 @@ mod tests {
         let transcript = bare.path().join("t.jsonl");
         conductor_transcript_of(&transcript, 450_000);
         assert_eq!(injected(&conductor_after_tool(bare.path(), &transcript)), None, "nothing to resume");
+    }
+
+    #[test]
+    fn overlapping_notices_without_a_session_id_share_the_transcript_checkpoint() {
+        let dir=open_project("x");
+        let transcript=dir.path().join("t.jsonl");
+        conductor_transcript_of(&transcript,300_000);
+        let call=HookInput {session_id:None,..conductor_after_tool(dir.path(),&transcript)};
+        let notices=std::thread::scope(|scope| {
+            let threads:Vec<_>=(0..8).map(|_|scope.spawn(||injected(&call))).collect();
+            threads.into_iter().filter_map(|thread|thread.join().unwrap()).count()
+        });
+        assert_eq!(notices,1,"same band is claimed once even without a session identity");
     }
 
     /// Nenhum aviso de tamanho cita valor de compactação automática: nem o de
@@ -878,14 +906,14 @@ mod tests {
                 (
                     "Go on to the next task.",
                     "Record the delivery, with the tasks not started in `undone`.",
-                    "60 thousand. The limit is 150 thousand, and the largest task took 30 thousand.",
+                    "60 thousand. The horizon is 150 thousand, and the largest task took 30 thousand.",
                     "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass",
                 )
             } else {
                 (
                     "Siga para a próxima tarefa.",
                     "Grave a entrega, com as tarefas não começadas em `undone`.",
-                    "60 mil. O limite é 150 mil, e a maior tarefa gastou 30 mil.",
+                    "60 mil. O horizonte é 150 mil, e a maior tarefa gastou 30 mil.",
                     "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`",
                 )
             };
@@ -1188,6 +1216,24 @@ mod tests {
             let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the order"));
             assert!(reason.starts_with("[Mustard]"), "{command}: {reason}");
         }
+    }
+
+    #[test]
+    fn capacity_horizon_does_not_interrupt_work_and_declared_minimal_checks_remain_available() {
+        use serde_json::json;
+        let dir=open_project("x");
+        let root=dir.path();
+        std::fs::write(root.join("mustard.json"),r#"{"language":{"text":"pt-BR"},"buildCommand":"cargo build","testCommand":"cargo test --locked -p app","lintCommand":"cargo clippy -p app"}"#).unwrap();
+        let mut replies=vec![agent_reply(170_000,Some("edit"))];
+        write_agent(root,&wave_request(Locale::PtBr),&replies);
+        assert_eq!(injected(&agent_after_tool(root)),None,"no stop order in the middle of a task");
+        assert_eq!(refused(root,"Edit",json!({"file_path":root.join("a.rs"),"old_string":"a","new_string":"b"})),None);
+        assert!(agent_finishes(root,&mut replies,180_000,Locale::PtBr).is_some());
+        for command in ["cargo test --locked -p app specific_test","rtk cargo test --locked -p app specific_test","cargo clippy -p app"] {
+            assert_eq!(refused(root,"Bash",json!({"command":command})),None,"{command}");
+        }
+        assert!(refused(root,"Agent",json!({"description":"next task","prompt":"start next task"})).is_some());
+        assert_eq!(refused(root,REPORT_BACK_TOOL,json!({"summary":"finished"})),None);
     }
 
     /// Depois da ordem de entregar, a devolução do relatório a quem conduz

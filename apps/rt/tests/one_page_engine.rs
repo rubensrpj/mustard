@@ -140,10 +140,10 @@ fn the_page(root: &Path) -> String {
 fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
     let project = tempfile::tempdir().expect("tempdir");
     let html = the_page(project.path());
-    let fonts = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Geist";
+    let fonts = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter";
     assert!(html.starts_with("<!doctype html>"), "{html}");
     assert!(!style(&html).is_empty(), "the page has no style");
-    assert!(html.contains(fonts), "the page does not link the Geist fonts");
+    assert!(html.contains(fonts), "the page does not link the Inter font");
     assert!(!html.contains("@font-face") && !html.contains("data:font"), "the page carries a font");
     assert_eq!(html.matches("<style>").count(), 1, "the page carries a second style");
     assert!(html.contains("<strong>negrito</strong>"), "the loose page did not convert markdown");

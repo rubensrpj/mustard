@@ -485,7 +485,7 @@ fn calls_lines(log: &SpecLog, term: &str) -> Vec<String> {
     let term = term.trim();
     let mut by_command: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
     for call in log.block(BlockQuery::Block(Block::Metrics)) {
-        if call.event_type == "call" && (term.is_empty() || calls_command(call, term)) {
+        if call.event_type == "call" && !call.fields.contains_key("request") && (term.is_empty() || calls_command(call, term)) {
             by_command.entry(call.str_field("command").unwrap_or_default().trim()).or_default().push(call);
         }
     }
@@ -517,7 +517,7 @@ fn calls_sum(command: &str, calls: &[&SpecEvent]) -> Map<String, Value> {
             sum.insert(field.into(), spread);
         }
     }
-    for field in ["tokens", "cost_micro_usd", "requests"] {
+    for field in ["tokens", "cost_micro_usd", "requests", "input_bytes", "output_bytes", "estimated_input_tokens", "estimated_output_tokens"] {
         let values = numbers(field);
         if !values.is_empty() {
             sum.insert(field.into(), json!(values.iter().fold(0_u64, |total, n| total.saturating_add(*n))));
@@ -697,7 +697,21 @@ pub(crate) fn read_by_command(command: &str) -> String {
 /// of a wave, or of the final review, and the final review request the close
 /// would build now print byte for byte, with no newline added.
 pub fn run(opts: &ReadOpts) {
-    match read_at(opts) {
+    let started = std::time::Instant::now();
+    let result = read_at(opts);
+    // Reads from a dispatched request already record each required item.
+    // Keep those receipts separate from the CLI invocation's own measure.
+    let report = match &result {
+        Ok(text) => serde_json::from_str(text).unwrap_or_else(|_| json!({"ok":true,"spec":opts.spec})),
+        Err(refusal) => refusal.clone(),
+    };
+    let exact=matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview));
+    let output=match &result {
+        Ok(text) => if exact {text.clone()} else {format!("{text}\n")},
+        Err(refusal) => serde_json::to_string_pretty(refusal).unwrap_or_default()+"\n",
+    };
+    let _ = super::conversation::record_output_call(&opts.root, "read", opts.spec.as_deref(), started, &report,&output);
+    match result {
         Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview)) => {
             print!("{text}");
         }
@@ -863,8 +877,23 @@ mod tests {
         let unknown = read_at(&opts(root, "everything", None)).unwrap_err();
         assert_eq!(unknown["reason"], json!("unknown-block"));
         assert!(unknown["hint"].as_str().unwrap().contains("everything"));
+        assert!(unknown["hint"].as_str().unwrap().contains("criterion"));
+        assert!(unknown["hint"].as_str().unwrap().contains("specification"));
         let missing = read_at(&opts(root, "state", None)).unwrap_err();
         assert_eq!(missing["reason"], json!("no-spec-file"));
+    }
+
+    #[test]
+    fn the_same_item_lookup_reads_every_event_kind_by_its_canonical_code() {
+        use mustard_core::domain::spec_events::{parse_log,TYPES};
+        let text=TYPES.iter().enumerate().map(|(at,spec)|json!({"v":1,"id":at+1,"type":spec.name,"text":"Conteúdo completo."}).to_string()).collect::<Vec<_>>().join("\n");
+        let log=parse_log(&text);let codes=log.codes();
+        for event in &log.events {
+            let code=codes.get(&event.id).expect("every event has a code");
+            let found=find_item(&log,&EventRef::Code(code.clone()),&codes).expect("universal item lookup");
+            assert_eq!(found.id,event.id,"{} {code}",event.event_type);
+            assert_eq!(found.str_field("text"),Some("Conteúdo completo."));
+        }
     }
 
     #[test]

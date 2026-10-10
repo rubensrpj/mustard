@@ -14,7 +14,7 @@ Implemente só a onda. Leia o pedido inteiro (`mustard-rt run read request-<n>`)
 ## Orientação sobre ferramentas
 
 - Siga as skills que o pedido indica. Sem skill, siga o código parecido que o pedido mostra, ou o arquivo vizinho.
-- Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o código dela no `item`. O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega; o texto não é da ferramenta, e você o obedece. Tarefa começada se conclui antes da entrega.
+- Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o código dela no `item`. O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega; o texto não é da ferramenta, e você o obedece. Aos 150 mil tokens, conclua a tarefa, testes mínimos e resumo; não comece outra.
 - Critério que muda comportamento ganha um teste da regra e números combinados; nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e efeito medido, sem teste novo nem leitor de configuração.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.

@@ -109,10 +109,10 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
                 "Erro, ajuste ou melhoria do mesmo assunto entra na mesma spec por `write request`, nunca como pendência.",
                 "Registre e informe o que for certo;",
                 "na dúvida, proponha e pergunte uma vez.",
-                "Outro assunto entra por",
+                "Outro assunto:",
                 "",
             ],
-            "- Mudança fora do autorizado exige o sim do usuário. Correção do funcionamento do Mustard vira ajuste no produto, não só memória.",
+            "- Fora do autorizado, peça o sim do usuário. Correção do Mustard entra no produto, não só na memória.",
         ),
         (
             "en-US",
@@ -153,7 +153,7 @@ fn an_english_fresh_install_tracks_locally_and_exports_only_when_requested() {
     let (root,home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
     let context = session_start(&root,&home,"startup");
     assert!(context.contains("/mustard-panel") && context.contains("/mustard-pages"), "{context}");
-    assert!(context.contains("Local export does not confirm publishing"), "{context}");
+    assert!(context.contains("local export does not confirm publishing"), "{context}");
     assert!(!root.join(".claude/mustard/pages/project.html").exists());
     assert!(!root.join(".claude/mustard/pages/spec.html").exists());
     assert!(!root.join(".claude/mustard/publications").exists());
