@@ -938,10 +938,10 @@ fn record_to(
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
     let file = store::spec_file(&project.root, spec);
-    task_declared(event_type, &draft, by.is_none()).map_err(|refusal| {
+    let declaration_issue = task_declared(event_type, &draft, by.is_none()).err().map(|refusal| {
         let source = file.as_deref().ok().map(|path| Source::of(path, locked.as_deref()));
         with_uncovered_items(source.as_ref(), refusal)
-    })?;
+    });
     let mut draft = draft;
     let path = file?;
     // O item que descreve o trabalho, gravado pelo modelo, entra com as
@@ -949,14 +949,15 @@ fn record_to(
     // conferência de escrita. A versão nova de um item de antes da forma
     // segue como ele era.
     let by_model = by.is_none() && item_form(event_type).is_some();
+    let mut issues: Vec<_> = declaration_issue.into_iter().collect();
     if by_model && !revises_an_item_without_the_form(&Source::of(&path, locked.as_deref()), &draft, event_type)? {
         let missing = item_form_missing(&draft, event_type, by_model);
         if !missing.is_empty() {
-            return Err(Refusal::ItemFormMissing { missing });
+            issues.push(Refusal::ItemFormMissing { missing });
         }
         let unclear = unclear_fields(&project.root, &draft, project.lang);
         if !unclear.is_empty() {
-            return Err(Refusal::ItemUnclear { fields: unclear });
+            issues.push(Refusal::ItemUnclear { fields: unclear });
         }
     }
     if event_type == "task" && by.is_some() {
@@ -979,6 +980,17 @@ fn record_to(
         && let Some(said) = last_user_message(&log)
     {
         draft.insert("origin".to_string(), json!(said.id));
+    }
+    if by_model {
+        let normalized = mustard_core::domain::spec_events::normalize(draft.clone(), event_type);
+        issues.extend(mustard_core::domain::spec_events::validation_issues(&normalized));
+        match issues.len() {
+            0 => {},
+            1 => return Err(issues.remove(0)),
+            _ => return Err(Refusal::ValidationIssues { issues }),
+        }
+    } else if let Some(issue) = issues.pop() {
+        return Err(issue);
     }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
@@ -1282,6 +1294,9 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                     }),
                 );
             }
+            SurveyStep::OutsideReview => {
+                next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
+            }
             SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
                 next.push(translate("survey.present_all", lang).to_string());
                 let open = survey::open_points(after);
@@ -1294,6 +1309,11 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                 }
             }
             SurveyStep::Point(point) => {
+                let covered = survey::known_answers(after, point);
+                if !covered.is_empty() {
+                    out.insert("covered_by".into(), json!(covered.iter().map(code_of).collect::<Vec<_>>()));
+                    next.push(translate("survey.covered_point", lang).replace("{records}", &covered.iter().map(code_of).collect::<Vec<_>>().join(", ")));
+                }
                 next.push(translate("survey.present_point", lang).replace("{code}", &code_of(&point.id)).replace("{id}", &point.id.to_string()));
                 out.insert("point".to_string(), super::shown(point, &codes));
             }
@@ -1603,7 +1623,9 @@ fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
 /// Run `write` and print the JSON report; with `copy`, the write also
 /// prepares the copy of the spec page. Exit 1 on a refusal.
 pub fn run(opts: &WriteOpts, copy: bool) {
+    let started = std::time::Instant::now();
     let report = write_at_with(opts, copy);
+    let _ = super::conversation::record_call(&opts.root, "write", opts.spec.as_deref(), started, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
         std::process::exit(1);
@@ -1975,7 +1997,10 @@ mod tests {
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"o plano"}"#);
 
-        let step = write(root, "step", r#"{"wave":23,"item":"MSTD-TASK-0041","text":"O tipo passo ficou gravado."}"#);
+        let criterion=write(root,"criterion",r#"{"when":"Ao pedir","then":"O recurso é entregue.","proof":"echo ok","form":"event_driven"}"#);
+        let task=write(root,"task",&json!({"text":"Entregar o recurso.","title":"Entregar recurso","agent":"Implementar o recurso.","files":[],"depends_on":[],"covers":[criterion["id"]]}).to_string());
+        assert_eq!(task["ok"],true,"{task}");
+        let step = write(root, "step", &json!({"wave":23,"item":task["code"],"text":"O tipo passo ficou gravado."}).to_string());
         assert_eq!(step["ok"], json!(true), "{step}");
         assert_eq!(step["type"], json!("step"), "{step}");
         assert!(step["code"].as_str().unwrap().starts_with("MSTD-STEP-"), "{step}");
@@ -1984,6 +2009,21 @@ mod tests {
         for page in ["spec.html", "spec.md"] {
             assert!(!spec.join(page).exists(), "{page}: the step is not the end of a wave");
         }
+    }
+
+    #[test]
+    fn independent_form_clarity_and_unknown_fields_are_reported_in_one_refusal() {
+        let dir=tempdir().unwrap();
+        write(dir.path(),"message",r#"{"author":"user","text":"Permitir baixar o arquivo."}"#);
+        let opts=WriteOpts {root:dir.path().into(),spec:Some("teste".into()),event_type:"criterion".into(),
+            json:json!({"when": "teste ".repeat(26),"then":"O arquivo é entregue.","proof":"echo ok","form":"event_driven","agent":"indevido","example":"indevido"}).to_string()};
+        let before=lines(dir.path());
+        let report=write_at(&opts);
+        assert_eq!(report["ok"],false,"{report}");
+        let issues=report["issues"].as_array().expect("all independent defects");
+        for reason in ["item-form-missing","item-unclear","unknown-field"] {assert!(issues.iter().any(|issue|issue["reason"]==reason),"{report}");}
+        for field in ["agent","example"] {assert!(issues.iter().any(|issue|issue["field"]==field),"{report}");}
+        assert_eq!(before,lines(dir.path()),"the refused draft changes no events");
     }
 
     /// O commit, o clique e a fala digitada do usuário não são gravados à mão,
@@ -4663,6 +4703,7 @@ mod tests {
                 point: Some(points[0].code.clone()),
                 event_type: None,
                 json: None,
+                facts: None,
                 result: None,
                 not_applicable: true,
                 reason: Some("Não vale para este pedido.".into()),

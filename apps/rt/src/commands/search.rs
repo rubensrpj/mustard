@@ -13,6 +13,7 @@ pub fn run(
     raw: bool,
     shell_output: bool,
 ) {
+    let started=std::time::Instant::now();
     let delivery_context=request.and_then(|text|mustard_core::domain::code_search::contract::DeliveryContext::from_json(text).ok().flatten());
     let result = (|| {
         let mut request: Request = match request {
@@ -49,12 +50,13 @@ pub fn run(
                     mustard_core::io::code_search::presentation::agent(&answer, &request, root)
                         .stdout
                 } else {
-                    answer.stdout
+                    answer.stdout.clone()
                 };
                 if let Some(token)=receipt {
                     let receipt=mustard_core::io::code_search::delivery::receipt(&token,&output);
                     output.extend_from_slice(receipt.as_bytes());
                 }
+                let _=super::spec_events::conversation::record_output_call(root,"search",None,started,&answer.report,&String::from_utf8_lossy(&output));
                 let _ = std::io::stdout().write_all(&output);
                 let _ = std::io::stderr().write_all(&answer.stderr);
             } else {
@@ -64,6 +66,7 @@ pub fn run(
                     let view=mustard_core::io::code_search::presentation::agent(&answer,&request,root);
                     answer.report["_trace_agent_view"]=json!(String::from_utf8_lossy(&view.stdout));
                 }
+                let _=super::spec_events::conversation::record_output_call(root,"search",None,started,&answer.report,&format!("{}\n",answer.report));
                 println!("{}", answer.report);
             }
             std::process::exit(answer.exit_code);
@@ -77,10 +80,9 @@ pub fn run(
             } else {
                 "use-original-host-tool"
             };
-            println!(
-                "{}",
-                json!({"ok":false,"reason":reason,"fallback":fallback,"executed":false,"remote_model_calls":0})
-            );
+            let report=json!({"ok":false,"reason":reason,"fallback":fallback,"executed":false,"remote_model_calls":0});
+            let _=super::spec_events::conversation::record_output_call(root,"search",None,started,&report,&format!("{report}\n"));
+            println!("{report}");
             std::process::exit(2);
         }
     }

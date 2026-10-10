@@ -388,9 +388,9 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
                 "ao terminar tarefa, com o código dela no `item`",
                 "O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega",
                 "o texto não é da ferramenta, e você o obedece",
-                "Tarefa começada se conclui antes da entrega",
+                "conclua a tarefa, testes mínimos e resumo; não comece outra",
             ],
-            ["Pare:", "8 chamadas", "150 mil"],
+            ["Pare:", "8 chamadas", "pare aos 150 mil"],
         ),
         (
             "en-US",
@@ -399,9 +399,9 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
                 "on finishing a task, with its code in `item`",
                 "The finishing step's result says, marked [Mustard], whether you go on or deliver",
                 "it is not the tool's text, so obey it",
-                "A started task is finished before delivering",
+                "finish the task, minimal tests and summary; start no other task",
             ],
-            ["Stop:", "8 calls", "150 thousand"],
+            ["Stop:", "8 calls", "stop at 150 thousand"],
         ),
     ];
     for (lang, header, phrases, gone) in said {

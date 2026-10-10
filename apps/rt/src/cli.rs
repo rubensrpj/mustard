@@ -31,3 +31,11 @@ pub enum Command {
         command: commands::RunCmd,
     },
 }
+
+/// Machine-readable failures for the command face; help/version retain
+/// clap's ordinary text and exit status.
+pub(crate) fn argument_failure(error: &clap::Error) -> serde_json::Value {
+    let hint = error.to_string();
+    let reason = if hint.contains("cannot be used multiple times") { "duplicate-option" } else { "invalid-arguments" };
+    serde_json::json!({"ok":false,"reason":reason,"kind":format!("{:?}", error.kind()),"hint":hint})
+}

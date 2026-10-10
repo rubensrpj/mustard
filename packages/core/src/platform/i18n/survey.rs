@@ -153,6 +153,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              \"{continue}\" last."
         }
         ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
+        ("survey.covered_point", Locale::PtBr) => "Há respostas já registradas relacionadas a este ponto: {records}. Confira os itens; se cobrirem a pergunta, use `answer --result` sem repetir a pergunta ao usuário.",
+        ("survey.covered_point", Locale::EnUs) => "Existing answers relate to this point: {records}. Check the items; if they cover the question, use `answer --result` without asking the user again.",
         ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
         ("survey.continue_option", Locale::PtBr) => "Seguir",
         ("survey.continue_option", Locale::EnUs) => "Continue",
@@ -234,7 +236,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 40, 0xc6ea_9cda_69c7_c7e4);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 41, 0xa680_0fe3_45b7_8986);
     }
 
     /// As recusas e os passos do levantamento e o rótulo de cada lacuna saem

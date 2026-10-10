@@ -23,9 +23,9 @@
 //! O `grill` grava cada item da lista que ainda não tem ponto como ponto
 //! aberto, com o autor `binary`, os fatos que a lista já traz e os lembretes;
 //! o fato do mapa que cita um arquivo que não existe mais fica de fora, e o
-//! ponto é gravado assim mesmo. O ponto pode nascer sem fato; o assistente soma os fatos que conferiu numa
-//! versão nova só com `replaces` e `facts`, e o ponto sem fato não fecha com
-//! resposta. Cada item da resposta traz o número, o código e a situação do
+//! ponto é gravado assim mesmo. O ponto pode nascer sem fato; o assistente
+//! soma os fatos que conferiu no próprio `answer --facts`, que grava a
+//! resposta e o fechamento numa transação. Cada item da resposta traz o número, o código e a situação do
 //! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
 //! ou, no condensado, pede para mostrar todos de uma vez; sem ponto aberto,
 //! lista em `unrouted` as mensagens do usuário sem destino. Chamar de novo
@@ -260,10 +260,10 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     });
     // Discovery only: grounded flow evidence does not close survey points,
     // introduce a requirement or substitute the required source read.
-    let discovery=mustard_core::io::knowledge::Query {text:&goal_text,file:None,limit:4,depth:1,all:false,detail:false,symbol:None,
-        direction:mustard_core::io::knowledge::Direction::Outgoing,refresh:false};
+    let discovery=mustard_core::io::knowledge::Query {text:&goal_text,file:None,limit:6,depth:1,all:false,detail:false,symbol:None,
+        direction:mustard_core::io::knowledge::Direction::Both,refresh:false};
     if let Ok((evidence,_))=mustard_core::io::knowledge::query_for(&opts.root,&opts.root,&discovery,
-        mustard_core::domain::knowledge::investigation::Task {intent:"",purpose:mustard_core::domain::knowledge::investigation::Purpose::Spec})
+        mustard_core::domain::knowledge::investigation::Task {intent:&goal_text,purpose:mustard_core::domain::knowledge::investigation::Purpose::Spec})
         && (evidence["cards"].as_array().is_some_and(|cards|!cards.is_empty()) || evidence["interpretations"].as_array().is_some_and(|notes|!notes.is_empty())) {
         report["knowledge"]=evidence;
     }

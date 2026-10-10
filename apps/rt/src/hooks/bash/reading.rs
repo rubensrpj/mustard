@@ -835,6 +835,16 @@ mod tests {
         let (_plain, plain) = fixture::project("{}", true);
         assert_eq!(run(&plain, "cat mustard.json"), Verdict::Allow);
     }
+
+    #[test]
+    fn a_blocked_config_read_explains_why_chained_tests_were_not_run() {
+        let (_dir,root)=fixture::project(&format!(r#"{{"jev":{{"key":"{}"}}}}"#,fixture::FAKE_KEY),true);
+        let message=refused(run(&root,"cat mustard.json && cargo test"),"cat mustard.json && cargo test");
+        assert!(!message.contains(fixture::FAKE_KEY));
+        assert!(message.contains("***"));
+        assert!(message.contains("incluindo etapas encadeadas de teste"),"{message}");
+        assert!(message.contains("Execute o teste separadamente"),"{message}");
+    }
     /// A busca recursiva que passaria pelo `mustard.json` com a chave é
     /// recusada com a opção que o deixa de fora, e o motivo nunca traz a
     /// chave: o `grep` recursivo na raiz, depois de um `cd` ou numa pasta

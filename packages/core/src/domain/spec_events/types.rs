@@ -443,6 +443,14 @@ pub const TYPES: &[TypeSpec] = &[
             req("ms", Kind::Int),
             req("result", Kind::OneOf(CALL_RESULTS)),
             opt("refusal", Kind::Text),
+            opt("invocation", Kind::Bool),
+            opt("search_enriched", Kind::Bool),
+            opt("search_task_evidence", Kind::Bool),
+            opt("search_fallback", Kind::Bool),
+            opt("input_bytes", Kind::Int),
+            opt("output_bytes", Kind::Int),
+            opt("estimated_input_tokens", Kind::Int),
+            opt("estimated_output_tokens", Kind::Int),
             // A busca que chamou o filtro: qual (`jev`, ou `jev:<motivo>` na
             // falha), o tempo dele, os tokens de entrada, o custo em
             // milionésimos de dólar (a soma de todos os pedidos), quantos
@@ -531,7 +539,8 @@ pub const TYPES: &[TypeSpec] = &[
             req("status", Kind::OneOf(POINT_STATUS)),
             opt("facts", Kind::Objects),
             opt("closes", Kind::Ref),
-            opt("result", Kind::Ints),
+            opt("result", Kind::Refs),
+            opt("reused_results", Kind::Refs),
             opt("reason", Kind::Text),
             opt("reminders", Kind::List),
         ],
@@ -586,7 +595,7 @@ pub const TYPES: &[TypeSpec] = &[
             // genérica de campo ausente, sem a lista. Critério gravado antes
             // desta exigência continua sem o campo, e a leitura não recusa.
             opt("form", Kind::OneOf(CRITERION_FORMS)),
-            opt("contracts", Kind::Ints),
+            opt("contracts", Kind::Refs),
             // Só o título: `when` e `then` já são a parte do usuário, e
             // `proof` é a do agente.
             TITLE,
@@ -650,7 +659,7 @@ pub const TYPES: &[TypeSpec] = &[
         &[
             req("n", Kind::Int),
             TEXT,
-            req("criteria", Kind::Ints),
+            req("criteria", Kind::Refs),
             req("done_when", Kind::Text),
             opt("depends_on", Kind::Ints),
             // A relação dos itens da onda em ordem de execução. É ela que o
@@ -682,7 +691,7 @@ pub const TYPES: &[TypeSpec] = &[
             // `depends_on`.
             opt("files", Kind::Objects),
             opt("skill", Kind::Text),
-            opt("covers", Kind::Ints),
+            opt("covers", Kind::Refs),
             opt("must_read", Kind::List),
             // As tarefas de que esta depende, pelo número ou pelo código;
             // vazia quando não depende de nenhuma. Alimenta a ordem das

@@ -54,9 +54,8 @@ pub enum FlowCmd {
     /// pedido misto), as lições e as specs anteriores que casam com o
     /// objetivo, e até três mensagens antigas do usuário como lembretes
     /// dentro desses pontos — e grava cada ponto que falta, aberto, com os
-    /// fatos que a lista traz. O assistente só soma os fatos que conferiu, com
-    /// `write point` levando `replaces` e `facts`, e responde cada ponto com
-    /// `answer`, que grava a resposta e fecha o ponto. Rodar o grill de novo
+    /// fatos que a lista traz. O assistente inclui os fatos conferidos
+    /// no próprio `answer --facts`, que grava a resposta e fecha o ponto. Rodar o grill de novo
     /// não grava nada e devolve o primeiro ponto aberto.
     #[command(display_order = 1)]
     Grill {
@@ -246,6 +245,10 @@ pub enum FlowCmd {
         /// do `write`. Vem junto com `--type`.
         #[arg(long)]
         json: Option<String>,
+        /// Fatos conferidos no código ou na conversa, como uma lista JSON
+        /// de {"text":"...","source":"..."}. Gravados com o fechamento.
+        #[arg(long)]
+        facts: Option<String>,
         /// Os itens já gravados que respondem o ponto, por número ou código,
         /// separados por vírgula: somam-se ao item novo, ou vêm sozinhos.
         #[arg(long)]
@@ -300,8 +303,8 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::reopen::ReopenOpts { root, spec, reason, fix };
             flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts));
         }
-        FlowCmd::Answer { spec, point, event_type, json, result, not_applicable, reason, root } => {
-            let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, result, not_applicable, reason };
+        FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
+            let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
             flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts));
         }
     }

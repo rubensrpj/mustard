@@ -54,11 +54,13 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         .into_iter()
         .map(|wave| {
             let sent = visible.iter().rev().find(|e| e.event_type == "send" && e.wave() == Some(wave));
-            let integrated = visible.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave));
-            let commit = visible.iter().rev().find(|e| e.event_type == "commit" && e.ints("waves").contains(&wave));
+            let attempt=sent.map(|event|log.dispatch_position(event.id));
+            let belongs=|id:u64|attempt.is_none_or(|start|id>start);
+            let integrated = visible.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && belongs(e.id));
+            let commit = visible.iter().rev().find(|e| e.event_type == "commit" && e.ints("waves").contains(&wave) && belongs(e.id));
             let received =
-                log.events.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && hidden.get(&e.id) == Some(&Hidden::Returned));
-            let repair = log.last_rejected().get(&wave).is_some_and(|id| integrated.is_none_or(|e| e.id < *id));
+                log.events.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && hidden.get(&e.id) == Some(&Hidden::Returned) && belongs(e.id));
+            let repair = log.last_rejected().get(&wave).is_some_and(|id| belongs(*id) && integrated.is_none_or(|e| e.id < *id));
             let status = if repair {
                 "repair-required"
             } else if commit.is_some() {
@@ -116,7 +118,114 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},
         "stages":stages,"final_validation_valid":if selected {Some(super::flow::validation::reusable(root,log))} else {None},
         "counted_waves":wave_counts(log),
-        "publication":publication,"jev":jev.spec(name),"review_approved":final_approval(log).is_some(),"undeclared_commands":missing})
+        "publication":publication,"jev":jev.spec(name),"operations":operations(root,name,log),
+        "definitions":if selected {definitions(log)} else {Value::Null},
+        "review_approved":final_approval(log).is_some(),"undeclared_commands":missing})
+}
+
+fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
+    let transport=super::spec_events::conversation::recorded_operations(root,name);
+    let calls: Vec<_> = log.visible().into_iter().chain(transport.visible()).filter(|event| event.event_type == "call" && !event.fields.contains_key("request")
+        && event.fields.get("invocation").and_then(Value::as_bool)!=Some(false)
+        && !matches!(event.str_field("command"),Some("wave assembly"|"wave items"))).collect();
+    let mut commands = std::collections::BTreeMap::<String, Value>::new();
+    let mut totals = json!({"calls":0,"refusals":0,"input_bytes":0,"output_bytes":0,"estimated_input_tokens":0,"estimated_output_tokens":0,"calls_without_payload_measurement":0,
+        "search":{"calls":0,"enriched":0,"task_evidence":0,"fallback":0,"ms":0}});
+    for call in calls {
+        let command = commands.entry(call.str_field("command").unwrap_or_default().into())
+            .or_insert_with(|| json!({"calls":0,"refusals":0,"reasons":{}}));
+        command["calls"] = json!(command["calls"].as_u64().unwrap_or(0) + 1);
+        totals["calls"] = json!(totals["calls"].as_u64().unwrap_or(0) + 1);
+        if call.str_field("result") == Some("refused") {
+            command["refusals"] = json!(command["refusals"].as_u64().unwrap_or(0) + 1);
+            totals["refusals"] = json!(totals["refusals"].as_u64().unwrap_or(0) + 1);
+            let reason = call.str_field("refusal").unwrap_or("unknown");
+            command["reasons"][reason] = json!(command["reasons"][reason].as_u64().unwrap_or(0) + 1);
+        }
+        for field in ["input_bytes", "output_bytes", "estimated_input_tokens", "estimated_output_tokens"] {
+            if let Some(value) = call.int(field) { totals[field] = json!(totals[field].as_u64().unwrap_or(0).saturating_add(value)); }
+        }
+        if call.int("input_bytes").is_none() { totals["calls_without_payload_measurement"] = json!(totals["calls_without_payload_measurement"].as_u64().unwrap_or(0) + 1); }
+        if call.str_field("command")==Some("search") {
+            totals["search"]["calls"]=json!(totals["search"]["calls"].as_u64().unwrap_or(0)+1);
+            totals["search"]["ms"]=json!(totals["search"]["ms"].as_u64().unwrap_or(0).saturating_add(call.int("ms").unwrap_or(0)));
+            for (key,field) in [("enriched","search_enriched"),("task_evidence","search_task_evidence"),("fallback","search_fallback")] {
+                if call.fields.get(field)==Some(&Value::Bool(true)){totals["search"][key]=json!(totals["search"][key].as_u64().unwrap_or(0)+1);}
+            }
+        }
+    }
+    totals["by_command"] = json!(commands);
+    totals["token_basis"] = json!("transport-characters-divided-by-four; estimate, not provider usage");
+    totals
+}
+
+fn safe_value(mut value: Value) -> Value {
+    match &mut value {
+        Value::String(text) => *text = crate::shared::secret::without_secrets(text),
+        Value::Array(values) => { for value in values { *value = safe_value(value.take()); } },
+        Value::Object(values) => { for value in values.values_mut() { *value = safe_value(value.take()); } },
+        _ => {},
+    }
+    value
+}
+
+fn definitions(log: &SpecLog) -> Value {
+    let codes = log.codes();
+    let mut groups = std::collections::BTreeMap::<String, Vec<Value>>::new();
+    for event in log.visible().into_iter().filter(|event| matches!(event.event_type.as_str(),
+        "context" | "concern" | "rule" | "decision" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "criterion" | "task" | "work_type") || event.event_type=="point" && event.str_field("status")==Some("open")) {
+        let mut item = display_item(event, &codes);
+        if let Some(fields) = item.as_object_mut() { for key in ["v", "at", "author", "search", "keys"] { fields.remove(key); } }
+        groups.entry(event.event_type.clone()).or_default().push(safe_value(item));
+    }
+    json!(groups)
+}
+
+fn display_item(event: &mustard_core::domain::spec_events::SpecEvent, codes: &std::collections::BTreeMap<u64,String>) -> Value {
+    use mustard_core::domain::spec_events::{Kind,type_spec};
+    let mut item=crate::commands::spec_events::shown(event,codes);
+    if let Some(spec)=type_spec(&event.event_type) {
+        for field in spec.fields {
+            if let Some(value)=item.get_mut(field.name) {
+                match field.kind {
+                    Kind::Ref => { if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);} },
+                    Kind::Refs => { if let Some(values)=value.as_array_mut() { for value in values {
+                        if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);}
+                    } } },
+                    _ => {},
+                }
+            }
+        }
+    }
+    item
+}
+
+/// Large historical requests are loaded only for the selected wave, never
+/// included in every background project summary.
+pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
+    let root = mustard_core::io::spec_events::spec_root(start);
+    let Some(log) = spec_index::read_specs(&root).into_iter().find_map(|(spec, log)| (spec == name).then_some(log)) else { return Value::Null };
+    let visible = log.visible();
+    let planned = visible.iter().rev().find(|event| event.event_type == "wave" && event.wave() == Some(wave));
+    let sent = visible.iter().rev().find(|event| event.event_type == "send" && event.wave() == Some(wave));
+    let codes=log.codes();
+    // A usage update replaces a send after its return. Follow replacements
+    // to the start of this attempt instead of treating that update as a resend.
+    let attempt=sent.map(|event|log.dispatch_position(event.id));
+    let received = log.events.iter().rev().find(|event| event.event_type == "delivered" && event.wave() == Some(wave)
+        && attempt.is_none_or(|start|event.id>start));
+    let steps: Vec<_> = visible.iter().filter(|event| event.event_type == "step" && event.wave() == Some(wave)).map(|event| display_item(event,&codes)).collect();
+    let tasks: Vec<_> = visible.iter().filter(|event| event.event_type == "task" && event.wave() == Some(wave)).map(|event| display_item(event,&codes)).collect();
+    let criterion_ids: BTreeSet<_> = planned.into_iter().flat_map(|event|event.ints("criteria")).filter_map(|id|log.current(id).map(|event|event.id)).collect();
+    let criteria: Vec<_> = visible.iter().filter(|event| event.event_type == "criterion" && criterion_ids.contains(&event.id)).map(|event| display_item(event,&codes)).collect();
+    let tests: Vec<_> = visible.iter().filter(|event|event.event_type=="criterion_run" && event.int("criterion").and_then(|id|log.current(id)).is_some_and(|criterion|criterion_ids.contains(&criterion.id)))
+        .map(|event| {let mut item=display_item(event,&codes);if let Some(code)=event.int("criterion").and_then(|id|codes.get(&id)){item["criterion"]=json!(code);}item}).collect();
+    let user_input = planned.and_then(|event| event.int("origin")).and_then(|id| log.get(id)).and_then(|event| event.str_field("text"));
+    safe_value(json!({"spec":name,"wave":wave,"plan":planned.map(|event| &event.fields),
+        "user_input":user_input,"request":sent.and_then(|event|event.str_field("text")),
+        "request_recorded":sent.is_some(),"sent_at":sent.map(|event|event.at()),
+        "delivery":received.map(|event|&event.fields),"delivery_integrated":received.is_some_and(|event|visible.iter().any(|current|current.id==event.id)),
+        "steps":steps,"tasks":tasks,"criteria":criteria,"tests":tests}))
 }
 
 /// The same progress used by the terminal and the full local projection.
@@ -137,5 +246,38 @@ mod tests {
         assert_eq!(result["specs"], json!([]));
         assert_eq!(result["jev"]["cost_micro_usd"], Value::Null);
         assert!(!dir.path().join(".claude").exists());
+    }
+
+    #[test]
+    fn selected_wave_exposes_its_exact_request_and_never_borrows_a_previous_attempts_return() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let folder=root.join(".claude/spec/demo");std::fs::create_dir_all(&folder).unwrap();
+        let input=format!("Pedido exato.\n{}\nFinal.","a".repeat(9000));
+        let rows=[
+            json!({"v":1,"id":1,"type":"message","text":"Pedido do usuário."}),
+            json!({"v":1,"id":2,"type":"criterion","code":"MSTD-CRIT-0001","when":"Ao pedir","then":"Arquivo entregue","proof":"echo ok"}),
+            json!({"v":1,"id":3,"type":"wave","n":1,"text":"Texto da onda.","criteria":[2],"done_when":"Conferido.","origin":1}),
+            json!({"v":1,"id":4,"type":"task","wave":1,"title":"Gerar arquivo","code":"MSTD-TASK-0001","text":"Gerar cópia.","covers":[2]}),
+            json!({"v":1,"id":5,"type":"send","wave":1,"text":input,"role":"wave"}),
+            json!({"v":1,"id":6,"type":"delivered","wave":1,"text":"Volta anterior.","returned":true}),
+            json!({"v":1,"id":7,"type":"send","wave":1,"text":input,"role":"wave","replaces":5,"tokens":180_000}),
+            json!({"v":1,"id":8,"type":"step","wave":1,"item":4,"text":"Teste mínimo aprovado."}),
+            json!({"v":1,"id":9,"type":"criterion_run","criterion":2,"result":"pass","exit":0,"ms":20}),
+        ];
+        let text=rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")+"\n";
+        std::fs::write(folder.join("spec.ndjson"),&text).unwrap();
+        let detail=wave_detail(root,"demo",1);
+        assert_eq!(detail["request"],input);assert_eq!(detail["plan"]["text"],"Texto da onda.");
+        assert_eq!(detail["user_input"],"Pedido do usuário.");assert_eq!(detail["tasks"][0]["code"],"MSTD-TASK-0001");
+        assert_eq!(detail["tests"][0]["criterion"],"MSTD-CRIT-0001");
+        assert_eq!(detail["delivery"]["text"],"Volta anterior.","a usage update is the same attempt");
+        assert_eq!(detail["delivery_integrated"],false);
+        std::fs::write(folder.join("spec.ndjson"),text+&json!({"v":1,"id":10,"type":"send","wave":1,"role":"wave","text":"Novo pedido.","resends":7}).to_string()+"\n").unwrap();
+        assert!(wave_detail(root,"demo",1)["delivery"].is_null(),"an earlier return does not belong to a new send");
+        let summary=snapshot(root,Some("demo"));
+        assert_eq!(summary["specs"][0]["waves"][0]["status"],"running");
+        assert!(summary["specs"][0]["waves"][0]["summary"].is_null());
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(),1,"read-only content loading");
     }
 }

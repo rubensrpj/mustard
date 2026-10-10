@@ -4,6 +4,8 @@
 //! quatro conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
+//! - [`reading`] — recusa leituras que expõem a chave antes de qualquer
+//!   reescrita que autorizaria a execução da linha inteira;
 //! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
 //!   caminho do Windows (`> C:\...`), que o shell POSIX transformaria num
 //!   arquivo com nome estranho na pasta atual;
@@ -11,7 +13,8 @@
 //!   com `pgrep`, `pidof` ou `ps`) e corrige, sem recusar, a compilação ou o
 //!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
 //!   completo;
-//! - [`reading`] — recusa a leitura do `mustard.json` que guarda a chave do
+//!
+//! [`reading`] recusa a leitura do `mustard.json` que guarda a chave do
 //!   Jev, com o arquivo sem a chave no motivo, e responde a busca por palavra
 //!   em pastas de código com a marca do mapa: a resposta agrupada por função
 //!   no lugar da busca que mostra linhas, quando o mapa crava; a busca comum
@@ -73,14 +76,14 @@ impl Check for CommandGuard {
         if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {
             return Ok(verdict);
         }
+        if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
+            return Ok(verdict);
+        }
         let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {
             return Ok(verdict);
         }
         if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
-            return Ok(verdict);
-        }
-        if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             return Ok(verdict);
         }
         Ok(crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow))

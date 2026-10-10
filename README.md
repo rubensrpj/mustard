@@ -122,11 +122,13 @@ O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods par
 |---|---|
 | `/mustard:continue` | Retoma a spec de onde parou. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
-| `/mustard-panel` | Projeto, specs, execução e consumo local, atualizados sem turno do modelo. Requer suporte a Mods (CLI 2.1.287+). |
+| `/mustard-panel` | Projeto, specs, definições, ondas, execução e consumo local. Requer suporte a Mods (CLI 2.1.287+). |
 | `/mustard-pages` | Publicação explícita de `project`, `spec [nome]` ou `report <arquivo.md>` pelo adaptador nativo Cloudflare Pages. Sem configuração, entrega arquivos locais; sem turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto e diagnostica a instalação. Para desligar o Mustard num projeto, ponha `"enabled": false` no `mustard.json`. |
 
 A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
+
+No painel, **Definições** mostra decisões, regras, critérios e tarefas completos. **Ondas** permite consultar plano, pedido exato enviado ao agente, entrega e testes. Textos extensos têm paginação. O tema segue as [diretrizes do ERP.Brain](https://github.com/atiz/erpbrain/blob/main/design/guidelines/README.md), com amarelo nas ações e seleções. **Todas as páginas e o Mods usam modo escuro fixo**, independentemente do tema do sistema. Mods adapta esse padrão aos componentes do terminal; fonte e tamanho das letras dependem do Claude Code. As páginas para navegador compartilham as cores e usam Inter, controles maiores e navegação responsiva.
 
 ---
 

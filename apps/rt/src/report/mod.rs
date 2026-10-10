@@ -1,8 +1,8 @@
 //! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
-//! A página avulsa e o snapshot explícito usam o layout aprovado
-//! em 17/09 (mostarda e carvão): menu lateral com as seções, barra com a
-//! busca. As fontes Geist e Geist Mono são buscadas do Google Fonts; nenhuma
+//! A página avulsa e o snapshot explícito seguem as diretrizes ERP.Brain
+//! com ações amarelas: menu lateral com as seções, barra com a
+//! busca. As fontes Inter e Geist Mono são buscadas do Google Fonts; nenhuma
 //! fonte vai gravada dentro da página, e quem abre o arquivo sem internet vê
 //! a fonte do sistema. O motor que montava a página inteira de uma spec e a
 //! do projeto, item por item, saiu com o comando que só ele servia.
@@ -23,12 +23,14 @@ use mustard_core::platform::i18n::{Locale, translate};
 pub mod markdown;
 mod render;
 mod snapshot;
+mod design;
 pub(crate) use snapshot::{public_project_snapshot, public_report_snapshot, public_snapshot, public_spend_snapshot};
 
 pub use render::Render;
 
 /// Folha de estilo do layout do Mustard, a mesma para toda página. Mora em
 /// `layout.css` para ser lida e revisada como CSS, não como literal Rust.
+#[cfg(test)]
 const STYLE: &str = include_str!("layout.css");
 
 /// O script da página, o mesmo para toda página: o menu que acompanha a
@@ -39,7 +41,7 @@ const SCRIPT: &str = include_str!("layout.js");
 /// As fontes do layout, buscadas do Google Fonts. Sem internet, vale a pilha
 /// do sistema declarada no estilo.
 pub(crate) const FONTS: &str = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?\
-family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap\">";
+family=Inter:wght@100..900&family=Geist+Mono:wght@100..900&display=swap\">";
 
 /// A lupa da busca.
 const SEARCH_ICON: &str = "<svg width=\"15\" height=\"15\" viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\">\
@@ -228,7 +230,7 @@ autocomplete=\"off\" spellcheck=\"false\" aria-label=\"{search_label}\"><span cl
             lang_attr = escape(&self.lang),
             fonts = FONTS,
             title = escape(&self.title),
-            style = STYLE,
+            style = design::style(),
             of = t("page.of"),
             one = t("page.count.one"),
             many = t("page.count.many"),
@@ -357,11 +359,11 @@ mod tests {
 
         let css = html.split_once("<style>").and_then(|(_, tail)| tail.split_once("</style>")).map(|(style, _)| style).expect("página sem <style>");
 
-        // Tokens mostarda e carvão, claro e escuro, e as cores de situação.
-        for token in ["#FAFAF7", "#2B2B29", "#E1AD01", "#8A6700", "#FBF1CF", "#2E2E2B", "#1C1C1A", "#ECEAE3", "#E8B923", "#121211", "#2F7A4B", "#B3261E"] {
+        // O padrão é sempre escuro, com amarelo e cores de situação legíveis.
+        for token in ["#e1ad01", "#292735", "#f5f1fa", "#f2cf4a", "#a0dfbc", "#f4cf92"] {
             assert!(css.contains(token), "token {token} ausente do layout");
         }
-        assert!(css.contains("\"Geist\"") && css.contains("\"Geist Mono\""));
+        assert!(css.contains("\"Inter\"") && css.contains("\"Geist Mono\""));
 
         // Estrutura do layout: a seção com o endereço no menu, a tabela em
         // moldura.
@@ -414,18 +416,18 @@ mod tests {
         }
     }
 
-    /// Geist e Geist Mono vêm do Google Fonts, por um link no `<head>`, e o
+    /// Inter e Geist Mono vêm do Google Fonts, por um link no `<head>`, e o
     /// estilo guarda a fonte do sistema como reserva; nenhuma fonte vai
     /// gravada dentro da página, que fica pequena.
     #[test]
-    fn report_links_the_geist_fonts_from_google_fonts() {
+    fn report_links_inter_and_a_code_font_with_system_fallbacks() {
         let html = Report::new("QA", "x").render();
         let head = html.split_once("</head>").map(|(head, _)| head).expect("página sem <head>");
         assert!(head.contains(FONTS), "o link das fontes fica no <head>");
-        assert!(FONTS.contains("family=Geist:wght@100..900") && FONTS.contains("family=Geist+Mono:wght@100..900"));
+        assert!(FONTS.contains("family=Inter:wght@100..900") && FONTS.contains("family=Geist+Mono:wght@100..900"));
         assert!(!html.contains("@font-face"), "nenhuma fonte declarada dentro da página");
         assert!(!html.contains("data:font") && !html.contains("base64"), "nenhuma fonte gravada");
-        assert!(STYLE.contains("--sans:\"Geist\",") && STYLE.contains("system-ui"));
+        assert!(STYLE.contains("--sans:\"Inter\",") && STYLE.contains("system-ui"));
         assert!(STYLE.contains("--mono:\"Geist Mono\",") && STYLE.contains("ui-monospace"));
         assert!(html.len() < 32_000, "a página vazia pesa {} bytes", html.len());
         assert_only_the_fonts_are_external(&html);

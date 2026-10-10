@@ -236,7 +236,7 @@ fn no_published_text_teaches_the_recording_the_command_refuses() {
     let gone = run(root, &["pr-review", "--pr", "1", "--critical", "3"]);
     assert_eq!(gone.status.code(), Some(2), "a contagem de críticos ainda é uma opção");
     assert!(
-        String::from_utf8_lossy(&gone.stderr).contains("--critical"),
+        serde_json::from_slice::<serde_json::Value>(&gone.stdout).expect("machine-readable argument error")["hint"].as_str().is_some_and(|hint|hint.contains("--critical")),
         "o erro nomeia a opção que não existe mais"
     );
 }

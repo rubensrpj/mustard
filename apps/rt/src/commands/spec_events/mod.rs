@@ -51,7 +51,21 @@ pub(crate) fn project(start: &Path) -> Project {
 
 /// A recusa como o comando imprime.
 pub(crate) fn refused(refusal: &Refusal, lang: SupportedLocale) -> Value {
-    json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) })
+    let mut out = json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) });
+    if let Refusal::ValidationIssues { issues } = refusal {
+        out["issues"] = json!(issues.iter().map(|issue| {
+            let mut entry = refused(issue, lang);
+            let field = match issue {
+                Refusal::UnknownField { field, .. } | Refusal::MissingField { field, .. }
+                | Refusal::InvalidValue { field, .. } | Refusal::EmptyText { field, .. }
+                | Refusal::BinaryOnlyField { field } => Some(field.as_str()),
+                _ => None,
+            };
+            if let Some(field) = field { entry["field"] = json!(field); }
+            entry
+        }).collect::<Vec<_>>());
+    }
+    out
 }
 
 /// O evento como a leitura mostra: sem o `search`, com o código do item.
