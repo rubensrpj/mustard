@@ -173,7 +173,7 @@ export function register(on) {
   on('tool.call',{tool:'mcp__mustard__search'},async ($,e)=>{
     const request=e.request;
     const problem=searchContractError(request);
-    if(problem) return {result:{content:[{type:'text',text:`search-contract: ${problem}. Retry with {request:{tool,input,intent,purpose,choose?}}; preserve original search arguments.`}],isError:true}};
+    if(problem) return {result:`search-contract: ${problem}. Retry with {request:{tool,input,intent,purpose,choose?}}; preserve original search arguments.`,isError:true};
     const cwd=await $.session.cwd();
     // MCP arguments are fields of e; the nested request avoids reserved tool.
     // Use Bash through the host tool API so
@@ -192,9 +192,10 @@ export function register(on) {
     const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(envelope)),'--shell-output'].join(' ');
     const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
     if(result.deny) return {deny:result.deny};
-    let stdout=result.result?.stdout ?? result.text ?? '';
+    const failed=result.isError===true || result.result?.interrupted===true;
+    let stdout=result.result?.stdout ?? result.text ?? (typeof result.result==='string' ? result.result : '');
     const receipt=/\n# mustard-delivery:([a-f0-9]{64}):(\d+):([a-f0-9]{16})\n?$/.exec(stdout);
-    if (receipt && envelope.context && epoch===evidenceEpoch && result.isError!==true && result.result?.interrupted!==true
+    if (receipt && envelope.context && epoch===evidenceEpoch && !failed
         && completeDelivery(stdout.slice(0,receipt.index),receipt)) {
       const acknowledged=evidenceAcknowledged.get(agent)||new Set();
       acknowledged.add(receipt[1]);
@@ -203,7 +204,9 @@ export function register(on) {
     }
     if(receipt)stdout=stdout.slice(0,receipt.index);
     const stderr=result.result?.stderr || '';
-    return {result:{content:[{type:'text',text:stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:'')}],isError:result.isError===true}};
+    // Mods validates the registered tool's result as content, not as an MCP
+    // tools/call envelope. Error status belongs to the tool.call reply itself.
+    return {result:stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:''),...(failed ? {isError:true} : {})};
   });
   // Observe completed operations without replacing permissions or the
   // native orchestration. Coalesce bursts; retain polling for external edits.
