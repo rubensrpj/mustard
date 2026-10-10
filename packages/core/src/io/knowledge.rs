@@ -68,6 +68,7 @@ fn note_card(note: &Interpretation) -> Card {
         routes: vec![],
         tests: vec![],
         inline_tests: false,
+        test_only: false,
         outgoing: vec![],
         callers: vec![],
         unresolved_calls: 0,
@@ -731,6 +732,8 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         if !native.verify(tree) {return Err(invalid("knowledge-source-changing; repeat the investigation"));}
         report["investigation"]=native.report;
         report["retrieval_method"]=json!("native-index-and-current-source");
+        report["local_model_calls"]=report["investigation"]["local_model_calls"].clone();
+        report["vectors_enabled"]=json!(report["local_model_calls"].as_u64().is_some_and(|calls|calls>0));
     }
     if let Some(scope)=scope {
         report["candidate_flow"]=json!({"native_owners":scope.seeds.len(),"hydrated_candidates":cards.len(),

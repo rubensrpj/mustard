@@ -46,10 +46,18 @@ impl SymbolSelector for KnowledgeSelector {
                 let next=format!("c{}",evidence_keys.len());
                 let key=evidence_keys.entry(c.id.clone()).or_insert(next).clone();
                 if !evidence.contains_key(&key) {
-                    evidence.insert(key.clone(),json!({"name":c.name,"kind":c.kind,
-                        "signature":c.signature.chars().take(320).collect::<String>(),"documentation":c.documentation.chars().take(400).collect::<String>(),
-                        "source":{"file":c.source.file,"line":c.source.line,"end_line":c.source.end_line},"routes":c.routes,
-                        "calls":c.outgoing.iter().take(6).map(|edge|json!({"target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"]})).collect::<Vec<_>>() }));
+                    let mut item=json!({"name":c.name,"kind":c.kind,
+                        "source":{"file":c.source.file,"line":c.source.line,"end_line":c.source.end_line}});
+                    if c.test_only {item["test_only"]=json!(true);}
+                    let source=source_text(&group.excerpts[&c.id].text);
+                    for (field,value,limit) in [("signature",&c.signature,320),("documentation",&c.documentation,400)] {
+                        if !value.trim().is_empty() && !source.contains(&compact(value)) {
+                            item[field]=json!(value.chars().take(limit).collect::<String>());
+                        }
+                    }
+                    if !c.routes.is_empty(){item["routes"]=json!(c.routes);}
+                    if !c.outgoing.is_empty(){item["calls"]=json!(c.outgoing.iter().take(6).map(|edge|json!({"target":edge["target"],"call_line":edge["call_line"],"resolution":edge["resolution"]})).collect::<Vec<_>>());}
+                    evidence.insert(key.clone(),item);
                 }
                 let excerpt=&group.excerpts[&c.id];
                 let next=format!("e{}",excerpt_keys.len());
@@ -75,7 +83,7 @@ impl SymbolSelector for KnowledgeSelector {
         if usable.is_empty() {
             return Decisions { usage: json!({"status":"native; no-source-backed-comparative-group","remote_model_calls":0,"deferred_groups":groups.len()}), ..Decisions::default() };
         }
-        let payload = json!({"model":JEV_MODEL,"state":{"revision":"knowledge-choice-v6","groups":state,"candidates":evidence,"excerpts":excerpts,"source_hashes":sources,
+        let payload = json!({"model":JEV_MODEL,"state":{"revision":"knowledge-choice-v7","groups":state,"candidates":evidence,"excerpts":excerpts,"source_hashes":sources,
             "relations_status":"static parser candidates; target source and runtime behavior not established"},"questions":questions}).to_string();
         let doc = match (self.invoke)(&payload) {
             Ok(doc) => doc,
@@ -136,6 +144,11 @@ impl SymbolSelector for KnowledgeSelector {
     }
 }
 
+fn compact(text:&str)->String {text.split_whitespace().collect::<Vec<_>>().join(" ")}
+fn source_text(text:&str)->String {
+    compact(&text.lines().map(|line|line.split_once(':').filter(|(at,_)|at.parse::<u64>().is_ok()).map_or(line,|(_,text)|text)).collect::<Vec<_>>().join("\n"))
+}
+
 fn criteria(card:&mustard_core::domain::knowledge::Card,at:usize,witnesses:&[Vec<Value>])->Value {
     let distinct:Vec<_>=witnesses[at].iter().filter(|w|!witnesses.iter().enumerate().any(|(other,values)|other!=at
         && values.iter().any(|v|v["kind"]==w["kind"] && v["value"]==w["value"]))).collect();
@@ -156,6 +169,20 @@ mod tests {
             source:card.source.clone(),text:format!("{}:fn {}() {{}}\n{}:\n",card.source.line,card.name,card.source.end_line),complete:true,
         });}
         group
+    }
+    #[test]
+    fn source_repeated_metadata_is_removed_but_distinct_documentation_and_hashes_remain() {
+        let mut group=group();
+        group.candidates[0].signature="fn one()".into();
+        group.candidates[0].documentation="Additional contract absent from the supplied excerpt".into();
+        let selector=KnowledgeSelector{languages:Languages::new(["en-US"]),invoke:Box::new(|payload| {
+            let request:Value=serde_json::from_str(payload).unwrap();let card=&request["state"]["candidates"]["c0"];
+            assert!(card.get("signature").is_none());assert!(card.get("routes").is_none());assert!(card.get("calls").is_none());
+            assert_eq!(card["documentation"],"Additional contract absent from the supplied excerpt");
+            assert!(request["state"]["excerpts"]["e0"]["text"].as_str().unwrap().contains("fn one()"));
+            assert!(request["state"]["source_hashes"].get("a.rs").is_some());
+            Ok(json!({"answers":{}}))
+        })};selector.select("quartz beacon",&[group]);
     }
     #[test]
     fn independent_questions_share_state_and_uncertain_answers_abstain() {

@@ -40,6 +40,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 mod line_end;
+mod chunks;
 mod typed;
 
 #[derive(Default)]
@@ -1658,6 +1659,7 @@ fn quoted_value(text: &str) -> Option<String> {
 /// Declared parameter/type fields with source coordinates; absent fields stay unknown.
 fn header_fields(node: Node, bytes: &[u8]) -> serde_json::Value {
     let mut fields=serde_json::Map::new();
+    fields.insert("source_chunks".into(),chunks::of(node));
     let body_start=node.child_by_field_name("body").map_or(node.end_byte(),|body|body.start_byte());
     for (field,role) in [("parameters","parameters"),("return_type","return_type"),("type","declared_type")] {
         if let Some(part)=node.child_by_field_name(field).filter(|part|part.end_byte()<=body_start)

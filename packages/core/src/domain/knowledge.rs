@@ -20,7 +20,7 @@ pub mod investigation;
 mod retrieval;
 pub use annotation::Annotation;
 
-pub const VERSION: u64 = 3;
+pub const VERSION: u64 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
@@ -61,6 +61,9 @@ pub struct Card {
     pub tests: Vec<String>,
     #[serde(default)]
     pub inline_tests: bool,
+    /// A test declaration is searchable evidence, not production behavior.
+    #[serde(default)]
+    pub test_only: bool,
     #[serde(default)]
     pub outgoing: Vec<Value>,
     #[serde(default)]
@@ -86,11 +89,15 @@ pub fn summary(card: &Card) -> Value {
         "signature":short(&card.signature,320),"documentation":short(&card.documentation,320),
         "file_documentation":short(&card.file_documentation,220),
         "parse_complete":card.parse_complete,"contracts":card.contracts.iter().take(3).collect::<Vec<_>>(),"routes":card.routes.iter().take(3).collect::<Vec<_>>(),
-        "outgoing":outgoing,"callers":callers,"inline_tests":card.inline_tests,"unresolved_calls":card.unresolved_calls,
+        "outgoing":outgoing,"callers":callers,"inline_tests":card.inline_tests,"test_only":card.test_only,"unresolved_calls":card.unresolved_calls,
         "detail_counts":{"literals":card.literals.len(),"tests":card.tests.len(),"body_comment_chars":card.body_comment.chars().count()},
         "text_compacted":card.signature.chars().count()>320 || card.documentation.chars().count()>320 || card.file_documentation.chars().count()>220,
     });
-    if !card.syntax.is_null() {projection["syntax"]=card.syntax.clone();}
+    if !card.syntax.is_null() {
+        let mut syntax=card.syntax.clone();
+        if let Some(object)=syntax.as_object_mut() {object.remove("source_chunks");}
+        if syntax.as_object().is_none_or(|object|!object.is_empty()) {projection["syntax"]=syntax;}
+    }
     if !card.annotations.is_empty() {
         projection["annotations"] = json!(annotations);
         projection["annotation_status"] = json!("author-assertion; not semantic proof");
@@ -161,9 +168,6 @@ pub fn enrich(raw: &mut Value) {
                     range[0].as_u64().is_some_and(|start| start <= line)
                         && range[1].as_u64().is_some_and(|end| line <= end)
                 });
-            if in_test || super::ast::is_test_path(file) {
-                continue;
-            }
             let name = declaration["name"].as_str().unwrap_or_default();
             let strings = |key: &str| {
                 declaration[key]
@@ -198,7 +202,7 @@ pub fn enrich(raw: &mut Value) {
                 routes:module["routes"].as_array().into_iter().flatten().filter(|route| route["handler"].as_str()==Some(name))
                     .map(|route|json!({"method":route["method"],"path":route["path"],"handler":route["handler"],"line":route["line"]})).collect(),
                 tests:module["tests"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
-                inline_tests:module["has_tests"].as_bool().unwrap_or(false),outgoing:Vec::new(),callers,
+                inline_tests:module["has_tests"].as_bool().unwrap_or(false),test_only:in_test || super::ast::is_test_path(file),outgoing:Vec::new(),callers,
                 unresolved_calls:declaration["common_calls"].as_u64().unwrap_or(0) as usize,
             });
         }
@@ -216,7 +220,7 @@ pub fn enrich(raw: &mut Value) {
                     literals:module["texts"].as_array().into_iter().flatten().map(evidence::source_literal).collect(),
                     file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),annotations:vec![],
                     source:Source{file:file.into(),line:1,end_line,sha256:sha256.into()},
-                    parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:vec![],routes:vec![],tests:vec![],inline_tests:false,
+                    parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:vec![],routes:vec![],tests:vec![],inline_tests:false,test_only:false,
                     outgoing:vec![],callers:vec![],unresolved_calls:0,
                 });
             }
@@ -722,7 +726,7 @@ mod tests {
         assert_eq!(subset[indexed[0].card].name,"second");
     }
     #[test]
-    fn calls_remain_ambiguous_and_test_declarations_stay_out() {
+    fn calls_remain_ambiguous_and_test_declarations_remain_identified() {
         let mut raw = json!({"modules":[{"path":"service.rs","analysis":{"content_sha256":"hash","parse_complete":true},"test_lines":[[20,50]],
             "declarations":[{"name":"save","line":1,"end_line":9},{"name":"test_save","line":22,"end_line":30}]},
             {"path":"db.rs","analysis":{"content_sha256":"db-hash"},"declarations":[{"name":"insert","line":1,"end_line":3,
@@ -730,9 +734,12 @@ mod tests {
         enrich(&mut raw);
         let map: ProjectMap = serde_json::from_value(raw.clone()).unwrap();
         let cards = cards(&map);
-        assert_eq!(cards.len(), 2);
-        assert_eq!(cards[0].outgoing[0]["resolution"], "ambiguous");
-        assert_eq!(cards[0].outgoing[0]["source"]["sha256"], "db-hash");
+        assert_eq!(cards.len(), 3);
+        let production=cards.iter().find(|card|card.name=="save").unwrap();
+        assert!(!production.test_only);
+        assert!(cards.iter().find(|card|card.name=="test_save").unwrap().test_only);
+        assert_eq!(production.outgoing[0]["resolution"], "ambiguous");
+        assert_eq!(production.outgoing[0]["source"]["sha256"], "db-hash");
         let before = raw.clone();
         enrich(&mut raw);
         assert_eq!(raw, before);

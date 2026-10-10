@@ -6,6 +6,21 @@ use mustard_core::io::code_search;
 use serde_json::json;
 
 #[test]
+fn test_declarations_are_searchable_and_remain_identified_in_the_host_view() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("lib.rs"),"#[cfg(test)]\nmod tests {\n fn probe_record() { assert_eq!(1, 1); }\n}\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","probe_record","."]}),intent:"Locate the test function probe_record".into(),purpose:Purpose::Implement,choose:false};
+    let answer=code_search::execute(root,root,root,&request,None).unwrap();
+    let card=answer.report["task_context"]["cards"].as_array().unwrap().iter().find(|card|card["name"]=="probe_record").unwrap();
+    assert_eq!(card["test_only"],true);
+    let view=String::from_utf8(code_search::presentation::agent(&answer,&request,root).stdout).unwrap();
+    assert!(view.contains("test-only"),"{view}");
+    assert_eq!(answer.stdout,code_search::execute_native(root,&request).unwrap().stdout);
+}
+
+#[test]
 fn an_area_survey_keeps_the_native_named_area_before_unrelated_validation_verbs() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
     std::fs::create_dir(root.join("QuartzPay")).unwrap();
@@ -219,9 +234,17 @@ fn declared_parameters_and_return_types_are_source_ranges_in_multiple_grammars()
         let syntax=card["syntax"].as_object().unwrap();
         assert!(syntax.contains_key("parameters"),"{}",card);
         assert!(syntax.contains_key("return_type") || syntax.contains_key("declared_type"),"{}",card);
-        for field in syntax.values() {
+        for field in syntax.values().filter(|field|field.is_object()) {
             let start=field["start_byte"].as_u64().unwrap() as usize;let end=field["end_byte"].as_u64().unwrap() as usize;
             assert_eq!(source.get(start..end).unwrap(),field["text"].as_str().unwrap());
+        }
+        let chunks=syntax["source_chunks"].as_array().unwrap();
+        assert!(!chunks.is_empty());
+        for chunk in chunks {
+            let start=chunk["start_byte"].as_u64().unwrap() as usize;
+            let end=chunk["end_byte"].as_u64().unwrap() as usize;
+            assert!(source.get(start..end).is_some());
+            assert!(chunk["line"].as_u64().unwrap()<=chunk["end_line"].as_u64().unwrap());
         }
     }
 }

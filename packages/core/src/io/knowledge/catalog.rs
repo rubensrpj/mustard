@@ -16,6 +16,7 @@ use crate::io::map_search::Discovery;
 use crate::io::project_map::{self as store, unreadable};
 use crate::io::sha256::Sha256;
 use crate::platform::error::{Error, Result};
+mod hydration;
 
 pub(crate) const BLOCK: Block = Block {
     name: "knowledge_index",
@@ -137,6 +138,15 @@ pub(super) struct Pool {
     pub total: usize,
     pub omitted: bool,
     pub outdated: i64,
+}
+
+pub(super) fn code_candidates(root:&Path,question:&str,files:&BTreeSet<String>)->std::result::Result<(Vec<Card>,Vec<String>,u64),MapRefusal> {
+    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled(){return Ok((Vec::new(),Vec::new(),0));}
+    let db=store::open_existing(&store::model_path(root))?;
+    let ranked=crate::io::code_vectors::ranked(db.conn(),question,files,96).map_err(unreadable)?;
+    let ids=ranked.ids;
+    let cards=hydrate(db.conn(),&ids.iter().cloned().collect()).map_err(unreadable)?;
+    Ok((cards,ids,ranked.calls))
 }
 
 /// Apply the native search's file inventory before hydration. Broad words in
@@ -461,9 +471,10 @@ pub(super) fn hydrate(conn: &Connection, ids: &BTreeSet<String>) -> Result<Vec<C
     for (path,positions) in files {
         let text:Option<String>=conn.query_row("SELECT analysis FROM texts WHERE path=?1",[path],|row|row.get(0)).optional()?.flatten();
         if let Some(text) = text {
-            let mut pack:Value=serde_json::from_str(&text).map_err(|e|Error::Parse(e.to_string()))?;
+            let wanted=positions.iter().map(|(position,_)|*position).collect();
+            let mut selected=hydration::selected(&text,&wanted).map_err(|e|Error::Parse(e.to_string()))?;
             for (position,id) in positions {
-                let value=pack["knowledge"]["cards"].as_array_mut().and_then(|cards|cards.get_mut(position)).map(Value::take)
+                let value=selected.remove(&position)
                     .ok_or_else(||Error::Parse("knowledge-catalog-position-mismatch; refresh scan".into()))?;
                 let card:Card=serde_json::from_value(value).map_err(|e|Error::Parse(e.to_string()))?;
                 if card.id != id {return Err(Error::Parse("knowledge-catalog-identity-mismatch; refresh scan".into()));}

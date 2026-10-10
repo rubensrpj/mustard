@@ -160,7 +160,11 @@ fn lower_priority() {}
 /// história faz depois de gravar a dela. O mapa vale sem os vetores, então a
 /// falha só avisa. Devolve quantos vetores de declaração foram calculados.
 fn fill_meaning(out: &Path, root: &Path) -> usize {
-    match mustard_core::io::map_meaning::fill_at(out, root) {
+    let code = match mustard_core::io::code_vectors::fill_at(out, root) {
+        Ok(count) => count,
+        Err(err) => {eprintln!("The code vectors were not written: {err}");0}
+    };
+    code + match mustard_core::io::map_meaning::fill_at(out, root) {
         Ok(report) => report.computed,
         Err(err) => {
             eprintln!("The meaning vectors were not written: {err}");

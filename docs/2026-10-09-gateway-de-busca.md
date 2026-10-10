@@ -1,5 +1,7 @@
 # Gateway de busca e aprendizado local
 
+**Atualização de 10/10/2026:** o estado vigente, os embeddings locais opcionais de código e a comparação com 80 descrições públicas estão em [prioridades e resultados de 10/10](2026-10-10-busca-prioridades-e-resultados.md). As etapas abaixo são histórico, com baselines próprios; seus percentuais não são acumuláveis. O corte de admissão por dois segundos foi retirado: arquivos e bytes continuam delimitados, com resultado determinístico e parcialidade explícita. A economia de uma sessão real do Claude/Codex continua sem medição.
+
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
 ## Revisão de foco e conteúdo entregue — 09/10

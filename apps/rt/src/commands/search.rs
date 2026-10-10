@@ -54,6 +54,12 @@ pub fn run(
                 let _ = std::io::stdout().write_all(&output);
                 let _ = std::io::stderr().write_all(&answer.stderr);
             } else {
+                // Explicit diagnostics can inspect exactly the host projection
+                // without repeating source discovery or a paid selection.
+        if std::env::var_os("MUSTARD_SEARCH_TRACE").is_some_and(|value|value=="1" || value=="projection") {
+                    let view=mustard_core::io::code_search::presentation::agent(&answer,&request,root);
+                    answer.report["_trace_agent_view"]=json!(String::from_utf8_lossy(&view.stdout));
+                }
                 println!("{}", answer.report);
             }
             std::process::exit(answer.exit_code);

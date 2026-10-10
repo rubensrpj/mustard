@@ -76,6 +76,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     let mut previous = "";
     let mut test_files = BTreeSet::new();
     let mut ranges = BTreeMap::<&str, Vec<String>>::new();
+    let mut test_ranges = BTreeMap::<&str, Vec<String>>::new();
     let mut deferred = BTreeMap::<&str, usize>::new();
     let mut visible_ids = BTreeSet::new();
     for card in cards {
@@ -90,6 +91,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         if card["initial_source_excerpt"] != true {
             if card["initial_reference"] == true {
                 ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));
+                if card["test_only"]==true {test_ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));}
                 visible_ids.insert(card["id"].as_str().unwrap_or_default());
             } else {*deferred.entry(file).or_default()+=1;}
             continue;
@@ -101,7 +103,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         }
         let _ = writeln!(
             text,
-            "# {} {start}-{end} [{}{}]",
+            "# {} {start}-{end} [{}{}{}]",
             card["name"].as_str().unwrap_or_default(),
             card["retrieval"].as_str().unwrap_or("static evidence"),
             if card["recommended"] == true && context["selection_basis"]=="exact-symbol-identity" {
@@ -110,7 +112,8 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
                 "; recommended"
             } else {
                 ""
-            }
+            },
+            if card["test_only"]==true {"; test-only, execution unverified"}else{""}
         );
         let source = card["source_excerpt"]["text"].as_str().unwrap_or_default();
         for field in ["signature", "documentation", "body_comment"] {
@@ -167,22 +170,12 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             "@ {file}\n# References (expand source/responsibility): {}",
             candidates.join("; ")
         );
+        if let Some(tests)=test_ranges.get(file) {let _=writeln!(text,"# Test-only declarations (execution unverified): {}",tests.join("; "));}
     }
-    for step in context["chain"]["steps"].as_array().into_iter().flatten() {
-        let from=step["from"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
-        let to=step["to"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
-        let _=writeln!(text,"# Native follow-up: {from}:{} -> {to} {}:{}-{} (static; effects unverified)",
-            step["call_source"]["line"],step["target_source"]["file"].as_str().unwrap_or_default(),
-            step["target_source"]["line"],step["target_source"]["end_line"]);
-    }
+    graph(&mut text,context);
     for test in context["chain"]["test_mentions"].as_array().into_iter().flatten() {
         let _=writeln!(text,"@ {}\n{} | {}\n# Associated test mention; coverage/execution unverified.",
             test["source"]["file"].as_str().unwrap_or_default(),test["source"]["line"],test["text"].as_str().unwrap_or_default());
-    }
-    for relation in context["chain"]["relations"].as_array().into_iter().flatten() {
-        let name=|key|relation[key].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
-        let _=writeln!(text,"# {}: {} -> {} [{}; runtime unverified]",relation["relation"].as_str().unwrap_or_default(),
-            name("from"),name("to"),relation["resolution"].as_str().unwrap_or_default());
     }
     for (at,question) in context["question_coverage"].as_array().into_iter().flatten().enumerate() {
         let _=writeln!(text,"# Question {}: {} — {} source references; behavior unverified",at+1,
@@ -278,4 +271,40 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         representation: "current-task-evidence",
         owner_ranges: cards.len(),
     })
+}
+
+/// Group repeated paths and provenance labels without removing graph records.
+/// These are source references, never a claim of runtime execution order.
+fn graph(text:&mut String,context:&Value) {
+    let mut steps=BTreeMap::<&str,Vec<String>>::new();
+    for step in context["chain"]["steps"].as_array().into_iter().flatten() {
+        let from=step["from"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
+        let to=step["to"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
+        steps.entry(step["target_source"]["file"].as_str().unwrap_or_default()).or_default().push(format!(
+            "{from}:{} -> {to} {}-{}",step["call_source"]["line"],step["target_source"]["line"],step["target_source"]["end_line"]));
+    }
+    for (file,records) in steps {let _=writeln!(text,"@ {file}\n# Native follow-up: {} [static; effects unverified]",records.join("; "));}
+    let mut relations=BTreeMap::<(&str,&str),Vec<String>>::new();
+    for relation in context["chain"]["relations"].as_array().into_iter().flatten() {
+        let name=|key|relation[key].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
+        relations.entry((relation["relation"].as_str().unwrap_or_default(),relation["resolution"].as_str().unwrap_or_default())).or_default()
+            .push(format!("{} -> {}",name("from"),name("to")));
+    }
+    for ((kind,resolution),records) in relations {let _=writeln!(text,"# {kind} [{resolution}; runtime unverified]: {}",records.join("; "));}
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+    #[test]
+    fn grouped_graph_keeps_each_source_range_and_each_resolution_without_repeating_paths() {
+        let context=serde_json::json!({"chain":{"steps":[
+            {"from":"a:1:first","to":"b:10:read","call_source":{"line":2},"target_source":{"file":"long/nested/file.rs","line":10,"end_line":15}},
+            {"from":"a:3:second","to":"b:20:write","call_source":{"line":4},"target_source":{"file":"long/nested/file.rs","line":20,"end_line":25}}],
+            "relations":[{"from":"a:1:first","to":"b:10:read","relation":"caller","resolution":"ambiguous"},
+                {"from":"a:3:second","to":"b:20:write","relation":"caller","resolution":"unique-static-target"}]}});
+        let mut view=String::new();graph(&mut view,&context);
+        assert_eq!(view.matches("long/nested/file.rs").count(),1);
+        for record in ["first:2 -> read 10-15","second:4 -> write 20-25","caller [ambiguous; runtime unverified]: first -> read","caller [unique-static-target; runtime unverified]: second -> write"] {assert!(view.contains(record),"{view}");}
+    }
 }

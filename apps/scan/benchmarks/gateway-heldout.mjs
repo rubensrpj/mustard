@@ -20,7 +20,7 @@ if(previous){
  assert.equal(previous.rows.filter(r=>r.version==='baseline').length,selection.repositories.length*10);
 }
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'mustard-heldout-'));fs.mkdirSync(out,{recursive:true});
-const env={...process.env,MUSTARD_RT_DELEGATED:'1',MUSTARD_SEARCH_TRACE:'1',CLAUDE_CONFIG_DIR:path.join(temp,'host'),MUSTARD_SPEND_DIR:path.join(temp,'usage')};
+const env={...process.env,MUSTARD_RT_DELEGATED:'1',MUSTARD_SEARCH_TRACE:options.get('--trace')==='full'?'1':'projection',CLAUDE_CONFIG_DIR:path.join(temp,'host'),MUSTARD_SPEND_DIR:path.join(temp,'usage')};
 for(const key of ['TYPESAFE_API_KEY','MUSTARD_JEV_URL','CLAUDE_PLUGIN_ROOT','MUSTARD_ACTIVE_SPEC'])delete env[key];
 function run(program,args,root){const start=performance.now();const r=cp.spawnSync(program,args,{cwd:root,env,maxBuffer:32*1024*1024,timeout:60000});assert.ok([0,1].includes(r.status),r.stderr.toString());return {bytes:r.stdout,ms:performance.now()-start};}
 const rows=previous?previous.rows.filter(r=>r.version==='baseline'):[];
@@ -43,18 +43,21 @@ try {
   for(const [repoAt,picked] of selection.repositories.entries()){
     const repo=dataset[picked.language].find(r=>r.repo===picked.repo&&r.commit_sha===picked.commit);assert.ok(repo);
     for(const version of repoAt%2?['current','baseline']:['baseline','current']){
+      if(options.has('--only')&&options.get('--only')!==version)continue;
       if(previous&&version==='baseline')continue;
       const root=path.join(temp,`${repoAt}-${version}`);fs.mkdirSync(root);
       for(const [file,text] of Object.entries(repo.content)){
         const destination=path.resolve(root,file);assert.ok(destination.startsWith(root+path.sep));
         fs.mkdirSync(path.dirname(destination),{recursive:true});fs.writeFileSync(destination,text);
       }
-      fs.writeFileSync(path.join(root,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:false,vectors:false},search:{filter:'none'}}));
-      run(path.join(bins[version],'scan'),['scan',root,'--native','--out',path.join(root,'.claude/grain.db'),'--json'],root);
+      const vectors=version==='current'&&options.get('--vectors')==='true';
+      fs.writeFileSync(path.join(root,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:false,vectors},search:{filter:'none'}}));
+      run(path.join(bins[version],'scan'),['scan',root,...(vectors?[]:['--native']),'--out',path.join(root,'.claude/grain.db'),'--json'],root);
       for(const [at,needle] of repo.needles.entries()){
         const invocation=request(needle.description),args=['run','search','--root',root,'--request',JSON.stringify(invocation)];
         const query=run(path.join(bins[version],'mustard-rt'),args,root),report=JSON.parse(query.bytes);
-        const view=run(path.join(bins[version],'mustard-rt'),[...args,'--shell-output'],root);
+        const view=typeof report._trace_agent_view==='string'?{bytes:Buffer.from(report._trace_agent_view)}:run(path.join(bins[version],'mustard-rt'),[...args,'--shell-output'],root);
+        if(at===0&&typeof report._trace_agent_view==='string')assert.deepEqual(view.bytes,run(path.join(bins[version],'mustard-rt'),[...args,'--shell-output'],root).bytes,'Diagnostic projection differs from actual host output');
         const native=run(path.join(bins[version],'mustard-rt'),['run','search','--root',root,'--request',JSON.stringify({...invocation,request:{...invocation.request,purpose:'locate'}})],root);
         const original=JSON.parse(native.bytes).result;
         // Separate physical ripgrep executions may reorder files without --sort.
@@ -80,6 +83,8 @@ try {
     found:arm.filter(r=>r.symbol_found).length,visible_found:arm.filter(r=>r.visible_symbol_found).length,native_owner_found:arm.filter(r=>r.native_owner_found).length,complete_bodies:arm.filter(r=>r.complete_body).length,bytes:arm.reduce((n,r)=>n+r.output_bytes,0),
     total_ms:arm.reduce((n,r)=>n+r.ms,0),native_parity:arm.filter(r=>r.native_parity).length,remote_model_calls:0}];}));
   const result={dataset_sha256:sha(bytes),selection_sha256:sha(fs.readFileSync(selectionPath)),
+    current_vectors:options.get('--vectors')==='true',
+    diagnostics:options.get('--trace')==='full'?'full-candidate-trace':'projection-only; no per-candidate trace',
     baseline_reused:previous!==null,
     binary_sha256:Object.fromEntries(Object.entries(bins).map(([name,dir])=>[name,sha(fs.readFileSync(path.join(dir,'mustard-rt')))])),rows,summary,
     method:'Adapted public-label retrieval via an answer-blind fixed lexical bootstrap and native rg --sort=path. New repositories, not autonomous Claude searches or official RepoQA scoring.',

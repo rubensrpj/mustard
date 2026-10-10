@@ -11,12 +11,10 @@ use crate::io::sha256::Sha256;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
-use std::time::{Duration, Instant};
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LIVE_FILES: usize = 96;
 const MAX_LIVE_BYTES: usize = 12 * 1024 * 1024;
-const LIVE_TIME: Duration = Duration::from_secs(2);
 mod crossing;
 
 pub struct Occurrence<'a> {
@@ -327,18 +325,30 @@ pub(super) fn prepare(
         );
     }
     let mut source_reservoir = None;
+    let mut code_ids=Vec::new();
+    let mut local_model_calls=0;
     if let Some(scope) = scope {
         let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
+        if query.symbol.is_none() && !query.all && !task.intent.trim().is_empty() && anchor_ids.is_empty() {
+            let (extra,ids,calls)=catalog::code_candidates(root,question,scope.files)?;
+            local_model_calls=calls;
+            let mut present:BTreeSet<_>=cards.iter().map(|c|c.id.clone()).collect();
+            cards.extend(extra.into_iter().filter(|c|present.insert(c.id.clone())));
+            code_ids=ids;
+            if !code_ids.is_empty(){phases.push(json!({"operation":"local-code-discovery","candidates":code_ids.len(),"encoder":"potion-code-16M-v2","remote_model_calls":0}));}
+        }
         let weights=catalog::task_weights(root,question,&languages)?;
         let mut anchors:Vec<_>=cards.iter().filter(|card|anchor_names.contains(&card.name.to_lowercase())).map(|card|card.id.clone()).collect();
         if matches!(task.purpose,Purpose::Spec|Purpose::Understand) {
             anchors.extend(knowledge::selection::area_anchors(cards,query.text,scope.seeds));
         }
-        let fused=knowledge::selection::fusion::rank(cards,query.text,question,&languages,&weights,&anchors,scope.seeds);
+        let fused=knowledge::selection::fusion::rank(cards,query.text,question,&languages,&weights,&anchors,scope.seeds).with_code(&code_ids,cards,&anchors);
         let mut order=fused.cards.clone();
         for &i in ranking.iter() {if !order.contains(&i) {order.push(i);}}
         *ranking=order;
-        source_reservoir=Some(fused.files(cards,query.limit.clamp(1,16)));
+        // Internal source admission is independent of the response budget.
+        // A short first-read response must not prevent inspecting candidates.
+        source_reservoir=Some(fused.files(cards,MAX_LIVE_FILES / fused.channels.len().max(1)));
     }
     let mut paths = Vec::new();
     let mut seen = BTreeSet::new();
@@ -422,7 +432,6 @@ pub(super) fn prepare(
             }
         }
     }
-    let started = Instant::now();
     let mut files = BTreeMap::new();
     let mut bytes = 0;
     let mut skipped = 0;
@@ -430,7 +439,6 @@ pub(super) fn prepare(
     for path in &paths {
         if files.len() >= MAX_LIVE_FILES
             || bytes >= MAX_LIVE_BYTES
-            || started.elapsed() >= LIVE_TIME
         {
             omitted = true;
             break;
@@ -479,7 +487,7 @@ pub(super) fn prepare(
         let admitted:Vec<_>=cards.iter().enumerate().filter(|(_,card)|files.contains_key(&card.source.file)
             && current(tree,&card.source,hashes)).map(|(i,_)|i).collect();
         let candidates:Vec<_>=admitted.iter().map(|&i|cards[i].clone()).collect();
-        let fused=knowledge::selection::fusion::rank(&candidates,query.text,question,&languages,&weights,&anchors,scope.seeds);
+        let fused=knowledge::selection::fusion::rank(&candidates,query.text,question,&languages,&weights,&anchors,scope.seeds).with_code(&code_ids,&candidates,&anchors);
         *ranking=fused.cards.iter().map(|&i|admitted[i]).collect();
         if std::env::var_os("MUSTARD_SEARCH_TRACE").is_some_and(|value|value=="1") {
             for (i,card) in candidates.iter().enumerate() {channel_trace.insert(card.id.clone(),fused.trace(i));}
@@ -607,7 +615,7 @@ pub(super) fn prepare(
     let report = json!({"purpose":task.purpose,"intent":task.intent,"phases":phases,"live_matches":live_only,
         "partial":omitted,"source_scope":"indexed candidate files plus current changes; repository fallback only without indexed destinations",
         "stop_reason":if omitted {"partial-evidence-expand-or-use-original-search"} else {"available-evidence-returned"},
-        "semantic_completeness":"unknown","local_model_calls":0,"remote_model_calls":0});
+        "semantic_completeness":"unknown","local_model_calls":local_model_calls,"remote_model_calls":0});
     Ok(Investigation {
         files,
         report,
@@ -674,7 +682,31 @@ pub(crate) fn current_excerpt(card: &Card, text: &str, matcher: &mut Matcher, pu
         (!slots.is_empty()).then_some((at as u64+1,slots))
     }).collect();
     let full=card.source.end_line-card.source.line<64 && text.lines().skip(card.source.line.saturating_sub(1) as usize).take((card.source.end_line-card.source.line+1) as usize).map(str::len).sum::<usize>()<=4096;
-    excerpt(&File{text:text.into(),hash:card.source.sha256.clone(),hits},card.source.line,card.source.end_line,if full {64}else{purpose.excerpt_lines()})
+    let file=File{text:text.into(),hash:card.source.sha256.clone(),hits};
+    structured_excerpt(&file,card,if full {64}else{purpose.excerpt_lines()})
+}
+
+fn structured_excerpt(file:&File,card:&Card,limit:usize)->Value {
+    let source=&card.source;
+    if source.end_line.saturating_sub(source.line)<limit as u64 {
+        return excerpt(file,source.line,source.end_line,limit);
+    }
+    let center=file.hits.iter().filter(|(line,_)|source.line<=*line && *line<=source.end_line)
+        .max_by_key(|(_,slots)|slots.len()).map_or(source.line,|(line,_)|*line);
+    let chunk=card.syntax["source_chunks"].as_array().into_iter().flatten().filter_map(|chunk| {
+        let first=chunk["line"].as_u64()?;let last=chunk["end_line"].as_u64()?;
+        (source.line<=first && first<=center && center<=last && last<=source.end_line
+            && last-first<limit as u64 && chunk["oversized_leaf"]!=true).then_some((first,last))
+    }).max_by_key(|(first,last)|last-first);
+    let Some((first,last))=chunk else{return excerpt(file,source.line,source.end_line,limit)};
+    let mut value=excerpt(file,first,last,limit);
+    let mut missing=Vec::new();
+    if source.line<first {missing.push(json!({"line":source.line,"end_line":first-1}));}
+    missing.extend(value["missing_ranges"].as_array().into_iter().flatten().cloned());
+    if last<source.end_line {missing.push(json!({"line":last+1,"end_line":source.end_line}));}
+    value["truncated"]=json!(!missing.is_empty());value["missing_ranges"]=json!(missing);
+    value["fragment_kind"]=json!("ast-sibling-range");
+    value
 }
 
 impl Investigation {
@@ -696,7 +728,7 @@ impl Investigation {
             .filter(|file| file.hash == card.source.sha256)
         {
             let limit = purpose.excerpt_lines();
-            item["source_excerpt"] = excerpt(file, card.source.line, card.source.end_line, limit);
+            item["source_excerpt"] = structured_excerpt(file,card,limit);
         }
         if let Some(cards) = self.alternatives.get(&card.id) {
             let candidates:Vec<_> = cards.iter().filter(|other|!primary_ids.contains(other.id.as_str())).map(|other| {
@@ -716,5 +748,23 @@ impl Investigation {
         self.files.iter().all(|(path, file)| {
             source_bytes(tree, path).is_some_and(|bytes| hash(&bytes) == file.hash)
         })
+    }
+}
+
+#[cfg(test)]
+mod structural_excerpt_tests {
+    use super::*;
+    #[test]
+    fn a_closed_structural_fragment_retains_the_unread_declaration_ranges() {
+        let text=(1..=80).map(|n|format!("step_{n}();")).collect::<Vec<_>>().join("\n");
+        let card:Card=serde_json::from_value(json!({"id":"a:1:run","name":"run","kind":"function",
+            "source":{"file":"a","line":1,"end_line":80,"sha256":"h"},
+            "syntax":{"source_chunks":[{"line":40,"end_line":50,"oversized_leaf":false}]}})).unwrap();
+        let file=File{text,hash:"h".into(),hits:vec![(45,BTreeSet::from([0]))]};
+        let part=structured_excerpt(&file,&card,30);
+        assert_eq!(part["line"],40);assert_eq!(part["end_line"],50);
+        assert_eq!(part["truncated"],true);
+        assert_eq!(part["missing_ranges"],json!([{"line":1,"end_line":39},{"line":51,"end_line":80}]));
+        assert!(part["text"].as_str().unwrap().contains("45 | step_45();"));
     }
 }

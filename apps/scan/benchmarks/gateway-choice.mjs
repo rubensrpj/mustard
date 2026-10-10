@@ -22,8 +22,9 @@ try {
   const repo=dataset[picked.language].find(r=>r.repo===picked.repo&&r.commit_sha===picked.commit);assert.ok(repo);
   const root=path.join(temp,String(at));fs.mkdirSync(root);
   for(const [file,text] of Object.entries(repo.content)){const p=path.resolve(root,file);assert.ok(p.startsWith(root+path.sep));fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,text);}
-  fs.writeFileSync(path.join(root,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:true,vectors:false},judgement:{search:{filter:'jev'}}}));
-  run('scan',['scan',root,'--native','--out',path.join(root,'.claude/grain.db'),'--json'],root);
+  const vectors=args.includes('--vectors');
+  fs.writeFileSync(path.join(root,'mustard.json'),JSON.stringify({language:{text:'en-US',code:'en-US'},ai:{fallback:true,vectors},judgement:{search:{filter:'jev'}}}));
+  run('scan',['scan',root,...(vectors?[]:['--native']),'--out',path.join(root,'.claude/grain.db'),'--json'],root);
   // Fixed before results: first two descriptions in every selected language.
   for(const [id,needle] of repo.needles.slice(0,2).entries()) {
    const q=request(needle.description),invoke=envelope=>['run','search','--root',root,'--request',JSON.stringify(envelope)];
@@ -50,7 +51,7 @@ try {
   }
  }
  const sum=field=>rows.reduce((n,r)=>n+r[field],0);
- const report={dataset_sha256:sha(raw),selection_sha256:sha(fs.readFileSync(selectionPath)),binary_sha256:sha(fs.readFileSync(path.join(bin,'mustard-rt'))),rows,
+ const report={dataset_sha256:sha(raw),selection_sha256:sha(fs.readFileSync(selectionPath)),binary_sha256:sha(fs.readFileSync(path.join(bin,'mustard-rt'))),vectors:args.includes('--vectors'),rows,
   summary:{cases:rows.length,valid_native:rows.filter(r=>r.native_status==='current-task-evidence').length,valid_choice:rows.filter(r=>r.choice_status==='current-task-evidence').length,
    expected_in_native_pool:rows.filter(r=>r.expected_in_native_pool).length,correct_selections:rows.filter(r=>r.correct_selection).length,wrong_accepted:rows.filter(r=>r.wrong_accepted).length,abstained:rows.filter(r=>r.abstained).length,
    native_first_correct:rows.filter(r=>r.native_first_correct).length,choice_first_correct:rows.filter(r=>r.choice_first_correct).length,

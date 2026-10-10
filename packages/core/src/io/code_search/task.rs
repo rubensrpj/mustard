@@ -360,9 +360,11 @@ pub(super) fn investigate(
         .map(|(_, slot)| slot.clone())
         .collect();
     report["cards"] = json!(items);
-    let chain_seeds: Vec<_> = cards.iter().enumerate().filter(|(i,card)| anchors.contains(&card.id) || recommendations.contains(&card.id)
-        || (anchors.is_empty() && (bodies.contains(i) || primary.contains(&card.id))))
-        .map(|(_,card)|card.clone()).take(4).collect();
+    let chain_eligible:BTreeSet<_> = cards.iter().enumerate().filter(|(i,card)| anchors.contains(&card.id) || recommendations.contains(&card.id)
+        || (anchors.is_empty() && (bodies.contains(i) || (primary.contains(&card.id) && decision_ids.contains(&card.id)))))
+        .map(|(i,_)|i).collect();
+    let explicit=anchors.iter().chain(&recommendations).cloned().collect();
+    let chain_seeds:Vec<_>=selection::follow_up_order(&cards,&chain_eligible,&explicit).into_iter().take(4).map(|i|cards[i].clone()).collect();
     let mut chained_items = report["cards"].as_array().cloned().unwrap_or_default();
     report["chain"] = super::chain::expand(root,tree,&scope.files,&chain_seeds,&mut chained_items,&mut matcher,request.purpose,&request.intent)?;
     report["cards"] = json!(chained_items);

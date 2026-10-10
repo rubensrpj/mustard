@@ -14,6 +14,35 @@ pub struct Order {
 }
 
 impl Order {
+    /// Balance lexical consensus and an independent code index as two families.
+    /// Correlated lexical views must not outvote code retrieval just by count.
+    #[must_use]
+    pub fn with_code(mut self, ids:&[String], cards:&[Card], anchors:&[String])->Self {
+        let by_id:BTreeMap<_,_>=cards.iter().enumerate().map(|(i,c)|(c.id.as_str(),i)).collect();
+        let code:Vec<_>=ids.iter().filter_map(|id|by_id.get(id.as_str()).copied()).collect();
+        if code.is_empty(){return self;}
+        let scores=reciprocal_ranks(&[self.cards.clone(),code.clone()]);
+        self.cards=scores.keys().copied().collect();
+        self.cards.sort_by(|&a,&b|scores[&b].total_cmp(&scores[&a]).then(cards[a].id.cmp(&cards[b].id)));
+        self.channels.push(("local-code-meaning".into(),code));
+        self.preserve_leaders(anchors,cards);self
+    }
+    /// Preserve leaders of each retrieval view before the fused consensus.
+    /// Correlated channels must not erase a strong independent discovery.
+    pub fn preserve_leaders(&mut self, anchors: &[String], cards: &[Card]) {
+        let mut seen=BTreeSet::new();
+        let mut order=Vec::new();
+        for &i in &self.cards {
+            if anchors.contains(&cards[i].id) && seen.insert(i) {order.push(i);}
+        }
+        for rank in 0..3 {
+            for (_,channel) in &self.channels {
+                if let Some(&i)=channel.get(rank) && seen.insert(i) {order.push(i);}
+            }
+        }
+        for &i in &self.cards {if seen.insert(i) {order.push(i);}}
+        self.cards=order;
+    }
     /// Reserve destinations from each channel before source admission. Output
     /// size is independent of this internal source-read reservoir.
     pub fn files(&self, cards: &[Card], per_channel: usize) -> Vec<String> {
@@ -137,12 +166,24 @@ pub fn rank(cards: &[Card], pattern: &str, intent: &str, languages: &Languages,
     order.sort_by(|&a, &b| anchors.contains(&cards[b].id).cmp(&anchors.contains(&cards[a].id))
         .then_with(|| scores[&b].total_cmp(&scores[&a]))
         .then_with(|| cards[a].id.cmp(&cards[b].id)));
-    Order {cards:order, channels, fields}
+    let mut out=Order {cards:order, channels, fields};
+    out.preserve_leaders(anchors,cards);
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_single_channel_leader_survives_consensus_and_keeps_exact_anchors() {
+        let cards:Vec<Card>=(0..40).map(|i|serde_json::from_value(json!({"id":i.to_string(),"name":i.to_string(),"kind":"function",
+            "source":{"file":"a.rs","line":i+1,"end_line":i+1,"sha256":""}})).unwrap()).collect();
+        let mut order=Order {cards:(0..40).collect(),channels:vec![("intent".into(),vec![35,34,33]),("native".into(),vec![0,1,2])],fields:vec![]};
+        order.preserve_leaders(&["10".into()],&cards);
+        assert_eq!(&order.cards[..5],&[10,35,0,34,1]);
+        assert_eq!(order.cards.len(),40);
+        assert_eq!(order.cards.iter().collect::<BTreeSet<_>>().len(),40);
+    }
     #[test]
     fn agreement_and_deduplication_are_independent_of_channel_score_scales() {
         let scores = reciprocal_ranks(&[vec![0, 0, 1], vec![1, 2]]);

@@ -33,7 +33,7 @@ pub fn report(root: &Path) -> Result<Value, MapRefusal> {
     Ok(json!({"status":if code==0 && other>0 {"no-code-grammar-matched"}else{"partial-scope"},
         "code_files":code,"extensions_without_code_parser":census["unsupported_exts"],"unreadable_or_non_utf8_files":census["non_utf8_skipped"],
         "skipped_directories":census["skipped_build_dirs"],"parse":parse,
-        "test_symbols":"excluded from production knowledge cards; use map declarations/tests for test investigation",
+        "test_symbols":"indexed with test_only=true; static test evidence does not prove production behavior or test execution",
         "meaning":"visited files at last scan; non-code extensions can include indexed text resources; ignored directories are not enumerated; no completeness guarantee"}))
 }
 

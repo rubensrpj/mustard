@@ -5,7 +5,7 @@ const args=process.argv.slice(2),option=n=>{assert.ok(args.includes(n),`Missing 
 const root=option('--root'),bin=option('--bin'),requestsFile=option('--requests'),out=option('--out');
 assert.ok(args.includes('--isolated'),'Use a disposable checkout, then pass --isolated');
 const raw=fs.readFileSync(requestsFile),requests=JSON.parse(raw);fs.mkdirSync(out,{recursive:true});
-const env={...process.env,MUSTARD_RT_DELEGATED:'1',MUSTARD_SEARCH_TRACE:'1',CLAUDE_CONFIG_DIR:path.join(out,'host'),MUSTARD_SPEND_DIR:path.join(out,'usage')};
+const env={...process.env,MUSTARD_RT_DELEGATED:'1',MUSTARD_SEARCH_TRACE:'projection',CLAUDE_CONFIG_DIR:path.join(out,'host'),MUSTARD_SPEND_DIR:path.join(out,'usage')};
 for(const k of ['TYPESAFE_API_KEY','MUSTARD_JEV_URL','CLAUDE_PLUGIN_ROOT','MUSTARD_ACTIVE_SPEC'])delete env[k];
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
 function run(program,argv){const at=performance.now(),r=cp.spawnSync(program,argv,{cwd:root,env,timeout:180000,maxBuffer:64*1024*1024});if(r.error)throw r.error;assert.ok([0,1].includes(r.status),r.stderr.toString());return {bytes:r.stdout,ms:performance.now()-at};}
@@ -13,7 +13,8 @@ const rows=[];
 for(const q of requests.requests){
  assert.match(q.id,/^[a-z0-9-]+$/);assert.equal(q.envelope.request.choose,false,'This runner never sends project code to a provider');
  const argv=['run','search','--root',root,'--request',JSON.stringify(q.envelope)],first=run(path.join(bin,'mustard-rt'),argv),report=JSON.parse(first.bytes);
- const view=run(path.join(bin,'mustard-rt'),[...argv,'--shell-output']);
+ const view=typeof report._trace_agent_view==='string'?{bytes:Buffer.from(report._trace_agent_view)}:run(path.join(bin,'mustard-rt'),[...argv,'--shell-output']);
+ if(rows.length===0&&typeof report._trace_agent_view==='string')assert.deepEqual(view.bytes,run(path.join(bin,'mustard-rt'),[...argv,'--shell-output']).bytes);
  const native=run(path.join(bin,'mustard-rt'),['run','search','--root',root,'--request',JSON.stringify({...q.envelope,request:{...q.envelope.request,purpose:'locate'}})]);
  const original=JSON.parse(native.bytes);assert.deepEqual(report.result,original.result);assert.equal(report.exit_code,original.exit_code);assert.equal(report.remote_model_calls,0);
  for(const c of report.task_context?.cards||[])assert.equal(sha(fs.readFileSync(path.join(root,c.source.file))),c.source.sha256);

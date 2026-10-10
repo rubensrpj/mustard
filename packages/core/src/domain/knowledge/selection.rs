@@ -259,6 +259,18 @@ pub fn task_order(cards:&[Card],query:&str,languages:&Languages,weights:&[f64],a
 
 /// Bodies add new written clues; other candidates remain expandable ranges.
 /// Containing types cannot spend context repeating their callable children.
+/// Prioritize seeds that can actually lead to a verified dependency. A group
+/// of leaf fields must not consume all follow-up slots before its functions.
+/// Explicit identities retain priority, including interfaces and data types.
+pub fn follow_up_order(cards:&[Card],eligible:&BTreeSet<usize>,explicit:&BTreeSet<String>)->Vec<usize> {
+    let mut order:Vec<_>=eligible.iter().copied().collect();
+    let leader=order.first().copied();
+    order.sort_by_key(|&i|(!explicit.contains(&cards[i].id),
+        Some(i)!=leader,
+        !cards[i].outgoing.iter().any(|edge|edge["resolution"]=="unique-static-target"),i));
+    order
+}
+
 pub fn task_bodies(cards:&[Card],slots:&[BTreeSet<usize>],primary:&BTreeSet<String>,recommended:&[String],anchors:&BTreeSet<String>,query:&str,languages:&Languages)->BTreeSet<usize> {
     task_bodies_with_declarations(cards,slots,primary,recommended,anchors,query,languages,&BTreeSet::new())
 }
@@ -335,6 +347,16 @@ pub fn native_usage() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn follow_up_slots_preserve_explicit_types_and_prefer_proven_dependencies_over_leaf_fields() {
+        let cards:Vec<Card>=(0..5).map(|i|serde_json::from_value(json!({"id":i.to_string(),"name":i.to_string(),"kind":"field",
+            "source":{"file":"a.rs","line":i+1,"end_line":i+1,"sha256":""},
+            "outgoing":if i==2||i==4 {json!([{"resolution":"unique-static-target","target":"next"}])}else if i==3 {json!([{"resolution":"ambiguous","target":"maybe"}])}else{json!([])}})).unwrap()).collect();
+        let all=(0..5).collect();
+        assert_eq!(follow_up_order(&cards,&all,&BTreeSet::from(["0".into()])),[0,2,4,1,3]);
+        assert_eq!(follow_up_order(&cards,&all,&BTreeSet::new()),[0,2,4,1,3]);
+        assert_eq!(follow_up_order(&cards,&BTreeSet::from([0,3]),&BTreeSet::new()),[0,3]);
+    }
     fn cards() -> Vec<Card> {
         let mut raw = json!({"modules":[{"path":"src/worker.rs","declarations":[
             {"name":"BeaconProvider","kind":"class","line":1,"end_line":20,"body_names":"quartz beacon archive","body_comment":"quartz beacon"},

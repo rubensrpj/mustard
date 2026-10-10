@@ -14,6 +14,7 @@ pub mod map_db;
 pub mod map_fill;
 pub mod map_format;
 pub mod map_meaning;
+pub mod code_vectors;
 pub mod map_glossary;
 mod map_index;
 pub mod map_notes;
