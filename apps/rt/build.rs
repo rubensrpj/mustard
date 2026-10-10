@@ -57,7 +57,7 @@ fn embed_shipped_hooks_manifest() {
 /// `cargo build`); short hash + dirty flag + commit date from git. Fail-open:
 /// git missing or this not being a repo degrades to the semver alone — the
 /// build must never panic.
-fn emit_version_full() {
+pub(crate) fn emit_version_full() {
     let semver = env_var("CARGO_PKG_VERSION").unwrap_or_else(|| "0.0.0".to_string());
     let build = env_var("MUSTARD_BUILD_NUMBER").unwrap_or_else(|| "dev".to_string());
 

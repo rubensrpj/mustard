@@ -90,6 +90,16 @@ lipo -create -output "$BIN/rtk" "$RTK_DIR/x86_64/rtk" "$RTK_DIR/aarch64/rtk"
 echo "    rtk: v$RTK_VERSION (universal)"
 chmod 0755 "$BIN"/*
 
+# The gateway must also work when rg is absent from the user's PATH.
+for arch in x86_64 aarch64; do
+  python3 "$REPO/packaging/fetch-ripgrep.py" --target "$arch-apple-darwin" --dest "$RTK_DIR/rg-$arch"
+done
+lipo -create -output "$BIN/rg" "$RTK_DIR/rg-x86_64/rg" "$RTK_DIR/rg-aarch64/rg"
+cp "$RTK_DIR/rg-x86_64/"ripgrep-* "$BIN/"
+cp "$REPO/packages/core/assets/code-meaning/LICENSE" "$BIN/potion-code-LICENSE"
+cp "$REPO/plugin/third-party/potion-code-16M-v2-NOTICE.txt" "$BIN/potion-code-NOTICE"
+chmod 0755 "$BIN/rg"
+
 # O passo do plugin, o MESMO script que o .deb embarca. Fora de bin/ de
 # propósito: bin/ vira symlinks no PATH (postinstall), e este não é um comando
 # que alguém digita — é uma etapa que o postinstall chama pelo caminho absoluto.

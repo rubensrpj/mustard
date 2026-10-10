@@ -1,0 +1,61 @@
+{
+  "dataset_url": "https://github.com/evalplus/repoqa_release/releases/download/2024-06-23/repoqa-2024-06-23.json.gz",
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "selection": "One repository per dataset language, smallest SHA256(repo) among repositories with <=400 files, <=3MiB supplied source and exactly 10 needles. All 10 supplied descriptions, unchanged. Selected before implementation/results. No builds or inference.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "ethereum/web3.py",
+      "commit": "257f464801d11431bf09132fb30bbeeb5937542e",
+      "selection_hash": "162954b279f6223bec9e277e1ed01f540c9c929108ac0bc5ff68730337105019",
+      "files": 149,
+      "bytes": 1156749,
+      "needles": 10
+    },
+    {
+      "language": "cpp",
+      "repo": "sass/node-sass",
+      "commit": "6081731aac89ce4612fe4839d4c6329539c0d8e1",
+      "selection_hash": "0baf4820eb2ae91725a4ff99b68bc99b5f808f52471327f6b9a7d1ca219195b0",
+      "files": 149,
+      "bytes": 1373659,
+      "needles": 10
+    },
+    {
+      "language": "java",
+      "repo": "karatelabs/karate",
+      "commit": "a378ba4f9e5af11eca1794d0bd55c428c8491bd8",
+      "selection_hash": "0b4baf400b705c683c9132ef9827a74f4f02f1b762b3f2558130e659849d4139",
+      "files": 206,
+      "bytes": 1345251,
+      "needles": 10
+    },
+    {
+      "language": "typescript",
+      "repo": "umami-software/umami",
+      "commit": "be7f69fd5d3d711ba650a21013b73c7e17125f52",
+      "selection_hash": "245c26ea79a0c5a0c05d998fd0f61d92d4b8b58a86aff7f8f23ceae7dd1e3aa9",
+      "files": 160,
+      "bytes": 293690,
+      "needles": 10
+    },
+    {
+      "language": "rust",
+      "repo": "seanmonstar/warp",
+      "commit": "ce8114b50cadedac089d496235fe9d18596f944e",
+      "selection_hash": "16129265d6a4868e5de3091fe303503444d67087df4a7e9a8baa13432d97d345",
+      "files": 46,
+      "bytes": 313906,
+      "needles": 10
+    },
+    {
+      "language": "go",
+      "repo": "jesseduffield/lazydocker",
+      "commit": "80af149b023f4d9be68a643412183d389d73368d",
+      "selection_hash": "25fb775679d916363dc68366e1923c3036da67f8b1f5435b614e859d2824ae4e",
+      "files": 83,
+      "bytes": 348103,
+      "needles": 10
+    }
+  ]
+}

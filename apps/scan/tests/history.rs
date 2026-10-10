@@ -13,12 +13,12 @@ use std::process::{Command, Stdio};
 
 use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::project_map::{examples, summary, FileLineage};
+use mustard_core::domain::project_map::{FileLineage,examples, summary};
 use mustard_core::io::map_search::{any_path, candidates_at};
 use mustard_core::io::map_triage::triage_at;
 use mustard_core::io::project_map as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale,translate};
+use serde_json::{Value,json};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -782,6 +782,7 @@ fn the_whole_reading_redoes_the_vector_of_the_declarations_whose_history_it_brou
     let temp = project("scan-history-vector-");
     let dir = temp.path();
     declare_base(dir, "main");
+    write(dir, "mustard.json", r#"{"ai":{"vectors":true},"git":{"flow":{"*":"main"}}}"#);
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
     let read_source = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
     commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(1)), "cria o ler");

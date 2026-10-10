@@ -1,0 +1,104 @@
+{
+  "source_commit": "a3fe37ab454cede37d3471993eb876985fcdfe1b",
+  "description": "Known development cases on the frozen backend snapshot. Expectations checked against source; not an independent quality benchmark. Paid inference is opt-in.",
+  "cases": [
+    {
+      "id": "11-xlsx-builder-choice",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "workbook|worksheet|createXlsx",
+            "src/common/services/excel.service.ts"
+          ]
+        },
+        "intent": "Escolher qual função existente escreve o XLSX diretamente na resposta HTTP do download. A alternativa que apenas retorna Buffer para armazenamento não é a chamada da rota. Conferir se a função escolhida suporta múltiplas abas e preservação do template original.",
+        "purpose": "spec",
+        "choose": true
+      },
+      "expected": {
+        "file": "src/common/services/excel.service.ts",
+        "name": "createXlsxStream",
+        "outcome": "selected",
+        "native_only": false
+      }
+    },
+    {
+      "id": "21-jev-multisheet-contract",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "async createXlsx",
+            "src/common/services/excel.service.ts"
+          ]
+        },
+        "intent": "workbook worksheet xlsx: várias abas e fórmulas preservadas no download do PI; se não houver suporte explícito a isso nos candidatos, nenhuma alternativa atende.",
+        "purpose": "spec",
+        "choose": true
+      },
+      "expected": {
+        "file": null,
+        "name": null,
+        "outcome": "no-match",
+        "native_only": false
+      }
+    },
+    {
+      "id": "29-cross-file-copy-responsibility",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "copyPlanFiles|duplicatePlan\\(|generateNewPlan\\(",
+            "src/puzzle/pi/services/plan/duplicate-plan.service.ts",
+            "src/puzzle/pi/services/plan/duplicate-plan-files.service.ts",
+            "src/puzzle/pi/services/plan/format-plan.service.ts"
+          ]
+        },
+        "intent": "Which supplied declaration copies the stored files to the new plan? Distinguish it from creating database records and formatting the new plan object.",
+        "purpose": "spec",
+        "choose": true
+      },
+      "expected": {
+        "file": "src/puzzle/pi/services/plan/duplicate-plan-files.service.ts",
+        "name": "copyPlanFiles",
+        "outcome": "selected",
+        "native_only": false
+      }
+    },
+    {
+      "id": "30-exact-symbol-no-jev",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "plantioCurveToDownload",
+            "src/puzzle/pi/services/curve/plantio-curve.service.ts"
+          ]
+        },
+        "intent": "plantioCurveToDownload",
+        "purpose": "locate",
+        "choose": true
+      },
+      "expected": {
+        "file": "src/puzzle/pi/services/curve/plantio-curve.service.ts",
+        "name": "plantioCurveToDownload",
+        "outcome": null,
+        "native_only": true
+      }
+    }
+  ]
+}

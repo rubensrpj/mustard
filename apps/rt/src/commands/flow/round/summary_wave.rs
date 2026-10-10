@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use mustard_core::domain::spec_events::SpecLog;
 
-use crate::shared::dag::{sets_cross, touches_whole_tree, BacklogTask, Batch};
+use crate::shared::dag::{BacklogTask, Batch, sets_cross, touches_whole_tree};
 
 /// Uma onda formada a partir de um resumo que ainda vale.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,9 +45,7 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
         }
         if !touches_whole_tree(&batch.files) {
             let sharing = |id: &u64| {
-                !taken.contains(id)
-                    && !carried.contains(id)
-                    && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && sets_cross(files, &batch.files))
+                !taken.contains(id) && !carried.contains(id) && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && sets_cross(files, &batch.files))
             };
             let along: Vec<u64> = ready.iter().copied().filter(sharing).collect();
             for id in &along {
@@ -66,20 +64,16 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
 mod tests {
     use std::path::Path;
 
-    use mustard_core::platform::i18n::{translate, Locale};
+    use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::super::agreed::request_agreed;
     use super::super::backlog::dispatch_backlog;
-    use super::super::queue::{
-        backlog_project, backlog_task_on, max_parallel, open_sends, seed_running, spec_now, wave_order, SIX_FILES,
-    };
+    use super::super::queue::{SIX_FILES, backlog_project, backlog_task_on, max_parallel, open_sends, seed_running, spec_now, wave_order};
     use super::super::read_check::{request_name, unread_items};
-    use super::super::tests::{
-        delivered, id_of, request_at, returned_unread, round, seed_read, seed_send, waves_in, write,
-    };
-    use crate::commands::spec_events::read::{read_for, ReadOpts};
+    use super::super::tests::{delivered, id_of, request_at, returned_unread, round, seed_read, seed_send, waves_in, write};
+    use crate::commands::spec_events::read::{ReadOpts, read_for};
     use crate::shared::spec_state::seed_event;
 
     /// A entrega de uma onda que parou e deixou por fazer as tarefas `left`,
@@ -99,8 +93,13 @@ mod tests {
     fn sent(root: &Path, wave: u64, summary: Option<u64>) {
         seed_send(root, wave);
         if let Some(summary) = summary {
-            seed_event(root, "x", "send", json!({"wave": wave, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
-                "items": [1], "mustard": "0", "author": "binary", "summary": summary}));
+            seed_event(
+                root,
+                "x",
+                "send",
+                json!({"wave": wave, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [1], "mustard": "0", "author": "binary", "summary": summary}),
+            );
         }
     }
 
@@ -181,10 +180,10 @@ mod tests {
         assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
     }
 
-    /// A onda que continua um resumo que vale sai mesmo pequena, com outra
-    /// onda em andamento; a outra tarefa pequena, sem resumo, espera.
+    /// Summary continuation keeps its own wave; independent small work can
+    /// use another free slot.
     #[test]
-    fn a_summary_wave_leaves_small_while_another_wave_runs_and_a_small_one_without_a_summary_waits() {
+    fn summary_continuation_and_independent_small_work_use_free_slots() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -197,9 +196,9 @@ mod tests {
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2]));
-        assert_eq!(wave_order(root, 2), vec![left], "o resumo sai pequeno");
-        assert_eq!(spec_now(root).current(other).and_then(|task| task.wave()), None, "a sem resumo espera");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2, 3]));
+        assert_eq!(wave_order(root, 2), vec![left], "summary stays attached");
+        assert_eq!(wave_order(root, 3), vec![other], "independent small work uses a slot");
     }
 
     /// A entrega da onda que continua um resumo é recusada, com o código dele,
@@ -230,9 +229,7 @@ mod tests {
 
         let refused = returned_unread(root, delivery.clone());
         assert_eq!(refused["reason"], json!("delivery-read-missing"), "{refused}");
-        let expected = translate("spec_events.delivery_read_missing", Locale::PtBr)
-            .replace("{wave}", "1")
-            .replace("{missing}", &code);
+        let expected = translate("spec_events.delivery_read_missing", Locale::PtBr).replace("{wave}", "1").replace("{missing}", &code);
         assert_eq!(refused["hint"], json!(expected), "only the summary is missing: {refused}");
 
         let copy = log.get(open).and_then(|send| send.str_field("copy")).expect("the copy of the wave").to_string();
@@ -253,8 +250,13 @@ mod tests {
         let root = dir.path();
         let (said, crit) = backlog_project(root);
         let first = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
-        let second = id_of(&write(root, "x", "task", json!({"text": "Mexer no código de dois.",
-            "files": [{"path": "src/b.rs"}], "depends_on": [first], "covers": [crit], "origin": said})));
+        let second = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Mexer no código de dois.",
+            "files": [{"path": "src/b.rs"}], "depends_on": [first], "covers": [crit], "origin": said}),
+        ));
         let summary = stopped_with(root, &[first, second]);
         let code = spec_now(root).codes()[&summary].clone();
         let read = translate("wave_prompt.summary.read", Locale::PtBr).replace("{code}", &code);
@@ -268,8 +270,9 @@ mod tests {
 
         let took = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(took["ok"], json!(true), "{took}");
-        let out = round(root, "x", None);
+        let out = took;
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
+        assert!(waves_in(&round(root, "x", None), "dispatch").is_empty(), "already dispatched");
         assert_eq!(wave_order(root, 2), vec![second]);
         let request = request_at(&out, 0);
         assert!(request.contains(opening), "the second request carries the summary too: {request}");

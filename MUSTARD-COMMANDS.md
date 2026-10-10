@@ -1,12 +1,12 @@
 # Mustard — Comandos e Fluxo
 
-Referência de tudo o que o Mustard publica: o fluxo, os três comandos de barra, os textos que chegam à janela, os ganchos e os comandos `mustard-rt run`. Nomes de comando, opções e chaves ficam como são.
+Referência de tudo o que o Mustard publica: o fluxo, os comandos de barra, os textos que chegam à janela, os ganchos e os comandos `mustard-rt run`. Nomes de comando, opções e chaves ficam como são.
 
 ---
 
 ## O fluxo
 
-Todo trabalho que muda arquivo passa por um fluxo só. Cada passo é uma chamada ao binário, e a resposta de cada chamada diz qual é o próximo passo: o modelo repassa essa resposta, em vez de decidir a ordem.
+Todo trabalho que muda arquivo passa por um fluxo só. Cada passo é uma chamada ao binário, e a resposta de cada chamada diz qual é o próximo passo: o modelo repassa essa resposta. O binário executa operações mecânicas: estado, recuperação, contexto, cálculos, validação e geração de páginas. O modelo interpreta, toma decisões que exigem raciocínio e implementa código. Operação mecânica ausente deve virar proposta de comando, não um script improvisado em cada conversa.
 
 ```mermaid
 flowchart LR
@@ -18,10 +18,10 @@ flowchart LR
 |---|---|---|
 | 1. Abertura | `mustard-rt run open --kind <tipo> --name "<nome>" --base <base>` | Cria a branch `<tipo>/<nome>` e a spec com o mesmo nome. O que falta volta como pergunta, com os candidatos. `--pending P-<n>` liga a spec à pendência de onde ela veio. |
 | 2. Levantamento | `mustard-rt run grill --spec <spec>` | Grava o tipo de trabalho e os pontos da lista, abertos, com os fatos que ela traz. Sem `--kinds`, vale o tipo gravado e, na primeira vez, o do começo da branch; o pedido misto diz os tipos, como `--kinds feature,fix`. `--condensed` junta todos os pontos num bloco só, para um pedido que cabe numa frase. O assistente soma os fatos que conferiu com `write point` levando só `replaces` e `facts`; cada resposta vai pelo `answer`, que grava o item, fecha o ponto e devolve o próximo. |
-| 3. Plano | `mustard-rt run plan --spec <spec>` | Monta o pedido de cada onda e confere o plano; prepara a cópia da spec para o banco de dados da página e manda publicar a página que ainda não tem endereço, mandar com a ferramenta `ArtifactData` as escritas de cada lote, que a resposta já traz prontas, e fazer a pergunta de aprovação. A cópia da página da spec se grava sozinha quando o último lote volta; a gravação à mão (`write copy`) fica para quando o gancho não avisar que gravou, e para a página do projeto. A rodada, o fechamento e o pedido que muda o plano mandam copiar do mesmo jeito o que entrou desde a última cópia; a entrega que a onda grava só entra na cópia depois que a rodada a assume. |
+| 3. Plano | `mustard-rt run plan --spec <spec>` | Confere o plano, prepara o pedido canônico e faz a pergunta de aprovação. Não gera nem sincroniza página externa; projeto e specs são acompanhados pelo painel local. |
 | 4. Aprovação | nenhum | O clique em "Aprovar" é gravado pela testemunha. "Ajustar" não aprova. |
-| 5. Ondas | `mustard-rt run round --spec <spec>` | Despacha as ondas que podem sair juntas, sem pedir a revisão de onda nenhuma. A onda sai na mesma rodada, sem parada de quem conduz: o item que o pedido não leva nem tira sozinho — o do projeto todo sem a marca `every_wave` e o sem ligação com a onda — passa por uma chamada ao Jev por onda, que diz se ele governa algo que as tarefas dela mudam; o item de toda onda, o que a tarefa faz, o dos arquivos dela e as lições vão sempre. Sem chave, ou com a chamada falhando, o pedido leva o padrão: o projeto todo vai, e o sem ligação fica fora. A onda grava a própria entrega com `mustard-rt run write delivered --spec <spec> --json '<a entrega>'`, só com o envio dela aberto; a rodada seguinte assume a entrega gravada, faz o commit da rodada, grava cada sobra como tarefa da spec e despacha a seguinte. `--report '<as linhas do orquestrador>'` leva o consumo e a pausa. |
-| 6. Fechamento | `mustard-rt run close --spec <spec>` | Roda cada critério uma vez e pede o agente de teste dedicado, mesmo com uma onda só; ele confere a obra inteira de uma vez, aponta e não conserta. Reprovado, o orquestrador monta o pedido do conserto, um agente conserta e o agente de teste confere só o conserto — até duas voltas; depois, a decisão é do usuário. Só fecha a spec com a linha dele aprovada. `--report '<as linhas>'` traz as linhas da última rodada e a do agente de teste, no mesmo formato da rodada; a entrega das ondas já está na spec. Na resposta, cada pendência aberta nascida na obra vem com a pergunta de destino e a linha da resposta: `--pending-later "P-<n>=<o motivo>"` grava o "fica para depois", que solta a pendência da obra e a passa ao projeto — uma por pendência, e vale também depois de a obra fechar. |
+| 5. Ondas | `mustard-rt run round --spec <spec>` | Integra os retornos autorizados, executa build e provas pertinentes, comita e despacha dependentes liberados. Lint e suíte geral ficam para o fechamento. Perfis de tarefas e julgamentos complementares válidos são reutilizados; dependências, reservas e prioridade são calculadas localmente. Jev só julga candidatos ambíguos. `--report` recebe consumo/pausas; a entrega é gravada pelo agente com `write delivered`, com envio aberto. |
+| 6. Fechamento | `mustard-rt run close --spec <spec>` | Executa lint, suíte geral e critérios sobre o código integrado, registra o resultado e reaproveita validação vigente. Mudança de conteúdo, comando ou ambiente invalida o recibo. Falha abre trabalho rastreável de conserto. A revisão final confere resumos, código, diff e critérios, sem alterar a obra. Só fecha com revisão aprovada e validação válida. `--report` recebe linhas da rodada; `--pending-later "P-<n>=<motivo>"` registra o destino de cada pendência. |
 | 7. Pull request | `mustard-rt run pr-open --base <base> --head <branch> --spec <spec>` | Envia a branch ao servidor (o envio recusado para o comando, sem abrir nada), monta o título e o corpo a partir da spec e abre o pull request; o que já existe só tem o corpo reescrito. Com submódulo mexido pela spec, abre antes o de cada submódulo e o do principal como rascunho, que fica pronto quando eles entram (`pr-merge --root <submódulo>` ou o início da sessão). `--draft` abre como rascunho; `--fill` monta título e corpo pelos commits, para o repositório sem spec. |
 | 8. Merge | `mustard-rt run pr-merge --pr <n>` | Só quando o usuário pede. Sem veredito aprovado, pergunta e não mexe em nada; `--confirm` é a resposta. |
 
@@ -36,6 +36,8 @@ A entrega da onda mora na spec: o agente a grava com `mustard-rt run write deliv
 | `/mustard:continue` | Retoma a spec pelo `resume` e repassa o próximo passo. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:measure` | Roda o `measure` e repassa a frase do veredito: o gasto do Claude no projeto antes e depois da marca da versão. |
 | `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
+| `/mustard-panel` | Abre projeto, specs, execução, consumo e dados da statusline nos Mods. Eventos atualizam a projeção; consulta a cada 2 s cobre mudanças externas. Sem turno de modelo. |
+| `/mustard-pages` | `project` publica a visão geral sem exigir spec aberta; `spec` usa a spec da branch atual; `spec <nome>` escolhe outra; `report <arquivo.md>` publica análise/resumo pronto no mesmo layout. Sem destino configurado, entrega arquivos locais. Não inicia turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto, e diagnostica a instalação. |
 
 Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre a spec.
@@ -47,7 +49,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 - **O mapa do início da sessão** (`.claude/mustard/session-map.md`, até 3 kB): o fluxo, quando uma spec abre e onde cada coisa mora. Entra no início da sessão, depois de `/clear` e da compactação.
 - **A linha de cada mensagem** (até 100 caracteres): o idioma do texto e "texto simples". Depois de uma resposta com erro de escrita, ela leva mais uma frase curta com o erro, como "Na última resposta: frase com 29 palavras.", uma vez só.
 - **O estilo de resposta** do plugin, um por idioma (`mustard:mustard-pt-BR`, `mustard:mustard-en-US`), escolhido pelo instalador na chave `outputStyle` do `.claude/settings.local.json`.
-- **Os dois agentes**, em `.claude/agents/mustard/`, no idioma do texto: `wave` implementa uma onda, e `review` confere uma onda, um levantamento ou o pull request de um colega. O modelo e o esforço de cada um vêm de `agents.model` e `agents.effort` do `mustard.json`; sem esses campos, a instalação os grava com `sonnet` e `xhigh`.
+- **Os dois agentes**, em `.claude/agents/mustard/`, no idioma do texto: `wave` implementa uma onda, e `review` confere a obra integrada no final, um levantamento ou o pull request de um colega. Resumos orientam a investigação; as conclusões são conferidas no código. O modelo e o esforço de cada um vêm de `agents.model` e `agents.effort` do `mustard.json`; sem esses campos, a instalação os grava com `sonnet` e `xhigh`.
 
 ---
 
@@ -55,14 +57,13 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 
 | Gancho | Quando | O que faz |
 |---|---|---|
-| `session_start_inject` | início da sessão | Coloca o mapa, a linha de retomada e os avisos, até 3 kB. Num projeto sem a página do projeto publicada, manda publicar o template dela e gravar o endereço. Em todo início de sessão (menos depois da compactação), com ou sem spec aberta, manda rodar `mustard-rt run spend`, que conta o dia aberto de novo. |
+| `session_start_inject` | início da sessão | Coloca mapa, retomada e avisos até 3 kB, incluindo o comando do painel local. Não prepara páginas nem pede sincronização/publicação externa, inclusive de gasto. |
 | `statusline_heal_observer` | início da sessão | Conserta a barra de status. |
 | `prompt_entry` | cada mensagem | Grava a mensagem na spec atual; depois de uma resposta com erro de escrita, coloca a linha curta com o erro, uma vez. |
-| `write_gate` | antes de escrever | Recusa escrita sem spec aprovada, numa base, em arquivo de segredo e nos `spec.*`. |
+| `write_gate` | antes de arquivos e depois de buscas | Conserva as proteções de escrita, segredo e leitura. Grep/rg executam com seus argumentos originais; compactação posterior só usa resultados executados verificáveis, sem Jev de rotina e sem transformar resultado em instrução. |
 | `command_guard` | antes de um comando | Recusa comando que apaga trabalho. |
 | `subagent_inject` | antes de despachar um agente | Troca o bilhete `MUSTARD-WAVE: <spec> <n>` pelo pedido montado da onda. |
 | `approval_witness` | depois de uma pergunta com opções | Grava o clique em "Aprovar" ou "Aceitar". |
-| `copy_witness` | depois de um lote mandado ao banco da página | Guarda a versão que o banco devolveu a cada documento do lote. Quando o último lote da cópia da página da spec volta, grava a cópia com essas versões e avisa. |
 | `end_of_turn_check` | fim da resposta | Confere a escrita: o erro achado vai na linha da mensagem seguinte, sem barrar. Barra quando a resposta sai noutro idioma que não o do projeto, para o assistente escrevê-la de novo, e quando a spec fecha ou entra no merge e a resposta não cita uma pendência aberta nascida nela. |
 | `session_cleanup_observer` | fim da sessão | Solta a spec da sessão. |
 
@@ -75,7 +76,7 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 | Comando | O que faz |
 |---|---|
 | `read <bloco>` | Devolve um bloco da spec: `state`, `specification`, `agreed`, `waves`, `wave-<n>`, `criteria`, `review`, `progress`, `notes` ou `conversation`. `--term <termo>` filtra pelo termo ou pelo código do item. |
-| `write <tipo>` | Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. Com o tipo `lesson`, grava no banco de lições. A publicação da página do projeto sem `--spec` grava o endereço direto no índice das specs. Com `--copy`, a gravação prepara a cópia da página: vai só na última gravação de um pedido do usuário que muda o plano, ou no próprio pedido quando ele não gera outra. O item sem `origin`, num tipo que o exige, recebe o número da última mensagem do usuário. |
+| `write <tipo>` | Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. `lesson` grava no banco de lições. `--copy` é compatibilidade: informa que a publicação automática foi retirada. Links/recibos históricos continuam legíveis. Quando obrigatório, `origin` recebe a última mensagem do usuário se estiver ausente. |
 | `answer` | Grava a resposta de um ponto do levantamento e fecha o ponto numa chamada só: `mustard-rt run answer --point <número ou código> --type <tipo> --json '{…}'`. Sem `--point`, vale o primeiro ponto aberto. `--result <itens>` aponta itens já gravados, junto do item novo ou sozinhos; `--not-applicable --reason "…"` fecha o ponto sem item. O item passa pelas mesmas recusas do `write`, e o item recusado não fecha o ponto; sem `origin`, ele e o fechamento apontam a última mensagem do usuário. Devolve o item, o fechamento e o próximo ponto. |
 | `resume` | A fase, o próximo passo em palavras e o comando que o faz. |
 | `reopen` | `mustard-rt run reopen --reason "<motivo>"` reabre a spec para um pedido novo: a que ainda não fechou volta ao levantamento; a fechada ou com o pull request aberto volta à execução, já aprovada, na mesma branch, e o pedido novo entra pelo `write request`; a entregue e a descartada são recusadas. Com `--fix`, é a porta de conserto do pull request que o servidor reprovou: só com o vermelho relatado, abre a onda de conserto dentro da mesma spec e, com ela entregue e comitada pela rodada, empurra a branch para o servidor — sem reabrir a obra e sem spec nova. |
@@ -83,15 +84,19 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 | `pending` | A lista de pendências. `--add --title "…" --detail "…"` acrescenta; `--close P-<n> --reason "…"` dá como entregue; `--remove` com `--id`, `--term` ou `--before <dia>` tira em duas chamadas, a segunda com `--confirm <código>`; `--drop P-<n>` é a mesma saída para um item; `--reopen P-<n>` traz de volta; `--stale` mostra as paradas há 30 dias e `--expire --keep P-<a>,P-<b>` tira as outras. |
 | `index` | Refaz o índice das specs. |
 | `scan` | Atualiza o mapa do projeto, lendo só o que mudou; nunca escreve no git. `--full` refaz o mapa de cada subprojeto; `--out <caminho>` grava o modelo em outro lugar. |
-| `map <pergunta>` | Pergunta ao mapa: `examples` (`--file <arquivo>`), `importers --file`, `tests --file`, `slice --file <arquivo> --name <declaração>`, `users --name <declaração>` (quem usa a declaração, como `arquivo:linha:quem chama`; com `--file`, só a desse arquivo), `search "<padrão>" [<pasta>]` (o mesmo texto que o `Grep` recebe, com `-i` (`--ignore-case`), `-w` (`--word-regexp`), `-F` (`--fixed-strings`), `--glob` e `--type`; a resposta é a que o Mustard dá a essa busca: cravado, parcial ou não achei) e `summary`. |
-| `page` | Gera uma página no layout do Mustard a partir de um arquivo markdown: `--body <pagina.md> --out <pagina.html>`, com `--title`, `--subtitle` e `--kind` opcionais. A página da spec e a do projeto são templates que leem um banco de dados; o comando que as refazia saiu. |
+| `map <pergunta>` | Pergunta ao mapa: `examples` (`--file <arquivo>`), `importers --file`, `tests --file`, `slice --file <arquivo> --name <declaração>`, `users --name <declaração>` (quem usa a declaração, como `arquivo:linha:quem chama`; com `--file`, só a desse arquivo), `search "<padrão>" [<pasta>]` (o mesmo texto que o `Grep` recebe, com `-i` (`--ignore-case`), `-w` (`--word-regexp`), `-F` (`--fixed-strings`), `--glob` e `--type`; recuperação local e julgamento complementar de candidatos ambíguos, quando habilitado; busca literal pelo Grep/rg não chama Jev) e `summary`. |
+| `page` | Gera HTML local no layout do Mustard a partir de markdown: `--body <pagina.md> --out <pagina.html>`, com `--title`, `--subtitle`, `--kind`. Não publica remotamente. |
+| `panel` | Consulta projeto, specs, ondas, validação, etapas e consumo conhecido em JSON: `--root <projeto> --spec <spec>`. Não gera página nem chama scan, Jev ou modelo. `--refresh-consumption` atualiza as contagens nativas locais; `--session <sessão>` inclui a observação da statusline. |
+| `knowledge` | Recupera evidência atual por capacidade/fluxo: `mustard-rt run knowledge --query "<assunto>" --limit 8 --depth 2`. `--intent "<tarefa>"` acrescenta pistas nativas; `--purpose locate|understand|spec|implement|validate` ajusta os trechos atuais. Alternativas são candidatas, trechos truncados exigem expansão e ocorrências não indexadas não reutilizam símbolos antigos. `--file <arquivo>` restringe os pontos de partida; `--detail` expande a evidência. `--symbol <id> --direction callers` investiga consumidores da declaração exata; `outgoing` segue chamadas e `both` os dois sentidos, com fontes conferidas. `--refresh` lista interpretações antigas e fontes afetadas para revisão explícita. `--all --markdown --out <relatorio.md>` exporta levantamento local; `--record <recibo.json>` registra interpretação com várias fontes/hashes. `--coverage` explica cobertura/exclusões; `--topics <plano.json>` compõe relatório por assuntos; `--evaluate <perguntas.json>` mede arquivos/símbolos e bytes, sem executar spec. Anotações são declarações do autor. Nativo por padrão; `--responsibility` habilita seleção experimental arquivo→símbolo; não é padrão por regressão observada. Choice opcional nesse modo exige `ai.fallback:true` e `judgement.search.filter:"jev"`, somente para candidatos ambíguos. |
+| `usage-record` | `mustard-rt run usage-record --root <projeto> --session <sessão>` recebe medição do host no stdin. Totais cumulativos não são somados repetidamente; a atribuição por spec usa intervalos observados na mesma branch. Custo é estimativa equivalente de API, com cobertura explícita; não é valor cobrado pela assinatura. |
+| `publish` | Gera HTML/JSON/manifesto e publica pelo Cloudflare configurado. Sem seletor, usa a spec da branch atual; `--spec <spec>` escolhe uma, `--project` gera visão geral mesmo sem spec, `--document <arquivo.md>` publica relatório no layout comum. `--include-consumption` autoriza incluir consumo. Só por pedido explícito; retorna `published:false` enquanto não houver envio remoto confirmado. |
 | `clean` | Lista as cópias descartáveis que os agentes deixaram no diretório temporário. `--dry-run` só lista, que é o padrão; `--apply` apaga as listadas; `--path <pasta>` apaga só aquela pasta. |
 | `pr-review` | Sem número, lista os pull requests abertos da base; `--pr <n>` mostra o pedido de revisão. Não grava veredito: `--verdict` recusa na entrada, porque o veredito de cada onda é gravado pela rodada. |
 | `upsert` | Instala ou atualiza. Na mesma chamada, tira as sobras do Mustard antigo nos `CLAUDE.md` e no `settings.json` da equipe, com as regras das Guards indo antes para um item só da lista de pendências, troca no lugar as regras de bloqueio da equipe escritas errado, e diz o que saiu e o que mudou; o arquivo sem marca só aparece na lista. Enquanto o `mustard.json` não tem `localFiles`, responde `localFilesFound`, os arquivos que o git ignora fora das pastas ignoradas; `--local-files <a,b>` grava a lista confirmada e `--prepare <comando>` o comando que prepara cada cópia, e o valor vazio grava que não há. |
 | `doctor` | Diagnóstico só de leitura. `--check <nome>` roda uma conferência; `--residue` procura também referências mortas; `--format json` ou `--json` responde em JSON. |
-| `spend` | O gasto de cada dia, contado pelas conversas da máquina (tokens, ações e procuras de código, por dia e por projeto com `mustard.json`) e mostrado numa página só da máquina, com o resumo no topo (hoje até agora, ontem, médias de 3 e 7 dias e do mês, e a previsão do Jev no mês). Funciona sem spec aberta. Sem argumento, conta os dias fechados que faltam, guarda as linhas num arquivo da máquina (um dia fechado é contado uma vez; apagar o arquivo refaz a conta), conta hoje de novo, que vai à página como parcial e nunca ao arquivo dos fechados, e prepara o template, os lotes e a ordem de copiar. `--republish` prepara a publicação nova e a cópia de todos os dias, para quem perdeu o link; `--url <endereço>` grava o endereço que a publicação devolveu. |
+| `spend` | Conta localmente conversas por dia/projeto, sem spec aberta. Deduplica mensagens, guarda dias fechados e recalcula hoje. Sem opções, devolve resumo e não prepara página ou lote externo. `--publish` gera/publica explicitamente um snapshot de todos os dias; `--republish` mantém compatibilidade com o pedido de republicação. `--url <endereço>` registra um endereço confirmado. Cloudflare Pages recebe o snapshot completo pelo binário se configurado; exportação local não confirma publicação. |
 | `measure` | O gasto do Claude no projeto antes e depois da marca da versão: a primeira sessão de cada compilação do Mustard no projeto, que o início da sessão grava. Compara os dias contados (fechados, com 100 ações ou mais; o dia da marca fica fora) dos dois lados, pela mesma conta do `spend`, e só afirma com 5 de cada lado. Responde `project`, `mark`, `before`, `after`, `verdict` e o veredito numa frase em `text`; sem marca, diz que a medição começa na próxima sessão. `--since <instante>` (RFC 3339 ou `AAAA-MM-DD`) mede a partir dele. Só lê: não grava nada e não chama o Jev. |
-| `statusline` | A barra de status, chamada pelo Claude Code. `--preview` mostra cada tema numa linha. |
+| `statusline` | Projeção compacta de spec/ondas, comandos do painel, validação e métricas conhecidas; preserva links históricos. Só consulta estado, sem scan, Jev ou publicação. `--preview` mostra os temas. |
 
 ---
 
@@ -100,8 +105,162 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 `mustard-rt run upsert` grava, escondidos do git do projeto:
 
 - `.claude/settings.local.json`, `.claude/.gitignore` e `mustard.json`, que são da pessoa: o que existe fica, e só o que falta é acrescentado;
-- o mapa `.claude/mustard/session-map.md`, os dois templates das páginas em `.claude/mustard/pages/` (`spec.html` e `project.html`) e os dois agentes em `.claude/agents/mustard/`, no idioma do `language.text`. Esses são textos do próprio Mustard: toda execução regrava o texto embarcado, então uma cópia editada volta em `updated`, e uma idêntica volta em `preserved`, porque não havia o que escrever.
+- o mapa `.claude/mustard/session-map.md` e os dois agentes em `.claude/agents/mustard/`, no idioma do `language.text`. Esses são textos do próprio Mustard: toda execução regrava o texto embarcado, então uma cópia editada volta em `updated`, e uma idêntica volta em `preserved`, porque não havia o que escrever.
 
-O `.claude/settings.local.json` recebe as liberações do próprio Mustard, na instalação nova e na atualização: os comandos `mustard-rt run`, a ferramenta `ArtifactData`, que grava no banco de dados das páginas publicadas, e a pasta das cópias das ondas, que mora fora do projeto, em `permissions.additionalDirectories`. As liberações que a pessoa já tem ficam como estão.
+O `.claude/settings.local.json` recebe as liberações do próprio Mustard, na instalação nova e na atualização: os comandos `mustard-rt run` e a pasta das cópias das ondas, que mora fora do projeto, em `permissions.additionalDirectories`. Não acrescenta permissão de publicação externa para o modelo. As liberações que a pessoa já tem ficam como estão.
 
-Uma instalação antiga que declarava as três partes do roteador (`orchestrator.md`, `dispatch.md` e `material.md`) passa a declarar o mapa no lugar delas, e os três arquivos saem do disco. Uma instalação com o mapa de nome antigo, `mapa-inicio-sessao.md`, passa a declarar o `session-map.md` no `mustard.json`, sem mudar o resto dele, e o arquivo antigo sai do disco. Nada é commitado.
+Uma instalação antiga que declarava as três partes do roteador (`orchestrator.md`, `dispatch.md` e `material.md`) passa a declarar o mapa no lugar delas, e os três arquivos saem do disco. Uma instalação com o mapa de nome antigo, `mapa-inicio-sessao.md`, passa a declarar o `session-map.md` no `mustard.json`, sem mudar o resto dele, e o arquivo antigo sai do disco. Templates automáticos de projeto/spec não são mais distribuídos ou semeados; páginas históricas não voltam a ser publicadas pela instalação. Nada é commitado.
+
+## Publicação externa nativa
+
+O destino recomendado é **Cloudflare Pages Direct Upload**. Configure uma vez
+um projeto Direct Upload no painel da sua conta (sem integração automática de
+Git) e um token com permissão **Account → Cloudflare Pages → Edit** restrito à
+conta escolhida. Disponibilize `CLOUDFLARE_API_TOKEN` ao processo do Claude Code
+ou ao terminal do binário; não grave o token em `mustard.json`, na spec ou no Git.
+
+Acrescente ao `mustard.json`, preservando as configurações existentes:
+
+```json
+{
+  "publication": {
+    "provider": "cloudflare-pages",
+    "accountId": "0123456789abcdef0123456789abcdef",
+    "projectName": "mustard-status"
+  }
+}
+```
+
+Os nomes acima são exemplos. `accountId` é o identificador real da conta,
+e `projectName` é o projeto Direct Upload já criado. A instalação não cria
+contas, projetos remotos ou credenciais.
+
+O bloco `publication` é opcional e pertence ao `mustard.json` da raiz do projeto.
+Instalação, atualização e `mustard config` preservam seus campos e as demais
+configurações existentes. O binário informa separadamente arquivo ilegível,
+destino inválido e token ausente, antes de tentar comunicação remota. O token
+é lido exclusivamente de `CLOUDFLARE_API_TOKEN` no ambiente; um campo de token
+no JSON não configura a autenticação.
+
+- `mustard-rt run publish --project` ou `/mustard-pages project` publica o projeto
+  sem exigir uma spec aberta.
+- `mustard-rt run publish` ou `/mustard-pages spec` usa a spec da branch atual.
+  `--spec <spec>` ou `/mustard-pages spec <spec>` seleciona outra. Consumo da spec só entra com `--include-consumption`.
+- `mustard-rt run publish --document resumo.md` ou `/mustard-pages report resumo.md`
+  publica o Markdown solicitado, com título inicial `# Título`, no layout comum.
+  O conteúdo pode ser uma análise ou resumo para gestores. O modelo raciocina
+  sobre o conteúdo quando necessário; formatação e envio são do binário.
+- `mustard-rt run spend --publish` publica o consumo agregado da máquina. Esse
+  pedido explícito inclui os nomes dos projetos e os valores por dia.
+- Só `published:true` com `remote_url` confirma uma página pronta. Se `pending:true`,
+  repita o comando para consultar a publicação aceita; isso não cria outra.
+- Sem configuração/token ou em caso de erro, os arquivos continuam locais e
+  `published:false`. Uma URL histórica não confirma o envio do snapshot atual.
+
+Cada publicação envia somente `index.html` e `snapshot.json`, com o layout
+comum do Mustard. O JSON é a base estática da publicação; não existe banco
+remoto recebendo atualizações automáticas. O binário verifica os arquivos que
+já existem no servidor antes de enviar e guarda o identificador aceito para
+retomar a consulta. Não utiliza modelo, Jev, Python ou Wrangler para publicar.
+
+O link retornado corresponde à versão publicada. Atualizar exige outro pedido
+explícito. O painel local continua consultando o estado atual sem publicar.
+Nenhum comando de publicação exclui páginas anteriores; retirar acesso ou
+apagar recursos remotos requer operação separada na conta do usuário.
+
+Protocolo: [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)
+e [API de deployments](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/).
+
+Os Mods observam `tool.call` após a execução, `turn.complete`, `session.compact`
+e `classic.SubagentStop` para antecipar consultas locais com coalescência de
+200 ms. `session.measure` fornece contexto, custo informado e limites diretamente
+do host. Observar um evento não acrescenta um novo recibo de entrega/validação:
+o histórico canônico permanece no binário. Hooks clássicos continuam aplicando
+as validações nativas. Fechar o painel cancela seus timers.
+
+O nome de comando nos Mods é `/mustard-pages`: a interface atual aceita letras,
+números, hífen e sublinhado, sem `:`. Isso permite execução direta sem transformar
+a publicação mecânica em um comando Markdown que consome turno do modelo.
+Relatórios atuais publicam texto/tabelas do Markdown; anexos em arquivos locais
+não são enviados implicitamente. A leitura do arquivo é explícita e não inclui
+outras conversas, código ou a spec inteira por conta própria.
+
+## Teste da versão de desenvolvimento no Claude Code
+
+O aceite do painel e dos eventos deve ser realizado numa sessão autenticada do
+Claude Code. Na raiz do projeto de teste, prepare os arquivos locais com o CLI
+do pacote em revisão e inicie o Claude com esse pacote:
+
+```sh
+mustard_review_plugin="/caminho/do/checkout/target/review-plugin"
+"$mustard_review_plugin/bin/mustard" init --yes
+PATH="$mustard_review_plugin/bin:$PATH" claude \
+  --plugin-dir "$mustard_review_plugin" \
+  --settings '{"enabledPlugins":{"mustard@inline":true}}'
+```
+
+Use o caminho real do pacote de revisão; o `mustard` instalado no sistema pode
+pertencer à versão anterior. O PATH informado vale para o Claude e seus filhos.
+O manifesto do Mustard declara `defaultEnabled:false`, portanto a configuração
+`mustard@inline:true` habilita a cópia local somente nessa sessão, sem gravar
+habilitação nas configurações pessoais.
+
+No Claude, confira o plugin em `/plugin` e abra `/mustard-panel`. Peça uma
+alteração pequena pelo fluxo normal: levantamento, aprovação do plano, ondas,
+validação e revisão final. Observe a atualização do painel, os dados de consumo
+e a statusline durante as ferramentas e após a retomada. A publicação externa
+continua exigindo pedido explícito e pode ser validada separadamente.
+
+Registre a versão retornada por `mustard-rt --version` e o resultado de cada
+etapa. Uma sessão que não carregou `mustard@inline` ou usa outro executável não
+comprova o comportamento desta entrega. Fonte:
+[carregamento de plugins](https://code.claude.com/docs/en/plugins/loading).
+
+## Source-first code search
+
+`mustard-rt run search --root <project> --intent "<task>" --purpose implement -- rg -n --with-filename "<pattern>" .` executes the source search before consulting the scan. The original pattern, filters and occurrences stay intact. The result adds current owners, comments/contracts, candidate relations and an exact Read request. `--purpose locate` keeps evidence compact.
+
+`mustard-rt run search --request '<JSON>'` accepts `{ "tool": "Grep", "input": { "pattern": "save", "output_mode": "content", "-n": true }, "intent": "find persistence for a repair", "purpose": "implement", "choose": false }`. Other adapters: Glob, Read, rg, grep, git grep. Native executables use `input.args`; shell command strings are not executed. Malformed or unknown operation arguments receive a corrective contract error; unsupported original host operations keep their native route.
+
+For investigation, `intent` names the local resource/provider and operation, instead of repeating the entire project goal. Preserve the original tool arguments. Split distinct responsibilities into separate calls or explicit question bullets with their own resource and constraints. The gateway does not infer that decomposition from arbitrary prose. Complementary destinations prioritize native-area clues co-occurring with question clues in the same file; current source verifies hits. Context resolves equal native field scores without allowing a body reference to displace a named declaration. These are lexical reading signals, not semantic proof. Signature-only ranges remain visible; behavioral follow-ups expand executable evidence while data/contract targets remain ranges unless their definition is requested.
+
+`mustard-rt run search --raw -- rg <options>` preserves native stdout/stderr/exit status exactly. `--shell-output` is the agent view used by Mods/hooks: original output or a smaller lossless grouping, with current owner ranges when they fit. Typed tools preserve pagination; Read retains its result contract. Routine output never appends the diagnostic report. Without an output flag, the CLI returns the full JSON report for explicit inspection. `--choose --intent "<task>"` permits configured Choice only for remaining responsibility ties; the explicitly requested recommendation may add context but never deletes occurrences.
+
+Verified new hits feed the local grain database with source hashes and checkout identity; repeated hits deduplicate. New/changed sources trigger the bundled incremental structural scan with `scan scan <root> --native --out <model> --json`, then the same executed result is crossed again. This path loads no sense model. A scan failure leaves native output usable and marks learning pending. Linked checkouts keep separate structural snapshots; inferred meanings need explicit interpretation receipts.
+
+Claude mods register `mcp__mustard__search` with a nested `request` object. It invokes the gateway through the host's Bash tool, retaining permissions and classic hooks. Classic hooks route supported Grep/Glob/text Read requests to the gateway and rewrite simple rg/grep/git grep commands. Unsupported tools/options, shell compounds, pipelines, redirects and substitutions keep the native path. This is not universal interception of arbitrary programs or a deployed Codex adapter. `run map search "<pattern>"` uses the same source-first path; `run knowledge --symbol <id>` expands indexed evidence.
+
+Explicit gateway operations also accept `Symbol` (exact current declaration ID), `Trace` (bounded static paths), `Structure` (a Tree-sitter query in one file), and `References` (compiler/index locations). They require `input.file_path`. References also requires `line` (one-based) and `column` (zero-based UTF-8 bytes), with `relation` set to `definitions`, `references` or `implementations`. Installed language servers use the existing language catalog; an unavailable provider returns native text candidates with its limitation. Identity resolution never calls Jev.
+
+Task retrieval groups all admitted native occurrences by source before selecting candidates; the first 256 lines no longer decide which owners exist. File/byte/time budgets and omissions remain explicit. Learning samples up to 256 line witnesses across admitted files and tracks whole source hashes separately, so a later discovered file can trigger a native structural refresh. Task ranking weights terms across declarations, normalizes document length and softly diversifies files; scores establish reading order, not meaning. Up to 24 current decision candidates are preserved before the presentation/graph cut, so the optional selector does not inherit that cut. Broad OR words do not become exclusive identity anchors merely by coinciding with a function name; declaration patterns use modifiers from actual signatures. Unavailable sources make the investigation partial without discarding other current evidence. Dependency bodies need an explicit name or additional written question evidence; references remain expandable. Optional Choice shares file hashes once and retains complete/incomplete source status. It can still accept a wrong candidate, particularly when the right one is missing; cache reuse and low request cost do not establish semantic accuracy.
+
+The full question can contribute an additional internal native search inside the original file inventory. Rare written index clues locate destinations; actual native occurrences and complete normalized source words verify them. The original command and result are preserved. Candidates are reranked after readable source and file expansion, before the decision cut. Source matching retains contiguous components of written identifiers (`QuartzPayClient` can match `quartzpay`), without joining neighbouring prose or accepting arbitrary substrings. `spec` and `understand` surveys prioritize current native owners whose path/name contains written identifier components from the original pattern, including names such as `CreateChargeAsync` found by `CreateCharge`; these owners survive even when the broader intent has no matching words. This does not resolve identity or recommend an implementation. Named internal functions preserve lexical containment in supported grammars; the language registry controls lexical visibility, including PHP's distinct global nested-function semantics. Scanned resources and files with no declarations reuse their current content hashes rather than requesting another scan solely because no symbol exists.
+
+Independent intent, source-field and native-pattern rankings are fused by reciprocal rank before source admission and again before the decision cut. Each channel preserves source destinations. Name, signature, documentation/comments, body and path are distinct evidence fields; repeated words never add duplicate votes. `MUSTARD_SEARCH_TRACE=1` adds source admission, channel ranks, decision cuts and presentation status to the diagnostic JSON, never routine agent output or paid state. These retrieval signals do not certify responsibility.
+
+An `intent` consisting entirely of two to eight `- ` or `* ` bullet lines supplies explicit independent questions. Preserve each question's constraints; ordinary prose is not split. Selection and source excerpts use each question individually. Optional Jev `knowledge-choice-v6` shares repeated candidates, excerpts and hashes across groups; missing source or conflicting snapshots defer without a paid call. It retains `none`, insufficient evidence, configured acceptance thresholds and caching. Shared state does not guarantee fewer tokens for a single question.
+
+For explicit diagnostics, `MUSTARD_SEARCH_TRACE=1` adds metadata for hydrated candidates, source validity, reading rank and retention before the decision cut. It adds no source to the provider or the routine agent view. An absent rank does not prove source absence or semantic irrelevance. Choice v5 asks for source support of inputs, outputs and distinguishing constraints, and permits `none` or `insufficient`; its probability thresholds remain a measured pilot policy, not a calibrated guarantee. `gateway-project.mjs` tests fixed task probes in a disposable checkout with no provider calls; `gateway-audit.mjs` grades saved public retrieval outputs offline. Whole-host validation uses `gateway-session.mjs --dry-run` for preflight or `--execute` with explicit authenticated model configuration.
+
+Optional precise indexes are imported with `mustard-rt run knowledge --import-scip <index.scip> --source-manifest <receipt.json>`. The manifest binds `index_sha256`, `position_encoding` (SCIP enum) and `sources` (relative file → SHA-256); include compiler configuration and lockfiles too. Embedded current document text can replace per-document receipts, but does not attest omitted compiler inputs. Imported locations are refused after a bound source changes. Mustard does not install or run a SCIP indexer automatically.
+
+The data-only `plugin/hooks/search-schema.js` is the canonical per-operation contract used by both Mods and Rust. Native args remain arrays. Read offsets and References lines start at 1; columns start at 0. The adapter supplies `schema_version:1` and may append a transport-only `context:{session,agent,epoch,acknowledged}` outside `request`. Only the adapter may acknowledge delivery receipts, after checking the delivered UTF-8 byte length and checksum; failed, interrupted, rewritten or truncated output is not acknowledged. Compact/reload/agent changes require a new context epoch. Complete current bodies may be replaced by a shorter reuse reference after acknowledgement; small/incomplete bodies and explicit Read remain whole.
+
+Investigations follow current unique static dependencies from exact-name/accepted recommendation seeds within the original inventory. Call lines, declared parameter/type fields and textual test mentions are source evidence, not proven data flow or coverage. Remaining candidates are expandable. Scan schema/build marks invalidate old structural extraction. A migrated index with missing structural marks requests a native rebuild even when the original search has no matches; learned source hashes cannot certify an empty derived index.
+
+Unresolved task investigations also follow a bounded set of primary evidence seeds. Stored members, contracts/implementations and current unique caller associations contribute expandable references, with at most two additional bodies when they add written question evidence. Parser associations remain labelled candidates. An already imported current SCIP index can contribute compiler implementation relations when its source verification stays inside the original inventory; automatic chains do not launch LSP. Out-of-scope, ambiguous or unavailable destinations remain partial and never enlarge the original inventory.
+
+Live References may reuse a private local compiler worker, isolated by checkout, language, binary and environment, with a 90-second idle shutdown. Each query checks workspace fingerprints and dependency metadata and obtains a fresh compiler response. Source/config changes restart the session. Returned source is still hashed; omitted/external compiler inputs are not exhaustively attested. First queries can cost more than cold queries; use References when exact identity matters. No language model is involved.
+
+Reproducible follow-up evaluation (from the repository checkout):
+
+The native acceptance benchmark requires Node 22+ with `node:sqlite`. This is a benchmark dependency, not a runtime dependency of the binary. The warm LSP benchmark prepares each arm's own native index before starting the timer.
+
+```sh
+node apps/scan/benchmarks/gateway-acceptance.mjs
+node apps/scan/benchmarks/gateway-heldout.mjs --dataset /path/to/repoqa-2024-06-23.json --selection apps/scan/benchmarks/repoqa-selection-followups-20261009.json --baseline /path/to/baseline-bin --current /path/to/current-bin --out target/heldout
+node apps/scan/benchmarks/gateway-warm-lsp.mjs --root /path/to/target/backend-snapshot --baseline /path/to/old/mustard-rt --current /path/to/new/mustard-rt --out target/warm-lsp
+node apps/scan/benchmarks/gateway-session.mjs --dry-run --out target/session-pair
+```
+
+The paid responsibility pilot requires an explicit `--jev`, a key in `TYPESAFE_API_KEY` or `--config /path/to/local/mustard.json`, and `--out`; optional `--bin` selects the comparison binary directory. Secrets are passed only through the child environment. The whole-task runner requires `--execute --model <full-model-id> --plugin <review-plugin> --out <new-output-folder>` and `ANTHROPIC_API_KEY` because the official bare CLI ignores subscription OAuth. It alternates baseline/Mustard order on two authored tasks, checks external behavior graders, records actual usage/cache categories and estimated cost, and rejects a Mustard session that never used its gateway. Dry-run is free. These samples do not establish general correctness or whole-session savings. Detailed results: [gateway continuation](docs/2026-10-09-gateway-de-busca.md).

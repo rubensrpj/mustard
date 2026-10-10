@@ -30,21 +30,24 @@
 //! command that no prose or argv calls, with no exception list.
 
 pub mod agent;
-pub mod wave;
 pub mod doctor;
-pub mod review;
 pub mod event;
-pub mod spec;
-pub mod maint;
+pub mod flow;
 pub mod git_delete;
 pub mod git_settle;
+pub mod knowledge;
+pub mod search;
+pub mod maint;
+pub mod map;
+pub mod panel;
+pub mod retired;
+pub mod review;
 pub mod scan;
 pub mod scan_claude;
-pub mod map;
+pub mod spec;
 pub mod spec_events;
-pub mod flow;
-pub mod retired;
 pub mod statusline;
+pub mod wave;
 // Families whose commands are ported scripts living in flat modules (no
 // `<family>/` directory of their own) keep their clap enum in a `*_cli.rs`
 // sibling — same contract as a `<family>/cli.rs`.
@@ -84,6 +87,8 @@ pub enum RunCmd {
     /// The spec event file: read one block, write one event.
     #[command(flatten)]
     SpecEvents(spec_events::cli::SpecEventsCmd),
+    #[command(flatten)]
+    Panel(panel::cli::PanelCmd),
     /// The Claude Code status bar.
     #[command(flatten)]
     Statusline(statusline::cli::StatuslineCmd),
@@ -104,6 +109,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Scan(c) => scan_cli::dispatch(c),
         RunCmd::Spec(c) => spec::cli::dispatch(c),
         RunCmd::SpecEvents(c) => spec_events::cli::dispatch(c),
+        RunCmd::Panel(c) => panel::cli::dispatch(c),
         RunCmd::Statusline(c) => statusline::cli::dispatch(c),
     }
 }
@@ -145,23 +151,16 @@ mod tests {
     /// cada valor que o argumento aceita. O defeito diz o comando, o
     /// argumento, quando há, e a palavra.
     fn help_uppercase_defects(path: &str, cmd: &Command, out: &mut Vec<String>) {
-        let own: Vec<String> = [
-            cmd.get_about(),
-            cmd.get_long_about(),
-            cmd.get_before_help(),
-            cmd.get_before_long_help(),
-            cmd.get_after_help(),
-            cmd.get_after_long_help(),
-        ]
-        .into_iter()
-        .flatten()
-        .map(ToString::to_string)
-        .collect();
+        let own: Vec<String> =
+            [cmd.get_about(), cmd.get_long_about(), cmd.get_before_help(), cmd.get_before_long_help(), cmd.get_after_help(), cmd.get_after_long_help()]
+                .into_iter()
+                .flatten()
+                .map(ToString::to_string)
+                .collect();
         push_defects(path, &own, out);
         for arg in cmd.get_arguments() {
             let name = arg.get_long().map_or_else(|| arg.get_id().to_string(), |long| format!("--{long}"));
-            let mut texts: Vec<String> =
-                [arg.get_help(), arg.get_long_help()].into_iter().flatten().map(ToString::to_string).collect();
+            let mut texts: Vec<String> = [arg.get_help(), arg.get_long_help()].into_iter().flatten().map(ToString::to_string).collect();
             texts.extend(arg.get_possible_values().iter().filter_map(|value| value.get_help().map(ToString::to_string)));
             push_defects(&format!("{path} {name}"), &texts, out);
         }
@@ -200,16 +199,10 @@ mod tests {
     fn a_loose_uppercase_word_in_a_help_fails_naming_the_command() {
         let with = |about: &str, help: &str| {
             let (about, help) = (about.to_string(), help.to_string());
-            program_tree().mut_subcommand("run", move |run| {
-                run.mut_subcommand("pending", move |pending| {
-                    pending.about(about).mut_arg("add", move |add| add.help(help))
-                })
-            })
+            program_tree()
+                .mut_subcommand("run", move |run| run.mut_subcommand("pending", move |pending| pending.about(about).mut_arg("add", move |add| add.help(help))))
         };
-        assert_eq!(
-            tree_defects(&with("Lists THE pending items.", "The item text.")),
-            vec!["mustard-rt run pending: uppercase word THE outside backticks"]
-        );
+        assert_eq!(tree_defects(&with("Lists THE pending items.", "The item text.")), vec!["mustard-rt run pending: uppercase word THE outside backticks"]);
         assert_eq!(
             tree_defects(&with("Lists the pending items.", "Writes THE item.")),
             vec!["mustard-rt run pending --add: uppercase word THE outside backticks"]
@@ -218,9 +211,7 @@ mod tests {
 
         let entry = |program: &str, on: &str, event: &str| {
             let (program, on, event) = (program.to_string(), on.to_string(), event.to_string());
-            program_tree()
-                .about(program)
-                .mut_subcommand("on", move |cmd| cmd.about(on).mut_arg("event", move |arg| arg.help(event)))
+            program_tree().about(program).mut_subcommand("on", move |cmd| cmd.about(on).mut_arg("event", move |arg| arg.help(event)))
         };
         assert_eq!(
             tree_defects(&entry("Mustard runtime.", "Runs THE hooks of an event.", "The event name.")),
@@ -234,9 +225,6 @@ mod tests {
             tree_defects(&entry("Mustard RUNTIME.", "Runs the hooks of an event.", "The event name.")),
             vec!["mustard-rt: uppercase word RUNTIME outside backticks"]
         );
-        assert_eq!(
-            tree_defects(&entry("Mustard `RUNTIME`.", "Runs `THE` hooks.", "`THE` event name.")),
-            Vec::<String>::new()
-        );
+        assert_eq!(tree_defects(&entry("Mustard `RUNTIME`.", "Runs `THE` hooks.", "`THE` event name.")), Vec::<String>::new());
     }
 }

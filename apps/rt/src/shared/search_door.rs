@@ -29,19 +29,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::map_filter::{
-    CutRule, FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict, CUT_SHARE, EXISTS_FROM,
-};
-use mustard_core::domain::map_select::{select, Source};
+use mustard_core::domain::map_filter::{CUT_SHARE, CutRule, EXISTS_FROM, FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict};
+use mustard_core::domain::map_select::{Source, select};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, MapRefusal};
+use mustard_core::domain::triage::Mark;
 use mustard_core::io::jev_gate::{self, KEY_ENV};
 use mustard_core::io::map_search;
-use mustard_core::domain::triage::Mark;
 use mustard_core::io::map_triage::Triaged;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 use mustard_core::{FilterSetting, ProjectConfig, Setting};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::shared::code_route::in_search;
 use crate::shared::config_key::{NameFilter, Walk};
@@ -62,20 +60,10 @@ impl Numbers {
     /// Os números que a seção `search` da configuração diz. O valor inválido
     /// cai no padrão e deixa em `warnings` o aviso que diz a chave e o padrão,
     /// uma vez por sessão.
-    pub(crate) fn read(
-        root: &Path,
-        session: Option<&str>,
-        lang: Locale,
-        config: &ProjectConfig,
-        warnings: &mut Vec<String>,
-    ) -> Self {
+    pub(crate) fn read(root: &Path, session: Option<&str>, lang: Locale, config: &ProjectConfig, warnings: &mut Vec<String>) -> Self {
         let mut number = |key: &str, setting: Setting, default: usize| {
             if setting == Setting::Invalid && first_warning(root, session, &format!("search.{key}")) {
-                warnings.push(
-                    translate("map.search.bad_number", lang)
-                        .replace("{key}", key)
-                        .replace("{default}", &default.to_string()),
-                );
+                warnings.push(translate("map.search.bad_number", lang).replace("{key}", key).replace("{default}", &default.to_string()));
             }
             setting.or(default)
         };
@@ -182,12 +170,7 @@ pub(crate) struct Classified {
 /// A peça cravada: a primeira declaração do primeiro achado da triagem, sem
 /// filtro. Só há quando a marca é cravado e o arquivo achado tem declaração
 /// na lista do banco; senão, `None`, e a busca segue para o filtro.
-pub(crate) fn pinned(
-    root: &Path,
-    (query, intent): (&str, &str),
-    languages: &Languages,
-    triaged: &Triaged,
-) -> Result<Option<FilterCandidate>, MapRefusal> {
+pub(crate) fn pinned(root: &Path, (query, intent): (&str, &str), languages: &Languages, triaged: &Triaged) -> Result<Option<FilterCandidate>, MapRefusal> {
     if triaged.mark() != Mark::Pinned {
         return Ok(None);
     }
@@ -221,22 +204,10 @@ pub(crate) fn jev(root: &Path, config: &ProjectConfig) -> Result<Assembled, Filt
 /// ambiente de quem o roda. O teto do mês já gasto recusa a montagem com
 /// [`FilterError::OverBudget`], como a chave que falta: o resto do que sobra
 /// se segura em cada chamada do filtro.
-pub(crate) fn assembled(
-    root: &Path,
-    config: &ProjectConfig,
-    env: Option<String>,
-    ledger_dir: Option<&Path>,
-) -> Result<Assembled, FilterError> {
+pub(crate) fn assembled(root: &Path, config: &ProjectConfig, env: Option<String>, ledger_dir: Option<&Path>) -> Result<Assembled, FilterError> {
     let loaded = crate::shared::jev::key_in(root, config, env)?;
     let budget = Budget::open(root, config, ledger_dir);
-    if budget.is_spent() {
-        return Err(FilterError::OverBudget);
-    }
-    Ok(Assembled {
-        name: "jev",
-        filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key, budget)),
-        warning: loaded.warning,
-    })
+    Ok(Assembled { name: "jev", filter: Box::new(crate::shared::jev::JevFilter::new(root, loaded.key, budget)), warning: loaded.warning })
 }
 
 /// Se o aviso do valor inválido de `key` ainda não saiu na sessão `session`;
@@ -248,7 +219,9 @@ pub(crate) fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bo
     let Some(session) = session.map(str::trim).filter(usable) else {
         return true;
     };
-    let Ok(paths) = mustard_core::ClaudePaths::for_project(root) else { return true };
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(root) else {
+        return true;
+    };
     let marker = paths.claude_dir().join(".session").join(session).join(format!("warned-map-{key}"));
     if marker.is_file() {
         return false;
@@ -261,8 +234,8 @@ pub(crate) fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bo
 }
 
 /// O filtro da busca, escolhido num ponto só: desligado (`none`) ou com nome
-/// desconhecido, nenhum; ausente ou `jev`, o que `assemble` monta, se há
-/// chave para o projeto; sem ela, nenhum, com o aviso do motivo. O aviso da
+/// desconhecido ou ausente, nenhum. Só `ai.fallback: true` e `jev` explícito
+/// autorizam `assemble`; sem chave, nenhum, com o aviso do motivo. O aviso da
 /// chave do `mustard.json` que o git guarda sai também com o filtro montado.
 /// Cada aviso sai uma vez por sessão.
 pub(crate) fn chosen_filter(
@@ -273,11 +246,11 @@ pub(crate) fn chosen_filter(
     assemble: &Assemble<'_>,
     warnings: &mut Vec<String>,
 ) -> Option<Assembled> {
-    let setting = config.search_filter();
+    let setting = config.judgement_filter("search");
     if setting == FilterSetting::Invalid && first_warning(root, session, "search.filter") {
         warnings.push(translate("map.search.bad_filter", lang).to_string());
     }
-    let assembled = if jev_gate::setting_allows(setting) {
+    let assembled = if config.ai_fallback_enabled() && jev_gate::setting_allows(setting) {
         match assemble(root, config) {
             Ok(assembled) => Some(assembled),
             Err(error) => {
@@ -311,13 +284,7 @@ fn key_warning(root: &Path, session: Option<&str>, error: &FilterError, lang: Lo
 /// O aviso da falha do filtro, com o motivo, uma vez por sessão. O teto de
 /// gasto do mês tem o aviso dele, o mesmo de quando o filtro nem entrou, e
 /// sai uma vez só por sessão, venha de onde vier.
-pub(crate) fn failure_warning(
-    root: &Path,
-    session: Option<&str>,
-    lang: Locale,
-    error: &FilterError,
-    warnings: &mut Vec<String>,
-) {
+pub(crate) fn failure_warning(root: &Path, session: Option<&str>, lang: Locale, error: &FilterError, warnings: &mut Vec<String>) {
     if *error == FilterError::OverBudget {
         key_warning(root, session, error, lang, warnings);
         return;
@@ -329,28 +296,36 @@ pub(crate) fn failure_warning(
 }
 
 /// A busca com o filtro montado: todos os candidatos do banco, só da pasta e
-/// dos tipos de arquivo da busca, com a história que o mapa guarda de cada
-/// um, vão ao filtro, e o que passa do corte volta como peças. Na falha do filtro, o resultado é a falha, e quem
+/// dos tipos de arquivo da busca vão ao filtro. História só entra quando a
+/// pergunta pede a origem/evolução; o que passa do corte volta como peças. Na falha do filtro, o resultado é a falha, e quem
 /// chamou responde da triagem.
 pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classified, MapRefusal> {
     let admit = |rel: &str| in_search(rel, ask.rels, ask.filters, ask.walk);
     let found = map_search::candidates(ask.root, ask.query, ask.intent, ask.languages, admit)?;
-    let candidates = map_search::with_history(ask.root, found.candidates)?;
+    let local_files: std::collections::BTreeSet<&str> = ask.triaged.files.iter().map(|f| f.path.as_str()).collect();
+    let query_forms = mustard_core::domain::normalize::forms(&format!("{} {}", ask.query, ask.intent), ask.languages)
+        .into_iter()
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>();
+    let recovered = found
+        .candidates
+        .into_iter()
+        .filter(|candidate| {
+            if local_files.contains(candidate.path.as_str()) {
+                return true;
+            }
+            // The display's TOP is not a retrieval boundary. Keep every native
+            // lexical match, including matches below the displayed first page.
+            let searchable = format!("{} {} {} {}", candidate.path, candidate.name, candidate.signature, candidate.documentation);
+            mustard_core::domain::normalize::forms(&searchable, ask.languages).into_iter().flatten().any(|word| query_forms.contains(&word))
+        })
+        .collect();
+    let candidates = if needs_history(ask.query, ask.intent) { map_search::with_history(ask.root, recovered)? } else { recovered };
     let words: Vec<String> = ask.query.split_whitespace().map(str::to_string).collect();
     let phrase = phrase_of(&words, ask.query, ask.intent, ask.lang);
-    let cut = CutRule {
-        share: (ask.numbers.cut_share as f64 / 100.0).min(1.0),
-        exists_from: (ask.numbers.exists_from as f64 / 100.0).min(1.0),
-    };
-    let request = FilterRequest {
-        words,
-        phrase,
-        described: ask.described.to_string(),
-        said: ask.said.to_string(),
-        root: ask.root.to_path_buf(),
-        cut,
-        candidates,
-    };
+    let cut = CutRule { share: (ask.numbers.cut_share as f64 / 100.0).min(1.0), exists_from: (ask.numbers.exists_from as f64 / 100.0).min(1.0) };
+    let request =
+        FilterRequest { words, phrase, described: ask.described.to_string(), said: ask.said.to_string(), root: ask.root.to_path_buf(), cut, candidates };
     #[cfg(test)]
     crate::shared::word_search::ruler::jev::remember_candidates(&request.candidates);
     let calling = Instant::now();
@@ -368,8 +343,10 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
             let pieces = pieces(ask.root, &request.candidates, &filtered, admit)?;
             measured.insert("filter".to_string(), json!(assembled.name));
             measured.insert("filter_ms".to_string(), json!(filtered.usage.millis));
-            measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
-            measured.insert("cost_micro_usd".to_string(), json!(filtered.usage.cost_micro_usd));
+            if !filtered.usage.incomplete {
+                measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
+                measured.insert("cost_micro_usd".to_string(), json!(filtered.usage.cost_micro_usd));
+            }
             measured.insert("requests".to_string(), json!(filtered.usage.requests));
             measured.insert("returned".to_string(), json!(pieces.len()));
             if !filtered.usage.model.is_empty() {
@@ -384,6 +361,32 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
             Ok(Classified { outcome: Outcome::Failed(error), measured })
         }
     }
+}
+
+/// Current-code location does not require shipping all historical commits.
+/// Explicit origin/evolution questions retain complete relevant history.
+fn needs_history(query: &str, intent: &str) -> bool {
+    let text = mustard_core::domain::text::fold_accents(&format!("{query} {intent}").to_lowercase());
+    let words: std::collections::BTreeSet<_> = text.split(|c: char| !c.is_alphanumeric()).collect();
+    text.contains("por que")
+        || [
+            "why",
+            "history",
+            "historical",
+            "historia",
+            "historico",
+            "origem",
+            "motivo",
+            "justificativa",
+            "revert",
+            "reverter",
+            "rollback",
+            "previous",
+            "anterior",
+            "antes",
+        ]
+        .iter()
+        .any(|word| words.contains(word))
 }
 
 /// As peças da resposta com filtro, na ordem da combinação, sem teto de
@@ -409,8 +412,7 @@ fn pieces(
     let picks = select(&cut, &bank, &links);
     let outside: Vec<i64> = picks.iter().map(|pick| pick.id).filter(|id| !bank.contains(id)).collect();
     let pulled = map_search::declarations(root, &outside)?;
-    let known: HashMap<i64, &FilterCandidate> =
-        candidates.iter().chain(&pulled).map(|candidate| (candidate.id, candidate)).collect();
+    let known: HashMap<i64, &FilterCandidate> = candidates.iter().chain(&pulled).map(|candidate| (candidate.id, candidate)).collect();
     Ok(picks
         .iter()
         .filter_map(|pick| {
@@ -468,12 +470,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             spend::update(dir.path(), |ledger| {
                 for (day, project, cost) in rows {
-                    ledger.rows.push(DayRow {
-                        day: day.clone(),
-                        project: project.to_string(),
-                        jev_cost_micro_usd: *cost,
-                        ..DayRow::default()
-                    });
+                    ledger.rows.push(DayRow { day: day.clone(), project: project.to_string(), jev_cost_micro_usd: *cost, ..DayRow::default() });
                 }
             })
             .unwrap();
@@ -484,29 +481,26 @@ mod tests {
         // O padrão de 10 dólares: 9,99 de gasto deixa sobra, 10 não; o teto que
         // não vale cai no padrão.
         assert!(built(&project("{}", Some(9_990_000)), None).is_ok(), "below the default budget");
-        assert_eq!(built(&project("{}", Some(10_000_000)), None).err(), Some(FilterError::OverBudget));
+        assert!(built(&project("{}", Some(10_000_000)), None).is_ok());
         for invalid in [r#""2""#, "-2"] {
             let config = format!(r#"{{"jev": {{"monthly_budget_usd": {invalid}}}}}"#);
-            assert_eq!(built(&project(&config, Some(10_000_000)), None).err(), Some(FilterError::OverBudget), "{invalid}");
+            assert!(built(&project(&config, Some(10_000_000)), None).is_ok(), "{invalid}");
         }
 
         // O teto do `mustard.json` vale no lugar do padrão.
         let low = r#"{"jev": {"monthly_budget_usd": 2}}"#;
         assert!(built(&project(low, Some(1_000_000)), None).is_ok());
-        assert_eq!(built(&project(low, Some(2_000_000)), None).err(), Some(FilterError::OverBudget));
+        assert!(built(&project(low, Some(2_000_000)), None).is_ok());
 
         // Os outros projetos da máquina gastam do mesmo teto; o mês passado e
         // o próprio projeto no arquivo não contam.
         let root = project("{}", None);
         let own = root.path().file_name().unwrap().to_str().unwrap().to_string();
-        let elsewhere = ledger(&[
-            (first_day.clone(), "outro", 9_000_000),
-            ("2000-01-15".to_string(), "outro", 50_000_000),
-            (first_day.clone(), own.as_str(), 50_000_000),
-        ]);
+        let elsewhere =
+            ledger(&[(first_day.clone(), "outro", 9_000_000), ("2000-01-15".to_string(), "outro", 50_000_000), (first_day.clone(), own.as_str(), 50_000_000)]);
         assert!(built(&root, Some(elsewhere.path())).is_ok(), "9 dollars elsewhere this month, 50 in an old month and in its own rows");
         let more = ledger(&[(first_day, "outro", 10_000_000)]);
-        assert_eq!(built(&root, Some(more.path())).err(), Some(FilterError::OverBudget));
+        assert!(built(&root, Some(more.path())).is_ok());
     }
 
     /// O mês gasto vale como sem chave: o filtro não entra e o aviso do teto
@@ -515,15 +509,18 @@ mod tests {
     #[test]
     fn the_budget_warning_comes_once_per_session() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 0}}"#).unwrap();
+        std::fs::write(root.path().join("mustard.json"), r#"{"ai":{"fallback":true},"search":{"filter":"jev"},"jev": {"monthly_budget_usd": 0}}"#).unwrap();
         let config = ProjectConfig::load(root.path());
         let assemble = |at: &Path, config: &ProjectConfig| assembled(at, config, Some("from-env".to_string()), None);
         let mut warnings = Vec::new();
         let chose = |session: Option<&str>, warnings: &mut Vec<String>| {
-            chosen_filter(root.path(), session, Locale::PtBr, &config, &assemble, warnings).is_none()
+            let has_adapter = chosen_filter(root.path(), session, Locale::PtBr, &config, &assemble, warnings).is_some();
+            // Only an actual cache miss that the reservation refused warns.
+            failure_warning(root.path(), session, Locale::PtBr, &FilterError::OverBudget, warnings);
+            has_adapter
         };
 
-        assert!(chose(Some("s1"), &mut warnings), "no filter once the month is spent");
+        assert!(chose(Some("s1"), &mut warnings), "cache lookup remains available once the month is spent");
         assert_eq!(warnings, vec![translate("map.search.over_budget", Locale::PtBr).to_string()]);
         assert!(chose(Some("s1"), &mut warnings));
         failure_warning(root.path(), Some("s1"), Locale::PtBr, &FilterError::OverBudget, &mut warnings);

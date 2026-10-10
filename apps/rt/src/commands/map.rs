@@ -20,10 +20,8 @@
 //!   mais velho, com o título e o número do pull request; a lista de cada
 //!   arquivo se monta na primeira pergunta sobre ele e fica gravada no mapa;
 //! - `search "<padrão>" [<pasta>]` (com `-i`, `-w`, `-F`, `--glob` e
-//!   `--type`): o mesmo texto que o `Grep` recebe, e a mesma resposta que o
-//!   gancho dá a ele: a lida pela mesma leitura ([`word_search::reply`]), com
-//!   o texto impresso como veio. A busca que o mapa não responde diz isso em
-//!   uma linha, e a busca comum segue;
+//!   `--type`): pesquisa nativa primeiro; resposta original e evidências
+//!   atuais do scan pela porta de busca compartilhada;
 //! - `search --query "<palavras>" --intent "<frase>"`, apelidos escondidos
 //!   que só a medida da busca usa: a busca por conceito, nos arquivos e nos
 //!   itens combinados das specs, cada um com a função ou o arquivo ligado a
@@ -54,6 +52,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::ValueEnum;
+use mustard_core::Setting;
 use mustard_core::domain::map_filter::Verdict;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
@@ -61,21 +60,19 @@ use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::map_notes::{self, NewNote};
-use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::map_search;
 use mustard_core::io::map_specs;
+use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::wave_prompt::recipe_for;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::Setting;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::commands::spec_events::conversation::record_measured_call;
 use crate::shared::code_route;
 use crate::shared::config_key::Walk;
-use crate::shared::search_door::{self as door, first_warning, jev, Assemble, Numbers};
+use crate::shared::search_door::{self as door, Assemble, Numbers, first_warning, jev};
 use crate::shared::triage_view;
-use crate::shared::word_search::{self, tool_filters, Dialect, Reply};
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -89,6 +86,7 @@ pub enum Question {
     Users,
     History,
     Dump,
+    Audit,
     Note,
 }
 
@@ -104,6 +102,7 @@ impl Question {
             Self::Users => "users",
             Self::History => "history",
             Self::Dump => "dump",
+            Self::Audit => "audit",
             Self::Note => "note",
         }
     }
@@ -168,8 +167,7 @@ pub(crate) type Mine<'m> = dyn Fn(&Path, &Path) -> mustard_core::platform::error
 /// A passada da história por arquivo: lê do git a história das declarações
 /// do arquivo (o terceiro argumento) na raiz, seguindo cada uma até o número
 /// de mudanças de arquivo do quarto, e a grava no mapa do caminho dado.
-pub(crate) type Trace<'t> =
-    dyn Fn(&Path, &Path, &str, usize) -> mustard_core::platform::error::Result<HistoryReport> + 't;
+pub(crate) type Trace<'t> = dyn Fn(&Path, &Path, &str, usize) -> mustard_core::platform::error::Result<HistoryReport> + 't;
 
 /// Responde a pergunta e devolve o JSON; nunca entra em pânico. Antes, a
 /// conferência do mapa com o conteúdo de agora relê por `mine` o que mudou
@@ -181,7 +179,13 @@ pub(crate) type Trace<'t> =
 /// dos arquivos ligados aos itens achados, e por `assemble` o filtro, quando
 /// a configuração não o desliga.
 pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Value {
+    if opts.question==Question::Search && let Some(grep)=&opts.grep {
+        return source_search(opts,grep);
+    }
     let project = crate::commands::spec_events::project(&opts.root);
+    if opts.question==Question::Audit {
+        return mustard_core::io::knowledge::audit::run(&project.root).unwrap_or_else(|error|refused(&error,project.lang));
+    }
     crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
     let _ = map_specs::sync(&project.root, &project.languages);
     let lang = project.lang;
@@ -194,17 +198,39 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
     }
 }
 
+/// Compatibility spelling of the source-first gateway. No scan or remote
+/// filter is required to execute a literal search.
+fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
+    if let Err(refusal)=required(Some(&grep.pattern),Question::Search,"<pattern>") {
+        return refused(&refusal,mustard_core::ProjectConfig::load(&opts.root).language().text_or_default());
+    }
+    let mut argv=vec!["rg".to_string(),"-n".into(),"--with-filename".into(),"--no-heading".into(),"--color=never".into()];
+    for (enabled,flag) in [(grep.ignore_case,"-i"),(grep.whole_word,"-w"),(grep.fixed,"-F")] {if enabled {argv.push(flag.into());}}
+    if let Some(glob)=&grep.glob {argv.extend(["--glob".into(),glob.clone()]);}
+    if let Some(kind)=&grep.kind {argv.extend(["--type".into(),kind.clone()]);}
+    argv.extend(["-e".into(),grep.pattern.clone(),"--".into(),grep.folder.as_deref().unwrap_or(Path::new(".")).to_string_lossy().into_owned()]);
+    let result=mustard_core::domain::code_search::Request::native(&argv).and_then(|mut request|{
+        request.intent=opts.intent.as_deref().or(opts.described.as_deref()).unwrap_or_default().into();
+        crate::shared::search_gateway::answer(&opts.root,&request)
+    });
+    match result {Ok(answer)=>answer.report,Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
+}
+
 /// Guarda no glossário do mapa o que a resposta entregou à sessão de quem
 /// pergunta: da busca, as palavras da `--query` e os lugares achados, no
 /// lugar da busca anterior da sessão; da leitura de uma declaração e da de
 /// quem a usa, os lugares delas, somados aos da última busca. A edição que
 /// vier depois ensina por eles. A falha da gravação não muda a resposta.
 fn remember(opts: &MapOpts, root: &Path, languages: &Languages, report: &Value) {
-    let Some(session) = opts.session.as_deref().filter(|session| !session.is_empty()) else { return };
+    let Some(session) = opts.session.as_deref().filter(|session| !session.is_empty()) else {
+        return;
+    };
     let model = store::model_path(root);
     let _ = match opts.question {
         Question::Search => {
-            let Some(query) = opts.query.as_deref() else { return };
+            let Some(query) = opts.query.as_deref() else {
+                return;
+            };
             map_glossary::record_search(&model, session, query, languages, &delivered(report))
         }
         Question::Slice | Question::Users => map_glossary::add_delivered(&model, session, &delivered(report)),
@@ -248,7 +274,9 @@ fn trace_search_links(root: &Path, found: &[FoundItem], moves: usize, trace: &Tr
         return false;
     }
     let items: Vec<(&str, &str)> = found.iter().map(|item| (item.spec.as_str(), item.code.as_str())).collect();
-    let Ok(files) = map_specs::untraced(root, &items, TOP, moves) else { return false };
+    let Ok(files) = map_specs::untraced(root, &items, TOP, moves) else {
+        return false;
+    };
     let model = store::model_path(root);
     for file in &files {
         let _ = trace(root, &model, file, moves);
@@ -261,14 +289,7 @@ fn dump(root: &Path) -> Result<Value, MapRefusal> {
     Ok(json!({ "ok": true, "question": "dump", "tables": store::dump(root)? }))
 }
 
-fn answer(
-    opts: &MapOpts,
-    root: &Path,
-    lang: Locale,
-    languages: &Languages,
-    trace: &Trace<'_>,
-    assemble: &Assemble<'_>,
-) -> Result<Value, MapRefusal> {
+fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Result<Value, MapRefusal> {
     answer_from(opts, root, lang, languages, &|need| store::read_for(root, need), trace, assemble)
 }
 
@@ -327,6 +348,7 @@ fn answer_from(
         Question::History => history(opts, root, lang, read, trace),
         Question::Examples => examples(opts, root, lang, read, trace),
         Question::Dump => dump(root),
+        Question::Audit => mustard_core::io::knowledge::audit::run(root),
         Question::Note => note(opts, root, read),
     }
 }
@@ -340,11 +362,8 @@ fn note(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRefu
     let text = after_the_map(required(opts.grep.as_ref().map(|grep| grep.pattern.as_str()), question, "<text>"), read)?;
     let session = opts.session.as_deref().filter(|session| !session.is_empty());
     let spec = crate::shared::spec_state::active_spec(&root.to_string_lossy(), session).unwrap_or_default();
-    let saved = map_notes::write(
-        &store::model_path(root),
-        root,
-        &NewNote { file: &file, name: opts.name.as_deref().unwrap_or_default(), text: &text, spec: &spec },
-    )?;
+    let saved =
+        map_notes::write(&store::model_path(root), root, &NewNote { file: &file, name: opts.name.as_deref().unwrap_or_default(), text: &text, spec: &spec })?;
     Ok(json!({
         "ok": true,
         "question": "note",
@@ -367,7 +386,7 @@ fn note(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRefu
 /// história dos arquivos ligados aos itens achados, seguindo o número de
 /// `map.historyMoves` lido como a pergunta da história o lê. Os avisos saem
 /// uma vez por sessão. O texto do `Grep` (`opts.grep`) tem outro caminho:
-/// [`grep_answer`].
+/// a porta de busca nativa, antes de consultar o índice.
 fn search(
     opts: &MapOpts,
     root: &Path,
@@ -377,8 +396,7 @@ fn search(
     (trace, assemble): (&Trace<'_>, &Assemble<'_>),
 ) -> Result<Value, MapRefusal> {
     if let Some(grep) = &opts.grep {
-        after_the_map(required(Some(grep.pattern.as_str()), opts.question, "<pattern>"), read)?;
-        return Ok(grep_answer(opts, grep, root, lang, languages, assemble));
+        return Ok(source_search(opts, grep));
     }
     let started = Instant::now();
     let query = after_the_map(required(opts.query.as_deref(), opts.question, "<pattern>"), read)?;
@@ -404,11 +422,7 @@ fn search(
     }
     let mut warnings: Vec<String> = Vec::new();
     let moves = history_moves(root, session, lang, &config, &mut warnings);
-    let specs = if trace_search_links(root, &specs, moves, trace) {
-        map_search::search_specs(root, &query, languages, TOP)?
-    } else {
-        specs
-    };
+    let specs = if trace_search_links(root, &specs, moves, trace) { map_search::search_specs(root, &query, languages, TOP)? } else { specs };
     let numbers = Numbers::read(root, session, lang, &config, &mut warnings);
     let assembled = door::chosen_filter(root, session, lang, &config, assemble, &mut warnings);
     let (mut report, measured) = match assembled {
@@ -445,66 +459,6 @@ fn search(
     Ok(report)
 }
 
-/// A resposta ao texto do `Grep` em `grep`: a mesma que o gancho da busca dá à
-/// ferramenta com esse padrão, pela mesma leitura ([`word_search::reply`]) e
-/// com os filtros de nome lidos como ele os lê ([`tool_filters`]). A pasta
-/// se conta a partir da pasta de `opts.root`, como o `grep` conta a dela a
-/// partir da pasta em que roda. A busca repetida não passa: o comando
-/// responde sempre, e não guarda a busca respondida. A que o mapa não
-/// responde (pasta fora do código do mapa, padrão que a leitura não entende,
-/// tipo que ela não conhece) diz isso em uma linha.
-fn grep_answer(
-    opts: &MapOpts,
-    grep: &GrepSearch,
-    root: &Path,
-    lang: Locale,
-    languages: &Languages,
-    assemble: &Assemble<'_>,
-) -> Value {
-    let (mut filters, typed) = tool_filters(grep.glob.as_deref(), grep.kind.as_deref());
-    let base = std::path::absolute(&opts.root).unwrap_or_else(|_| opts.root.clone());
-    let given = grep.folder.as_deref().map_or_else(|| ".".to_string(), |folder| folder.to_string_lossy().into_owned());
-    let folder = code_route::project_path(&root.to_string_lossy(), &base.to_string_lossy(), &given)
-        .filter(|folder| folder.abs.is_dir());
-    let reply = match (typed, folder) {
-        (Some(typed), Some(folder)) => {
-            filters.extend(typed);
-            let patterns = [grep.pattern.clone()];
-            let search = word_search::Search {
-                patterns: &patterns,
-                dialect: if grep.fixed { Dialect::Fixed } else { Dialect::Rust },
-                ignore_case: grep.ignore_case,
-                whole_word: grep.whole_word,
-                folders: std::slice::from_ref(&folder),
-                filters: &filters,
-                walk: Walk::Rg { unignored: false },
-                shows_lines: true,
-            };
-            let config = mustard_core::ProjectConfig::load(root);
-            let scene = word_search::Scene {
-                root,
-                model: &store::model_path(root),
-                memory: None,
-                session: opts.session.as_deref(),
-                lang,
-                languages,
-                config: &config,
-                assemble,
-                record: &record_measured_call,
-                described: opts.described.as_deref().map(str::trim).unwrap_or_default(),
-                said: word_search::Said::Given(opts.said.as_deref().map(str::trim).unwrap_or_default()),
-            };
-            word_search::reply(&scene, &search)
-        }
-        _ => Reply::Pass,
-    };
-    let answer = match reply {
-        Reply::Answer(text) | Reply::Note(text) => text,
-        Reply::Pass => mustard_core::translate("map.search.pass", lang).to_string(),
-    };
-    json!({ "ok": true, "question": "search", "answer": answer })
-}
-
 /// A resposta da busca depois do filtro: as peças que passaram, com o grau, a
 /// marca e a linha de usar as ferramentas de sempre; a linha de não achei
 /// quando o filtro achou que nenhum candidato serve; e, sem candidato para
@@ -514,8 +468,7 @@ fn filtered_report(query: &str, triaged: &Triaged, lang: Locale, filter: &str, o
         door::Outcome::NoCandidates | door::Outcome::Failed(_) => triage_view::bank_report(query, triaged, lang),
         door::Outcome::Classified { verdict, pieces } => {
             let pieces: Vec<Value> = pieces.iter().map(door::Piece::to_value).collect();
-            let mut report =
-                json!({ "ok": true, "question": "search", "query": query, "filter": filter, "pieces": pieces });
+            let mut report = json!({ "ok": true, "question": "search", "query": query, "filter": filter, "pieces": pieces });
             if *verdict == Verdict::NotFound {
                 // O filtro achou que nenhum candidato serve: nada da lista é o
                 // que se procura, e a resposta manda usar as ferramentas de
@@ -560,8 +513,8 @@ fn add_specs(report: &mut Value, specs: &[FoundItem]) {
 fn parts(opts: &MapOpts, root: &Path, file: &str, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let mut found = project_map::parts(&read(Need::Parts(file))?, file)?;
     if let Some(copy) = code_route::linked_copy(&opts.root, root) {
-        let text = std::fs::read_to_string(copy.join(&found.file))
-            .map_err(|e| MapRefusal::FileUnreadable { file: found.file.clone(), detail: e.to_string() })?;
+        let text =
+            std::fs::read_to_string(copy.join(&found.file)).map_err(|e| MapRefusal::FileUnreadable { file: found.file.clone(), detail: e.to_string() })?;
         if let Ok(project) = std::fs::read_to_string(root.join(&found.file)) {
             found = code_route::parts_in_copy(found, &project, &text);
         }
@@ -631,16 +584,10 @@ fn slice_in_copy(place: &project_map::DeclPlace, copy: &str, project: Option<&st
         return Ok((place.line, place.end_line));
     }
     let (line, end_line) = (place.line.max(1), place.end_line.max(place.line.max(1)));
-    let changed = |range: Option<(u64, u64)>| MapRefusal::ChangedInCopy {
-        file: place.file.clone(),
-        name: place.name.clone(),
-        line,
-        copy: range,
-    };
+    let changed = |range: Option<(u64, u64)>| MapRefusal::ChangedInCopy { file: place.file.clone(), name: place.name.clone(), line, copy: range };
     let project = project.ok_or_else(|| changed(None))?;
     let block = project_map::lines_of(project, line, end_line);
-    let (first, last) =
-        code_route::CopyLines::between(project, copy).range(line, end_line).ok_or_else(|| changed(None))?;
+    let (first, last) = code_route::CopyLines::between(project, copy).range(line, end_line).ok_or_else(|| changed(None))?;
     if block.is_empty() {
         return Err(changed(None));
     }
@@ -684,17 +631,12 @@ fn users(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>) -> Result
             });
             if !by_candidates.is_empty() {
                 any_suspect = true;
-                entry["suspect"] = by_candidates
-                    .into_iter()
-                    .map(|(candidates, used_by)| json!({"candidates": candidates, "used_by": used_by}))
-                    .collect();
+                entry["suspect"] = by_candidates.into_iter().map(|(candidates, used_by)| json!({"candidates": candidates, "used_by": used_by})).collect();
             }
             if d.common_calls > 0 {
                 entry["common_calls"] = json!(d.common_calls);
                 let key = if d.common_calls == 1 { "map.users.common.one" } else { "map.users.common.many" };
-                entry["common"] = json!(mustard_core::translate(key, lang)
-                    .replace("{count}", &d.common_calls.to_string())
-                    .replace("{name}", &d.name));
+                entry["common"] = json!(mustard_core::translate(key, lang).replace("{count}", &d.common_calls.to_string()).replace("{name}", &d.name));
             }
             if !d.routes.is_empty() {
                 any_route = true;
@@ -708,10 +650,8 @@ fn users(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>) -> Result
                         });
                         if !by_candidates.is_empty() {
                             any_route_suspect = true;
-                            route["suspect"] = by_candidates
-                                .into_iter()
-                                .map(|(candidates, screens)| json!({"candidates": candidates, "screens": screens}))
-                                .collect();
+                            route["suspect"] =
+                                by_candidates.into_iter().map(|(candidates, screens)| json!({"candidates": candidates, "screens": screens})).collect();
                         }
                         route
                     })
@@ -719,9 +659,7 @@ fn users(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>) -> Result
             }
             let screens = d.routes.iter().any(|r| !r.called_by.is_empty());
             if d.used_by.is_empty() && d.common_calls == 0 && !screens {
-                entry["note"] = json!(mustard_core::translate("map.users.none", lang)
-                    .replace("{name}", &d.name)
-                    .replace("{file}", &d.file));
+                entry["note"] = json!(mustard_core::translate("map.users.none", lang).replace("{name}", &d.name).replace("{file}", &d.file));
             }
             entry
         })
@@ -771,13 +709,7 @@ fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>
 /// a pergunta seguinte a lê do mapa. A história segue o número de
 /// `map.historyMoves` lido como a pergunta da história o lê, com o mesmo
 /// aviso do valor inválido.
-fn examples(
-    opts: &MapOpts,
-    root: &Path,
-    lang: Locale,
-    read: &Reader<'_>,
-    trace: &Trace<'_>,
-) -> Result<Value, MapRefusal> {
+fn examples(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, trace: &Trace<'_>) -> Result<Value, MapRefusal> {
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     // Sem o alvo, só as recusas do mapa vêm antes da que diz o que falta.
     let mut map = read(if file.is_some() { Need::Examples { words: false } } else { Need::Nothing })?;
@@ -878,7 +810,9 @@ fn history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, trace: 
 fn pull_answer(number: u32, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let map = read(Need::Pull(number))?;
     Ok(match project_map::pull_description(&map, number) {
-        Some((title, description)) => json!({ "number": number, "title": title, "description": description }),
+        Some((title, description)) => {
+            json!({ "number": number, "title": title, "description": description })
+        }
         None => json!({
             "number": number,
             "note": mustard_core::translate("map.history.pull_missing", lang).replace("{number}", &number.to_string()),
@@ -896,11 +830,8 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
         return Ok(json!({ "ok": true, "question": "history", "name": name, "note": note }));
     }
     let [path] = files.as_slice() else {
-        let mut places: Vec<(&str, u64)> = map
-            .modules
-            .iter()
-            .flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (m.path.as_str(), d.line)))
-            .collect();
+        let mut places: Vec<(&str, u64)> =
+            map.modules.iter().flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (m.path.as_str(), d.line))).collect();
         places.sort_unstable();
         return Ok(json!({
             "ok": true,
@@ -917,16 +848,11 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
     let shown = history_number(root, session, lang, commits, project_map::DECL_COMMITS_SHOWN, &mut warnings);
     let calls = ("pullRequestCalls", config.pull_request_calls());
     history_number(root, session, lang, calls, crate::shared::pr_history::CALLS_PER_PASS, &mut warnings);
-    let fresh = map
-        .lineage
-        .iter()
-        .find(|lineage| &lineage.path == path)
-        .is_some_and(|lineage| project_map::lineage_is_fresh(lineage, &map, moves));
+    let fresh = map.lineage.iter().find(|lineage| &lineage.path == path).is_some_and(|lineage| project_map::lineage_is_fresh(lineage, &map, moves));
     let map = if fresh {
         map
     } else {
-        trace(root, &store::model_path(root), path, moves)
-            .map_err(|e| MapRefusal::HistoryUnreadable { file: path.clone(), detail: e.to_string() })?;
+        trace(root, &store::model_path(root), path, moves).map_err(|e| MapRefusal::HistoryUnreadable { file: path.clone(), detail: e.to_string() })?;
         read(Need::History { file: Some(path), name: &name })?
     };
     let found = project_map::decl_history(&map, path, &name, shown)?;
@@ -958,8 +884,7 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
             });
             // O título de cada pull request uma vez, e os comentários de
             // revisão presos às linhas da declaração.
-            let pulls: Vec<String> =
-                d.pulls.iter().filter(|(_, title)| !title.is_empty()).map(|(number, title)| format!("#{number} {title}")).collect();
+            let pulls: Vec<String> = d.pulls.iter().filter(|(_, title)| !title.is_empty()).map(|(number, title)| format!("#{number} {title}")).collect();
             if !pulls.is_empty() {
                 entry["pulls"] = json!(pulls);
             }
@@ -984,13 +909,7 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
 /// história de uma declaração segue, lido por um caminho só pela pergunta da
 /// história, pela busca e pelos exemplos: o aviso do valor inválido sai uma
 /// vez por sessão, seja qual for a pergunta que o leu primeiro.
-fn history_moves(
-    root: &Path,
-    session: Option<&str>,
-    lang: Locale,
-    config: &mustard_core::ProjectConfig,
-    warnings: &mut Vec<String>,
-) -> usize {
+fn history_moves(root: &Path, session: Option<&str>, lang: Locale, config: &mustard_core::ProjectConfig, warnings: &mut Vec<String>) -> usize {
     let moves = ("historyMoves", config.history_moves());
     history_number(root, session, lang, moves, project_map::MOVES_FOLLOWED, warnings)
 }
@@ -998,20 +917,9 @@ fn history_moves(
 /// O número da chave `key` da seção `map`, escrito como `setting`: o valor
 /// inválido cai no padrão `default` e deixa em `warnings` o aviso que diz a
 /// chave e o padrão, uma vez por sessão.
-fn history_number(
-    root: &Path,
-    session: Option<&str>,
-    lang: Locale,
-    (key, setting): (&str, Setting),
-    default: usize,
-    warnings: &mut Vec<String>,
-) -> usize {
+fn history_number(root: &Path, session: Option<&str>, lang: Locale, (key, setting): (&str, Setting), default: usize, warnings: &mut Vec<String>) -> usize {
     if setting == Setting::Invalid && first_warning(root, session, key) {
-        warnings.push(
-            mustard_core::translate("map.history.bad_setting", lang)
-                .replace("{key}", key)
-                .replace("{default}", &default.to_string()),
-        );
+        warnings.push(mustard_core::translate("map.history.bad_setting", lang).replace("{key}", key).replace("{default}", &default.to_string()));
     }
     setting.or(default)
 }
@@ -1020,12 +928,7 @@ fn history_number(
 /// sai como texto, e as demais, como JSON.
 pub fn run(opts: &MapOpts) {
     let scan = mustard_core::Scan::locate();
-    let report = map_at(
-        opts,
-        &|root, out| scan.scan_then_read_history(root, out),
-        &|root, out, file, moves| scan.history(root, out, file, moves),
-        &jev,
-    );
+    let report = map_at(opts, &|root, out| scan.scan_then_read_history(root, out), &|root, out, file, moves| scan.history(root, out, file, moves), &jev);
     match report["answer"].as_str().filter(|_| report["question"] == "search") {
         // A resposta ao texto do `Grep` sai como o gancho a dá: o texto só.
         Some(answer) => println!("{answer}"),
@@ -1041,10 +944,16 @@ mod tests {
     use super::*;
     use crate::shared::search_door::Assembled;
     use mustard_core::domain::map_filter::{FilterError, FilterRequest, Filtered, MapFilter};
-    use mustard_core::domain::project_map::{
-        DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText,
-    };
+    use mustard_core::domain::project_map::{DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText};
     use tempfile::tempdir;
+
+    #[test]
+    fn audit_inspects_the_stored_database_without_invoking_the_scanner() {
+        let dir=tempdir().unwrap();
+        store::save_at(&store::model_path(dir.path()),&json!({"modules":[]}),"test",&Languages::new([])).unwrap();
+        let report=map_at(&ask(dir.path(),Question::Audit),&|_,_|panic!("audit must inspect before any refresh"),&|_,_,_,_|panic!("audit never requests history"));
+        assert_eq!(report["ok"],true,"{report}");assert_eq!(report["question"],"audit");
+    }
 
     /// A resposta de um projeto sem a chave do filtro: a busca é a do banco.
     fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Value {
@@ -1054,9 +963,7 @@ mod tests {
     /// A resposta do comando a um mapa de teste, que ninguém relê: fora do
     /// git, a conferência não chama o scan.
     fn answered(opts: &MapOpts) -> Value {
-        map_at(opts, &|_, _| panic!("a map outside git is never read again"), &|_, _, _, _| {
-            panic!("a map without a base never reads a history")
-        })
+        map_at(opts, &|_, _| panic!("a map outside git is never read again"), &|_, _, _, _| panic!("a map without a base never reads a history"))
     }
 
     /// Um mapa pequeno: uma pasta de comandos com quatro arquivos que
@@ -1154,11 +1061,7 @@ mod tests {
     #[test]
     fn users_warns_once_per_session_about_an_invalid_common_name_ceiling() {
         let dir = tempdir().unwrap();
-        store::write_text(
-            dir.path(),
-            r#"{"modules": [{"path": "src/m1.rs", "loc": 3, "declarations": [{"name": "comum", "common_calls": 1}]}]}"#,
-        )
-        .unwrap();
+        store::write_text(dir.path(), r#"{"modules": [{"path": "src/m1.rs", "loc": 3, "declarations": [{"name": "comum", "common_calls": 1}]}]}"#).unwrap();
         std::fs::write(dir.path().join("mustard.json"), r#"{"scan": {"max_same_name": "dois"}}"#).unwrap();
         let opts = MapOpts { name: Some("comum".to_string()), session: Some("sessao".to_string()), ..ask(dir.path(), Question::Users) };
 
@@ -1256,9 +1159,7 @@ mod tests {
     fn project_with_a_file_older_than_the_window() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let commits: Vec<Value> = (0..project_map::MAX_COMMITS)
-            .map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]}))
-            .collect();
+        let commits: Vec<Value> = (0..project_map::MAX_COMMITS).map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]})).collect();
         let modules = json!([
             {"path": "src/old.rs", "loc": 30},
             {"path": "src/registry.rs", "loc": 30},
@@ -1275,18 +1176,11 @@ mod tests {
     /// A passada falsa da história: grava no mapa em `out` a de `file`,
     /// seguindo `moves` mudanças, como a de verdade: três commits que mudaram
     /// o registro junto com ele.
-    fn three_commits_with_the_registry(
-        out: &Path,
-        file: &str,
-        moves: usize,
-    ) -> mustard_core::platform::error::Result<HistoryReport> {
+    fn three_commits_with_the_registry(out: &Path, file: &str, moves: usize) -> mustard_core::platform::error::Result<HistoryReport> {
         let mark = store::read_for_at(out, Need::Lineage(file)).unwrap().census_mark;
         let commit = |id: &str| LineageCommit {
             id: id.to_string(),
-            files: project_map::CommitFiles {
-                changed: vec![file.to_string(), "src/registry.rs".to_string()],
-                ..Default::default()
-            },
+            files: project_map::CommitFiles { changed: vec![file.to_string(), "src/registry.rs".to_string()], ..Default::default() },
             ..LineageCommit::default()
         };
         let lineage = FileLineage {
@@ -1345,18 +1239,13 @@ mod tests {
             three_commits_with_the_registry(out, file, moves)
         };
         let ask_in = |session: &str| {
-            let opts = MapOpts {
-                file: Some("src/old.rs".to_string()),
-                session: Some(session.to_string()),
-                ..ask(root, Question::Examples)
-            };
+            let opts = MapOpts { file: Some("src/old.rs".to_string()), session: Some(session.to_string()), ..ask(root, Question::Examples) };
             map_at(&opts, &|_, _| panic!("a map outside git is never read again"), &trace)
         };
         let report = ask_in("sessao-1");
         assert_eq!(*moved.borrow(), vec![project_map::MOVES_FOLLOWED], "{bad}: {report}");
         assert_eq!(report["recipe"]["commits"], json!(3), "{bad}: {report}");
-        let warnings: Vec<&str> =
-            report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let warnings: Vec<&str> = report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
         assert_eq!(warnings.len(), 1, "{bad}: {report}");
         assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
         assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
@@ -1473,7 +1362,8 @@ mod tests {
         ];
 
         let mut lines = vec![
-            r#"{"v":1,"id":1,"at":"2026-09-15T10:00:00-03:00","type":"wave","author":"assistant","n":1,"text":"A onda","criteria":[],"done_when":"passa"}"#.to_string(),
+            r#"{"v":1,"id":1,"at":"2026-09-15T10:00:00-03:00","type":"wave","author":"assistant","n":1,"text":"A onda","criteria":[],"done_when":"passa"}"#
+                .to_string(),
         ];
         for (n, (file, task, _, _)) in cases.iter().enumerate() {
             lines.push(format!(
@@ -1529,11 +1419,7 @@ mod tests {
         let piece = &report["pieces"][0];
         assert_eq!((&piece["path"], &piece["name"]), (&json!("src/consulta.rs"), &json!("carregar")), "{report}");
         assert_eq!((&piece["line"], &piece["end_line"]), (&json!(1), &json!(9)), "{report}");
-        assert_eq!(
-            piece["text"],
-            json!({"line": 4, "kind": "error", "value": "pedido não encontrado", "owner": "carregar"}),
-            "{report}"
-        );
+        assert_eq!(piece["text"], json!({"line": 4, "kind": "error", "value": "pedido não encontrado", "owner": "carregar"}), "{report}");
     }
 
     #[test]
@@ -1641,11 +1527,7 @@ mod tests {
     fn project_with_ids(blob: &str) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(
-            dir.path().join("src/ids.rs"),
-            "pub fn check_digits(number: &str) -> bool {\n    number.len() == 11\n}\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("src/ids.rs"), "pub fn check_digits(number: &str) -> bool {\n    number.len() == 11\n}\n").unwrap();
         std::fs::write(dir.path().join("mustard.json"), r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
         write_ids_map(dir.path(), blob);
         dir
@@ -2006,7 +1888,13 @@ mod tests {
             mark: String::new(),
             moves: u32::try_from(project_map::MOVES_FOLLOWED).unwrap(),
             commits: vec![
-                LineageCommit { id: "c3".to_string(), at: 259_200, title: "feat(pay): grava o pagamento (#4)".to_string(), pr: Some(4), ..LineageCommit::default() },
+                LineageCommit {
+                    id: "c3".to_string(),
+                    at: 259_200,
+                    title: "feat(pay): grava o pagamento (#4)".to_string(),
+                    pr: Some(4),
+                    ..LineageCommit::default()
+                },
                 LineageCommit { id: "c1".to_string(), at: 86_400, title: "formata".to_string(), pr: None, ..LineageCommit::default() },
             ],
             declarations: vec![DeclLineage {
@@ -2039,7 +1927,13 @@ mod tests {
             commits: ids
                 .iter()
                 .zip(0_i64..)
-                .map(|(id, age)| LineageCommit { id: id.clone(), at: 1_000_000 - age * 1_000, title: format!("muda {id}"), pr: None, ..LineageCommit::default() })
+                .map(|(id, age)| LineageCommit {
+                    id: id.clone(),
+                    at: 1_000_000 - age * 1_000,
+                    title: format!("muda {id}"),
+                    pr: None,
+                    ..LineageCommit::default()
+                })
                 .collect(),
             declarations: vec![DeclLineage {
                 name: "run".to_string(),
@@ -2134,8 +2028,7 @@ mod tests {
         let report = case.ask("sessao-1");
         assert_eq!(HistoryNumbers::shown(&report), project_map::DECL_COMMITS_SHOWN, "{bad}: {report}");
         assert!(case.traced.borrow().is_empty(), "{bad}: the default moves still count: {report}");
-        let warnings: Vec<&str> =
-            report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let warnings: Vec<&str> = report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
         assert_eq!(warnings.len(), 3, "{bad}: {report}");
         assert!(warnings[0].contains("map.historyMoves") && warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()));
         assert!(warnings[1].contains("map.historyCommits") && warnings[1].contains(&project_map::DECL_COMMITS_SHOWN.to_string()));
@@ -2158,13 +2051,10 @@ mod tests {
         let bad = "\"dez\"";
         let case = HistoryNumbers::new();
         case.config(&format!(r#"{{"map": {{"historyMoves": {bad}}}, "search": {{"filter": "none"}}}}"#));
-        let search = |session: &str| {
-            searched(&search_opts(case.dir.path(), "pay", None, Some(session)), &|_, _| panic!("the filter is off"))
-        };
+        let search = |session: &str| searched(&search_opts(case.dir.path(), "pay", None, Some(session)), &|_, _| panic!("the filter is off"));
         let report = search("sessao-1");
         assert_eq!(report["ok"], json!(true), "{bad}: {report}");
-        let warnings: Vec<&str> =
-            report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let warnings: Vec<&str> = report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
         assert_eq!(warnings.len(), 1, "{bad}: {report}");
         assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
         assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
@@ -2190,7 +2080,13 @@ mod tests {
         let dir = map_with_a_base_and_a_lineage();
         let model = store::model_path(dir.path());
         let path = "apps/rt/src/commands/pay/write.rs";
-        let commit = |id: &str, at: i64, title: &str, pr: Option<u32>| LineageCommit { id: id.to_string(), at, title: title.to_string(), pr, ..LineageCommit::default() };
+        let commit = |id: &str, at: i64, title: &str, pr: Option<u32>| LineageCommit {
+            id: id.to_string(),
+            at,
+            title: title.to_string(),
+            pr,
+            ..LineageCommit::default()
+        };
         let lineage = FileLineage {
             commits: vec![
                 commit("c3", 259_200, "feat(pay): grava o pagamento (#4)", Some(4)),
@@ -2275,23 +2171,24 @@ mod tests {
             let comments = store::pull_comments_at(out, file).unwrap();
             let mut lineage = write_rs_lineage();
             lineage.comments = u32::try_from(comments.len()).unwrap();
-            lineage.declarations[0].comments =
-                comments.iter().map(|c| DeclComment { pr: c.number, commit: c.commit.clone(), body: c.body.clone() }).collect();
+            lineage.declarations[0].comments = comments.iter().map(|c| DeclComment { pr: c.number, commit: c.commit.clone(), body: c.body.clone() }).collect();
             store::save_lineage_at(out, &lineage)?;
             Ok(HistoryReport::default())
         };
-        let opts = MapOpts {
-            file: Some("apps/rt/src/commands/pay/write.rs".to_string()),
-            name: Some("run".to_string()),
-            ..ask(dir.path(), Question::History)
-        };
+        let opts = MapOpts { file: Some("apps/rt/src/commands/pay/write.rs".to_string()), name: Some("run".to_string()), ..ask(dir.path(), Question::History) };
         let ask_now = || map_at(&opts, &|_, _| panic!("a map outside git is never read again"), &trace);
         let before = ask_now();
         assert_eq!(traced.get(), 0, "{before}");
         assert!(before["declarations"][0].get("comments").is_none(), "{before}");
 
         let text = PullText { number: 4, title: "Grava o pagamento".to_string(), ..PullText::default() };
-        let comment = PullComment { number: 4, commit: "c3".to_string(), path: "apps/rt/src/commands/pay/write.rs".to_string(), line: 2, body: "cuidado com o arredondamento".to_string() };
+        let comment = PullComment {
+            number: 4,
+            commit: "c3".to_string(),
+            path: "apps/rt/src/commands/pay/write.rs".to_string(),
+            line: 2,
+            body: "cuidado com o arredondamento".to_string(),
+        };
         store::save_pull_at(&model, &text, &[comment]).unwrap();
         let after = ask_now();
         assert_eq!(traced.get(), 1, "{after}");
@@ -2416,21 +2313,37 @@ mod tests {
             git(&["commit", "-q", "-m", title]);
         };
         git(&["init", "-q", "-b", "main"]);
-        std::fs::write(root.join(".git/info/exclude"), "mustard.json
+        std::fs::write(
+            root.join(".git/info/exclude"),
+            "mustard.json
 .claude/
-").unwrap();
+",
+        )
+        .unwrap();
         std::fs::write(root.join("mustard.json"), r#"{"git": {"flow": {"*": "main"}}}"#).unwrap();
-        let write_source = |n: u32| format!("pub fn gravar() -> u32 {{
+        let write_source = |n: u32| {
+            format!(
+                "pub fn gravar() -> u32 {{
     {n}
 }}
-");
+"
+            )
+        };
         commit("src/a.rs", &write_source(1), "feat(a): cria o gravar");
-        commit("src/b.rs", "pub fn ler() -> u32 {
+        commit(
+            "src/b.rs",
+            "pub fn ler() -> u32 {
     1
 }
-", "cria o ler");
-        commit("src/c.rs", "pub fn gravar() {}
-", "outro gravar");
+",
+            "cria o ler",
+        );
+        commit(
+            "src/c.rs",
+            "pub fn gravar() {}
+",
+            "outro gravar",
+        );
         commit("src/a.rs", &write_source(2), "fix(a): corrige o gravar (#5)");
         commit("src/a.rs", &write_source(3), "muda o gravar de novo");
         scan.scan(root, &store::model_path(root)).expect("the first pass writes the map");
@@ -2443,18 +2356,10 @@ mod tests {
             traces.set(traces.get() + 1);
             scan.history(root, out, file, moves)
         };
-        let question = |file: Option<&str>, name: &str| MapOpts {
-            file: file.map(str::to_string),
-            name: Some(name.to_string()),
-            ..ask(root, Question::History)
-        };
+        let question =
+            |file: Option<&str>, name: &str| MapOpts { file: file.map(str::to_string), name: Some(name.to_string()), ..ask(root, Question::History) };
         let lines = |report: &Value| -> Vec<String> {
-            report["declarations"][0]["commits"]
-                .as_array()
-                .unwrap_or(&Vec::new())
-                .iter()
-                .map(|line| line.as_str().unwrap_or_default().to_string())
-                .collect()
+            report["declarations"][0]["commits"].as_array().unwrap_or(&Vec::new()).iter().map(|line| line.as_str().unwrap_or_default().to_string()).collect()
         };
 
         let report = map_at(&question(Some("src/a.rs"), "gravar"), &mine, &trace);
@@ -2585,10 +2490,7 @@ mod tests {
         };
         let links = refund_links(root, &failing);
         assert_eq!(*traced.borrow(), ["apps/rt/src/commands/pay/index.rs"]);
-        assert_eq!(
-            links,
-            json!(["apps/rt/src/commands/pay/write.rs:run", "apps/rt/src/commands/pay/index.rs", "src/sumiu.rs"])
-        );
+        assert_eq!(links, json!(["apps/rt/src/commands/pay/write.rs:run", "apps/rt/src/commands/pay/index.rs", "src/sumiu.rs"]));
 
         let dir = tempdir().unwrap();
         store::write_text(dir.path(), EVERY_PART).unwrap();
@@ -2772,8 +2674,7 @@ mod tests {
         opts.file = Some("apps/rt/src/commands/pay/write.rs".to_string());
         opts.name = Some("run".to_string());
         let report = answered(&opts);
-        let lines: Vec<&str> =
-            report["declarations"][0]["commits"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+        let lines: Vec<&str> = report["declarations"][0]["commits"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
         let note = mustard_core::translate("map.history.spec", Locale::default())
             .replace("{spec}", "obra")
             .replace("{code}", "MSTD-DEC-0001")
@@ -2832,7 +2733,9 @@ mod tests {
     fn search_project(map: &str, search: &Value) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         store::write_text(dir.path(), map).unwrap();
-        let config = json!({"language": {"text": "pt-BR", "code": "pt-BR"}, "search": search});
+        let mut search = search.clone();
+        search.as_object_mut().unwrap().entry("filter").or_insert(json!("jev"));
+        let config = json!({"ai":{"fallback":true},"language": {"text": "pt-BR", "code": "pt-BR"}, "search": search});
         std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
         dir
     }
@@ -2854,12 +2757,7 @@ mod tests {
     }
 
     fn search_opts(root: &Path, query: &str, intent: Option<&str>, session: Option<&str>) -> MapOpts {
-        MapOpts {
-            query: Some(query.to_string()),
-            intent: intent.map(str::to_string),
-            session: session.map(str::to_string),
-            ..ask(root, Question::Search)
-        }
+        MapOpts { query: Some(query.to_string()), intent: intent.map(str::to_string), session: session.map(str::to_string), ..ask(root, Question::Search) }
     }
 
     /// A resposta da busca com a montagem `assemble` no lugar da chave do
@@ -2918,6 +2816,7 @@ mod tests {
                 .map(|(candidate, &score)| mustard_core::domain::map_filter::Scored { id: candidate.id, score })
                 .collect();
             let usage = mustard_core::domain::map_filter::FilterUsage {
+                incomplete: false,
                 input_tokens: 21_000,
                 millis: 40,
                 cost_micro_usd: 882,
@@ -2953,10 +2852,7 @@ mod tests {
         /// A montagem com a chave achada no projeto como a busca de verdade a
         /// acha, com `env` no lugar do ambiente de quem roda o teste e este
         /// filtro no lugar do serviço.
-        fn assemble_from_the_project(
-            &self,
-            env: Option<&'static str>,
-        ) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+        fn assemble_from_the_project(&self, env: Option<&'static str>) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
             move |root, config| {
                 let loaded = crate::shared::jev::key_in(root, config, env.map(str::to_string))?;
                 Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: loaded.warning })
@@ -2991,10 +2887,7 @@ mod tests {
         assert_eq!(without(&first, "warnings"), bank, "{first}");
         assert_eq!(searched(&opts, &fake.assemble_from_the_project(None)), bank, "the same session is not warned again");
         let with_intent = search_opts(dir.path(), "pedido", Some("onde avisa o cliente"), Some("sessao-sem-chave"));
-        assert_eq!(
-            searched(&with_intent, &fake.assemble_from_the_project(None)),
-            bank_answer_with(dir.path(), "pedido", "onde avisa o cliente")
-        );
+        assert_eq!(searched(&with_intent, &fake.assemble_from_the_project(None)), bank_answer_with(dir.path(), "pedido", "onde avisa o cliente"));
         assert_eq!(fake.calls(), 0);
 
         let off = search_project(FILTER_MAP, &json!({"filter": "none"}));
@@ -3104,8 +2997,7 @@ mod tests {
         }
         let opts = search_opts(dir.path(), "timestamp", intent, Some("sessao-ordem"));
         let answer = searched(&opts, &fake.assemble_from_the_project(None));
-        let answered: Vec<String> =
-            answer["files"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect();
+        let answered: Vec<String> = answer["files"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect();
         assert_eq!(sent, answered, "{answer}");
         assert_eq!(sent, ["src/relogio.rs", "src/notas.rs"]);
     }
@@ -3224,6 +3116,7 @@ mod tests {
     fn only_the_search_question_assembles_the_filter() {
         let dir = tempdir().unwrap();
         store::write_text(dir.path(), EVERY_PART).unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"fallback":true},"search":{"filter":"jev"}}"#).unwrap();
         let assembled = std::cell::Cell::new(0);
         let counting = |_: &Path, _: &mustard_core::ProjectConfig| {
             assembled.set(assembled.get() + 1);
@@ -3257,10 +3150,8 @@ mod tests {
         assert_eq!(sent(json!({"candidates": 5})), (120, Value::Null));
     }
 
-    /// A busca por assunto manda ao filtro, em cada candidato, a história
-    /// inteira que o mapa guarda: os 30 commits que mudaram a função e o
-    /// comentário de revisão de 500 letras, sem corte; a função sem história
-    /// vai sem ela.
+    /// Current-code search omits unrelated history. An explicit why question
+    /// receives the complete relevant history, without a top-K truncation.
     #[test]
     fn the_search_hands_the_filter_the_whole_history_of_each_candidate() {
         let dir = search_project(FILTER_MAP, &json!({}));
@@ -3284,6 +3175,12 @@ mod tests {
         let fake = FakeFilter::scoring(&[0.9]);
         searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
 
+        assert!(
+            fake.last().candidates.iter().all(|candidate| candidate.commits.is_empty() && candidate.reviews.is_empty()),
+            "location alone does not ship historical evidence"
+        );
+        searched(&search_opts(dir.path(), "pedido", Some("por que o pedido é gravado assim"), None), &fake.assemble());
+
         let sent = fake.last().candidates;
         let saved = sent.iter().find(|candidate| candidate.name == "gravar_pedido").expect("the candidate is sent");
         assert_eq!(saved.commits.len(), 30, "{:?}", saved.commits);
@@ -3299,10 +3196,7 @@ mod tests {
     fn the_cut_settings_go_in_the_request() {
         use mustard_core::domain::map_filter::CutRule;
         type CutSetting = (&'static str, u32, f64, u32, fn(&CutRule) -> f64);
-        let settings: [CutSetting; 2] = [
-            ("cut_share", 25, 0.25, 10, |cut| cut.share),
-            ("exists_from", 70, 0.70, 50, |cut| cut.exists_from),
-        ];
+        let settings: [CutSetting; 2] = [("cut_share", 25, 0.25, 10, |cut| cut.share), ("exists_from", 70, 0.70, 50, |cut| cut.exists_from)];
         for (key, points, written, default_points, pick) in settings {
             let sent = |search: Value| {
                 let dir = search_project(FILTER_MAP, &search);
@@ -3313,9 +3207,7 @@ mod tests {
             let default = f64::from(default_points) / 100.0;
             assert_eq!(sent(json!({})), (default, Value::Null), "{key}");
             assert_eq!(sent(json!({ key: points })), (written, Value::Null), "{key}");
-            let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
-                .replace("{key}", key)
-                .replace("{default}", &default_points.to_string());
+            let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr).replace("{key}", key).replace("{default}", &default_points.to_string());
             assert_eq!(sent(json!({ key: 0 })), (default, json!([warned])), "{key}");
         }
     }
@@ -3368,9 +3260,8 @@ mod tests {
             let fake = FakeFilter::scoring(&notes);
             searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble())
         };
-        let names = |report: &Value| -> Vec<String> {
-            report["pieces"].as_array().unwrap().iter().map(|piece| piece["name"].as_str().unwrap().to_string()).collect()
-        };
+        let names =
+            |report: &Value| -> Vec<String> { report["pieces"].as_array().unwrap().iter().map(|piece| piece["name"].as_str().unwrap().to_string()).collect() };
         let whole = answered_with(json!({}));
         assert_eq!(names(&whole).len(), 12, "{whole}");
         assert!(whole.get("warnings").is_none(), "{whole}");
@@ -3450,9 +3341,7 @@ mod tests {
         use mustard_core::domain::spec_state::SpecState;
         crate::shared::spec_state::DiskSpecState::new(root)
             .log(spec)
-            .map(|log| {
-                log.visible().into_iter().filter(|e| e.event_type == "call").map(|e| e.fields.clone()).collect()
-            })
+            .map(|log| log.visible().into_iter().filter(|e| e.event_type == "call").map(|e| e.fields.clone()).collect())
             .unwrap_or_default()
     }
 
@@ -3556,6 +3445,8 @@ mod tests {
         let path = root.join("mustard.json");
         let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         config["jev"] = json!({"key": PROJECT_KEY});
+        config["ai"] = json!({"fallback": true});
+        config.as_object_mut().unwrap().entry("search").or_insert_with(|| json!({}))["filter"] = json!("jev");
         std::fs::write(&path, config.to_string()).unwrap();
     }
 
@@ -3712,8 +3603,7 @@ mod tests {
                     .unwrap();
                 assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
             };
-            std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR", "code": "pt-BR"}}).to_string())
-                .unwrap();
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR", "code": "pt-BR"}}).to_string()).unwrap();
             git(&["init", "-q"]);
             git(&["add", "-A"]);
             git(&["commit", "-q", "-m", "semente"]);
@@ -3757,6 +3647,7 @@ mod tests {
     fn declarations_emptied_by_a_format_change_are_read_again_and_the_search_sends_all_its_candidates() {
         let (dir, map) = scanned_repo(&many_orders(120));
         let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"ai":{"fallback":true},"search":{"filter":"jev"}}"#).unwrap();
         opened_by_an_older_scan(root);
         let passes = std::cell::Cell::new(0);
         let same_build = |root: &Path, _: &Path| {
@@ -3854,23 +3745,14 @@ mod tests {
         let root = dir.path();
         let copies = tempdir().unwrap();
         let copy = copies.path().join("c");
-        let out = std::process::Command::new("git")
-            .args(["worktree", "add", "-q", "-b", "onda"])
-            .arg(&copy)
-            .current_dir(root)
-            .output()
-            .unwrap();
+        let out = std::process::Command::new("git").args(["worktree", "add", "-q", "-b", "onda"]).arg(&copy).current_dir(root).output().unwrap();
         assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
         let rescan = |root: &Path, _: &Path| {
             written_by_the_scan(root, &map);
             Ok(ScanReport::default())
         };
         let slice_from = |start: &Path, name: &str| {
-            let opts = MapOpts {
-                file: Some("src/pedido.rs".to_string()),
-                name: Some(name.to_string()),
-                ..ask(start, Question::Slice)
-            };
+            let opts = MapOpts { file: Some("src/pedido.rs".to_string()), name: Some(name.to_string()), ..ask(start, Question::Slice) };
             super::map_at(&opts, &rescan, &no_history, &|_, _| Err(FilterError::MissingKey))
         };
         let declaration = "pub fn gravar_pedido(pedido: &Pedido) {\n    banco::gravar(pedido);\n}";
@@ -3911,35 +3793,22 @@ mod tests {
         let root = dir.path();
         let copies = tempdir().unwrap();
         let copy = copies.path().join("c");
-        let out = std::process::Command::new("git")
-            .args(["worktree", "add", "-q", "-b", "onda"])
-            .arg(&copy)
-            .current_dir(root)
-            .output()
-            .unwrap();
+        let out = std::process::Command::new("git").args(["worktree", "add", "-q", "-b", "onda"]).arg(&copy).current_dir(root).output().unwrap();
         assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
         let rescan = |root: &Path, _: &Path| {
             written_by_the_scan(root, &map);
             Ok(ScanReport::default())
         };
         let refusal_from = |start: &Path| {
-            let opts = MapOpts {
-                file: Some("src/pedido.rs".to_string()),
-                name: Some("gravar_pedido".to_string()),
-                ..ask(start, Question::Slice)
-            };
+            let opts = MapOpts { file: Some("src/pedido.rs".to_string()), name: Some("gravar_pedido".to_string()), ..ask(start, Question::Slice) };
             let report = super::map_at(&opts, &rescan, &no_history, &|_, _| Err(FilterError::MissingKey));
             assert_eq!(report["reason"], json!("changed-in-copy"), "{report}");
             report["hint"].as_str().unwrap().to_string()
         };
         let said = |key: &str, slots: &[(&str, &str)]| {
-            slots.iter().fold(mustard_core::translate(key, Locale::PtBr).to_string(), |text, (slot, value)| {
-                text.replace(slot, value)
-            })
+            slots.iter().fold(mustard_core::translate(key, Locale::PtBr).to_string(), |text, (slot, value)| text.replace(slot, value))
         };
-        let slots = |extra: &[(&'static str, &'static str)]| {
-            [&[("{name}", "gravar_pedido"), ("{file}", "src/pedido.rs")][..], extra].concat()
-        };
+        let slots = |extra: &[(&'static str, &'static str)]| [&[("{name}", "gravar_pedido"), ("{file}", "src/pedido.rs")][..], extra].concat();
         let file = copy.join("src/pedido.rs");
 
         let changed = ORDER_FILE.replace("banco::gravar(pedido);", "banco::gravar(pedido)?;");
@@ -3967,12 +3836,7 @@ mod tests {
         let root = dir.path();
         let copies = tempdir().unwrap();
         let copy = copies.path().join("c");
-        let out = std::process::Command::new("git")
-            .args(["worktree", "add", "-q", "-b", "onda"])
-            .arg(&copy)
-            .current_dir(root)
-            .output()
-            .unwrap();
+        let out = std::process::Command::new("git").args(["worktree", "add", "-q", "-b", "onda"]).arg(&copy).current_dir(root).output().unwrap();
         assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
         let rescan = |root: &Path, _: &Path| {
             written_by_the_scan(root, &map);
@@ -3990,8 +3854,7 @@ mod tests {
         std::fs::write(&file, format!("use banco;\nuse pedido::Pedido;\n{ORDER_FILE}")).unwrap();
         assert_eq!(parts_from(&copy.join("src")), [r#""gravar_pedido" 5-7"#, r#""cancelar_pedido" 9-9"#]);
 
-        let grown = ORDER_FILE
-            .replace("    banco::gravar(pedido);\n", "    let feito = banco::gravar(pedido);\n    avisar(feito);\n");
+        let grown = ORDER_FILE.replace("    banco::gravar(pedido);\n", "    let feito = banco::gravar(pedido);\n    avisar(feito);\n");
         std::fs::write(&file, format!("use banco;\n{grown}")).unwrap();
         assert_eq!(parts_from(&copy), [r#""gravar_pedido" 4-7"#, r#""cancelar_pedido" 9-9"#]);
 
@@ -4001,294 +3864,124 @@ mod tests {
         assert_eq!(parts_from(root), [r#""gravar_pedido" 3-5"#, r#""cancelar_pedido" 7-7"#]);
     }
 
-    /// A busca com o texto do `Grep`: o comando dá a resposta que o gancho da
-    /// busca dá à ferramenta e ao terminal com o mesmo texto.
+    /// Native gateway compatibility spelling: preserve source search, not old filters.
     mod the_text_of_grep {
         use super::*;
         use crate::shared::word_search::fixture;
         use mustard_core::domain::model::contract::{HookInput, Trigger, Verdict as Hooked};
-        use mustard_core::platform::i18n::translate;
 
-        /// O projeto sem filtro: a resposta parcial sai só da triagem, e nenhum
-        /// aviso de chave entra nela.
-        const CONFIG: &str = r#"{"search":{"filter":"none"}}"#;
-
-        const INSTALLMENTS: &str = "export function splitInstallments(total: number, count: number) {\n  // divide o total em parcela iguais\n  return Array.from({ length: count }, () => total / count);\n}\n\nexport function payInstallment(value: number) {\n  return value;\n}\n";
-
-        /// O projeto das parcelas: uma função de nome em inglês, com a palavra
-        /// `parcela` só num comentário, e uma nota fora do mapa.
-        fn installments() -> (tempfile::TempDir, PathBuf) {
-            let map = json!({ "modules": [{
-                "path": "src/parcelas.ts", "language": "typescript", "loc": 8,
-                "declarations": [
-                    { "kind": "function", "name": "splitInstallments", "line": 1, "end_line": 4,
-                      "signature": "export function splitInstallments(total: number, count: number)",
-                      "body_comment": "divide o total em parcela iguais" },
-                    { "kind": "function", "name": "payInstallment", "line": 6, "end_line": 8 }
-                ]
-            }] });
-            fixture::repo_with(CONFIG, &[("src/parcelas.ts", INSTALLMENTS), ("docs/notas.md", "As parcela do pedido.\n")], map)
-        }
-
-        /// O texto que o gancho dá à chamada da ferramenta `tool`, na sessão
-        /// `session`: o motivo da recusa ou a linha que segue a busca; `None`
-        /// quando a busca passa calada.
-        fn hooked(root: &Path, tool: &str, tool_input: Value, session: &str) -> Option<String> {
-            let input = HookInput {
-                tool_name: Some(tool.to_string()),
-                tool_input,
-                hook_event_name: Some("PreToolUse".to_string()),
-                cwd: Some(root.to_string_lossy().into_owned()),
-                session_id: Some(session.to_string()),
-                ..HookInput::default()
-            };
+        fn hooked(root: &Path, input: Value) -> String {
+            let input = HookInput { tool_name: Some("Grep".into()), tool_input: input,
+                hook_event_name: Some("PreToolUse".into()), cwd: Some(root.to_string_lossy().into_owned()),
+                session_id: Some("native-gateway".into()), ..HookInput::default() };
             match crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict {
-                Hooked::Deny { reason } => Some(reason),
-                Hooked::Inject { context } => Some(context),
-                _ => None,
+                Hooked::Deny { reason } => reason,
+                other => panic!("Expected gateway handoff, got {other:?}"),
             }
         }
-
-        /// A resposta do comando `run map search` ao texto `grep`.
-        fn asked(root: &Path, grep: GrepSearch) -> Value {
-            let opts = MapOpts { grep: Some(grep), session: Some("s-comando".to_string()), ..ask(root, Question::Search) };
-            map_at(&opts, &|_, _| Ok(ScanReport::default()), &|_, _, _, _| {
-                panic!("a search with the text of Grep never reads a history")
-            })
-        }
-
         fn pattern(text: &str) -> GrepSearch {
-            GrepSearch { pattern: text.to_string(), ..GrepSearch::default() }
+            GrepSearch { pattern: text.into(), ..GrepSearch::default() }
         }
-
-        /// O que o comando diz da busca que o mapa não responde.
-        fn nothing_to_say() -> String {
-            translate("map.search.pass", Locale::PtBr).to_string()
+        fn asked(root: &Path, grep: GrepSearch) -> Value {
+            let opts = MapOpts { grep: Some(grep), ..ask(root, Question::Search) };
+            map_at(&opts, &|_, _| panic!("gateway owns native refresh"), &no_history)
         }
+        fn stdout(report: &Value) -> &str { report["result"]["stdout"].as_str().unwrap() }
 
-        /// `run map search` com o padrão `splitInstallments|parcela` dá a
-        /// mesma resposta que o gancho dá ao `Grep` com esse padrão: as
-        /// funções do mapa com as linhas achadas, e não o texto em JSON.
         #[test]
-        fn the_command_answers_the_pattern_like_the_hook_answers_grep() {
-            let text = "splitInstallments|parcela";
-            let (_for_hook, hook_root) = installments();
-            let (_for_command, command_root) = installments();
-            let from_hook = hooked(&hook_root, "Grep", json!({ "pattern": text, "output_mode": "content" }), "s-gancho")
-                .expect("the hook answers this search");
-            assert!(from_hook.contains("src/parcelas.ts") && from_hook.contains("splitInstallments"), "{from_hook}");
-
-            let report = asked(&command_root, pattern(text));
-
-            assert_eq!(report["ok"], json!(true), "{report}");
-            assert_eq!(report["question"], json!("search"), "{report}");
-            assert_eq!(report["answer"], json!(from_hook));
-        }
-
-        /// `--described` e `--said` do `run map search` com o texto do `Grep`
-        /// chegam ao filtro que julga a busca parcial, aparados.
-        #[test]
-        fn the_description_and_the_speech_of_the_command_reach_the_filter_for_the_text_of_grep() {
+        fn original_grep_request_routes_without_reinterpreting_its_pattern() {
             let (_dir, root) = fixture::repo("{}");
-            let fake = FakeFilter::scoring(&[0.9, 0.05]);
-            let opts = MapOpts {
-                grep: Some(pattern("imposto")),
-                described: Some(" Procura o imposto ".to_string()),
-                said: Some(" Vou olhar o imposto. ".to_string()),
-                session: Some("s-descrito".to_string()),
-                ..ask(&root, Question::Search)
-            };
-            crate::commands::map::map_at(
-                &opts,
-                &|_, _| Ok(ScanReport::default()),
-                &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
-                &fake.assemble(),
-            );
-            assert_eq!(fake.calls(), 1);
-            let asked = fake.last();
-            assert_eq!(asked.described, "Procura o imposto");
-            assert_eq!(asked.said, "Vou olhar o imposto.");
+            let input=json!({"pattern":"calcular_frete|imposto","output_mode":"content","-i":true});
+            let reason=hooked(&root,input.clone());
+            assert!(reason.contains("mcp__mustard__search"));
+            assert!(reason.contains(&input.to_string()));
+            let report=asked(&root,pattern("calcular_frete|imposto"));
+            assert_eq!(report["ok"],true);
+            assert!(stdout(&report).contains("calcular_frete"));
+            assert!(stdout(&report).contains("imposto"));
         }
-
-        /// A pasta e o glob do `run map search` com o texto do `Grep` valem
-        /// também para o filtro: ele recebe só os candidatos da pasta e dos
-        /// arquivos do tipo pedido, e a busca sem pasta nem glob manda os do
-        /// projeto inteiro.
         #[test]
-        fn the_folder_and_the_glob_of_the_command_limit_the_candidates_the_filter_is_asked() {
-            let (_dir, root) = crate::shared::word_search::scoped::project();
-            let fake = FakeFilter::scoring(&[0.9, 0.05]);
-            let by_command = |grep: GrepSearch| {
-                let opts = MapOpts { grep: Some(grep), session: Some("s-pasta".to_string()), ..ask(&root, Question::Search) };
-                crate::commands::map::map_at(
-                    &opts,
-                    &|_, _| Ok(ScanReport::default()),
-                    &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
-                    &fake.assemble(),
-                );
-                let mut paths: Vec<String> = fake.last().candidates.into_iter().map(|candidate| candidate.path).collect();
-                paths.sort();
-                paths
-            };
-
-            let narrowed = GrepSearch { folder: Some(PathBuf::from("src/frete")), glob: Some("*.rs".to_string()), ..pattern("imposto") };
-            assert_eq!(by_command(narrowed), ["src/frete/calculo.rs", "src/frete/tabela.rs"]);
-            let in_folder = GrepSearch { folder: Some(PathBuf::from("src/pedido")), ..pattern("imposto") };
-            assert_eq!(by_command(in_folder), ["src/pedido/recibo.rs", "src/pedido/total.rs"]);
-            assert_eq!(by_command(pattern("imposto")).len(), 5, "without a folder or a glob the whole project is asked");
+        fn intention_is_transported_without_invoking_the_retired_literal_filter() {
+            let (_dir, root)=fixture::repo("{}");
+            let fake=FakeFilter::scoring(&[0.9,0.05]);
+            let opts=MapOpts {grep:Some(pattern("imposto")),intent:Some("inspect tax persistence".into()),
+                described:Some("older description".into()),said:Some("older speech".into()),..ask(&root,Question::Search)};
+            let report=super::super::map_at(&opts,&|_,_|panic!("native refresh"),&no_history,&fake.assemble());
+            assert_eq!(report["intent"],"inspect tax persistence");
+            assert_eq!(fake.calls(),0);
+            assert!(stdout(&report).contains("imposto"));
+            assert_eq!(report["remote_model_calls"],0);
         }
-
-        /// O `run map search` com o texto do `Grep`, numa spec aberta, grava a
-        /// chamada `word search` da busca parcial que o filtro julga: o
-        /// comando, o resultado, o filtro, os tokens e o que voltou. A busca
-        /// cravada, que responde sem o filtro, não grava.
         #[test]
-        fn the_command_records_the_word_search_call_of_a_partial_search_in_an_open_spec() {
-            let (_dir, root) = fixture::repo("{}");
-            crate::shared::spec_state::stand_on_spec_branch(&root, "busca-por-texto");
-            crate::commands::spec_events::write::record_open(&root, "busca-por-texto", "feature/busca-por-texto", "dev")
-                .unwrap();
-            let fake = FakeFilter::scoring(&[0.9, 0.05]);
-            let by_command = |text: &str| {
-                let opts = MapOpts {
-                    grep: Some(pattern(text)),
-                    session: Some("s-comando".to_string()),
-                    ..ask(&root, Question::Search)
-                };
-                crate::commands::map::map_at(
-                    &opts,
-                    &|_, _| Ok(ScanReport::default()),
-                    &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
-                    &fake.assemble(),
-                )
-            };
-
-            let report = by_command("imposto");
-            assert_eq!(report["ok"], json!(true), "{report}");
-            assert_eq!(fake.calls(), 1, "the partial search asks the filter: {report}");
-            let calls = calls_of(&root, "busca-por-texto");
-            assert_eq!(calls.len(), 1, "{calls:?}");
-            let call = &calls[0];
-            assert_eq!(call["command"], json!("word search"));
-            assert_eq!(call["result"], json!("ok"));
-            assert_eq!(
-                [&call["filter"], &call["tokens"], &call["cost_micro_usd"], &call["candidates"], &call["returned"]],
-                [&json!("jev"), &json!(21_000), &json!(882), &json!(2), &json!(1)]
-            );
-
-            by_command("fechar_pedido");
-            assert_eq!(fake.calls(), 1, "a pinned search never reaches the filter");
-            assert_eq!(calls_of(&root, "busca-por-texto").len(), 1, "a pinned search records no call");
+        fn folder_and_glob_restrict_actual_hits_without_a_filter_call() {
+            let (_dir,root)=crate::shared::word_search::scoped::project();
+            let report=asked(&root,GrepSearch{folder:Some("src/frete".into()),glob:Some("*.rs".into()),..pattern("imposto")});
+            // Native rg uses the host's separators; only the assertion's path
+            // spelling is normalized, never the gateway's native response.
+            let text=stdout(&report).replace('\\',"/");
+            assert!(text.contains("src/frete/calculo.rs"));
+            assert!(text.contains("src/frete/tabela.rs"));
+            assert!(!text.contains("src/pedido/"));
+            assert!(!text.contains("docs/"));
+            let all=asked(&root,pattern("imposto"));
+            assert!(stdout(&all).replace('\\',"/").contains("src/pedido/"));
         }
-
-        /// A pasta, o `-i`, o `--glob` e o `--type` do comando chegam à busca
-        /// como chegam pelo `Grep`; o `-w` e o `-F`, como chegam pelo
-        /// `grep` do terminal. O comando responde a busca que o gancho
-        /// deixa passar com a linha que diz que o mapa não a responde.
         #[test]
-        fn the_options_reach_the_search_as_they_reach_the_hook() {
-            let (_dir, root) = fixture::repo(CONFIG);
-            let src = root.join("src").to_string_lossy().into_owned();
-            let cases: Vec<(&str, GrepSearch, (&str, Value))> = vec![
-                (
-                    "a folder",
-                    GrepSearch { folder: Some(PathBuf::from("src")), ..pattern("calcular_frete") },
-                    ("Grep", json!({ "pattern": "calcular_frete", "path": src, "output_mode": "content" })),
-                ),
-                (
-                    "ignore case",
-                    GrepSearch { ignore_case: true, ..pattern("CALCULAR_FRETE") },
-                    ("Grep", json!({ "pattern": "CALCULAR_FRETE", "-i": true, "output_mode": "content" })),
-                ),
-                (
-                    "a glob of the mapped code",
-                    GrepSearch { glob: Some("*.rs".to_string()), ..pattern("desconto_frete") },
-                    ("Grep", json!({ "pattern": "desconto_frete", "glob": "*.rs", "output_mode": "content" })),
-                ),
-                (
-                    "a glob that leaves the mapped code out",
-                    GrepSearch { glob: Some("!*.rs".to_string()), ..pattern("desconto_frete") },
-                    ("Grep", json!({ "pattern": "desconto_frete", "glob": "!*.rs", "output_mode": "content" })),
-                ),
-                (
-                    "a type",
-                    GrepSearch { kind: Some("rust".to_string()), ..pattern("fechar_pedido") },
-                    ("Grep", json!({ "pattern": "fechar_pedido", "type": "rust", "output_mode": "content" })),
-                ),
-                (
-                    "a type the reading does not know",
-                    GrepSearch { kind: Some("cobol".to_string()), ..pattern("fechar_pedido") },
-                    ("Grep", json!({ "pattern": "fechar_pedido", "type": "cobol", "output_mode": "content" })),
-                ),
-                (
-                    "whole words",
-                    GrepSearch { whole_word: true, ..pattern("calcular_frete") },
-                    ("Bash", json!({ "command": "grep -rnw calcular_frete ." })),
-                ),
-                (
-                    "plain text",
-                    GrepSearch { fixed: true, ..pattern("calcular_frete") },
-                    ("Bash", json!({ "command": "grep -rnF calcular_frete ." })),
-                ),
-                (
-                    "plain text with a bar",
-                    GrepSearch { fixed: true, ..pattern("calcular_frete|desconto_frete") },
-                    ("Bash", json!({ "command": "grep -rnF 'calcular_frete|desconto_frete' ." })),
-                ),
-            ];
-            for (n, (what, grep, (tool, tool_input))) in cases.into_iter().enumerate() {
-                let expected = hooked(&root, tool, tool_input, &format!("s-gancho-{n}")).unwrap_or_else(nothing_to_say);
-                let report = asked(&root, grep);
-                assert_eq!(report["answer"], json!(expected), "{what}: {report}");
+        fn ordinary_partial_search_does_not_record_an_inference_in_the_open_spec() {
+            let (_dir,root)=fixture::repo("{}");
+            crate::shared::spec_state::stand_on_spec_branch(&root,"busca-por-texto");
+            crate::commands::spec_events::write::record_open(&root,"busca-por-texto","feature/busca-por-texto","dev").unwrap();
+            let report=asked(&root,pattern("imposto"));
+            assert_eq!(report["remote_model_calls"],0);
+            assert!(calls_of(&root,"busca-por-texto").is_empty());
+            assert!(report["learning"]["new_facts"].as_u64().unwrap()>0);
+        }
+        #[test]
+        fn flags_have_native_regex_literal_case_type_and_error_semantics() {
+            let (_dir,root)=fixture::repo("{}");
+            for grep in [GrepSearch{ignore_case:true,..pattern("CALCULAR_FRETE")},
+                GrepSearch{whole_word:true,..pattern("calcular_frete")},
+                GrepSearch{kind:Some("rust".into()),..pattern("calcular_frete")}] {
+                let report=asked(&root,grep);
+                assert_eq!(report["exit_code"],0,"{report}");
+                assert!(stdout(&report).contains("calcular_frete"));
             }
-            // Os casos que passam não são o de sempre: pelo menos a pasta e o
-            // `--glob` do código do mapa trazem a resposta por função.
-            let plain = asked(&root, pattern("calcular_frete"));
-            assert!(plain["answer"].as_str().unwrap().contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{plain}");
-            let none = asked(&root, GrepSearch { glob: Some("!*.rs".to_string()), ..pattern("desconto_frete") });
-            assert_eq!(none["answer"], json!(nothing_to_say()), "{none}");
-            // O `-F` lê a barra como texto: o mesmo padrão, sem ele, lê as duas
-            // alternativas e acha; com ele, o mapa não tem o texto.
-            let either = asked(&root, pattern("calcular_frete|desconto_frete"));
-            let literal = asked(&root, GrepSearch { fixed: true, ..pattern("calcular_frete|desconto_frete") });
-            let found = either["answer"].as_str().unwrap();
-            assert!(found.contains("calcular_frete (2)") && found.contains("desconto_frete (8)"), "{either}");
-            assert_ne!(either["answer"], literal["answer"], "{literal}");
+            let regex=asked(&root,pattern("calcular_frete|desconto_frete"));
+            let literal=asked(&root,GrepSearch{fixed:true,..pattern("calcular_frete|desconto_frete")});
+            assert!(stdout(&regex).contains("calcular_frete"));
+            assert!(stdout(&regex).contains("desconto_frete"));
+            assert_eq!(literal["exit_code"],1);
+            assert_eq!(stdout(&literal),"");
+            let unsupported=asked(&root,GrepSearch{kind:Some("unknown-fixture-type".into()),..pattern("calcular_frete")});
+            assert_eq!(unsupported["ok"],false);
+            assert_eq!(unsupported["exit_code"],2);
+            assert!(!unsupported["result"]["stderr"].as_str().unwrap().is_empty());
         }
-
-        /// A mesma busca, pedida duas vezes, recebe a resposta nas duas: o
-        /// comando não guarda a busca respondida, como o gancho guarda.
         #[test]
-        fn the_same_search_asked_twice_is_answered_twice() {
-            let (_dir, root) = fixture::repo(CONFIG);
-            let first = asked(&root, pattern("calcular_frete"));
-            let second = asked(&root, pattern("calcular_frete"));
-            assert!(first["answer"].as_str().unwrap().starts_with("Cravado."), "{first}");
-            assert_eq!(first["answer"], second["answer"]);
-            let hook = hooked(&root, "Grep", json!({ "pattern": "calcular_frete", "output_mode": "content" }), "s-gancho");
-            let again = hooked(&root, "Grep", json!({ "pattern": "calcular_frete", "output_mode": "content" }), "s-gancho");
-            assert!(hook.is_some() && again.is_none(), "the hook answers once per session: {hook:?} {again:?}");
+        fn repeated_searches_keep_results_and_reuse_verified_facts() {
+            let (_dir,root)=fixture::repo("{}");
+            let first=asked(&root,pattern("calcular_frete"));
+            let second=asked(&root,pattern("calcular_frete"));
+            assert!(!stdout(&first).is_empty());
+            let lines=|report:&Value|{let mut lines:Vec<_>=stdout(report).lines().map(str::to_string).collect();lines.sort();lines};
+            assert_eq!(lines(&first),lines(&second),"native parallel traversal may reorder files");
+            assert_eq!(second["learning"]["new_facts"],0);
+            assert!(second["learning"]["reused_facts"].as_u64().unwrap()>0);
+            assert_eq!(second["learning"]["scan"],Value::Null);
         }
-
-        /// A pasta fora do projeto, a que não é pasta e o padrão em branco não
-        /// recebem resposta do mapa: as duas primeiras dizem que o mapa não a
-        /// responde, e a última é recusada pelo nome do que falta.
         #[test]
-        fn a_search_the_map_cannot_answer_says_so_and_a_blank_pattern_is_refused() {
-            let (_dir, root) = fixture::repo(CONFIG);
-            let elsewhere = tempdir().unwrap();
-            for (what, folder) in [
-                ("a folder outside the project", elsewhere.path().to_path_buf()),
-                ("a file", PathBuf::from("src/frete.rs")),
-                ("a folder that does not exist", PathBuf::from("nada")),
-            ] {
-                let report = asked(&root, GrepSearch { folder: Some(folder), ..pattern("calcular_frete") });
-                assert_eq!(report["answer"], json!(nothing_to_say()), "{what}: {report}");
-            }
-            let blank = asked(&root, pattern("   "));
-            assert_eq!(blank["ok"], json!(false), "{blank}");
-            assert_eq!(blank["reason"], json!("missing-argument"), "{blank}");
-            assert!(blank["hint"].as_str().unwrap().contains("<pattern>"), "{blank}");
+        fn missing_scope_no_matches_and_blank_patterns_remain_distinct() {
+            let (_dir,root)=fixture::repo("{}");
+            let elsewhere=tempdir().unwrap();
+            let absent=asked(&root,GrepSearch{folder:Some(elsewhere.path().into()),..pattern("calcular_frete")});
+            assert_eq!(absent["exit_code"],1);
+            assert!(absent["evidence"].is_null());
+            let file=asked(&root,GrepSearch{folder:Some("src/frete.rs".into()),..pattern("calcular_frete")});
+            assert_eq!(file["exit_code"],0);
+            let missing=asked(&root,GrepSearch{folder:Some("no-such-folder".into()),..pattern("calcular_frete")});
+            assert_eq!(missing["exit_code"],2);
+            let blank=asked(&root,pattern("  "));
+            assert_eq!(blank["reason"],"missing-argument");
         }
     }
 }

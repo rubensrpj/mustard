@@ -41,11 +41,7 @@ const VERSION_DEADLINE: Duration = Duration::from_secs(5);
 /// `cmd.exe` não tem aspa simples e o `bash.exe` do git lê a barra invertida
 /// de um caminho como ela é.
 fn quote(text: &str, windows: bool) -> String {
-    if windows {
-        format!("\"{text}\"")
-    } else {
-        format!("'{}'", text.replace('\'', "'\\''"))
-    }
+    if windows { format!("\"{text}\"") } else { format!("'{}'", text.replace('\'', "'\\''")) }
 }
 
 /// [`quote`] no shell da plataforma em que o programa roda.
@@ -58,12 +54,27 @@ fn quoted(text: &str) -> String {
 #[must_use]
 pub(crate) fn build_command(target: &Path) -> String {
     let packages: Vec<String> = PACKAGES.iter().map(|package| format!("-p {package}")).collect();
-    format!("cargo build --release --locked {} --target-dir {}", packages.join(" "), quoted(&target.display().to_string()))
+    format!("cargo build --profile mustard-dev --locked {} --target-dir {}", packages.join(" "), quoted(&target.display().to_string()))
+}
+
+pub(crate) fn build_changed_command(target: &Path, files: &[String]) -> String {
+    let shared = files
+        .iter()
+        .any(|f| f.starts_with("packages/") || f.starts_with("plugin/") || matches!(f.as_str(), "Cargo.toml" | "Cargo.lock" | "apps/rt/build.rs") || f.starts_with(".cargo/"));
+    let packages: Vec<_> = PACKAGES
+        .into_iter()
+        .filter(|p| shared || *p == "mustard-rt" || files.iter().any(|f| f.starts_with(if *p == "scan" { "apps/scan/" } else { "apps/cli/" })))
+        .collect();
+    format!(
+        "cargo build --profile mustard-dev --locked {} --target-dir {}",
+        packages.iter().map(|p| format!("-p {p}")).collect::<Vec<_>>().join(" "),
+        quoted(&target.display().to_string())
+    )
 }
 
 /// O programa compilado da pasta `target`, esteja ele em disco ou não.
 fn program_in(target: &Path) -> PathBuf {
-    target.join("release").join(if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" })
+    target.join("mustard-dev").join(if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" })
 }
 
 /// O que separa o programa compilado do commit da branch.
@@ -162,18 +173,12 @@ pub(crate) enum Launch {
 /// não solta uma segunda: duas juntas disputariam a mesma pasta.
 #[must_use]
 pub(crate) fn start_in_background(main: &Path) -> Launch {
-    start_in_background_with(main, &development_build_dir(main), &|command, cwd| {
-        crate::shared::proc::spawn_detached_shell(command, cwd)
-    })
+    start_in_background_with(main, &development_build_dir(main), &|command, cwd| crate::shared::proc::spawn_detached_shell(command, cwd))
 }
 
 /// [`start_in_background`] com a pasta do programa e o disparo recebidos, que é
 /// como um teste prova a trava sem compilar nada.
-fn start_in_background_with(
-    main: &Path,
-    target: &Path,
-    spawn: &dyn Fn(&str, &Path) -> std::io::Result<()>,
-) -> Launch {
+fn start_in_background_with(main: &Path, target: &Path, spawn: &dyn Fn(&str, &Path) -> std::io::Result<()>) -> Launch {
     let beside = |suffix: &str| {
         let mut name = target.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_default();
         name.push(suffix);
@@ -231,7 +236,7 @@ mod tests {
     /// plataforma mesmo com espaço no caminho.
     #[test]
     fn the_build_command_builds_the_three_programs_into_the_folder() {
-        let program = "cargo build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir ";
+        let program = "cargo build --profile mustard-dev --locked -p mustard-rt -p scan -p mustard-cli --target-dir ";
         assert_eq!(build_command(Path::new("/cache/build/mustard-1")), format!("{program}{}", quoted("/cache/build/mustard-1")));
         assert!(build_command(Path::new("/o dono/build")).ends_with(&quoted("/o dono/build")));
     }
@@ -277,16 +282,8 @@ mod tests {
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].1, main, "compila no checkout principal");
             assert!(calls[0].0.starts_with(&build_command(&target)), "{}", calls[0].0);
-            assert!(
-                calls[0].0.contains("echo built") && calls[0].0.contains("echo failed"),
-                "a trava diz como a compilação terminou: {}",
-                calls[0].0
-            );
-            assert!(
-                !calls[0].0.contains(';') && !calls[0].0.contains("rm "),
-                "só o que o sh, o bash.exe e o cmd.exe leem do mesmo jeito: {}",
-                calls[0].0
-            );
+            assert!(calls[0].0.contains("echo built") && calls[0].0.contains("echo failed"), "a trava diz como a compilação terminou: {}", calls[0].0);
+            assert!(!calls[0].0.contains(';') && !calls[0].0.contains("rm "), "só o que o sh, o bash.exe e o cmd.exe leem do mesmo jeito: {}", calls[0].0);
         }
         let marker = place.path().join("build").join("mustard-1.building");
         assert!(marker.is_file());
@@ -336,14 +333,13 @@ mod tests {
 
                 assert_eq!(start_in_background_with(&main, &target, &capture), Launch::Started);
                 let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-                let status =
-                    crate::util::platform::build_shell_command(&command.borrow()).current_dir(&main).env("PATH", path).status().unwrap();
+                let status = crate::util::platform::build_shell_command(&command.borrow()).current_dir(&main).env("PATH", path).status().unwrap();
                 assert!(status.success(), "o shell termina sem erro mesmo com a compilação vermelha: {status}");
 
                 let marker = place.path().join("build").join("mustard-1.building");
                 assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), said, "código {code}");
                 let log = std::fs::read_to_string(place.path().join("build").join("mustard-1.log")).unwrap();
-                assert!(log.contains("compilando build --release --locked") && log.contains("erro"), "o registro traz as duas saídas: {log}");
+                assert!(log.contains("compilando build --profile mustard-dev --locked") && log.contains("erro"), "o registro traz as duas saídas: {log}");
                 assert_eq!(start_in_background_with(&main, &target, &capture), Launch::Started, "a trava que terminou não segura a próxima");
             }
         }

@@ -24,7 +24,7 @@ pub(crate) fn read_by(need: Need<'_>) -> &'static [&'static MapBlock] {
         Need::Nothing | Need::Pull(_) => &[],
         Need::Terrain | Need::Lineage(_) => &[&CENSUS],
         Need::Paths => &[&FILES],
-        Need::Importers(_) | Need::Tests(_) => &[&FILES, &GRAPH],
+        Need::Imports(_) | Need::Importers(_) | Need::Tests(_) => &[&FILES, &GRAPH],
         Need::Parts(_) => &[&FILES, &DECLS],
         Need::Declarations { .. } => &[&FILES, &DECLS, &ROUTES],
         Need::Summary => &[&CENSUS, &FILES, &GRAPH, &HISTORY],
@@ -146,11 +146,12 @@ mod tests {
     }
 
     /// Cada pergunta ao mapa, pelos nomes de [`map_of_every_block`].
-    const QUESTIONS: [Need<'static>; 14] = [
+    const QUESTIONS: [Need<'static>; 15] = [
         Need::Nothing,
         Need::Summary,
         Need::Terrain,
         Need::Paths,
+        Need::Imports(&["src/uso.rs"]),
         Need::Importers("src/pedido.rs"),
         Need::Tests("src/pedido.rs"),
         Need::Declarations { file: None, name: "gravar_pedido" },

@@ -20,18 +20,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use rusqlite::types::{Value as Sql, ValueRef};
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::{Connection, params_from_iter};
 use serde_json::{Map, Value};
 
-use crate::domain::project_map::{
-    Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapLanguage, MapModule, MapProject,
-    MapRefusal, MapSkeleton, ProjectMap, PullComment, PullOfCommit, PullText, Pulls,
-};
 use crate::domain::normalize::Languages;
+use crate::domain::project_map::{
+    Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
+    PullComment, PullOfCommit, PullText, Pulls,
+};
 use crate::io::map_db::{self, Block, Kind, MapDb};
-pub use crate::io::map_db::{model_path, MAP_FILE, MAP_FILE_NAME};
-pub use crate::io::map_listing::{base_of, listing, Base, Listing};
+pub use crate::io::map_db::{MAP_FILE, MAP_FILE_NAME, model_path};
 use crate::io::map_listing::inside_work_tree;
+pub use crate::io::map_listing::{Base, Listing, base_of, listing};
 use crate::io::{map_fill, map_format, map_glossary, map_revision, map_search};
 use crate::platform::error::{Error, Result};
 
@@ -238,7 +238,7 @@ fn filled_by_the_scan(_: &Connection, _: &Path) -> Result<()> {
 /// que mudam a leitura de todos os outros e os que não se decodificaram. E o
 /// teto do nome comum com que as chamadas ligaram, que religa o projeto
 /// quando muda.
-pub const CENSUS: MapBlock = block!("census", version 5, {
+pub const CENSUS: MapBlock = block!("census", version 6, {
     "census" at Place::One => [
         "root" Text,
         "head" Text ["state", "head"],
@@ -250,7 +250,7 @@ pub const CENSUS: MapBlock = block!("census", version 5, {
         "max_same_name" Int ["state", "max_same_name"],
         "frameworks" Json,
         "detected_stacks" Json,
-        "skipped_build_dirs" Json ["coverage", "skipped_build_dirs"]
+        "coverage_report" Json ["coverage"]
     ],
     "projects" at list(&["projects"]) => [
         "name" Text, "dir" Text, "kind" Text, "code_files" Int,
@@ -302,15 +302,15 @@ pub const FILES: MapBlock = block!("files", version 3, {
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 13, {
+pub const DECLS: MapBlock = block!("decls", version 16, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
-        "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
+        "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text, "annotations" Json,
         "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
-        "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
+        "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json, "syntax" Json
     ],
     "texts" at Place::Files => [
-        "path" Text, "texts" Json, "file_doc" Text, "file_comment" Text, "file_doc_in_body" Int, "quality" Json
+        "path" Text, "texts" Json, "file_doc" Text, "file_comment" Text, "file_doc_in_body" Int, "quality" Json, "analysis" Json
     ]
 }, index [
     "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
@@ -366,6 +366,20 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
         "id" Text, "at" Int, "title" Text, "pr" Int, "added" Json, "changed" Json
     ]
 });
+
+/// Verbatim documentation/configuration/schema text. No executable symbols or
+/// inferred behavior are manufactured from these excerpts.
+pub const RESOURCES: MapBlock = block!("resources", version 2, {
+    "resource_files" at list(&["resources"]) => [
+        "path" Text, "blob" Text, "sha256" Text, "kind" Text, "issue" Text, "sections" Json
+    ]
+}, index ["resource_fts", "resource_positions", "resource_meta", "resource_index_files"]
+   "CREATE VIRTUAL TABLE resource_fts USING fts5(title, body, path, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
+    CREATE TABLE resource_positions(id INTEGER PRIMARY KEY, path TEXT NOT NULL, section INTEGER NOT NULL);\
+    CREATE INDEX resource_by_path ON resource_positions(path,section);\
+    CREATE INDEX resource_source_path ON resource_files(path);\
+    CREATE TABLE resource_index_files(path TEXT PRIMARY KEY, sha256 TEXT NOT NULL);\
+    CREATE TABLE resource_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
 
 /// A história de cada declaração, lida do git na primeira pergunta sobre um
 /// arquivo e guardada por arquivo: a branch de partida, o commit mais novo do
@@ -425,6 +439,12 @@ pub const NOTES: MapBlock = written(block!("notes", version 1, {
     "notes" at list(&["notes"]) => ["file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text]
 }));
 
+/// Multi-source interpretations remain separate from extracted syntax and
+/// survive scans. Every source hash must match before retrieval can use one.
+pub const KNOWLEDGE_NOTES: MapBlock = written(block!("knowledge_notes", version 1, {
+    "knowledge_notes" at list(&["knowledge_notes"]) => ["id" Text, "payload" Text]
+}));
+
 /// O bloco declarado por [`block!`] como escrito: convertido na troca de
 /// versão, nunca apagado.
 const fn written(mut declared: MapBlock) -> MapBlock {
@@ -451,7 +471,8 @@ fn kept_as_is(_: &Connection, _: u32) -> Result<()> {
 /// índice da busca dos itens, com o título, a parte do usuário e as palavras
 /// como campos próprios. Quem o enche é `io::map_specs`; a montagem não o
 /// grava nem o confere.
-pub const SPECS: MapBlock = rebuilt_by(block!("specs", version 2, {
+pub const SPECS: MapBlock = rebuilt_by(
+    block!("specs", version 2, {
     "spec_items" at list(&["items"]) => [
         "spec" Text, "id" Int, "code" Text, "kind" Text, "title" Text, "text" Text, "agent" Text, "search" Text,
         "files" Json
@@ -467,7 +488,9 @@ pub const SPECS: MapBlock = rebuilt_by(block!("specs", version 2, {
      tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE spec_vocab USING fts5vocab(spec_fts, instance);\
    CREATE TABLE spec_lengths(id INTEGER PRIMARY KEY, title INTEGER, text INTEGER, words INTEGER);\
-   CREATE TABLE spec_meta(key TEXT PRIMARY KEY, value);"), crate::io::map_specs::rebuild);
+   CREATE TABLE spec_meta(key TEXT PRIMARY KEY, value);"),
+    crate::io::map_specs::rebuild,
+);
 
 /// O bloco declarado por [`block!`] refeito por `rebuild`, e não vazio para
 /// o scan encher.
@@ -478,7 +501,7 @@ const fn rebuilt_by(mut declared: MapBlock, rebuild: crate::io::map_db::Rebuild)
 
 /// Os blocos do mapa, na ordem em que se leem: os arquivos antes das
 /// declarações, das rotas e das ligações deles.
-pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY];
+pub const BLOCKS: [MapBlock; 7] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY, RESOURCES];
 
 /// Os blocos de que o índice de busca lê: os arquivos, as declarações e as
 /// ligações, onde moram as chamadas.
@@ -492,23 +515,12 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
 /// das specs, o do glossário e o das notas de sentido.
-const DECLARED: [&MapBlock; 11] =
-    [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES];
+const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 11] = [
-    CENSUS.block,
-    FILES.block,
-    DECLS.block,
-    ROUTES.block,
-    GRAPH.block,
-    HISTORY.block,
-    LINEAGE.block,
-    PULLS.block,
-    SPECS.block,
-    GLOSSARY.block,
-    NOTES.block,
-];
+pub(crate) const DB_BLOCKS: [Block; 16] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
+    crate::io::knowledge::precise::BLOCK];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -530,8 +542,7 @@ pub fn read(root: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
 pub fn read_at(model: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
     let db = open_existing(model)?;
     let json = map_text(db.conn(), every_column).map_err(unreadable)?;
-    let mut map: ProjectMap =
-        serde_json::from_str(&json).map_err(|e| MapRefusal::MapUnreadable { detail: e.to_string() })?;
+    let mut map: ProjectMap = serde_json::from_str(&json).map_err(|e| MapRefusal::MapUnreadable { detail: e.to_string() })?;
     map.lineage = lineages(db.conn(), None).map_err(unreadable)?;
     map.census_mark = db.mark(CENSUS.name()).map_err(unreadable)?.unwrap_or_default();
     map.pulls = every_pull(db.conn()).map_err(unreadable)?;
@@ -569,6 +580,15 @@ pub fn read_state_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal>
     stored_part(model, state_column)
 }
 
+/// Only non-code packs, for a resource update that must leave code/graph/Git
+/// blocks untouched. Reading a resource never needs the whole code model.
+pub fn resources_at(model: &Path) -> std::result::Result<Vec<crate::domain::knowledge::resources::File>, MapRefusal> {
+    let stored = stored_part(model, |table,_| RESOURCES.tables.iter().any(|resource| resource.name == table.name))?;
+    #[derive(serde::Deserialize)]
+    struct Packs { #[serde(default)] resources: Vec<crate::domain::knowledge::resources::File> }
+    Ok(serde_json::from_str::<Packs>(&stored.json).map_err(|err| MapRefusal::MapUnreadable {detail:err.to_string()})?.resources)
+}
+
 /// Quais colunas de cada tabela uma leitura do mapa em JSON traz.
 type Pick = fn(&Table, &Column) -> bool;
 
@@ -587,6 +607,7 @@ const STATE_FILE_COLUMNS: [&str; 3] = ["path", "blob", "signals"];
 fn state_column(table: &Table, column: &Column) -> bool {
     CENSUS.tables.iter().any(|census| census.name == table.name)
         || (FILES.tables.iter().any(|files| files.name == table.name) && STATE_FILE_COLUMNS.contains(&column.name))
+        || (RESOURCES.tables.iter().any(|files| files.name == table.name) && ["path", "blob", "kind", "issue"].contains(&column.name))
 }
 
 /// O mapa gravado em `model` com só as colunas que `pick` escolhe, e a marca
@@ -637,9 +658,7 @@ fn dump_tables(conn: &Connection) -> Result<Value> {
         out.push(serde_json::json!({ "table": table.name, "rows": rows }));
     }
     let declared: Vec<&str> = DB_BLOCKS.iter().flat_map(|block| block.tables.iter().copied()).collect();
-    let mut stmt = conn.prepare(
-        "SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-    )?;
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
     let others: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?
@@ -695,6 +714,8 @@ pub enum Need<'a> {
     Terrain,
     /// Os caminhos dos arquivos, e nada mais deles.
     Paths,
+    /// Importações apenas dos caminhos pedidos, em uma consulta indexada.
+    Imports(&'a [&'a str]),
     /// Quem importa o arquivo: ele e os arquivos que o importam, com as
     /// importações de cada um.
     Importers(&'a str),
@@ -755,8 +776,7 @@ pub fn blobs_of(model: &Path, paths: &[&str]) -> std::result::Result<BTreeMap<St
     let db = open_existing(model)?;
     let mut blobs = BTreeMap::new();
     for path in paths {
-        let rows = file_rows(db.conn(), &["path", "blob"], Some(&crate::domain::project_map::clean_path(path)))
-            .map_err(unreadable)?;
+        let rows = file_rows(db.conn(), &["path", "blob"], Some(&crate::domain::project_map::clean_path(path))).map_err(unreadable)?;
         if let Some(row) = rows.first() {
             blobs.insert(text_cell(&row[0]), text_cell(&row[1]));
         }
@@ -814,6 +834,7 @@ pub(crate) fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
         Need::Paths => {
             map.modules = file_rows(conn, &["path"], None)?.into_iter().map(module_of).collect::<Result<_>>()?;
         }
+        Need::Imports(paths) => map.modules = imports_of(conn, paths)?,
         Need::Importers(file) => map.modules = importers(conn, &clean_path(file))?,
         Need::Tests(file) => map.modules = tests_of(conn, &clean_path(file))?,
         Need::Parts(file) => map.modules = parts_of(conn, &clean_path(file))?,
@@ -831,8 +852,7 @@ pub(crate) fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
             map.lineage = lineages(conn, Some(&paths))?;
             map.census_mark = db.mark(CENSUS.name())?.unwrap_or_default();
             map.pulls = pulls_of(conn, &paths, &map.lineage)?;
-            let ids: Vec<&str> =
-                map.lineage.iter().flat_map(|lineage| lineage.commits.iter().map(|commit| commit.id.as_str())).collect();
+            let ids: Vec<&str> = map.lineage.iter().flat_map(|lineage| lineage.commits.iter().map(|commit| commit.id.as_str())).collect();
             map.spec_notes = crate::io::map_specs::notes_of(conn, Some(&ids))?;
         }
         Need::Lineage(file) => {
@@ -853,10 +873,7 @@ pub(crate) fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
 fn every_pull(conn: &Connection) -> Result<Pulls> {
     Ok(Pulls {
         texts: pull_texts(conn, "", &[])?,
-        comments: picked(conn, "pr_comments", &["number", "sha", "path", "line", "body"], "", &[])?
-            .iter()
-            .map(pull_comment)
-            .collect(),
+        comments: picked(conn, "pr_comments", &["number", "sha", "path", "line", "body"], "", &[])?.iter().map(pull_comment).collect(),
         commits: picked(conn, "pr_commits", &["id", "pr"], "", &[])?.iter().map(pull_of_commit).collect(),
     })
 }
@@ -887,15 +904,11 @@ fn pulls_of(conn: &Connection, paths: &[&str], lineage: &[FileLineage]) -> Resul
     let mut pulls = Pulls::default();
     if !paths.is_empty() {
         let filter = within("pr_comments", "path", paths)?;
-        pulls.comments = picked(conn, "pr_comments", &["number", "sha", "path", "line", "body"], &filter, paths)?
-            .iter()
-            .map(pull_comment)
-            .collect();
+        pulls.comments = picked(conn, "pr_comments", &["number", "sha", "path", "line", "body"], &filter, paths)?.iter().map(pull_comment).collect();
     }
     let ids: Vec<&str> = lineage.iter().flat_map(|file| file.commits.iter().map(|commit| commit.id.as_str())).collect();
     if !ids.is_empty() {
-        pulls.commits =
-            picked(conn, "pr_commits", &["id", "pr"], &within("pr_commits", "id", &ids)?, &ids)?.iter().map(pull_of_commit).collect();
+        pulls.commits = picked(conn, "pr_commits", &["id", "pr"], &within("pr_commits", "id", &ids)?, &ids)?.iter().map(pull_of_commit).collect();
     }
     let numbers: BTreeSet<String> = lineage
         .iter()
@@ -992,13 +1005,8 @@ pub fn pull_comments_for_at(model: &Path, paths: &[&str]) -> std::result::Result
 /// Sem o mapa, com ele ilegível ou quando a gravação falha.
 pub fn save_pull_at(model: &Path, text: &PullText, comments: &[PullComment]) -> Result<()> {
     let number = Sql::Integer(i64::from(text.number));
-    let texts = vec![vec![
-        number.clone(),
-        Sql::Text(text.title.clone()),
-        Sql::Text(text.body.clone()),
-        Sql::Text(text.etag.clone()),
-        Sql::Text(text.through.clone()),
-    ]];
+    let texts =
+        vec![vec![number.clone(), Sql::Text(text.title.clone()), Sql::Text(text.body.clone()), Sql::Text(text.etag.clone()), Sql::Text(text.through.clone())]];
     let comments = comments
         .iter()
         .map(|comment| {
@@ -1081,11 +1089,7 @@ fn table_name(table: &str) -> Result<String> {
 }
 
 fn declared_table(table: &str) -> Result<&'static Table> {
-    DECLARED
-        .iter()
-        .flat_map(|block| block.tables)
-        .find(|found| found.name == table)
-        .ok_or_else(|| Error::Parse(format!("the map declares no table `{table}`")))
+    DECLARED.iter().flat_map(|block| block.tables).find(|found| found.name == table).ok_or_else(|| Error::Parse(format!("the map declares no table `{table}`")))
 }
 
 /// As colunas `columns` da tabela `table`, entre aspas e com o nome da
@@ -1172,22 +1176,12 @@ fn languages(conn: &Connection) -> Result<Vec<MapLanguage>> {
 fn projects(conn: &Connection) -> Result<Vec<MapProject>> {
     picked(conn, "projects", &["name", "dir", "kind", "code_files"], "", &[])?
         .iter()
-        .map(|row| {
-            Ok(MapProject {
-                name: text_cell(&row[0]),
-                dir: text_cell(&row[1]),
-                kind: text_cell(&row[2]),
-                code_files: int_cell(&row[3]) as usize,
-            })
-        })
+        .map(|row| Ok(MapProject { name: text_cell(&row[0]), dir: text_cell(&row[1]), kind: text_cell(&row[2]), code_files: int_cell(&row[3]) as usize }))
         .collect()
 }
 
 fn skeleton(conn: &Connection) -> Result<Vec<MapSkeleton>> {
-    picked(conn, "skeleton", &["dir", "role"], "", &[])?
-        .iter()
-        .map(|row| Ok(MapSkeleton { dir: text_cell(&row[0]), role: text_cell(&row[1]) }))
-        .collect()
+    picked(conn, "skeleton", &["dir", "role"], "", &[])?.iter().map(|row| Ok(MapSkeleton { dir: text_cell(&row[0]), role: text_cell(&row[1]) })).collect()
 }
 
 fn fan_in(conn: &Connection) -> Result<Vec<MapDegree>> {
@@ -1285,8 +1279,21 @@ pub(crate) fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<
     Ok(files)
 }
 
-/// O arquivo `file` e os que o importam, na ordem do mapa, cada um com as
-/// importações dele.
+/// Importações dos caminhos pedidos, sem carregar seus importadores.
+fn imports_of(conn: &Connection, paths: &[&str]) -> Result<Vec<MapModule>> {
+    let files = table_name("files")?;
+    let links = table_name("links")?;
+    let (path, link_path) = (column_names("files", &["path"])?, column_names("links", &["path"])?);
+    let deps = column_names("links", &["deps"])?;
+    let inventory = serde_json::to_string(&paths.iter().map(|path| crate::domain::project_map::clean_path(path)).collect::<Vec<_>>())
+        .map_err(|error| Error::Parse(error.to_string()))?;
+    let sql = format!("SELECT {path}, {deps} FROM {files} LEFT JOIN {links} ON {link_path} = {path} WHERE {path} IN (SELECT value FROM json_each(?1)) ORDER BY {path}");
+    let mut query = conn.prepare(&sql)?;
+    query.query_map([inventory], |row| Ok((row.get::<_, Sql>(0)?, row.get::<_, Sql>(1)?)))?
+        .map(|row| {let (path,deps)=row?; Ok(MapModule{path:text_cell(&path),deps:json_cell(&deps)?,..MapModule::default()})}).collect()
+}
+
+/// O arquivo e os que o importam, com as importações de cada um.
 fn importers(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
     let files = table_name("files")?;
     let links = table_name("links")?;
@@ -1309,7 +1316,9 @@ fn importers(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
 /// O arquivo `file`, com a marca dos próprios testes e os testes que o
 /// cobrem.
 fn tests_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
-    let Some(row) = file_rows(conn, &["path", "has_tests"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
+    let Some(row) = file_rows(conn, &["path", "has_tests"], Some(file))?.into_iter().next() else {
+        return Ok(Vec::new());
+    };
     let tests = picked(conn, "links", &["tests"], &format!("{} = ?1", column_names("links", &["path"])?), &[file])?;
     Ok(vec![MapModule {
         path: text_cell(&row[0]),
@@ -1323,7 +1332,9 @@ fn tests_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
 /// só com o tipo, o nome e as linhas, na ordem do mapa. O arquivo que o mapa
 /// não tem não vem.
 fn parts_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
-    let Some(row) = file_rows(conn, &["path", "test_lines"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
+    let Some(row) = file_rows(conn, &["path", "test_lines"], Some(file))?.into_iter().next() else {
+        return Ok(Vec::new());
+    };
     let filter = format!("{} = ?1", column_names("decls", &["file"])?);
     let declarations = picked(conn, "decls", &["kind", "name", "line", "end_line"], &filter, &[file])?
         .iter()
@@ -1339,10 +1350,8 @@ fn parts_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
 }
 
 /// As colunas de uma declaração que as perguntas pelo nome leem.
-const NAMED_COLUMNS: [&str; 14] = [
-    "file", "kind", "name", "line", "end_line", "doc", "signature", "used_by",
-    "owner", "contract", "members", "implements", "implemented_by", "common_calls",
-];
+const NAMED_COLUMNS: [&str; 15] =
+    ["file", "kind", "name", "line", "end_line", "doc", "signature", "used_by", "owner", "contract", "members", "implements", "implemented_by", "common_calls", "syntax"];
 
 /// A declaração de uma linha com as colunas de [`NAMED_COLUMNS`].
 fn named_decl(row: &Picked) -> Result<MapDecl> {
@@ -1360,6 +1369,7 @@ fn named_decl(row: &Picked) -> Result<MapDecl> {
         implements: json_cell(&row[11])?,
         implemented_by: json_cell(&row[12])?,
         common_calls: usize::try_from(int_cell(&row[13])).unwrap_or_default(),
+        syntax:json_cell(&row[14])?,
     })
 }
 
@@ -1389,7 +1399,9 @@ fn named(conn: &Connection, file: Option<&str>, name: &str) -> Result<Vec<MapMod
         with_routes(conn, &mut modules)?;
         return Ok(modules);
     };
-    let Some(row) = file_rows(conn, &["path"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
+    let Some(row) = file_rows(conn, &["path"], Some(file))?.into_iter().next() else {
+        return Ok(Vec::new());
+    };
     let mut module = module_of(row)?;
     for row in picked(conn, "decls", &NAMED_COLUMNS, &format!("{decl_file} = ?1 AND {decl_name} = ?2"), &[file, name])? {
         module.declarations.push(named_decl(&row)?);
@@ -1471,12 +1483,17 @@ pub fn is_behind(root: &Path, scan_format: &dyn Fn() -> Option<String>) -> bool 
     if !exists_at(&model_path(root)) {
         return inside_work_tree(root);
     }
-    let Ok(db) = open_existing(&model_path(root)) else { return false };
-    let Ok(rows) = picked(db.conn(), "census", &["head", "listing", "base", "base_tip"], "", &[]) else { return false };
-    let Some(now) = listing(root) else { return false };
-    let (head, digest, base) = rows.first().map_or_else(Default::default, |row| {
-        (text_cell(&row[0]), text_cell(&row[1]), Base { name: text_cell(&row[2]), tip: text_cell(&row[3]) })
-    });
+    let Ok(db) = open_existing(&model_path(root)) else {
+        return false;
+    };
+    let Ok(rows) = picked(db.conn(), "census", &["head", "listing", "base", "base_tip"], "", &[]) else {
+        return false;
+    };
+    let Some(now) = listing(root) else {
+        return false;
+    };
+    let (head, digest, base) =
+        rows.first().map_or_else(Default::default, |row| (text_cell(&row[0]), text_cell(&row[1]), Base { name: text_cell(&row[2]), tip: text_cell(&row[3]) }));
     head != now.head
         || digest != now.digest()
         || base != now.base
@@ -1537,9 +1554,8 @@ fn rows_in(conn: &Connection, table: &Table) -> Result<Vec<Row>> {
     let columns: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
     let mut stmt = conn.prepare(&format!("SELECT {} FROM {} ORDER BY rowid", columns.join(", "), quoted(table.name)))?;
     let width = table.columns.len();
-    let rows = stmt
-        .query_map([], |row| (0..width).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Row>>())?
-        .collect::<rusqlite::Result<Vec<Row>>>()?;
+    let rows =
+        stmt.query_map([], |row| (0..width).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Row>>())?.collect::<rusqlite::Result<Vec<Row>>>()?;
     Ok(rows)
 }
 
@@ -1558,11 +1574,9 @@ impl Node {
     fn size(&self) -> usize {
         match self {
             Self::Raw(text) => text.len(),
-            Self::Modules(modules) => modules
-                .iter()
-                .map(|module| module.fields.len() + module.declarations.len() + DECLARATIONS[0].len() + 8)
-                .sum::<usize>()
-                + 2,
+            Self::Modules(modules) => {
+                modules.iter().map(|module| module.fields.len() + module.declarations.len() + DECLARATIONS[0].len() + 8).sum::<usize>() + 2
+            }
             Self::Object(entries) => entries.iter().map(|(key, node)| key.len() + 4 + node.size()).sum::<usize>() + 2,
         }
     }
@@ -1669,7 +1683,9 @@ fn map_text(conn: &Connection, pick: Pick) -> Result<String> {
                         None if first => {
                             by_path.insert(path, modules.len());
                             modules.push(ModuleText::default());
-                            let Some(module) = modules.last_mut() else { continue };
+                            let Some(module) = modules.last_mut() else {
+                                continue;
+                            };
                             module
                         }
                         // A ligação de um arquivo que a tabela dos arquivos
@@ -1685,7 +1701,9 @@ fn map_text(conn: &Connection, pick: Pick) -> Result<String> {
             }
             Place::Decls => {
                 while let Some(row) = rows.next()? {
-                    let Some(&at) = by_path.get(&owner_of(row)?) else { continue };
+                    let Some(&at) = by_path.get(&owner_of(row)?) else {
+                        continue;
+                    };
                     let declarations = &mut modules[at].declarations;
                     if !declarations.is_empty() {
                         declarations.push(',');
@@ -1717,14 +1735,7 @@ fn owner_of(row: &rusqlite::Row<'_>) -> Result<Option<String>> {
 /// da coluna `skip` das lidas, `columns`, separadas por vírgula; a primeira
 /// também, quando `comma`. As colunas de uma linha de lista ou de arquivo
 /// têm nome de um nível só.
-fn push_fields(
-    out: &mut String,
-    table: &Table,
-    columns: &[&Column],
-    row: &rusqlite::Row<'_>,
-    skip: usize,
-    mut comma: bool,
-) -> Result<()> {
+fn push_fields(out: &mut String, table: &Table, columns: &[&Column], row: &rusqlite::Row<'_>, skip: usize, mut comma: bool) -> Result<()> {
     for (at, column) in columns.iter().enumerate().skip(skip) {
         let value = row.get_ref(at)?;
         if value == ValueRef::Null {
@@ -1769,9 +1780,7 @@ fn push_key(out: &mut String, key: &str) {
 /// escrever nada, quando ela está vazia.
 fn push_cell(out: &mut String, table: &Table, column: &Column, value: ValueRef<'_>) -> Result<bool> {
     use std::fmt::Write as _;
-    let text = |bytes| {
-        std::str::from_utf8(bytes).map_err(|e| Error::Parse(format!("`{}.{}` is not UTF-8: {e}", table.name, column.name)))
-    };
+    let text = |bytes| std::str::from_utf8(bytes).map_err(|e| Error::Parse(format!("`{}.{}` is not UTF-8: {e}", table.name, column.name)));
     match (column.cell, value) {
         (_, ValueRef::Null) => return Ok(false),
         (Cell::Int, ValueRef::Integer(n)) => {
@@ -1819,7 +1828,9 @@ fn push_string(out: &mut String, text: &str) {
 /// A chave `key` de `object` passa a valer `value`, criando os objetos do
 /// caminho que faltam.
 fn put(object: &mut Object, key: &[&'static str], value: Node) {
-    let Some((last, parents)) = key.split_last() else { return };
+    let Some((last, parents)) = key.split_last() else {
+        return;
+    };
     let mut at = object;
     for part in parents {
         let index = match at.iter().position(|(name, _)| name == part) {
@@ -1832,7 +1843,9 @@ fn put(object: &mut Object, key: &[&'static str], value: Node) {
         if !matches!(at[index].1, Node::Object(_)) {
             at[index].1 = Node::Object(Vec::new());
         }
-        let Node::Object(inner) = &mut at[index].1 else { return };
+        let Node::Object(inner) = &mut at[index].1 else {
+            return;
+        };
         at = inner;
     }
     match at.iter_mut().find(|(name, _)| name == last) {
@@ -1848,10 +1861,10 @@ fn json_of(table: &Table, column: &Column, value: &Sql) -> std::result::Result<O
         (Cell::Int, Sql::Integer(n)) => Value::from(*n),
         (Cell::Flag, Sql::Integer(n)) => Value::Bool(*n != 0),
         (Cell::Text | Cell::Owner, Sql::Text(text)) => Value::String(text.clone()),
-        (Cell::Json, Sql::Text(text)) => {
-            serde_json::from_str(text).map_err(|e| format!("`{}.{}` holds broken JSON: {e}", table.name, column.name))?
+        (Cell::Json, Sql::Text(text)) => serde_json::from_str(text).map_err(|e| format!("`{}.{}` holds broken JSON: {e}", table.name, column.name))?,
+        _ => {
+            return Err(format!("`{}.{}` does not hold {}", table.name, column.name, column.cell.what()));
         }
-        _ => return Err(format!("`{}.{}` does not hold {}", table.name, column.name, column.cell.what())),
     }))
 }
 
@@ -1886,9 +1899,16 @@ pub fn save_at(model: &Path, map: &Value, mark: &str, languages: &Languages) -> 
 ///
 /// A chave que não cabe na coluna dela ([`Error::Parse`]) e a falha do banco.
 pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) -> Result<bool> {
-    let fresh: BlockRows =
-        block.tables.iter().map(|table| rows(table, map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
+    let fresh: BlockRows = block.tables.iter().map(|table| rows(table, map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
     save_rows(model, [(block, &fresh)], mark, None)
+}
+
+/// Replace selected scanner blocks and their derived indexes atomically.
+/// Used to update resource text and census without rebuilding the code graph.
+pub fn save_blocks_at(model: &Path, blocks: &[&MapBlock], map: &Value, mark: &str, languages: &Languages) -> Result<bool> {
+    let fresh: Vec<BlockRows> = blocks.iter().map(|block| block.tables.iter().map(|table| rows(table,map)).collect())
+        .collect::<std::result::Result<_,_>>().map_err(Error::Parse)?;
+    save_rows(model, blocks.iter().zip(&fresh).map(|(block,rows)|(*block,rows)), mark, Some(languages))
 }
 
 /// Grava a história das declarações de um arquivo, `lineage`, no mapa em
@@ -1944,14 +1964,8 @@ fn lineage_changes(lineage: &FileLineage) -> Result<Vec<Replacement<'static>>> {
             "comments": (!decl.comments.is_empty()).then_some(&decl.comments),
         })).collect::<Vec<_>>(),
     });
-    let fresh: BlockRows =
-        LINEAGE.tables.iter().map(|table| rows(table, &rows_in_map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
-    Ok(LINEAGE
-        .tables
-        .iter()
-        .zip(fresh)
-        .map(|(table, rows)| (table.name, "path", Sql::Text(path.to_string()), rows))
-        .collect())
+    let fresh: BlockRows = LINEAGE.tables.iter().map(|table| rows(table, &rows_in_map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
+    Ok(LINEAGE.tables.iter().zip(fresh).map(|(table, rows)| (table.name, "path", Sql::Text(path.to_string()), rows)).collect())
 }
 
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].
@@ -1963,12 +1977,7 @@ type BlockRows = Vec<Vec<Row>>;
 /// declarações ou as ligações, onde moram as chamadas —, ele se refaz nas
 /// línguas `languages`; sem elas, fica sem línguas, e a primeira busca o
 /// refaz nas dela.
-fn save_rows<'b>(
-    model: &Path,
-    fresh: impl IntoIterator<Item = (&'b MapBlock, &'b BlockRows)>,
-    mark: &str,
-    languages: Option<&Languages>,
-) -> Result<bool> {
+fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'b BlockRows)>, mark: &str, languages: Option<&Languages>) -> Result<bool> {
     let head = head_of(model);
     if !head.is_empty() && head != SQLITE_HEADER {
         remove(model)?;
@@ -1996,8 +2005,7 @@ fn save_rows<'b>(
                 tx.execute(&format!("DELETE FROM {}", quoted(table.name)), [])?;
                 let names: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
                 let slots = vec!["?"; names.len()].join(", ");
-                let mut insert =
-                    tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(table.name), names.join(", ")))?;
+                let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(table.name), names.join(", ")))?;
                 for row in rows {
                     insert.execute(params_from_iter(row))?;
                 }
@@ -2009,6 +2017,15 @@ fn save_rows<'b>(
                 Some(languages) => map_search::rebuild(tx, languages)?,
                 None => map_search::forget(tx)?,
             }
+        }
+        if changed.iter().any(|(block, _)| block.name() == RESOURCES.name()) {
+            crate::io::knowledge::resources::rebuild(tx, languages.unwrap_or(&Languages::new([])))?;
+        }
+        if changed.iter().any(|(block,_)| block.name() == DECLS.name()) {
+            crate::io::knowledge::catalog::sync(tx,languages.unwrap_or(&Languages::new([])))?;
+        }
+        if changed.iter().any(|(block,_)| [DECLS.name(),RESOURCES.name()].contains(&block.name())) {
+            crate::io::knowledge::references::rebuild(tx)?;
         }
         // Refeitas as declarações, a marca do glossário cuja declaração mudou
         // de nome ou sumiu sai junto.
@@ -2023,10 +2040,7 @@ fn save_rows<'b>(
 
 /// As linhas que `map` dá a cada tabela de cada bloco.
 fn rows_of(map: &Value) -> std::result::Result<Vec<BlockRows>, String> {
-    BLOCKS
-        .iter()
-        .map(|block| block.tables.iter().map(|table| rows(table, map)).collect())
-        .collect()
+    BLOCKS.iter().map(|block| block.tables.iter().map(|table| rows(table, map)).collect()).collect()
 }
 
 fn rows(table: &Table, map: &Value) -> std::result::Result<Vec<Row>, String> {
@@ -2078,7 +2092,9 @@ fn items<'a>(value: &'a Value, at: &[&str]) -> std::result::Result<&'a [Value], 
 /// O valor de `value` na coluna: vazio quando falta; recusado quando não é
 /// do jeito que a coluna guarda.
 fn cell(table: &Table, column: &Column, value: Option<&Value>) -> std::result::Result<Sql, String> {
-    let Some(value) = value.filter(|value| !value.is_null()) else { return Ok(Sql::Null) };
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(Sql::Null);
+    };
     let wrong = || format!("`{}.{}` is not {}: {value}", table.name, column.name, column.cell.what());
     match column.cell {
         Cell::Int => value.as_i64().map(Sql::Integer).ok_or_else(wrong),
@@ -2221,11 +2237,7 @@ mod tests {
         let root = dir.path().join("projeto");
         assert!(!exists_at(&model_path(&root)));
         let map = ProjectMap {
-            modules: vec![MapModule {
-                path: "src/a.rs".to_string(),
-                deps: vec!["src/b.rs".to_string()],
-                ..MapModule::default()
-            }],
+            modules: vec![MapModule { path: "src/a.rs".to_string(), deps: vec!["src/b.rs".to_string()], ..MapModule::default() }],
             state: MapState { head: "abc123".to_string() },
             ..ProjectMap::default()
         };
@@ -2319,6 +2331,17 @@ mod tests {
         assert!(blobs_of(&dir.path().join("nada.db"), &["src/a.rs"]).is_err(), "sem mapa, recusa");
     }
 
+    #[test]
+    fn batched_imports_only_load_the_requested_paths_and_preserve_missing_map_refusal() {
+        let dir=tempdir().unwrap();let root=dir.path();
+        assert!(read_for(root,Need::Imports(&["src/a.rs"])).is_err());assert!(!model_path(root).exists());
+        save_at(&model_path(root),&scan_map(),"imports fixture",&languages()).unwrap();
+        let selected=read_for(root,Need::Imports(&["src/a.rs","missing.rs","src/a.rs"])).unwrap();
+        assert_eq!(selected.modules.len(),1);assert_eq!(selected.modules[0].path,"src/a.rs");
+        assert_eq!(selected.modules[0].deps,["src/b.rs"]);
+        assert!(read_for(root,Need::Imports(&[])).unwrap().modules.is_empty());
+    }
+
     /// O mapa do scan volta do banco igual, fora as chaves que nenhuma coluna
     /// guarda.
     #[test]
@@ -2333,11 +2356,8 @@ mod tests {
         let mut expected = map;
         let Value::Object(top) = &mut expected else { unreachable!() };
         top.remove("shared_contracts");
-        top["graph"]
-            .as_object_mut()
-            .unwrap()
-            .retain(|key, _| !["cyclic", "top_fan_out", "layers", "touchpoints"].contains(&key.as_str()));
-        top["coverage"].as_object_mut().unwrap().retain(|key, _| key == "skipped_build_dirs");
+        top.insert("resources".into(), serde_json::json!([]));
+        top["graph"].as_object_mut().unwrap().retain(|key, _| !["cyclic", "top_fan_out", "layers", "touchpoints"].contains(&key.as_str()));
         top["projects"][0].as_object_mut().unwrap().remove("dependencies");
         assert_eq!(back, expected);
         assert_eq!(stored.marks.len(), BLOCKS.len());
@@ -2355,10 +2375,7 @@ mod tests {
         assert_eq!(run.implemented_by[0].file, "src/c.rs");
         // A pergunta pelo nome lê as mesmas ligações só das colunas dela.
         let asked = read_for(dir.path(), Need::Declarations { file: None, name: "run" }).unwrap();
-        assert_eq!(
-            serde_json::to_value(&asked.modules[0].declarations[0]).unwrap(),
-            serde_json::to_value(run).unwrap()
-        );
+        assert_eq!(serde_json::to_value(&asked.modules[0].declarations[0]).unwrap(), serde_json::to_value(run).unwrap());
         assert_eq!(read.graph.top_fan_in[0].module, "src/b.rs");
         assert_eq!(read.history.commits.len(), 2);
         assert_eq!(read.history.commits[0].title, "Cria o leitor (#12)");
@@ -2419,7 +2436,7 @@ mod tests {
         for key in ["root", "state", "manifests", "projects", "languages", "frameworks", "skeleton", "detected_stacks"] {
             assert_eq!(back[key], expected[key], "{key}");
         }
-        assert_eq!(back["coverage"], json!({"skipped_build_dirs": ["target"]}));
+        assert_eq!(back["coverage"], expected["coverage"]);
         assert_eq!(
             back["modules"],
             json!([
@@ -2444,8 +2461,7 @@ mod tests {
             let expected = if block.name() == CENSUS.name() { "scan 2" } else { "scan 1" };
             assert_eq!(again.marks[block.name()], expected, "{}", block.name());
         }
-        let deps: String =
-            open(&model).unwrap().conn().query_row("SELECT \"deps\" FROM \"links\" LIMIT 1", [], |row| row.get(0)).unwrap();
+        let deps: String = open(&model).unwrap().conn().query_row("SELECT \"deps\" FROM \"links\" LIMIT 1", [], |row| row.get(0)).unwrap();
         assert_eq!(deps, "{broken", "as ligações não se regravam");
     }
 
@@ -2470,10 +2486,37 @@ mod tests {
         assert_eq!(
             names,
             [
-                "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
-                "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
-                "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-                "spec_marks", "glossary_asks", "glossary_marks", "notes", "blocks"
+                "census",
+                "projects",
+                "languages",
+                "manifests",
+                "skeleton",
+                "files",
+                "decls",
+                "texts",
+                "routes",
+                "links",
+                "graph",
+                "fan_in",
+                "history_base",
+                "history_paths",
+                "commits",
+                "resource_files",
+                "lineage_files",
+                "lineage_commits",
+                "lineage_decls",
+                "pr_texts",
+                "pr_comments",
+                "pr_commits",
+                "spec_items",
+                "spec_commits",
+                "spec_pulls",
+                "spec_marks",
+                "glossary_asks",
+                "glossary_marks",
+                "notes",
+                "knowledge_notes",
+                "blocks"
             ]
         );
         let decls = &dump[6]["rows"];
@@ -2491,14 +2534,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let model = model_path(dir.path());
         save_at(&model, &scan_map(), "scan 1", &languages()).unwrap();
-        let comment = |line: u64, body: &str| PullComment {
+        let comment =
+            |line: u64, body: &str| PullComment { number: 7, commit: "c0ffee1234".to_string(), path: "src/a.rs".to_string(), line, body: body.to_string() };
+        let text = |title: &str| PullText {
             number: 7,
-            commit: "c0ffee1234".to_string(),
-            path: "src/a.rs".to_string(),
-            line,
-            body: body.to_string(),
+            title: title.to_string(),
+            body: "Descrição.".to_string(),
+            etag: "W/\"e1\"".to_string(),
+            through: "aaaa".to_string(),
         };
-        let text = |title: &str| PullText { number: 7, title: title.to_string(), body: "Descrição.".to_string(), etag: "W/\"e1\"".to_string(), through: "aaaa".to_string() };
         save_pull_at(&model, &text("Primeiro"), &[comment(3, "velho"), comment(4, "velho também")]).unwrap();
         save_pull_at(&model, &text("Grava o pagamento"), &[comment(3, "cuidado com o arredondamento")]).unwrap();
         save_pull_commits_at(&model, &[PullOfCommit { id: "bbbb".to_string(), pr: 9 }, PullOfCommit { id: "cccc".to_string(), pr: 0 }]).unwrap();

@@ -54,7 +54,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::search::Found;
-use crate::domain::search::{folders_first, fuse, RECIPROCAL_FROM, TOP, VECTOR_WEIGHT};
+use crate::domain::search::{RECIPROCAL_FROM, TOP, VECTOR_WEIGHT,folders_first, fuse};
 use crate::domain::triage::Lead;
 use crate::io::map_check;
 use crate::io::map_lists::{decl_files, ranked_files_near, sources_near};
@@ -185,13 +185,15 @@ pub(super) enum Check<'a> {
 /// não escreve e da ordem dos vetores: nenhum dos dois põe um arquivo na
 /// frente de um que as palavras escritas acharam. Os arquivos e a conferência
 /// ficam os da ordem com o sentido.
-pub(super) fn ordered(
-    conn: &Connection,
-    check: Check<'_>,
-    query: &str,
-    intent: &str,
-    languages: &Languages,
-) -> Result<Ordered> {
+pub(super) fn ordered(conn: &Connection, check: Check<'_>, query: &str, intent: &str, languages: &Languages) -> Result<Ordered> {
+    let vectors = match check {
+        Check::On(root) => root.is_some_and(|root| crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled()),
+        #[cfg(test)]
+        Check::Off => true,
+    };
+    if !vectors {
+        return ordered_with(conn, check, &Sense::off(), query, intent, languages);
+    }
     let sense = Sense::read(conn, languages, (query, intent), true)?;
     let sensed = ordered_with(conn, check, &sense, query, intent, languages)?;
     let written = ordered_with(conn, check, &Sense::off(), query, intent, languages)?;
@@ -253,11 +255,15 @@ pub(super) fn ordered_in(
         let mut seen: HashSet<i64> = HashSet::new();
         let mut files: Vec<(i64, String)> = Vec::new();
         for id in *list {
-            let Some(&file) = file_of.get(id) else { continue };
+            let Some(&file) = file_of.get(id) else {
+                continue;
+            };
             if !seen.insert(file) {
                 continue;
             }
-            let Some(path) = path_of.query_row([file], |row| row.get::<_, String>(0)).optional()? else { continue };
+            let Some(path) = path_of.query_row([file], |row| row.get::<_, String>(0)).optional()? else {
+                continue;
+            };
             files.push((file, path));
         }
         folders_first(&mut files, scope, |(_, path)| path);
@@ -280,8 +286,7 @@ pub(super) fn ordered_in(
     // `sort_by` é estável: no empate, a ordem da lista inteira e depois a do banco.
     entries.sort_by(|a, b| b.sum(&weight).total_cmp(&a.sum(&weight)));
     folders_first(&mut entries, scope, |entry| &entry.path);
-    let found: Vec<Found> =
-        entries.iter().map(|e| Found { path: e.path.clone(), score: e.bank_score, text: None }).collect();
+    let found: Vec<Found> = entries.iter().map(|e| Found { path: e.path.clone(), score: e.bank_score, text: None }).collect();
     let checked = match check {
         #[cfg(test)]
         Check::Off => map_check::Verdict { files: found, lead: Lead::default() },
@@ -322,8 +327,8 @@ mod tests {
     use crate::io::map_search::{any_path, candidates_at};
     use crate::io::map_sense::Near;
     use crate::io::project_map::{self as store, model_path, open_existing};
-    use serde_json::{json, Value};
-    use tempfile::{tempdir, TempDir};
+    use serde_json::{Value,json};
+    use tempfile::{TempDir,tempdir};
 
     fn languages() -> Languages {
         Languages::new(["pt-BR", "en-US"])

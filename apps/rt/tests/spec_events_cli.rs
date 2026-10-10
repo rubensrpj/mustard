@@ -237,7 +237,7 @@ fn a_write_cut_by_the_size_limit_leaves_the_spec_file_as_it_was() {
 /// mesmo tempo, em dois processos, a cópia que ficou tem os dois itens, e
 /// cada lote aponta só arquivos que estão lá, sem sobra de outra rodada.
 #[test]
-fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
+fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publication() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let spec = root.join(".claude").join("spec").join("teste");
@@ -293,10 +293,13 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
                 .count();
             assert_eq!(warned, 0, "{}", String::from_utf8_lossy(&out.stdout));
         }
-        let copied = copied_items(root, &spec.join("copy"));
+        let history = std::fs::read_to_string(spec.join("spec.ndjson")).expect("canonical history");
+        let items: Vec<Value> = history.lines().map(|line| serde_json::from_str(line).expect("canonical event")).collect();
         for text in &texts {
-            assert!(copied.iter().any(|item| item["text"] == json!(text)), "round {round}: the copy lacks {text}");
+            assert!(items.iter().any(|item| item["type"] == "delivered" && item["text"] == json!(text)), "round {round}: canonical history lacks {text}");
         }
+        assert!(!spec.join("copy").exists(), "concurrent round closures do not create external database batches");
+        assert!(!root.join(".claude/mustard/publications").exists());
         for page in ["spec.md", "spec.html"] {
             assert!(!spec.join(page).exists(), "round {round}: no {page} is written");
         }
@@ -339,41 +342,6 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
         let copies = made.recv().expect("the copies folder");
         assert!(!copies.exists(), "fails={fails}: the copies folder stayed at {}", copies.display());
     }
-}
-
-/// Os itens que a cópia em `folder` manda para o banco, lidos como a
-/// ferramenta do banco os lê: de cada lote `spec-<n>.json`, cada escrita da
-/// coleção das faixas pelo arquivo dela, com os itens dela abertos. Cada
-/// arquivo apontado existe, e cada arquivo de faixa da pasta é apontado por
-/// um lote: a pasta é de uma cópia só.
-fn copied_items(root: &std::path::Path, folder: &std::path::Path) -> Vec<Value> {
-    let mut batches: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
-        .expect("the copy folder")
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("spec-")))
-        .collect();
-    batches.sort();
-    let mut pointed: Vec<std::path::PathBuf> = Vec::new();
-    let mut items = Vec::new();
-    for (n, batch) in batches.iter().enumerate() {
-        let name = batch.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        assert_eq!(name, format!("spec-{}.json", n + 1), "{batches:?}");
-        let writes: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(batch).expect("batch")).expect("json");
-        for write in writes.iter().filter(|w| w["op"] == json!("set")) {
-            let file = root.join(write["file_path"].as_str().expect("file_path"));
-            let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-            if write["collection"] == json!("ranges") {
-                let range: Value = serde_json::from_str(&body).expect("range json");
-                items.extend(range["items"].as_array().cloned().unwrap_or_default());
-            }
-            pointed.push(file);
-        }
-    }
-    for entry in std::fs::read_dir(folder.join("ranges")).expect("ranges").flatten() {
-        assert!(pointed.contains(&entry.path()), "{} is left over from another copy", entry.path().display());
-    }
-    items
 }
 
 #[test]
@@ -703,7 +671,11 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
         .into_iter()
         .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
         .collect();
-    assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 1, "hint": hint}]), "{body}");
+    assert_eq!(warned.len(), 2, "{body}");
+    assert_eq!(warned[0], json!({"reason": "files-diverged", "wave": 1, "hint": hint}), "{body}");
+    assert_eq!(warned[1]["reason"], "scope-expanded", "{body}");
+    assert_eq!(warned[1]["files"], json!(["extra.rs"]), "{body}");
+    assert_eq!(warned[1]["classification"], "necessity-unverified", "{body}");
 
     // Onda 2: a cópia dela deixa o comando de compilação quebrado.
     let before = head();

@@ -1,36 +1,30 @@
-# O Mustard neste projeto
+# Mustard neste projeto
 
-Todo trabalho que muda arquivo segue um fluxo só: levantamento, plano, aprovação, ondas, revisão, fechamento e pull request. Cada comando diz o próximo passo: siga-o, sem decidir a ordem sozinho.
+Binário busca/calcula; LLM implementa.
 
-## Quando o pedido chega
+## Levantamento
 
-- Pedido que muda arquivo abre uma spec: rode `mustard-rt run open`. Gravado o objetivo (o primeiro `context`), sugira `/clear`: a linha de retomada diz onde a spec está.
-- Pergunta, leitura ou status não abre spec. Responda direto.
-- Em branch que o Mustard não abriu, nada trava.
+- Abra mudanças por `mustard-rt run open`, grave o objetivo em `context`, sugira `/clear`; a linha de retomada mostra o estado. Consultas não abrem spec; branch alheia não bloqueia.
+- Explique na ordem de explicar do estilo de resposta. Confira código/histórico antes de remover. Grave respostas por `mustard-rt run answer`.
+- Busque/leia por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve argumentos/escopo. `intent`: pergunta local com recurso/provedor + operação, sem repetir o objetivo geral; ou 2–8 itens `- pergunta` com recurso/restrições por item. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
+- CLI: `mustard-rt run search --shell-output --intent "<pergunta>" --purpose spec -- rg -n "<padrão>" .`. Bash: `mustard:spec: <pergunta>`, senão `locate`. `--raw`: nativo; `--choose`: Jev opcional.
+- Reuse linhas/corpos confirmados; leia faixas faltantes com `Read` (`offset`/`limit`). Sem faixa: `run map summary --file <arquivo>`. Fonte mudou: releia. Referência não prova comportamento.
+- `mustard-rt run knowledge`: dossiê.
 
-## No levantamento
+## Spec aberta
 
-- Apresente um ponto por vez, na ordem de explicar do estilo de resposta.
-- Confira no código e no histórico do git antes de afirmar ou propor: o que parece morto pode ter quem o use, e o que saiu pode ter saído de propósito.
-- Grave cada resposta na hora com `mustard-rt run answer`.
+- Leia/grave a spec por `mustard-rt run read`/`run write`; nunca edite `spec.*` à mão.
 
-## Durante a spec
+- Em spec fechada ou com pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes de `write request`. PR reprovado pelo servidor: `mustard-rt run reopen --fix --reason "<motivo>"`.
+- Erro, ajuste ou melhoria do mesmo assunto entra na mesma spec por `write request`, nunca como pendência. Registre e informe o que for certo; na dúvida, proponha e pergunte uma vez. Outro assunto entra por `mustard-rt run pending --add`; se o usuário quiser fazer já, sugira outra conversa.
+- Mudança fora do autorizado exige o sim do usuário. Correção do funcionamento do Mustard vira ajuste no produto, não só memória.
+- Delegue a investigação que abre muitos arquivos. Peça a todo agente achados na spec por `mustard-rt run write` e retorno em duas linhas.
 
-- Em spec fechada ou com o pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes do `write request`. Pull request reprovado pelo servidor: `mustard-rt run reopen --fix --reason "<motivo>"`. Erro, ponto crítico, melhoria e ajuste do mesmo assunto entram na mesma spec, pelo `write request`: nunca viram pendência. Quem identifica é você: com certeza, grave e avise; na dúvida, sugira e pergunte uma vez. Só assunto diferente vira pendência, com `mustard-rt run pending --add`; se o usuário quiser fazer já, sugira outra conversa.
-- Outra mudança sua ou de um agente só segue com o "sim" do usuário.
-- Toda correção do jeito de o Mustard trabalhar vira ajuste do próprio Mustard, nunca só memória sua.
-- Nunca edite os `spec.*` à mão: use `write` e `mustard-rt run read <bloco>`.
-- Delegue a um agente a investigação que abre muitos arquivos; a conferência pontual é sua. Peça a todo agente que grave na spec pelo `mustard-rt run write` e volte com duas linhas.
+## Acompanhamento
 
-## Páginas
-
-- Nunca escreva HTML. Página avulsa sai do `mustard-rt run page`, a partir de markdown.
-- Publique no claude.ai só quando um comando mandar e grave o endereço como ele disser. O link fica na barra de status: não o repita na conversa.
-
-## Commit e pull request
-
-O binário monta a mensagem de commit e o corpo do pull request. Nunca escreva neles "Claude", link do claude.ai, e-mail ou caminho da máquina.
+- `/mustard-panel`: projeto/specs/execução/consumo, sem IA; CLI: `run panel`.
+- `/mustard-pages` só sob pedido; exportar não confirma publicação. Atualize só por pedido. `run publish --spec <spec>`; `--include-consumption`: autoriza consumo. `mustard-rt run page`: markdown.
 
 ## Retomar
 
-"Onde eu parei" e "vamos continuar" pedem `mustard-rt run resume`.
+`mustard-rt run resume`. Commit/PR não levam cliente, e-mail ou caminho local.

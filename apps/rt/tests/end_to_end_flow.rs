@@ -312,8 +312,8 @@ impl Project {
     /// Um programa compilado de mentira na pasta da versão em construção, que
     /// responde `says` ao `--version`.
     fn compiled_program_says(&self, says: &str) {
-        let program = self.build_folder().join("release").join("mustard-rt");
-        std::fs::create_dir_all(program.parent().expect("release folder")).expect("the build folder");
+        let program = self.build_folder().join("mustard-dev").join("mustard-rt");
+        std::fs::create_dir_all(program.parent().expect("development profile folder")).expect("the build folder");
         executable::write_executable(&program, &format!("#!/bin/sh\necho '{says}'\n"));
     }
 
@@ -745,7 +745,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     names.sort();
-    assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
+    assert_eq!(names, ["spec.ndjson", "validation-base-map.json"], "the spec keeps its native events and validation map without automatic publication");
 
     // O fluxo inteiro não grava onda pela linha de comando: toda linha de onda
     // do arquivo da spec — lida crua, com as versões antigas e as removidas —
@@ -1412,7 +1412,7 @@ fn a_close_that_takes_the_last_return_starts_the_reading_of_the_history_of_the_p
 /// recebe a chamada de cada compilação como `<pasta> <argumentos>`.
 fn the_build_call(project: &Project) -> String {
     format!(
-        "{} build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir {}",
+        "{} build --profile mustard-dev --locked -p mustard-rt -p scan -p mustard-cli --target-dir {}",
         project.root.display(),
         project.build_folder().display()
     )
@@ -1430,7 +1430,7 @@ fn a_round_that_committed_the_program_builds_the_development_version_once_in_the
 
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
-    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
+    assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
     let reasons: Vec<&str> = second["warnings"].as_array().into_iter().flatten().filter_map(|w| w["reason"].as_str()).collect();
     assert!(!reasons.contains(&"development-build-failed"), "a compilação verde não avisa: {second}");
 }
@@ -1471,7 +1471,7 @@ fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
 
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed anyway: {second}");
-    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
+    assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
     let warning = second["warnings"]
         .as_array()
         .into_iter()
@@ -1638,8 +1638,12 @@ fn building_the_development_version_installs_nothing_and_leaves_the_plugin_folde
 
     let calls = project.cargo_calls();
     assert_eq!(calls.len(), 2, "uma compilação pela sessão e outra pela rodada: {calls:?}");
-    assert!(calls.iter().all(|call| call == &the_build_call(&project)), "o cargo só recebe o build: {calls:?}");
+    assert_eq!(calls, [the_build_call(&project), changed_build_call(&project)], "full startup then affected runtime build");
     let after = snapshot_of(&config);
     let changed: Vec<&PathBuf> = before.keys().chain(after.keys()).filter(|path| before.get(*path) != after.get(*path)).collect();
     assert!(changed.is_empty(), "o plugin instalado e o registro ficam como estavam: {changed:?}");
+}
+
+fn changed_build_call(project: &Project) -> String {
+    format!("{} build --profile mustard-dev --locked -p mustard-rt --target-dir {}", project.root.display(), project.build_folder().display())
 }

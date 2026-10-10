@@ -40,6 +40,12 @@ use crate::io::fs;
 use crate::platform::harness::home_dir;
 use crate::platform::process::{program_file, program_file_names};
 
+/// Startup configuration for native queries against an existing language server.
+pub struct LanguageServer {
+    pub args: &'static [&'static str],
+    pub initialization_options: Option<&'static str>,
+}
+
 /// O programa que um plugin de linguagem chama, e o comando que instala esse
 /// programa. `plugin` é `None` para uma linguagem que o catálogo oficial
 /// ainda não cobre — hoje, Dart.
@@ -52,6 +58,7 @@ use crate::platform::process::{program_file, program_file_names};
 /// programa que foi instalado mas não roda, com o comando pronto. `pin`, quando
 /// há, é a versão em que o programa precisa ficar, e como a etapa a confere.
 pub struct CodeTool {
+    pub lsp: LanguageServer,
     pub plugin: Option<&'static str>,
     pub program: &'static str,
     pub install_cmd: &'static str,
@@ -135,6 +142,12 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "rust",
         CodeTool {
+            lsp: LanguageServer {
+                args: &[],
+                initialization_options: Some(
+                    r#"{"check":{"enable":false},"cargo":{"buildScripts":{"enable":false}},"procMacro":{"enable":false}}"#,
+                ),
+            },
             plugin: Some("rust-analyzer-lsp"),
             program: "rust-analyzer",
             install_cmd: "rustup component add rust-analyzer",
@@ -146,6 +159,12 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "typescript",
         CodeTool {
+            lsp: LanguageServer {
+                args: &["--stdio"],
+                initialization_options: Some(
+                    r#"{"disableAutomaticTypingAcquisition":true,"tsserver":{"useSyntaxServer":"never"}}"#,
+                ),
+            },
             plugin: Some("typescript-lsp"),
             program: "typescript-language-server",
             install_cmd: TYPESCRIPT_INSTALL,
@@ -157,6 +176,12 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "javascript",
         CodeTool {
+            lsp: LanguageServer {
+                args: &["--stdio"],
+                initialization_options: Some(
+                    r#"{"disableAutomaticTypingAcquisition":true,"tsserver":{"useSyntaxServer":"never"}}"#,
+                ),
+            },
             plugin: Some("typescript-lsp"),
             program: "typescript-language-server",
             install_cmd: TYPESCRIPT_INSTALL,
@@ -168,6 +193,10 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "csharp",
         CodeTool {
+            lsp: LanguageServer {
+                args: &[],
+                initialization_options: None,
+            },
             plugin: Some("csharp-lsp"),
             program: "csharp-ls",
             install_cmd: CSHARP_INSTALL,
@@ -179,6 +208,10 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "go",
         CodeTool {
+            lsp: LanguageServer {
+                args: &[],
+                initialization_options: None,
+            },
             plugin: Some("gopls-lsp"),
             program: "gopls",
             install_cmd: "go install golang.org/x/tools/gopls@latest",
@@ -190,6 +223,10 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "python",
         CodeTool {
+            lsp: LanguageServer {
+                args: &["--stdio"],
+                initialization_options: None,
+            },
             plugin: Some("pyright-lsp"),
             program: "pyright-langserver",
             install_cmd: "npm install -g pyright",
@@ -201,6 +238,10 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
     (
         "php",
         CodeTool {
+            lsp: LanguageServer {
+                args: &["--stdio"],
+                initialization_options: None,
+            },
             plugin: Some("php-lsp"),
             program: "intelephense",
             install_cmd: "npm install -g intelephense",

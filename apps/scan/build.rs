@@ -11,7 +11,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
+// Reuse the stamp emitter; the runtime-only hooks emitter is unused here.
+#[allow(dead_code)]
+#[path = "../rt/build.rs"]
+mod version_stamp;
+
 fn main() {
+    version_stamp::emit_version_full();
+    println!("cargo:rerun-if-changed=../rt/build.rs");
     let manifest = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
     let registry_path = Path::new(&manifest).join("languages.toml");
@@ -114,6 +121,7 @@ fn main() {
     // objeto. OPCIONAL: sem o campo, `false`.
     let mut implicit_table = String::new();
     implicit_table.push_str("pub(crate) static LANG_IMPLICIT_SELF: &[(&str, bool)] = &[\n");
+    let mut lexical_table=String::from("pub(crate) static LANG_LEXICAL_FUNCTIONS: &[(&str, bool)] = &[\n");
 
     // (name, single_part_paths) — se o import não relativo de uma parte só
     // pode nomear um arquivo do projeto. OPCIONAL: sem o campo, `false`.
@@ -255,6 +263,7 @@ fn main() {
             .get("implicit_self")
             .map(|v| v.as_bool().expect("language.implicit_self must be true or false"))
             .unwrap_or(false);
+        let lexical_functions=tbl.get("lexical_functions").map(|v|v.as_bool().expect("language.lexical_functions must be true or false")).unwrap_or(false);
         let single_part_paths = tbl
             .get("single_part_paths")
             .map(|v| v.as_bool().expect("language.single_part_paths must be true or false"))
@@ -350,6 +359,7 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(implicit_table, "    ({name:?}, {implicit_self}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(lexical_table,"    ({name:?}, {lexical_functions}),").expect("generated String");
         writeln!(single_part_table, "    ({name:?}, {single_part_paths}),")
             .expect("the generated table is a String, which never fails to write");
         writeln!(global_namespace_table, "    ({name:?}, {global_namespace}),")
@@ -394,6 +404,7 @@ fn main() {
         &mut member_table,
         &mut self_table,
         &mut implicit_table,
+        &mut lexical_table,
         &mut single_part_table,
         &mut global_namespace_table,
         &mut family_table,
@@ -840,7 +851,9 @@ fn source_digest(crate_root: &Path) -> String {
     collect_files(&crate_root.join("src"), &mut files);
     collect_files(&crate_root.join("queries"), &mut files);
     collect_files(&crate_root.join("routes"), &mut files);
-    for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES] {
+    for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES, CORE_KNOWLEDGE, CORE_ANNOTATIONS,
+        "../../packages/core/src/domain/knowledge/resources.rs", "../../packages/core/src/domain/knowledge/resources.toml",
+        "../../packages/core/src/domain/knowledge/references.rs", "../../packages/core/src/domain/knowledge/evidence.rs"] {
         let core_data = crate_root.join(core_data);
         println!("cargo:rerun-if-changed={}", relative_to(crate_root, &core_data));
         files.push(core_data);
@@ -882,6 +895,10 @@ const CORE_TEST_FILES: &str = "../../packages/core/src/domain/ast/test-files.tom
 /// The core's entry-file data, from the crate root: for each language of the
 /// registry, the names of the file that answers for its folder.
 const CORE_ENTRY_FILES: &str = "../../packages/core/src/domain/ast/entry-files.toml";
+
+// Evidence-pack rules change the durable product even without a parser edit.
+const CORE_KNOWLEDGE: &str = "../../packages/core/src/domain/knowledge.rs";
+const CORE_ANNOTATIONS: &str = "../../packages/core/src/domain/knowledge/annotation.rs";
 
 /// `path` as cargo should record a watched file: relative to the crate root.
 ///

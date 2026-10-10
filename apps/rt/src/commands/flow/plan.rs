@@ -65,13 +65,13 @@ use mustard_core::domain::survey::{open_points, open_refusal};
 use mustard_core::domain::wave_prompt::{self, Owner};
 use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{prompts, Flight, WavePrompt};
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Map, Value};
+use mustard_core::io::wave_prompt::{Flight, WavePrompt, prompts};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Map, Value, json};
 
 use crate::commands::flow::skill_search::{best_skill, skills_on_disk};
 use crate::commands::spec_events::{self, write::record};
-use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// As opções de `mustard-rt run plan`.
 pub struct PlanOpts {
@@ -146,40 +146,26 @@ impl PlanFinding {
 
     /// A mensagem exata, no idioma pedido.
     fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, String)]| {
-            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
-        };
+        let fill = |key: &str, slots: &[(&str, String)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
         match self {
             Self::Refused(refusal) => refusal.message(lang),
             Self::Skill { name, refusal } => {
                 format!("{name}: {}", refusal.message(lang))
             }
             Self::Proof { criterion, refusal } => format!("{criterion}: {}", refusal.message(lang)),
-            Self::FileOutsideGit { task, path } => {
-                fill("plan.file_outside_git", &[("{task}", task.clone()), ("{path}", path.clone())])
-            }
+            Self::FileOutsideGit { task, path } => fill("plan.file_outside_git", &[("{task}", task.clone()), ("{path}", path.clone())]),
             // A conferência das citações é a mesma do ponto do levantamento, e
             // as mensagens dela também: o número do fato vira o código da
             // tarefa que citou.
             Self::Cited { task, finding } => {
-                let text = finding
-                    .refusal(0)
-                    .map(|refusal| refusal.message(lang))
-                    .or_else(|| finding.warning(0, lang))
-                    .unwrap_or_default();
+                let text = finding.refusal(0).map(|refusal| refusal.message(lang)).or_else(|| finding.warning(0, lang)).unwrap_or_default();
                 format!("{task}: {text}")
             }
             Self::ItemWithoutTask { code } => fill("plan.item_without_task", &[("{code}", code.clone())]),
-            Self::ContractWithoutCriterion { code } => {
-                fill("plan.contract_without_criterion", &[("{code}", code.clone())])
-            }
+            Self::ContractWithoutCriterion { code } => fill("plan.contract_without_criterion", &[("{code}", code.clone())]),
             Self::TaskWithoutFile { task } => fill("plan.task_without_file", &[("{task}", task.clone())]),
-            Self::TaskCouldNameASkill { task, skill } => {
-                fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
-            }
-            Self::CommandNotDeclared { field } => {
-                fill("plan.command_not_declared", &[("{field}", (*field).to_string())])
-            }
+            Self::TaskCouldNameASkill { task, skill } => fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())]),
+            Self::CommandNotDeclared { field } => fill("plan.command_not_declared", &[("{field}", (*field).to_string())]),
         }
     }
 
@@ -227,14 +213,9 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     if let Err(refusal) = note_findings(&opts.root, &spec, &log, &findings, lang) {
         return refuse(&refusal);
     }
-    let blocking: Vec<Value> =
-        findings.iter().filter(|f| f.blocks()).map(|f| f.to_value(lang)).collect();
-    let warnings: Vec<Value> =
-        findings.iter().filter(|f| !f.blocks()).map(|f| f.to_value(lang)).collect();
-    let waves: Vec<Value> = built
-        .iter()
-        .map(|p| json!({ "wave": p.wave, "lines": p.lines, "skills": p.stale_skills }))
-        .collect();
+    let blocking: Vec<Value> = findings.iter().filter(|f| f.blocks()).map(|f| f.to_value(lang)).collect();
+    let warnings: Vec<Value> = findings.iter().filter(|f| !f.blocks()).map(|f| f.to_value(lang)).collect();
+    let waves: Vec<Value> = built.iter().map(|p| json!({ "wave": p.wave, "lines": p.lines, "skills": p.stale_skills })).collect();
 
     if !blocking.is_empty() {
         // O plano travado não é marco: nada vai para o banco da página, e o
@@ -245,7 +226,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
             "hint": translate("plan.not_ready", lang).replace("{count}", &blocking.len().to_string()),
             "waves": waves, "blocking": blocking, "warnings": warnings,
         });
-        let withheld = spec_events::pages::copy::withheld(&log);
+        let withheld = spec_events::pages::secrets::withheld(&log);
         spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
         return report;
     }
@@ -256,8 +237,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     let from = State::from_log(&log).phase.unwrap_or("-").to_string();
     let recorded = if from == "plan" {
         if let Ok(paths) = mustard_core::ClaudePaths::for_project(&project.root)
-            && let Err(refusal) =
-                mustard_core::io::spec_index::refresh_line(&paths.spec_index_path(), &spec, &log)
+            && let Err(refusal) = mustard_core::io::spec_index::refresh_line(&paths.spec_index_path(), &spec, &log)
         {
             return refuse(&refusal);
         }
@@ -279,10 +259,6 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     // link mora na barra de status. O item que ainda guarda um trecho com
     // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
     // pergunta.
-    let prepared = match spec_events::pages::copy::prepare_milestone(&project.root, &spec, "approval", lang) {
-        Ok(prepared) => prepared,
-        Err(refusal) => return refuse(&refusal),
-    };
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
@@ -292,10 +268,11 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     }
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
-    let ask = translate("plan.next", lang)
-        .replace("{question}", translate("approval.question", lang))
-        .replace("{option}", translate("approval.option", lang));
-    spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
+    let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang)).replace("{option}", translate("approval.option", lang));
+    report["next"] = json!(ask);
+    report["panel"] = json!("/mustard-panel");
+    let withheld = spec_events::pages::secrets::withheld(&log);
+    spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
     report
 }
 
@@ -307,13 +284,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
 /// # Errors
 ///
 /// A recusa da gravação da anotação.
-fn note_findings(
-    start: &Path,
-    spec: &str,
-    log: &SpecLog,
-    findings: &[PlanFinding],
-    lang: Locale,
-) -> Result<(), Refusal> {
+fn note_findings(start: &Path, spec: &str, log: &SpecLog, findings: &[PlanFinding], lang: Locale) -> Result<(), Refusal> {
     let mut noted: BTreeSet<String> = log
         .block(BlockQuery::Block(Block::Notes))
         .into_iter()
@@ -340,13 +311,7 @@ fn note_findings(
 // ---------------------------------------------------------------------------
 
 /// Tudo que a conferência do plano acha, na ordem em que é conferido.
-fn check(
-    start: &Path,
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    built: &[WavePrompt],
-) -> Vec<PlanFinding> {
+fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WavePrompt]) -> Vec<PlanFinding> {
     let mut out: Vec<PlanFinding> = Vec::new();
     let codes = log.codes();
     let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
@@ -386,17 +351,12 @@ fn check(
     // os nomes citados existem no mapa.
     let roots = store::citation_roots(start, root);
     let world = DiskWorld::new(roots, Some(root));
-    let tasks: Vec<&SpecEvent> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "task")
-        .collect();
+    let tasks: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task").collect();
     // A conferência olha só o que ainda vem: a tarefa de onda que já tem
     // registro de entrega está provada pelo código que entrou, pelo commit
     // que a carrega e pela revisão que a aprovou, e conferir de novo o texto
     // que a descreveu só acumula trava que ninguém vai consertar.
-    let ahead: Vec<&SpecEvent> =
-        tasks.iter().copied().filter(|task| !task.wave().is_some_and(|n| delivered.contains(&n))).collect();
+    let ahead: Vec<&SpecEvent> = tasks.iter().copied().filter(|task| !task.wave().is_some_and(|n| delivered.contains(&n))).collect();
 
     let mut cited: Vec<String> = Vec::new();
     for task in &ahead {
@@ -408,10 +368,7 @@ fn check(
         }
         for (path, new) in &files {
             if !new && world.file_lines(path).is_none() {
-                out.push(PlanFinding::Cited {
-                    task: code.clone(),
-                    finding: Finding::MissingFile { path: path.clone() },
-                });
+                out.push(PlanFinding::Cited { task: code.clone(), finding: Finding::MissingFile { path: path.clone() } });
             }
             if !cited.contains(path) {
                 cited.push(path.clone());
@@ -424,8 +381,7 @@ fn check(
 
     // Todo arquivo citado está no git: um agente noutra sessão ou noutra
     // máquina não vê o que só existe neste disco.
-    let tracked: BTreeSet<String> =
-        mustard_core::platform::git_exclude::tracked_paths(root, &cited).into_iter().collect();
+    let tracked: BTreeSet<String> = mustard_core::platform::git_exclude::tracked_paths(root, &cited).into_iter().collect();
     for task in &ahead {
         let code = code_of(task);
         for (path, new) in declared_files(task) {
@@ -439,16 +395,9 @@ fn check(
     // avisam, e a decisão fica com quem aprova. O item sem dono não é
     // conferido aqui: a análise antes do envio de cada onda decide se ele vai
     // para ela.
-    let covered: BTreeSet<u64> = tasks
-        .iter()
-        .flat_map(|task| task.ints("covers"))
-        .filter_map(|id| log.current(id).map(|e| e.id))
-        .collect();
-    let agreed: Vec<&SpecEvent> = log
-        .block(BlockQuery::Block(Block::Agreed))
-        .into_iter()
-        .filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty()))
-        .collect();
+    let covered: BTreeSet<u64> = tasks.iter().flat_map(|task| task.ints("covers")).filter_map(|id| log.current(id).map(|e| e.id)).collect();
+    let agreed: Vec<&SpecEvent> =
+        log.block(BlockQuery::Block(Block::Agreed)).into_iter().filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty())).collect();
     // O item do projeto é regra que vale sempre, sem tarefa que o implemente;
     // o marcado como "não vira código" traz o motivo na própria linha. Avisar
     // sobre eles seria avisar para sempre.
@@ -487,12 +436,8 @@ fn check(
         }
     }
 
-    let with_criterion: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Criteria))
-        .into_iter()
-        .flat_map(|e| e.ints("contracts"))
-        .filter_map(|id| log.current(id).map(|e| e.id))
-        .collect();
+    let with_criterion: BTreeSet<u64> =
+        log.block(BlockQuery::Block(Block::Criteria)).into_iter().flat_map(|e| e.ints("contracts")).filter_map(|id| log.current(id).map(|e| e.id)).collect();
     for contract in agreed.iter().filter(|e| e.event_type == "contract") {
         if !with_criterion.contains(&contract.id) {
             out.push(PlanFinding::ContractWithoutCriterion { code: code_of(contract) });
@@ -532,19 +477,16 @@ pub(super) fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
         .filter_map(|file| {
             let path = file.as_str().or_else(|| file.get("path").and_then(Value::as_str))?;
             let path = path.trim().replace('\\', "/");
-            (!path.is_empty())
-                .then(|| (path, file.get("new").and_then(Value::as_bool) == Some(true)))
+            (!path.is_empty()).then(|| (path, file.get("new").and_then(Value::as_bool) == Some(true)))
         })
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::flow::grill::{grill_for, GrillOpts};
-    use crate::commands::spec_events::pages::copy::{sent, sent_items};
-    use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
+    use crate::commands::flow::grill::{GrillOpts, grill_for};
+    use crate::commands::spec_events::write::{WriteOpts, record_open, seed_at};
     use tempfile::tempdir;
 
     const GOAL: &str = "Travar o merge enquanto houver pendência aberta.";
@@ -598,9 +540,13 @@ mod tests {
 
     /// Um critério da spec, que toda onda precisa apontar.
     fn criterion(root: &Path, spec: &str, said: u64) -> u64 {
-        id_of(&write(root, Some(spec), "criterion",
+        id_of(&write(
+            root,
+            Some(spec),
+            "criterion",
             json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",
-                "origin": said})))
+                "origin": said}),
+        ))
     }
 
     /// Uma onda com uma tarefa, num plano que passa em tudo.
@@ -615,13 +561,7 @@ mod tests {
     }
 
     fn reasons(report: &Value, field: &str) -> Vec<String> {
-        report[field]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|f| f["reason"].as_str().map(str::to_string))
-            .collect()
+        report[field].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f["reason"].as_str().map(str::to_string)).collect()
     }
 
     /// Um plano são é conferido numa chamada: a spec passa para o plano, a
@@ -646,17 +586,10 @@ mod tests {
         // aprovação reconhece, e nenhuma vaga fica por preencher.
         assert!(next.contains("com o texto exato \"Aprovar esta spec?\""), "{next}");
         assert!(!next.contains("{question}"), "{next}");
-        for page in ["spec", "project"] {
-            assert!(next.contains(&format!(r#"'{{"page":"{page}","milestone":"approval","#)), "{page}: {next}");
-        }
-        assert!(next.contains("write copy") && next.contains("ArtifactData"), "{next}");
-        // A aprovação é um marco: a resposta manda publicar as duas páginas,
-        // que ainda não têm endereço, e copiar a spec inteira para o banco.
-        assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
-        assert!(!report.to_string().contains("http"), "{report}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert!(!sent_items(root, &report).is_empty(), "{report}");
-        assert_eq!(report["copy"]["spec"]["record"], json!({"page": "spec", "last": log.max_id()}), "{report}");
+        assert!(report.get("publish").is_none() && report.get("copy").is_none(), "{report}");
+        assert!(!next.contains("ArtifactData") && !next.contains("write publish"), "{next}");
+        assert_eq!(report["panel"], "/mustard-panel");
+        assert!(!root.join(".claude/mustard/publications").exists());
         for page in ["spec.html", "spec.md"] {
             assert!(!root.join(".claude/spec/x").join(page).exists(), "{page}");
         }
@@ -673,7 +606,7 @@ mod tests {
         assert_eq!(again["ok"], json!(true), "{again}");
         assert_eq!(again["from"], json!("plan"));
         assert!(again["id"].is_null(), "{again}");
-        assert_eq!(again["publish"], json!(["spec", "project"]), "{again}");
+        assert!(again.get("publish").is_none() && again.get("copy").is_none(), "{again}");
         let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert_eq!(rebuilt, index, "o índice volta igual");
     }
@@ -688,11 +621,21 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "rule", json!({"text": "No máximo 3 tentativas de compilação.",
-            "example": "a quarta para", "keys": ["tentativas"], "applies_to": {"files": ["**"]}, "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "rule",
+            json!({"text": "No máximo 3 tentativas de compilação.",
+            "example": "a quarta para", "keys": ["tentativas"], "applies_to": {"files": ["**"]}, "origin": said}),
+        );
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Escrever a soma.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "Escrever a subtração.", "criteria": [crit], "done_when": "passa", "depends_on": [1], "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "wave",
+            json!({"n": 2, "text": "Escrever a subtração.", "criteria": [crit], "done_when": "passa", "depends_on": [1], "origin": said}),
+        );
         write(root, Some("x"), "task", json!({"wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/b.rs"}], "origin": said}));
 
         let report = plan(root, "x");
@@ -700,13 +643,9 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
-        let computed = sent(root, &report, "spec").into_iter().find(|w| w["collection"] == json!("computed")).unwrap();
-        for prompt in &built {
-            assert!(prompt.lines > 0);
-            // O texto que o banco da página recebe é o mesmo que o agente lê,
-            // seções fixas incluídas: nenhuma linha fica de fora.
-            assert_eq!(computed["body"]["prompts"][prompt.wave.to_string()], json!(prompt.text), "{computed}");
-        }
+        assert!(report.get("copy").is_none() && report.get("publish").is_none());
+        assert!(!root.join(".claude/spec/x/copy").exists());
+        assert_eq!(crate::commands::panel::snapshot(root, Some("x"))["specs"][0]["waves"].as_array().unwrap().len(), 2);
         let returns = format!("## {}", translate("prompt.part.return", Locale::PtBr));
         assert!(built.iter().all(|prompt| prompt.text.contains(&returns)), "{built:?}");
     }
@@ -719,8 +658,13 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         sound_plan(root, "x", said);
-        write(root, Some("x"), "point", json!({"block": "limits", "gap": "o teto", "from": "gap",
-            "status": "open", "facts": [{"text": GOAL, "source": "src/a.rs:1"}], "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "point",
+            json!({"block": "limits", "gap": "o teto", "from": "gap",
+            "status": "open", "facts": [{"text": GOAL, "source": "src/a.rs:1"}], "origin": said}),
+        );
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -734,14 +678,9 @@ mod tests {
     /// simula uma onda que já existia no arquivo, de antes do backlog, ou uma
     /// edição feita fora do binário.
     fn append_raw(root: &Path, spec: &str, event_type: &str, body: Value, id: u64) {
-        let mut map = mustard_core::domain::spec_events::normalize(
-            body.as_object().cloned().unwrap_or_default(),
-            event_type,
-        );
+        let mut map = mustard_core::domain::spec_events::normalize(body.as_object().cloned().unwrap_or_default(), event_type);
         map.insert("type".into(), json!(event_type));
-        let line = mustard_core::domain::spec_events::render_line(
-            &mustard_core::domain::spec_events::stamp(map, id, None, "2026-09-20T10:00:00-03:00"),
-        );
+        let line = mustard_core::domain::spec_events::render_line(&mustard_core::domain::spec_events::stamp(map, id, None, "2026-09-20T10:00:00-03:00"));
         use std::io::Write as _;
         let path = store::spec_file(root, spec).unwrap();
         let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
@@ -767,8 +706,14 @@ mod tests {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
-            append_raw(root, "x", "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
-                "skill": format!("s{i}"), "origin": said}), first_id + i);
+            append_raw(
+                root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
+                "skill": format!("s{i}"), "origin": said}),
+                first_id + i,
+            );
         }
 
         let report = plan(root, "x");
@@ -787,12 +732,17 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        let wave = write(root, Some("x"), "wave",
-            json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        let wave = write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
         let first_id = id_of(&wave) + 1;
         for i in 0..4 {
-            append_raw(root, "x", "task", json!({"wave": 1, "text": format!("Tarefa {i}."),
-                "files": [{"path": "src/a.rs"}], "origin": said}), first_id + i);
+            append_raw(
+                root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": format!("Tarefa {i}."),
+                "files": [{"path": "src/a.rs"}], "origin": said}),
+                first_id + i,
+            );
         }
 
         let report = plan(root, "x");
@@ -816,8 +766,14 @@ mod tests {
         let mut next = log.max_id();
         for proof in ["sai vazio", "git --version ; git --help", "git grep -n x"] {
             next += 1;
-            append_raw(root, "x", "criterion", json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous",
-                "origin": said}), next);
+            append_raw(
+                root,
+                "x",
+                "criterion",
+                json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous",
+                "origin": said}),
+                next,
+            );
         }
 
         let report = plan(root, "x");
@@ -826,13 +782,8 @@ mod tests {
         for reason in ["proof-program-unknown", "proof-chained-by-semicolon", "proof-search-not-negated"] {
             assert!(blocking.contains(&reason.to_string()), "{reason}: {report}");
         }
-        let hints: Vec<String> = report["blocking"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|f| f["hint"].as_str().map(str::to_string))
-            .collect();
+        let hints: Vec<String> =
+            report["blocking"].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f["hint"].as_str().map(str::to_string)).collect();
         assert!(hints.iter().any(|h| h.starts_with("MSTD-CRIT-") && h.contains("sai")), "{hints:?}");
     }
 
@@ -846,10 +797,20 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Some com o `Somador`.",
-            "files": [{"path": "src/nao-existe.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escreve o resto.",
-            "files": [{"path": "src/novo.rs", "new": true}], "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Some com o `Somador`.",
+            "files": [{"path": "src/nao-existe.rs"}], "origin": said}),
+        );
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Escreve o resto.",
+            "files": [{"path": "src/novo.rs", "new": true}], "origin": said}),
+        );
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -892,18 +853,13 @@ mod tests {
     /// que está declarado.
     #[test]
     fn a_placeholder_command_never_reaches_the_request() {
-        for (build, test, missing, present) in [
-            (mustard_core::BUILD_COMMAND_FALLBACK, "make test", "buildCommand", "testCommand"),
-            ("cargo build", "", "testCommand", "buildCommand"),
-        ] {
+        for (build, test, missing, present) in
+            [(mustard_core::BUILD_COMMAND_FALLBACK, "make test", "buildCommand", "testCommand"), ("cargo build", "", "testCommand", "buildCommand")]
+        {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
-            std::fs::write(
-                root.join("mustard.json"),
-                json!({"build_command": build, "test_command": test}).to_string(),
-            )
-            .unwrap();
+            std::fs::write(root.join("mustard.json"), json!({"build_command": build, "test_command": test}).to_string()).unwrap();
             sound_plan(root, "x", said);
 
             let report = plan(root, "x");
@@ -938,19 +894,24 @@ mod tests {
         )
         .unwrap();
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
-            "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
-            "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+            "files": [{"path": "src/a.rs"}], "origin": said}),
+        );
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
+            "files": [{"path": "src/b.rs"}], "origin": said}),
+        );
 
         let report = plan(root, "x");
-        let named: Vec<&Value> = report["warnings"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter(|f| f["reason"] == json!("task-could-name-a-skill"))
-            .collect();
+        let named: Vec<&Value> =
+            report["warnings"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter(|f| f["reason"] == json!("task-could-name-a-skill")).collect();
         assert_eq!(named.len(), 1, "só a tarefa sem skill recebe o nome: {report}");
         let hint = named[0]["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("MSTD-TASK-0001") && hint.contains("add-run-command"), "{hint}");
@@ -986,10 +947,20 @@ mod tests {
         )
         .unwrap();
         for n in [1, 2] {
-            write(root, Some("x"), "wave", json!({"n": n, "text": "Os comandos de execução novos.",
-                "criteria": [crit], "done_when": "passa", "origin": said}));
-            write(root, Some("x"), "task", json!({"wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
-                "files": [{"path": "src/a.rs"}], "origin": said}));
+            write(
+                root,
+                Some("x"),
+                "wave",
+                json!({"n": n, "text": "Os comandos de execução novos.",
+                "criteria": [crit], "done_when": "passa", "origin": said}),
+            );
+            write(
+                root,
+                Some("x"),
+                "task",
+                json!({"wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+                "files": [{"path": "src/a.rs"}], "origin": said}),
+            );
         }
         let record = write(root, Some("x"), "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
         assert_eq!(record["ok"], json!(true), "{record}");
@@ -1009,28 +980,37 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Os ganchos da sessão.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "A página da spec.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "wave",
+            json!({"n": 1, "text": "Os ganchos da sessão.",
+            "criteria": [crit], "done_when": "passa", "origin": said}),
+        );
+        write(
+            root,
+            Some("x"),
+            "wave",
+            json!({"n": 2, "text": "A página da spec.",
+            "criteria": [crit], "done_when": "passa", "origin": said}),
+        );
         // A mesma tarefa quebrada nas duas ondas: cita um arquivo que não
         // existe e não está marcado como novo.
         for wave in [1, 2] {
-            write(root, Some("x"), "task", json!({"wave": wave, "text": "Somar dois números.",
-                "files": [{"path": "src/somar.rs"}], "origin": said}));
+            write(
+                root,
+                Some("x"),
+                "task",
+                json!({"wave": wave, "text": "Somar dois números.",
+                "files": [{"path": "src/somar.rs"}], "origin": said}),
+            );
         }
-        let record = write(root, Some("x"), "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/somar.rs"]}));
+        let record = write(root, Some("x"), "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/somar.rs"]}));
         assert_eq!(record["ok"], json!(true), "{record}");
 
         let report = plan(root, "x");
-        let blocking: Vec<String> = report["blocking"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|f| f["hint"].as_str().map(str::to_string))
-            .collect();
+        let blocking: Vec<String> =
+            report["blocking"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|f| f["hint"].as_str().map(str::to_string)).collect();
         assert!(blocking.iter().any(|h| h.contains("MSTD-TASK-0002")), "a onda que ainda vem é conferida: {report}");
         assert!(!blocking.iter().any(|h| h.contains("MSTD-TASK-0001")), "a onda entregue não é: {report}");
     }
@@ -1044,10 +1024,20 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "decision", json!({"text": "Quem decidiu sozinho.", "keys": ["registro"],
-            "why": "registro da conversa", "no_code": "é registro de processo, não vira código", "waves": [1], "origin": said}));
-        write(root, Some("x"), "decision", json!({"text": "A rodada formata os arquivos dela.", "keys": ["formatador"],
-            "why": "o commit sai formatado", "waves": [1], "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "decision",
+            json!({"text": "Quem decidiu sozinho.", "keys": ["registro"],
+            "why": "registro da conversa", "no_code": "é registro de processo, não vira código", "waves": [1], "origin": said}),
+        );
+        write(
+            root,
+            Some("x"),
+            "decision",
+            json!({"text": "A rodada formata os arquivos dela.", "keys": ["formatador"],
+            "why": "o commit sai formatado", "waves": [1], "origin": said}),
+        );
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
 
@@ -1088,8 +1078,13 @@ mod tests {
         decision("Do projeto.", json!({"applies_to": {"files": ["**"]}}));
         decision("Da onda que não existe.", json!({"waves": [9]}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
-            "covers": [covered], "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
+            "covers": [covered], "origin": said}),
+        );
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let unowned: Vec<String> = wave_prompt::unowned(&log).iter().map(|e| codes[&e.id].clone()).collect();
@@ -1098,11 +1093,8 @@ mod tests {
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "the item without owner does not hold the plan: {report}");
         assert_eq!(report["phase"], json!("plan"), "{report}");
-        let every: Vec<String> = ["blocking", "warnings"]
-            .iter()
-            .flat_map(|field| report[*field].as_array().cloned().unwrap_or_default())
-            .map(|f| f.to_string())
-            .collect();
+        let every: Vec<String> =
+            ["blocking", "warnings"].iter().flat_map(|field| report[*field].as_array().cloned().unwrap_or_default()).map(|f| f.to_string()).collect();
         for code in &unowned {
             assert!(every.iter().all(|f| !f.contains(code.as_str())), "{code} is not a finding: {report}");
         }
@@ -1159,13 +1151,8 @@ mod tests {
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
-        let messages: Vec<String> = report["warnings"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|f| f["hint"].as_str().map(str::to_string))
-            .collect();
+        let messages: Vec<String> =
+            report["warnings"].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f["hint"].as_str().map(str::to_string)).collect();
         assert!(messages.len() >= 2, "{report}");
 
         // Cada achado virou anotação, com o texto exato.
@@ -1193,8 +1180,13 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit],
-            "done_when": "passa", "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "wave",
+            json!({"n": 1, "text": "Uma.", "criteria": [crit],
+            "done_when": "passa", "origin": said}),
+        );
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/nao-existe.rs"}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1237,53 +1229,27 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         sound_plan(root, "x", said);
-        let note = write(root, Some("x"), "note",
-            json!({"text": "A senha do banco: S3nh4F0rte", "keys": ["banco"], "origin": said}));
-        let code = note["code"].as_str().unwrap_or_default().to_string();
-
-        let held = plan(root, "x");
-        assert_eq!(held["ok"], json!(true), "{held}");
-        assert_eq!(held["publish"], json!(["spec", "project"]), "the publish is not held: {held}");
-        assert_eq!(held["withheld"], json!([code]), "{held}");
-        let next = held["next"].as_str().unwrap_or_default();
-        assert!(next.contains(&code) && next.contains("write purge"), "{next}");
-        let ask = translate("plan.next", Locale::PtBr)
-            .replace("{question}", translate("approval.question", Locale::PtBr))
-            .replace("{option}", translate("approval.option", Locale::PtBr));
-        assert!(next.contains("write publish") && next.ends_with(&ask), "{next}");
-        let warned = held["warnings"].as_array().cloned().unwrap_or_default();
-        assert!(warned.iter().any(|w| w["reason"] == json!("page-check")
-            && w["hint"].as_str().unwrap_or_default().contains(&code)), "{held}");
-        let note_id = note["id"].as_u64().unwrap_or_default();
-        assert!(!sent_items(root, &held).contains(&note_id), "the item stays out of the copy");
-        let folder = std::fs::read_dir(root.join(".claude/spec/x/copy/ranges")).unwrap();
-        for file in folder.flatten() {
-            let body = std::fs::read_to_string(file.path()).unwrap();
-            assert!(!body.contains("S3nh4F0rte"), "{}", file.path().display());
-        }
-
-        let purged = write(root, Some("x"), "purge", json!({"targets": [code], "reason": "secret"}));
-        assert_eq!(purged["ok"], json!(true), "{purged}");
-        let free = plan(root, "x");
-        assert_eq!(free["publish"], json!(["spec", "project"]), "{free}");
-        assert!(free.get("withheld").is_none(), "{free}");
-        let writes = sent(root, &free, "spec");
-        let range = writes
-            .iter()
-            .find(|w| w["body"]["items"].as_array().is_some_and(|items| items.iter().any(|i| i["id"].as_u64() == Some(note_id))))
-            .expect("the range with the purged item goes again");
-        let copied = range["body"]["items"].as_array().unwrap().iter().find(|i| i["id"].as_u64() == Some(note_id)).unwrap();
-        assert_eq!(copied["text"], json!("A senha do banco: …"), "the purged item goes, with the excerpt hidden");
+        let note = write(root, Some("x"), "note", json!({"text":"A senha do banco: S3nh4F0rte","keys":["banco"],"origin":said}));
+        let code = note["code"].as_str().unwrap();
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["withheld"], json!([code]));
+        assert!(report["warnings"].as_array().unwrap().iter().any(|w| w["reason"] == "page-check" && w["hint"].as_str().unwrap().contains("write purge")));
+        assert!(report.get("copy").is_none() && report.get("publish").is_none());
+        assert!(!root.join(".claude/mustard/publications").exists());
+        let export = crate::commands::panel::prepare_publication(root, "x", false);
+        let body = std::fs::read_to_string(export["database"].as_str().unwrap()).unwrap();
+        assert!(!body.contains("S3nh4F0rte") && !body.contains("senha"));
+        assert_eq!(export["published"], false);
+        assert_eq!(write(root, Some("x"), "purge", json!({"targets":[code],"reason":"secret"}))["ok"], true);
+        assert!(plan(root, "x").get("withheld").is_none());
     }
 
     /// A dica de aprovar do plano lê a opção de aprovar do catálogo, a mesma
     /// que a testemunha da aprovação reconhece, nos dois idiomas.
     #[test]
     fn the_approval_hint_reads_the_option_from_the_catalog() {
-        for (lang, config) in [
-            (Locale::PtBr, "{}".to_string()),
-            (Locale::EnUs, r#"{"language":{"text":"en-US"}}"#.to_string()),
-        ] {
+        for (lang, config) in [(Locale::PtBr, "{}".to_string()), (Locale::EnUs, r#"{"language":{"text":"en-US"}}"#.to_string())] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
@@ -1309,8 +1275,13 @@ mod tests {
     fn waves_of_code(root: &Path, said: u64, count: u64) {
         let crit = criterion(root, "x", said);
         for n in 1..=count {
-            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
-                "done_when": "passa", "origin": said}));
+            write(
+                root,
+                Some("x"),
+                "wave",
+                json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
+                "done_when": "passa", "origin": said}),
+            );
         }
     }
 
@@ -1345,51 +1316,21 @@ mod tests {
     /// ainda no plano, ganha o template num link novo na aprovação.
     #[test]
     fn approving_a_new_spec_tells_the_orchestrator_to_copy_the_whole_spec() {
-        use crate::commands::spec_events::pages::copy::{batches_order, old_page_order};
-        let lang = Locale::PtBr;
-        for old in [false, true] {
+        for legacy in [false, true] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
-            waves_of_code(root, said, 1);
-            rated(root, said, 1, "src/a1.rs");
-            rated(root, said, 1, "src/b1.rs");
-            rated(root, said, 1, "src/c1.rs");
-            if old {
-                let page = json!({"page": "spec", "milestone": "approval", "ok": true,
-                    "url": "https://claude.ai/code/artifact/pagina-antiga"});
-                assert_eq!(write(root, Some("x"), "publish", page)["ok"], json!(true));
+            sound_plan(root, "x", said);
+            if legacy {
+                let page = json!({"page":"spec","milestone":"approval","ok":true,"url":"https://claude.ai/code/artifact/old"});
+                assert_eq!(write(root, Some("x"), "publish", page)["ok"], true);
             }
-
             let report = plan(root, "x");
-            assert_eq!(report["ok"], json!(true), "{old}: {report}");
-            let next = report["next"].as_str().unwrap_or_default();
-            assert_eq!(report["publish"], json!(["spec", "project"]), "{old}: {report}");
-            // A publicação grava o carimbo do molde que o programa monta.
-            let stamp = mustard_core::platform::page_templates::spec_page_template(lang);
-            let stamp = mustard_core::platform::page_templates::template_stamp(&stamp).expect("the stamp");
-            let record = format!(
-                r#"'{{"page":"spec","milestone":"approval","ok":true,"template":true,"stamp":"{stamp}","url":"…"}}'"#
-            );
-            assert!(next.contains(&record), "{old}: {next}");
-            assert_eq!(next.contains(&old_page_order("spec", lang)), old, "{old}: {next}");
-            // A cópia leva a spec inteira, do primeiro item ao último.
-            let items = sent_items(root, &report);
-            let last = report["copy"]["spec"]["record"]["last"].as_u64().expect("the number copied");
-            assert_eq!(items.first(), Some(&1), "{old}: the whole spec: {items:?}");
-            assert_eq!(items.last(), Some(&last), "{old}: up to the last item: {items:?}");
-            // O orquestrador copia ele mesmo: a frase dos lotes vai solta, uma
-            // vez, antes da pergunta, sem texto a despachar para um agente.
-            let copy = batches_order(&report, "x", translate("page.copy.new_address", lang), lang);
-            assert!(copy.starts_with("Copie você mesmo, nesta conversa e sem agente,"), "{old}: {copy}");
-            assert_eq!(next.matches(copy.as_str()).count(), 1, "{old}: the conversation copies it: {next}");
-            assert!(!next.contains('«'), "{old}: no text goes to an agent: {next}");
-            assert!(report["copy"]["spec"].get("first").is_none(), "{old}: no first-copy mark: {report}");
-            let ask = translate("plan.next", lang)
-                .replace("{question}", translate("approval.question", lang))
-                .replace("{option}", translate("approval.option", lang));
-            assert!(next.find(&copy) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
-            assert!(report.get("migration").is_none(), "{old}: a migração de nota não existe mais: {report}");
+            assert_eq!(report["ok"], true, "{report}");
+            assert!(report.get("copy").is_none() && report.get("publish").is_none());
+            assert!(!root.join(".claude/spec/x/copy").exists());
+            assert!(!root.join(".claude/mustard/publications").exists());
+            assert!(report["next"].as_str().unwrap().contains("Aprovar esta spec?"));
         }
     }
 }

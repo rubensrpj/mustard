@@ -1,0 +1,39 @@
+{
+  "dataset_url": "https://github.com/evalplus/repoqa_release/releases/download/2024-06-23/repoqa-2024-06-23.json.gz",
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "criterion": "Frozen before implementation of occurrence triage. First alphabetical unused repository per language with <=200 files and <=2MB. Earlier checked-in selections excluded. Labels used only for evaluation.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "locustio/locust",
+      "commit": "6241e9cf0a5c296da98abfaeb9d66d0ad1db2390",
+      "needles": 10,
+      "files": 64,
+      "bytes": 997748
+    },
+    {
+      "language": "typescript",
+      "repo": "firebase/firebase-admin-node",
+      "commit": "67151e620fbb7bdfc2a017e9a35d51eca035d824",
+      "needles": 10,
+      "files": 106,
+      "bytes": 1014613
+    },
+    {
+      "language": "rust",
+      "repo": "alacritty/alacritty",
+      "commit": "d4f2f8577f763df059653dfab733dfe6ddc06913",
+      "needles": 10,
+      "files": 52,
+      "bytes": 682748
+    },
+    {
+      "language": "go",
+      "repo": "iawia002/lux",
+      "commit": "59f517bb7138acd4fffcced4560197e83a592fc2",
+      "needles": 10,
+      "files": 96,
+      "bytes": 226713
+    }
+  ]
+}

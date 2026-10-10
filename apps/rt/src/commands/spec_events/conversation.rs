@@ -21,10 +21,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, last_user_message};
 use mustard_core::domain::survey;
 use mustard_core::io::spend;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::shared::secret::without_secrets;
 use crate::shared::spec_state::DiskSpecState;
@@ -68,9 +68,7 @@ fn record(root: &Path, session: Option<&str>, event_type: &str, draft: Map<Strin
 
 /// Grava um evento na spec `spec`, pela gravação do `run write`.
 fn record_in_spec(root: &Path, spec: &str, event_type: &str, draft: Map<String, Value>) -> Option<u64> {
-    super::write::record(root, spec, event_type, draft, PhaseWriter::Binary)
-        .ok()
-        .map(|recorded| recorded.written.id)
+    super::write::record(root, spec, event_type, draft, PhaseWriter::Binary).ok().map(|recorded| recorded.written.id)
 }
 
 fn draft(fields: Value) -> Map<String, Value> {
@@ -110,14 +108,7 @@ pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> 
 /// testemunha o grava. O texto, a pergunta e a opção vão sem os segredos,
 /// como a mensagem: a nota digitada ao lado da opção pode trazer uma senha
 /// ou uma chave. O código da mudança vai como veio.
-pub(crate) fn record_witnessed_message(
-    root: &Path,
-    session: Option<&str>,
-    text: &str,
-    question: &str,
-    answer: &str,
-    change: Option<&str>,
-) -> Option<u64> {
+pub(crate) fn record_witnessed_message(root: &Path, session: Option<&str>, text: &str, question: &str, answer: &str, change: Option<&str>) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
@@ -151,31 +142,14 @@ pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) ->
 
 /// Um gancho barrou ou avisou: quem, o quê, em que ferramenta (ou evento) e
 /// por quê.
-pub(crate) fn record_hook(
-    root: &Path,
-    session: Option<&str>,
-    hook: &str,
-    action: HookAction,
-    tool: &str,
-    reason: &str,
-) -> Option<u64> {
-    record(
-        root,
-        session,
-        "hook",
-        draft(json!({ "author": "hook", "hook": hook, "action": action.name(), "tool": tool, "reason": reason })),
-    )
+pub(crate) fn record_hook(root: &Path, session: Option<&str>, hook: &str, action: HookAction, tool: &str, reason: &str) -> Option<u64> {
+    record(root, session, "hook", draft(json!({ "author": "hook", "hook": hook, "action": action.name(), "tool": tool, "reason": reason })))
 }
 
 /// Um gancho colocou texto na conversa: quem, o texto e o tamanho dele em
 /// caracteres.
 pub(crate) fn record_injection(root: &Path, session: Option<&str>, hook: &str, text: &str) -> Option<u64> {
-    record(
-        root,
-        session,
-        "injection",
-        draft(json!({ "author": "hook", "hook": hook, "chars": text.chars().count(), "text": text })),
-    )
+    record(root, session, "injection", draft(json!({ "author": "hook", "hook": hook, "chars": text.chars().count(), "text": text })))
 }
 
 /// Uma chamada de um passo do fluxo: o comando, quanto tempo levou, se deu
@@ -256,7 +230,6 @@ mod tests {
     use super::*;
     use crate::commands::spec_events::write::record_open;
     use crate::shared::spec_state::stand_on_spec_branch;
-    use mustard_core::platform::i18n::Locale;
 
     /// Um projeto com a spec `spec` aberta e o checkout na branch dela.
     fn project_on(spec: &str) -> tempfile::TempDir {
@@ -271,13 +244,7 @@ mod tests {
     fn events_of(root: &Path, spec: &str, event_type: &str) -> Vec<Map<String, Value>> {
         DiskSpecState::new(root)
             .log(spec)
-            .map(|log| {
-                log.visible()
-                    .into_iter()
-                    .filter(|e| e.event_type == event_type)
-                    .map(|e| e.fields.clone())
-                    .collect()
-            })
+            .map(|log| log.visible().into_iter().filter(|e| e.event_type == event_type).map(|e| e.fields.clone()).collect())
             .unwrap_or_default()
     }
 
@@ -347,10 +314,7 @@ mod tests {
 
         let before = event_lines(root, "abertura");
         let refused = loose_response(root, "abertura", "Solta.").err();
-        let missing = mustard_core::domain::spec_events::Refusal::MissingField {
-            event_type: "response".to_string(),
-            field: "reply_to".to_string(),
-        };
+        let missing = mustard_core::domain::spec_events::Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() };
         assert_eq!(refused, Some(missing));
         assert_eq!(event_lines(root, "abertura"), before, "a refusal writes nothing");
     }
@@ -435,8 +399,7 @@ mod tests {
         let response = &events_of(root, "chave", "response")[0];
         assert_eq!(response["text"], json!("Recebi a chave apikey_…; não a guarde."));
         let lines = file_lines(root, "chave");
-        let spoken: Vec<&String> =
-            lines.iter().filter(|line| line.contains(r#""type":"message""#) || line.contains(r#""type":"response""#)).collect();
+        let spoken: Vec<&String> = lines.iter().filter(|line| line.contains(r#""type":"message""#) || line.contains(r#""type":"response""#)).collect();
         assert_eq!(spoken.len(), 2, "{lines:?}");
         for line in lines {
             assert!(!line.contains(&head) && !line.contains(&tail), "a piece of the key reached the file: {line}");
@@ -451,25 +414,15 @@ mod tests {
         let dir = project_on("pagina");
         let root = dir.path();
         let (key, head, tail) = pasted_key();
-        hook_event(root, "UserPromptSubmit", json!({ "prompt": format!("use esta: {key}") }));
-        let prepared = crate::commands::spec_events::pages::copy::prepare(root, "pagina", Locale::PtBr)
-            .expect("the page copy is prepared");
-        assert!(prepared.withheld.is_empty(), "the clean message is not held back: {:?}", prepared.withheld);
-        let mut texts = Vec::new();
-        let mut folders = vec![root.join(".claude/spec/pagina/copy")];
-        while let Some(folder) = folders.pop() {
-            for entry in std::fs::read_dir(&folder).expect("the copy folder").flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    folders.push(path);
-                } else {
-                    texts.push(std::fs::read_to_string(&path).unwrap_or_default());
-                }
-            }
-        }
-        assert!(texts.iter().any(|text| text.contains("use esta: apikey_…")), "the message goes to the page");
-        for text in &texts {
-            assert!(!text.contains(&head) && !text.contains(&tail), "a piece of the key reached the page: {text}");
+        hook_event(root, "UserPromptSubmit", json!({"prompt":format!("use esta: {key}")}));
+        let projection = crate::commands::panel::snapshot(root, Some("pagina")).to_string();
+        assert!(!projection.contains(&head) && !projection.contains(&tail));
+        assert!(!root.join(".claude/mustard/publications").exists());
+        let export = crate::commands::panel::prepare_publication(root, "pagina", false);
+        assert_eq!(export["ok"], true, "{export}");
+        for field in ["database", "page", "manifest"] {
+            let body = std::fs::read_to_string(export[field].as_str().unwrap()).unwrap();
+            assert!(!body.contains(&head) && !body.contains(&tail), "{field}: {body}");
         }
     }
 
@@ -566,8 +519,7 @@ mod tests {
         let root = dir.path();
         let started = Instant::now();
         record_call(root, "plan", None, started, &json!({"ok": true, "spec": "chamada"})).expect("ok call");
-        record_call(root, "round", Some("chamada"), started, &json!({"ok": false, "reason": "not-approved"}))
-            .expect("refused call");
+        record_call(root, "round", Some("chamada"), started, &json!({"ok": false, "reason": "not-approved"})).expect("refused call");
         let calls = events_of(root, "chamada", "call");
         assert_eq!(calls.len(), 2);
         assert_eq!((calls[0]["command"].as_str(), calls[0]["result"].as_str()), (Some("plan"), Some("ok")));

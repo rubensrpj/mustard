@@ -39,9 +39,7 @@ use std::process::Command;
 
 use mustard_core::domain::config::AgentSettings;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{
-    detect_install_mode, footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED,
-};
+use mustard_core::{CLAUDE_GITIGNORE, InstallMode, SETTINGS_SEED, detect_install_mode, footprint_rules, harness_texts, upsert_project};
 
 // ---------------------------------------------------------------------------
 // The clone-local exclude file
@@ -58,27 +56,16 @@ fn private_upsert_writes_clone_local_exclude() {
 
     assert!(report.private, "the run must declare itself private");
     assert_eq!(report.exclude_unavailable, None, "git was available: {report:?}");
-    assert_eq!(
-        report.excluded,
-        footprint_rules(),
-        "a repository nobody excluded anything in yet receives the whole footprint",
-    );
+    assert_eq!(report.excluded, footprint_rules(), "a repository nobody excluded anything in yet receives the whole footprint");
 
     // Every rule is really IN the file git pointed at — not in a path we chose.
     let body = read(&exclude).expect("git resolved an exclude file that exists");
     for rule in footprint_rules() {
-        assert!(
-            body.lines().any(|l| l.trim() == rule),
-            "rule {rule:?} never reached {exclude:?}: {body}",
-        );
+        assert!(body.lines().any(|l| l.trim() == rule), "rule {rule:?} never reached {exclude:?}: {body}");
     }
 
     // The rules WORK: the four seeds the install just wrote are invisible.
-    assert_eq!(
-        git_status(root),
-        "",
-        "the install wrote its footprint and git must see none of it",
-    );
+    assert_eq!(git_status(root), "", "the install wrote its footprint and git must see none of it");
 
     // …and they work on OUR footprint ONLY. Asked of real git, because the
     // failure this pins is a property of gitignore syntax that no reading of the
@@ -128,18 +115,10 @@ fn private_install_hides_the_map_and_an_update_completes_an_older_exclude_file()
     // The exclude file of an install that predates the map: same marks, same
     // rules, none for the map.
     let complete = read(&exclude).expect("the exclude file exists");
-    let older: String = complete
-        .lines()
-        .filter(|line| !line.contains(MAP_FILE_NAME))
-        .flat_map(|line| [line, "\n"])
-        .collect();
+    let older: String = complete.lines().filter(|line| !line.contains(MAP_FILE_NAME)).flat_map(|line| [line, "\n"]).collect();
     assert_ne!(older, complete, "the fixture really removes the map rules");
     write(&exclude, &older);
-    assert!(
-        git_status(root).contains(&format!(".claude/{MAP_FILE_NAME}")),
-        "without its rules the map shows to git: {:?}",
-        git_status(root),
-    );
+    assert!(git_status(root).contains(&format!(".claude/{MAP_FILE_NAME}")), "without its rules the map shows to git: {:?}", git_status(root));
 
     // An update finds the mode from the marks and gives the rules back.
     assert_eq!(detect_install_mode(root), InstallMode::Private, "the older file still carries the marks");
@@ -169,26 +148,16 @@ fn private_upsert_seeds_local_settings() {
     let local = root.join(".claude/settings.local.json");
     let shared = root.join(".claude/settings.json");
     assert!(local.is_file(), "the harness settings must land on the local layer");
-    assert!(
-        !shared.exists(),
-        "a private install must never create the file the host repository versions",
-    );
+    assert!(!shared.exists(), "a private install must never create the file the host repository versions");
 
     // It is the real seed, not an empty placeholder.
-    let seeded: serde_json::Value =
-        serde_json::from_str(&read(&local).unwrap_or_default()).expect("valid JSON");
+    let seeded: serde_json::Value = serde_json::from_str(&read(&local).unwrap_or_default()).expect("valid JSON");
     assert!(seeded.get("statusLine").is_some(), "real seed content: {seeded}");
     assert!(seeded.get("permissions").is_some(), "real seed content: {seeded}");
 
     // And the report names the file that was actually written.
-    assert!(
-        report.created.contains(&".claude/settings.local.json".to_string()),
-        "report names the local layer: {report:?}",
-    );
-    assert!(
-        !report.created.contains(&".claude/settings.json".to_string()),
-        "report must not claim a file nobody wrote: {report:?}",
-    );
+    assert!(report.created.contains(&".claude/settings.local.json".to_string()), "report names the local layer: {report:?}");
+    assert!(!report.created.contains(&".claude/settings.json".to_string()), "report must not claim a file nobody wrote: {report:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -211,22 +180,12 @@ fn already_tracked_paths_are_reported_not_unlinked() {
 
     let report = upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");
 
-    assert!(
-        report.already_tracked.contains(&"CLAUDE.md".to_string()),
-        "the residue no rule can hide must be named: {report:?}",
-    );
+    assert!(report.already_tracked.contains(&"CLAUDE.md".to_string()), "the residue no rule can hide must be named: {report:?}");
 
     // Nothing was unlinked: the path is still in the index, with its own bytes.
-    assert!(
-        git_out(root, &["ls-files"]).lines().any(|l| l.trim() == "CLAUDE.md"),
-        "`git rm --cached` rewrites the host's index — that is the operator's call",
-    );
+    assert!(git_out(root, &["ls-files"]).lines().any(|l| l.trim() == "CLAUDE.md"), "`git rm --cached` rewrites the host's index — that is the operator's call");
     assert_eq!(read(&host_md), before, "the client's file is byte-identical");
-    assert_eq!(
-        git_status(root),
-        "",
-        "a tracked-but-untouched file plus an excluded footprint is a clean tree",
-    );
+    assert_eq!(git_status(root), "", "a tracked-but-untouched file plus an excluded footprint is a clean tree");
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +211,6 @@ fn shared_install_is_byte_identical_to_today() {
             ".claude/settings.json",
             ".claude/settings.local.json",
             ".claude/mustard/session-map.md",
-            ".claude/mustard/pages/spec.html",
-            ".claude/mustard/pages/project.html",
             ".claude/agents/mustard/wave.md",
             ".claude/agents/mustard/review.md",
             ".claude/.gitignore",
@@ -265,16 +222,15 @@ fn shared_install_is_byte_identical_to_today() {
     //    is what the engine has always written — computed here rather than
     //    quoted so the comparison stays honest if the template changes.
     let seed: serde_json::Value = serde_json::from_str(SETTINGS_SEED).expect("seed is JSON");
-    let expected_settings = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&seed).expect("re-render the seed"),
-    );
+    let expected_settings = format!("{}\n", serde_json::to_string_pretty(&seed).expect("re-render the seed"));
     assert_eq!(read(&root.join(".claude/settings.json")), Some(expected_settings));
     for (rel, body) in harness_texts(Locale::PtBr, AgentSettings::default()) {
         assert_eq!(read(&root.join(".claude").join(&rel)), Some(body), "{rel}");
     }
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
+    assert!(!root.join(".claude/mustard/pages/spec.html").exists(), "external pages are created only by explicit export");
+    assert!(!root.join(".claude/mustard/pages/project.html").exists());
 
     // 3. Nothing of the private mode happened: the local layer holds only the
     //    folder of the project's copies, which is this machine's path and so
@@ -304,10 +260,7 @@ fn shared_install_is_byte_identical_to_today() {
     //    sees and nobody has recorded: visible, which is what "versionable"
     //    means here.
     let seen = git_out(root, &["status", "--porcelain", "--untracked-files=all", "--", "mustard.json"]);
-    assert!(
-        seen.contains("mustard.json"),
-        "a shared install is versionable — git must see the config: {seen:?}",
-    );
+    assert!(seen.contains("mustard.json"), "a shared install is versionable — git must see the config: {seen:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -361,13 +314,9 @@ fn private_install_refuses_when_it_cannot_hide() {
     let sealed = std::fs::Permissions::from_mode(0o555);
     std::fs::set_permissions(&info_dir, sealed).expect("seal the info directory");
 
-    let err = upsert_project(root, Some("9.9.9"), InstallMode::Private)
-        .expect_err("an install that cannot hide must not report success");
+    let err = upsert_project(root, Some("9.9.9"), InstallMode::Private).expect_err("an install that cannot hide must not report success");
     let rendered = err.to_string();
-    assert!(
-        rendered.contains("private install cannot hide"),
-        "the refusal must name what went wrong: {rendered}",
-    );
+    assert!(rendered.contains("private install cannot hide"), "the refusal must name what went wrong: {rendered}");
 
     // NOTHING was written — not the seeds, not the local layer, not even the
     // directory they live in. A refusal that still left a footprint behind would
@@ -383,11 +332,7 @@ fn private_install_refuses_when_it_cannot_hide() {
     ] {
         assert!(!root.join(path).exists(), "the refused install wrote {path}");
     }
-    assert_eq!(
-        git_status(root),
-        "",
-        "the host repository must have nothing to report after a refused install",
-    );
+    assert_eq!(git_status(root), "", "the host repository must have nothing to report after a refused install");
 
     // Unseal before the tempdir is dropped: a read-only directory cannot be
     // removed, and the failure would surface far from here.
@@ -399,8 +344,7 @@ fn private_install_refuses_when_it_cannot_hide() {
     // stopped working.
     // The seal is already lifted above; the exclude file is an ordinary
     // writable file again, so the control needs no repair beyond that.
-    let report = upsert_project(root, Some("9.9.9"), InstallMode::Private)
-        .expect("a repository whose exclude file is writable installs privately");
+    let report = upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("a repository whose exclude file is writable installs privately");
     assert!(report.private, "the control really installed privately: {report:?}");
     assert_eq!(report.exclude_unavailable, None, "…with nothing unavailable: {report:?}");
     assert!(root.join(".claude/settings.local.json").is_file(), "the seeds landed");
@@ -409,12 +353,8 @@ fn private_install_refuses_when_it_cannot_hide() {
     // A tree with NO repository is not this failure: there is nobody a footprint
     // could be visible to, so the install proceeds and only reports the reason.
     let bare = tempfile::tempdir().expect("temp dir");
-    let report = upsert_project(bare.path(), Some("9.9.9"), InstallMode::Private)
-        .expect("a directory outside any repository still installs");
-    assert!(
-        report.exclude_unavailable.is_some(),
-        "…and says why nothing was excluded: {report:?}",
-    );
+    let report = upsert_project(bare.path(), Some("9.9.9"), InstallMode::Private).expect("a directory outside any repository still installs");
+    assert!(report.exclude_unavailable.is_some(), "…and says why nothing was excluded: {report:?}");
     assert!(bare.path().join("mustard.json").is_file(), "the seeds landed");
 }
 
@@ -448,11 +388,7 @@ fn exclude_file(root: &Path) -> PathBuf {
     let answer = git_out(root, &["rev-parse", "--git-path", "info/exclude"]);
     let path = PathBuf::from(answer.trim());
     assert!(!path.as_os_str().is_empty(), "git did not resolve an exclude path");
-    if path.is_absolute() {
-        path
-    } else {
-        root.join(path)
-    }
+    if path.is_absolute() { path } else { root.join(path) }
 }
 
 /// The repository's dirt, trimmed. `--untracked-files=all` because the default
@@ -464,12 +400,7 @@ fn git_status(root: &Path) -> String {
 
 /// Run a git command in `root`, asserting success — test scaffolding only.
 fn git(root: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let ok = Command::new("git").args(args).current_dir(root).output().map(|o| o.status.success()).unwrap_or(false);
     assert!(ok, "git {args:?} failed");
 }
 

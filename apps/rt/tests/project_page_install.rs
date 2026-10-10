@@ -3,24 +3,16 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! As páginas publicadas chegam ao projeto pela instalação.
-//!
-//! Cada página do Mustard nasce de um template publicado uma vez no claude.ai,
-//! e o que muda depois vai para o banco de dados da página, pela ferramenta
-//! `ArtifactData`. Dois defeitos param isso sem ninguém ver: a ferramenta
-//! pedindo o sim da pessoa a cada marco, porque a atualização só levava as
-//! liberações dos comandos do Mustard; e a página do projeto que só nascia
-//! com a primeira spec. Os testes rodam o `upsert`, o gancho do início da
-//! sessão, o `run write` e a barra de status como a pessoa roda, num
-//! repositório temporário com uma pasta pessoal falsa.
+//! A instalação entrega acompanhamento local e preserva decisões pessoais.
+//! Nenhum template ou permissão de publicação externa é criado por instalar
+//! ou atualizar. Os testes rodam upsert, início de sessão, gravação histórica
+//! e statusline em repositório temporário com pasta pessoal falsa.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use mustard_core::platform::i18n::{translate, Locale};
-use mustard_core::platform::page_templates::{project_page_template, spec_page_template, PROJECT_CAPABILITIES};
-use mustard_core::platform::project_seed::{project_page_template_path, PAGE_DATABASE_TOOL};
+use mustard_core::platform::i18n::Locale;
 use serde_json::{json, Value};
 
 /// As liberações que a pessoa escreveu por conta própria.
@@ -95,48 +87,41 @@ fn rules(settings: &Value, list: &str) -> Vec<String> {
 }
 
 /// Confere o que a instalação deixou no projeto em `root`, que antes tinha as
-/// listas `allow`, `ask` e `deny`: a ferramenta do banco de dados liberada uma
-/// vez só; as liberações, perguntas e bloqueios da pessoa iguais, na mesma
-/// ordem, com só as regras do próprio Mustard acrescentadas depois delas; e
-/// os dois templates em `.claude/mustard/pages`, no idioma `text`.
+/// listas `allow`, `ask` e `deny`: nenhuma permissão de publicação adicionada;
+/// as liberações, perguntas e bloqueios da pessoa iguais, na mesma ordem,
+/// com só as regras dos comandos nativos acrescentadas depois delas; e
+/// os textos locais no idioma `text`, sem templates de publicação automática.
 fn assert_installed(root: &Path, allow: &[&str], ask: &[&str], deny: &[&str], text: Locale, case: &str) {
     let settings = local_settings(root);
     let now = rules(&settings, "allow");
     assert_eq!(
-        now.iter().filter(|rule| *rule == PAGE_DATABASE_TOOL).count(),
-        1,
-        "{case}: the page database tool is allowed once: {now:?}",
+        now.iter().filter(|rule| *rule == "ArtifactData").count(),
+        allow.iter().filter(|rule| **rule == "ArtifactData").count(),
+        "{case}: publication permissions are personal decisions: {now:?}",
     );
     assert_eq!(now[..allow.len()], *allow, "{case}: the person's allow rules changed: {now:?}");
     for added in &now[allow.len()..] {
         assert!(
-            added.starts_with("Bash(mustard-rt run ") || added == PAGE_DATABASE_TOOL,
+            added.starts_with("Bash(mustard-rt run "),
             "{case}: `{added}` is not one of Mustard's own rules: {now:?}",
         );
     }
     assert_eq!(rules(&settings, "ask"), ask, "{case}: the person's ask rules changed");
     let denied = rules(&settings, "deny");
     assert_eq!(denied[..deny.len()], *deny, "{case}: the person's deny rules changed: {denied:?}");
-    assert!(!denied.iter().any(|rule| rule == PAGE_DATABASE_TOOL), "{case}: {denied:?}");
 
     let pages = root.join(".claude/mustard/pages");
-    assert_eq!(
-        std::fs::read_to_string(pages.join("spec.html")).ok(),
-        Some(spec_page_template(text)),
-        "{case}: the spec page template is not installed in the text language",
-    );
-    assert_eq!(
-        std::fs::read_to_string(pages.join("project.html")).ok(),
-        Some(project_page_template(text)),
-        "{case}: the project page template is not installed in the text language",
-    );
+    assert!(!pages.join("spec.html").exists() && !pages.join("project.html").exists(), "{case}: no automatic public resources");
+    let map = std::fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap();
+    assert!(map.contains("/mustard-panel") && map.contains("/mustard-pages"), "{case}: local tracking and explicit export");
+    assert!(map.contains(if text == Locale::PtBr { "Mustard neste projeto" } else { "Mustard in this project" }), "{case}: text language");
+
 }
 
-/// A instalação nova e a atualização liberam a ferramenta do banco de dados
-/// das páginas e instalam os dois templates, sem mexer nas liberações que a
-/// pessoa já tinha; a segunda volta não muda nada.
+/// Instalar e atualizar não libera ferramentas de publicação para o modelo.
+/// Uma permissão pessoal já existente é preservada; repetir não muda nada.
 #[test]
-fn the_install_and_the_update_allow_the_page_database() {
+fn the_install_and_the_update_keep_publication_permissions_personal() {
     let own = || json!({ "permissions": { "allow": OWN_ALLOW, "ask": OWN_ASK, "deny": OWN_DENY } });
 
     // A instalação nova num projeto que já tem configurações locais próprias.
@@ -154,27 +139,27 @@ fn the_install_and_the_update_allow_the_page_database() {
         "a second install changes nothing",
     );
 
-    // A atualização de um projeto instalado antes da ferramenta e dos
-    // templates, em inglês, com liberações próprias no meio das do Mustard.
+    // Atualização em inglês: permissões pessoais no meio das do Mustard,
+    // inclusive uma ferramenta externa que a pessoa decidiu liberar.
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = fresh_repo(dir.path());
     std::fs::write(root.join("mustard.json"), r#"{"version":"0.0.1","language":{"text":"en-US"}}"#).unwrap();
     rt_ok(&root, &home, &["run", "upsert"], "");
     assert!(
-        rules(&local_settings(&root), "allow").iter().any(|rule| rule == PAGE_DATABASE_TOOL),
-        "the seed of a bare install carries the page database tool",
+        !rules(&local_settings(&root), "allow").iter().any(|rule| rule == "ArtifactData"),
+        "a bare install adds no publication-tool permission",
     );
     let mut old = local_settings(&root);
-    let mut allow: Vec<String> =
-        rules(&old, "allow").into_iter().filter(|rule| rule != PAGE_DATABASE_TOOL).collect();
+    let mut allow = rules(&old, "allow");
     allow.splice(1..1, OWN_ALLOW.iter().map(|rule| (*rule).to_string()));
+    allow.insert(2, "ArtifactData".to_string());
     old["permissions"]["allow"] = json!(allow);
     old["permissions"]["ask"] = json!(OWN_ASK);
     let mut deny = rules(&old, "deny");
     deny.insert(0, OWN_DENY[0].to_string());
     old["permissions"]["deny"] = json!(deny);
     std::fs::write(root.join(".claude/settings.local.json"), serde_json::to_string_pretty(&old).unwrap()).unwrap();
-    std::fs::remove_dir_all(root.join(".claude/mustard/pages")).unwrap();
+    assert!(!root.join(".claude/mustard/pages").exists());
     let before_allow: Vec<&str> = allow.iter().map(String::as_str).collect();
     let before_deny: Vec<&str> = deny.iter().map(String::as_str).collect();
 
@@ -211,55 +196,32 @@ fn record_project_page(root: &Path, home: &Path, publish: &Value) -> Output {
     rt(root, home, &["run", "write", "publish", "--json", &publish.to_string()], "")
 }
 
-/// Num projeto sem a página do projeto publicada, o início da sessão manda
-/// publicar o template dela e gravar o endereço. O aviso fica enquanto o
-/// endereço não é gravado, também com o índice das specs sem endereço e
-/// depois de uma publicação que falhou; gravado o endereço, ele vira o link
-/// da barra de status e o início da sessão não manda mais nada.
+/// O início da sessão aponta para o painel local, sem pedir publicação.
+/// Um endereço histórico confirmado continua disponível na barra de status.
 #[test]
-fn a_session_without_project_page_asks_to_publish_it() {
+fn a_session_without_project_page_tracks_locally_and_preserves_a_legacy_link() {
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = fresh_repo(dir.path());
     std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
     rt_ok(&root, &home, &["run", "upsert"], "");
-
-    let template = project_page_template_path();
-    assert!(root.join(&template).is_file(), "the template the notice names is installed");
-    let notice = translate("session.project_page", Locale::PtBr)
-        .replace("{template}", &template)
-        .replace("{capabilities}", PROJECT_CAPABILITIES);
-    for source in ["startup", "clear"] {
-        let context = session_start(&root, &home, source);
-        assert!(context.contains(&notice), "`{source}` does not ask to publish the project page: {context}");
-    }
-
-    // O índice das specs sem endereço na linha do projeto: ainda não há página.
-    rt_ok(&root, &home, &["run", "index"], "");
-    assert!(root.join(".claude/spec/index.ndjson").is_file());
-    assert!(session_start(&root, &home, "startup").contains(&notice), "an index without an address has no page");
-
-    // A publicação que falhou não tem endereço a gravar, e o aviso fica.
-    let failed = record_project_page(&root, &home, &json!({"page": "project", "ok": false, "reason": "offline"}));
-    assert!(!failed.status.success(), "a failed publication without a spec is refused");
-    let no_url = record_project_page(&root, &home, &json!({"page": "project", "ok": true}));
-    assert!(!no_url.status.success(), "a publication without an address is refused");
-    assert!(session_start(&root, &home, "startup").contains(&notice), "nothing was recorded, so it still asks");
-
-    // Gravado o endereço, ele vira o link da barra e o aviso não volta.
-    let url = "https://claude.ai/code/artifact/pagina-do-projeto";
-    let recorded = record_project_page(&root, &home, &json!({"page": "project", "ok": true, "url": url}));
-    assert!(recorded.status.success(), "{}", String::from_utf8_lossy(&recorded.stdout));
-    let report: Value = serde_json::from_slice(&recorded.stdout).unwrap();
-    assert_eq!(report, json!({"ok": true, "type": "publish", "page": "project", "url": url}));
-    let bar = rt_ok(&root, &home, &["run", "statusline"], &json!({"workspace": {"current_dir": root}}).to_string());
-    assert!(bar.contains(url), "the address is the status line's link: {bar}");
+    let template = ".claude/mustard/pages/project.html";
+    assert!(!root.join(template).exists());
     for source in ["startup", "clear", "compact"] {
         let context = session_start(&root, &home, source);
-        assert!(!context.contains(&template), "`{source}` still asks to publish a published page: {context}");
+        assert!(context.contains("/mustard-panel") && context.contains("/mustard-publish"), "{context}");
+        assert!(!context.contains(template), "no automatic publication instruction: {context}");
     }
-    // O índice refeito do zero guarda o endereço gravado sem spec.
+    let failed = record_project_page(&root, &home, &json!({"page":"project","ok":false,"reason":"offline"}));
+    assert!(!failed.status.success());
+    let no_url = record_project_page(&root, &home, &json!({"page":"project","ok":true}));
+    assert!(!no_url.status.success());
+    let url = "https://claude.ai/code/artifact/pagina-do-projeto";
+    let recorded = record_project_page(&root, &home, &json!({"page":"project","ok":true,"url":url}));
+    assert!(recorded.status.success(), "{}", String::from_utf8_lossy(&recorded.stdout));
     rt_ok(&root, &home, &["run", "index"], "");
-    assert!(!session_start(&root, &home, "startup").contains(&template), "the rebuilt index lost the address");
+    let bar = rt_ok(&root, &home, &["run", "statusline"], &json!({"workspace":{"current_dir":root}}).to_string());
+    assert!(bar.contains(url) && bar.contains("/mustard-panel"), "legacy links and local tracking coexist: {bar}");
+    assert!(!session_start(&root,&home,"startup").contains(template));
 }
 
 /// A instalação local preenche o idioma de resposta do Claude Code e desliga a

@@ -1,0 +1,26 @@
+{
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "selection_rule": "First alphabetical unused repository per language, <=200 files and <=2 MiB UTF-8; frozen before decision-pool evaluation. All ten descriptions per repository, no labels in search/provider input.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "mlc-ai/mlc-llm",
+      "commit": "068d5ea9ca556f2f7a9603537b4f966da12b11f6"
+    },
+    {
+      "language": "typescript",
+      "repo": "xenova/transformers.js",
+      "commit": "642743136efa3a481b2b96d3c2c550085540d844"
+    },
+    {
+      "language": "rust",
+      "repo": "huggingface/candle",
+      "commit": "33c9b6655459bd1086574cef9ba8f2e72a8804c8"
+    },
+    {
+      "language": "go",
+      "repo": "lima-vm/lima",
+      "commit": "5f6bfc951f5df6f8d21e3e2ccf9693146216ef4d"
+    }
+  ]
+}

@@ -15,6 +15,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "write_gate",
     "code_route",
     "config_key",
+    "search",
     "approval",
     "change",
     "workbranch",
@@ -28,6 +29,8 @@ pub(super) const PREFIXES: &[&str] = &[
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
+        ("search.gateway.route", Locale::PtBr) => "[Mustard] Busque por `mcp__mustard__search` com {request:{tool,input,intent,purpose,choose?}}. Use os mesmos argumentos. Diga em intent o que quer saber. Em purpose, use understand, spec, implement ou validate. Para só achar texto, use locate. Outra opção: {command}. Se a opção faltar, use a busca de antes.",
+        ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with {request:{tool,input,intent,purpose,choose?}}, preserving original arguments. For investigation, state the specific question in intent and set purpose (understand/spec/implement/validate); locate keeps literal lookup. Alternative: {command}. If the new search lacks an option, use the original tool.",
         // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
         // written to telemetry), so they are ENGLISH regardless of the user's
@@ -555,8 +558,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            71,
-            0x8e59_1182_3aae_d2d6,
+            72,
+            0x261f_0028_3e6c_043f,
         );
     }
 
@@ -624,7 +627,6 @@ mod tests {
             ("subagent.rejected_agent_working", &["{wave}"][..]),
             ("subagent.rejected_agent_locked", &["{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
-            ("session.project_page", &["{template}", "{capabilities}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
             ("session.provider_silent", &["{spec}", "{reason}"][..]),
             ("session.submodules", &["{spec}", "{text}"][..]),

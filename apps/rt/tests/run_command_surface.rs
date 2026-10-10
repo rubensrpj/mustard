@@ -335,9 +335,9 @@ fn map_dump_brings_one_entry_per_table() {
         names,
         [
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
-            "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
+            "graph", "fan_in", "history_base", "history_paths", "commits", "resource_files", "lineage_files", "lineage_commits",
             "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-            "spec_marks", "glossary_asks", "glossary_marks", "notes", "blocks"
+            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );
@@ -709,17 +709,27 @@ fn hook_answer_to_grep(root: &Path, pattern: &str) -> Option<String> {
     denied.then(|| reason.to_string())
 }
 
-/// `run map search "splitInstallments|parcela"`, com o texto que se dá ao
-/// `Grep`, imprime a mesma resposta que o gancho dá ao `Grep` com esse
-/// padrão, em texto, e não em JSON; a pasta e as opções do `grep` entram
-/// como o gancho as lê. O padrão em branco é recusado pelo nome do que falta.
+/// O gancho encaminha o padrão sem o reinterpretar; a porta e o `map search`
+/// executam a pesquisa real antes do cruzamento. O vazio é recusado.
 #[test]
-fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
+fn the_grep_handoff_and_explicit_map_search_preserve_the_native_pattern() {
     let project = installments_project();
     let root = project.path();
     let pattern = "splitInstallments|parcela";
-    let from_hook = hook_answer_to_grep(root, pattern).expect("the hook answers this search");
-    assert!(from_hook.contains("src/parcelas.ts") && from_hook.contains("splitInstallments"), "{from_hook}");
+    let handoff = hook_answer_to_grep(root, pattern).expect("supported Grep routes through the gateway");
+    assert!(handoff.contains("mcp__mustard__search"), "{handoff}");
+    let request = serde_json::json!({"tool":"Grep","input":{"pattern":pattern,"output_mode":"content"},"intent":"","purpose":"locate","choose":false});
+    assert!(handoff.contains(&request.to_string()), "complete transported request: {handoff}");
+    let gateway = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "search", "--request", &request.to_string(), "--root"])
+        .arg(root).current_dir(root).output().unwrap();
+    assert!(gateway.status.success(), "{}",String::from_utf8_lossy(&gateway.stderr));
+    let response: serde_json::Value=serde_json::from_slice(&gateway.stdout).unwrap();
+    let native = std::process::Command::new("rg")
+        .args(["--with-filename","--no-heading","--color=never","-n","--",pattern,"."])
+        .current_dir(root).output().unwrap();
+    assert_eq!(response["result"]["content"].as_str().unwrap(),String::from_utf8(native.stdout).unwrap().trim_end_matches('\n'));
+    assert_eq!(response["remote_model_calls"],0);
 
     let run = |args: &[&str]| {
         std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
@@ -734,7 +744,8 @@ fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
     };
     let out = run(&["search", pattern]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), from_hook.trim_end());
+    let answer = String::from_utf8_lossy(&out.stdout);
+    assert!(answer.contains("src/parcelas.ts") && answer.contains("splitInstallments"), "explicit map recovery: {answer}");
 
     for options in [&["src", "--glob", "*.ts", "-i"][..], &["src", "--type", "ts"][..]] {
         let out = run(&[&["search", pattern][..], options].concat());
@@ -743,7 +754,10 @@ fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
         assert!(stdout.contains("splitInstallments"), "the folder and {options:?} reach the search: {stdout}");
     }
     let outside = run(&["search", pattern, "--glob", "*.rs"]);
-    assert!(String::from_utf8_lossy(&outside.stdout).starts_with("O mapa não tem resposta"), "a glob with no mapped code");
+    let outside:serde_json::Value=serde_json::from_slice(&outside.stdout).unwrap();
+    assert_eq!(outside["exit_code"],1,"native no-match status");
+    assert_eq!(outside["result"]["stdout"],"");
+    assert!(outside["evidence"].is_null());
 
     let blank = run(&["search", "  "]);
     assert!(!blank.status.success());

@@ -96,6 +96,11 @@ impl<K: Copy> KeyedAutomaton<K> {
         Ok(Self { ac, table })
     }
 
+    /// Test for a match without allocating a list of matched terms.
+    pub(crate) fn is_match(&self, haystack: &str) -> bool {
+        self.ac.is_match(haystack)
+    }
+
     /// Scan a haystack and emit one [`KeyedHit`] per match, left to right.
     pub(crate) fn scan(&self, haystack: &str) -> Vec<KeyedHit<K>> {
         self.ac

@@ -98,6 +98,10 @@ if ($Targets -in 'windows', 'both') {
     # rtk empacotado na versão fixa, conferida; sem ele o pacote não sai.
     $rtk = Get-PinnedRtk
     Copy-Item $rtk (Join-Path $pkg 'bin\rtk.exe') -Force
+    python (Join-Path $PkgDir 'fetch-ripgrep.py') --target x86_64-pc-windows-msvc --dest (Join-Path $pkg 'bin')
+    if ($LASTEXITCODE -ne 0) { throw "ripgrep verificado ausente — pacote incompleto." }
+    Copy-Item (Join-Path $Root 'packages\core\assets\code-meaning\LICENSE') (Join-Path $pkg 'bin\potion-code-LICENSE')
+    Copy-Item (Join-Path $Root 'plugin\third-party\potion-code-16M-v2-NOTICE.txt') (Join-Path $pkg 'bin\potion-code-NOTICE')
     Copy-Item (Join-Path $Installer 'install.ps1') $pkg -Force
     Copy-Item (Join-Path $Installer 'README.txt')  $pkg -Force
 

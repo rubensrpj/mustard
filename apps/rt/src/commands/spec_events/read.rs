@@ -103,22 +103,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use mustard_core::ClaudePaths;
 use mustard_core::domain::lessons::kept;
 use mustard_core::domain::mustard_id;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::spec_events::{
-    calls_command, found_by, shown_line, Block, BlockQuery, EventRef, Hidden, ReadQuery, Refusal, SpecEvent,
-    SpecLog,
-};
+use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, Hidden, ReadQuery, Refusal, SpecEvent, SpecLog, calls_command, found_by, shown_line};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{final_review, lesson_bank, request_items};
 use mustard_core::platform::i18n::Locale;
-use mustard_core::ClaudePaths;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::read_record::{self, Request};
-use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Options for `mustard-rt run read`.
 pub struct ReadOpts {
@@ -162,9 +159,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
     let reading = ReadQuery::parse(block).ok_or_else(|| refuse(Refusal::UnknownBlock { found: block.to_string() }))?;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
-        None => DiskSpecState::new(&checkout(&opts.root))
-            .active(session)
-            .ok_or_else(|| refuse(Refusal::NoCurrentSpec))?,
+        None => DiskSpecState::new(&checkout(&opts.root)).active(session).ok_or_else(|| refuse(Refusal::NoCurrentSpec))?,
     };
     let path = store::spec_file(&project.root, &spec).map_err(refuse)?;
     let Some(log) = store::read(&path).map_err(refuse)? else {
@@ -186,8 +181,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
         ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
         ReadQuery::ReviewPreview => return Ok(final_review(&project.root, &spec, &log, lang).text),
         ReadQuery::Dispatch(wave) => {
-            let (lines, listed) =
-                dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view);
+            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view);
             read = listed;
             only_wave = Some(wave);
             lines
@@ -225,6 +219,15 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             found.into_iter().map(|e| shown_with_code(e, &codes, shown)).collect()
         }
     };
+    let events = events
+        .into_iter()
+        .map(|line| {
+            let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
+                return line;
+            };
+            if crate::shared::evidence::revalidate(&project.root, &mut value) { value.to_string() } else { line }
+        })
+        .collect::<Vec<_>>();
     note_reading(&project.root, &spec, session, request.as_ref(), only_wave, &read, started);
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &extra, &warnings))
@@ -241,10 +244,7 @@ fn latest_copies(events: Vec<&SpecEvent>) -> Vec<&SpecEvent> {
         let id = newest.entry(event.str_field("page")).or_insert(event.id);
         *id = (*id).max(event.id);
     }
-    events
-        .into_iter()
-        .filter(|event| event.event_type != "copy" || newest.get(&event.str_field("page")) == Some(&event.id))
-        .collect()
+    events.into_iter().filter(|event| event.event_type != "copy" || newest.get(&event.str_field("page")) == Some(&event.id)).collect()
 }
 
 /// A spec da leitura e o arquivo dela, sem recusar: a leitura das lições não
@@ -263,15 +263,7 @@ fn quiet_spec(opts: &ReadOpts, session: Option<&str>, root: &Path) -> Option<(St
 /// pedido aberto da spec (`request`, de `read_record::request_of`): uma
 /// chamada por item. Com `only_wave`, só vale na cópia dessa onda. Sem item
 /// achado, ou fora de uma cópia de pedido, nada é gravado.
-fn note_reading(
-    root: &Path,
-    spec: &str,
-    session: Option<&str>,
-    request: Option<&Request>,
-    only_wave: Option<u64>,
-    read: &[String],
-    started: Instant,
-) {
+fn note_reading(root: &Path, spec: &str, session: Option<&str>, request: Option<&Request>, only_wave: Option<u64>, read: &[String], started: Instant) {
     if read.is_empty() {
         return;
     }
@@ -293,11 +285,7 @@ fn request_text(log: &SpecLog, wave: u64) -> String {
 /// texto puro. O envio dele não tem onda, então `request-<n>` não o alcança.
 /// Sem envio de revisão na spec, o texto vem vazio.
 fn review_request_text(log: &SpecLog) -> String {
-    let sent = log
-        .visible()
-        .into_iter()
-        .filter(|event| event.event_type == "send" && event.str_field("role") == Some("review"))
-        .max_by_key(|event| event.id);
+    let sent = log.visible().into_iter().filter(|event| event.event_type == "send" && event.str_field("role") == Some("review")).max_by_key(|event| event.id);
     sent.and_then(|send| send.str_field("text")).unwrap_or_default().to_string()
 }
 
@@ -366,8 +354,7 @@ const NOT_COMPARED: &[&str] = &["v", "id", "code", "at", "type", "search", "repl
 /// quanto (`from`, `to`); um texto ou um objeto só diz que mudou (`true`),
 /// porque as duas versões se leem pelo número.
 fn changed_fields(old: &Map<String, Value>, new: &Map<String, Value>) -> Map<String, Value> {
-    let keys: BTreeSet<&str> =
-        old.keys().chain(new.keys()).map(String::as_str).filter(|key| !NOT_COMPARED.contains(key)).collect();
+    let keys: BTreeSet<&str> = old.keys().chain(new.keys()).map(String::as_str).filter(|key| !NOT_COMPARED.contains(key)).collect();
     let mut changed = Map::new();
     for key in keys {
         let (before, after) = (old.get(key), new.get(key));
@@ -391,9 +378,7 @@ fn changed_fields(old: &Map<String, Value>, new: &Map<String, Value>) -> Map<Str
 /// que só mudou de ordem, ou de um detalhe de um arquivo que continua nela,
 /// só diz que mudou.
 fn list_change(before: Option<&Value>, after: Option<&Value>) -> Value {
-    let items = |value: Option<&Value>| -> Vec<Value> {
-        value.and_then(Value::as_array).map(|list| list.iter().map(list_key).collect()).unwrap_or_default()
-    };
+    let items = |value: Option<&Value>| -> Vec<Value> { value.and_then(Value::as_array).map(|list| list.iter().map(list_key).collect()).unwrap_or_default() };
     let (old, new) = (items(before), items(after));
     let only_in = |these: &[Value], those: &[Value]| -> Vec<Value> {
         let mut out: Vec<Value> = Vec::new();
@@ -423,9 +408,7 @@ fn list_key(item: &Value) -> Value {
 /// vem vazia.
 fn delivered_lines(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> Vec<String> {
     let assumed = log.last_by_wave("delivered").get(&wave).and_then(|id| log.get(*id));
-    let delivery = assumed.or_else(|| {
-        log.unassumed_returns().into_iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(wave))
-    });
+    let delivery = assumed.or_else(|| log.unassumed_returns().into_iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(wave)));
     let Some(delivery) = delivery else {
         return Vec::new();
     };
@@ -444,8 +427,7 @@ fn delivered_lines(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> V
 /// do texto e as ondas de que ela depende, vazia quando não depende de
 /// nenhuma. A onda removida ou substituída fica de fora, como no bloco.
 fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<String> {
-    let mut waves: Vec<&SpecEvent> =
-        log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").collect();
+    let mut waves: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").collect();
     waves.sort_by_key(|wave| (wave.wave(), wave.id));
     waves
         .into_iter()
@@ -594,12 +576,7 @@ fn dispatch_lines(
 /// assim que o pedido de uma onda a leva, sem copiar o texto dela. Sem
 /// número, ou sem lição vigente com esse número, a lista vem vazia; sem
 /// banco no disco, o mesmo. Devolve a saída e o número das lições achadas.
-fn read_lessons(
-    root: &Path,
-    spec: Option<&str>,
-    term: Option<&str>,
-    lang: Locale,
-) -> Result<(String, Vec<u64>), Value> {
+fn read_lessons(root: &Path, spec: Option<&str>, term: Option<&str>, lang: Locale) -> Result<(String, Vec<u64>), Value> {
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
     let paths = ClaudePaths::for_project(root).map_err(|e| refuse(Refusal::Io { detail: e.to_string() }))?;
     let bank = mustard_core::io::lessons::read(&paths.lessons_path()).map_err(refuse)?.unwrap_or_default();
@@ -675,12 +652,7 @@ fn without_agent_omissions(fields: &mut Map<String, Value>, event_type: &str) {
 /// A saída de uma leitura: o envelope, um evento por linha, depois os campos
 /// de `extra` que a leitura dá além dos eventos, e os avisos por último.
 fn render(spec: &str, block: &str, events: &[String], extra: &[(&str, Value)], warnings: &[String]) -> String {
-    let mut out = format!(
-        "{{\"ok\":true,\"spec\":{},\"block\":{},\"count\":{},\"events\":[",
-        json!(spec),
-        json!(block),
-        events.len()
-    );
+    let mut out = format!("{{\"ok\":true,\"spec\":{},\"block\":{},\"count\":{},\"events\":[", json!(spec), json!(block), events.len());
     for (i, event) in events.iter().enumerate() {
         out.push_str(if i == 0 { "\n" } else { ",\n" });
         out.push_str(event);
@@ -726,12 +698,7 @@ pub(crate) fn read_by_command(command: &str) -> String {
 /// would build now print byte for byte, with no newline added.
 pub fn run(opts: &ReadOpts) {
     match read_at(opts) {
-        Ok(text)
-            if matches!(
-                ReadQuery::parse(&opts.block),
-                Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview)
-            ) =>
-        {
+        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview)) => {
             print!("{text}");
         }
         Ok(report) => println!("{report}"),
@@ -745,16 +712,11 @@ pub fn run(opts: &ReadOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{seed_at, WriteOpts};
+    use crate::commands::spec_events::write::{WriteOpts, seed_at};
     use tempfile::tempdir;
 
     fn opts(root: &std::path::Path, block: &str, term: Option<&str>) -> ReadOpts {
-        ReadOpts {
-            root: root.to_path_buf(),
-            spec: Some("teste".into()),
-            block: block.into(),
-            term: term.map(str::to_string),
-        }
+        ReadOpts { root: root.to_path_buf(), spec: Some("teste".into()), block: block.into(), term: term.map(str::to_string) }
     }
 
     fn without_spec(root: &std::path::Path, block: &str) -> ReadOpts {
@@ -769,12 +731,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
             std::fs::File::create(&path).expect("the event file");
         }
-        let out = seed_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some("teste".into()),
-            event_type: event_type.into(),
-            json: fields.to_string(),
-        });
+        let out = seed_at(&WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: event_type.into(), json: fields.to_string() });
         assert_eq!(out["ok"], json!(true), "{out}");
         out["id"].as_u64().unwrap()
     }
@@ -842,9 +799,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
-        let put_rule = |text: &str, key: &str| {
-            put(root, "rule", json!({"text": text, "keys": [key], "example": "e", "origin": said}))
-        };
+        let put_rule = |text: &str, key: &str| put(root, "rule", json!({"text": text, "keys": [key], "example": "e", "origin": said}));
         let weak = put_rule("A página mostra o commit da onda.", "página");
         let strong = put_rule("A rodada formata só os arquivos da rodada antes do commit.", "formatador");
         put_rule("O levantamento pergunta o tipo de trabalho.", "levantamento");
@@ -1009,11 +964,19 @@ mod tests {
             let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}));
             put(root, "wave", json!({"n": n, "text": "Onda.", "criteria": [c], "done_when": "x", "origin": said}));
         }
-        let old = put(root, "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "a.rs"}, {"path": "b.rs"}],
-            "depends_on": [], "origin": said}));
+        let old = put(
+            root,
+            "task",
+            json!({"wave": 1, "text": "Somar.", "files": [{"path": "a.rs"}, {"path": "b.rs"}],
+            "depends_on": [], "origin": said}),
+        );
         let other = put(root, "task", json!({"wave": 2, "text": "Mostrar.", "files": [{"path": "c.rs"}], "depends_on": [], "origin": said}));
-        let new = put(root, "task", json!({"wave": 2, "text": "Somar e mostrar.", "files": [{"path": "a.rs"}, {"path": "d.rs"}],
-            "depends_on": [other], "origin": said, "replaces": old}));
+        let new = put(
+            root,
+            "task",
+            json!({"wave": 2, "text": "Somar e mostrar.", "files": [{"path": "a.rs"}, {"path": "d.rs"}],
+            "depends_on": [other], "origin": said, "replaces": old}),
+        );
         (said, old, other, new)
     }
 
@@ -1131,11 +1094,7 @@ mod tests {
             assert_eq!(item["id"], json!(said), "{block}: {report}");
             assert_eq!(item["code"], json!("MSTD-MSG-0001"), "{block}: {report}");
             assert_eq!(item["author"], json!("user"), "{block}: {report}");
-            assert_eq!(
-                item["text"],
-                json!("Pode liberar mais espaço, é voce que está lotando o disco"),
-                "{block}: {report}"
-            );
+            assert_eq!(item["text"], json!("Pode liberar mais espaço, é voce que está lotando o disco"), "{block}: {report}");
         }
     }
 
@@ -1148,17 +1107,25 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         plan_with_a_new_version(root);
-        let own = by_program(root, "delivered", json!({"author": "wave", "wave": 1, "text": "Do agente.", "files": ["a.rs"],
-            "returned": true, "agreed": [{"item": "MSTD-RULE-0001", "met": false, "text": "falta"}]}));
+        let own = by_program(
+            root,
+            "delivered",
+            json!({"author": "wave", "wave": 1, "text": "Do agente.", "files": ["a.rs"],
+            "returned": true, "agreed": [{"item": "MSTD-RULE-0001", "met": false, "text": "falta"}]}),
+        );
 
         let (report, alone) = only_line(root, "delivered-1");
         assert_eq!(alone["id"], json!(own), "without the assumed one, the agent's own: {report}");
         assert_eq!(alone["returned"], json!(true), "{report}");
 
-        let assumed = by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "Assumida.",
+        let assumed = by_program(
+            root,
+            "delivered",
+            json!({"author": "binary", "wave": 1, "text": "Assumida.",
             "files": ["a.rs", "b.rs"], "replaces": [own],
             "agreed": [{"item": "MSTD-RULE-0001", "met": true}, {"item": "MSTD-RULE-0002", "met": false, "text": "falta o teste"}],
-            "leftovers": [{"title": "Sobra", "detail": "no `x.rs`"}], "undone": ["MSTD-TASK-0002"]}));
+            "leftovers": [{"title": "Sobra", "detail": "no `x.rs`"}], "undone": ["MSTD-TASK-0002"]}),
+        );
         let (report, got) = only_line(root, "delivered-1");
         assert_eq!(got["id"], json!(assumed), "{report}");
         assert_eq!(got["text"], json!("Assumida."), "{report}");
@@ -1237,8 +1204,12 @@ mod tests {
         let first = wave(1, "Somar as parcelas.", &[], Some(old_first));
         put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
         put(root, "remove", json!({"targets": [gone], "reason": "Saiu do plano."}));
-        by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "O pedido inteiro da onda.",
-            "lines": 1, "chars": 25, "mustard": "0.2.0"}));
+        by_program(
+            root,
+            "send",
+            json!({"author": "binary", "wave": 1, "role": "wave", "text": "O pedido inteiro da onda.",
+            "lines": 1, "chars": 25, "mustard": "0.2.0"}),
+        );
         by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "Pronta.", "files": ["a.rs"]}));
 
         let report = read_at(&opts(root, "wave-list", None)).unwrap();
@@ -1274,9 +1245,8 @@ mod tests {
         by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "A map search ficou pronta.", "files": []}));
         let second = call(root, "map search", json!({"ms": 900}));
 
-        let ids = |block: &str, term: &str| -> Vec<Value> {
-            events(&read_at(&opts(root, block, Some(term))).unwrap()).iter().map(|e| e["id"].clone()).collect()
-        };
+        let ids =
+            |block: &str, term: &str| -> Vec<Value> { events(&read_at(&opts(root, block, Some(term))).unwrap()).iter().map(|e| e["id"].clone()).collect() };
         assert_eq!(ids("metrics", "map search"), [json!(first), json!(second)]);
         assert_eq!(ids("conversation", " Map  Search "), [json!(first), json!(second)]);
         assert_eq!(ids("metrics", "pronta").len(), 1, "a word that names no command still searches by score");
@@ -1291,9 +1261,7 @@ mod tests {
     fn the_calls_reading_sums_each_command() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let jev = |ms: u64, filter_ms: u64, tokens: u64, cost: u64| {
-            json!({"ms": ms, "filter": "jev", "filter_ms": filter_ms, "tokens": tokens, "cost_micro_usd": cost})
-        };
+        let jev = |ms: u64, filter_ms: u64, tokens: u64, cost: u64| json!({"ms": ms, "filter": "jev", "filter_ms": filter_ms, "tokens": tokens, "cost_micro_usd": cost});
         call(root, "map search", jev(100, 90, 20_000, 840));
         call(root, "map search", jev(900, 800, 21_000, 882));
         call(root, "map search", json!({"ms": 300, "filter": "jev:busy", "filter_ms": 40}));
@@ -1312,9 +1280,7 @@ mod tests {
             \"failures\":{\"jev:busy\":2,\"no-map\":1},\"filter_ms\":{\"max\":950,\"median\":500,\"p90\":950},\
             \"ms\":{\"max\":1000,\"median\":500,\"p90\":900},\"tokens\":146000}";
         let round = "{\"command\":\"round\",\"count\":3,\"failures\":{\"refused\":1},\"ms\":{\"max\":7,\"median\":5,\"p90\":7}}";
-        let envelope = |count: usize, lines: &str| {
-            format!("{{\"ok\":true,\"spec\":\"teste\",\"block\":\"calls\",\"count\":{count},\"events\":[\n{lines}\n]}}")
-        };
+        let envelope = |count: usize, lines: &str| format!("{{\"ok\":true,\"spec\":\"teste\",\"block\":\"calls\",\"count\":{count},\"events\":[\n{lines}\n]}}");
         assert_eq!(read_at(&opts(root, "calls", None)).unwrap(), envelope(2, &format!("{search},\n{round}")));
         assert_eq!(read_at(&opts(root, "calls", Some("map search"))).unwrap(), envelope(1, search));
         assert!(events(&read_at(&opts(root, "calls", Some("close"))).unwrap()).is_empty());
@@ -1357,8 +1323,7 @@ mod tests {
 
         let report = read_at(&opts(root, "state", None)).unwrap();
         let got = events(&report);
-        let kinds: Vec<(&str, u64)> =
-            got.iter().map(|e| (e["type"].as_str().unwrap(), e["id"].as_u64().unwrap())).collect();
+        let kinds: Vec<(&str, u64)> = got.iter().map(|e| (e["type"].as_str().unwrap(), e["id"].as_u64().unwrap())).collect();
         let copies: Vec<&Value> = got.iter().filter(|e| e["type"] == json!("copy")).collect();
         assert_eq!(copies.len(), 2, "one copy per page: {report}");
         assert_eq!(
@@ -1383,8 +1348,12 @@ mod tests {
         put(root, "task", json!({"wave": 1, "text": "Fazer.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
         let copy = root.join("copias").join("a");
         std::fs::create_dir_all(copy.join("apps").join("rt")).unwrap();
-        let sent = by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "pedido", "lines": 1,
-            "chars": 6, "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&copy)}));
+        let sent = by_program(
+            root,
+            "send",
+            json!({"author": "binary", "wave": 1, "role": "wave", "text": "pedido", "lines": 1,
+            "chars": 6, "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&copy)}),
+        );
         (copy, sent)
     }
 
@@ -1418,10 +1387,7 @@ mod tests {
 
         read_from(root, &copy, "item-MSTD-RULE-0001", None);
         read_from(root, &copy.join("apps").join("rt"), "item-MSTD-TASK-0001", None);
-        assert_eq!(
-            recorded_reads(root),
-            [("request-1".into(), "MSTD-RULE-0001".into()), ("request-1".into(), "MSTD-TASK-0001".into())]
-        );
+        assert_eq!(recorded_reads(root), [("request-1".into(), "MSTD-RULE-0001".into()), ("request-1".into(), "MSTD-TASK-0001".into())]);
 
         read_from(root, root, "item-MSTD-RULE-0001", None);
         read_from(root, &copy.parent().unwrap().join("outra"), "item-MSTD-RULE-0001", None);
@@ -1443,10 +1409,7 @@ mod tests {
         read_from(root, &copy, &format!("item-{rule}"), None);
         read_from(root, &copy, "lessons", Some(&lesson.to_string()));
         read_from(root, &copy, "lessons", Some("999"));
-        assert_eq!(
-            recorded_reads(root),
-            [("request-1".into(), "MSTD-RULE-0002".into()), ("request-1".into(), format!("lesson-{lesson}"))]
-        );
+        assert_eq!(recorded_reads(root), [("request-1".into(), "MSTD-RULE-0002".into()), ("request-1".into(), format!("lesson-{lesson}"))]);
     }
 
     /// Ler `dispatch-<n>` de dentro da cópia da onda `n` conta todos os
@@ -1458,16 +1421,18 @@ mod tests {
         let root = dir.path();
         let (copy, _) = open_request(root);
         let report = read_from(root, root, "dispatch-1", None);
-        let listed: Vec<String> =
-            events(&report).iter().map(|e| e["code"].as_str().expect("every listed item has a code").to_string()).collect();
+        let listed: Vec<String> = events(&report).iter().map(|e| e["code"].as_str().expect("every listed item has a code").to_string()).collect();
         assert!(listed.contains(&"MSTD-TASK-0001".to_string()) && listed.contains(&"MSTD-WAVE-0001".to_string()), "{listed:?}");
         assert!(recorded_reads(root).is_empty(), "lido de fora da cópia não grava");
 
         read_from(root, &copy, "dispatch-1", None);
-        let recorded: Vec<String> = recorded_reads(root).into_iter().map(|(request, item)| {
-            assert_eq!(request, "request-1");
-            item
-        }).collect();
+        let recorded: Vec<String> = recorded_reads(root)
+            .into_iter()
+            .map(|(request, item)| {
+                assert_eq!(request, "request-1");
+                item
+            })
+            .collect();
         assert_eq!(recorded, listed);
 
         let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "echo q", "form": "ubiquitous", "origin": 1}));
@@ -1485,8 +1450,12 @@ mod tests {
         let (copy, _) = open_request(root);
         let review = root.join("copias").join("revisao");
         std::fs::create_dir_all(&review).unwrap();
-        by_program(root, "send", json!({"author": "binary", "role": "review", "text": "revise", "lines": 1, "chars": 6,
-            "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&review)}));
+        by_program(
+            root,
+            "send",
+            json!({"author": "binary", "role": "review", "text": "revise", "lines": 1, "chars": 6,
+            "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&review)}),
+        );
 
         read_from(root, &review, "item-MSTD-RULE-0001", None);
         assert_eq!(recorded_reads(root), [("request-review".into(), "MSTD-RULE-0001".into())]);
@@ -1503,8 +1472,12 @@ mod tests {
     /// autor e outras palavras de busca, para o `changed` ter o que dizer.
     fn revise_the_rule(root: &std::path::Path) {
         let old = events(&read_from(root, root, "item-MSTD-RULE-0001", None))[0]["id"].as_u64().unwrap();
-        by_program(root, "rule", json!({"author": "binary", "title": "Regra", "text": "Vale sempre, agora.", "agent": "detalhe",
-            "keys": ["regra", "nova"], "example": "e", "origin": 1, "replaces": old}));
+        by_program(
+            root,
+            "rule",
+            json!({"author": "binary", "title": "Regra", "text": "Vale sempre, agora.", "agent": "detalhe",
+            "keys": ["regra", "nova"], "example": "e", "origin": 1, "replaces": old}),
+        );
     }
 
     /// De dentro da cópia de um pedido aberto, o item vem sem as marcas do
@@ -1562,8 +1535,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (copy, _) = open_request(root);
-        put(root, "rule", json!({"title": "Global", "text": "Vale para tudo.", "agent": "d", "keys": ["global"], "example": "e", "origin": 1,
-            "applies_to": {"files": ["**"]}}));
+        put(
+            root,
+            "rule",
+            json!({"title": "Global", "text": "Vale para tudo.", "agent": "d", "keys": ["global"], "example": "e", "origin": 1,
+            "applies_to": {"files": ["**"]}}),
+        );
 
         let outside = events(&read_from(root, root, "dispatch-1", None));
         assert!(outside.iter().any(|e| e["type"] == json!("rule")), "the dispatch lists the global rule: {outside:?}");
@@ -1594,7 +1571,11 @@ mod tests {
         let injection = by_program(root, "injection", json!({"author": "hook", "hook": "prompt_entry", "chars": 23, "text": "Texto longo da injecao."}));
         by_program(root, "hook", json!({"author": "hook", "hook": "write_gate", "tool": "Write", "action": "block", "reason": "o motivo do bloqueio"}));
         call(root, "round", json!({"ms": 3}));
-        by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0", "copy": "x"}));
+        by_program(
+            root,
+            "send",
+            json!({"author": "binary", "wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0", "copy": "x"}),
+        );
         by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "O relato da entrega.", "files": ["a.rs"]}));
 
         let panel = events(&read_at(&opts(root, "metrics", None)).unwrap());

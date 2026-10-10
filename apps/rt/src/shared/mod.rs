@@ -49,6 +49,7 @@
 
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
 /// conversa; nunca texto do usuário.
+#[cfg(test)]
 pub mod agent_said;
 pub mod branch_state;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
@@ -66,21 +67,27 @@ pub mod dag;
 /// O programa compilado da branch do Mustard: se está em dia com o commit e a
 /// compilação dele, em primeiro e em segundo plano.
 pub mod development_build;
+pub(crate) mod evidence;
 pub mod jev;
+pub(crate) mod knowledge_selection;
 /// O que sobra do teto de gasto do Jev no mês, a porta de toda chamada a ele.
 pub mod jev_budget;
+pub mod judgement;
+pub(crate) mod publication;
 pub mod paths;
+/// A porta única da busca do mapa, depois da triagem.
+pub mod search_door;
+pub(crate) mod search_output;
+pub(crate) mod search_gateway;
 /// A procura de segredo no texto, a mesma da página da spec, do expurgo e do
 /// envio a serviço de fora.
 pub mod secret;
-/// A porta única da busca do mapa, depois da triagem.
-pub mod search_door;
 /// O que a triagem do mapa põe na resposta da busca.
 pub mod triage_view;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod pr_azure;
-pub mod pr_provider;
 pub mod pr_history;
+pub mod pr_provider;
 pub mod proc;
 pub mod prompt;
 /// O texto do catálogo com as vagas preenchidas.

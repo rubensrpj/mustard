@@ -1,0 +1,39 @@
+{
+  "dataset_url": "https://raw.githubusercontent.com/evalplus/repoqa/main/datasets/repoqa-2024-06-23.json",
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "criterion": "Unseen repositories selected and questions frozen before investigation implementation. Four parser-supported language groups; separate from previous six-repository sets. Not official RepoQA scoring.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "Ciphey/Ciphey",
+      "commit": "5dfbe9330070d4aefc997e5d2648155a136a3757",
+      "needles": 10,
+      "files": 74,
+      "bytes": 190893
+    },
+    {
+      "language": "typescript",
+      "repo": "axios/axios",
+      "commit": "751133eb9ed794c6f6634c52f4fe116e33bf5f09",
+      "needles": 10,
+      "files": 56,
+      "bytes": 124710
+    },
+    {
+      "language": "rust",
+      "repo": "AFLplusplus/LibAFL",
+      "commit": "527b892c1ddcc83207faaa71591e7f33a1a806a7",
+      "needles": 10,
+      "files": 111,
+      "bytes": 1633099
+    },
+    {
+      "language": "go",
+      "repo": "fatedier/frp",
+      "commit": "eaae212d2d1b17360754afd9432c21640f15c832",
+      "needles": 10,
+      "files": 108,
+      "bytes": 407415
+    }
+  ]
+}

@@ -2,36 +2,36 @@
 //! agora, no máximo uma por vaga livre, cada uma com um assunto só, e a
 //! desmontagem da onda de lote que ficou montada e não saiu. Só existe a onda
 //! que está rodando; o resto das tarefas fica no backlog, sem número de onda.
-//! O assunto é o tipo de trabalho que o Jev julga numa chamada só sobre o
-//! backlog inteiro; sem o Jev, ou com a chamada falhando, é o arquivo que as
-//! tarefas dividem.
+//! O assunto combina tipo de trabalho, arquivos e relações atuais do scan.
+//! O Jev responde decisões tipadas não atendidas pelo cache; na falha,
+//! o agrupamento segue pelas evidências nativas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::map_filter::FilterError;
+use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::leftovers::is_cleanup;
 use super::queue::{
-    backlog_left, backlog_left_without, backlog_population, backlog_ready, backlog_ready_without, covers_nothing,
-    open_sends, outgoing, task_revision, waves_done, waves_in_progress,
+    backlog_left, backlog_left_without, backlog_population, backlog_ready_without, covers_nothing, open_sends, outgoing, task_revision, waves_done,
+    waves_in_progress,
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
 use super::summary_wave::summary_waves;
 use crate::commands::spec_events::conversation::record_measured_call;
-use crate::commands::spec_events::write::{record, RecordCheck};
+use crate::commands::spec_events::write::{RecordCheck, record};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
-use crate::shared::dag::{pack_by_kind, sets_cross, touches_whole_tree, BacklogTask, Reserved};
-use crate::shared::jev::{Board, BoardTask, BoardWave, Judged};
+use crate::shared::dag::{BacklogTask, Reserved, pack_by_affinity, pack_by_kind, sets_cross, touches_whole_tree};
+use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
 use crate::shared::task_size::wave_budget;
 
-/// Quem julga o backlog para a montagem: uma chamada só, com o quadro inteiro
+/// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
 /// ([`Board`]), que volta com o tipo de trabalho de cada tarefa, o tamanho
 /// dela e o quanto ela pode mudar o mesmo que uma onda em andamento
 /// ([`Judged`]). A chamada que falha deixa a montagem pelo arquivo, como sem o
@@ -46,8 +46,9 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// que uma vaga abrir. A limpeza ([`is_cleanup`]) só entra quando nada mais
 /// resta ([`backlog_ready`]).
 ///
-/// O assunto vem do Jev (`judge`), numa chamada só por montagem, feita só
-/// quando há vaga livre e tarefa pronta: o quadro leva as ondas em andamento
+/// O assunto pode vir do Jev (`judge`), avaliando apenas decisões tipadas
+/// ainda não atendidas pelo cache, quando há vaga livre e tarefa elegível.
+/// O quadro leva as ondas em andamento
 /// e o backlog pronto, e a resposta diz o tipo de trabalho de cada tarefa, o
 /// tamanho dela e o quanto ela muda o mesmo que cada onda em andamento. A onda
 /// junta as tarefas do mesmo tipo, tenham ou não arquivo em comum, até a soma
@@ -60,9 +61,9 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// ([`pack_by_kind`]). Duas ondas com arquivo em comum nunca saem juntas, de
 /// tipos diferentes ou não: a que perde a vez fica no backlog. A chamada grava um evento `call` com os tokens, o custo e
 /// o modelo, como a busca. Sem `judge` (sem chave, ou o Jev desligado), ou com
-/// a chamada falhando, o assunto é o arquivo: as tarefas que dividem arquivo,
-/// direto ou por uma corrente de outras, e a de código mais baixo sai
-/// primeiro ([`pack_batches`](crate::shared::dag::pack_batches)). Em qualquer
+/// a chamada falhando, o assunto combina os arquivos declarados e as relações
+/// atuais do scan, dentro da estimativa de tamanho. Os grupos que dividem
+/// arquivo continuam atômicos ([`pack_by_local_evidence`](crate::shared::dag::pack_by_local_evidence)). Em qualquer
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
 ///
@@ -74,15 +75,10 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// ou não. O Jev não a julga: ela é lida do evento, e o quadro mandado a ele
 /// não muda.
 ///
-/// A onda pequena espera juntar trabalho: o lote com menos de
-/// [`MIN_WAVE_FILES`](crate::shared::dag::MIN_WAVE_FILES) arquivos declarados
-/// não sai enquanto houver onda em andamento ([`waves_in_progress`]). Sai
-/// quando chega a esse tamanho — com as tarefas do mesmo tipo que o Jev juntou
-/// nele — ou quando nada roda. A onda que continua um resumo que vale, a que
-/// leva uma tarefa marcada como prioridade e a tarefa do curinga da árvore
-/// inteira não esperam. O lote que espera reserva
-/// os arquivos dele, como a tarefa bloqueada: a que vem depois e os divide
-/// também espera.
+/// Uma onda pequena independente pode usar uma vaga livre. Relações de
+/// leitura/escrita verificadas no scan ajudam o agrupamento e impedem que
+/// consumidores concorram com contratos em mudança. Leitura compartilhada
+/// sozinha não bloqueia. Arquivos reservados e dependências continuam exatos.
 ///
 /// A tarefa que não cobre item nenhum ([`covers_nothing`]) fica de fora das
 /// duas montagens, como pronta e como a que espera: a onda leva os critérios
@@ -155,13 +151,12 @@ pub(crate) fn dispatch_backlog(
     limit: usize,
     judge: Option<&Judge<'_>>,
 ) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
-    use crate::shared::dag::{pack_batches, Batch};
+    use crate::shared::dag::{Batch, pack_by_local_evidence};
 
     let log = locked;
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
-    let by_id: BTreeMap<u64, &SpecEvent> =
-        log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
+    let by_id: BTreeMap<u64, &SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
     let codes = log.codes();
     // A onda de lote montada e não enviada se desfaz: só existe a que roda.
     let undone = unsent_batch_waves(log);
@@ -177,14 +172,13 @@ pub(crate) fn dispatch_backlog(
     let marked: BTreeSet<u64> = population.iter().filter(|task| task.priority).map(|task| task.id).collect();
     // A versão vigente, em `locked`, do que a leitura de entrada via.
     let in_locked = |ids: BTreeSet<u64>| -> BTreeSet<u64> {
-        ids.into_iter().filter_map(|id| log.current(id)).map(|task| task.id).collect()
+        ids.into_iter()
+            .filter_map(|id| log.current(id).filter(|task| task.id == id || task.str_field("author") != Some("binary")))
+            .map(|task| task.id)
+            .collect()
     };
-    let ready_on_entry = in_locked(backlog_ready(on_entry).into_iter().collect());
-    let order: Vec<u64> = backlog_ready_without(log, &undone)
-        .into_iter()
-        .filter(|id| ready_on_entry.contains(id) || in_undone(id))
-        .collect();
     let left_on_entry = in_locked(backlog_left(on_entry));
+    let order: Vec<u64> = backlog_ready_without(log, &undone).into_iter().filter(|id| left_on_entry.contains(id) || in_undone(id)).collect();
     let waiting: Vec<u64> = backlog_left_without(log, &undone)
         .into_iter()
         .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !cleanup(id) && !bare(id))
@@ -192,56 +186,81 @@ pub(crate) fn dispatch_backlog(
     // O arquivo de cada onda do plano que ainda não terminou: em andamento,
     // por sair, mantida ou com conserto pendente.
     let graph = wave_graph(log);
-    let open_waves: Vec<u64> =
-        log.planned_waves().into_iter().filter(|n| !done_waves.contains(n) && !undone.contains(n)).collect();
-    let busy: BTreeSet<String> =
-        open_waves.iter().flat_map(|n| graph.files.get(n).cloned().unwrap_or_default()).collect();
+    let open_waves: Vec<u64> = log.planned_waves().into_iter().filter(|n| !done_waves.contains(n) && !undone.contains(n)).collect();
+    let busy: BTreeSet<String> = open_waves.iter().flat_map(|n| graph.files.get(n).cloned().unwrap_or_default()).collect();
     // As vagas que as ondas já montadas deixam livres. O ciclo entre ondas é
     // recusado pela escolha das ondas prontas, logo depois: aqui só não sobra
     // vaga para onda nova.
-    let (free, alone) = outgoing(log, limit, &open_sends(log), &waves_stuck(log), &undone)
-        .map_or((0, false), |out| (out.free, out.alone));
+    let (free, alone) = outgoing(log, limit, &open_sends(log), &waves_stuck(log), &undone).map_or((0, false), |out| (out.free, out.alone));
 
-    let code_of = |id: &u64| -> u64 {
-        codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id)
-    };
+    let code_of = |id: &u64| -> u64 { codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id) };
     // Cada resumo que ainda vale vira a base de uma onda, antes de qualquer outra;
     // as tarefas dessas ondas ficam fora do resto da montagem, saiam elas
     // agora ou esperem a vez: a que saísse noutra onda perderia o resumo.
     let by_summary = summary_waves(log, &order, &population);
     let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
     let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
-    // O Jev julga o backlog pronto numa chamada só, e só quando há vaga para
-    // uma onda nova: sem vaga ou sem tarefa pronta nada se pergunta.
+    let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).copied().collect();
+    let mut affinity_board = board_of(log, &by_id, &population, &candidates, &open_waves);
+    if free > 0 && (!order.is_empty() || !claimed.is_empty()) {super::evidence::augment(start, &mut affinity_board);}
+    // A consumer cannot read a contract another running wave is changing.
+    // Shared reading remains harmless. The actual source verified above,
+    // rather than semantic similarity, establishes this reservation.
+    let mut busy = busy;
+    for task in &affinity_board.backlog {
+        if affinity_board.running.iter().flat_map(|wave| &wave.tasks).any(|other| task.relation(other).read_write) {
+            busy.extend(task.files.iter().cloned());
+        }
+    }
+    // Only uncached typed decisions are delegated when a slot is available.
+    // Native source relationships are reused in the paid board.
+    let eligible = order.iter().filter_map(|id| population.iter().find(|task| task.id == *id))
+        .any(|task| !sets_cross(&task.files, &busy) && (!touches_whole_tree(&task.files) || alone));
     let judging = match judge {
-        Some(judge) if free > 0 && !order.is_empty() => {
-            let board = board_of(log, &by_id, &population, &order, &open_waves);
+        Some(judge) if free > 0 && eligible => {
+            // Only dependent candidates that can become eligible in this
+            // batch need a profile. Their intrinsic cache key is independent
+            // of the running board, just like already-ready tasks.
+            let mut candidates: BTreeSet<u64> = order.iter().copied().collect();
+            let done: BTreeSet<u64> = population.iter().filter(|t| t.done).map(|t| t.id).collect();
+            loop {
+                let before = candidates.len();
+                for task in population.iter().filter(|t| waiting.contains(&t.id) && !sets_cross(&t.files, &busy)) {
+                    if task.depends_on.iter().all(|d| done.contains(d) || candidates.contains(d)) {
+                        candidates.insert(task.id);
+                    }
+                }
+                if before == candidates.len() {
+                    break;
+                }
+            }
+            let mut board = board_of(log, &by_id, &population, &candidates.into_iter().collect::<Vec<_>>(), &open_waves);
+            for task in &mut board.backlog {
+                if let Some(known) = affinity_board.backlog.iter().find(|known| known.id == task.id) {task.reads.clone_from(&known.reads);}
+            }
+            board.running.clone_from(&affinity_board.running);
             let called = Instant::now();
-            Some((order.len(), called, judge(&board)))
+            Some((board.backlog.len(), called, judge(&board)))
         }
         _ => None,
     };
+    let affinity = affinity_board.affinities();
     let batches = match &judging {
-        Some((_, _, Ok(judged))) => {
-            pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of, wave_budget(WAVE_LIMIT))
-        }
+        Some((_, _, Ok(judged))) if affinity.is_empty() => pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of, wave_budget(WAVE_LIMIT)),
+        Some((_, _, Ok(judged))) => pack_by_affinity(&population, &order, &waiting, &busy, &judged.tasks, &code_of, (wave_budget(WAVE_LIMIT), &affinity)),
         _ => {
-            let mut batches =
-                if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, &waiting, &busy) };
+            let mut batches = if order.is_empty() { Vec::new() } else {
+                pack_by_local_evidence(&population, &order, &waiting, &busy, &super::evidence::links(&affinity_board), wave_budget(WAVE_LIMIT))
+            };
             // O lote com a tarefa marcada como prioridade primeiro; depois o
             // curinga da árvore inteira; os outros pela tarefa de código mais
             // baixo, e a ordem de prontidão do motor desempata.
-            batches.sort_by_key(|batch| {
-                (!batch.holds_any(&marked), !touches_whole_tree(&batch.files), batch.tasks.iter().map(&code_of).min())
-            });
+            batches.sort_by_key(|batch| (!batch.holds_any(&marked), !touches_whole_tree(&batch.files), batch.tasks.iter().map(&code_of).min()));
             batches
         }
     };
-    let batches: Vec<(Batch<u64>, Option<u64>)> = by_summary
-        .into_iter()
-        .map(|wave| (wave.batch, Some(wave.summary)))
-        .chain(batches.into_iter().map(|batch| (batch, None)))
-        .collect();
+    let batches: Vec<(Batch<u64>, Option<u64>)> =
+        by_summary.into_iter().map(|wave| (wave.batch, Some(wave.summary))).chain(batches.into_iter().map(|batch| (batch, None))).collect();
     // Duas ondas com arquivo em comum nunca saem juntas: a que perde a vez
     // fica no backlog e entra na montagem da rodada em que uma vaga abrir. E
     // a que espera, por onda aberta ou por outra desta passada, reserva os
@@ -254,7 +273,10 @@ pub(crate) fn dispatch_backlog(
             break;
         }
         let taken: Vec<&String> = chosen.iter().flat_map(|(picked, _)| &picked.files).collect();
-        let held = sets_cross(&batch.files, &busy) || sets_cross(&batch.files, taken.iter().copied());
+        let clash = batch.tasks.iter().filter_map(|id| affinity_board.backlog.iter().find(|task| task.id == *id)).any(|task|
+            chosen.iter().flat_map(|(picked, _)| &picked.tasks)
+                .filter_map(|id| affinity_board.backlog.iter().find(|other| other.id == *id)).any(|other| task.relation(other).read_write));
+        let held = clash || sets_cross(&batch.files, &busy) || sets_cross(&batch.files, taken.iter().copied());
         if touches_whole_tree(&batch.files) {
             // O curinga da árvore inteira cruza com todos: só sai sozinho, sem
             // nada em andamento. Ele não reserva nada, senão parava todo o
@@ -265,11 +287,8 @@ pub(crate) fn dispatch_backlog(
             }
             continue;
         }
-        // A onda pequena espera enquanto outra roda, salvo a que continua um
-        // resumo e a que leva uma tarefa marcada como prioridade. Ela
-        // reserva os arquivos como a bloqueada.
-        let waits = summary.is_none() && !running.is_empty() && batch.waits_to_grow() && !batch.holds_any(&marked);
-        if reserved.lets_out(&batch.files, held || waits) {
+        // Small independent batches do not wait for a file-count threshold.
+        if reserved.lets_out(&batch.files, held) {
             chosen.push((batch, summary));
         }
     }
@@ -335,24 +354,13 @@ pub(crate) fn dispatch_backlog(
 /// (`open_waves`), cada uma com as tarefas e os arquivos delas, e o backlog
 /// pronto (`ready`), na ordem de prontidão, com o que cada tarefa diz de si e
 /// os títulos das tarefas de que depende.
-fn board_of(
-    log: &SpecLog,
-    by_id: &BTreeMap<u64, &SpecEvent>,
-    population: &[BacklogTask<u64>],
-    ready: &[u64],
-    open_waves: &[u64],
-) -> Board {
+fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[BacklogTask<u64>], ready: &[u64], open_waves: &[u64]) -> Board {
     let seen = BoardTask::of;
     let running = open_waves
         .iter()
         .map(|n| BoardWave {
             n: *n,
-            tasks: log
-                .block(BlockQuery::Wave(*n))
-                .into_iter()
-                .filter(|e| e.event_type == "task")
-                .map(|task| seen(task, Vec::new()))
-                .collect(),
+            tasks: log.block(BlockQuery::Wave(*n)).into_iter().filter(|e| e.event_type == "task").map(|task| seen(task, Vec::new())).collect(),
         })
         .collect();
     let backlog = ready
@@ -378,13 +386,7 @@ fn board_of(
 /// `returned`) e, na resposta, o tempo, os tokens, o custo e o modelo; na
 /// falha, o motivo dela no nome do filtro (`jev:<motivo>`), e a montagem
 /// seguiu pelo arquivo. `called` é a hora da chamada.
-fn record_assembly(
-    start: &Path,
-    spec: &str,
-    (asked, returned): (usize, usize),
-    called: Instant,
-    answer: &Result<Judged, FilterError>,
-) {
+fn record_assembly(start: &Path, spec: &str, (asked, returned): (usize, usize), called: Instant, answer: &Result<Judged, FilterError>) {
     let mut measured = Map::new();
     measured.insert("candidates".to_string(), json!(asked));
     measured.insert("returned".to_string(), json!(returned));
@@ -392,8 +394,10 @@ fn record_assembly(
         Ok(judged) => {
             measured.insert("filter".to_string(), json!("jev"));
             measured.insert("filter_ms".to_string(), json!(judged.usage.millis));
-            measured.insert("tokens".to_string(), json!(judged.usage.input_tokens));
-            measured.insert("cost_micro_usd".to_string(), json!(judged.usage.cost_micro_usd));
+            if !judged.usage.incomplete {
+                measured.insert("tokens".to_string(), json!(judged.usage.input_tokens));
+                measured.insert("cost_micro_usd".to_string(), json!(judged.usage.cost_micro_usd));
+            }
             measured.insert("requests".to_string(), json!(judged.usage.requests));
             if !judged.usage.model.is_empty() {
                 measured.insert("model".to_string(), json!(judged.usage.model));
@@ -401,10 +405,7 @@ fn record_assembly(
         }
         Err(error) => {
             measured.insert("filter".to_string(), json!(format!("jev:{}", error.reason())));
-            measured.insert(
-                "filter_ms".to_string(),
-                json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)),
-            );
+            measured.insert("filter_ms".to_string(), json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)));
         }
     }
     let report = json!({ "ok": true, "spec": spec });
@@ -417,12 +418,7 @@ fn record_assembly(
 /// autor binário; a onda combinada à mão no plano, sem ordem, segue como está
 /// até a rodada despachá-la. É a onda de lote que a rodada desfaz.
 fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
-    let sent: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "send")
-        .filter_map(SpecEvent::wave)
-        .collect();
+    let sent: BTreeSet<u64> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "send").filter_map(SpecEvent::wave).collect();
     let delivered = log.delivered_waves();
     let formed: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))

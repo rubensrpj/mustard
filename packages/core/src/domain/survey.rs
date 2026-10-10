@@ -37,15 +37,15 @@ use serde_json::{Map, Value};
 
 use crate::domain::citation::cited_names;
 use crate::domain::lessons;
-use crate::domain::project_map::importers;
-use crate::io::project_map::{MapReader, Need};
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::search::{shared_words, SearchIndex, TOP};
-use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
-use crate::domain::spec_index::{title_of, IndexLine};
-use crate::domain::spec_state::{birth_event, original_of, State};
+use crate::domain::project_map::importers;
+use crate::domain::search::{SearchIndex, TOP, shared_words};
+use crate::domain::spec_events::{Refusal, SpecEvent, SpecLog, WORK_KINDS, search_field};
+use crate::domain::spec_index::{IndexLine, title_of};
+use crate::domain::spec_state::{State, birth_event, original_of};
 use crate::domain::text::fold_accents;
-use crate::platform::i18n::{translate, Locale};
+use crate::io::project_map::{MapReader, Need};
+use crate::platform::i18n::{Locale, translate};
 
 /// O bloco único do levantamento condensado.
 pub const CONDENSED: &str = "condensed";
@@ -211,13 +211,9 @@ impl GapKey {
         match self {
             Self::WhoUses | Self::ExternalDeps => "context",
             Self::Symptom | Self::Reproduction | Self::ExpectedVsActual | Self::Cause => "defect",
-            Self::MeasuredReason
-            | Self::MustNotChange
-            | Self::RemovedAndUsers
-            | Self::Moves
-            | Self::Dependents
-            | Self::GreenOrder
-            | Self::BeforeAfter => "refactor",
+            Self::MeasuredReason | Self::MustNotChange | Self::RemovedAndUsers | Self::Moves | Self::Dependents | Self::GreenOrder | Self::BeforeAfter => {
+                "refactor"
+            }
             Self::Rules => "rules",
             Self::Limits => "limits",
             Self::Contracts => "contracts",
@@ -234,9 +230,7 @@ impl GapKey {
     #[must_use]
     pub fn matches(self, written: &str) -> bool {
         let written = plain(written);
-        !written.is_empty()
-            && (written == self.name()
-                || [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| plain(self.label(lang)) == written))
+        !written.is_empty() && (written == self.name() || [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| plain(self.label(lang)) == written))
     }
 
     /// As lacunas de um tipo de trabalho; nenhuma para um tipo que não existe.
@@ -309,12 +303,8 @@ pub fn work_type(log: &SpecLog) -> Option<&SpecEvent> {
 /// Os tipos de um `work_type`, na ordem de [`WORK_KINDS`].
 #[must_use]
 pub fn kinds_of(event: &SpecEvent) -> Vec<&'static str> {
-    let listed: Vec<&str> = event
-        .fields
-        .get("kinds")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::trim).collect())
-        .unwrap_or_default();
+    let listed: Vec<&str> =
+        event.fields.get("kinds").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::trim).collect()).unwrap_or_default();
     WORK_KINDS.iter().copied().filter(|kind| listed.contains(kind)).collect()
 }
 
@@ -586,12 +576,9 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
         return Vec::new();
     }
     let (was, now) = (open_points(before), open_points(after));
-    let blocks = |open: &[&SpecEvent]| -> BTreeSet<String> {
-        open.iter().map(|p| p.str_field("block").unwrap_or_default().trim().to_string()).collect()
-    };
+    let blocks = |open: &[&SpecEvent]| -> BTreeSet<String> { open.iter().map(|p| p.str_field("block").unwrap_or_default().trim().to_string()).collect() };
     let still = blocks(&now);
-    let mut emptied: Vec<String> =
-        blocks(&was).into_iter().filter(|block| block != CONDENSED && !still.contains(block)).collect();
+    let mut emptied: Vec<String> = blocks(&was).into_iter().filter(|block| block != CONDENSED && !still.contains(block)).collect();
     emptied.sort_by_key(|block| block_rank(block));
     let mut steps = Vec::new();
     if let Some(block) = emptied.into_iter().next() {
@@ -639,10 +626,7 @@ fn outside_reviewed(log: &SpecLog) -> bool {
 /// o `context` seguinte. É a mesma leitura do objetivo do índice.
 #[must_use]
 pub fn goal(log: &SpecLog) -> Option<&SpecEvent> {
-    log.events
-        .iter()
-        .filter(|e| e.event_type == "context" && e.int("replaces").is_none())
-        .find_map(|e| log.current(e.id))
+    log.events.iter().filter(|e| e.event_type == "context" && e.int("replaces").is_none()).find_map(|e| log.current(e.id))
 }
 
 /// As mensagens do usuário, visíveis, que ficaram soltas: nenhum evento
@@ -695,12 +679,7 @@ impl Reminder {
 /// assistente nunca entram. As palavras são cortadas nas línguas
 /// `languages`.
 #[must_use]
-pub fn reminders<'a>(
-    prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>,
-    goal: &str,
-    max: usize,
-    languages: &Languages,
-) -> Vec<Reminder> {
+pub fn reminders<'a>(prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>, goal: &str, max: usize, languages: &Languages) -> Vec<Reminder> {
     let mut normalizer = Normalizer::new(languages);
     let terms = normalizer.query(goal);
     if terms.is_empty() || max == 0 {
@@ -722,12 +701,7 @@ pub fn reminders<'a>(
         .into_iter()
         .filter_map(|hit| {
             let (spec, message, text, search) = candidates.get(doc_pos(hit.id))?;
-            strong(&terms, search).then(|| Reminder {
-                spec: (*spec).to_string(),
-                message: *message,
-                text: (*text).to_string(),
-                score: hit.score,
-            })
+            strong(&terms, search).then(|| Reminder { spec: (*spec).to_string(), message: *message, text: (*text).to_string(), score: hit.score })
         })
         .collect();
     found.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.spec.cmp(&b.spec)).then(a.message.cmp(&b.message)));
@@ -880,12 +854,14 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
     list
 }
 
-/// Os fatos que o mapa do projeto já dá para a lacuna: para quem depende, na
-/// refatoração, onde cada nome citado no objetivo é declarado e quem importa
-/// esse arquivo. Os nomes vêm primeiro da parte do agente e depois do texto,
-/// sem repetir: o objetivo antigo, com o nome no texto, segue achando.
+/// Structural evidence for the open question. Declarations and importers
+/// guide contract/flow investigation; associated tests are candidates, never
+/// proof of coverage. Product choices still need the user's answer.
 fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
-    let Some(read) = sources.map.filter(|_| key == GapKey::Dependents) else {
+    let consumers = matches!(key, GapKey::Dependents | GapKey::WhoUses | GapKey::RemovedAndUsers | GapKey::Moves);
+    let validation = matches!(key, GapKey::DoneProof | GapKey::GreenOrder | GapKey::Reproduction);
+    let contracts = key == GapKey::Contracts;
+    let Some(read) = sources.map.filter(|_| consumers || validation || contracts) else {
         return Vec::new();
     };
     let mut facts: Vec<Fact> = Vec::new();
@@ -904,12 +880,24 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
         let declared = read(Need::Declarations { file: None, name: &name }).map(|map| map.declared(&name));
         for (path, line) in declared.unwrap_or_default().into_iter().take(MAP_NAMES) {
             push(Fact {
-                text: translate("survey.fact_declared", sources.lang)
-                    .replace("{name}", &name)
-                    .replace("{path}", &path)
-                    .replace("{line}", &line.to_string()),
+                text: translate("survey.fact_declared", sources.lang).replace("{name}", &name).replace("{path}", &path).replace("{line}", &line.to_string()),
                 source: format!("{path}:{line}"),
             });
+            if validation
+                && let Some(tests) = read(Need::Tests(&path)).ok().and_then(|map| crate::domain::project_map::tests_for(&map, &path).ok())
+                && (tests.inline || !tests.files.is_empty())
+            {
+                push(Fact {
+                    text: translate("survey.fact_test_candidates", sources.lang)
+                        .replace("{path}", &path)
+                        .replace("{tests}", &tests.files.join(", "))
+                        .replace("{inline}", if tests.inline { "true" } else { "false" }),
+                    source: format!("mustard-rt run map tests --file {path}"),
+                });
+            }
+            if !consumers {
+                continue;
+            }
             let users = read(Need::Importers(&path)).and_then(|map| importers(&map, &path)).unwrap_or_default();
             if users.is_empty() {
                 continue;
@@ -919,9 +907,7 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
                 listed.push_str(", …");
             }
             push(Fact {
-                text: translate("survey.fact_importers", sources.lang)
-                    .replace("{path}", &path)
-                    .replace("{importers}", &listed),
+                text: translate("survey.fact_importers", sources.lang).replace("{path}", &path).replace("{importers}", &listed),
                 source: format!("mustard-rt run map importers --file {path}"),
             });
         }
@@ -976,12 +962,8 @@ fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
 fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let mut normalizer = Normalizer::new(sources.languages);
     let terms = normalizer.query(sources.goal);
-    let lines: Vec<(&IndexLine, Vec<Vec<String>>)> = sources
-        .index
-        .iter()
-        .filter(|line| line.name != sources.current)
-        .map(|line| (line, normalizer.forms(&line.search)))
-        .collect();
+    let lines: Vec<(&IndexLine, Vec<Vec<String>>)> =
+        sources.index.iter().filter(|line| line.name != sources.current).map(|line| (line, normalizer.forms(&line.search))).collect();
     let index = SearchIndex::build(lines.iter().enumerate().map(|(i, (_, words))| (doc_id(i), words.clone())));
     let strong_lines: Vec<&IndexLine> = index
         .top(&terms, lines.len())
@@ -1012,24 +994,19 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
 /// casam com o objetivo, até [`PRIOR_FACTS`], cada um pelo título e pelo
 /// comando que lê o item. Sem nenhum, o objetivo dela, pelo comando que lê a
 /// especificação.
-fn prior_facts(
-    name: &str,
-    goal: Option<&str>,
-    log: Option<&SpecLog>,
-    terms: &[Vec<String>],
-    normalizer: &mut Normalizer,
-) -> Vec<Fact> {
+fn prior_facts(name: &str, goal: Option<&str>, log: Option<&SpecLog>, terms: &[Vec<String>], normalizer: &mut Normalizer) -> Vec<Fact> {
     let mut facts = Vec::new();
     if let Some(log) = log {
-        let items: Vec<&SpecEvent> =
-            log.visible().into_iter().filter(|e| PRIOR_FACT_TYPES.contains(&e.event_type.as_str())).collect();
+        let items: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| PRIOR_FACT_TYPES.contains(&e.event_type.as_str())).collect();
         let codes = log.codes();
-        let index = SearchIndex::build(
-            items.iter().map(|e| (e.id, normalizer.forms(e.str_field("search").unwrap_or_default()))).collect::<Vec<_>>(),
-        );
+        let index = SearchIndex::build(items.iter().map(|e| (e.id, normalizer.forms(e.str_field("search").unwrap_or_default()))).collect::<Vec<_>>());
         for hit in index.top(terms, PRIOR_FACTS) {
-            let Some(item) = log.get(hit.id) else { continue };
-            let (Some(text), Some(code)) = (title_of(item), codes.get(&item.id)) else { continue };
+            let Some(item) = log.get(hit.id) else {
+                continue;
+            };
+            let (Some(text), Some(code)) = (title_of(item), codes.get(&item.id)) else {
+                continue;
+            };
             facts.push(Fact { text, source: format!("mustard-rt run read agreed --spec {name} --term {code}") });
         }
     }
@@ -1058,11 +1035,7 @@ fn place(list: &mut [Proposed], found: Vec<Reminder>, languages: &Languages) {
     let has_room = |list: &[Proposed], at: usize| list.get(at).is_some_and(|item| item.reminders.len() < MAX_REMINDERS);
     for reminder in found {
         let ranked = index.top(&normalizer.query(&reminder.text), list.len());
-        let target = ranked
-            .iter()
-            .map(|hit| doc_pos(hit.id))
-            .find(|at| has_room(list, *at))
-            .or_else(|| (0..list.len()).find(|at| has_room(list, *at)));
+        let target = ranked.iter().map(|hit| doc_pos(hit.id)).find(|at| has_room(list, *at)).or_else(|| (0..list.len()).find(|at| has_room(list, *at)));
         if let Some(item) = target.and_then(|at| list.get_mut(at)) {
             item.reminders.push(reminder);
         }
@@ -1094,8 +1067,8 @@ fn doc_pos(id: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::spec_events::{normalize, parse_log, render_line, stamp};
     use crate::domain::project_map::ProjectMap;
+    use crate::domain::spec_events::{normalize, parse_log, render_line, stamp};
     use crate::domain::spec_index::goal_of;
     use crate::io::project_map as store;
     use serde_json::json;
@@ -1127,10 +1100,7 @@ mod tests {
             "applies_to": applies_to,
             "found_in": {"spec": "antiga"},
         });
-        format!(
-            "{}\n",
-            render_line(&stamp(lessons::normalize(obj(draft), None), id, None, "2026-09-14T09:00:00-03:00"))
-        )
+        format!("{}\n", render_line(&stamp(lessons::normalize(obj(draft), None), id, None, "2026-09-14T09:00:00-03:00")))
     }
 
     fn log_of(lines: &[String]) -> SpecLog {
@@ -1139,12 +1109,7 @@ mod tests {
 
     const GOAL: &str = "Travar o merge enquanto houver pendência aberta.";
 
-    fn sources<'a>(
-        kinds: &'a [&'a str],
-        bank: Option<&'a SpecLog>,
-        index: &'a [IndexLine],
-        prior: &'a [(String, SpecLog)],
-    ) -> Sources<'a> {
+    fn sources<'a>(kinds: &'a [&'a str], bank: Option<&'a SpecLog>, index: &'a [IndexLine], prior: &'a [(String, SpecLog)]) -> Sources<'a> {
         Sources {
             kinds,
             goal: GOAL,
@@ -1220,8 +1185,12 @@ mod tests {
     #[test]
     fn open_points_come_in_block_order_and_leave_when_closed() {
         let point = |id: u64, block: &str, gap: &str| {
-            ev(id, "point", json!({"block": block, "gap": gap, "from": "gap", "status": "open", "origin": 1,
-                "facts": [{"text": "f", "source": "mensagem 1"}]}))
+            ev(
+                id,
+                "point",
+                json!({"block": block, "gap": gap, "from": "gap", "status": "open", "origin": 1,
+                "facts": [{"text": "f", "source": "mensagem 1"}]}),
+            )
         };
         let base = vec![
             ev(1, "message", json!({"author": "user", "text": "oi"})),
@@ -1234,16 +1203,28 @@ mod tests {
         assert_eq!(ids(&log_of(&base)), [3, 4, 2, 5]);
 
         let mut closed = base.clone();
-        closed.push(ev(6, "point", json!({"block": "rules", "gap": "g", "from": "gap", "status": "closed",
-            "closes": 4, "result": [1], "origin": 1})));
+        closed.push(ev(
+            6,
+            "point",
+            json!({"block": "rules", "gap": "g", "from": "gap", "status": "closed",
+            "closes": 4, "result": [1], "origin": 1}),
+        ));
         assert_eq!(ids(&log_of(&closed)), [3, 2, 5]);
 
         let mut revised = base;
-        revised.push(ev(6, "point", json!({"block": "context", "gap": "Quem usa", "from": "gap", "status": "open",
-            "replaces": 3, "origin": 1, "facts": [{"text": "f2", "source": "mensagem 1"}]})));
+        revised.push(ev(
+            6,
+            "point",
+            json!({"block": "context", "gap": "Quem usa", "from": "gap", "status": "open",
+            "replaces": 3, "origin": 1, "facts": [{"text": "f2", "source": "mensagem 1"}]}),
+        ));
         assert_eq!(ids(&log_of(&revised)), [6, 4, 2, 5], "the revision keeps the place of the point");
-        revised.push(ev(7, "point", json!({"block": "context", "gap": "g", "from": "gap", "status": "not_applicable",
-            "closes": 3, "reason": "não vale", "origin": 1})));
+        revised.push(ev(
+            7,
+            "point",
+            json!({"block": "context", "gap": "g", "from": "gap", "status": "not_applicable",
+            "closes": 3, "reason": "não vale", "origin": 1}),
+        ));
         assert_eq!(ids(&log_of(&revised)), [4, 2, 5], "closing the first version closes the revision");
     }
 
@@ -1296,8 +1277,12 @@ mod tests {
     fn a_message_said_during_a_point_is_not_unrouted() {
         let log = log_of(&[
             ev(1, "message", json!({"author": "user", "text": GOAL})),
-            ev(2, "point", json!({"block": "proof", "gap": "Como provar?", "from": "gap", "status": "open", "origin": 1,
-                "facts": [{"text": "f", "source": "mensagem 1"}]})),
+            ev(
+                2,
+                "point",
+                json!({"block": "proof", "gap": "Como provar?", "from": "gap", "status": "open", "origin": 1,
+                "facts": [{"text": "f", "source": "mensagem 1"}]}),
+            ),
             ev(3, "message", json!({"author": "user", "text": "8 é fixo?", "during": 2})),
             ev(4, "message", json!({"author": "user", "text": "e o painel?"})),
             ev(5, "message", json!({"author": "user", "text": "não entendi", "during": 2})),
@@ -1415,13 +1400,8 @@ mod tests {
             format!("{}\n", render_line(&stamp(lessons::normalize(obj(retirement), None), 3, None, "2026-09-14T09:00:00-03:00"))),
         ]);
         let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
-        let lines: Vec<&str> = list
-            .iter()
-            .filter(|p| p.from == "lesson")
-            .flat_map(|p| p.facts.iter().map(|f| f.source.as_str()))
-            .collect();
-        let shown: Vec<String> =
-            lessons::kept(&bank).iter().map(|l| format!(".claude/spec/lessons.ndjson:{}", l.line)).collect();
+        let lines: Vec<&str> = list.iter().filter(|p| p.from == "lesson").flat_map(|p| p.facts.iter().map(|f| f.source.as_str())).collect();
+        let shown: Vec<String> = lessons::kept(&bank).iter().map(|l| format!(".claude/spec/lessons.ndjson:{}", l.line)).collect();
         assert_eq!(lines, shown, "{list:?}");
         assert_eq!(lines, [".claude/spec/lessons.ndjson:1"]);
     }
@@ -1445,11 +1425,7 @@ mod tests {
             titles: Vec::new(),
             search: search_field(Some(goal), &[name]),
         };
-        let index = vec![
-            line("antiga", "Travar o merge com pendência aberta."),
-            line("atual", GOAL),
-            line("fraca", "O merge da página."),
-        ];
+        let index = vec![line("antiga", "Travar o merge com pendência aberta."), line("atual", GOAL), line("fraca", "O merge da página.")];
         let prior = vec![("antiga".to_string(), old)];
         let list = build(&sources(&["fix"], None, &index, &prior));
         let points: Vec<&Proposed> = list.iter().filter(|p| p.from == "prior_spec").collect();
@@ -1457,10 +1433,7 @@ mod tests {
         assert_eq!(points[0].gap, "antiga: Travar o merge com pendência aberta.");
         let facts: Vec<(&str, &str)> = points[0].facts.iter().map(|f| (f.text.as_str(), f.source.as_str())).collect();
         assert!(facts.contains(&("Merge travado.", "mustard-rt run read agreed --spec antiga --term MSTD-RULE-0001")), "{facts:?}");
-        assert!(
-            facts.contains(&("A cobrança da pendência sai no merge.", "mustard-rt run read agreed --spec antiga --term MSTD-DEC-0001")),
-            "{facts:?}"
-        );
+        assert!(facts.contains(&("A cobrança da pendência sai no merge.", "mustard-rt run read agreed --spec antiga --term MSTD-DEC-0001")), "{facts:?}");
         assert!(!facts.iter().any(|(text, _)| text.contains("título")), "{facts:?}");
     }
 
@@ -1497,13 +1470,35 @@ mod tests {
             dependents.facts,
             [
                 Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into() },
-                Fact {
-                    text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(),
-                    source: "mustard-rt run map importers --file src/a.rs".into(),
-                },
+                Fact { text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(), source: "mustard-rt run map importers --file src/a.rs".into() },
             ]
         );
-        assert!(list.iter().filter(|p| p.key != Some(GapKey::Dependents)).all(|p| p.facts.is_empty()));
+        assert!(list.iter().filter(|p| p.key == Some(GapKey::OutOfScope)).all(|p| p.facts.is_empty()));
+    }
+
+    #[test]
+    fn a_survey_recovers_consumers_contracts_and_test_candidates_without_deciding_product_scope() {
+        let map: ProjectMap = serde_json::from_value(json!({"modules":[
+            {"path":"src/billing.py","declarations":[{"kind":"function","name":"invoice","line":1}],
+                "has_tests":false,"tests":["tests/test_billing.py"]},
+            {"path":"src/api.py","deps":["src/billing.py"]}
+        ]}))
+        .unwrap();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let mut given = sources(&["feature"], None, &[], &[]);
+            given.lang = lang;
+            given.goal_agent = "Change `invoice()`.";
+            let whole = |_: Need<'_>| Ok(map.clone());
+            given.map = Some(&whole);
+            let list = build(&given);
+            let uses = list.iter().find(|point| point.key == Some(GapKey::WhoUses)).unwrap();
+            assert!(uses.facts.iter().any(|fact| fact.text.contains("src/api.py")));
+            let contract = list.iter().find(|point| point.key == Some(GapKey::Contracts)).unwrap();
+            assert_eq!(contract.facts[0].source, "src/billing.py:1");
+            let proof = list.iter().find(|point| point.key == Some(GapKey::DoneProof)).unwrap();
+            assert!(proof.facts.iter().any(|fact| fact.text.contains("tests/test_billing.py")));
+            assert!(list.iter().filter(|point| point.key == Some(GapKey::OutOfScope)).all(|point| point.facts.is_empty()));
+        }
     }
 
     /// O objetivo gravado em três partes não cita código na parte do usuário:
@@ -1530,10 +1525,7 @@ mod tests {
             dependents.facts,
             [
                 Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into() },
-                Fact {
-                    text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(),
-                    source: "mustard-rt run map importers --file src/a.rs".into(),
-                },
+                Fact { text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(), source: "mustard-rt run map importers --file src/a.rs".into() },
             ]
         );
     }
@@ -1585,13 +1577,7 @@ mod tests {
         let sources: Vec<&str> = facts.iter().map(|fact| fact.source.as_str()).collect();
         assert_eq!(
             sources,
-            [
-                "src/a.rs:3",
-                "mustard-rt run map importers --file src/a.rs",
-                "src/z.rs:9",
-                "mustard-rt run map importers --file src/z.rs",
-                "src/d.rs:1",
-            ]
+            ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs", "src/z.rs:9", "mustard-rt run map importers --file src/z.rs", "src/d.rs:1",]
         );
     }
 
@@ -1600,8 +1586,12 @@ mod tests {
     #[test]
     fn a_recorded_gap_is_found_by_its_label_in_either_language_or_its_name() {
         let point = |id: u64, gap: &str| {
-            ev(id, "point", json!({"block": "context", "gap": gap, "from": "gap", "status": "open", "origin": 1,
-                "facts": [{"text": "f", "source": "mensagem 1"}]}))
+            ev(
+                id,
+                "point",
+                json!({"block": "context", "gap": gap, "from": "gap", "status": "open", "origin": 1,
+                "facts": [{"text": "f", "source": "mensagem 1"}]}),
+            )
         };
         let log = log_of(&[
             ev(1, "message", json!({"author": "user", "text": GOAL})),
@@ -1619,24 +1609,29 @@ mod tests {
 
     /// Um ponto aberto, como o assistente grava, com a mensagem 2 de origem.
     fn open_point(id: u64, block: &str, gap: &str) -> String {
-        ev(id, "point", json!({"block": block, "gap": gap, "from": "gap", "status": "open", "origin": 2,
-            "facts": [{"text": "f", "source": "mensagem 2"}]}))
+        ev(
+            id,
+            "point",
+            json!({"block": block, "gap": gap, "from": "gap", "status": "open", "origin": 2,
+            "facts": [{"text": "f", "source": "mensagem 2"}]}),
+        )
     }
 
     /// O fechamento do ponto `closes`.
     fn closing(id: u64, closes: u64) -> String {
-        ev(id, "point", json!({"block": "b", "gap": "g", "from": "gap", "status": "closed", "closes": closes,
-            "result": [2], "origin": 2}))
+        ev(
+            id,
+            "point",
+            json!({"block": "b", "gap": "g", "from": "gap", "status": "closed", "closes": closes,
+            "result": [2], "origin": 2}),
+        )
     }
 
     /// O levantamento só sai com o tipo de trabalho gravado, um ponto para
     /// cada lacuna dele e nenhum ponto aberto, e diz o que falta nessa ordem.
     #[test]
     fn leaving_the_survey_names_what_still_holds_it() {
-        let mut lines = vec![
-            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
-            ev(2, "message", json!({"author": "user", "text": GOAL})),
-        ];
+        let mut lines = vec![ev(1, "state", json!({"phase": "survey", "author": "binary"})), ev(2, "message", json!({"author": "user", "text": GOAL}))];
         assert_eq!(leave_survey(&log_of(&lines)), Err(SurveyGap::NotStarted));
         lines.push(ev(3, "work_type", json!({"kinds": ["fix"], "origin": 2})));
         assert_eq!(leave_survey(&log_of(&lines)), Err(SurveyGap::Unrecorded(gaps(&["fix"]))));
@@ -1741,11 +1736,19 @@ mod tests {
         unrecorded.push(closing(9, 4));
         assert_eq!(step_of(&unrecorded), ["ReviewBlock", "Record"], "a gap without a point holds the end");
 
-        lines.push(ev(7, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
-            "status": "open", "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]})));
+        lines.push(ev(
+            7,
+            "point",
+            json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "open", "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]}),
+        ));
         assert_eq!(step_of(&lines), ["Point"], "the reviewer's point is presented like the others");
-        lines.push(ev(8, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
-            "status": "closed", "closes": 7, "result": [2], "origin": 2})));
+        lines.push(ev(
+            8,
+            "point",
+            json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "closed", "closes": 7, "result": [2], "origin": 2}),
+        ));
         assert_eq!(step_of(&lines), ["ReviewBlock", "Done"], "the reviewer already ran: it is not ordered again");
     }
 }

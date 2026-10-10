@@ -1,8 +1,8 @@
 //! `mustard-rt run round [--spec <nome>]` — uma rodada de ondas.
 //!
 //! É a porta única da execução, e cada rodada é uma chamada só. Sem relatório,
-//! a rodada despacha: escolhe as ondas que podem sair juntas — duas no mesmo
-//! arquivo inclusive —, prepara no commit atual a vaga de cada uma, a cópia
+//! a rodada despacha: escolhe as ondas que podem sair juntas, preservando as
+//! reservas de arquivos, e prepara no commit atual a vaga de cada uma, a cópia
 //! fixa em que ela compila, monta o pedido de cada uma com a cópia dela,
 //! grava o envio com o pedido exato como foi injetado e marca a spec como em
 //! execução na primeira rodada. Com a entrega que uma onda gravou na spec e
@@ -13,8 +13,8 @@
 //! **A onda nasce quando sai.** Só existe a onda que está rodando; as outras
 //! tarefas ficam no backlog, sem número de onda. A cada rodada, a montagem
 //! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
-//! tarefas do mesmo tipo de trabalho, que o Jev julga numa chamada só sobre o
-//! backlog inteiro, ou que dividem arquivo quando não há Jev. A onda montada
+//! tarefas do mesmo tipo de trabalho, com decisões tipadas do Jev em cache,
+//! ou por arquivos e relações atuais do scan quando não há Jev. A onda montada
 //! que não saiu se desfaz, e as tarefas dela voltam ao backlog e entram na
 //! conta.
 //!
@@ -116,15 +116,19 @@
 //! postas e tiradas e os arquivos mudados —, que sai na resposta como aviso
 //! `wave-size` e no corpo do commit. O tamanho nunca recusa a onda.
 //!
-//! A página da spec e a do projeto são refeitas no fim da rodada, e a resposta
-//! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço
-//! é impresso na conversa.
+//! O painel local acompanha os eventos. Publicação externa só existe sob
+//! pedido explícito, pela porta de publicação.
 
 mod agreed;
 mod answer;
 mod backlog;
 mod checks;
+mod evidence;
+mod scheduling;
+pub(crate) use scheduling::snapshot as scheduling_snapshot;
 mod commit;
+mod unused_evidence;
+pub(crate) use commit::final_unused;
 mod copy_check;
 mod finish_check;
 mod fixes;
@@ -144,6 +148,7 @@ mod size_check;
 mod slots;
 mod stops;
 mod summary_wave;
+mod test_warnings;
 mod usage;
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
@@ -167,29 +172,28 @@ use serde_json::Value;
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::{agents_refreshed, read_command, wave_dispatch, RoundRefusal};
+pub(crate) use answer::{RoundRefusal, agents_refreshed, read_command, wave_dispatch};
 pub(crate) use fixes::{fix_file, sweep_fixes};
+pub(crate) use keep::Kept;
+pub(crate) use queue::{backlog_left, open_review, open_sends, send_revision, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix};
+pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
-pub(crate) use queue::{
-    backlog_left, open_review, open_sends, send_revision, tasks_left, wave_states, waves_awaiting_new_agent, waves_in_progress,
-    waves_pending_fix,
-};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
-pub(crate) use keep::Kept;
 pub(crate) use slots::{
-    code_kept_hint, ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_single_copy,
-    remove_spec_copies, reset_slot, slot_owner, spec_copies, Removal,
+    Removal, code_kept_hint, ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_single_copy, remove_spec_copies, reset_slot, slot_owner,
+    spec_copies,
 };
-pub(crate) use read_check::request_name;
 #[cfg(test)]
 pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
 // Fora da rodada, só os testes do gancho do despacho leem o processo fechado,
 // e eles rodam só no Linux.
+pub(crate) use finish_check::mark_step_copy;
+#[cfg(test)]
+pub(crate) use queue::wave_states;
+pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use tests::closed_process;
-pub(crate) use finish_check::mark_step_copy;
-pub(crate) use report::{backlog_return, check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
 /// As opções de `mustard-rt run round`.
@@ -247,20 +251,20 @@ mod tests {
     use std::process::Command;
 
     use mustard_core::io::spec_events as store;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     pub(crate) use super::closed_process::closed_process;
     use super::read_check::unread_items;
     use super::*;
-    use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
+    use crate::commands::spec_events::write::{WriteOpts, record_open, seed_at};
+
+    /// A refusal preserves domain state while retaining execution metrics.
+    pub(super) fn without_measurements(text: &str) -> String {
+        text.lines().filter(|line| serde_json::from_str::<Value>(line).ok().is_none_or(|event| event["type"] != "stage_run")).collect::<Vec<_>>().join("\n")
+    }
 
     pub(super) fn write(root: &Path, spec: &str, event_type: &str, body: Value) -> Value {
-        seed_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some(spec.to_string()),
-            event_type: event_type.into(),
-            json: body.to_string(),
-        })
+        seed_at(&WriteOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), event_type: event_type.into(), json: body.to_string() })
     }
 
     pub(super) fn id_of(report: &Value) -> u64 {
@@ -333,8 +337,13 @@ mod tests {
             }
             write(root, spec, "wave", wave);
             let declared: Vec<Value> = files.iter().map(|f| json!({"path": f})).collect();
-            write(root, spec, "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
-                "files": declared, "depends_on": [], "origin": said}));
+            write(
+                root,
+                spec,
+                "task",
+                json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": declared, "depends_on": [], "origin": said}),
+            );
         }
         before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
@@ -391,10 +400,7 @@ mod tests {
     }
 
     pub(super) fn round(root: &Path, spec: &str, report: Option<&str>) -> Value {
-        round_for(
-            &RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) },
-            None,
-        )
+        round_for(&RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) }, None)
     }
 
     /// As opções de uma rodada da spec `x`, com o relatório `report`.
@@ -417,9 +423,7 @@ mod tests {
         let project = spec_events::project(root);
         let opts = round_opts(root, report);
         entry
-            .and_then(|entry| {
-                answer::run_entered_round(&opts, &project.root, project.lang, Caller::default(), &answer::scan_mine, entry)
-            })
+            .and_then(|entry| answer::run_entered_round(&opts, &project.root, project.lang, Caller::default(), &answer::scan_mine, entry))
             .unwrap_or_else(|refusal| refusal.to_value(project.lang))
     }
 
@@ -443,13 +447,9 @@ mod tests {
         root: &Path,
         spec: &str,
         report: Option<&str>,
-        mine: &dyn Fn(
-            &Path,
-            &Path,
-        ) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+        mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
     ) -> Value {
-        let opts =
-            RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
+        let opts = RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
         let project = spec_events::project(&opts.root);
         match answer::run_round_with_mine(&opts, &project.root, project.lang, Caller::default(), mine) {
             Ok(report) => report,
@@ -460,8 +460,7 @@ mod tests {
     /// A chamada `read` que o `run read` de dentro da cópia grava para `item` do
     /// pedido `request`, na spec `spec`.
     pub(crate) fn seed_read(root: &Path, spec: &str, request: &str, item: &str) {
-        let call =
-            json!({"author": "binary", "command": "read", "ms": 0, "result": "ok", "request": request, "item": item});
+        let call = json!({"author": "binary", "command": "read", "ms": 0, "result": "ok", "request": request, "item": item});
         crate::shared::spec_state::seed_event(root, spec, "call", call);
     }
 
@@ -471,7 +470,9 @@ mod tests {
     /// não grava nada.
     pub(crate) fn read_request(root: &Path, spec: &str, wave: u64) {
         let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
-        let Some(sent) = open_sends(&log).get(&wave).copied() else { return };
+        let Some(sent) = open_sends(&log).get(&wave).copied() else {
+            return;
+        };
         let request = request_name(Some(wave));
         for item in unread_items(&log, sent, &request) {
             seed_read(root, spec, &request, &item);
@@ -484,7 +485,9 @@ mod tests {
     /// não grava nada.
     pub(crate) fn read_review(root: &Path, spec: &str) {
         let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
-        let Some(sent) = open_review(&log) else { return };
+        let Some(sent) = open_review(&log) else {
+            return;
+        };
         let request = request_name(None);
         for item in unread_items(&log, sent, &request) {
             seed_read(root, spec, &request, &item);
@@ -523,7 +526,9 @@ mod tests {
     /// outra recusa volta como veio, sem nada gravado.
     pub(crate) fn deliver_after_refusals(root: &Path, spec: &str, body: &Value, write: &dyn Fn(&Value) -> Value) -> Value {
         let mut out = write(body);
-        let Some(wave) = body["wave"].as_u64() else { return out };
+        let Some(wave) = body["wave"].as_u64() else {
+            return out;
+        };
         for _ in 0..2 {
             match out["reason"].as_str() {
                 Some("delivery-read-missing") => read_request(root, spec, wave),
@@ -569,8 +574,7 @@ mod tests {
         }
         let mut body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let agreed: Vec<Value> =
-            agreed::request_agreed(&log, wave).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+        let agreed: Vec<Value> = agreed::request_agreed(&log, wave).iter().map(|item| json!({"item": item.id, "met": true})).collect();
         if !agreed.is_empty() {
             body["agreed"] = json!(agreed);
         }
@@ -609,8 +613,13 @@ mod tests {
     /// Um pedido de revisão da spec `x`, gravado sem passar pelo fechamento.
     /// Devolve o número dele.
     pub(super) fn seed_review(root: &Path) -> u64 {
-        crate::shared::spec_state::seed_event(root, "x", "send", json!({"role": "review", "text": "revise",
-            "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}))
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "send",
+            json!({"role": "review", "text": "revise",
+            "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}),
+        )
     }
 
     pub(super) fn delivered_count(root: &Path) -> usize {
@@ -699,11 +708,7 @@ mod tests {
     /// decisão de onde a versão nova nasce.
     pub(super) fn replan_from(root: &Path, n: u64, origin: Option<u64>) {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let task = log
-            .visible()
-            .into_iter()
-            .find(|e| e.event_type == "task" && e.wave() == Some(n))
-            .unwrap_or_else(|| panic!("sem tarefa da onda {n}"));
+        let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(n)).unwrap_or_else(|| panic!("sem tarefa da onda {n}"));
         let mut fields = task.fields.clone();
         for key in ["v", "id", "code", "at", "search", "type", "author"] {
             fields.remove(key);
@@ -719,8 +724,13 @@ mod tests {
 
     /// Um pedido da onda `n` gravado sem passar pela rodada.
     pub(super) fn seed_send(root: &Path, n: u64) {
-        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": n, "role": "wave",
-            "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary"}));
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "send",
+            json!({"wave": n, "role": "wave",
+            "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary"}),
+        );
     }
 
     /// O envio da onda `wave` da spec `x` de um Claude Code que fechou: a

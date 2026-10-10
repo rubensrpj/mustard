@@ -652,7 +652,7 @@ mod tests {
     }
 
     fn mapped(_: &Path) -> Result<ScanReport, String> {
-        Ok(ScanReport { full: false, read: vec!["src/main.rs".into()], files: 1, head: String::new(), dictionary: false })
+        Ok(ScanReport { full: false, read: vec!["src/main.rs".into()], files: 1, ..ScanReport::default() })
     }
 
     fn opts(root: &Path, kind: Option<&str>, name: Option<&str>, base: Option<&str>) -> OpenOpts {

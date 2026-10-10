@@ -19,11 +19,11 @@ use std::time::Instant;
 
 use mustard_core::domain::map_filter::FilterError;
 use mustard_core::domain::spec_events::{BlockQuery, SpecEvent, SpecLog};
-use mustard_core::domain::wave_prompt::{candidates, item_title, Candidates, Choice};
-use serde_json::{json, Map};
+use mustard_core::domain::wave_prompt::{Candidates, Choice, candidates, item_title};
+use serde_json::{Map, json};
 
 use crate::commands::spec_events::conversation::record_measured_call;
-use crate::shared::jev::{BoardItem, BoardTask, ItemsBoard, ItemsJudged, JevFilter};
+use crate::shared::judgement::{BoardItem, BoardTask, ItemsBoard, ItemsJudged, WaveJudge};
 
 /// Quem julga os itens de uma onda: uma chamada com o quadro dela
 /// ([`ItemsBoard`]), que volta com a chance de sim de cada item. As chamadas
@@ -35,13 +35,7 @@ pub(crate) type JudgeItems<'a> = dyn Fn(&ItemsBoard) -> Result<ItemsJudged, Filt
 /// sem Jev, ficam de fora: o pedido dela leva o padrão. Cada chamada grava um
 /// evento `call` com o tempo, os tokens, o custo e o modelo; a que falha o
 /// grava com o motivo, e a onda dela segue pelo padrão.
-pub(super) fn choose_items(
-    start: &Path,
-    spec: &str,
-    log: &SpecLog,
-    ready: &[u64],
-    jev: Option<&JevFilter>,
-) -> BTreeMap<u64, Choice> {
+pub(super) fn choose_items(start: &Path, spec: &str, log: &SpecLog, ready: &[u64], jev: Option<&dyn WaveJudge>) -> BTreeMap<u64, Choice> {
     #[cfg(test)]
     if let Some(fake) = fake::installed() {
         return choose_with(start, spec, log, ready, Some(&*fake));
@@ -51,14 +45,10 @@ pub(super) fn choose_items(
 }
 
 /// [`choose_items`] com quem julga (`judge`) já escolhido.
-fn choose_with(
-    start: &Path,
-    spec: &str,
-    log: &SpecLog,
-    ready: &[u64],
-    judge: Option<&JudgeItems<'_>>,
-) -> BTreeMap<u64, Choice> {
-    let Some(judge) = judge else { return BTreeMap::new() };
+fn choose_with(start: &Path, spec: &str, log: &SpecLog, ready: &[u64], judge: Option<&JudgeItems<'_>>) -> BTreeMap<u64, Choice> {
+    let Some(judge) = judge else {
+        return BTreeMap::new();
+    };
     let asked: Vec<(u64, Candidates<'_>, ItemsBoard)> = ready
         .iter()
         .filter_map(|wave| {
@@ -81,11 +71,7 @@ fn choose_with(
             .collect();
         running
             .into_iter()
-            .map(|handle| {
-                handle.join().unwrap_or_else(|_| {
-                    (Instant::now(), Err(FilterError::Network("a request thread failed".to_string())))
-                })
-            })
+            .map(|handle| handle.join().unwrap_or_else(|_| (Instant::now(), Err(FilterError::Network("a request thread failed".to_string())))))
             .collect()
     });
     let mut choices = BTreeMap::new();
@@ -104,12 +90,7 @@ fn choose_with(
 /// com o título e o texto, sem dono, arquivo nem onda: o Jev julga o item
 /// ligado aos arquivos da onda como o do projeto todo.
 fn board_of(log: &SpecLog, wave: u64, found: &Candidates<'_>) -> ItemsBoard {
-    let tasks = log
-        .block(BlockQuery::Wave(wave))
-        .into_iter()
-        .filter(|e| e.event_type == "task")
-        .map(|task| BoardTask::of(task, Vec::new()))
-        .collect();
+    let tasks = log.block(BlockQuery::Wave(wave)).into_iter().filter(|e| e.event_type == "task").map(|task| BoardTask::of(task, Vec::new())).collect();
     let shown = |item: &&SpecEvent| BoardItem {
         id: item.id,
         title: item_title(item).unwrap_or_default(),
@@ -124,13 +105,7 @@ fn board_of(log: &SpecLog, wave: u64, found: &Candidates<'_>) -> ItemsBoard {
 /// quantos itens foram ao Jev e quantos mudaram no pedido (`asked`,
 /// `changed`) e, na resposta, o tempo, os tokens, o custo e o
 /// modelo; na falha, o motivo dela no nome do filtro (`jev:<motivo>`).
-fn record_call(
-    start: &Path,
-    spec: &str,
-    (asked, changed): (usize, usize),
-    called: Instant,
-    answer: &Result<ItemsJudged, FilterError>,
-) {
+fn record_call(start: &Path, spec: &str, (asked, changed): (usize, usize), called: Instant, answer: &Result<ItemsJudged, FilterError>) {
     let mut measured = Map::new();
     measured.insert("candidates".to_string(), json!(asked));
     measured.insert("returned".to_string(), json!(changed));
@@ -138,8 +113,10 @@ fn record_call(
         Ok(judged) => {
             measured.insert("filter".to_string(), json!("jev"));
             measured.insert("filter_ms".to_string(), json!(judged.usage.millis));
-            measured.insert("tokens".to_string(), json!(judged.usage.input_tokens));
-            measured.insert("cost_micro_usd".to_string(), json!(judged.usage.cost_micro_usd));
+            if !judged.usage.incomplete {
+                measured.insert("tokens".to_string(), json!(judged.usage.input_tokens));
+                measured.insert("cost_micro_usd".to_string(), json!(judged.usage.cost_micro_usd));
+            }
             measured.insert("requests".to_string(), json!(judged.usage.requests));
             if !judged.usage.model.is_empty() {
                 measured.insert("model".to_string(), json!(judged.usage.model));
@@ -147,10 +124,7 @@ fn record_call(
         }
         Err(error) => {
             measured.insert("filter".to_string(), json!(format!("jev:{}", error.reason())));
-            measured.insert(
-                "filter_ms".to_string(),
-                json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)),
-            );
+            measured.insert("filter_ms".to_string(), json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)));
         }
     }
     let report = json!({ "ok": true, "spec": spec });
@@ -167,7 +141,7 @@ pub(crate) mod fake {
 
     use mustard_core::domain::map_filter::{FilterError, FilterUsage};
 
-    use crate::shared::jev::{ItemsBoard, ItemsJudged};
+    use crate::shared::judgement::{ItemsBoard, ItemsJudged};
 
     type Answer = dyn Fn(&ItemsBoard) -> Result<ItemsJudged, FilterError> + Send + Sync;
 
@@ -193,13 +167,7 @@ pub(crate) mod fake {
     /// `chances` dá, pelo número do item, e conta 1.000 tokens de entrada.
     pub(crate) fn answering(chances: impl Fn(&ItemsBoard) -> BTreeMap<u64, f64> + Send + Sync + 'static) -> Installed {
         let answer: Arc<Answer> = Arc::new(move |board: &ItemsBoard| {
-            let usage = FilterUsage {
-                input_tokens: 1_000,
-                cost_micro_usd: 42,
-                requests: 1,
-                model: "jev-1.13.0".to_string(),
-                ..FilterUsage::default()
-            };
+            let usage = FilterUsage { input_tokens: 1_000, cost_micro_usd: 42, requests: 1, model: "jev-1.13.0".to_string(), ..FilterUsage::default() };
             Ok(ItemsJudged { chances: chances(board), usage })
         });
         INSTALLED.with(|installed| *installed.borrow_mut() = Some(answer));

@@ -129,13 +129,13 @@ fn verdict(findings: &[Finding]) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::event::pending::{pending_at, PendingOpts};
-    use crate::hook_output::hook_specific_output;
+    use crate::commands::event::pending::{PendingOpts, pending_at};
     use crate::commands::spec_events::write::record_phase;
+    use crate::hook_output::hook_specific_output;
     use crate::hooks::task::pending_gate::seed_spec;
     use crate::registry::Registry;
     use mustard_core::domain::model::contract::Outcome;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::time::{Duration, Instant};
 
     /// Um arquivo do plugin, lido da cópia que roda o teste: o `plugin/`
@@ -169,15 +169,13 @@ mod tests {
     const EN_PROJECT: &str = r#"{"language":{"text":"en-US"}}"#;
 
     /// A linha curta que abre a correção num projeto em pt-BR.
-    const PT_LINE: &str =
-        "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
+    const PT_LINE: &str = "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
 
     /// A mesma linha num projeto em en-US.
     const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
 
     /// O texto que barra a resposta em inglês num projeto em pt-BR.
-    const PT_BLOCK: &str =
-        "A resposta saiu em en-US, e o idioma do projeto e do usuário é pt-BR. Escreva a resposta de novo em pt-BR.";
+    const PT_BLOCK: &str = "A resposta saiu em en-US, e o idioma do projeto e do usuário é pt-BR. Escreva a resposta de novo em pt-BR.";
 
     /// O texto que barra a resposta em português num projeto em en-US.
     const EN_BLOCK: &str = "The reply came out in pt-BR, and the language of the project and the user is en-US. \
@@ -214,9 +212,7 @@ mod tests {
                 outcome.fold(check.evaluate(input, &c).unwrap_or(Verdict::Allow));
             }
         }
-        hook_specific_output("Stop", &outcome)
-            .map(|json| serde_json::from_str(&json).expect("valid JSON"))
-            .unwrap_or(Value::Null)
+        hook_specific_output("Stop", &outcome).map(|json| serde_json::from_str(&json).expect("valid JSON")).unwrap_or(Value::Null)
     }
 
     /// Um evento como o Claude Code o manda ao `mustard-rt on <evento>`, com
@@ -235,9 +231,7 @@ mod tests {
         }
         let input: HookInput = serde_json::from_value(payload).expect("a hook payload");
         let outcome = crate::dispatch::run_event(Trigger::from_event_name(event), &input);
-        hook_specific_output(event, &outcome)
-            .map(|out| serde_json::from_str(&out).expect("valid JSON"))
-            .unwrap_or(Value::Null)
+        hook_specific_output(event, &outcome).map(|out| serde_json::from_str(&out).expect("valid JSON")).unwrap_or(Value::Null)
     }
 
     /// O `Stop` de verdade, com o texto final e o `stop_hook_active`.
@@ -329,7 +323,7 @@ mod tests {
             (plugin_file("output-styles/mustard-pt-BR.md"), "Contexto antes do código"),
             (plugin_file("output-styles/mustard-en-US.md"), "Context before code"),
         ] {
-            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
+            assert!(style.contains("painel") || style.contains("panel"), "the answer style names the page: {style}");
             for cap in ["15 linhas", "15 lines"] {
                 assert!(!style.contains(cap), "the answer style still caps the reply at `{cap}`: {style}");
             }
@@ -379,14 +373,8 @@ mod tests {
             let questions = style.find(before).unwrap_or_else(|| panic!("the answer style lacks `{before}`"));
             let examples = style.find(after).unwrap_or_else(|| panic!("the answer style lacks `{after}`"));
             assert!(questions < at && at < examples, "`{title}` sits between `{before}` and `{after}`: {style}");
-            assert!(
-                !style[questions..at].contains("\n## "),
-                "`{title}` follows `{before}` with no other section between: {style}"
-            );
-            assert!(
-                style[at + section.len()..].starts_with(after),
-                "`{title}` comes right before `{after}`: {style}"
-            );
+            assert!(!style[questions..at].contains("\n## "), "`{title}` follows `{before}` with no other section between: {style}");
+            assert!(style[at + section.len()..].starts_with(after), "`{title}` comes right before `{after}`: {style}");
             for gone in ["lock advisory", "advisory lock", "P-19"] {
                 assert!(!style.contains(gone), "the answer style still carries `{gone}`: {style}");
             }
@@ -478,9 +466,7 @@ mod tests {
         }
 
         let by_rule = run_rules(&[&PendingRule], &stop("s-close", message, false), &ctx(alone.path()));
-        let by_check = EndOfTurnCheck
-            .evaluate(&stop("s-close", message, false), &ctx(inside.path()))
-            .expect("never errors");
+        let by_check = EndOfTurnCheck.evaluate(&stop("s-close", message, false), &ctx(inside.path())).expect("never errors");
         let Verdict::Deny { reason } = &by_rule else {
             panic!("the rule blocks a closure that omits an item, got {by_rule:?}");
         };
@@ -516,10 +502,7 @@ mod tests {
 
         let rewrite = "Fechei a unidade; seguem o Humanize e o html padrao da spec.";
         assert_eq!(stop_event(root, "s-both", rewrite, true), Value::Null, "the cited items pass");
-        assert_eq!(
-            next_line(root, "s-both"),
-            format!("{PT_LINE} Na última resposta: frase com 40 palavras; MSTD-RULE-0008 é um código interno.")
-        );
+        assert_eq!(next_line(root, "s-both"), format!("{PT_LINE} Na última resposta: frase com 40 palavras; MSTD-RULE-0008 é um código interno."));
         assert_eq!(stop_event(root, "s-both", "Fechei a unidade.", false), Value::Null, "the closure settled");
     }
 

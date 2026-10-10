@@ -10,29 +10,26 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mustard_core::domain::spec_events::SpecLog;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
 use super::answer::RoundRefusal;
 use super::commit::{real_changed_files, unknown_file};
 use super::report::WaveReport;
-use super::stops::{hold_refused, HeldReturn};
+use super::stops::{HeldReturn, hold_refused};
 
 /// Confere cada volta de `waves` contra a cópia dela, lida em `log`: troca a
 /// lista citada pelos arquivos que a cópia mudou, e tira de `waves` a volta
 /// sem título de commit com a cópia mudada e a que cita arquivo que não está
 /// no disco nem no git. Devolve os avisos de divergência, no idioma `lang`, e
 /// cada volta tirada, com a recusa dela.
-pub(super) fn check_against_copies(
-    root: &Path,
-    log: &SpecLog,
-    waves: &mut Vec<WaveReport>,
-    lang: Locale,
-) -> (Vec<Value>, Vec<HeldReturn>) {
+pub(super) fn check_against_copies(root: &Path, log: &SpecLog, waves: &mut Vec<WaveReport>, lang: Locale) -> (Vec<Value>, Vec<HeldReturn>) {
     let mut warnings: Vec<Value> = Vec::new();
     let mut needs_commit: BTreeSet<u64> = BTreeSet::new();
     for wave in waves.iter_mut() {
-        let Some(actual) = real_changed_files(root, log, wave.wave) else { continue };
+        let Some(actual) = real_changed_files(root, log, wave.wave) else {
+            continue;
+        };
         // Cópia sem diff nenhum (comum nos testes, que escrevem direto na
         // raiz do checkout em vez da cópia da onda) não conta como
         // divergência nem apaga a lista declarada: sem nada de real para
@@ -64,6 +61,22 @@ pub(super) fn check_against_copies(
                     .replace("{declared}", &declared.len().to_string())
                     .replace("{missing}", &undeclared.join(", ")),
             }));
+        }
+        let planned = mustard_core::domain::wave_prompt::wave_files(log, wave.wave);
+        let outside = actual.iter().filter(|file| !planned.iter().any(|scope| crate::shared::dag::files_cross(scope, file))).cloned().collect::<Vec<_>>();
+        if !outside.is_empty() {
+            let files = outside.join(", ");
+            let hint = match lang {
+                Locale::EnUs => format!(
+                    "Wave {} changed files outside its planned scope: {files}. The diff proves the expansion; its necessity still requires review.",
+                    wave.wave
+                ),
+                Locale::PtBr => format!(
+                    "A onda {} mudou arquivos fora do escopo planejado: {files}. O diff comprova a expansão; sua necessidade ainda exige revisão.",
+                    wave.wave
+                ),
+            };
+            warnings.push(json!({"reason":"scope-expanded","wave":wave.wave,"files":outside,"classification":"necessity-unverified","origin":"worktree-diff","hint":hint}));
         }
         wave.files = actual;
     }

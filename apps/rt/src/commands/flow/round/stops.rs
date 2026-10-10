@@ -11,11 +11,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Map, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Map, Value, json};
 
-use super::answer::{without_final_period, RoundRefusal};
-use super::report::{backlog_return, PlanChange, WaveReport};
+use super::answer::{RoundRefusal, without_final_period};
+use super::report::{PlanChange, WaveReport, backlog_return};
 use super::sent_tasks::sent_tasks;
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
@@ -57,19 +57,13 @@ pub(super) fn fix_limit_refusal(stuck: &[u64], refused: &str, fixes: Vec<(u64, S
 /// As ondas paradas pelo limite de consertos, na resposta da rodada: cada uma
 /// com a pergunta ao usuário e os vereditos que a pararam, por inteiro — é com
 /// eles que o usuário decide —, e o texto que manda fazer cada pergunta.
-pub(super) fn stopped_waves(
-    stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
-    codes: &BTreeMap<u64, String>,
-    lang: Locale,
-) -> (Vec<Value>, Vec<String>) {
+pub(super) fn stopped_waves(stuck: &BTreeMap<u64, Vec<&SpecEvent>>, codes: &BTreeMap<u64, String>, lang: Locale) -> (Vec<Value>, Vec<String>) {
     let max = MAX_FIX_ROUNDS.to_string();
     stuck
         .iter()
         .map(|(wave, verdicts)| {
-            let listed: Vec<(String, &str)> = verdicts
-                .iter()
-                .map(|v| (codes.get(&v.id).cloned().unwrap_or_else(|| v.id.to_string()), v.str_field("text").unwrap_or_default()))
-                .collect();
+            let listed: Vec<(String, &str)> =
+                verdicts.iter().map(|v| (codes.get(&v.id).cloned().unwrap_or_else(|| v.id.to_string()), v.str_field("text").unwrap_or_default())).collect();
             let names: Vec<&str> = listed.iter().map(|(code, _)| code.as_str()).collect();
             let asked = translate("round.fix_limit", lang)
                 .replace("{wave}", &wave.to_string())
@@ -109,10 +103,7 @@ fn is_change_code(word: &str) -> bool {
     let Some((wave, key)) = word.strip_prefix("onda-").and_then(|rest| rest.split_once('-')) else {
         return false;
     };
-    !wave.is_empty()
-        && wave.bytes().all(|b| b.is_ascii_digit())
-        && key.len() == 6
-        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    !wave.is_empty() && wave.bytes().all(|b| b.is_ascii_digit()) && key.len() == 6 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// A mudança de código `code`, proposta pela onda `wave`, foi aceita: o
@@ -190,7 +181,9 @@ impl HeldReturn {
 /// outra.
 pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -> Vec<HeldReturn> {
     hold_refused(waves, |wave| {
-        let Some(PlanChange { change, decision: Some(_) }) = &wave.replan else { return Ok(()) };
+        let Some(PlanChange { change, decision: Some(_) }) = &wave.replan else {
+            return Ok(());
+        };
         let code = replan_code(wave.wave, change);
         if change_accepted(log, wave.wave, &code) {
             return Ok(());
@@ -203,10 +196,7 @@ pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -
 /// Tira das voltas `waves` cada uma que a conferência `check` recusa, e
 /// devolve cada uma com a recusa dela ([`HeldReturn`]): a recusa de uma volta
 /// segura só a onda dela, e as outras seguem.
-pub(super) fn hold_refused(
-    waves: &mut Vec<WaveReport>,
-    mut check: impl FnMut(&WaveReport) -> Result<(), RoundRefusal>,
-) -> Vec<HeldReturn> {
+pub(super) fn hold_refused(waves: &mut Vec<WaveReport>, mut check: impl FnMut(&WaveReport) -> Result<(), RoundRefusal>) -> Vec<HeldReturn> {
     let mut held = Vec::new();
     waves.retain(|wave| match check(wave) {
         Ok(()) => true,
@@ -230,12 +220,7 @@ pub(crate) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
     let mut out = BTreeMap::new();
     for (n, verdicts) in verdicts {
         let since = reset.get(&n).copied().unwrap_or(0);
-        let mut rejected: Vec<&SpecEvent> = verdicts
-            .iter()
-            .rev()
-            .take_while(|v| v.id > since && v.str_field("result") == Some("rejected"))
-            .copied()
-            .collect();
+        let mut rejected: Vec<&SpecEvent> = verdicts.iter().rev().take_while(|v| v.id > since && v.str_field("result") == Some("rejected")).copied().collect();
         if rejected.len() > MAX_FIX_ROUNDS {
             rejected.reverse();
             out.insert(n, rejected);
@@ -275,20 +260,14 @@ fn last_planned(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// consertos: a que nasce (`origin`) de uma mensagem ou de uma decisão do
 /// usuário gravada depois da última reprovação da onda anterior à versão.
 fn last_reset_by_user(log: &SpecLog, verdicts: &BTreeMap<u64, Vec<&SpecEvent>>) -> BTreeMap<u64, u64> {
-    let from_user = |origin: u64| {
-        log.get(origin).filter(|o| matches!(o.event_type.as_str(), "message" | "decision") && o.str_field("author") == Some("user"))
-    };
+    let from_user = |origin: u64| log.get(origin).filter(|o| matches!(o.event_type.as_str(), "message" | "decision") && o.str_field("author") == Some("user"));
     let mut reset: BTreeMap<u64, u64> = BTreeMap::new();
     for (n, event) in plan_versions(log) {
-        let Some(asked) = event.int("origin").and_then(from_user) else { continue };
-        let last_rejection = verdicts
-            .get(&n)
-            .into_iter()
-            .flatten()
-            .filter(|v| v.id < event.id && v.str_field("result") == Some("rejected"))
-            .map(|v| v.id)
-            .max()
-            .unwrap_or(0);
+        let Some(asked) = event.int("origin").and_then(from_user) else {
+            continue;
+        };
+        let last_rejection =
+            verdicts.get(&n).into_iter().flatten().filter(|v| v.id < event.id && v.str_field("result") == Some("rejected")).map(|v| v.id).max().unwrap_or(0);
         if asked.id > last_rejection {
             let newest = reset.entry(n).or_insert(0);
             *newest = (*newest).max(event.id);
@@ -301,11 +280,7 @@ fn last_reset_by_user(log: &SpecLog, verdicts: &BTreeMap<u64, Vec<&SpecEvent>>) 
 /// ganhou versão nova depois do envio.
 pub(super) fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_dispatch_by_wave();
-    last_planned(log)
-        .into_iter()
-        .filter(|(n, planned)| last_send.get(n).is_some_and(|sent| sent < planned))
-        .map(|(n, _)| n)
-        .collect()
+    last_planned(log).into_iter().filter(|(n, planned)| last_send.get(n).is_some_and(|sent| sent < planned)).map(|(n, _)| n).collect()
 }
 
 /// O que a volta da onda `wave` diz não ter feito (`undone`): as tarefas que
@@ -320,12 +295,7 @@ pub(super) fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
 /// é obrigatória, vazia quando a onda fez todas: sem ela, a rodada daria por
 /// feitas as tarefas que o agente não fez. Sem a mudança, a ausência quer
 /// dizer que a onda fez todas.
-pub(super) fn undone_of(
-    log: &SpecLog,
-    wave: u64,
-    fields: &Map<String, Value>,
-    replan: bool,
-) -> Result<(Vec<(u64, String)>, bool), RoundRefusal> {
+pub(super) fn undone_of(log: &SpecLog, wave: u64, fields: &Map<String, Value>, replan: bool) -> Result<(Vec<(u64, String)>, bool), RoundRefusal> {
     let codes = log.codes();
     let code_of = |task: &SpecEvent| codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
     let own = sent_tasks(log, wave);
@@ -356,8 +326,7 @@ pub(super) fn undone_of(
 fn undone_return(task: &SpecEvent, wave: u64, change: Option<&str>, lang: Locale) -> Map<String, Value> {
     let mut draft = backlog_return(task);
     if let Some(change) = change {
-        let line =
-            translate("round.returned_change", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim());
+        let line = translate("round.returned_change", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim());
         append_agent_line(&mut draft, &line);
     }
     draft
@@ -400,9 +369,7 @@ pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) 
 pub(super) fn tasks_returned(wave: &WaveReport, lang: Locale) -> Option<Value> {
     let codes: Vec<&str> = wave.undone.iter().map(|(_, code)| code.as_str()).collect();
     (!codes.is_empty()).then(|| {
-        let hint = translate("round.tasks_returned", lang)
-            .replace("{wave}", &wave.wave.to_string())
-            .replace("{tasks}", &codes.join(", "));
+        let hint = translate("round.tasks_returned", lang).replace("{wave}", &wave.wave.to_string()).replace("{tasks}", &codes.join(", "));
         json!({ "reason": "tasks-returned", "wave": wave.wave, "tasks": codes, "hint": hint })
     })
 }
@@ -413,10 +380,10 @@ pub(super) fn tasks_returned(wave: &WaveReport, lang: Locale) -> Option<Value> {
 /// onda não muda o plano ou quando a mudança troca uma decisão, que o usuário
 /// decidiu.
 pub(super) fn plan_changed_alone(wave: &WaveReport, lang: Locale) -> Option<Value> {
-    let PlanChange { change, decision: None } = wave.replan.as_ref()? else { return None };
-    let hint = translate("round.replan_recorded", lang)
-        .replace("{wave}", &wave.wave.to_string())
-        .replace("{change}", &without_final_period(change));
+    let PlanChange { change, decision: None } = wave.replan.as_ref()? else {
+        return None;
+    };
+    let hint = translate("round.replan_recorded", lang).replace("{wave}", &wave.wave.to_string()).replace("{change}", &without_final_period(change));
     Some(json!({ "reason": "plan-changed", "wave": wave.wave, "hint": hint }))
 }
 
@@ -444,8 +411,13 @@ mod tests {
         // diferentes: a que muda de onda não a esvazia, porque um lote vazio
         // nunca sai, e não a prende à onda 1 por um arquivo dividido.
         approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
-            write(root, "x", "task", json!({"wave": 2, "text": "Outra tarefa da onda 2.",
-                "files": [{"path": "src/c.rs"}], "depends_on": [], "origin": said}));
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": 2, "text": "Outra tarefa da onda 2.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [], "origin": said}),
+            );
         });
         let first = round(root, "x", None);
         assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(2), "{first}");
@@ -453,11 +425,7 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let current = |kind: &str, n: u64| -> Value {
             let log = store::read(&path).unwrap().unwrap();
-            let event = log
-                .visible()
-                .into_iter()
-                .find(|e| e.event_type == kind && e.wave() == Some(n))
-                .unwrap_or_else(|| panic!("sem {kind} da onda {n}"));
+            let event = log.visible().into_iter().find(|e| e.event_type == kind && e.wave() == Some(n)).unwrap_or_else(|| panic!("sem {kind} da onda {n}"));
             let mut fields = event.fields.clone();
             for key in ["v", "id", "code", "at", "search", "type", "author"] {
                 fields.remove(key);
@@ -477,8 +445,7 @@ mod tests {
         id_of(&write(root, "x", "task", task));
 
         let again = round(root, "x", None);
-        let waves: Vec<u64> =
-            again["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
+        let waves: Vec<u64> = again["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(waves, vec![1, 2], "as duas foram replanejadas depois do pedido: {again}");
 
         let quiet = round(root, "x", None);
@@ -616,12 +583,7 @@ mod tests {
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "a rodada gravou o que a onda entregou: {went}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let clicked = log
-            .visible()
-            .into_iter()
-            .filter_map(|e| e.fields.get("witness").cloned())
-            .next_back()
-            .expect("o clique gravado");
+        let clicked = log.visible().into_iter().filter_map(|e| e.fields.get("witness").cloned()).next_back().expect("o clique gravado");
         assert_eq!(clicked["change"], json!(code), "o código fica ao lado da resposta: {clicked}");
         assert_eq!(clicked["question"], json!(mine), "a frase gravada é a que o usuário leu: {clicked}");
     }
@@ -720,17 +682,7 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(
-            root,
-            "x",
-            &[
-                (1, &["src/a.rs"], &[]),
-                (2, &["src/b.rs"], &[]),
-                (3, &["src/a.rs"], &[]),
-                (4, &["src/c.rs"], &[2]),
-                (5, &["src/d.rs"], &[1]),
-            ],
-        );
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/a.rs"], &[]), (4, &["src/c.rs"], &[2]), (5, &["src/d.rs"], &[1])]);
         let mut first = waves_in(&round(root, "x", None), "dispatch");
         first.sort_unstable();
         assert_eq!(first, vec![1, 2], "a onda 3 divide o arquivo da 1");
@@ -833,12 +785,7 @@ mod tests {
         let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
 
-        let opts = crate::commands::flow::close::CloseOpts {
-            root: root.to_path_buf(),
-            spec: Some("x".into()),
-            report: None,
-            ..Default::default()
-        };
+        let opts = crate::commands::flow::close::CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() };
         let closed = crate::commands::flow::close::close_for(&opts, None);
         assert_eq!(closed["reason"], json!("wave-plan-does-not-work"), "{closed}");
         assert_eq!(closed["header"], json!(replan_code(1, change)), "{closed}");
@@ -896,9 +843,7 @@ mod tests {
             .map(|e| json!({"code": codes[&e.id], "text": e.str_field("text").unwrap()}))
             .collect();
         assert_eq!(verdicts.len(), 3, "a terceira reprovação foi gravada");
-        let question = translate("round.fix_limit.question", Locale::PtBr)
-            .replace("{wave}", "1")
-            .replace("{max}", &MAX_FIX_ROUNDS.to_string());
+        let question = translate("round.fix_limit.question", Locale::PtBr).replace("{wave}", "1").replace("{max}", &MAX_FIX_ROUNDS.to_string());
         assert_eq!(stopped["stopped"], json!([{"wave": 1, "question": question, "verdicts": verdicts}]), "{stopped}");
         // Sem mais nada a fazer, o próximo passo é a pergunta, com os vereditos.
         let codes: Vec<&str> = verdicts.iter().filter_map(|v| v["code"].as_str()).collect();
@@ -935,8 +880,13 @@ mod tests {
     /// agora pelo gancho da entrada. Devolve o número da decisão.
     fn user_decides(root: &Path, text: &str) -> u64 {
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": text})));
-        id_of(&write(root, "x", "decision", json!({"author": "user", "text": text,
-            "why": "o usuário reviu o plano da onda", "keys": ["plano"], "waves": [1], "origin": said})))
+        id_of(&write(
+            root,
+            "x",
+            "decision",
+            json!({"author": "user", "text": text,
+            "why": "o usuário reviu o plano da onda", "keys": ["plano"], "waves": [1], "origin": said}),
+        ))
     }
 
     /// A conta de consertos só zera com o usuário. A tarefa que o orquestrador
@@ -960,9 +910,12 @@ mod tests {
             assert_eq!(out["ok"], json!(true), "{out}");
             let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
             seed_review(root);
-            let wrote = judged(root, json!({"wave": 1, "result": "rejected", "final": true,
+            let wrote = judged(
+                root,
+                json!({"wave": 1, "result": "rejected", "final": true,
                 "text": format!("reprovação {n}"), "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
-                "agreed": agreed}));
+                "agreed": agreed}),
+            );
             assert_eq!(wrote["ok"], json!(true), "{wrote}");
             round(root, "x", None)
         };
@@ -973,11 +926,21 @@ mod tests {
         assert_eq!(waves_in(&rejected(2, &[]), "dispatch"), vec![1]);
 
         // O orquestrador acrescenta uma tarefa à onda, por decisão dele.
-        let own = id_of(&write(root, "x", "decision", json!({"text": "Falta uma tarefa na onda 1.",
-            "why": "a revisão apontou", "keys": ["tarefa"], "waves": [1], "origin": early})));
+        let own = id_of(&write(
+            root,
+            "x",
+            "decision",
+            json!({"text": "Falta uma tarefa na onda 1.",
+            "why": "a revisão apontou", "keys": ["tarefa"], "waves": [1], "origin": early}),
+        ));
         for origin in [own, early] {
-            write(root, "x", "task", json!({"wave": 1, "text": format!("Tarefa acrescentada ({origin})."),
-                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": origin}));
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": format!("Tarefa acrescentada ({origin})."),
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": origin}),
+            );
         }
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "o plano mudou depois do pedido: {again}");
@@ -1050,8 +1013,7 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let judged: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "verdict").collect();
-        let verdicts: Vec<Value> =
-            judged.iter().map(|e| json!({"code": codes[&e.id], "text": e.str_field("text").unwrap()})).collect();
+        let verdicts: Vec<Value> = judged.iter().map(|e| json!({"code": codes[&e.id], "text": e.str_field("text").unwrap()})).collect();
         assert_eq!(out["stopped"][0]["verdicts"], json!(verdicts), "{out}");
         let names: Vec<&str> = judged.iter().map(|e| codes[&e.id].as_str()).collect();
         let asked = translate("round.fix_limit", Locale::PtBr)
@@ -1063,12 +1025,8 @@ mod tests {
         assert!(out["next"].as_str().unwrap_or_default().ends_with(&format!("{asked} {rest}")), "{out}");
 
         // O usuário tira do plano a onda 1 e a 5, que estava em andamento.
-        let targets: Vec<u64> = log
-            .visible()
-            .into_iter()
-            .filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && matches!(e.wave(), Some(1 | 5)))
-            .map(|e| e.id)
-            .collect();
+        let targets: Vec<u64> =
+            log.visible().into_iter().filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && matches!(e.wave(), Some(1 | 5))).map(|e| e.id).collect();
         write(root, "x", "remove", json!({"targets": targets, "reason": "o usuário tirou as ondas do plano"}));
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -1088,9 +1046,7 @@ mod tests {
     /// A frase do próximo passo da volta da onda `wave` que ficou de fora,
     /// com a mensagem `hint` da recusa dela.
     fn held_line(wave: u64, hint: &Value) -> String {
-        translate("round.held_return", Locale::PtBr)
-            .replace("{wave}", &wave.to_string())
-            .replace("{hint}", hint.as_str().unwrap_or_default())
+        translate("round.held_return", Locale::PtBr).replace("{wave}", &wave.to_string()).replace("{hint}", hint.as_str().unwrap_or_default())
     }
 
     /// Duas ondas voltam na mesma rodada, e a cópia de uma mudou arquivo sem
@@ -1107,11 +1063,7 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(
-            root,
-            "x",
-            &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[2]), (4, &["src/d.rs"], &[1])],
-        );
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[2]), (4, &["src/d.rs"], &[1])]);
         let mut first = waves_in(&round(root, "x", None), "dispatch");
         first.sort_unstable();
         assert_eq!(first, vec![1, 2], "a 3 e a 4 esperam as dependências");
@@ -1169,9 +1121,13 @@ mod tests {
             let other = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(2)).unwrap().id;
             let other = log.codes()[&other].clone();
             let mut body = match case {
-                "replan-needs-undone" => json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda."}),
+                "replan-needs-undone" => {
+                    json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda."})
+                }
                 "undone-not-in-wave" => json!({"wave": 1, "text": "Parei.", "undone": [other]}),
-                _ => json!({"wave": 1, "text": "Saiu.", "files": ["src/nao_existe.rs"], "commit": "a onda 1 saiu"}),
+                _ => {
+                    json!({"wave": 1, "text": "Saiu.", "files": ["src/nao_existe.rs"], "commit": "a onda 1 saiu"})
+                }
             };
             body["returned"] = json!(true);
             body["author"] = json!("wave");
@@ -1287,11 +1243,10 @@ mod tests {
         assert_eq!(change_asked(&held)["wave"], json!(1), "{held}");
         assert_eq!(waves_in(&held, "dispatch"), vec![3], "{held}");
 
-        let bodies = crate::commands::spec_events::pages::copy::sent(root, &held, "spec");
-        let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
-        assert_eq!(computed["body"]["waves"]["1"], json!("todo"), "a onda que espera o clique: {computed}");
-        assert_eq!(computed["body"]["waves"]["3"], json!("running"), "{computed}");
-
+        let panel = crate::commands::panel::snapshot(root, Some("x"));
+        let waves = panel["specs"][0]["waves"].as_array().unwrap();
+        assert_ne!(waves.iter().find(|w| w["wave"] == 1).unwrap()["status"], "running", "waiting for authorization is not running");
+        assert_eq!(waves.iter().find(|w| w["wave"] == 3).unwrap()["status"], "running");
         let recorded = request_of(&held, 3);
         let hooked = hook_request(root, 3);
         assert_eq!(hooked, recorded, "o gancho monta o mesmo pedido que a rodada gravou");

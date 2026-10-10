@@ -87,6 +87,9 @@ jobs:
       MUSTARD_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       # NO version is named here, and that is the point: with the `toolchain`
       # input left empty this action installs exactly what `rust-toolchain.toml`
@@ -139,6 +142,9 @@ jobs:
             cp "target/release/$b.exe" "$PAYLOAD/bin/$b.exe"
           done
           cp dist/_rtk/rtk.exe "$PAYLOAD/bin/rtk.exe"
+          python packaging/fetch-ripgrep.py --target x86_64-pc-windows-msvc --dest "$PAYLOAD/bin"
+          cp packages/core/assets/code-meaning/LICENSE "$PAYLOAD/bin/potion-code-LICENSE"
+          cp plugin/third-party/potion-code-16M-v2-NOTICE.txt "$PAYLOAD/bin/potion-code-NOTICE"
 
       # NSIS ships with some runner images and not others (it left windows-2025),
       # so the presence is checked instead of assumed — the assumption is exactly
@@ -173,10 +179,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist/bins
-          for b in scan mustard-rt mustard; do
-            cp "target/release/$b.exe" dist/bins/
-          done
-          cp dist/_rtk/rtk.exe dist/bins/rtk.exe
+          cp dist/_win-payload/bin/* dist/bins/
           (cd dist/bins && 7z a "../mustard-bins-$VERSION-windows-x64.zip" .)
 
       - name: Coleta o instalador
@@ -187,6 +190,18 @@ jobs:
           path: |
             dist/Mustard_*-setup.exe
             dist/mustard-bins-*.zip
+
+      - name: Install and exercise the Windows package
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $installer = (Get-ChildItem dist/Mustard_*-setup.exe | Select-Object -First 1).FullName
+          $destination = Join-Path $env:RUNNER_TEMP 'mustard-install'
+          $process = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$destination" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
+          python packaging/smoke-install.py --bin-dir (Join-Path $destination 'mustard-cli') --version $env:VERSION --bootstrap-archive "dist/mustard-bins-$env:VERSION-windows-x64.zip"
+          if ($LASTEXITCODE -ne 0) { throw "Installed Mustard smoke test failed." }
 
   # ------------------------------------------------ macOS — instalador .pkg ----
   macos-installer:
@@ -199,6 +214,9 @@ jobs:
       MUSTARD_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       # Toolchain from `rust-toolchain.toml` — see the note in the Windows job.
       # The two Apple targets stay an input: they are needed by THIS job only,
@@ -230,10 +248,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist/bins
-          for b in scan mustard-rt mustard; do
-            lipo -create "target/x86_64-apple-darwin/release/$b" "target/aarch64-apple-darwin/release/$b" -output "dist/bins/$b"
-            chmod +x "dist/bins/$b"
-          done
+          cp dist/_pkgroot/usr/local/mustard/bin/* dist/bins/
           tar -czf "dist/mustard-bins-$VERSION-macos-universal.tar.gz" -C dist/bins .
 
       - name: Coleta o instalador
@@ -244,6 +259,13 @@ jobs:
           path: |
             dist/Mustard-*-universal.pkg
             dist/mustard-bins-*.tar.gz
+
+      - name: Install and exercise the macOS package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sudo installer -pkg "dist/Mustard-$VERSION-universal.pkg" -target /
+          python3 packaging/smoke-install.py --bin-dir /usr/local/mustard/bin --version "$VERSION" --bootstrap-archive "dist/mustard-bins-$VERSION-macos-universal.tar.gz"
 
   # ------------------------------------------ Linux — .deb fundido (Docker) ----
   linux-deb:
@@ -256,6 +278,9 @@ jobs:
       MUSTARD_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       # O build-deb.sh baixa o rtk na versão fixa do checksums.txt e confere a
       # soma; sem ele o .deb não sai.
@@ -263,31 +288,15 @@ jobs:
         shell: pwsh
         run: ./packaging/build-packages.ps1 -Targets linux
 
-      # Binários avulsos nativos (runner ubuntu, sem Docker) — o bootstrap do
-      # plugin baixa este tar na primeira sessão.
-      # Toolchain from `rust-toolchain.toml` — see the note in the Windows job.
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-          rustflags: ''
-
-      # Só restaura — ver a nota no job do Windows.
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          shared-key: mustard-workspace
-          save-if: false
-
+      # Reuse the Ubuntu 22.04 payload; a second build on ubuntu-latest can
+      # require a newer glibc and break the plugin on supported older hosts.
       - name: Empacota binários avulsos (bootstrap do plugin)
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          cargo build --release --locked --bin scan --bin mustard-rt --bin mustard
+          dpkg-deb -x "dist/mustard_${VERSION}_amd64.deb" dist/_deb-runtime
           mkdir -p dist/bins
-          for b in scan mustard-rt mustard; do
-            cp "target/release/$b" dist/bins/
-          done
+          cp dist/_deb-runtime/usr/lib/mustard/bin/* dist/bins/
           tar -czf "dist/mustard-bins-$VERSION-linux-x64.tar.gz" -C dist/bins .
 
       - name: Coleta o .deb + instalador
@@ -301,6 +310,13 @@ jobs:
             dist/README.txt
             dist/TUTORIAL-LINUX.md
             dist/mustard-bins-*.tar.gz
+
+      - name: Install and exercise the Linux package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sudo dpkg -i "dist/mustard_${VERSION}_amd64.deb"
+          python3 packaging/smoke-install.py --bin-dir /usr/lib/mustard/bin --version "$VERSION" --bootstrap-archive "dist/mustard-bins-$VERSION-linux-x64.tar.gz"
 
   # ------------------------------------------------------------- publica ----
   # Junta os instaladores num único GitHub Release. Só publica em tag; no

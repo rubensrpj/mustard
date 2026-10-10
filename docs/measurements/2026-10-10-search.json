@@ -1,0 +1,2109 @@
+{
+  "date": "2026-10-10",
+  "branch": "codex/mustard-plano-completo",
+  "baseline_commit": "e29ec6f3a750109f64b23d976e7a03c660b0338b",
+  "build_profile": "CARGO_PROFILE_DEV_OPT_LEVEL=3; workspace opt-level=3, dependency override=1; identical baseline/current flags",
+  "method": "Prior retrieval revision (baseline e29ec6f) is preserved below as history. Current delivery_revision compares against f7c80415 with local vectors on in both arms.",
+  "summary": {
+    "baseline": {
+      "cases": 80,
+      "visible_symbol_found": 55,
+      "complete_body": 40,
+      "output_bytes": 1596596,
+      "native_parity": 80,
+      "remote_model_calls": 0
+    },
+    "native": {
+      "cases": 80,
+      "visible_symbol_found": 64,
+      "complete_body": 41,
+      "output_bytes": 1407348,
+      "native_parity": 80,
+      "remote_model_calls": 0
+    },
+    "local": {
+      "cases": 80,
+      "visible_symbol_found": 72,
+      "complete_body": 49,
+      "output_bytes": 1356648,
+      "native_parity": 80,
+      "remote_model_calls": 0
+    }
+  },
+  "diff": {
+    "native": {
+      "target_gains": [
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 1,
+          "target": {
+            "file": "torch_geometric/nn/conv/supergat_conv.py",
+            "name": "positive_sampling"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 7,
+          "target": {
+            "file": "torch_geometric/edge_index.py",
+            "name": "set_tuple_item"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 2,
+          "target": {
+            "file": "src/cargo/core/source_id.rs",
+            "name": "test_cratesio_hash"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 1,
+          "target": {
+            "file": "src/croc/croc_test.go",
+            "name": "TestCrocSymlink"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 2,
+          "target": {
+            "file": "src/compress/compress_test.go",
+            "name": "BenchmarkCompressLevelNineBinary"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 6,
+          "target": {
+            "file": "src/tcp/tcp_test.go",
+            "name": "TestTCP"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 2,
+          "target": {
+            "file": "core/breaker/breaker_test.go",
+            "name": "TestCircuitBreaker_Do"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 6,
+          "target": {
+            "file": "core/stores/builder/builder_test.go",
+            "name": "TestPostgreSqlJoin"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 8,
+          "target": {
+            "file": "core/mapping/valuer_test.go",
+            "name": "TestMapValuerWithInherit_Value"
+          }
+        }
+      ],
+      "target_losses": [],
+      "body_gains": [
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 1,
+          "target": {
+            "file": "torch_geometric/nn/conv/supergat_conv.py",
+            "name": "positive_sampling"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 7,
+          "target": {
+            "file": "torch_geometric/edge_index.py",
+            "name": "set_tuple_item"
+          }
+        },
+        {
+          "repo": "langchain-ai/langchainjs",
+          "id": 1,
+          "target": {
+            "file": "langchain/src/retrievers/self_query/utils.ts",
+            "name": "isFilterEmpty"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 2,
+          "target": {
+            "file": "src/cargo/core/source_id.rs",
+            "name": "test_cratesio_hash"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 6,
+          "target": {
+            "file": "src/tcp/tcp_test.go",
+            "name": "TestTCP"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 7,
+          "target": {
+            "file": "src/message/message.go",
+            "name": "Send"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 4,
+          "target": {
+            "file": "src/py/reactpy/reactpy/web/module.py",
+            "name": "_equal_files"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 3,
+          "target": {
+            "file": "src/intervalToDuration/index.ts",
+            "name": "intervalToDuration"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 7,
+          "target": {
+            "file": "src/locale/kn/_lib/formatDistance/index.ts",
+            "name": "getResultByTense"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 6,
+          "target": {
+            "file": "serde/src/ser/fmt.rs",
+            "name": "serialize_unit_variant"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 6,
+          "target": {
+            "file": "core/stores/builder/builder_test.go",
+            "name": "TestPostgreSqlJoin"
+          }
+        }
+      ],
+      "body_losses": [
+        {
+          "repo": "rust-lang/cargo",
+          "id": 0,
+          "target": {
+            "file": "src/cargo/core/profiles.rs",
+            "name": "get_config_profile"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 1,
+          "target": {
+            "file": "src/cargo/ops/cargo_package.rs",
+            "name": "package"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 1,
+          "target": {
+            "file": "src/py/reactpy/reactpy/core/vdom.py",
+            "name": "custom_vdom_constructor"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 5,
+          "target": {
+            "file": "src/py/reactpy/reactpy/testing/backend.py",
+            "name": "stop_server"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 6,
+          "target": {
+            "file": "src/py/reactpy/reactpy/core/hooks.py",
+            "name": "create_context"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 6,
+          "target": {
+            "file": "src/differenceInHours/index.ts",
+            "name": "differenceInHours"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 0,
+          "target": {
+            "file": "serde/src/de/mod.rs",
+            "name": "newtype_variant"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 9,
+          "target": {
+            "file": "serde/src/ser/mod.rs",
+            "name": "serialize_entry"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 1,
+          "target": {
+            "file": "core/breaker/googlebreaker.go",
+            "name": "newGoogleBreaker"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 4,
+          "target": {
+            "file": "core/stores/dbtest/sql.go",
+            "name": "RunTest"
+          }
+        }
+      ]
+    },
+    "local": {
+      "target_gains": [
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 1,
+          "target": {
+            "file": "torch_geometric/nn/conv/supergat_conv.py",
+            "name": "positive_sampling"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 3,
+          "target": {
+            "file": "torch_geometric/datasets/tu_dataset.py",
+            "name": "num_node_labels"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 7,
+          "target": {
+            "file": "torch_geometric/edge_index.py",
+            "name": "set_tuple_item"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 8,
+          "target": {
+            "file": "torch_geometric/explain/algorithm/captum.py",
+            "name": "_to_edge_mask"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 9,
+          "target": {
+            "file": "torch_geometric/utils/loop.py",
+            "name": "get_self_loop_attr"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 2,
+          "target": {
+            "file": "src/cargo/core/source_id.rs",
+            "name": "test_cratesio_hash"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 5,
+          "target": {
+            "file": "src/cargo/ops/cargo_uninstall.rs",
+            "name": "uninstall_one"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 0,
+          "target": {
+            "file": "src/cli/cli.go",
+            "name": "getStdin"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 1,
+          "target": {
+            "file": "src/croc/croc_test.go",
+            "name": "TestCrocSymlink"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 2,
+          "target": {
+            "file": "src/compress/compress_test.go",
+            "name": "BenchmarkCompressLevelNineBinary"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 6,
+          "target": {
+            "file": "src/tcp/tcp_test.go",
+            "name": "TestTCP"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 9,
+          "target": {
+            "file": "src/locale/bn/_lib/localize/index.ts",
+            "name": "dateOrdinalNumber"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 2,
+          "target": {
+            "file": "serde/src/ser/impossible.rs",
+            "name": "serialize_key"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 4,
+          "target": {
+            "file": "serde/src/ser/impls.rs",
+            "name": "format_u8"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 2,
+          "target": {
+            "file": "core/breaker/breaker_test.go",
+            "name": "TestCircuitBreaker_Do"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 6,
+          "target": {
+            "file": "core/stores/builder/builder_test.go",
+            "name": "TestPostgreSqlJoin"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 8,
+          "target": {
+            "file": "core/mapping/valuer_test.go",
+            "name": "TestMapValuerWithInherit_Value"
+          }
+        }
+      ],
+      "target_losses": [],
+      "body_gains": [
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 1,
+          "target": {
+            "file": "torch_geometric/nn/conv/supergat_conv.py",
+            "name": "positive_sampling"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 3,
+          "target": {
+            "file": "torch_geometric/datasets/tu_dataset.py",
+            "name": "num_node_labels"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 7,
+          "target": {
+            "file": "torch_geometric/edge_index.py",
+            "name": "set_tuple_item"
+          }
+        },
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 9,
+          "target": {
+            "file": "torch_geometric/utils/loop.py",
+            "name": "get_self_loop_attr"
+          }
+        },
+        {
+          "repo": "langchain-ai/langchainjs",
+          "id": 1,
+          "target": {
+            "file": "langchain/src/retrievers/self_query/utils.ts",
+            "name": "isFilterEmpty"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 2,
+          "target": {
+            "file": "src/cargo/core/source_id.rs",
+            "name": "test_cratesio_hash"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 1,
+          "target": {
+            "file": "src/croc/croc_test.go",
+            "name": "TestCrocSymlink"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 6,
+          "target": {
+            "file": "src/tcp/tcp_test.go",
+            "name": "TestTCP"
+          }
+        },
+        {
+          "repo": "schollz/croc",
+          "id": 7,
+          "target": {
+            "file": "src/message/message.go",
+            "name": "Send"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 4,
+          "target": {
+            "file": "src/py/reactpy/reactpy/web/module.py",
+            "name": "_equal_files"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 3,
+          "target": {
+            "file": "src/intervalToDuration/index.ts",
+            "name": "intervalToDuration"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 7,
+          "target": {
+            "file": "src/locale/kn/_lib/formatDistance/index.ts",
+            "name": "getResultByTense"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 4,
+          "target": {
+            "file": "serde/src/ser/impls.rs",
+            "name": "format_u8"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 6,
+          "target": {
+            "file": "serde/src/ser/fmt.rs",
+            "name": "serialize_unit_variant"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 8,
+          "target": {
+            "file": "serde/src/de/mod.rs",
+            "name": "variant"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 6,
+          "target": {
+            "file": "core/stores/builder/builder_test.go",
+            "name": "TestPostgreSqlJoin"
+          }
+        }
+      ],
+      "body_losses": [
+        {
+          "repo": "pyg-team/pytorch_geometric",
+          "id": 0,
+          "target": {
+            "file": "torch_geometric/loader/prefetch.py",
+            "name": "maybe_init_stream"
+          }
+        },
+        {
+          "repo": "rust-lang/cargo",
+          "id": 1,
+          "target": {
+            "file": "src/cargo/ops/cargo_package.rs",
+            "name": "package"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 1,
+          "target": {
+            "file": "src/py/reactpy/reactpy/core/vdom.py",
+            "name": "custom_vdom_constructor"
+          }
+        },
+        {
+          "repo": "reactive-python/reactpy",
+          "id": 5,
+          "target": {
+            "file": "src/py/reactpy/reactpy/testing/backend.py",
+            "name": "stop_server"
+          }
+        },
+        {
+          "repo": "date-fns/date-fns",
+          "id": 6,
+          "target": {
+            "file": "src/differenceInHours/index.ts",
+            "name": "differenceInHours"
+          }
+        },
+        {
+          "repo": "serde-rs/serde",
+          "id": 9,
+          "target": {
+            "file": "serde/src/ser/mod.rs",
+            "name": "serialize_entry"
+          }
+        },
+        {
+          "repo": "zeromicro/go-zero",
+          "id": 1,
+          "target": {
+            "file": "core/breaker/googlebreaker.go",
+            "name": "newGoogleBreaker"
+          }
+        }
+      ]
+    }
+  },
+  "per_language": {
+    "python": {
+      "baseline": {
+        "cases": 20,
+        "visible": 14,
+        "complete": 11,
+        "bytes": 415404
+      },
+      "native": {
+        "cases": 20,
+        "visible": 16,
+        "complete": 11,
+        "bytes": 386262
+      },
+      "local": {
+        "cases": 20,
+        "visible": 19,
+        "complete": 13,
+        "bytes": 379671
+      }
+    },
+    "typescript": {
+      "baseline": {
+        "cases": 20,
+        "visible": 16,
+        "complete": 9,
+        "bytes": 418452
+      },
+      "native": {
+        "cases": 20,
+        "visible": 16,
+        "complete": 11,
+        "bytes": 382774
+      },
+      "local": {
+        "cases": 20,
+        "visible": 17,
+        "complete": 11,
+        "bytes": 376507
+      }
+    },
+    "rust": {
+      "baseline": {
+        "cases": 20,
+        "visible": 14,
+        "complete": 11,
+        "bytes": 470613
+      },
+      "native": {
+        "cases": 20,
+        "visible": 15,
+        "complete": 9,
+        "bytes": 380198
+      },
+      "local": {
+        "cases": 20,
+        "visible": 18,
+        "complete": 13,
+        "bytes": 358597
+      }
+    },
+    "go": {
+      "baseline": {
+        "cases": 20,
+        "visible": 11,
+        "complete": 9,
+        "bytes": 292127
+      },
+      "native": {
+        "cases": 20,
+        "visible": 17,
+        "complete": 10,
+        "bytes": 258114
+      },
+      "local": {
+        "cases": 20,
+        "visible": 18,
+        "complete": 12,
+        "bytes": 241873
+      }
+    }
+  },
+  "provenance": {
+    "known-native": {
+      "dataset": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection": "5bde8e49ff69e8b7aecd5a515db7e1a453d483da11dec4e941dcba42e3518227",
+      "binaries": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "576cb952e4fa0810a4f48cb8100a7d333c4c704a9dd5e0612b4cf4e810afae44"
+      }
+    },
+    "known-local": {
+      "dataset": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection": "5bde8e49ff69e8b7aecd5a515db7e1a453d483da11dec4e941dcba42e3518227",
+      "binaries": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "576cb952e4fa0810a4f48cb8100a7d333c4c704a9dd5e0612b4cf4e810afae44"
+      }
+    },
+    "unseen-native": {
+      "dataset": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection": "f8a6af52e61fe7cd56b7b2f88232491ecb6d3468e409de37688941a43be8f7f2",
+      "binaries": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "576cb952e4fa0810a4f48cb8100a7d333c4c704a9dd5e0612b4cf4e810afae44"
+      }
+    },
+    "unseen-local": {
+      "dataset": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection": "f8a6af52e61fe7cd56b7b2f88232491ecb6d3468e409de37688941a43be8f7f2",
+      "binaries": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "576cb952e4fa0810a4f48cb8100a7d333c4c704a9dd5e0612b4cf4e810afae44"
+      }
+    }
+  },
+  "final_binary_provenance": {
+    "known": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "5bde8e49ff69e8b7aecd5a515db7e1a453d483da11dec4e941dcba42e3518227",
+      "binary_sha256": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681"
+      },
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 25,
+          "visible_found": 25,
+          "native_owner_found": 14,
+          "complete_bodies": 20,
+          "bytes": 1049026,
+          "total_ms": 155628.01509500004,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 36,
+          "visible_found": 36,
+          "native_owner_found": 17,
+          "complete_bodies": 27,
+          "bytes": 854598,
+          "total_ms": 207069.49412000008,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      }
+    },
+    "unseen": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "f8a6af52e61fe7cd56b7b2f88232491ecb6d3468e409de37688941a43be8f7f2",
+      "binary_sha256": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681"
+      },
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 30,
+          "visible_found": 30,
+          "native_owner_found": 20,
+          "complete_bodies": 20,
+          "bytes": 547570,
+          "total_ms": 66797.85443699996,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 36,
+          "visible_found": 36,
+          "native_owner_found": 21,
+          "complete_bodies": 22,
+          "bytes": 502050,
+          "total_ms": 159795.826542,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      }
+    },
+    "known-native": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "5bde8e49ff69e8b7aecd5a515db7e1a453d483da11dec4e941dcba42e3518227",
+      "binary_sha256": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681"
+      },
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 25,
+          "visible_found": 25,
+          "native_owner_found": 14,
+          "complete_bodies": 20,
+          "bytes": 1049026,
+          "total_ms": 155628.01509500004,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 32,
+          "visible_found": 31,
+          "native_owner_found": 17,
+          "complete_bodies": 24,
+          "bytes": 878606,
+          "total_ms": 211824.99156700008,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      }
+    },
+    "unseen-native": {
+      "dataset_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+      "selection_sha256": "f8a6af52e61fe7cd56b7b2f88232491ecb6d3468e409de37688941a43be8f7f2",
+      "binary_sha256": {
+        "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+        "current": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681"
+      },
+      "summary": {
+        "baseline": {
+          "cases": 40,
+          "found": 30,
+          "visible_found": 30,
+          "native_owner_found": 20,
+          "complete_bodies": 20,
+          "bytes": 547570,
+          "total_ms": 66797.85443699996,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        },
+        "current": {
+          "cases": 40,
+          "found": 33,
+          "visible_found": 33,
+          "native_owner_found": 21,
+          "complete_bodies": 17,
+          "bytes": 528742,
+          "total_ms": 175170.33990900003,
+          "native_parity": 40,
+          "remote_model_calls": 0
+        }
+      }
+    }
+  },
+  "identical_projection_after_selective_hydration": 160,
+  "latency": {
+    "method": "One unmeasured warm-up per case/arm, then alternating arms; actual --shell-output, diagnostics disabled, no parallel work within this runner.",
+    "repeat": 3,
+    "binary_sha256": {
+      "baseline": "67a35a9a0184fdb8c3d9c1c0bba3046ff855e3013a5fa85512378e605019a879",
+      "current": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681",
+      "native": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681"
+    },
+    "summary": {
+      "baseline": {
+        "samples": 12,
+        "median_ms": 3195.4414545000036,
+        "per_case": {
+          "sialia-overview": {
+            "median_ms": 4731.563665000009,
+            "deterministic_output": true,
+            "bytes": 19846
+          },
+          "sialia-charging": {
+            "median_ms": 5824.611428999997,
+            "deterministic_output": true,
+            "bytes": 29440
+          },
+          "florestal-01-discover-xlsx": {
+            "median_ms": 1660.7205900000117,
+            "deterministic_output": true,
+            "bytes": 7889
+          },
+          "florestal-02-find-input-entrypoints": {
+            "median_ms": 340.2325199999905,
+            "deterministic_output": true,
+            "bytes": 3776
+          }
+        }
+      },
+      "current": {
+        "samples": 12,
+        "median_ms": 4075.5825380000097,
+        "per_case": {
+          "sialia-overview": {
+            "median_ms": 6214.994804000016,
+            "deterministic_output": true,
+            "bytes": 22487
+          },
+          "sialia-charging": {
+            "median_ms": 7838.185683999996,
+            "deterministic_output": true,
+            "bytes": 27445
+          },
+          "florestal-01-discover-xlsx": {
+            "median_ms": 1951.7502580000146,
+            "deterministic_output": true,
+            "bytes": 9780
+          },
+          "florestal-02-find-input-entrypoints": {
+            "median_ms": 421.60951899999054,
+            "deterministic_output": true,
+            "bytes": 3537
+          }
+        }
+      },
+      "native": {
+        "samples": 12,
+        "median_ms": 3485.0023759999967,
+        "per_case": {
+          "sialia-overview": {
+            "median_ms": 5156.154741000006,
+            "deterministic_output": true,
+            "bytes": 18168
+          },
+          "sialia-charging": {
+            "median_ms": 7236.4775269999955,
+            "deterministic_output": true,
+            "bytes": 27528
+          },
+          "florestal-01-discover-xlsx": {
+            "median_ms": 1864.5761849999835,
+            "deterministic_output": true,
+            "bytes": 9499
+          },
+          "florestal-02-find-input-entrypoints": {
+            "median_ms": 341.065923999995,
+            "deterministic_output": true,
+            "bytes": 3299
+          }
+        }
+      }
+    },
+    "comparisons": {
+      "native_vs_baseline_pct": 9.061687582860166,
+      "local_vs_baseline_pct": 27.543646035527924,
+      "native_improvement_pct": 7.811546072108733,
+      "local_improvement_pct": 6.159076154913546,
+      "identical_output_samples": 36
+    },
+    "limits": [
+      "Small known query sample, warm filesystem cache, one machine.",
+      "No autonomous host model, billing, application execution or end-to-end task time measured.",
+      "Models/configurations must be recorded by the caller; each root must already be scanned by its own binary."
+    ]
+  },
+  "projects": {
+    "sialia": {
+      "baseline": {
+        "targets": 12,
+        "visible": 10,
+        "complete_bodies": 3,
+        "view_bytes": 165973,
+        "native_parity": 7,
+        "requests": 7
+      },
+      "current": {
+        "targets": 12,
+        "visible": 10,
+        "complete_bodies": 3,
+        "view_bytes": 169562,
+        "native_parity": 7,
+        "requests": 7
+      },
+      "gains": [],
+      "regressions": []
+    },
+    "florestal": {
+      "baseline": {
+        "targets": 8,
+        "complete_bodies": 3,
+        "bytes": 66616
+      },
+      "current": {
+        "search_requests": 8,
+        "native_agent_bytes": 21791,
+        "task_agent_bytes": 59453,
+        "unique_current_source_lines": 438,
+        "located_required": 8,
+        "complete_required": 3
+      }
+    }
+  },
+  "jev": {
+    "small_paired": {
+      "before": {
+        "physical_calls": 12,
+        "input_tokens": 12398,
+        "cost_micro_usd": 523
+      },
+      "after": {
+        "physical_calls": 12,
+        "input_tokens": 11726,
+        "cost_micro_usd": 490
+      },
+      "expected_outcomes_matched": 12,
+      "wrong_accepted": 0,
+      "input_tokens_reduction_pct": 5.420229069204707
+    },
+    "public_final": {
+      "cases": 8,
+      "valid_native": 8,
+      "valid_choice": 8,
+      "expected_in_native_pool": 7,
+      "correct_selections": 7,
+      "wrong_accepted": 0,
+      "abstained": 1,
+      "native_first_correct": 1,
+      "choice_first_correct": 7,
+      "physical_calls": 9,
+      "known_input_tokens": 178232,
+      "estimated_micro_usd": 7485,
+      "cache_verified": 8
+    },
+    "public_binary_sha256": "576cb952e4fa0810a4f48cb8100a7d333c4c704a9dd5e0612b4cf4e810afae44",
+    "total_revision_physical_calls": 54,
+    "total_known_input_tokens": 392902,
+    "total_estimated_cost_micro_usd": 16503,
+    "price_source": "configured estimate; provider invoice not verified"
+  },
+  "model": {
+    "repository": "minishlab/potion-code-16M-v2",
+    "revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b",
+    "license": "MIT",
+    "model_license_source": "https://huggingface.co/minishlab/potion-code-16M-v2/blob/e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b/README.md",
+    "license_text_source": "https://github.com/MinishLab/model2vec/blob/main/LICENSE",
+    "files_sha256": {
+      "model.safetensors": "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c",
+      "tokenizer.json": "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45",
+      "config.json": "148e5691a6fcc553437156859701fba017a1ba5d340b170f17e0f3668fb861a7"
+    },
+    "payload_bytes": 33514471,
+    "default_enabled": true,
+    "runtime_downloads": false,
+    "new_production_inference_dependency": false,
+    "previous_default_enabled": false
+  },
+  "checks": {
+    "rust_passed": 3987,
+    "rust_failed": 0,
+    "rust_ignored_inherited": 2,
+    "clippy_warnings_as_errors": true,
+    "mods_sdk_passed": 16,
+    "plugin_validation": true,
+    "native_acceptance": {
+      "ok": true,
+      "commit": "f7c80415a5a9c772f24fd93942af6c110b9b684e",
+      "truly_empty_native_install": true,
+      "automatic_native_refresh": true,
+      "repeat_deduplicates_without_rescan": true,
+      "changed_and_new_sources": true,
+      "failed_scan_keeps_native_and_retries_later": true,
+      "raw_stdout_stderr_status_parity": true,
+      "native_fallback_parity": true,
+      "automatic_output_does_not_append_reports": true,
+      "typed_agent_pagination": true,
+      "typed_tools": true,
+      "late_occurrence_source_learned_and_crossed": true,
+      "migrated_index_refreshes_after_empty_native_search": true,
+      "native_search_unavailable_passes_host_tool": true,
+      "task_evidence_visible_to_agent": true,
+      "complementary_new_source_refreshes_natively": true,
+      "named_declaration_without_inference": true,
+      "typed_operation_contract": true,
+      "acknowledged_body_reuse_and_compaction_reset": true,
+      "native_dependency_body": true,
+      "delivery_bytes": {
+        "initial": 1266,
+        "repeated": 457,
+        "initial_transport": 1373,
+        "reduction_percent": 63.90205371248025
+      },
+      "structural_result_recrossed_after_refresh": true,
+      "deferred_candidates_expand_via_binary": true,
+      "real_classic_hook_handoff_and_rewrite": true,
+      "original_read_guard": true,
+      "checkout_isolation": true,
+      "default_http_requests": 0,
+      "local_model_calls": 0,
+      "remote_model_calls": 0,
+      "binaries": [
+        {
+          "name": "mustard",
+          "sha256": "0de0e0024381d36d5ddab362cf45b0c0131d5f692923c48eae77c5405a91a5df"
+        },
+        {
+          "name": "mustard-rt",
+          "sha256": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9"
+        },
+        {
+          "name": "scan",
+          "sha256": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+        }
+      ]
+    },
+    "local_model_acceptance": {
+      "ok": true,
+      "default_local_vectors": true,
+      "first_semantic_request_builds_index": true,
+      "unchanged_documents_not_reembedded": true,
+      "raw_native_parity_without_vector_refresh": true,
+      "changed_source_receipts_refreshed": true,
+      "explicit_opt_out": true,
+      "remote_model_calls": 0,
+      "binaries": {
+        "mustard-rt": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9",
+        "scan": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+      }
+    },
+    "session_preflight": {
+      "executed": false,
+      "grader_self_checks": true,
+      "gateway_preflight": [
+        {
+          "task": "copy-input-export",
+          "source_file_located": true,
+          "native_result_preserved": true,
+          "remote_model_calls": 0,
+          "agent_view_bytes": 1251,
+          "host_model_ran": false
+        },
+        {
+          "task": "idempotent-cancellation",
+          "source_file_located": true,
+          "native_result_preserved": true,
+          "remote_model_calls": 0,
+          "agent_view_bytes": 1299,
+          "host_model_ran": false
+        }
+      ],
+      "host_execution_pending": true
+    },
+    "syntax_and_assets": {
+      "syntax_files": [
+        "apps/scan/benchmarks/gateway-acceptance.mjs",
+        "apps/scan/benchmarks/gateway-heldout.mjs",
+        "apps/scan/benchmarks/gateway-project-audit.mjs",
+        "apps/scan/benchmarks/gateway-project.mjs",
+        "apps/scan/benchmarks/gateway-session.mjs",
+        "apps/scan/benchmarks/gateway-task.mjs",
+        "plugin/hooks/search-schema.js",
+        "apps/scan/benchmarks/gateway-evidence-cost.mjs",
+        "apps/scan/benchmarks/gateway-local-model.mjs",
+        "apps/scan/benchmarks/source-evidence.mjs"
+      ],
+      "syntax_passed": 10,
+      "model_hashes_verified": true
+    }
+  },
+  "limitations": [
+    "Target recovery is not precision across every returned candidate.",
+    "Final fixed selections were reused for diagnosis; not an independent blind final evaluation.",
+    "Seven previously complete expected bodies became partial/references with the local model; targets remain visible.",
+    "Latency rises relative to baseline, and the index grows.",
+    "No billed Claude/Codex token savings or whole-task implementation improvement measured.",
+    "Packaged post-commit binaries get distinct hashes in the local review manifest.",
+    "Current delivery revision preserved all 72 visible targets and 49 complete expected bodies individually; retrieval accuracy did not increase in this step.",
+    "Current four-query latency sample improved in aggregate, but XLSX discovery grew about 28.5%; no uniform speedup claimed.",
+    "Real autonomous Claude sessions remain unauthenticated/pending; known-range evidence cost is a lower bound, not billed tokens."
+  ],
+  "prior_checks": {
+    "rust_passed": 3982,
+    "rust_failed": 0,
+    "rust_ignored_inherited": 2,
+    "clippy_warnings_as_errors": true,
+    "mods_sdk_passed": 16,
+    "native_acceptance": {
+      "ok": true,
+      "commit": "e29ec6f3a750109f64b23d976e7a03c660b0338b",
+      "truly_empty_native_install": true,
+      "automatic_native_refresh": true,
+      "repeat_deduplicates_without_rescan": true,
+      "changed_and_new_sources": true,
+      "failed_scan_keeps_native_and_retries_later": true,
+      "raw_stdout_stderr_status_parity": true,
+      "native_fallback_parity": true,
+      "automatic_output_does_not_append_reports": true,
+      "typed_agent_pagination": true,
+      "typed_tools": true,
+      "late_occurrence_source_learned_and_crossed": true,
+      "migrated_index_refreshes_after_empty_native_search": true,
+      "native_search_unavailable_passes_host_tool": true,
+      "task_evidence_visible_to_agent": true,
+      "complementary_new_source_refreshes_natively": true,
+      "named_declaration_without_inference": true,
+      "typed_operation_contract": true,
+      "acknowledged_body_reuse_and_compaction_reset": true,
+      "native_dependency_body": true,
+      "delivery_bytes": {
+        "initial": 1271,
+        "repeated": 462,
+        "initial_transport": 1378,
+        "reduction_percent": 63.65066876475216
+      },
+      "structural_result_recrossed_after_refresh": true,
+      "deferred_candidates_expand_via_binary": true,
+      "real_classic_hook_handoff_and_rewrite": true,
+      "original_read_guard": true,
+      "checkout_isolation": true,
+      "default_http_requests": 0,
+      "local_model_calls": 0,
+      "remote_model_calls": 0,
+      "binaries": [
+        {
+          "name": "mustard",
+          "sha256": "7514bd8c3a2a4deba62515627b567d027d4124937f545f92cb99ab18590b479c"
+        },
+        {
+          "name": "mustard-rt",
+          "sha256": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681"
+        },
+        {
+          "name": "scan",
+          "sha256": "6fd7a751a220497ea105488ef4593ffd54134d3d3e56ff306cc2c1b4f0fc46ff"
+        }
+      ]
+    }
+  },
+  "delivery_revision": {
+    "baseline_commit": "f7c80415a5a9c772f24fd93942af6c110b9b684e",
+    "baseline_runtime_sha256": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681",
+    "measured_before_commit": true,
+    "binary_sha256": {
+      "mustard": "0de0e0024381d36d5ddab362cf45b0c0131d5f692923c48eae77c5405a91a5df",
+      "mustard-rt": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9",
+      "scan": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+    },
+    "summary": {
+      "baseline": {
+        "cases": 80,
+        "visible_found": 72,
+        "complete_bodies": 49,
+        "bytes": 1356648,
+        "native_parity": 80,
+        "remote_model_calls": 0
+      },
+      "current": {
+        "cases": 80,
+        "visible_found": 72,
+        "complete_bodies": 49,
+        "bytes": 1228267,
+        "native_parity": 80,
+        "remote_model_calls": 0
+      }
+    },
+    "differences": [],
+    "per_language": {
+      "python": {
+        "baseline": {
+          "cases": 20,
+          "visible": 19,
+          "complete": 13,
+          "bytes": 379671
+        },
+        "current": {
+          "cases": 20,
+          "visible": 19,
+          "complete": 13,
+          "bytes": 338837
+        }
+      },
+      "typescript": {
+        "baseline": {
+          "cases": 20,
+          "visible": 17,
+          "complete": 11,
+          "bytes": 376507
+        },
+        "current": {
+          "cases": 20,
+          "visible": 17,
+          "complete": 11,
+          "bytes": 345774
+        }
+      },
+      "rust": {
+        "baseline": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 13,
+          "bytes": 358597
+        },
+        "current": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 13,
+          "bytes": 328245
+        }
+      },
+      "go": {
+        "baseline": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 12,
+          "bytes": 241873
+        },
+        "current": {
+          "cases": 20,
+          "visible": 18,
+          "complete": 12,
+          "bytes": 215411
+        }
+      }
+    },
+    "byte_reduction_percent": 9.463103177832421,
+    "projects": {
+      "sialia": {
+        "baseline": {
+          "targets": 12,
+          "visible": 10,
+          "complete_bodies": 3,
+          "view_bytes": 169562,
+          "native_parity": 7,
+          "requests": 7
+        },
+        "current": {
+          "targets": 12,
+          "visible": 10,
+          "complete_bodies": 3,
+          "view_bytes": 149834,
+          "native_parity": 7,
+          "requests": 7
+        },
+        "gains": [],
+        "regressions": [],
+        "equivalent_evidence": {
+          "labels_sha256": "5cb633a6bb9ef6b9ee9e4820b47a2f6f2d22f367f5c572de6fee97b69eaf9f53",
+          "requests_sha256": "002cd6881075b006b5d73257d55c2b5fd8f7050ca493e2675cbbaa9b27703d4a",
+          "required_targets": 12,
+          "comparable_targets": [
+            "charge",
+            "cancel",
+            "status",
+            "webhook-business",
+            "webhook-security",
+            "subscription",
+            "provider-routing",
+            "contract-coupling",
+            "provider-contract",
+            "frontend-provider"
+          ],
+          "baseline": {
+            "located_targets": [
+              "charge",
+              "cancel",
+              "status",
+              "webhook-business",
+              "webhook-security",
+              "subscription",
+              "provider-routing",
+              "contract-coupling",
+              "provider-contract",
+              "frontend-provider"
+            ],
+            "unlocated_targets": [
+              "tokenization",
+              "subaccount-disable"
+            ],
+            "bootstrap_bytes": 169562,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 8,
+            "missing_source_lines": 538,
+            "additional_read_bytes": 26051,
+            "equivalent_evidence_bytes": 195613,
+            "reads": [
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 68,
+                "limit": 19,
+                "bytes": 1624
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 102,
+                "limit": 47,
+                "bytes": 2644
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayWebhookService.cs",
+                "offset": 129,
+                "limit": 113,
+                "bytes": 5891
+              },
+              {
+                "file": "backend/Sialia.Backend/Backend/Modules/v1/PaymentGateway/Providers/Safe2Pay/Filters/Safe2PaySignatureValidationFilter.cs",
+                "offset": 31,
+                "limit": 81,
+                "bytes": 3439
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PaySubscriptionService.cs",
+                "offset": 59,
+                "limit": 134,
+                "bytes": 6776
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Services/PaymentGatewayService.cs",
+                "offset": 119,
+                "limit": 23,
+                "bytes": 961
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Contracts/IPaymentGatewayProvider.cs",
+                "offset": 10,
+                "limit": 86,
+                "bytes": 3677
+              },
+              {
+                "file": "packages/sialia-core/src/client/gateway/provider-descriptor.ts",
+                "offset": 114,
+                "limit": 35,
+                "bytes": 1039
+              }
+            ]
+          },
+          "current": {
+            "located_targets": [
+              "charge",
+              "cancel",
+              "status",
+              "webhook-business",
+              "webhook-security",
+              "subscription",
+              "provider-routing",
+              "contract-coupling",
+              "provider-contract",
+              "frontend-provider"
+            ],
+            "unlocated_targets": [
+              "tokenization",
+              "subaccount-disable"
+            ],
+            "bootstrap_bytes": 149834,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 8,
+            "missing_source_lines": 538,
+            "additional_read_bytes": 26051,
+            "equivalent_evidence_bytes": 175885,
+            "reads": [
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 68,
+                "limit": 19,
+                "bytes": 1624
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayService.cs",
+                "offset": 102,
+                "limit": 47,
+                "bytes": 2644
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayWebhookService.cs",
+                "offset": 129,
+                "limit": 113,
+                "bytes": 5891
+              },
+              {
+                "file": "backend/Sialia.Backend/Backend/Modules/v1/PaymentGateway/Providers/Safe2Pay/Filters/Safe2PaySignatureValidationFilter.cs",
+                "offset": 31,
+                "limit": 81,
+                "bytes": 3439
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PaySubscriptionService.cs",
+                "offset": 59,
+                "limit": 134,
+                "bytes": 6776
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Services/PaymentGatewayService.cs",
+                "offset": 119,
+                "limit": 23,
+                "bytes": 961
+              },
+              {
+                "file": "backend/Sialia.Backend/Application/Modules/v1/PaymentGateway/Contracts/IPaymentGatewayProvider.cs",
+                "offset": 10,
+                "limit": 86,
+                "bytes": 3677
+              },
+              {
+                "file": "packages/sialia-core/src/client/gateway/provider-descriptor.ts",
+                "offset": 114,
+                "limit": 35,
+                "bytes": 1039
+              }
+            ]
+          },
+          "equivalent_evidence_byte_reduction_percent": 10.085219285016844,
+          "whole_session_tokens": null,
+          "whole_session_cost": null,
+          "host_model_ran": false,
+          "limits": [
+            "Known source-evidence targets; not a blind evaluation.",
+            "Expansions are answer-informed and identical required ranges are graded in both arms; this is a delivery-cost lower bound, not an autonomous tool trajectory.",
+            "Unlocated targets are explicit and excluded from the common-evidence cost; they are not declared solved.",
+            "Bytes include actual Read responses, not billed tokens or correctness of a complete implementation."
+          ]
+        }
+      },
+      "florestal": {
+        "baseline": {
+          "targets": 8,
+          "visible": 8,
+          "complete_bodies": 3,
+          "view_bytes": 59453,
+          "native_parity": 8,
+          "requests": 8
+        },
+        "current": {
+          "targets": 8,
+          "visible": 8,
+          "complete_bodies": 3,
+          "view_bytes": 54388,
+          "native_parity": 8,
+          "requests": 8
+        },
+        "gains": [],
+        "regressions": [],
+        "equivalent_evidence": {
+          "labels_sha256": "3f29997b96105b2be53c1f482394bd5d9c438448c0f3a9a58783d8799519510d",
+          "requests_sha256": "471de6ef0edcfad297125f489c36daec94cc845958d0aa3df9226566fbc3af5d",
+          "required_targets": 8,
+          "comparable_targets": [
+            "processPlanBackground",
+            "listData",
+            "duplicateLineage",
+            "copyPlanFiles",
+            "createXlsxStream",
+            "toMenuRow",
+            "listMenu",
+            "plantioCurveToDownload"
+          ],
+          "baseline": {
+            "located_targets": [
+              "processPlanBackground",
+              "listData",
+              "duplicateLineage",
+              "copyPlanFiles",
+              "createXlsxStream",
+              "toMenuRow",
+              "listMenu",
+              "plantioCurveToDownload"
+            ],
+            "unlocated_targets": [],
+            "bootstrap_bytes": 59453,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 5,
+            "missing_source_lines": 181,
+            "additional_read_bytes": 7678,
+            "equivalent_evidence_bytes": 67131,
+            "reads": [
+              {
+                "file": "src/puzzle/pi/services/pi-auxiliar.service.ts",
+                "offset": 28,
+                "limit": 50,
+                "bytes": 2654
+              },
+              {
+                "file": "src/puzzle/services/plantio-download-orchestrator.service.ts",
+                "offset": 29,
+                "limit": 40,
+                "bytes": 1711
+              },
+              {
+                "file": "src/common/services/excel.service.ts",
+                "offset": 11,
+                "limit": 34,
+                "bytes": 1355
+              },
+              {
+                "file": "src/puzzle/pi/services/plan-input/optimizer-output-source.service.ts",
+                "offset": 446,
+                "limit": 29,
+                "bytes": 1090
+              },
+              {
+                "file": "src/puzzle/pi/services/menu/search-menu.service.ts",
+                "offset": 18,
+                "limit": 28,
+                "bytes": 868
+              }
+            ]
+          },
+          "current": {
+            "located_targets": [
+              "processPlanBackground",
+              "listData",
+              "duplicateLineage",
+              "copyPlanFiles",
+              "createXlsxStream",
+              "toMenuRow",
+              "listMenu",
+              "plantioCurveToDownload"
+            ],
+            "unlocated_targets": [],
+            "bootstrap_bytes": 54388,
+            "required_file_repeated_source_lines": 0,
+            "missing_range_reads": 5,
+            "missing_source_lines": 181,
+            "additional_read_bytes": 7678,
+            "equivalent_evidence_bytes": 62066,
+            "reads": [
+              {
+                "file": "src/puzzle/pi/services/pi-auxiliar.service.ts",
+                "offset": 28,
+                "limit": 50,
+                "bytes": 2654
+              },
+              {
+                "file": "src/puzzle/services/plantio-download-orchestrator.service.ts",
+                "offset": 29,
+                "limit": 40,
+                "bytes": 1711
+              },
+              {
+                "file": "src/common/services/excel.service.ts",
+                "offset": 11,
+                "limit": 34,
+                "bytes": 1355
+              },
+              {
+                "file": "src/puzzle/pi/services/plan-input/optimizer-output-source.service.ts",
+                "offset": 446,
+                "limit": 29,
+                "bytes": 1090
+              },
+              {
+                "file": "src/puzzle/pi/services/menu/search-menu.service.ts",
+                "offset": 18,
+                "limit": 28,
+                "bytes": 868
+              }
+            ]
+          },
+          "equivalent_evidence_byte_reduction_percent": 7.544949427239278,
+          "whole_session_tokens": null,
+          "whole_session_cost": null,
+          "host_model_ran": false,
+          "limits": [
+            "Known source-evidence targets; not a blind evaluation.",
+            "Expansions are answer-informed and identical required ranges are graded in both arms; this is a delivery-cost lower bound, not an autonomous tool trajectory.",
+            "Unlocated targets are explicit and excluded from the common-evidence cost; they are not declared solved.",
+            "Bytes include actual Read responses, not billed tokens or correctness of a complete implementation."
+          ]
+        }
+      }
+    },
+    "checks": {
+      "rust_passed": 3987,
+      "rust_failed": 0,
+      "rust_ignored_inherited": 2,
+      "clippy_warnings_as_errors": true,
+      "mods_sdk_passed": 16,
+      "plugin_validation": true,
+      "native_acceptance": {
+        "ok": true,
+        "commit": "f7c80415a5a9c772f24fd93942af6c110b9b684e",
+        "truly_empty_native_install": true,
+        "automatic_native_refresh": true,
+        "repeat_deduplicates_without_rescan": true,
+        "changed_and_new_sources": true,
+        "failed_scan_keeps_native_and_retries_later": true,
+        "raw_stdout_stderr_status_parity": true,
+        "native_fallback_parity": true,
+        "automatic_output_does_not_append_reports": true,
+        "typed_agent_pagination": true,
+        "typed_tools": true,
+        "late_occurrence_source_learned_and_crossed": true,
+        "migrated_index_refreshes_after_empty_native_search": true,
+        "native_search_unavailable_passes_host_tool": true,
+        "task_evidence_visible_to_agent": true,
+        "complementary_new_source_refreshes_natively": true,
+        "named_declaration_without_inference": true,
+        "typed_operation_contract": true,
+        "acknowledged_body_reuse_and_compaction_reset": true,
+        "native_dependency_body": true,
+        "delivery_bytes": {
+          "initial": 1266,
+          "repeated": 457,
+          "initial_transport": 1373,
+          "reduction_percent": 63.90205371248025
+        },
+        "structural_result_recrossed_after_refresh": true,
+        "deferred_candidates_expand_via_binary": true,
+        "real_classic_hook_handoff_and_rewrite": true,
+        "original_read_guard": true,
+        "checkout_isolation": true,
+        "default_http_requests": 0,
+        "local_model_calls": 0,
+        "remote_model_calls": 0,
+        "binaries": [
+          {
+            "name": "mustard",
+            "sha256": "0de0e0024381d36d5ddab362cf45b0c0131d5f692923c48eae77c5405a91a5df"
+          },
+          {
+            "name": "mustard-rt",
+            "sha256": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9"
+          },
+          {
+            "name": "scan",
+            "sha256": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+          }
+        ]
+      },
+      "local_model_acceptance": {
+        "ok": true,
+        "default_local_vectors": true,
+        "first_semantic_request_builds_index": true,
+        "unchanged_documents_not_reembedded": true,
+        "raw_native_parity_without_vector_refresh": true,
+        "changed_source_receipts_refreshed": true,
+        "explicit_opt_out": true,
+        "remote_model_calls": 0,
+        "binaries": {
+          "mustard-rt": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9",
+          "scan": "101a806fb757fe2334b0ca7be6a1022149bd4e041abdcb9de04f3fc74d4ec998"
+        }
+      },
+      "session_preflight": {
+        "executed": false,
+        "grader_self_checks": true,
+        "gateway_preflight": [
+          {
+            "task": "copy-input-export",
+            "source_file_located": true,
+            "native_result_preserved": true,
+            "remote_model_calls": 0,
+            "agent_view_bytes": 1251,
+            "host_model_ran": false
+          },
+          {
+            "task": "idempotent-cancellation",
+            "source_file_located": true,
+            "native_result_preserved": true,
+            "remote_model_calls": 0,
+            "agent_view_bytes": 1299,
+            "host_model_ran": false
+          }
+        ],
+        "host_execution_pending": true
+      },
+      "syntax_and_assets": {
+        "syntax_files": [
+          "apps/scan/benchmarks/gateway-acceptance.mjs",
+          "apps/scan/benchmarks/gateway-heldout.mjs",
+          "apps/scan/benchmarks/gateway-project-audit.mjs",
+          "apps/scan/benchmarks/gateway-project.mjs",
+          "apps/scan/benchmarks/gateway-session.mjs",
+          "apps/scan/benchmarks/gateway-task.mjs",
+          "plugin/hooks/search-schema.js",
+          "apps/scan/benchmarks/gateway-evidence-cost.mjs",
+          "apps/scan/benchmarks/gateway-local-model.mjs",
+          "apps/scan/benchmarks/source-evidence.mjs"
+        ],
+        "syntax_passed": 10,
+        "model_hashes_verified": true
+      }
+    },
+    "model_default_enabled": true,
+    "new_paid_jev_calls": 0,
+    "host_model_ran": false,
+    "whole_session_tokens": null,
+    "whole_session_cost": null,
+    "limits": [
+      "Known target searches, not a blind evaluation or autonomous coding sessions.",
+      "Public baseline presentations reused with original dataset, selection and runtime hashes; current replay repeated in full.",
+      "Bytes measure delivered text; not billed tokens.",
+      "Equivalent-evidence reads use known required ranges after retrieval, a lower bound, not autonomous model decisions."
+    ],
+    "latency": {
+      "manifest_sha256": "757bea3e6e8b4d67d6ba1d150dfb9e4b6114e151665d2583d096740b0e689818",
+      "binary_sha256": {
+        "baseline": "4372022a0fc9eeee734e1757cd223a30271b94d4eb3c532ec13c27dc10edc681",
+        "current": "6b163b7d8d111e37a6d260a3792af7821a6fb47f7c00572ccec72c6dc986e5f9"
+      },
+      "method": "One unmeasured warm-up per case/arm, then alternating arms; actual --shell-output, diagnostics disabled, no parallel work within this runner.",
+      "repeat": 3,
+      "rows": [
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 7343.810932,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 6415.4998600000035,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 8458.211232999995,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 8634.318879999999,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2114.0292279999994,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2717.272813000003,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "round": 0,
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 475.1423189999914,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "round": 0,
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 467.5695699999924,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 8822.828651999997,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 11361.778848999995,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 18565.915615000005,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 9795.589016000013,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2063.2181869999913,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2077.346967999998,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "round": 1,
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 438.3098239999963,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        },
+        {
+          "round": 1,
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 451.07612899999367,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 6884.3536090000125,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 7018.267656000011,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 8951.762774000003,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 9612.969267999986,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 3023.0766989999975,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2874.187230999989,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "round": 2,
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 870.6690479999816,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        },
+        {
+          "round": 2,
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 655.9246700000076,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "baseline",
+          "id": "sialia-overview",
+          "ms": 6513.1790679999995,
+          "bytes": 22487,
+          "stdout_sha256": "5a31a9770ee6f900004949dc8ec7781e52c4b128aeeb37b3e37f1aff6e77db45"
+        },
+        {
+          "arm": "current",
+          "id": "sialia-overview",
+          "ms": 6496.385767999999,
+          "bytes": 19937,
+          "stdout_sha256": "2d14ee204d1cd762e88007d7d1fb260f0a0e02d81416983813f031d9105f25ed"
+        },
+        {
+          "arm": "baseline",
+          "id": "sialia-charging",
+          "ms": 8198.399572,
+          "bytes": 27445,
+          "stdout_sha256": "8936acc8da083ddacfcc95db06ac9616e8882ed2b7e064e822eb30c7493f214b"
+        },
+        {
+          "arm": "current",
+          "id": "sialia-charging",
+          "ms": 8452.237395,
+          "bytes": 22274,
+          "stdout_sha256": "796cdef6dae505f89e6150d2867c212c9717de2dc2d61551ec7bcd195a197379"
+        },
+        {
+          "arm": "baseline",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2123.8764340000016,
+          "bytes": 9780,
+          "stdout_sha256": "3a8dd02c106971af8e71886612d248879ca680d9d8775b432ade9873c0d59c57"
+        },
+        {
+          "arm": "current",
+          "id": "florestal-01-discover-xlsx",
+          "ms": 2061.029211000001,
+          "bytes": 8957,
+          "stdout_sha256": "55bff53afcd99dd207e4c9ddc54c31d5e6767b1c2e70750a4ac0c349ecb34976"
+        },
+        {
+          "arm": "baseline",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 474.51038100000005,
+          "bytes": 3537,
+          "stdout_sha256": "0d22dcc378c7d9366337ef816fd1350f473135d58765fc682cc3f53993ae6c38"
+        },
+        {
+          "arm": "current",
+          "id": "florestal-02-find-input-entrypoints",
+          "ms": 499.5437759999986,
+          "bytes": 3349,
+          "stdout_sha256": "5b17ebb665eb9fe70ac15115f5715db05f2109dcd86300e44286aab27166c609"
+        }
+      ],
+      "summary": {
+        "baseline": {
+          "samples": 12,
+          "median_ms": 4953.715154000005,
+          "per_case": {
+            "sialia-overview": {
+              "median_ms": 7343.810932,
+              "deterministic_output": true,
+              "bytes": 22487
+            },
+            "sialia-charging": {
+              "median_ms": 9612.969267999986,
+              "deterministic_output": true,
+              "bytes": 27445
+            },
+            "florestal-01-discover-xlsx": {
+              "median_ms": 2114.0292279999994,
+              "deterministic_output": true,
+              "bytes": 9780
+            },
+            "florestal-02-find-input-entrypoints": {
+              "median_ms": 467.5695699999924,
+              "deterministic_output": true,
+              "bytes": 3537
+            }
+          }
+        },
+        "current": {
+          "samples": 12,
+          "median_ms": 4644.843545499996,
+          "per_case": {
+            "sialia-overview": {
+              "median_ms": 7018.267656000011,
+              "deterministic_output": true,
+              "bytes": 19937
+            },
+            "sialia-charging": {
+              "median_ms": 8951.762774000003,
+              "deterministic_output": true,
+              "bytes": 22274
+            },
+            "florestal-01-discover-xlsx": {
+              "median_ms": 2717.272813000003,
+              "deterministic_output": true,
+              "bytes": 8957
+            },
+            "florestal-02-find-input-entrypoints": {
+              "median_ms": 475.1423189999914,
+              "deterministic_output": true,
+              "bytes": 3349
+            }
+          }
+        }
+      },
+      "limits": [
+        "Small known query sample, warm filesystem cache, one machine.",
+        "No autonomous host model, billing, application execution or end-to-end task time measured.",
+        "Models/configurations must be recorded by the caller; each root must already be scanned by its own binary."
+      ]
+    },
+    "latency_change_percent": -6.235150768622666
+  }
+}

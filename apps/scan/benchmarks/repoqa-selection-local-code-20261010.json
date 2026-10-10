@@ -1,0 +1,39 @@
+{
+  "dataset_url": "https://github.com/evalplus/repoqa_release/releases/tag/2024-06-23",
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "method": "Frozen before priority implementation; selection based only on unused repository identity and corpus size; original descriptions unchanged.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "reactive-python/reactpy",
+      "commit": "4307a09dfa75e6c1b10a285e5ae4bdf0323cd018",
+      "needles": 10,
+      "files": 47,
+      "bytes": 223857
+    },
+    {
+      "language": "typescript",
+      "repo": "date-fns/date-fns",
+      "commit": "5c1adb5369805ff552737bf8017dbe07f559b0c6",
+      "needles": 10,
+      "files": 1342,
+      "bytes": 2447132
+    },
+    {
+      "language": "rust",
+      "repo": "serde-rs/serde",
+      "commit": "6e38afff498d592af4ccac4cb669a86fc789207f",
+      "needles": 10,
+      "files": 19,
+      "bytes": 491089
+    },
+    {
+      "language": "go",
+      "repo": "zeromicro/go-zero",
+      "commit": "b337ae36e50092488c1899069f860007447fa17c",
+      "needles": 10,
+      "files": 448,
+      "bytes": 1519715
+    }
+  ]
+}

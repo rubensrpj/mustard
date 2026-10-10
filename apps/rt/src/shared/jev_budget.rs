@@ -15,9 +15,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use mustard_core::ProjectConfig;
 use mustard_core::domain::map_filter::FilterError;
 use mustard_core::io::{jev_gate, spend};
-use mustard_core::ProjectConfig;
 
 /// O que sobra do teto do mês, em milionésimos de dólar, dividido entre as
 /// cópias do mesmo filtro, e se ele já recusou uma chamada.
@@ -61,6 +61,13 @@ impl Budget {
         }
         *left -= micro_usd;
         Ok(())
+    }
+
+    /// Release an estimate reserved for a miss that another process filled
+    /// before this process acquired the cache lock. No HTTP call took place.
+    pub(crate) fn release_cached(&self, micro_usd: u64) {
+        let mut left = self.left.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *left = left.saturating_add(micro_usd);
     }
 
     /// Se o teto já recusou uma chamada que passaria do que sobra: o Jev

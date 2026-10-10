@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::ast::is_test_path;
 use crate::domain::pattern::Pattern;
 pub use crate::domain::search::{Found, FoundText};
-use crate::platform::i18n::{translate, Locale};
+use crate::platform::i18n::{Locale, translate};
 
 mod example_material;
 use example_material::is_example_material;
@@ -135,10 +135,8 @@ impl History {
     pub fn from_raw(commits: Vec<RawCommit>) -> Self {
         let skip = commits.len().saturating_sub(MAX_COMMITS);
         let commits: Vec<RawCommit> = commits.into_iter().skip(skip).collect();
-        let paths: Vec<String> =
-            commits.iter().flat_map(RawCommit::files).map(str::to_string).collect::<BTreeSet<_>>().into_iter().collect();
-        let index: BTreeMap<&str, u32> =
-            paths.iter().enumerate().map(|(i, p)| (p.as_str(), u32::try_from(i).unwrap_or(u32::MAX))).collect();
+        let paths: Vec<String> = commits.iter().flat_map(RawCommit::files).map(str::to_string).collect::<BTreeSet<_>>().into_iter().collect();
+        let index: BTreeMap<&str, u32> = paths.iter().enumerate().map(|(i, p)| (p.as_str(), u32::try_from(i).unwrap_or(u32::MAX))).collect();
         let numbers = |list: &[String]| -> Vec<u32> {
             let mut out: Vec<u32> = list.iter().filter_map(|p| index.get(p.as_str()).copied()).collect();
             out.sort_unstable();
@@ -147,14 +145,7 @@ impl History {
         };
         let commits = commits
             .iter()
-            .map(|c| Commit {
-                id: c.id.clone(),
-                at: c.at,
-                title: c.title.clone(),
-                pr: c.pr,
-                added: numbers(&c.added),
-                changed: numbers(&c.changed),
-            })
+            .map(|c| Commit { id: c.id.clone(), at: c.at, title: c.title.clone(), pr: c.pr, added: numbers(&c.added), changed: numbers(&c.changed) })
             .collect();
         Self { paths, commits, ..Self::default() }
     }
@@ -163,19 +154,10 @@ impl History {
     /// novo.
     #[must_use]
     pub fn raw(&self) -> Vec<RawCommit> {
-        let name = |list: &[u32]| -> Vec<String> {
-            list.iter().filter_map(|&i| self.paths.get(i as usize)).cloned().collect()
-        };
+        let name = |list: &[u32]| -> Vec<String> { list.iter().filter_map(|&i| self.paths.get(i as usize)).cloned().collect() };
         self.commits
             .iter()
-            .map(|c| RawCommit {
-                id: c.id.clone(),
-                at: c.at,
-                title: c.title.clone(),
-                pr: c.pr,
-                added: name(&c.added),
-                changed: name(&c.changed),
-            })
+            .map(|c| RawCommit { id: c.id.clone(), at: c.at, title: c.title.clone(), pr: c.pr, added: name(&c.added), changed: name(&c.changed) })
             .collect()
     }
 
@@ -239,10 +221,7 @@ pub fn file_history(history: &History, path: &str) -> Option<FileHistory> {
             }
         }
     }
-    let mut ranked: Vec<(String, u32)> = together
-        .into_iter()
-        .filter_map(|(i, n)| history.paths.get(i as usize).map(|p| (p.clone(), n)))
-        .collect();
+    let mut ranked: Vec<(String, u32)> = together.into_iter().filter_map(|(i, n)| history.paths.get(i as usize).map(|p| (p.clone(), n))).collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     ranked.truncate(TOGETHER_SHOWN);
     out.together = ranked;
@@ -488,11 +467,9 @@ pub const DESCRIPTION_CHARS: usize = 600;
 pub fn decl_history(map: &ProjectMap, file: &str, name: &str, shown: usize) -> Result<Vec<DeclHistory>, MapRefusal> {
     let found = named_in(map, Some(file), name)?;
     let lineage = map.lineage.iter().find(|lineage| found.first().is_some_and(|(m, _)| m.path == lineage.path));
-    let commits: BTreeMap<&str, &LineageCommit> =
-        lineage.map(|l| l.commits.iter().map(|c| (c.id.as_str(), c)).collect()).unwrap_or_default();
+    let commits: BTreeMap<&str, &LineageCommit> = lineage.map(|l| l.commits.iter().map(|c| (c.id.as_str(), c)).collect()).unwrap_or_default();
     // O número que o provedor deu ao commit sem número no título.
-    let asked: BTreeMap<&str, u32> =
-        map.pulls.commits.iter().filter(|c| c.pr > 0).map(|c| (c.id.as_str(), c.pr)).collect();
+    let asked: BTreeMap<&str, u32> = map.pulls.commits.iter().filter(|c| c.pr > 0).map(|c| (c.id.as_str(), c.pr)).collect();
     let titles: BTreeMap<u32, &str> = map.pulls.texts.iter().map(|t| (t.number, t.title.as_str())).collect();
     Ok(found
         .iter()
@@ -521,9 +498,8 @@ pub fn decl_history(map: &ProjectMap, file: &str, name: &str, shown: usize) -> R
                     pulls.push((number, titles.get(&number).map(|t| t.trim().to_string()).unwrap_or_default()));
                 }
             }
-            let comments = declared
-                .map(|d| d.comments.iter().map(|c| (c.pr, crate::domain::spec_index::cut(c.body.trim(), COMMENT_CHARS))).collect())
-                .unwrap_or_default();
+            let comments =
+                declared.map(|d| d.comments.iter().map(|c| (c.pr, crate::domain::spec_index::cut(c.body.trim(), COMMENT_CHARS))).collect()).unwrap_or_default();
             DeclHistory {
                 file: module.path.clone(),
                 line: decl.line,
@@ -563,12 +539,7 @@ pub fn history_line(commit: &ShownCommit, lang: Locale) -> String {
     }
     if let Some(note) = &commit.spec {
         line.push_str(" — ");
-        line.push_str(
-            &translate("map.history.spec", lang)
-                .replace("{spec}", &note.spec)
-                .replace("{code}", &note.code)
-                .replace("{sentence}", &note.sentence),
-        );
+        line.push_str(&translate("map.history.spec", lang).replace("{spec}", &note.spec).replace("{code}", &note.code).replace("{sentence}", &note.sentence));
     }
     line
 }
@@ -626,10 +597,7 @@ pub fn history_stats(history: &History) -> HistoryStats {
     let name = |i: u32| history.paths.get(i as usize).cloned().unwrap_or_default();
     HistoryStats {
         commits: commits.into_iter().map(|(i, n)| (name(i), n)).collect(),
-        together: together
-            .into_iter()
-            .map(|(i, others)| (name(i), others.into_iter().map(|(o, n)| (name(o), n)).collect()))
-            .collect(),
+        together: together.into_iter().map(|(i, others)| (name(i), others.into_iter().map(|(o, n)| (name(o), n)).collect())).collect(),
     }
 }
 
@@ -656,6 +624,7 @@ pub fn date_of(at: i64) -> String {
 #[serde(default)]
 pub struct ProjectMap {
     pub modules: Vec<MapModule>,
+    pub resources: Vec<crate::domain::knowledge::resources::File>,
     pub projects: Vec<MapProject>,
     pub languages: Vec<MapLanguage>,
     pub graph: MapGraph,
@@ -732,6 +701,8 @@ pub const WHOLE_FILE_END: u64 = u32::MAX as u64;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapModule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<serde_json::Value>,
     pub path: String,
     pub language: String,
     pub loc: usize,
@@ -826,10 +797,7 @@ impl QualityCuts {
     #[must_use]
     pub fn of(modules: &[MapModule]) -> Self {
         let measured: Vec<&Quality> = modules.iter().filter(|m| is_example_material(m)).map(|m| &m.quality).collect();
-        Self {
-            size: top_cut(measured.iter().map(|q| q.size).collect()),
-            repeated: top_cut(measured.iter().map(|q| q.repeated).collect()),
-        }
+        Self { size: top_cut(measured.iter().map(|q| q.size).collect()), repeated: top_cut(measured.iter().map(|q| q.repeated).collect()) }
     }
 
     /// O arquivo passa do corte de tamanho.
@@ -888,6 +856,8 @@ pub struct MapDecl {
     /// A assinatura da declaração, sem o corpo. Vazia quando o scan não
     /// gravou uma.
     pub signature: String,
+    #[serde(default)]
+    pub syntax: serde_json::Value,
     /// Cada uso da declaração no projeto: o arquivo, a linha e a declaração
     /// de onde parte a chamada, provado ou suspeito. Vazio num mapa antigo,
     /// sem o campo.
@@ -977,11 +947,7 @@ impl UseSite {
     /// `arquivo:linha` fora de toda declaração.
     #[must_use]
     pub fn place(&self) -> String {
-        if self.from.is_empty() {
-            format!("{}:{}", self.file, self.line)
-        } else {
-            format!("{}:{}:{}", self.file, self.line, self.from)
-        }
+        if self.from.is_empty() { format!("{}:{}", self.file, self.line) } else { format!("{}:{}:{}", self.file, self.line, self.from) }
     }
 
     /// O uso lido de `arquivo:linha[:quem]`, sem candidatas. `None` quando o
@@ -1009,11 +975,7 @@ struct SuspectUse {
 
 impl Serialize for UseSite {
     fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
-        if self.is_proven() {
-            out.collect_str(&self.place())
-        } else {
-            SuspectUse { at: self.place(), candidates: self.candidates.clone() }.serialize(out)
-        }
+        if self.is_proven() { out.collect_str(&self.place()) } else { SuspectUse { at: self.place(), candidates: self.candidates.clone() }.serialize(out) }
     }
 }
 
@@ -1032,8 +994,7 @@ impl<'de> Deserialize<'de> for UseSite {
             Written::Proven(text) => (text, Vec::new()),
             Written::Suspect(SuspectUse { at, candidates }) => (at, candidates),
         };
-        let place = Self::parse_place(&text)
-            .ok_or_else(|| D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`")))?;
+        let place = Self::parse_place(&text).ok_or_else(|| D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`")))?;
         Ok(Self { candidates, ..place })
     }
 }
@@ -1142,9 +1103,7 @@ impl MapRefusal {
     /// A mensagem da recusa no idioma pedido.
     #[must_use]
     pub fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, String)]| {
-            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
-        };
+        let fill = |key: &str, slots: &[(&str, String)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
         match self {
             Self::MapMissing => fill("map.missing", &[]),
             Self::MapUnreadable { detail } => fill("map.unreadable", &[("{detail}", detail.clone())]),
@@ -1153,37 +1112,20 @@ impl MapRefusal {
                 fill("map.unfilled", &[("{blocks}", blocks.join(", "))])
             }
             Self::UnknownFile { file } => fill("map.unknown_file", &[("{file}", file.clone())]),
-            Self::MissingArgument { question, flag } => {
-                fill("map.missing_argument", &[("{question}", question.clone()), ("{flag}", flag.clone())])
-            }
+            Self::MissingArgument { question, flag } => fill("map.missing_argument", &[("{question}", question.clone()), ("{flag}", flag.clone())]),
             Self::SkillMissingPaths { paths } => fill("map.skill_missing_path", &[("{paths}", paths.join(", "))]),
-            Self::SkillTooLong { lines } => fill(
-                "map.skill_too_long",
-                &[("{lines}", lines.to_string()), ("{max}", SKILL_MAX_LINES.to_string())],
-            ),
-            Self::UnknownDeclaration { file: Some(file), name } => {
-                fill("map.unknown_declaration", &[("{file}", file.clone()), ("{name}", name.clone())])
-            }
+            Self::SkillTooLong { lines } => fill("map.skill_too_long", &[("{lines}", lines.to_string()), ("{max}", SKILL_MAX_LINES.to_string())]),
+            Self::UnknownDeclaration { file: Some(file), name } => fill("map.unknown_declaration", &[("{file}", file.clone()), ("{name}", name.clone())]),
             Self::UnknownDeclaration { file: None, name } => fill("map.unknown_name", &[("{name}", name.clone())]),
-            Self::FileUnreadable { file, detail } => {
-                fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
+            Self::FileUnreadable { file, detail } => fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())]),
+            Self::ChangedInCopy { file, name, line, copy: None } => {
+                fill("map.changed_in_copy", &[("{file}", file.clone()), ("{name}", name.clone()), ("{line}", line.to_string())])
             }
-            Self::ChangedInCopy { file, name, line, copy: None } => fill(
-                "map.changed_in_copy",
-                &[("{file}", file.clone()), ("{name}", name.clone()), ("{line}", line.to_string())],
-            ),
             Self::ChangedInCopy { file, name, copy: Some((first, last)), .. } => fill(
                 "map.changed_in_copy_range",
-                &[
-                    ("{file}", file.clone()),
-                    ("{name}", name.clone()),
-                    ("{first}", first.to_string()),
-                    ("{last}", last.to_string()),
-                ],
+                &[("{file}", file.clone()), ("{name}", name.clone()), ("{first}", first.to_string()), ("{last}", last.to_string())],
             ),
-            Self::HistoryUnreadable { file, detail } => {
-                fill("map.history_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
-            }
+            Self::HistoryUnreadable { file, detail } => fill("map.history_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())]),
         }
     }
 }
@@ -1223,11 +1165,8 @@ impl ProjectMap {
     /// esse nome, em ordem de caminho e de linha.
     #[must_use]
     pub fn declared(&self, name: &str) -> Vec<(String, u64)> {
-        let mut out: Vec<(String, u64)> = self
-            .modules
-            .iter()
-            .flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(|d| (m.path.clone(), d.line)))
-            .collect();
+        let mut out: Vec<(String, u64)> =
+            self.modules.iter().flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(|d| (m.path.clone(), d.line))).collect();
         out.sort();
         out.dedup();
         out
@@ -1245,8 +1184,7 @@ impl ProjectMap {
 /// Os arquivos que importam `file`, em ordem de nome.
 pub fn importers(map: &ProjectMap, file: &str) -> Result<Vec<String>, MapRefusal> {
     let target = map.known(file)?.path.clone();
-    let mut out: Vec<String> =
-        map.modules.iter().filter(|m| m.deps.contains(&target)).map(|m| m.path.clone()).collect();
+    let mut out: Vec<String> = map.modules.iter().filter(|m| m.deps.contains(&target)).map(|m| m.path.clone()).collect();
     out.sort();
     Ok(out)
 }
@@ -1293,9 +1231,11 @@ pub struct DeclPlace {
 pub fn declaration(map: &ProjectMap, file: &str, name: &str) -> Result<DeclPlace, MapRefusal> {
     let module = map.known(file)?;
     let name = name.trim();
-    let found = module.declarations.iter().find(|d| d.name == name).ok_or_else(|| {
-        MapRefusal::UnknownDeclaration { file: Some(module.path.clone()), name: name.to_string() }
-    })?;
+    let found = module
+        .declarations
+        .iter()
+        .find(|d| d.name == name)
+        .ok_or_else(|| MapRefusal::UnknownDeclaration { file: Some(module.path.clone()), name: name.to_string() })?;
     Ok(DeclPlace {
         file: module.path.clone(),
         kind: found.kind.clone(),
@@ -1400,18 +1340,13 @@ pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<Dec
 
 /// Cada declaração chamada `name`, com o arquivo dela, em ordem de caminho e
 /// de linha; com `file`, só as desse arquivo. As recusas são as de [`users`].
-fn named_in<'m>(
-    map: &'m ProjectMap,
-    file: Option<&str>,
-    name: &str,
-) -> Result<Vec<(&'m MapModule, &'m MapDecl)>, MapRefusal> {
+fn named_in<'m>(map: &'m ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<(&'m MapModule, &'m MapDecl)>, MapRefusal> {
     let name = name.trim();
     let modules: Vec<&MapModule> = match file {
         Some(file) => vec![map.known(file)?],
         None => map.modules.iter().collect(),
     };
-    let mut found: Vec<(&MapModule, &MapDecl)> =
-        modules.iter().flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (*m, d))).collect();
+    let mut found: Vec<(&MapModule, &MapDecl)> = modules.iter().flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (*m, d))).collect();
     if found.is_empty() {
         let file = file.and(modules.first()).map(|m| m.path.clone());
         return Err(MapRefusal::UnknownDeclaration { file, name: name.to_string() });
@@ -1565,11 +1500,8 @@ fn main_imports_of(files: &[&MapModule]) -> Vec<String> {
             *count.entry(d.as_str()).or_insert(0) += 1;
         }
     }
-    let mut ranked: Vec<(usize, &MapModule)> = files
-        .iter()
-        .filter(|m| !m.deps.is_empty())
-        .map(|m| (m.deps.iter().map(|d| count[d.as_str()] - 1).sum(), *m))
-        .collect();
+    let mut ranked: Vec<(usize, &MapModule)> =
+        files.iter().filter(|m| !m.deps.is_empty()).map(|m| (m.deps.iter().map(|d| count[d.as_str()] - 1).sum(), *m)).collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
     let core = ranked.len().div_ceil(3).max(2);
     let mut shared: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1612,8 +1544,7 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
 pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern: &Pattern) -> Examples {
     let target = clean_path(target);
     let target_module = map.module(&target);
-    let is_folder = target_module.is_none()
-        && (target.is_empty() || map.modules.iter().any(|m| folder_of(&m.path) == target));
+    let is_folder = target_module.is_none() && (target.is_empty() || map.modules.iter().any(|m| folder_of(&m.path) == target));
     let folder = if is_folder { target.clone() } else { folder_of(&target).to_string() };
     let last_at = |path: &str| -> i64 { file_history(&map.history, path).map_or(0, |h| h.last_at) };
 
@@ -1621,11 +1552,8 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
     // Nem o arquivo que passa do corte de tamanho ou de repetição do projeto
     // ([`QualityCuts`]): ele ensinaria a crescer ou a copiar.
     let cuts = QualityCuts::of(&map.modules);
-    let usable = |m: &&MapModule| {
-        is_example_material(m) && m.path != target && pattern.follows(m) && !cuts.large(m) && !cuts.repeated(m)
-    };
-    let mut pool: Vec<(&MapModule, bool)> =
-        map.modules.iter().filter(usable).filter(|m| folder_of(&m.path) == folder).map(|m| (m, true)).collect();
+    let usable = |m: &&MapModule| is_example_material(m) && m.path != target && pattern.follows(m) && !cuts.large(m) && !cuts.repeated(m);
+    let mut pool: Vec<(&MapModule, bool)> = map.modules.iter().filter(usable).filter(|m| folder_of(&m.path) == folder).map(|m| (m, true)).collect();
     if pool.len() < 2 {
         let parent = folder_of(&folder);
         let near = |m: &MapModule| {
@@ -1690,11 +1618,7 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
             let key = if c.same_folder { "map.why.same_folder" } else { "map.why.near_folder" };
             why.push(translate(key, lang).to_string());
             if !main_imports.is_empty() {
-                why.push(
-                    translate("map.why.imports", lang)
-                        .replace("{shared}", &c.shared.len().to_string())
-                        .replace("{of}", &main_imports.len().to_string()),
-                );
+                why.push(translate("map.why.imports", lang).replace("{shared}", &c.shared.len().to_string()).replace("{of}", &main_imports.len().to_string()));
             }
             if !c.module.tests.is_empty() {
                 why.push(translate("map.why.tested", lang).replace("{tests}", &c.module.tests.join(", ")));
@@ -1721,12 +1645,7 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
         })
         .collect();
 
-    Examples {
-        no_history: history_note(&map.history, lang),
-        folder,
-        main_imports,
-        picks,
-    }
+    Examples { no_history: history_note(&map.history, lang), folder, main_imports, picks }
 }
 
 /// A receita de criar o arquivo `target`, que ainda não existe: a soma dos
@@ -1738,11 +1657,8 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
 pub fn recipe_for_new(history: &History, target: &str) -> Option<Recipe> {
     let folder = folder_of(target);
     let ext = if target.ends_with('/') { None } else { extension_of(target) };
-    let same_kind: Vec<bool> = history
-        .paths
-        .iter()
-        .map(|p| folder_of(p) == folder && !is_test_path(p) && ext.is_none_or(|e| extension_of(p) == Some(e)))
-        .collect();
+    let same_kind: Vec<bool> =
+        history.paths.iter().map(|p| folder_of(p) == folder && !is_test_path(p) && ext.is_none_or(|e| extension_of(p) == Some(e))).collect();
     let kind = |i: u32| same_kind.get(i as usize).copied().unwrap_or(false);
     let mut sum = RecipeSum::default();
     for commit in history.commits.iter().filter(|c| c.added.len() + c.changed.len() <= CO_CHANGE_MAX_FILES) {
@@ -1860,16 +1776,11 @@ fn clip(line: String) -> String {
 #[must_use]
 pub fn summary(map: &ProjectMap, lang: Locale) -> String {
     let files: usize = map.modules.len();
-    let languages: Vec<String> =
-        map.languages.iter().take(SUMMARY_FILES).map(|l| format!("{} {}", l.language, l.files)).collect();
-    let mut lines: Vec<String> = vec![clip(
-        translate("map.summary.head", lang)
-            .replace("{files}", &files.to_string())
-            .replace("{languages}", &languages.join(", ")),
-    )];
+    let languages: Vec<String> = map.languages.iter().take(SUMMARY_FILES).map(|l| format!("{} {}", l.language, l.files)).collect();
+    let mut lines: Vec<String> =
+        vec![clip(translate("map.summary.head", lang).replace("{files}", &files.to_string()).replace("{languages}", &languages.join(", ")))];
     // Um projeto de teste (uma fixture dentro de `tests/`) não é subprojeto.
-    let mut projects: Vec<&MapProject> =
-        map.projects.iter().filter(|p| p.code_files > 0 && !is_test_path(&format!("{}/x", p.dir))).collect();
+    let mut projects: Vec<&MapProject> = map.projects.iter().filter(|p| p.code_files > 0 && !is_test_path(&format!("{}/x", p.dir))).collect();
     projects.sort_by(|a, b| b.code_files.cmp(&a.code_files).then_with(|| a.dir.cmp(&b.dir)));
     if projects.len() > 1 {
         lines.push(translate("map.summary.projects", lang).to_string());
@@ -1994,11 +1905,7 @@ pub fn map_knows(map: &ProjectMap, cited: &str) -> bool {
     let tail = format!("/{cited}");
     let inside = format!("/{cited}/");
     map.modules.iter().any(|m| {
-        m.path == cited
-            || m.path.ends_with(&tail)
-            || folder_of(&m.path) == cited
-            || m.path.starts_with(&format!("{cited}/"))
-            || m.path.contains(&inside)
+        m.path == cited || m.path.ends_with(&tail) || folder_of(&m.path) == cited || m.path.starts_with(&format!("{cited}/")) || m.path.contains(&inside)
     })
 }
 
@@ -2007,13 +1914,7 @@ mod tests {
     use super::*;
 
     fn module(path: &str, loc: usize, deps: &[&str]) -> MapModule {
-        MapModule {
-            path: path.to_string(),
-            language: "rust".to_string(),
-            loc,
-            deps: deps.iter().map(|d| (*d).to_string()).collect(),
-            ..MapModule::default()
-        }
+        MapModule { path: path.to_string(), language: "rust".to_string(), loc, deps: deps.iter().map(|d| (*d).to_string()).collect(), ..MapModule::default() }
     }
 
     fn decl(name: &str) -> MapDecl {
@@ -2052,19 +1953,10 @@ mod tests {
         let history = History::from_raw(vec![
             commit("aaaa", DAY, &[&format!("{dir}/pages.rs")], &[]),
             commit("bbbb", 2 * DAY, &[&format!("{dir}/index.rs")], &["apps/rt/tests/run_command_surface.rs"]),
-            commit(
-                "cccc",
-                3 * DAY,
-                &[&format!("{dir}/read.rs")],
-                &["apps/rt/tests/run_command_surface.rs", "packages/core/src/platform/i18n.rs"],
-            ),
+            commit("cccc", 3 * DAY, &[&format!("{dir}/read.rs")], &["apps/rt/tests/run_command_surface.rs", "packages/core/src/platform/i18n.rs"]),
             commit("dddd", 4 * DAY, &[], &[&format!("{dir}/write.rs")]),
         ]);
-        ProjectMap {
-            modules: vec![read, write, index, pages, huge, lone, test],
-            history,
-            ..ProjectMap::default()
-        }
+        ProjectMap { modules: vec![read, write, index, pages, huge, lone, test], history, ..ProjectMap::default() }
     }
 
     #[test]
@@ -2202,8 +2094,7 @@ mod tests {
     #[test]
     fn the_recipe_sums_every_commit_that_created_a_file_of_the_same_kind_there() {
         let map = command_folder();
-        let recipe = recipe_for_new(&map.history, "apps/rt/src/commands/spec_events/map.rs")
-            .expect("three commits created a command there");
+        let recipe = recipe_for_new(&map.history, "apps/rt/src/commands/spec_events/map.rs").expect("three commits created a command there");
         assert_eq!(recipe.of, RecipeOf::Created("apps/rt/src/commands/spec_events/*.rs".to_string()));
         assert_eq!(recipe.commits, 3);
         // O texto mudou junto em só 1 dos 3: fica de fora.
@@ -2257,10 +2148,7 @@ mod tests {
 
     #[test]
     fn fewer_than_three_commits_or_no_history_give_no_recipe() {
-        let two = History::from_raw(vec![
-            commit("a", DAY, &["src/a.rs"], &["src/mod.rs"]),
-            commit("b", 2 * DAY, &["src/b.rs"], &["src/mod.rs"]),
-        ]);
+        let two = History::from_raw(vec![commit("a", DAY, &["src/a.rs"], &["src/mod.rs"]), commit("b", 2 * DAY, &["src/b.rs"], &["src/mod.rs"])]);
         assert_eq!(recipe_for_new(&two, "src/c.rs"), None);
         assert_eq!(recipe_for_new(&History::default(), "src/c.rs"), None);
         assert_eq!(recipe_for_existing(&History::default(), "src/a.rs"), None);
@@ -2294,10 +2182,7 @@ mod tests {
     fn the_recipe_of_a_history_read_beyond_the_window_comes_from_its_commits_files() {
         let with = |id: &str, added: &[&str], changed: &[&str]| LineageCommit {
             id: id.to_string(),
-            files: CommitFiles {
-                added: added.iter().map(|p| (*p).to_string()).collect(),
-                changed: changed.iter().map(|p| (*p).to_string()).collect(),
-            },
+            files: CommitFiles { added: added.iter().map(|p| (*p).to_string()).collect(), changed: changed.iter().map(|p| (*p).to_string()).collect() },
             ..LineageCommit::default()
         };
         let lineage = FileLineage {
@@ -2444,20 +2329,12 @@ mod tests {
 
     #[test]
     fn the_map_summary_fits_in_three_kilobytes() {
-        let modules: Vec<MapModule> =
-            (0..5000).map(|i| module(&format!("apps/sub{}/src/{}/file_{i}.rs", i % 40, "x".repeat(60)), 10, &[])).collect();
+        let modules: Vec<MapModule> = (0..5000).map(|i| module(&format!("apps/sub{}/src/{}/file_{i}.rs", i % 40, "x".repeat(60)), 10, &[])).collect();
         let projects: Vec<MapProject> = (0..40)
-            .map(|i| MapProject {
-                name: format!("sub{i}-{}", "n".repeat(80)),
-                dir: format!("apps/sub{i}"),
-                kind: "cargo".to_string(),
-                code_files: 100 + i,
-            })
+            .map(|i| MapProject { name: format!("sub{i}-{}", "n".repeat(80)), dir: format!("apps/sub{i}"), kind: "cargo".to_string(), code_files: 100 + i })
             .collect();
         let top_fan_in = modules.iter().take(64).map(|m| MapDegree { module: m.path.clone(), degree: 3 }).collect();
-        let history = History::from_raw(
-            modules.iter().take(200).enumerate().map(|(i, m)| commit(&i.to_string(), i as i64, &[], &[&m.path])).collect(),
-        );
+        let history = History::from_raw(modules.iter().take(200).enumerate().map(|(i, m)| commit(&i.to_string(), i as i64, &[], &[&m.path])).collect());
         let map = ProjectMap {
             modules,
             projects,
@@ -2498,17 +2375,10 @@ mod tests {
                     e `plugin/**` não contam, nem `pt-BR/en-US`, nem o endereço `package:flutter/material.dart`.";
         assert_eq!(
             cited_paths(text),
-            vec![
-                "apps/rt/src/commands/nao_existe.rs".to_string(),
-                "apps/rt/src/commands/spec_events/write.rs".to_string(),
-                "spec_events/mod.rs".to_string(),
-            ],
+            vec!["apps/rt/src/commands/nao_existe.rs".to_string(), "apps/rt/src/commands/spec_events/write.rs".to_string(), "spec_events/mod.rs".to_string(),],
         );
         let map = ProjectMap {
-            modules: vec![
-                module("apps/rt/src/commands/spec_events/write.rs", 1, &[]),
-                module("apps/rt/src/commands/spec_events/mod.rs", 1, &[]),
-            ],
+            modules: vec![module("apps/rt/src/commands/spec_events/write.rs", 1, &[]), module("apps/rt/src/commands/spec_events/mod.rs", 1, &[])],
             ..ProjectMap::default()
         };
         let refused = check_skill(text, |p| map_knows(&map, p)).unwrap_err();
@@ -2526,10 +2396,7 @@ mod tests {
     /// continua recusada, e um pedaço do nome da pasta não conta.
     #[test]
     fn a_folder_cited_by_its_tail_is_known_only_when_a_file_lives_under_it() {
-        let map = ProjectMap {
-            modules: vec![module("packages/core/src/domain/model/contract.rs", 1, &[])],
-            ..ProjectMap::default()
-        };
+        let map = ProjectMap { modules: vec![module("packages/core/src/domain/model/contract.rs", 1, &[])], ..ProjectMap::default() };
         assert!(map_knows(&map, "domain/model/"));
         assert!(map_knows(&map, "src/domain/"));
         assert!(!map_knows(&map, "domain/modelo/"), "a pasta que nenhum arquivo tem");
@@ -2589,8 +2456,7 @@ mod tests {
         .unwrap();
         let found = parts(&map, "./src/a.rs").unwrap();
         assert_eq!(found.file, "src/a.rs");
-        let seen: Vec<(&str, &str, u64, u64)> =
-            found.parts.iter().map(|p| (p.kind.as_str(), p.name.as_str(), p.line, p.end_line)).collect();
+        let seen: Vec<(&str, &str, u64, u64)> = found.parts.iter().map(|p| (p.kind.as_str(), p.name.as_str(), p.line, p.end_line)).collect();
         assert_eq!(seen, [("struct", "Alpha", 3, 10), ("method", "run", 12, 20), ("function", "tail", 25, 25)]);
         assert_eq!(found.tests_line, Some(40));
         assert!(matches!(parts(&map, "src/b.rs"), Err(MapRefusal::UnknownFile { .. })));

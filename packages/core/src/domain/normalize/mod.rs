@@ -254,6 +254,23 @@ impl Normalizer {
         self.collect(text, false)
     }
 
+    /// Source spellings also retain contiguous identifier components. A
+    /// lowercase query can then find `QuartzPayClient` as `quartzpay`, while
+    /// ordinary neighbouring prose words never become a synthetic identifier.
+    pub fn written_forms(&mut self, text: &str) -> std::collections::BTreeSet<String> {
+        let mut out:std::collections::BTreeSet<_>=self.forms(text).into_iter().flatten().collect();
+        for token in text.split(|c:char|!c.is_alphanumeric() && c!='_').filter(|word|!word.is_empty()) {
+            let split=split_identifier(token).to_lowercase();let parts:Vec<_>=split.split_whitespace().collect();
+            if parts.len()<2 {continue;}
+            out.extend(self.word_forms(&parts.concat()));
+            // Bounded windows avoid quadratic work on pathological names.
+            for width in 2..=parts.len().min(4) {
+                for window in parts.windows(width) {out.extend(self.word_forms(&window.concat()));}
+            }
+        }
+        out
+    }
+
     /// As palavras de uma pergunta com as suas formas, como [`Self::forms`],
     /// sem as palavras de ligação: sem isso, o "a" de "apagando a pasta"
     /// casaria qualquer texto com um "a". A pergunta só com palavras de

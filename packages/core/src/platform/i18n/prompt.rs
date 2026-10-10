@@ -36,12 +36,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The dispatch was blocked: the spec {spec} is in the {phase} phase, and only an \
              approved spec has a wave request."
         }
-        ("subagent.no_wave", Locale::PtBr) => {
-            "[Mustard] O despacho foi barrado: o plano da spec {spec} não tem a onda {wave}."
-        }
-        ("subagent.no_wave", Locale::EnUs) => {
-            "[Mustard] The dispatch was blocked: the plan of the spec {spec} has no wave {wave}."
-        }
+        ("subagent.no_wave", Locale::PtBr) => "[Mustard] O despacho foi barrado: o plano da spec {spec} não tem a onda {wave}.",
+        ("subagent.no_wave", Locale::EnUs) => "[Mustard] The dispatch was blocked: the plan of the spec {spec} has no wave {wave}.",
         ("subagent.wave_not_running", Locale::PtBr) => {
             "[Mustard] O despacho foi barrado: a onda {wave} da spec {spec} não está em andamento. Só \
              sai a onda que a rodada soltou."
@@ -267,12 +263,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.pattern.head_plain", Locale::EnUs) => "What the project shows about this task, taken from the code and the git history.",
         // O arquivo da tarefa entre os maiores do projeto: só informa, e pede
         // o código novo num arquivo novo.
-        ("prompt.pattern.large", Locale::PtBr) => {
-            "Entre os {percent}% maiores arquivos do projeto: {files}. Ponha o código novo num arquivo novo."
-        }
-        ("prompt.pattern.large", Locale::EnUs) => {
-            "Among the {percent}% largest files in the project: {files}. Put the new code in a new file."
-        }
+        ("prompt.pattern.large", Locale::PtBr) => "Entre os {percent}% maiores arquivos do projeto: {files}. Ponha o código novo num arquivo novo.",
+        ("prompt.pattern.large", Locale::EnUs) => "Among the {percent}% largest files in the project: {files}. Put the new code in a new file.",
         // A receita do git: o que os commits do mesmo trabalho fizeram junto,
         // com a fração de cada coisa.
         ("prompt.pattern.recipe.created", Locale::PtBr) => "Receita do git, de {commits} commits que criaram um arquivo `{kind}`:",
@@ -396,6 +388,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
         ("prompt.part.agreed", Locale::PtBr) => "Requisitos acordados",
         ("prompt.part.agreed", Locale::EnUs) => "Agreed requirements",
+        ("prompt.part.validation", Locale::PtBr) => "Recibos da validação final registrada",
+        ("prompt.part.validation", Locale::EnUs) => "Recorded final-validation receipts",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
@@ -440,12 +434,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A mesma leitura obrigatória, quando o mapa do projeto conhece a
         // declaração e a linha em que ela termina: o pedido já manda ler só
         // as linhas atuais dela, sem número que envelhece no plano.
-        ("prompt.task_read.function_lines", Locale::PtBr) => {
-            "leia só as linhas {lines} de `{function}` em `{path}`"
-        }
-        ("prompt.task_read.function_lines", Locale::EnUs) => {
-            "read only lines {lines} of `{function}` in `{path}`"
-        }
+        ("prompt.task_read.function_lines", Locale::PtBr) => "leia só as linhas {lines} de `{function}` em `{path}`",
+        ("prompt.task_read.function_lines", Locale::EnUs) => "read only lines {lines} of `{function}` in `{path}`",
         // A cópia é a vaga fixa da onda: depois do commit ela fica, com a
         // compilação dentro, e a próxima onda que cair nela só refaz o que
         // o git mudou.
@@ -602,19 +592,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // As regras do projeto, no fim de todo pedido ao revisor.
         ("prompt.part.project_rules", Locale::PtBr) => "Regras do projeto",
         ("prompt.part.project_rules", Locale::EnUs) => "Project rules",
-        ("prompt.project_rules.source", Locale::PtBr) => {
-            "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta revisão."
-        }
-        ("prompt.project_rules.source", Locale::EnUs) => {
-            "The text of the `CLAUDE.md` at the project root. Follow it in this review."
-        }
+        ("prompt.project_rules.source", Locale::PtBr) => "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta execução.",
+        ("prompt.project_rules.source", Locale::EnUs) => "The text of the `CLAUDE.md` at the project root. Follow it during this work.",
         ("prompt.project_rules.sources", Locale::PtBr) => {
             "Os arquivos de regras da raiz e das pastas onde a obra mexeu, cada um sob o caminho dele. Siga todos \
-             nesta revisão."
+             nesta execução."
         }
         ("prompt.project_rules.sources", Locale::EnUs) => {
             "The rules files of the root and of the folders the work touched, each under its path. Follow them all \
-             in this review."
+             during this work."
         }
         _ => return None,
     })
@@ -627,19 +613,14 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("prompt.rs"),
-            super::PREFIXES,
-            101,
-            0xdde3_2c85_eb81_0ee3,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 102, 0x9d07_8283_e244_ee9b);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
     /// dois idiomas, com cada lacuna trocada por uma palavra.
     #[test]
     fn the_pattern_block_texts_read_clearly() {
-        use crate::platform::i18n::{translate, Locale};
+        use crate::platform::i18n::{Locale, translate};
         for lang in [Locale::PtBr, Locale::EnUs] {
             for key in [
                 "prompt.pattern.head",
@@ -680,7 +661,7 @@ mod tests {
     /// trocada por uma palavra.
     #[test]
     fn the_request_step_texts_read_clearly() {
-        use crate::platform::i18n::{translate, Locale};
+        use crate::platform::i18n::{Locale, translate};
         for lang in [Locale::PtBr, Locale::EnUs] {
             for key in [
                 "prompt.read.wave",

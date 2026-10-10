@@ -31,16 +31,7 @@ use mustard_core::domain::model::contract::{Outcome, Verdict};
 /// …) have no slot, so the harness rejects the whole response when an object is
 /// emitted for them.
 pub(crate) fn event_accepts_hook_output(event_name: &str) -> bool {
-    matches!(
-        event_name,
-        "PreToolUse"
-            | "UserPromptSubmit"
-            | "PostToolUse"
-            | "PostToolBatch"
-            | "Stop"
-            | "SubagentStop"
-            | "SessionStart"
-    )
+    matches!(event_name, "PreToolUse" | "UserPromptSubmit" | "PostToolUse" | "PostToolBatch" | "Stop" | "SubagentStop" | "SessionStart")
 }
 
 /// Build the `hookSpecificOutput` JSON for an outcome, or `None` for a bare
@@ -65,15 +56,16 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // venham junto (`outcome.warnings`) entram na mesma mensagem, separados
     // por uma linha em branco.
     if event_name == "PreCompact"
-        && let Verdict::Inject { context } = &outcome.verdict {
-            let mut text = context.clone();
-            if !outcome.warnings.is_empty() {
-                text = format!("{text}\n\n{}", outcome.warnings.join("\n"));
-            }
-            let mut root = serde_json::Map::new();
-            root.insert("systemMessage".to_string(), serde_json::Value::String(text));
-            return Some(serde_json::Value::Object(root).to_string());
+        && let Verdict::Inject { context } = &outcome.verdict
+    {
+        let mut text = context.clone();
+        if !outcome.warnings.is_empty() {
+            text = format!("{text}\n\n{}", outcome.warnings.join("\n"));
         }
+        let mut root = serde_json::Map::new();
+        root.insert("systemMessage".to_string(), serde_json::Value::String(text));
+        return Some(serde_json::Value::Object(root).to_string());
+    }
 
     if !event_accepts_hook_output(event_name) {
         return None;
@@ -86,13 +78,14 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // silently never fire. Non-deny verdicts keep the shared path below
     // (`additionalContext` is a valid member for this event).
     if event_name == "UserPromptSubmit"
-        && let Verdict::Deny { reason } = &outcome.verdict {
-            let root = serde_json::json!({
-                "decision": "block",
-                "reason": reason,
-            });
-            return Some(root.to_string());
-        }
+        && let Verdict::Deny { reason } = &outcome.verdict
+    {
+        let root = serde_json::json!({
+            "decision": "block",
+            "reason": reason,
+        });
+        return Some(root.to_string());
+    }
 
     // `Stop` blocks the same way: a top-level `{"decision":"block", …}` (the
     // `end_of_turn_check` end-of-reply check), NOT the `PreToolUse` permissionDecision
@@ -105,17 +98,18 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // the whole binary expresses blocking through JSON, never a non-zero exit
     // (rt `## Guards`), so the exit-2 blocking path never applies here.
     if event_name == "Stop"
-        && let Verdict::Deny { reason } = &outcome.verdict {
-            let root = serde_json::json!({
-                "decision": "block",
-                "reason": reason,
-                "hookSpecificOutput": {
-                    "hookEventName": "Stop",
-                    "additionalContext": reason,
-                },
-            });
-            return Some(root.to_string());
-        }
+        && let Verdict::Deny { reason } = &outcome.verdict
+    {
+        let root = serde_json::json!({
+            "decision": "block",
+            "reason": reason,
+            "hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": reason,
+            },
+        });
+        return Some(root.to_string());
+    }
 
     // `Stop` fala com o USUÁRIO por `systemMessage` — campo universal, "Warning
     // message shown to the user", e a seção do `Stop` não o descarta (conferido
@@ -126,40 +120,24 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // (`Warn`) que venham junto saem no formato de sempre, montados pelo mesmo
     // caminho abaixo, e a mensagem entra ao lado deles.
     if event_name == "Stop"
-        && let Verdict::Inject { context } = &outcome.verdict {
-            let advisory = Outcome {
-                verdict: Verdict::Allow,
-                warnings: outcome.warnings.clone(),
-            };
-            let mut root = hook_specific_output(event_name, &advisory)
-                .and_then(|json| {
-                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&json).ok()
-                })
-                .unwrap_or_default();
-            root.insert(
-                "systemMessage".to_string(),
-                serde_json::Value::String(context.clone()),
-            );
-            return Some(serde_json::Value::Object(root).to_string());
-        }
+        && let Verdict::Inject { context } = &outcome.verdict
+    {
+        let advisory = Outcome { verdict: Verdict::Allow, warnings: outcome.warnings.clone() };
+        let mut root = hook_specific_output(event_name, &advisory)
+            .and_then(|json| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&json).ok())
+            .unwrap_or_default();
+        root.insert("systemMessage".to_string(), serde_json::Value::String(context.clone()));
+        return Some(serde_json::Value::Object(root).to_string());
+    }
 
     let mut hook_output = serde_json::Map::new();
-    hook_output.insert(
-        "hookEventName".to_string(),
-        serde_json::Value::String(event_name.to_string()),
-    );
+    hook_output.insert("hookEventName".to_string(), serde_json::Value::String(event_name.to_string()));
 
     match &outcome.verdict {
         Verdict::Allow if outcome.warnings.is_empty() => return None,
         Verdict::Deny { reason } => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("deny".to_string()),
-            );
-            hook_output.insert(
-                "permissionDecisionReason".to_string(),
-                serde_json::Value::String(reason.clone()),
-            );
+            hook_output.insert("permissionDecision".to_string(), serde_json::Value::String("deny".to_string()));
+            hook_output.insert("permissionDecisionReason".to_string(), serde_json::Value::String(reason.clone()));
         }
         Verdict::Rewrite { tool_input, note } => {
             // Sem `permissionDecision`: o `updatedInput` vale sozinho
@@ -175,12 +153,18 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
                 hook_output.insert("additionalContext".to_string(), serde_json::Value::String(note.clone()));
             }
         }
+        Verdict::ToolOutput { tool_output, context } => {
+            if event_name != "PostToolUse" {
+                return None;
+            }
+            hook_output.insert("updatedToolOutput".into(), tool_output.clone());
+            if let Some(context)=context {
+                hook_output.insert("additionalContext".into(),serde_json::Value::String(context.clone()));
+            }
+        }
         Verdict::Inject { context } => {
             // Só o contexto: a nota que vai junto da ferramenta nunca a libera.
-            hook_output.insert(
-                "additionalContext".to_string(),
-                serde_json::Value::String(context.clone()),
-            );
+            hook_output.insert("additionalContext".to_string(), serde_json::Value::String(context.clone()));
         }
         Verdict::Allow | Verdict::Warn { .. } => {
             // `Allow` only reaches here with warnings present; `Warn` verdicts
@@ -205,10 +189,7 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     }
 
     let mut root = serde_json::Map::new();
-    root.insert(
-        "hookSpecificOutput".to_string(),
-        serde_json::Value::Object(hook_output),
-    );
+    root.insert("hookSpecificOutput".to_string(), serde_json::Value::Object(hook_output));
     Some(serde_json::Value::Object(root).to_string())
 }
 
@@ -216,13 +197,19 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
 mod tests {
     use super::*;
 
+    #[test]
+    fn executed_tool_evidence_and_projection_share_post_tool_output_without_permissions() {
+        let output = serde_json::json!({"stdout":"hit 2 | quartz", "stderr":"", "interrupted":false,"isImage":false});
+        let outcome = Outcome { verdict: Verdict::ToolOutput { tool_output:output.clone(),context:Some("current owner".into()) },warnings:vec![] };
+        let value:serde_json::Value = serde_json::from_str(&hook_specific_output("PostToolUse",&outcome).unwrap()).unwrap();
+        assert_eq!(value["hookSpecificOutput"]["updatedToolOutput"],output);
+        assert_eq!(value["hookSpecificOutput"]["additionalContext"],"current owner");
+        assert!(!value.to_string().contains("permissionDecision"));
+        assert!(hook_specific_output("PreToolUse",&outcome).is_none());
+    }
+
     fn inject_outcome() -> Outcome {
-        Outcome {
-            verdict: Verdict::Inject {
-                context: "remember this".to_string(),
-            },
-            warnings: Vec::new(),
-        }
+        Outcome { verdict: Verdict::Inject { context: "remember this".to_string() }, warnings: Vec::new() }
     }
 
     #[test]
@@ -245,8 +232,7 @@ mod tests {
     fn user_prompt_submit_emits_additional_context() {
         // `UserPromptSubmit` is an accepted event, so an injecting outcome
         // serialises its context into `additionalContext`.
-        let json = hook_specific_output("UserPromptSubmit", &inject_outcome())
-            .expect("accepted event must emit output");
+        let json = hook_specific_output("UserPromptSubmit", &inject_outcome()).expect("accepted event must emit output");
         assert!(json.contains("additionalContext"));
     }
 
@@ -256,8 +242,7 @@ mod tests {
         // persistent memory at the top of a session), so an injecting outcome
         // must serialise rather than stay silent — dropping it would lose the
         // session-start memory injection.
-        let json = hook_specific_output("SessionStart", &inject_outcome())
-            .expect("SessionStart must emit output");
+        let json = hook_specific_output("SessionStart", &inject_outcome()).expect("SessionStart must emit output");
         assert!(json.contains("additionalContext"));
     }
 
@@ -285,11 +270,7 @@ mod tests {
         // `permissionDecision: "allow"` pularia as permissões do usuário.
         let json = hook_specific_output("PreToolUse", &inject_outcome()).expect("a note must emit output");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(
-            parsed,
-            serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "remember this" } }),
-            "{json}"
-        );
+        assert_eq!(parsed, serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "remember this" } }), "{json}");
     }
 
     #[test]
@@ -299,11 +280,7 @@ mod tests {
         let warned = Outcome { verdict: Verdict::Allow, warnings: vec!["first".to_string(), "second".to_string()] };
         let json = hook_specific_output("PreToolUse", &warned).expect("a warning must emit output");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(
-            parsed,
-            serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "first\nsecond" } }),
-            "{json}"
-        );
+        assert_eq!(parsed, serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "first\nsecond" } }), "{json}");
 
         let both = Outcome { verdict: inject_outcome().verdict, warnings: vec!["first".to_string()] };
         let json = hook_specific_output("PreToolUse", &both).expect("emits");
@@ -322,28 +299,15 @@ mod tests {
         // — never the PreToolUse `permissionDecision` member, which this
         // event's hookSpecificOutput union does not carry (the harness would
         // reject the whole response and the gate would silently not fire).
-        let outcome = Outcome {
-            verdict: Verdict::Deny {
-                reason: "Mustard is not installed".to_string(),
-            },
-            warnings: Vec::new(),
-        };
-        let json = hook_specific_output("UserPromptSubmit", &outcome)
-            .expect("a denying UserPromptSubmit outcome must emit output");
+        let outcome = Outcome { verdict: Verdict::Deny { reason: "Mustard is not installed".to_string() }, warnings: Vec::new() };
+        let json = hook_specific_output("UserPromptSubmit", &outcome).expect("a denying UserPromptSubmit outcome must emit output");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(parsed.get("decision").and_then(|v| v.as_str()), Some("block"));
-        assert_eq!(
-            parsed.get("reason").and_then(|v| v.as_str()),
-            Some("Mustard is not installed")
-        );
-        assert!(
-            !json.contains("permissionDecision"),
-            "PreToolUse shape must not leak into UserPromptSubmit: {json}"
-        );
+        assert_eq!(parsed.get("reason").and_then(|v| v.as_str()), Some("Mustard is not installed"));
+        assert!(!json.contains("permissionDecision"), "PreToolUse shape must not leak into UserPromptSubmit: {json}");
 
         // A PreToolUse deny keeps the historical permissionDecision shape.
-        let json = hook_specific_output("PreToolUse", &outcome)
-            .expect("a denying PreToolUse outcome must emit output");
+        let json = hook_specific_output("PreToolUse", &outcome).expect("a denying PreToolUse outcome must emit output");
         assert!(json.contains("\"permissionDecision\":\"deny\""), "unexpected: {json}");
     }
 
@@ -353,31 +317,13 @@ mod tests {
         // top-level `decision: "block"` + `reason`, mirrored into
         // `hookSpecificOutput.additionalContext` — never the PreToolUse
         // permissionDecision member (rejected wholesale for Stop). Exit stays 0.
-        let outcome = Outcome {
-            verdict: Verdict::Deny {
-                reason: "QA criterion AC-2 still fails".to_string(),
-            },
-            warnings: Vec::new(),
-        };
-        let json = hook_specific_output("Stop", &outcome)
-            .expect("a denying Stop outcome must emit output");
+        let outcome = Outcome { verdict: Verdict::Deny { reason: "QA criterion AC-2 still fails".to_string() }, warnings: Vec::new() };
+        let json = hook_specific_output("Stop", &outcome).expect("a denying Stop outcome must emit output");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(parsed.get("decision").and_then(|v| v.as_str()), Some("block"));
-        assert_eq!(
-            parsed.get("reason").and_then(|v| v.as_str()),
-            Some("QA criterion AC-2 still fails")
-        );
-        assert_eq!(
-            parsed
-                .get("hookSpecificOutput")
-                .and_then(|h| h.get("additionalContext"))
-                .and_then(|v| v.as_str()),
-            Some("QA criterion AC-2 still fails")
-        );
-        assert!(
-            !json.contains("permissionDecision"),
-            "PreToolUse shape must not leak into Stop: {json}"
-        );
+        assert_eq!(parsed.get("reason").and_then(|v| v.as_str()), Some("QA criterion AC-2 still fails"));
+        assert_eq!(parsed.get("hookSpecificOutput").and_then(|h| h.get("additionalContext")).and_then(|v| v.as_str()), Some("QA criterion AC-2 still fails"));
+        assert!(!json.contains("permissionDecision"), "PreToolUse shape must not leak into Stop: {json}");
 
         // A Stop ALLOW with no warnings stays silent (no forced continue).
         assert!(hook_specific_output("Stop", &Outcome::allow()).is_none());
@@ -387,35 +333,19 @@ mod tests {
     fn stop_inject_reaches_the_user_as_system_message() {
         // Um `Inject` do `Stop` vira só `systemMessage`: nada de `decision`
         // (bloquearia) nem de `additionalContext` (faria a conversa continuar).
-        let json = hook_specific_output("Stop", &inject_outcome())
-            .expect("a Stop inject must emit output");
+        let json = hook_specific_output("Stop", &inject_outcome()).expect("a Stop inject must emit output");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(parsed, serde_json::json!({"systemMessage": "remember this"}), "{json}");
 
         // Com avisos junto, os avisos saem no formato de antes, byte a byte, e a
         // mensagem entra ao lado deles.
         let warnings = vec!["prune the stale specs".to_string()];
-        let with_warning = Outcome {
-            verdict: Verdict::Inject {
-                context: "remember this".to_string(),
-            },
-            warnings: warnings.clone(),
-        };
+        let with_warning = Outcome { verdict: Verdict::Inject { context: "remember this".to_string() }, warnings: warnings.clone() };
         let json = hook_specific_output("Stop", &with_warning).expect("emits");
         let mut parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        let message = parsed
-            .as_object_mut()
-            .and_then(|o| o.remove("systemMessage"))
-            .expect("systemMessage present");
+        let message = parsed.as_object_mut().and_then(|o| o.remove("systemMessage")).expect("systemMessage present");
         assert_eq!(message, "remember this");
-        let before = hook_specific_output(
-            "Stop",
-            &Outcome {
-                verdict: Verdict::Allow,
-                warnings,
-            },
-        )
-        .expect("a warning emits");
+        let before = hook_specific_output("Stop", &Outcome { verdict: Verdict::Allow, warnings }).expect("a warning emits");
         let before: serde_json::Value = serde_json::from_str(&before).expect("valid JSON");
         assert_eq!(parsed, before, "the warning shape must not change");
 

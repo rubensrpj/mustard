@@ -57,16 +57,14 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _, State};
-use mustard_core::domain::wave_prompt::{
-    carries_project_rules, language_line, project_rules_section, wave_of_title, wave_title,
-};
+use mustard_core::domain::wave_prompt::{carries_project_rules, language_line, project_rules_section, wave_of_title, wave_title};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::transcript::{agent_opening, heading_of};
-use mustard_core::io::wave_prompt::{project_rules, prompts, touched_files, Flight};
+use mustard_core::io::wave_prompt::{Flight, project_rules, prompts, touched_files};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{ProjectConfig, AGENT_NAMES};
-use serde_json::{json, Value};
+use mustard_core::{AGENT_NAMES, ProjectConfig};
+use serde_json::{Value, json};
 
 use crate::commands::spec_events::write::record_locked;
 use crate::hooks::write::write_gate::say;
@@ -205,17 +203,16 @@ fn fix_message(input: &HookInput, ctx: &Ctx) -> Verdict {
     let lang = project.lang;
     let agent = input.tool_input.get("to").and_then(Value::as_str).unwrap_or_default();
     let destination = input.transcript_path().and_then(|transcript| agent_opening(Path::new(transcript), agent));
-    let Some(((spec, wave), started)) =
-        destination.and_then(|(heading, started)| Some((wave_of_title(&heading, lang)?, started)))
-    else {
+    let Some(((spec, wave), started)) = destination.and_then(|(heading, started)| Some((wave_of_title(&heading, lang)?, started))) else {
         return Verdict::Allow;
     };
-    let Ok(log) = spec_log(&project.root, &spec, lang) else { return Verdict::Allow };
+    let Ok(log) = spec_log(&project.root, &spec, lang) else {
+        return Verdict::Allow;
+    };
     if crate::commands::flow::round::replaced_by_rejection(&log, wave, started) {
         return Verdict::Deny { reason: replaced_agent_reason(&project.root, &spec, &log, wave, lang) };
     }
-    let fix = crate::commands::flow::round::fix_file(&project.root, &spec, &log, wave)
-        .and_then(|file| std::fs::read_to_string(file).ok());
+    let fix = crate::commands::flow::round::fix_file(&project.root, &spec, &log, wave).and_then(|file| std::fs::read_to_string(file).ok());
     match fix {
         Some(text) => replaced(input, "message", text, "subagent.fix_replaced", wave, lang),
         None => Verdict::Allow,
@@ -253,12 +250,7 @@ fn dispatch_prompt(input: &HookInput) -> &str {
 /// Se o despacho vai a um agente do Mustard: o `subagent_type` é `mustard-`
 /// seguido do nome de um dos agentes que o instalador grava.
 fn to_mustard_agent(input: &HookInput) -> bool {
-    input
-        .tool_input
-        .get("subagent_type")
-        .and_then(Value::as_str)
-        .and_then(|kind| kind.strip_prefix("mustard-"))
-        .is_some_and(|name| AGENT_NAMES.contains(&name))
+    input.tool_input.get("subagent_type").and_then(Value::as_str).and_then(|kind| kind.strip_prefix("mustard-")).is_some_and(|name| AGENT_NAMES.contains(&name))
 }
 
 /// O despacho com `text` no lugar do texto da tarefa e os outros campos como
@@ -282,11 +274,7 @@ fn with_field(input: &HookInput, field: &str, text: String, note: Option<String>
 
 /// Se o despacho vai ao agente de exploração do Claude Code.
 fn to_explore_agent(input: &HookInput) -> bool {
-    input
-        .tool_input
-        .get("subagent_type")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("explore"))
+    input.tool_input.get("subagent_type").and_then(Value::as_str).is_some_and(|kind| kind.trim().eq_ignore_ascii_case("explore"))
 }
 
 /// O pedido ao agente de exploração com a resposta curta do mapa no topo,
@@ -374,7 +362,7 @@ impl Check for SubagentInject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
+    use crate::commands::spec_events::write::{WriteOpts, record_open, seed_at};
     use mustard_core::platform::i18n::translate;
     use serde_json::json;
     use tempfile::tempdir;
@@ -409,12 +397,7 @@ mod tests {
     }
 
     fn write(root: &Path, event_type: &str, body: Value) -> u64 {
-        let out = seed_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some("x".to_string()),
-            event_type: event_type.into(),
-            json: body.to_string(),
-        });
+        let out = seed_at(&WriteOpts { root: root.to_path_buf(), spec: Some("x".to_string()), event_type: event_type.into(), json: body.to_string() });
         out["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {out}"))
     }
 
@@ -427,14 +410,9 @@ mod tests {
     /// [`planned_with`] a usa para as tarefas além do teto que a onda nasce
     /// com, simulando a onda grande que já existia antes dele.
     fn append_raw(root: &Path, event_type: &str, body: Value, id: u64) {
-        let mut map = mustard_core::domain::spec_events::normalize(
-            body.as_object().cloned().unwrap_or_default(),
-            event_type,
-        );
+        let mut map = mustard_core::domain::spec_events::normalize(body.as_object().cloned().unwrap_or_default(), event_type);
         map.insert("type".into(), json!(event_type));
-        let line = mustard_core::domain::spec_events::render_line(
-            &mustard_core::domain::spec_events::stamp(map, id, None, "2026-09-20T10:00:00-03:00"),
-        );
+        let line = mustard_core::domain::spec_events::render_line(&mustard_core::domain::spec_events::stamp(map, id, None, "2026-09-20T10:00:00-03:00"));
         use std::io::Write as _;
         let path = store::spec_file(root, "x").unwrap();
         let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
@@ -455,8 +433,12 @@ mod tests {
             json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",
                 "origin": said}),
         );
-        let mut next_id = write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
-            "done_when": "A suíte passa.", "origin": said}));
+        let mut next_id = write(
+            root,
+            "wave",
+            json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+            "done_when": "A suíte passa.", "origin": said}),
+        );
         for i in 0..tasks {
             let mut task = json!({"wave": 1, "text": format!("Tarefa {i}."), "files": [], "depends_on": [], "origin": said});
             if skills {
@@ -632,9 +614,7 @@ mod tests {
         std::fs::write(root.join("lib/sub/CLAUDE.md"), "- A biblioteca não lê o disco.\n").unwrap();
         let nested = rewritten(dispatch_to(root, "mustard-review", survey));
         let sources = translate("prompt.project_rules.sources", Locale::PtBr);
-        let both = format!(
-            "## Regras do projeto\n\n{sources}\n\n### `CLAUDE.md`\n\n{rules}\n\n### `lib/sub/CLAUDE.md`\n\n- A biblioteca não lê o disco."
-        );
+        let both = format!("## Regras do projeto\n\n{sources}\n\n### `CLAUDE.md`\n\n{rules}\n\n### `lib/sub/CLAUDE.md`\n\n- A biblioteca não lê o disco.");
         assert_eq!(nested, format!("{line}\n\n{survey}\n\n{both}"));
 
         let final_review = format!("{line}\n\nmustard-rt run read request-review --root /r --spec x");
@@ -642,7 +622,10 @@ mod tests {
         let fix = rewritten(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."));
         assert_eq!(fix, format!("{line}\n\nConserte o teste da soma."));
         let wave = rewritten(dispatch_to(root, "mustard-wave", "MUSTARD-WAVE: x 1"));
-        assert!(!wave.contains("configuração do git") && !wave.contains("lê o disco") && wave == assembled(root), "{wave}");
+        assert!(
+            wave.contains("configuração do git") && !wave.contains("lê o disco") && wave == assembled(root),
+            "the wave receives the root rules and only its touched directory rules: {wave}"
+        );
     }
 
     /// O despacho que abre com o título de uma onda que a spec não tem em
@@ -692,8 +675,11 @@ mod tests {
         planned(root, 1);
         approve(root);
         let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
-        seed("send", json!({"wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0",
-            "author": "binary", "claude_pid": pid, "claude_started": started}));
+        seed(
+            "send",
+            json!({"wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0",
+            "author": "binary", "claude_pid": pid, "claude_started": started}),
+        );
         seed("delivered", json!({"wave": 1, "text": "Feito.", "files": [], "returned": true}));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let fix = crate::commands::flow::round::fix_file(root, "x", &log, 1).expect("the pending return");
@@ -734,8 +720,7 @@ mod tests {
                 .collect();
             dispatches.into_iter().map(|dispatch| dispatch.join().unwrap()).collect()
         });
-        let (passed, barred): (Vec<Verdict>, Vec<Verdict>) =
-            verdicts.into_iter().partition(|verdict| matches!(verdict, Verdict::Rewrite { .. }));
+        let (passed, barred): (Vec<Verdict>, Vec<Verdict>) = verdicts.into_iter().partition(|verdict| matches!(verdict, Verdict::Rewrite { .. }));
         assert_eq!(passed.into_iter().map(rewritten).collect::<Vec<_>>(), vec![new_agent.clone()], "one new agent");
         assert_eq!(barred.into_iter().map(denied).collect::<Vec<_>>(), vec![refused.clone()]);
         assert_eq!(denied(dispatch_to(root, "mustard-wave", &sent)), refused, "the new agent's Claude Code is open");
@@ -812,11 +797,7 @@ mod tests {
         let dir = tempdir().unwrap();
         planned(dir.path(), 1);
         approve(dir.path());
-        assert_eq!(
-            rewritten(dispatch_to(dir.path(), "Explore", "MUSTARD-WAVE: x 1")),
-            assembled(dir.path()),
-            "the wave ticket stays what it was"
-        );
+        assert_eq!(rewritten(dispatch_to(dir.path(), "Explore", "MUSTARD-WAVE: x 1")), assembled(dir.path()), "the wave ticket stays what it was");
     }
 
     /// O pedido ao agente de exploração cuja busca o mapa acha só em parte
@@ -845,11 +826,7 @@ mod tests {
         let root = dir.path();
         assert_eq!(dispatch(root, "Investigue o gancho.\nSKILL: foo"), Verdict::Allow);
         assert_eq!(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."), Verdict::Allow);
-        let input = HookInput {
-            tool_name: Some("Task".to_string()),
-            tool_input: json!({ "prompt": "MUSTARD-WAVE: x 1" }),
-            ..HookInput::default()
-        };
+        let input = HookInput { tool_name: Some("Task".to_string()), tool_input: json!({ "prompt": "MUSTARD-WAVE: x 1" }), ..HookInput::default() };
         let after = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         assert_eq!(SubagentInject.evaluate(&input, &after).unwrap(), Verdict::Allow);
     }

@@ -954,6 +954,51 @@ pub fn candidates_at(
     Ok(FilterCandidates { candidates })
 }
 
+/// File and symbol positions from the same local index.
+pub struct Discovery {
+    pub files: Vec<String>,
+    pub places: Vec<(String, u64, String)>,
+}
+
+/// Local discovery order for knowledge packs. Keep the file ranking (which
+/// includes file documentation and local vectors) as well as symbol order.
+/// The paid filter's candidate ordering remains unchanged. Verification of
+/// bodies uses the checkout being investigated, not implicitly the anchor.
+pub fn discovery(
+    root: &Path,
+    tree: &Path,
+    query: &str,
+    languages: &Languages,
+) -> std::result::Result<Discovery, MapRefusal> {
+    discovery_mode(root,tree,query,languages,false)
+}
+
+pub fn discovery_native(root:&Path,tree:&Path,query:&str,languages:&Languages)->std::result::Result<Discovery,MapRefusal> {
+    discovery_mode(root,tree,query,languages,true)
+}
+
+fn discovery_mode(root:&Path,tree:&Path,query:&str,languages:&Languages,native:bool)->std::result::Result<Discovery,MapRefusal> {
+    let db = indexed(&model_path(root), languages, &map_fill::READ_BY_CANDIDATES)?;
+    let ordered = if native {
+        map_order::ordered_with(db.conn(),map_order::Check::On(Some(tree)),&crate::io::map_sense::Sense::off(),query,"",languages)
+    } else { map_order::ordered(db.conn(), map_order::Check::On(Some(tree)), query, "", languages) }.map_err(unreadable)?;
+    // The filter's broad candidate reservoir can contain unrelated symbols
+    // even when no term or local meaning found evidence. A knowledge answer
+    // must not present that reservoir as a discovery.
+    if !ordered.files.iter().chain(&ordered.bank).any(|found| found.score>0) {
+        return Ok(Discovery { files:vec![], places:vec![] });
+    }
+    let files = ordered.files.into_iter().map(|found| found.path).collect();
+    let mut statement = db.conn().prepare("SELECT file,line,name FROM decls WHERE rowid=?1").map_err(|e| unreadable(e.into()))?;
+    let mut places = Vec::with_capacity(ordered.list.len());
+    for id in ordered.list {
+        let place = statement.query_row([id], |row| Ok((row.get(0)?, u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0), row.get(2)?)))
+            .map_err(|e| unreadable(e.into()))?;
+        places.push(place);
+    }
+    Ok(Discovery { files, places })
+}
+
 /// Quantos caminhos a leitura da história pede ao banco de uma vez.
 const HISTORY_PATHS_PER_QUERY: usize = 500;
 

@@ -1,12 +1,11 @@
 //! Os ganchos do Mustard, atrás do contrato `Check` / `Observer` do núcleo.
 //!
-//! São quatorze, cada um num arquivo, agrupados pela família do evento:
+//! São agrupados pela família do evento:
 //!
 //! - `bash` — a trava de comandos (`command_guard`).
 //! - `write` — o portão de escrita (`write_gate`).
-//! - `observe` — a testemunha da aprovação (`approval_witness`), a da cópia
-//!   da página da spec (`copy_witness`), que grava a cópia quando o último
-//!   lote volta do banco, o sinal de vida da onda (`wave_alive_observer`) e a
+//! - `observe` — a testemunha da aprovação (`approval_witness`), o sinal de
+//!   vida da onda (`wave_alive_observer`) e a
 //!   testemunha do glossário do mapa (`glossary_witness`), que marca a
 //!   palavra da busca na declaração editada logo depois.
 //! - `session` — a entrada da mensagem (`prompt_entry`), o início da sessão

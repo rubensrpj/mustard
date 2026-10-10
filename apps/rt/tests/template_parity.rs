@@ -53,16 +53,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     ),
     (
         "map",
-        "intent",
-        "hidden alias of the search measurement (the ruler); the search teaches the text of Grep",
-    ),
-    (
-        "map",
-        "query",
-        "hidden alias of the search measurement (the ruler); the search teaches the text of Grep",
-    ),
-    (
-        "map",
         "said",
         "hidden option of the search measurement: the terminal hook fills the last speech of the agent by itself",
     ),
@@ -323,10 +313,16 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
             .and_then(|n| n.to_str())
             .is_some_and(|n| n == "cli.rs" || n == "doctor.rs" || n == own_module)
     };
-    rt_sources
+    let native=rt_sources
         .iter()
         .filter(|p| has_extension(p, &["rs"]) && !excluded(p))
-        .any(|p| squash_whitespace(&read_lossy(p)).contains(&needle))
+        .any(|p| squash_whitespace(&read_lossy(p)).contains(&needle));
+    // Mods invoke native commands from JavaScript. Count actual argv pairs,
+    // not a command's docs or test fixtures, as production callers too.
+    let mut host_sources=Vec::new();
+    walk_files(&root.join("plugin/hooks"),&mut host_sources);
+    native || host_sources.iter().filter(|path|has_extension(path,&["js"]))
+        .any(|path|read_lossy(path).split_whitespace().collect::<String>().contains(&format!("'run','{name}'")))
 }
 
 #[test]
@@ -504,7 +500,6 @@ fn next_step_field_goes_through_the_same_gate() {
 const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
-    "copy_witness",
     "end_of_turn_check",
     "glossary_witness",
     "precompact_notice",
@@ -521,6 +516,7 @@ const KEPT_HOOKS: &[&str] = &[
 /// Os ganchos que saíram, pelo nome com que estavam registrados. Nenhum deles
 /// volta ao registro.
 const REMOVED_HOOKS: &[&str] = &[
+    "copy_witness",
     "active_spec_limit_gate",
     "amend_window_inject",
     "bash_command_gate",
@@ -1348,7 +1344,7 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
         Some("Read"),
         Some("Agent"),
         Some("AskUserQuestion"),
-        Some(mustard_core::platform::project_seed::PAGE_DATABASE_TOOL),
+        Some("unregistered-tool"),
     ];
     let with_hook: BTreeSet<String> = [
         "PreToolUse",
@@ -1479,9 +1475,8 @@ fn flag_whitelist_stays_sorted_live_and_not_redundant() {
     }
 }
 
-/// O mapa do início da sessão manda toda página mostrada ao usuário passar
-/// pelo `page`, escrita em markdown, e ser publicada no claude.ai, nos dois
-/// idiomas.
+/// O mapa mantém geração nativa de páginas e exportação somente sob pedido,
+/// sem exigir o transporte legado pelo claude.ai, nos dois idiomas.
 ///
 /// Lido do texto que o binário embute e grava no projeto, e conferido pelo
 /// mesmo extrator da catraca: a chamada tem de ser uma invocação de verdade,
@@ -1495,7 +1490,7 @@ fn the_session_map_sends_every_page_through_the_page_command() {
             invocations.iter().any(|inv| inv.name == "page"),
             "the {text} session map never tells the reader to run `mustard-rt run page`"
         );
-        assert!(map.contains("claude.ai"), "the {text} session map never says the page is published on claude.ai");
+        assert!(map.contains("/mustard-pages"), "the {text} map keeps explicit publication");
         assert!(map.contains("markdown"), "the {text} session map never says a page is written in markdown");
     }
 }

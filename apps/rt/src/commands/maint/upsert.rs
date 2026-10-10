@@ -2,8 +2,8 @@
 //!
 //! A porta de entrada do plugin: tudo o que o harness precisa num projeto (o
 //! `.claude/settings.local.json`; os textos do próprio Mustard, que são o mapa
-//! da sessão em `.claude/mustard/`, os dois moldes de página em
-//! `.claude/mustard/pages/` e os dois agentes em `.claude/agents/mustard/`; o
+//! da sessão em `.claude/mustard/` e os dois agentes em
+//! `.claude/agents/mustard/`; o
 //! `.claude/.gitignore`; e o `mustard.json` da raiz do projeto) é semeado por
 //! `mustard_core::upsert_project`, de forma idempotente.
 //! O arquivo de configurações é o LOCAL porque a instalação é sempre no modo
@@ -15,15 +15,14 @@
 //! falta: um `.claude/settings.local.json`, um `.claude/.gitignore` ou um
 //! `mustard.json` que já existe fica como está, e só o que falta é criado ou
 //! acrescentado. Os textos do próprio Mustard (`.claude/mustard/session-map.md`,
-//! `.claude/mustard/pages/{spec,project}.html` e
 //! `.claude/agents/mustard/{wave,review}.md`) são SEMPRE regravados, no idioma
 //! de `language.text`: são texto do harness, não configuração do projeto,
 //! então a cópia que divergiu é trocada e relatada como `Updated`, e a cópia
 //! já igual, byte a byte, ao texto embarcado é relatada como `Preserved`,
 //! porque não havia nada a gravar.
 //! As configurações locais ganham as liberações do próprio Mustard (os
-//! comandos `mustard-rt run` dele e o `ArtifactData`, a ferramenta que grava o
-//! banco de dados das páginas que ele publica) sem mexer nas regras da pessoa.
+//! comandos `mustard-rt run` dele) sem mexer nas regras da pessoa. Exportação
+//! externa não adiciona permissão de ferramentas de publicação para o modelo.
 //! O mapa de uma instalação antiga com o nome de antes,
 //! `mapa-inicio-sessao.md`, sai do disco, e cada declaração dele em
 //! `mustard.json#inject`, em qualquer escrita do caminho antigo, passa a

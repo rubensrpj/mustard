@@ -10,10 +10,8 @@ use std::path::Path;
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::transcript;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Map, Value};
-
-use super::report::dispatched_at;
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Map, Value, json};
 
 /// Quem chama a rodada ou o fechamento: a sessão da conversa principal e a
 /// pasta de configuração da plataforma, onde ela grava o arquivo de conversa
@@ -38,21 +36,21 @@ pub(crate) struct Usage {
     pub tokens: Option<u64>,
     pub caller_steps: Option<u64>,
     pub caller_tokens: Option<u64>,
+    pub breakdown: Option<transcript::TokenBreakdown>,
+    pub caller_breakdown: Option<transcript::TokenBreakdown>,
 }
 
 impl Usage {
     /// Os campos medidos, com os nomes que o envio grava; vazio sem nenhum.
     pub(super) fn fields(&self) -> Map<String, Value> {
         let mut out = Map::new();
+        for (key,value) in [("usage_breakdown",&self.breakdown),("caller_usage_breakdown",&self.caller_breakdown)] {
+            if let Some(value)=value {out.insert(key.into(),json!(value));}
+        }
         if let Some(model) = &self.model_used {
             out.insert("model_used".into(), json!(model));
         }
-        for (key, value) in [
-            ("steps", self.steps),
-            ("tokens", self.tokens),
-            ("caller_steps", self.caller_steps),
-            ("caller_tokens", self.caller_tokens),
-        ] {
+        for (key, value) in [("steps", self.steps), ("tokens", self.tokens), ("caller_steps", self.caller_steps), ("caller_tokens", self.caller_tokens)] {
             if let Some(value) = value {
                 out.insert(key.into(), json!(value));
             }
@@ -66,13 +64,8 @@ impl Usage {
 /// `USAGE` chegou depois de assumidas —, trocando o de cada uma: o do agente
 /// da onda, no arquivo dele, e o da conversa principal, o mesmo para todas,
 /// no ramo da spec desde o começo dela. Sem a pasta da sessão, nada é medido.
-pub(super) fn measure_usage<'u>(
-    log: &SpecLog,
-    caller: Caller<'_>,
-    waves: impl IntoIterator<Item = (u64, &'u mut Usage)>,
-) {
-    let Some(session) = caller.config_dir.zip(caller.session).and_then(|(dir, id)| transcript::session_dir(dir, id))
-    else {
+pub(super) fn measure_usage<'u>(log: &SpecLog, caller: Caller<'_>, waves: impl IntoIterator<Item = (u64, &'u mut Usage)>) {
+    let Some(session) = caller.config_dir.zip(caller.session).and_then(|(dir, id)| transcript::session_dir(dir, id)) else {
         return;
     };
     let main = main_usage(log, &session);
@@ -84,6 +77,8 @@ pub(super) fn measure_usage<'u>(
             tokens: own.as_ref().map(|own| own.tokens),
             caller_steps: main.as_ref().map(|main| main.steps),
             caller_tokens: main.as_ref().map(|main| main.tokens),
+            breakdown: own.as_ref().map(|own|own.breakdown.clone()),
+            caller_breakdown: main.as_ref().map(|main|main.breakdown.clone()),
         };
     }
 }
@@ -108,15 +103,21 @@ pub(super) fn usage_missing(wave: u64, lang: Locale) -> Value {
 /// uma vez, como toda resposta e todo uso de ferramenta. `None` quando o
 /// arquivo não é achado ou nenhum pedaço se lê.
 fn wave_usage(log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Usage> {
-    let sent = log.get(dispatched_at(log, wave)?)?;
-    let title = sent.str_field("text")?.lines().next()?;
-    let file = transcript::wave_agent_file(session, title, sent.at())?;
-    let texts: Vec<String> = transcript::agent_pieces(&file)
-        .iter()
-        .filter_map(|piece| std::fs::read(piece).ok())
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .collect();
-    (!texts.is_empty()).then(|| transcript::usage_of(texts.iter().flat_map(|text| text.lines())))
+    let sends: Vec<_> = log.events.iter().filter(|e| e.event_type == "send" && e.wave() == Some(wave) && log.dispatch_position(e.id) == e.id).collect();
+    let mut pieces = std::collections::BTreeSet::new();
+    for (at, sent) in sends.iter().enumerate() {
+        let title = sent.str_field("text")?.lines().next()?;
+        let until = sends.get(at + 1).map(|s| s.at());
+        let files = transcript::wave_agent_files(session, title, sent.at(), until);
+        if files.is_empty() {
+            return None;
+        }
+        for file in files {
+            pieces.extend(transcript::agent_pieces(&file));
+        }
+    }
+    let texts: Vec<String> = pieces.into_iter().map(std::fs::read_to_string).collect::<Result<_, _>>().ok()?;
+    (!texts.is_empty()).then(|| transcript::usage_of(texts.iter().flat_map(|t| t.lines())))
 }
 
 /// O consumo da conversa principal: as linhas dela no ramo da spec, desde o
@@ -136,12 +137,12 @@ pub(super) mod tests {
     use std::path::Path;
 
     use mustard_core::io::spec_events as store;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::Caller;
     use crate::commands::flow::round::tests::{approved, line, request_at, returned, round};
-    use crate::commands::flow::round::{round_in, RoundOpts};
+    use crate::commands::flow::round::{RoundOpts, round_in};
 
     /// O modelo que a plataforma grava nas respostas de um agente.
     pub(crate) const MODEL: &str = "claude-opus-5-5";
@@ -238,11 +239,7 @@ pub(super) mod tests {
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
-        let opts = RoundOpts {
-            root: root.to_path_buf(),
-            spec: Some("x".to_string()),
-            report: Some(line("USAGE", json!({"wave": 1}))),
-        };
+        let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
         let out = round_in(&opts, Caller { session: Some("nova"), config_dir: Some(config) });
         assert_eq!(out["ok"], json!(true), "{out}");
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();

@@ -29,7 +29,7 @@ const SKIPPED_DIRS: &[&str] = &["target", "dist", "node_modules", "fixtures"];
 
 /// Os arquivos de terceiros embutidos no binário: o vocabulário do modelo de
 /// vetores traz palavras do idioma que não são texto do Mustard.
-const SKIPPED_PREFIXES: &[&str] = &["packages/core/assets/meaning"];
+const SKIPPED_PREFIXES: &[&str] = &["packages/core/assets/meaning", "packages/core/assets/code-meaning"];
 
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {

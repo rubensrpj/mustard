@@ -102,7 +102,7 @@ pub(crate) fn ensure_ripgrep() {
 
 /// Whether `rg --version` succeeds (ripgrep reachable on PATH).
 fn rg_on_path() -> bool {
-    Command::new("rg")
+    process::command("rg")
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success())

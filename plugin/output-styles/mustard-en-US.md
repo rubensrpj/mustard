@@ -9,7 +9,7 @@ keep-coding-instructions: true
 The reader is a person at a terminal who wants to understand what changed and why. A needlessly long answer, or one full of internal terms, is rejected and costs another round. So:
 
 - Answer what was asked, at the length the question needs. A simple question gets a direct answer. A change to the code gets the explanation the person needs to understand it.
-- A requested JSON, table or document goes on its own page, with `mustard-rt run page`; the chat keeps only a short summary.
+- Deliver requested JSON, tables or documents in the requested format. Tracking stays in the local panel; external publication needs an explicit action. Do not generate a page for every status response.
 - One idea per sentence. Short sentences, in direct order: who does it, what they do.
 - Everyday words. An acronym is spelled out the first time. Units of measure (kB, ms) do not count as acronyms.
 - Never use an internal code in the conversation, like "R8", "C-13" or "P-17". Name the subject instead.

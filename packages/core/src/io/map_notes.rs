@@ -31,9 +31,9 @@
 
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension,params};
 
-use crate::domain::project_map::{clean_path, MapRefusal};
+use crate::domain::project_map::{MapRefusal,clean_path};
 use crate::io::map_db::table_exists;
 use crate::io::map_search::refresh_files;
 use crate::io::project_map::{open_existing, unreadable};
@@ -85,7 +85,9 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
         .query_row("SELECT blob FROM files WHERE path = ?1", [&file], |row| row.get::<_, Option<String>>(0))
         .optional()
         .map_err(|err| unreadable(err.into()))?;
-    let Some(blob) = blob else { return Err(MapRefusal::UnknownFile { file }) };
+    let Some(blob) = blob else {
+        return Err(MapRefusal::UnknownFile { file });
+    };
     if !name.is_empty() {
         let declared = db
             .conn()
@@ -99,10 +101,7 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
     let note = Note { file, name, text, spec: new.spec.trim().to_string(), stale: false };
     db.write(|tx| {
         tx.execute("DELETE FROM notes WHERE file = ?1 AND name = ?2", params![note.file, note.name])?;
-        tx.execute(
-            "INSERT INTO notes(file, name, text, spec, blob) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![note.file, note.name, note.text, note.spec, blob],
-        )?;
+        tx.execute("INSERT INTO notes(file, name, text, spec, blob) VALUES (?1, ?2, ?3, ?4, ?5)", params![note.file, note.name, note.text, note.spec, blob])?;
         refresh_files(tx, &[note.file.as_str()])?;
         map_revision::bump(tx)?;
         Ok(())
@@ -147,14 +146,14 @@ mod tests {
     use crate::domain::normalize::Languages;
     use crate::domain::search::TOP;
     use crate::io::map_db::MapDb;
+    use crate::io::map_lists::ranked_files_near;
     use crate::io::map_meaning::{fill_at, ranked_declarations};
     use crate::io::map_notes_fresh::fresh;
-    use crate::io::map_lists::ranked_files_near;
     use crate::io::map_search::{any_path, candidates_at, forget, indexed};
     use crate::io::map_sense::Near;
     use crate::io::map_triage::triage_at;
-    use crate::io::project_map::{model_path, save_at, SEARCHED};
-    use serde_json::{json, Value};
+    use crate::io::project_map::{SEARCHED,model_path, save_at};
+    use serde_json::{Value,json};
     use tempfile::TempDir;
 
     /// O pedido, em palavras de negócio, que nenhum nome do código escreve.
@@ -190,6 +189,7 @@ mod tests {
     /// Um projeto gravado como o scan grava, com o arquivo de ids no blob dado.
     fn saved(ids_blob: &str) -> TempDir {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"vectors":true}}"#).unwrap();
         save_at(&model_path(dir.path()), &modules(ids_blob), "scan 1", &languages()).unwrap();
         dir
     }

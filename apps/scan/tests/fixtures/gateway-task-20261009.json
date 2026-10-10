@@ -1,0 +1,166 @@
+{
+  "source_commit": "a3fe37ab454cede37d3471993eb876985fcdfe1b",
+  "description": "Known development queries replayed as task evidence; not an independent accuracy evaluation or model session.",
+  "cases": [
+    {
+      "id": "01-discover-xlsx",
+      "request": {
+        "tool": "Grep",
+        "input": {
+          "pattern": "xlsx|excel|workbook|spreadsheet",
+          "path": "src/puzzle",
+          "-i": true,
+          "output_mode": "files_with_matches",
+          "head_limit": 0
+        },
+        "intent": "Localizar os pontos de importação do input XLSX do PI e os exportadores existentes antes de propor a baixa do input a partir da cópia editável.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "02-find-input-entrypoints",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "-i",
+            "input|download|upload|xlsx|duplicat|copy",
+            "src/puzzle/controller/puzzle.controller.ts",
+            "src/puzzle/pi/services/pi-upload.service.ts",
+            "src/puzzle/pi/services/plan/plantio-plan-files.service.ts"
+          ]
+        },
+        "intent": "Distinguir entrada XLSX, download do arquivo original e exportação baseada no banco do PI; localizar as funções e rotas que devem ser lidas.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "04-download-flow",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "download|createXlsx|class |constructor|PlantioDownload",
+            "src/puzzle/services/puzzle.service.ts",
+            "src/puzzle/services/plantio-download-orchestrator.service.ts",
+            "src/common/services/excel.service.ts"
+          ]
+        },
+        "intent": "Localizar a seleção de dados usada pelo download do PI e o contrato do gerador XLSX.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "07-discover-input-and-copy",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "async |collect|input|output|copy|duplicat|menu|curve|planId|Workbook|createXlsxStream",
+            "src/puzzle/pi/services/plan-input/optimizer-plan-input.service.ts",
+            "src/puzzle/pi/services/plan-input/optimizer-input-collector.service.ts",
+            "src/puzzle/pi/services/plan-input/optimizer-output-source.service.ts",
+            "src/puzzle/pi/services/plan/duplicate-plan.service.ts",
+            "src/common/services/excel.service.ts"
+          ]
+        },
+        "intent": "Distinguir o arquivo de input do otimizador dos downloads menu/curva e verificar como a cópia se relaciona ao plano original.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "09-optimize-input-entry",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "input\\.xlsx|inputXlsx|inputFile|input-file|load\\.xlsx|inputFileName|inputPath|readFile|xlsx\\.load|workbook\\.xlsx",
+            "src/puzzle"
+          ]
+        },
+        "intent": "Identificar o contrato do input completo enviado à otimização, evitando confundir cardápio separado com o workbook integral.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "12-workbook-and-copy-details",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "addWorksheet|write\\(|writeBuffer|columns|data\\[0\\]|copy|input|origin|sourceId|planType|createDuplicateData|create\\(",
+            "src/common/services/excel.service.ts",
+            "src/puzzle/pi/services/plan/duplicate-plan.service.ts",
+            "src/puzzle/pi/services/plan/duplicate-plan-files.service.ts",
+            "src/puzzle/pi/services/plan/duplicate-plan-data.service.ts"
+          ]
+        },
+        "intent": "Verificar a limitação de uma aba do exportador e quais arquivos e registros a cópia editável preserva.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "17-input-contracts",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "Cardápio Terras|Capacidade Plantio|SHEET_TYPE_MAP|menuMapping|curveMapping|sourcePlanId|parentId|originalPlanId|generateNewPlan",
+            "src/puzzle/types",
+            "src/puzzle/pi/services/plan",
+            "src/puzzle/pi/services/pi-auxiliar.service.ts",
+            "src/puzzle/pi/schemas"
+          ]
+        },
+        "intent": "Identificar os contratos conhecidos das abas e a referência persistida ao cenário que fornece o input original.",
+        "purpose": "spec",
+        "choose": false
+      }
+    },
+    {
+      "id": "23-follow-plan-input-sources",
+      "request": {
+        "tool": "rg",
+        "input": {
+          "args": [
+            "--sort=path",
+            "-n",
+            "--with-filename",
+            "duplicateLineage|sourceScenario|sourcePlan|optimizedPlan|basePlan|groupId|readLand|toMenuRow|plantioCurveToDownload|listMenu\\(",
+            "src/puzzle/pi/services/plan/format-plan.service.ts",
+            "src/puzzle/pi/services/plan-input/optimizer-output-source.service.ts",
+            "src/puzzle/pi/services/menu/search-menu.service.ts",
+            "src/puzzle/pi/services/curve"
+          ]
+        },
+        "intent": "Localizar a linhagem da cópia e confirmar se os downloads leem os registros atuais desse planId.",
+        "purpose": "spec",
+        "choose": false
+      }
+    }
+  ]
+}

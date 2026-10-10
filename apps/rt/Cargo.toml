@@ -50,6 +50,8 @@ chrono = { workspace = true }
 # The pull-request calls against Azure DevOps go over HTTP. `ureq` is the
 # workspace's blocking, runtime-free HTTP client; no async runtime is pulled in.
 ureq = { workspace = true }
+blake3 = { workspace = true }
+base64 = { workspace = true }
 
 # `tempfile` stages the scratch directories the work-unit and capability
 # commands write into, and powers the parity tests.

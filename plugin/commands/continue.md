@@ -7,7 +7,7 @@ argument-hint: [spec-name]
 1. Run `mustard-rt run resume --spec {spec}`. Without a name, drop the flag: the command takes the spec of the checkout's branch.
 2. Relay `next` to the user and run `command` when the answer has one. Never decide the next step yourself: the phase decides it.
 3. The names it can hand you: `mustard-rt run grill`, `mustard-rt run plan`, `mustard-rt run round` and `mustard-rt run pr-open`.
-4. A spec in the plan phase still waits for the approval question, after its page is published. Typing this command approves nothing.
-5. The answer carries no page link: the link lives in the status line.
+4. A spec in the plan phase still waits for the approval question, using the exact approval question. Typing this command approves nothing.
+5. Local tracking lives in `/mustard-panel`. External publication only follows an explicit `/mustard-pages` action.
 
 Only on the user's word: `mustard-rt run reopen --reason "<why>"` reopens the spec, and `mustard-rt run discard` drops it, in two calls with a code. To look without moving: `mustard-rt run read <block>`. A missing or diverging index: `mustard-rt run index`.

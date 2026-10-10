@@ -18,7 +18,7 @@ use mustard_core::platform::git;
 mod runner;
 
 #[cfg(test)]
-pub(crate) use runner::{ceiling_secs, with_timeout_variable, Ceiling};
+pub(crate) use runner::{Ceiling, ceiling_secs, with_timeout_variable};
 
 /// One AC execution outcome.
 pub(crate) struct AcResult {
@@ -81,6 +81,7 @@ pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
 /// A leitura de quantos testes o comando rodou não vale aqui: um lint verde
 /// cuja saída cite "no tests" não é uma prova que deixou de provar, e quem
 /// lesse assim recusaria um verde legítimo.
+#[cfg(test)]
 pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), None)
 }
@@ -91,6 +92,10 @@ pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
 /// executor e mesma leitura de [`run_command`], com um teto só deles, de uma
 /// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
 /// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.
+pub(crate) fn run_build_command(command: &str, cwd: &Path) -> ProofRun {
+    graded(runner::run_build_command(command, cwd), None)
+}
+
 pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_server_command(command, cwd), None)
 }
@@ -142,10 +147,7 @@ pub(crate) struct FailedProof {
 /// antes de comitar, só para os que as ondas do relatório cobrem: quem chama
 /// decide o que grava com cada execução e como nomeia a recusa — aqui só se
 /// roda e se lê o resultado.
-pub(crate) fn run_criteria_proofs(
-    root: &Path,
-    criteria: &[(u64, String, String)],
-) -> (Vec<(u64, String, ProofRun)>, Option<FailedProof>) {
+pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)]) -> (Vec<(u64, String, ProofRun)>, Option<FailedProof>) {
     let mut runs = Vec::new();
     let mut failed = None;
     for (id, code, proof) in criteria {
@@ -213,10 +215,7 @@ fn missing_test_name(command: &str, root: &Path) -> Option<String> {
     }
     let mut files: Option<Option<Vec<String>>> = None;
     names.into_iter().find(|name| {
-        let search = git::run(
-            root,
-            &["grep", "--untracked", "-F", "-q", "-e", name, "--", ".", ":(exclude).claude/spec"],
-        );
+        let search = git::run(root, &["grep", "--untracked", "-F", "-q", "-e", name, "--", ".", ":(exclude).claude/spec"]);
         // Achou (saída zero) ou não pôde procurar (erro escrito): não falta.
         if search.ok || !search.stderr.trim().is_empty() {
             return false;
@@ -283,9 +282,7 @@ fn test_name(word: &str) -> Option<String> {
         return None;
     }
     let last = word.rsplit("::").next().unwrap_or(word);
-    let shaped = last.contains('_')
-        && last.chars().any(char::is_alphanumeric)
-        && last.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let shaped = last.contains('_') && last.chars().any(char::is_alphanumeric) && last.chars().all(|c| c.is_alphanumeric() || c == '_');
     shaped.then(|| last.to_string())
 }
 
@@ -344,8 +341,7 @@ pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
     // Reuse the shared, i18n-aware section extractor so this QA reader and the
     // rewave producer (which carries this section verbatim into `wave-plan.md`)
     // parse the heading identically and cannot drift.
-    let block =
-        crate::commands::spec::spec_sections::section_block(markdown, "acceptanceCriteria")?;
+    let block = crate::commands::spec::spec_sections::section_block(markdown, "acceptanceCriteria")?;
     // Body only — drop the heading line itself.
     Some(block.split_once('\n').map_or("", |(_, body)| body).to_string())
 }
@@ -384,17 +380,9 @@ mod tests {
     fn check_that_runs_no_test_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        )
-        .unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("src/lib.rs"),
-            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn sum() { assert_eq!(1 + 1, 2); }\n}\n",
-        )
-        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "#[cfg(test)]\nmod tests {\n    #[test]\n    fn sum() { assert_eq!(1 + 1, 2); }\n}\n").unwrap();
 
         // Sanidade: o mesmo comando, com o nome certo, roda e passa — a
         // recusa abaixo é da leitura de zero testes, não de outro motivo.
@@ -434,10 +422,7 @@ mod tests {
     #[test]
     fn a_proof_cites_only_the_words_shaped_like_a_test_name() {
         let names = |command: &str| cited_test_names(command);
-        assert_eq!(
-            names(r#"PATH="$HOME/.cargo/bin:$PATH" cargo test --locked -p pacote-x -- nome_presente"#),
-            ["nome_presente"],
-        );
+        assert_eq!(names(r#"PATH="$HOME/.cargo/bin:$PATH" cargo test --locked -p pacote-x -- nome_presente"#), ["nome_presente"],);
         assert!(names("echo Tests: 3 total").is_empty());
         assert_eq!(names("cargo test --lib -- tests::sum_of_two --exact"), ["sum_of_two"]);
         assert!(names("cargo test --lib -- tests::sum --exact").is_empty(), "sem sublinhado não é nome");
@@ -472,11 +457,7 @@ mod tests {
         let root = dir.path();
         repo_with(
             root,
-            &[
-                ("src/lib.rs", "#[test]\nfn nome_presente() {}\n"),
-                ("tests/alvo_inteiro.rs", "#[test]\nfn one() {}\n"),
-                (".gitignore", "target/\n"),
-            ],
+            &[("src/lib.rs", "#[test]\nfn nome_presente() {}\n"), ("tests/alvo_inteiro.rs", "#[test]\nfn one() {}\n"), (".gitignore", "target/\n")],
         );
         std::fs::write(root.join("src/novo.rs"), "fn new_test() {}\n").unwrap();
         std::fs::create_dir_all(root.join("target")).unwrap();

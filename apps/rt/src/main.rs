@@ -62,6 +62,13 @@ use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};
 use std::io::{Read, Write};
 
 fn main() {
+    let internal:Vec<_>=std::env::args_os().collect();
+    if internal.get(1).is_some_and(|arg|arg=="--mustard-lsp-worker") {
+        if internal.len()==4 && let Some(language)=internal[3].to_str() {
+            let _=mustard_core::io::knowledge::precise::lsp::worker::run(std::path::Path::new(&internal[2]),language);
+        }
+        return;
+    }
     // Before ANY face runs: inside the Mustard source repository, hand the
     // whole invocation to the program compiled from the branch; otherwise, if
     // the plugin registry records a strictly newer install of this binary,

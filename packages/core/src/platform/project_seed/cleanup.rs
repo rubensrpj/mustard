@@ -583,7 +583,7 @@ pub fn apply(root: &Path, plan: &CleanupPlan, pending: &dyn PendingList) -> Resu
 fn rules_mark(rules: &[LeavingRule]) -> String {
     let body: Vec<String> =
         rules.iter().map(|rule| format!("{}\u{1f}{}", rule.text, rule.sources.join("\u{1e}"))).collect();
-    format!("{:08x}", crate::platform::page_templates::fingerprint(&body.join("\n")) >> 32)
+    format!("{:08x}", crate::platform::fingerprint::fingerprint(&body.join("\n")) >> 32)
 }
 
 /// The one pending item of a cleanup, in the project's language `lang`: the

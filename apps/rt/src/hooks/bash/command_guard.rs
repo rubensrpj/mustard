@@ -56,6 +56,20 @@ impl Check for CommandGuard {
             return Ok(Verdict::Allow);
         };
         let segments = lex::segments(&cmd);
+        if input.is_subagent()
+            && segments.iter().any(|seg| {
+                matches!(seg.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")
+                    && seg
+                        .args
+                        .windows(3)
+                        .any(|args| args[0].text == "run" && args[1].text == "write" && matches!(args[2].text.as_str(), "task" | "request" | "wave"))
+            })
+        {
+            return Ok(Verdict::Deny { reason: match ctx.config.language().text_or_default() {
+                mustard_core::SupportedLocale::PtBr => "O agente não altera o plano diretamente. Relate sobras, obrigações e proposta no retorno da onda; o condutor e o runtime gravam a tarefa autorizada.".into(),
+                mustard_core::SupportedLocale::EnUs => "An agent cannot edit the plan directly. Report leftovers, obligations and proposals in the wave return; the conductor and runtime write authorized tasks.".into(),
+            }});
+        }
         if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {
             return Ok(verdict);
         }
@@ -69,7 +83,7 @@ impl Check for CommandGuard {
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             return Ok(verdict);
         }
-        Ok(Verdict::Allow)
+        Ok(crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow))
     }
 }
 
@@ -131,7 +145,9 @@ mod tests {
 
         match verdict_for("rm -rvf /tmp/work > C:\\pasta\\arquivo.txt") {
             Verdict::Deny { .. } => {}
-            other => panic!("a destructive command stays denied even with a Windows redirect: {other:?}"),
+            other => {
+                panic!("a destructive command stays denied even with a Windows redirect: {other:?}")
+            }
         }
     }
 
@@ -166,11 +182,7 @@ mod tests {
 
     #[test]
     fn non_bash_tool_allows() {
-        let input = HookInput {
-            tool_name: Some("Write".to_string()),
-            hook_event_name: Some("PreToolUse".to_string()),
-            ..HookInput::default()
-        };
+        let input = HookInput { tool_name: Some("Write".to_string()), hook_event_name: Some("PreToolUse".to_string()), ..HookInput::default() };
         let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(CommandGuard.evaluate(&input, &ctx).expect("no error"), Verdict::Allow);
     }

@@ -4,20 +4,13 @@
 //! shells `rtk gain --all --format json` and normalises the result across rtk
 //! versions. This module keeps it as a helper consumed by `run statusline`.
 //!
-//! [`project_days`] é a outra leitura: a economia do rtk neste projeto, dia a
-//! dia (`rtk gain -p -d -f json`, rodado na pasta do projeto), que o painel da
-//! página da spec soma nos dias da spec. Só entram os dias já fechados: o de
-//! hoje muda a cada comando, e duas gerações da mesma página têm de sair
-//! iguais. O Mustard não conta nada por conta própria: os números são os do
-//! rtk.
-//!
 //! Fail-open: `rtk` missing, a timeout, or unparseable JSON yields `None`,
 //! exactly like the JS helper returning `null`.
 
+#[cfg(test)]
 use mustard_core::view::document::RtkDay;
 use serde_json::Value;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use mustard_core::platform::code_tools::{MachineRunner,RunOutcome,ToolRunner};
 
 /// Normalised `rtk gain` summary — the fields the statusline segment consumes.
 #[derive(Debug, Clone)]
@@ -37,9 +30,10 @@ fn num(obj: &Value, keys: &[&str]) -> f64 {
                 return n;
             }
             if let Some(s) = v.as_str()
-                && let Ok(n) = s.parse::<f64>() {
-                    return n;
-                }
+                && let Ok(n) = s.parse::<f64>()
+            {
+                return n;
+            }
         }
     }
     0.0
@@ -52,17 +46,9 @@ fn num(obj: &Value, keys: &[&str]) -> f64 {
 /// `if (saved <= 0 && commands <= 0) return null`.
 #[must_use]
 pub fn get_rtk_gain() -> Option<RtkGain> {
-    let output = Command::new("rtk")
-        .args(["gain", "--all", "--format", "json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw = String::from_utf8(output.stdout).ok()?;
+    let runner=MachineRunner::new(&std::env::var("PATH").unwrap_or_default());
+    let (outcome,raw)=runner.output("rtk",&["gain","--all","--format","json"],std::time::Duration::from_secs(1));
+    if outcome!=RunOutcome::Succeeded {return None;}
     let data: Value = serde_json::from_str(&raw).ok()?;
     // The JS reads `data.summary` when present, else `data` itself.
     let summary = data.get("summary").unwrap_or(&data);
@@ -77,35 +63,15 @@ pub fn get_rtk_gain() -> Option<RtkGain> {
     Some(RtkGain { saved, pct })
 }
 
-/// A economia do rtk no projeto `root`, um dia por linha, só dos dias antes
-/// de `before` (`2026-09-17`). Sem o rtk, com uma saída que não se entende ou
-/// sem comando nenhum no projeto, nenhum dia.
-#[must_use]
-pub fn project_days(root: &Path, before: &str) -> Vec<RtkDay> {
-    let Ok(output) = Command::new("rtk")
-        .args(["gain", "--project", "--daily", "--format", "json"])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let days = String::from_utf8(output.stdout).map(|raw| parse_days(&raw)).unwrap_or_default();
-    closed(days, before)
-}
-
 /// Só os dias antes de `before`.
+#[cfg(test)]
 fn closed(days: Vec<RtkDay>, before: &str) -> Vec<RtkDay> {
     days.into_iter().filter(|day| day.date.as_str() < before).collect()
 }
 
 /// Os dias da saída JSON do `rtk gain --daily`, em ordem de data. O dia sem
 /// data fica de fora.
+#[cfg(test)]
 fn parse_days(raw: &str) -> Vec<RtkDay> {
     let Ok(data) = serde_json::from_str::<Value>(raw) else {
         return Vec::new();

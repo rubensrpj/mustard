@@ -1122,6 +1122,7 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
             ("CI/CD", false),
             ("Windows/Linux/macOS", false),
             ("24/09/2026", false),
+            ("10/2026", false),
             ("apps/rt/src", false),
             ("/", false),
             ("~/", false),

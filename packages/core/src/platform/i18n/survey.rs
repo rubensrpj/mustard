@@ -174,6 +174,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
         ("survey.fact_importers", Locale::PtBr) => "{path} é importado por: {importers}.",
         ("survey.fact_importers", Locale::EnUs) => "{path} is imported by: {importers}.",
+        ("survey.fact_test_candidates", Locale::PtBr) => {
+            "Testes candidatos para {path}: {tests}; testes no próprio arquivo: {inline}. A associação do scan não comprova cobertura nem execução; confira os testes e o comportamento."
+        }
+        ("survey.fact_test_candidates", Locale::EnUs) => {
+            "Candidate tests for {path}: {tests}; inline tests: {inline}. The scan association proves neither coverage nor execution; check the tests and behavior."
+        }
         ("survey.gap.who_uses", Locale::PtBr) => "Quem usa e para quê",
         ("survey.gap.who_uses", Locale::EnUs) => "Who uses it and what for",
         ("survey.gap.rules", Locale::PtBr) => "Cada regra, com um exemplo com números",
@@ -228,12 +234,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("survey.rs"),
-            super::PREFIXES,
-            39,
-            0x9a8c_0a85_2e33_7dce,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 40, 0xc6ea_9cda_69c7_c7e4);
     }
 
     /// As recusas e os passos do levantamento e o rótulo de cada lacuna saem
@@ -269,6 +270,7 @@ mod tests {
             ("survey.outside_review_step".into(), &["{spec}"][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
+            ("survey.fact_test_candidates".into(), &["{path}", "{tests}", "{inline}"][..]),
         ];
         for gap in crate::domain::survey::GapKey::ALL {
             keys.push((gap.label_key().to_string(), &[][..]));

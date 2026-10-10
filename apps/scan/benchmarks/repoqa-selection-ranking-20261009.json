@@ -1,0 +1,26 @@
+{
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "selection_rule": "First alphabetical unused repository per language, <=200 files and <=2 MiB UTF-8 source, frozen before final scoring. All descriptions used; no expected symbols passed to retrieval.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "marshmallow-code/marshmallow",
+      "commit": "b8149cec77d16357d11b08f86de3b13e6fe02fa0"
+    },
+    {
+      "language": "typescript",
+      "repo": "openai/openai-node",
+      "commit": "018ac718ccf6a96798ef8f91906b3b652aa50919"
+    },
+    {
+      "language": "rust",
+      "repo": "cloudflare/pingora",
+      "commit": "acee67f87020ef41267fe475bcc5cbed44782a06"
+    },
+    {
+      "language": "go",
+      "repo": "junegunn/fzf",
+      "commit": "e352b6887849cb6c3c8ae1d98ed357f94273e90a"
+    }
+  ]
+}

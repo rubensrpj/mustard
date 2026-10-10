@@ -227,6 +227,10 @@
 (impl_item type: (_) @owner body: (declaration_list (const_item name: (identifier) @name) @definition.constant))
 (impl_item trait: (_) @owner.contract body: (declaration_list (const_item name: (identifier) @name) @definition.constant))
 (trait_item body: (declaration_list (function_item name: (identifier) @name) @definition.method))
+
+; Named local items are searchable too. Earlier context-specific method
+; patterns keep precedence, independently of match order.
+(function_item name: (identifier) @name) @definition.function
 (trait_item body: (declaration_list (function_signature_item name: (identifier) @name) @definition.method))
 
 ; Membros — campos de struct e variantes de enum. Os kinds de membro chegam ao

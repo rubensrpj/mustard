@@ -9,12 +9,12 @@
 use super::theme::Color;
 use crate::shared::rtk_gain::RtkGain;
 use crate::shared::spec_state::DiskSpecState;
-use mustard_core::domain::spec_state::SpecState;
 use mustard_core::SupportedLocale;
+use mustard_core::domain::spec_state::SpecState;
+use mustard_core::platform::git as git_exec;
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::Path;
-use mustard_core::platform::git as git_exec;
 
 /// All segment kinds the statusline knows how to render. New kinds must be
 /// appended (themes index a `[Style; SEGMENT_KIND_COUNT]` by `kind as usize`).
@@ -60,11 +60,7 @@ pub struct Segment {
 impl Segment {
     #[must_use]
     pub fn new(kind: SegmentKind, text: impl Into<String>) -> Self {
-        Self {
-            kind,
-            text: text.into(),
-            override_fg: None,
-        }
+        Self { kind, text: text.into(), override_fg: None }
     }
 }
 
@@ -78,9 +74,7 @@ impl Segment {
 /// do projeto quando o índice das specs traz o endereço dela.
 #[must_use]
 pub fn module_segment(cwd: &Path) -> Segment {
-    let module = cwd
-        .file_name()
-        .map_or_else(|| "?".to_string(), |n| n.to_string_lossy().to_string());
+    let module = cwd.file_name().map_or_else(|| "?".to_string(), |n| n.to_string_lossy().to_string());
     // A mesma leitura com que o início da sessão decide se manda publicar a
     // página do projeto: link na barra e silêncio no início andam juntos.
     let text = match mustard_core::io::spec_index::project_page_url(cwd) {
@@ -123,15 +117,8 @@ pub fn git_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     if untracked > 0 {
         let _ = write!(status, "?{untracked}");
     }
-    let suffix = if status.is_empty() {
-        " \u{2713}".to_string()
-    } else {
-        format!(" {status}")
-    };
-    Some(Segment::new(
-        SegmentKind::Git,
-        format!("\u{2387} {branch}{suffix}"),
-    ))
+    let suffix = if status.is_empty() { " \u{2713}".to_string() } else { format!(" {status}") };
+    Some(Segment::new(SegmentKind::Git, format!("\u{2387} {branch}{suffix}")))
 }
 
 /// `██░░░░░░░░ 24%` — o uso da conversa num número só: o já usado, 100 menos
@@ -146,11 +133,7 @@ pub fn context_segment(data: &Value) -> Option<Segment> {
     let bar_len = 10i64;
     let cells = ((used as f64 / 100.0) * bar_len as f64).round() as i64;
     let cells = cells.clamp(0, bar_len);
-    let bar = format!(
-        "{}{}",
-        "\u{2588}".repeat(cells as usize),
-        "\u{2591}".repeat((bar_len - cells) as usize),
-    );
+    let bar = format!("{}{}", "\u{2588}".repeat(cells as usize), "\u{2591}".repeat((bar_len - cells) as usize));
     let mut s = Segment::new(SegmentKind::Context, format!("{bar} {used}%"));
     // A cor pelo que sobra: vermelho forte abaixo de 20%, vermelho abaixo de
     // 40%, amarelo abaixo de 60%.
@@ -177,17 +160,9 @@ pub fn duration_segment(data: &Value) -> Option<Segment> {
     let m = (dur_ms % 3_600_000) / 60_000;
     let s = (dur_ms % 60_000) / 1000;
     let text = if h > 0 {
-        if m > 0 {
-            format!("{h}h{m}m")
-        } else {
-            format!("{h}h")
-        }
+        if m > 0 { format!("{h}h{m}m") } else { format!("{h}h") }
     } else if m > 0 {
-        if s > 0 {
-            format!("{m}m{s}s")
-        } else {
-            format!("{m}m")
-        }
+        if s > 0 { format!("{m}m{s}s") } else { format!("{m}m") }
     } else {
         format!("{s}s")
     };
@@ -258,15 +233,8 @@ pub fn mustard_segment() -> Segment {
 /// tight.
 #[must_use]
 pub fn model_segment(data: &Value) -> Segment {
-    let raw = data
-        .get("model")
-        .and_then(|m| m.get("display_name").or_else(|| m.get("id")))
-        .and_then(Value::as_str)
-        .unwrap_or("Claude");
-    let short = raw
-        .strip_prefix("Claude ")
-        .or_else(|| raw.strip_prefix("claude-"))
-        .unwrap_or(raw);
+    let raw = data.get("model").and_then(|m| m.get("display_name").or_else(|| m.get("id"))).and_then(Value::as_str).unwrap_or("Claude");
+    let short = raw.strip_prefix("Claude ").or_else(|| raw.strip_prefix("claude-")).unwrap_or(raw);
     Segment::new(SegmentKind::Model, short.to_string())
 }
 
@@ -297,8 +265,7 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     let slug = crate::shared::context::checkout::current_spec(&root).filter(|s| !s.is_empty())?;
     // Um endereço com caractere de controle (arquivo editado à mão) quebraria
     // a sequência e sujaria a barra; nesse caso o texto sai sem link.
-    let url = crate::commands::spec::spec_doc::published_url(cwd, &slug)
-        .filter(|url| !url.chars().any(char::is_control));
+    let url = crate::commands::spec::spec_doc::published_url(cwd, &slug).filter(|url| !url.chars().any(char::is_control));
     let linked = |label: &str| url.as_deref().map_or_else(|| label.to_string(), |url| hyperlink(url, label));
     // A fase é conveniência, não o ponto: um arquivo de eventos ilegível ainda
     // deixa a spec nomeada.
@@ -316,9 +283,8 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
         if matches!(phase, "approved" | "running")
             && let Some((delivered, total)) = wave_progress(cwd, &slug)
         {
-            let progress = mustard_core::translate("statusline.wave", lang)
-                .replace("{delivered}", &delivered.to_string())
-                .replace("{total}", &total.to_string());
+            let progress =
+                mustard_core::translate("statusline.wave", lang).replace("{delivered}", &delivered.to_string()).replace("{total}", &total.to_string());
             let _ = write!(text, " {progress}");
         }
     }
@@ -331,12 +297,8 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
 /// esvaziada não entra. `None` sem arquivo de eventos e sem onda que conte.
 fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
     let log = DiskSpecState::new(cwd).log(slug)?;
-    let counted = log.counted_waves();
-    if counted.is_empty() {
-        return None;
-    }
-    let delivered = log.delivered_waves().intersection(&counted).count();
-    Some((delivered, counted.len()))
+    let counts = crate::commands::panel::wave_counts(&log);
+    (counts.1 > 0).then_some(counts)
 }
 
 /// `label` como hiperlink OSC 8 para `url`: `ESC ]8;;URL ESC \ label ESC ]8;; ESC \`.
@@ -359,11 +321,7 @@ fn hyperlink(url: &str, label: &str) -> String {
 pub fn plugin_switched_off(settings: &Path) -> Option<bool> {
     let text = std::fs::read_to_string(settings).ok()?;
     let json: Value = serde_json::from_str(&text).ok()?;
-    json.get("enabledPlugins")?
-        .as_object()?
-        .iter()
-        .find(|(key, _)| key.split('@').next() == Some("mustard"))
-        .map(|(_, value)| value.as_bool() == Some(false))
+    json.get("enabledPlugins")?.as_object()?.iter().find(|(key, _)| key.split('@').next() == Some("mustard")).map(|(_, value)| value.as_bool() == Some(false))
 }
 
 /// `⨯ harness inerte` — the plugin is installed and switched off.
@@ -454,12 +412,7 @@ mod tests {
         // A unit in PLAN, with the checkout on its branch: the current-spec
         // ladder every consumer reads names it, and the bar shows its stage
         // (the branch segment already carries the name).
-        crate::shared::spec_state::seed_event(
-            root,
-            "roteador-didatico",
-            "state",
-            serde_json::json!({ "phase": "plan" }),
-        );
+        crate::shared::spec_state::seed_event(root, "roteador-didatico", "state", serde_json::json!({ "phase": "plan" }));
         crate::shared::spec_state::stand_on_spec_branch(root, "roteador-didatico");
 
         let seg = unit_segment(root, Some("feature/roteador-didatico")).expect("an active unit must reach the bar");
@@ -552,11 +505,7 @@ mod tests {
         );
         for branch in [Some("feature/outro-nome-v2"), Some("dev"), None] {
             let linked = unit_segment(root, branch).expect("a published unit reaches the bar");
-            assert_eq!(
-                linked.text,
-                format!("\u{25b8} {} levantamento", hyperlink(url, "outro-nome")),
-                "only the name is the link ({branch:?})"
-            );
+            assert_eq!(linked.text, format!("\u{25b8} {} levantamento", hyperlink(url, "outro-nome")), "only the name is the link ({branch:?})");
         }
     }
 
@@ -585,8 +534,11 @@ mod tests {
         let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
         for n in 1..=8 {
             let author = if n % 2 == 0 { "binary" } else { "assistant" };
-            seed("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x",
-                "origin": said, "author": author}));
+            seed(
+                "wave",
+                json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x",
+                "origin": said, "author": author}),
+            );
         }
         let task = |wave: Option<u64>, text: &str, replaces: Option<u64>| {
             let mut body = json!({"text": text, "files": [], "depends_on": [], "origin": said});
@@ -640,11 +592,8 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
         assert_eq!(module_segment(&root).text, "loja");
         let url = "https://claude.ai/code/artifacts/projeto";
-        std::fs::write(
-            root.join(".claude").join("spec").join("index.ndjson"),
-            format!("{}\n", mustard_core::domain::spec_index::project_line(Some(url))),
-        )
-        .unwrap();
+        std::fs::write(root.join(".claude").join("spec").join("index.ndjson"), format!("{}\n", mustard_core::domain::spec_index::project_line(Some(url))))
+            .unwrap();
         let linked = module_segment(&root);
         assert_eq!(linked.text, hyperlink(url, "loja"));
         assert_eq!(visible(&linked.text), "loja");
@@ -673,11 +622,7 @@ mod tests {
         assert_eq!(verdict(None), None, "no settings file: unanswerable, not green");
         assert_eq!(verdict(Some("{ not json")), None, "unparseable: unanswerable");
         assert_eq!(verdict(Some(r#"{"enabledPlugins":{}}"#)), None, "unlisted: unanswerable");
-        assert_eq!(
-            verdict(Some(r#"{"enabledPlugins":{"mustard@mustard-local":true}}"#)),
-            Some(false),
-            "an enabled plugin is measured as running",
-        );
+        assert_eq!(verdict(Some(r#"{"enabledPlugins":{"mustard@mustard-local":true}}"#)), Some(false), "an enabled plugin is measured as running");
         // The marketplace suffix varies by install, so the name before `@` decides.
         assert_eq!(
             verdict(Some(r#"{"enabledPlugins":{"other@x":true,"mustard@whatever":false}}"#)),
@@ -787,10 +732,7 @@ mod tests {
         assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no file yet");
 
         let day = |day: &str, tokens: u64| DayRow { day: day.into(), project: "loja".into(), actions: 200, tokens, ..DayRow::default() };
-        let mut ledger = Ledger {
-            rows: vec![day("2026-09-26", 200), day("2026-09-27", 150)],
-            ..Ledger::default()
-        };
+        let mut ledger = Ledger { rows: vec![day("2026-09-26", 200), day("2026-09-27", 150)], ..Ledger::default() };
         std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
         assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no panel address");
 

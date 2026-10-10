@@ -7,8 +7,8 @@
 //!
 //! O modelo se grava no mapa do projeto, o banco que a porta do núcleo
 //! declara (`mustard_core::io::project_map`), e se lê dele de volta: o que o
-//! banco não guarda — a cobertura além das pastas puladas e se o grafo tem
-//! ciclo — só serve ao resumo impresso da passada, e volta vazio.
+//! banco não guarda — como se o grafo tem ciclo — só serve ao resumo
+//! impresso da passada, e volta vazio. A cobertura fica no censo.
 
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{History, Quality};
@@ -28,6 +28,8 @@ pub struct ProjectModel {
     pub frameworks: Vec<String>,
     pub skeleton: Vec<SkeletonEntry>,
     pub modules: Vec<Module>,
+    /// Non-code excerpts, separate from executable declarations and links.
+    pub resources: Vec<mustard_core::domain::knowledge::resources::File>,
     pub graph: GraphStats,
     /// What the scan visited vs skipped — verifiable answer to "did you read it all?".
     #[serde(default)]
@@ -88,7 +90,9 @@ impl ProjectModel {
     /// refaz com os arquivos e as declarações prepara as palavras nas línguas
     /// `languages`.
     pub fn save(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
-        Ok(store::save_at(path, &serde_json::to_value(self)?, mark, languages)?)
+        let mut raw = serde_json::to_value(self)?;
+        mustard_core::domain::knowledge::enrich(&mut raw);
+        Ok(store::save_at(path, &raw, mark, languages)?)
     }
 
     /// Grava só o censo do modelo no mapa em `path`, com a marca `mark`; os
@@ -96,6 +100,10 @@ impl ProjectModel {
     /// resposta é `false`.
     pub fn save_census(&self, path: &Path, mark: &str) -> anyhow::Result<bool> {
         Ok(store::save_block_at(path, &store::CENSUS, &serde_json::to_value(self)?, mark)?)
+    }
+
+    pub fn save_resources(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
+        Ok(store::save_blocks_at(path, &[&store::CENSUS,&store::RESOURCES], &serde_json::to_value(self)?, mark, languages)?)
     }
 }
 
@@ -129,6 +137,9 @@ pub struct ProjectUnit {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Coverage {
+    /// Aggregated while parsing; queries never decode every evidence pack.
+    #[serde(default)]
+    pub parse: serde_json::Value,
     pub top_dirs: Vec<DirCoverage>,
     /// As pastas que a caminhada pulou pela lista do `manifests.toml`, pelo
     /// caminho relativo, em qualquer profundidade: as que nunca guardam
@@ -331,6 +342,8 @@ pub struct Module {
     /// passada ([`crate::quality`]). Written only when measured.
     #[serde(default, skip_serializing_if = "Quality::is_empty")]
     pub quality: Quality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<serde_json::Value>,
     /// The stack code signatures found in this file's content, kept so a pass
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -429,6 +442,9 @@ pub struct Text {
     pub line: usize,
     pub kind: String,
     pub value: String,
+    /// Full normalized source text when the first-read value was compacted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub full_value: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
 }
@@ -779,9 +795,7 @@ impl Serialize for CallSite {
 impl<'de> Deserialize<'de> for CallSite {
     fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
         let text = String::deserialize(input)?;
-        let (head, line) = text
-            .rsplit_once(':')
-            .ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
+        let (head, line) = text.rsplit_once(':').ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
         let line = line.parse().map_err(D::Error::custom)?;
         let (qualifier, name) = head.rsplit_once('.').unwrap_or(("", head));
         Ok(Self { name: name.to_string(), line, qualifier: qualifier.to_string() })
@@ -867,11 +881,17 @@ pub struct Decl {
     /// declaration has no header to speak of.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature: String,
+    /// Written grammar fields with exact ranges. Missing fields are unknown.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub syntax: serde_json::Value,
     /// A documentação de cima inteira, sem o teto de [`Decl::doc`]: guardada
     /// só quando o teto cortou alguma coisa, e vazia quando a de `doc` já é a
     /// inteira.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub whole_doc: String,
+    /// Explicit metadata in attached documentation, with original line ranges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<mustard_core::domain::knowledge::Annotation>,
     /// Os comentários escritos nas linhas da declaração, da primeira à
     /// última, limpos das marcas e juntados numa linha. Os de uma declaração
     /// de dentro são também da que a contém.

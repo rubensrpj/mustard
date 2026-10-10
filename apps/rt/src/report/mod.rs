@@ -1,6 +1,6 @@
 //! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
-//! Hoje só a página avulsa escrita em markdown sai daqui, no layout aprovado
+//! A página avulsa e o snapshot explícito usam o layout aprovado
 //! em 17/09 (mostarda e carvão): menu lateral com as seções, barra com a
 //! busca. As fontes Geist e Geist Mono são buscadas do Google Fonts; nenhuma
 //! fonte vai gravada dentro da página, e quem abre o arquivo sem internet vê
@@ -18,10 +18,12 @@
 use std::fmt::Write as _;
 use std::str::FromStr;
 
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 pub mod markdown;
 mod render;
+mod snapshot;
+pub(crate) use snapshot::{public_project_snapshot, public_report_snapshot, public_snapshot, public_spend_snapshot};
 
 pub use render::Render;
 
@@ -335,11 +337,7 @@ mod tests {
     fn targets_li(selector: &str) -> bool {
         selector
             .split(|c: char| c.is_whitespace() || matches!(c, ',' | '>' | '+' | '~'))
-            .any(|compound| {
-                compound
-                    .strip_prefix("li")
-                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(['.', ':', '[', '#']))
-            })
+            .any(|compound| compound.strip_prefix("li").is_some_and(|tail| tail.is_empty() || tail.starts_with(['.', ':', '[', '#'])))
     }
 
     #[test]
@@ -357,17 +355,10 @@ mod tests {
         assert!(html.contains("<html lang=\"pt-BR\">"), "lang pedido ausente");
         assert!(Report::new("QA", "x").render().contains("<html lang=\"en\">"));
 
-        let css = html
-            .split_once("<style>")
-            .and_then(|(_, tail)| tail.split_once("</style>"))
-            .map(|(style, _)| style)
-            .expect("página sem <style>");
+        let css = html.split_once("<style>").and_then(|(_, tail)| tail.split_once("</style>")).map(|(style, _)| style).expect("página sem <style>");
 
         // Tokens mostarda e carvão, claro e escuro, e as cores de situação.
-        for token in [
-            "#FAFAF7", "#2B2B29", "#E1AD01", "#8A6700", "#FBF1CF", "#2E2E2B", "#1C1C1A", "#ECEAE3",
-            "#E8B923", "#121211", "#2F7A4B", "#B3261E",
-        ] {
+        for token in ["#FAFAF7", "#2B2B29", "#E1AD01", "#8A6700", "#FBF1CF", "#2E2E2B", "#1C1C1A", "#ECEAE3", "#E8B923", "#121211", "#2F7A4B", "#B3261E"] {
             assert!(css.contains(token), "token {token} ausente do layout");
         }
         assert!(css.contains("\"Geist\"") && css.contains("\"Geist Mono\""));
@@ -376,15 +367,13 @@ mod tests {
         // moldura.
         assert!(html.contains("<section id=\"section-1\" class=\"block\" data-crumb=\"Tabela\"><h2><span>Tabela</span></h2>"));
         assert!(html.contains("<div class=\"table\"><table>"));
-        assert!(html.contains("<li data-sec=\"section-1\"><button type=\"button\" data-go=\"section-1\" class=\"top\"><span>Tabela</span><i></i></button><ol></ol></li>"));
+        assert!(html.contains(
+            "<li data-sec=\"section-1\"><button type=\"button\" data-go=\"section-1\" class=\"top\"><span>Tabela</span><i></i></button><ol></ol></li>"
+        ));
 
         let rules = css_rules(css);
         let rule = |selector: &str| {
-            rules
-                .iter()
-                .find(|(sel, _)| sel == selector)
-                .map(|(_, decls)| decls.as_str())
-                .unwrap_or_else(|| panic!("regra {selector} ausente"))
+            rules.iter().find(|(sel, _)| sel == selector).map(|(_, decls)| decls.as_str()).unwrap_or_else(|| panic!("regra {selector} ausente"))
         };
         // A tabela larga rola dentro da própria moldura, e o código dentro
         // dela nunca quebra.
@@ -421,10 +410,7 @@ mod tests {
 
         // Nenhum li (nem pseudo-elemento dele) vira grid.
         for (selector, decls) in &rules {
-            assert!(
-                !(targets_li(selector) && decls.contains("display:grid")),
-                "li em grid: {selector}{{{decls}}}"
-            );
+            assert!(!(targets_li(selector) && decls.contains("display:grid")), "li em grid: {selector}{{{decls}}}");
         }
     }
 
@@ -450,11 +436,7 @@ mod tests {
     /// vazio.
     #[test]
     fn report_header_carries_kind_and_meta_pairs() {
-        let html = Report::new("Resumo", "")
-            .with_kind("spec para aprovar")
-            .with_meta("spec", "demo")
-            .with_note("aguardando aprovação")
-            .render();
+        let html = Report::new("Resumo", "").with_kind("spec para aprovar").with_meta("spec", "demo").with_note("aguardando aprovação").render();
         assert!(html.contains("<p class=\"brand\"><b>Mustard</b> · spec para aprovar</p>"), "{html}");
         assert!(html.contains(
             "<header class=\"top\"><p class=\"eyebrow\">spec para aprovar</p><h1>Resumo</h1>\
@@ -493,12 +475,9 @@ mod tests {
         }
 
         let en = Report::new("demo", "").with_lang("en-US").render();
-        for piece in [
-            "placeholder=\"Search text or code\"",
-            ">Open all</button>",
-            "data-of=\"{n} of {total}\"",
-            "an item&#39;s code, like <code>DEC-0142</code>.</p>",
-        ] {
+        for piece in
+            ["placeholder=\"Search text or code\"", ">Open all</button>", "data-of=\"{n} of {total}\"", "an item&#39;s code, like <code>DEC-0142</code>.</p>"]
+        {
             assert!(en.contains(piece), "{piece} is missing in English");
         }
     }

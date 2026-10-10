@@ -1,8 +1,8 @@
 //! `jev_gate` — a regra que liga o filtro do Jev na busca, num lugar só.
 //!
-//! A busca chama o Jev quando duas coisas valem: o `mustard.json` não
-//! desliga o filtro (`search.filter` diferente de `none` e de um valor que
-//! não existe) e o projeto tem uma chave válida. A chave vem de [`KEY_ENV`] no
+//! A busca usa regras nativas por padrão. O Jev exige `ai.fallback: true`,
+//! um filtro `jev` explicitamente escolhido para a finalidade e uma chave
+//! válida. A chave vem de [`KEY_ENV`] no
 //! ambiente ou, sem ela, de `jev.key` no `mustard.json`; o git não pode
 //! guardar esse arquivo: guardado, a chave dele não se usa. A busca monta o
 //! filtro com a chave chamando as funções daqui, e nenhuma outra regra liga o
@@ -56,11 +56,10 @@ impl fmt::Debug for FoundKey {
     }
 }
 
-/// Se o `mustard.json` deixa a busca chamar o Jev: ausente ou `jev`, sim;
-/// `none` ou um valor que não existe, não.
+/// A provider must be named explicitly. Missing settings use native rules.
 #[must_use]
 pub fn setting_allows(setting: FilterSetting) -> bool {
-    matches!(setting, FilterSetting::Absent | FilterSetting::Jev)
+    matches!(setting, FilterSetting::Jev)
 }
 
 /// O teto de gasto do Jev por mês, em dólares, quando o `mustard.json` não
@@ -144,11 +143,11 @@ mod tests {
         assert!(found.warning().is_none());
     }
 
-    /// Só `none` e o valor que não existe desligam o filtro.
+    /// An API key alone must never activate the provider.
     #[test]
-    fn only_none_and_an_unknown_value_turn_the_filter_off() {
+    fn only_an_explicit_jev_filter_allows_the_provider() {
         let allows = |value: serde_json::Value| setting_allows(FilterSetting::of(Some(&value)));
-        assert!(setting_allows(FilterSetting::of(None)));
+        assert!(!setting_allows(FilterSetting::of(None)));
         assert!(allows(json!("jev")));
         assert!(!allows(json!("none")));
         assert!(!allows(json!("another")));

@@ -27,6 +27,7 @@ ignored = [
     "grammar_py",
     "grammar_rs",
     "grammar_ts",
+    "grammar_schema",
 ]
 ignored-paths = ["tests/fixtures/**/*.rs"]
 
@@ -80,6 +81,7 @@ grammar_rs = { package = "tree-sitter-rust", version = "0.24" }
 grammar_go = { package = "tree-sitter-go", version = "0.25" }
 grammar_php = { package = "tree-sitter-php", version = "0.24" }
 grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
+grammar_schema = { package = "tree-sitter-prisma-io", version = "=1.6.0" }
 
 [target.'cfg(unix)'.dependencies]
 # Baixa a prioridade da leitura da história em segundo plano (`setpriority`):

@@ -1,40 +1,30 @@
 //! `mustard-rt run spend` — o gasto de cada dia, contado pelas conversas e
 //! mostrado numa página.
 //!
-//! Sem argumento, o comando conta os dias fechados que faltam (do dia seguinte
-//! ao último contado até ontem), guarda as linhas no arquivo do gasto da
-//! máquina e conta hoje, o dia aberto, de novo a cada pedido: as linhas de
-//! hoje vão à página como parciais e nunca ao arquivo dos dias fechados. Em
-//! seguida prepara a cópia para o banco da página: o template, os lotes (as
-//! linhas fechadas que faltam, as de hoje e o resumo da máquina) e a ordem do
-//! que o orquestrador faz. A cópia preparada vale como feita: o arquivo do
-//! gasto já guarda até que dia a página recebeu e a versão de cada documento
-//! que a cópia seguinte troca. Funciona em qualquer projeto, com ou sem spec.
-//!
-//! - `--republish` prepara a publicação nova e a cópia de todos os dias: o
-//!   caminho de quem perdeu o link da página ou teve um lote que falhou.
-//! - `--url <endereço>` grava o endereço que a publicação devolveu.
+//! Sem argumento, conta e guarda dias fechados e mostra o resumo local de hoje.
+//! Só `--publish` ou `--republish` prepara e publica um snapshot estático. `--url`
+//! registra uma URL confirmada. Nenhum hook inicia essa operação.
 //!
 //! A regra mora em `mustard_core::domain::spend` e `mustard_core::io::spend`.
 //! Recusa sai com exit 1, `ok: false`, a razão em `reason` e a mensagem no
 //! idioma do projeto em `hint`.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spend::{summarize, DayRow, Ledger, Refusal};
+use mustard_core::domain::spend::{Refusal, summarize};
 use mustard_core::io::spend as store;
 use mustard_core::platform::harness::claude_config_dir;
 use mustard_core::platform::i18n::Locale;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::commands::spec_events::pages::spend as copy;
 use crate::commands::spec_events::project;
 
 /// Options for `mustard-rt run spend`.
 pub struct SpendOpts {
     /// Qualquer pasta dentro do repositório: só dá o idioma das mensagens.
     pub root: PathBuf,
+    /// Prepara a página externa somente a pedido explícito.
+    pub publish: bool,
     /// Prepara a publicação nova e a cópia de todos os dias.
     pub republish: bool,
     /// O endereço que a publicação devolveu, a gravar.
@@ -53,7 +43,11 @@ pub(crate) struct Machine {
 impl Machine {
     /// A máquina de hoje, como o ambiente a diz.
     pub(crate) fn here() -> Self {
-        Self { dir: store::machine_dir(), config: claude_config_dir(), today: store::today() }
+        Self {
+            dir: store::machine_dir(),
+            config: claude_config_dir(),
+            today: store::today(),
+        }
     }
 }
 
@@ -62,7 +56,9 @@ pub(crate) fn spend_at(opts: &SpendOpts, machine: &Machine) -> Value {
     let lang = project(&opts.root).lang;
     match answer(opts, machine, lang) {
         Ok(report) => report,
-        Err(refusal) => json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) }),
+        Err(refusal) => {
+            json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) })
+        }
     }
 }
 
@@ -76,64 +72,70 @@ fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Re
     let config = machine.config.as_deref().ok_or(Refusal::NoMachineFolder)?;
     let counted = count_missing(dir, config, &machine.today)?;
     let open = store::count_open(config, Some(dir), &machine.today);
-    let (prepared, url) =
-        store::update(dir, |ledger| prepare(dir, ledger, &open, &machine.today, opts.republish, lang))??;
-    let order = copy::order(&prepared, url.as_deref(), opts.republish, lang);
-    let published = url.is_some() && !opts.republish;
-    Ok(json!({
-        "ok": true,
-        "counted": counted,
-        "copy": { copy::KEY: copy::to_value(&prepared, published) },
-        "order": order,
-    }))
+    store::update(dir, |ledger| {
+        ledger.open_rows.clone_from(&open);
+        ledger.open_day=Some(machine.today.clone());
+        ledger.measured_at=Some(chrono::Utc::now().to_rfc3339());
+    })?;
+    if !opts.publish && !opts.republish {
+        let ledger = store::load(dir)?;
+        return Ok(
+            json!({"ok":true,"counted":counted,"summary":summarize(&ledger.rows,&open,&machine.today),"published":false}),
+        );
+    }
+    let ledger = store::update(dir, |ledger| ledger.clone())?;
+    let rows=ledger.rows.iter().chain(&open).map(|row| {
+        let name=row.project.rsplit(['/', '\\']).next().unwrap_or("Projeto");
+        let project=crate::shared::secret::without_secrets(&name.chars().filter(|c|!c.is_control()).collect::<String>());
+        json!({"day":row.day,"project":project,"tokens":row.tokens,"actions":row.actions,"code_searches":row.code_searches,
+            "jev_tokens":row.jev_tokens,"jev_cost_micro_usd":row.jev_cost_micro_usd,"partial":row.partial})
+    }).collect::<Vec<_>>();
+    let public = json!({"schema_version":1,"kind":"spend","language":lang.to_string(),"at":chrono::Utc::now().to_rfc3339(),
+        "rows":rows,"summary":summarize(&ledger.rows,&open,&machine.today)});
+    let prepared = crate::shared::publication::prepare_snapshot(
+        dir,
+        &dir.join("publications"),
+        &public,
+        crate::report::public_spend_snapshot,
+    );
+    let mut answer = crate::shared::publication::upload_prepared(
+        &opts.root,
+        dir,
+        prepared,
+        "spend",
+        crate::report::public_spend_snapshot,
+    );
+    answer["counted"] = counted;
+    if answer["published"] == true {
+        // Static snapshots have no remote document versions/copy cursor.
+        let url = answer["remote_url"].as_str().ok_or_else(|| Refusal::Io {
+            detail: "publication-no-confirmed-url".into(),
+        })?;
+        store::update(dir, |ledger| ledger.url = Some(url.to_string()))?;
+    }
+    Ok(answer)
 }
 
 /// Conta os dias fechados que faltam e guarda as linhas no arquivo da
 /// máquina; devolve a faixa contada e quantas linhas ela deu, ou `null` quando
 /// não faltava dia nenhum. Um dia já contado não se abre de novo.
 fn count_missing(dir: &Path, config: &Path, today: &str) -> Result<Value, Refusal> {
-    let Some(range) = store::load(dir)?.to_count(today) else { return Ok(Value::Null) };
+    let Some(range) = store::load(dir)?.to_count(today) else {
+        return Ok(Value::Null);
+    };
     let rows = store::count(config, Some(dir), &range);
     let counted = rows.len();
     store::update(dir, |ledger| ledger.record_counted(&range, rows))?;
     Ok(json!({ "first": range.first, "last": range.last, "rows": counted }))
 }
 
-/// Prepara a cópia com a trava do arquivo do gasto presa: as linhas fechadas
-/// que a página ainda não recebeu, as de hoje e o resumo da máquina, e dá a
-/// cópia por feita no arquivo. Uma página nova — a que ainda não tem endereço
-/// e a do `--republish` — tem o banco vazio: leva todas as linhas fechadas,
-/// sem versão em nenhuma escrita, e o que se sabia do banco anterior não vale.
-/// Devolve o que a preparação deixou e o endereço da página, quando ela já
-/// tem.
-fn prepare(
-    dir: &Path,
-    ledger: &mut Ledger,
-    open: &[DayRow],
-    today: &str,
-    republish: bool,
-    lang: Locale,
-) -> Result<(copy::Prepared, Option<String>), Refusal> {
-    let summary = summarize(&ledger.rows, open, today);
-    let fresh = republish || ledger.url.is_none();
-    let empty = BTreeMap::new();
-    let prepared = {
-        let closed: Vec<&DayRow> = if fresh { ledger.rows.iter().collect() } else { ledger.uncopied() };
-        let send = republish || !closed.is_empty() || !open.is_empty() || ledger.url.is_some();
-        let versions = if fresh { &empty } else { &ledger.versions };
-        copy::prepare(dir, &copy::Plan { closed: &closed, open, summary: &summary, versions, send }, lang)?
-    };
-    if !prepared.docs.is_empty() {
-        ledger.record_sent(prepared.through.clone(), prepared.docs.clone(), fresh);
-    }
-    Ok((prepared, ledger.url.clone()))
-}
-
 /// Grava o endereço da página.
 fn record_url(dir: &Path, url: &str) -> Result<Value, Refusal> {
     let url = url.trim();
     if !url.starts_with("https://") || url.len() <= "https://".len() {
-        return Err(Refusal::NotAnAddress { found: url.to_string() });
+        return Err(Refusal::NotAnAddress {
+            found: url.to_string(),
+        });
     }
     store::update(dir, |ledger| ledger.url = Some(url.to_string()))?;
     Ok(json!({ "ok": true, "recorded": "url" }))
@@ -142,7 +144,10 @@ fn record_url(dir: &Path, url: &str) -> Result<Value, Refusal> {
 /// CLI entry — `mustard-rt run spend`.
 pub fn run(opts: &SpendOpts) {
     let report = spend_at(opts, &Machine::here());
-    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string()));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+    );
     let _ = std::io::Write::flush(&mut std::io::stdout());
     if report["ok"] != json!(true) {
         std::process::exit(1);
@@ -158,11 +163,20 @@ mod tests {
     /// Uma máquina de mentira: a pasta do gasto e a da configuração do Claude
     /// Code dentro de `base`, e hoje em `today`.
     fn machine(base: &Path, today: &str) -> Machine {
-        Machine { dir: Some(base.join("spend")), config: Some(base.join("config")), today: today.to_string() }
+        Machine {
+            dir: Some(base.join("spend")),
+            config: Some(base.join("config")),
+            today: today.to_string(),
+        }
     }
 
     fn opts(root: &Path) -> SpendOpts {
-        SpendOpts { root: root.to_path_buf(), republish: false, url: None }
+        SpendOpts {
+            root: root.to_path_buf(),
+            publish: true,
+            republish: false,
+            url: None,
+        }
     }
 
     /// Um projeto com `mustard.json` na pasta `name` de `base`, no idioma
@@ -170,7 +184,11 @@ mod tests {
     fn project(base: &Path, name: &str, text: &str) -> PathBuf {
         let root = base.join(name);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{text}"}}}}"#)).unwrap();
+        fs::write(
+            root.join("mustard.json"),
+            format!(r#"{{"language":{{"text":"{text}"}}}}"#),
+        )
+        .unwrap();
         root
     }
 
@@ -191,68 +209,60 @@ mod tests {
         fs::write(dir.join("s1.jsonl"), lines.join("\n")).unwrap();
     }
 
-    /// O nome de cada documento da cópia preparada em `answer`, na ordem dos
-    /// lotes, e a versão com que ele sai.
-    fn docs_of(answer: &Value) -> Vec<(String, Value)> {
-        let batches = answer["copy"]["spend"]["writes"].as_array().unwrap();
-        let writes = batches.iter().flat_map(|batch| batch.as_array().unwrap());
-        writes.map(|write| (write["doc_id"].as_str().unwrap().to_string(), write["if_version"].clone())).collect()
+    fn database(answer: &Value) -> Value {
+        serde_json::from_slice(&fs::read(answer["database"].as_str().unwrap()).unwrap()).unwrap()
     }
 
-    /// Enquanto a página não tem endereço (a publicação falhou), cada pedido
-    /// leva tudo de novo, sem versão, porque o banco dela está vazio; com o
-    /// endereço gravado, o pedido seguinte leva só hoje e o resumo, trocando a
-    /// versão que o banco tem, e o dia fechado não é contado duas vezes.
     #[test]
-    fn a_page_without_an_address_gets_everything_again_and_a_published_one_only_today_and_the_summary() {
+    fn an_explicit_static_snapshot_is_complete_retryable_and_does_not_confirm_an_upload() {
         let dir = tempfile::tempdir().unwrap();
         let machine = machine(dir.path(), "2026-10-02");
         let root = project(dir.path(), "loja", "pt-BR");
-        conversation(dir.path(), &root, &["2026-09-30", "2026-10-01", "2026-10-02"]);
-
+        conversation(
+            dir.path(),
+            &root,
+            &["2026-09-30", "2026-10-01", "2026-10-02"],
+        );
         let first = spend_at(&opts(&root), &machine);
-        assert_eq!(first["counted"]["rows"], json!(2), "only the closed days are counted: {first}");
-        let names = ["2026-09-30-loja", "2026-10-01-loja", "2026-10-02-loja", "current"];
-        let docs = docs_of(&first);
-        assert_eq!(docs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), names, "the closed days, the open day, the summary");
-        assert!(docs.iter().all(|(_, version)| version.is_null()), "a page with no address has an empty database");
-
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["counted"]["rows"], 2);
+        assert_eq!(first["published"], false);
+        assert_eq!(first["reason"], "publication-not-configured");
+        let data = database(&first);
+        assert_eq!(data["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(data["rows"][2]["partial"], true);
+        assert!(!first.to_string().contains("ArtifactData") && first.get("order").is_none());
         let again = spend_at(&opts(&root), &machine);
-        assert_eq!(docs_of(&again), docs, "with no address every line goes again: {again}");
-        assert_eq!(again["counted"], Value::Null, "a closed day is not counted twice");
-        assert!(again["order"][0].as_str().unwrap().contains("page.html"), "the page is published: {again}");
-
-        let url = Some("https://claude.ai/code/artifact/a".to_string());
-        assert_eq!(spend_at(&SpendOpts { url, ..opts(&root) }, &machine)["ok"], json!(true));
-        let next = docs_of(&spend_at(&opts(&root), &machine));
-        assert_eq!(next, [("2026-10-02-loja".to_string(), json!(1)), ("current".to_string(), json!(1))]);
-    }
-
-    /// A publicação nova leva todos os dias fechados mais hoje, sem versão em
-    /// nenhuma escrita, porque o banco da página nova está vazio, e manda
-    /// publicar a página de novo; a cópia seguinte volta a levar só hoje e o
-    /// resumo, com a versão do banco novo.
-    #[test]
-    fn republishing_sends_every_day_to_an_empty_database() {
-        let dir = tempfile::tempdir().unwrap();
-        let machine = machine(dir.path(), "2026-10-02");
-        let root = project(dir.path(), "loja", "pt-BR");
-        conversation(dir.path(), &root, &["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"]);
-        let record = |url: &str| spend_at(&SpendOpts { url: Some(url.into()), ..opts(&root) }, &machine);
-        spend_at(&opts(&root), &machine);
-        record("https://claude.ai/code/artifact/a");
-        assert_eq!(docs_of(&spend_at(&opts(&root), &machine)).len(), 2, "with the page published only today and the summary go");
-
-        let all = spend_at(&SpendOpts { republish: true, ..opts(&root) }, &machine);
-        let docs = docs_of(&all);
-        let names: Vec<&str> = docs.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["2026-09-29-loja", "2026-09-30-loja", "2026-10-01-loja", "2026-10-02-loja", "current"]);
-        assert!(docs.iter().all(|(_, version)| version.is_null()), "a new page has an empty database: {all}");
-        assert!(all["order"][0].as_str().unwrap().contains("page.html"), "the first step publishes the page again: {all}");
-
-        record("https://claude.ai/code/artifact/b");
-        let next = docs_of(&spend_at(&opts(&root), &machine));
-        assert_eq!(next, [("2026-10-02-loja".to_string(), json!(1)), ("current".to_string(), json!(1))], "the new database starts at version 1");
+        assert_eq!(first["snapshot_id"], again["snapshot_id"]);
+        assert_eq!(
+            database(&again),
+            data,
+            "unchanged export retains its timestamp"
+        );
+        assert!(again["counted"].is_null());
+        spend_at(
+            &SpendOpts {
+                url: Some("https://example.com/historical".into()),
+                ..opts(&root)
+            },
+            &machine,
+        );
+        let all = spend_at(
+            &SpendOpts {
+                republish: true,
+                ..opts(&root)
+            },
+            &machine,
+        );
+        assert_eq!(database(&all)["rows"], data["rows"]);
+        assert_eq!(
+            all["published"], false,
+            "a historical URL is no upload confirmation"
+        );
+        let ledger = store::load(machine.dir.as_ref().unwrap()).unwrap();
+        assert!(ledger.copied_through.is_none() && ledger.versions.is_empty());
+        let html = fs::read_to_string(all["page"].as_str().unwrap()).unwrap();
+        assert!(html.contains("status-grid") && !html.contains("@claude/artifact-runtime"));
     }
 
     /// O endereço que não começa por `https://` é recusado nos dois idiomas,
@@ -265,15 +275,44 @@ mod tests {
         let machine = machine(dir.path(), "2026-10-02");
         for (text, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
             let root = project(dir.path(), text, text);
-            let refused = spend_at(&SpendOpts { url: Some("claude.ai/x".into()), ..opts(&root) }, &machine);
-            assert_eq!((refused["ok"].clone(), refused["reason"].clone()), (json!(false), json!("not-an-address")), "{text}");
-            let expected = translate("page.spend.refusal.not_an_address", lang).replace("{found}", "claude.ai/x");
-            assert_eq!(refused["hint"], json!(expected), "{text}: the hint speaks the project language");
-            let no_folder = spend_at(&opts(&root), &Machine { dir: None, config: None, today: "2026-10-02".into() });
+            let refused = spend_at(
+                &SpendOpts {
+                    url: Some("claude.ai/x".into()),
+                    ..opts(&root)
+                },
+                &machine,
+            );
+            assert_eq!(
+                (refused["ok"].clone(), refused["reason"].clone()),
+                (json!(false), json!("not-an-address")),
+                "{text}"
+            );
+            let expected = translate("page.spend.refusal.not_an_address", lang)
+                .replace("{found}", "claude.ai/x");
+            assert_eq!(
+                refused["hint"],
+                json!(expected),
+                "{text}: the hint speaks the project language"
+            );
+            let no_folder = spend_at(
+                &opts(&root),
+                &Machine {
+                    dir: None,
+                    config: None,
+                    today: "2026-10-02".into(),
+                },
+            );
             assert_eq!(no_folder["reason"], json!("no-machine-folder"));
-            assert_eq!(no_folder["hint"], json!(translate("page.spend.refusal.no_machine_folder", lang)), "{text}");
+            assert_eq!(
+                no_folder["hint"],
+                json!(translate("page.spend.refusal.no_machine_folder", lang)),
+                "{text}"
+            );
         }
-        assert!(!machine.dir.as_ref().unwrap().exists(), "a refusal writes nothing");
+        assert!(
+            !machine.dir.as_ref().unwrap().exists(),
+            "a refusal writes nothing"
+        );
 
         let root = project(dir.path(), "loja", "en-US");
         let folder = machine.dir.clone().unwrap();
@@ -281,7 +320,16 @@ mod tests {
         fs::write(store::ledger_path(&folder), "{ not json").unwrap();
         let refused = spend_at(&opts(&root), &machine);
         assert_eq!(refused["reason"], json!("unreadable-ledger"), "{refused}");
-        assert!(refused["hint"].as_str().unwrap().contains("Delete the file"), "{refused}");
-        assert_eq!(fs::read_to_string(store::ledger_path(&folder)).unwrap(), "{ not json");
+        assert!(
+            refused["hint"]
+                .as_str()
+                .unwrap()
+                .contains("Delete the file"),
+            "{refused}"
+        );
+        assert_eq!(
+            fs::read_to_string(store::ledger_path(&folder)).unwrap(),
+            "{ not json"
+        );
     }
 }

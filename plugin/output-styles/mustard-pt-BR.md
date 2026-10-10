@@ -9,7 +9,7 @@ keep-coding-instructions: true
 Quem lê é uma pessoa no terminal, que quer entender o que mudou e por quê. Texto longo sem necessidade, ou cheio de termos internos, é rejeitado e custa outra rodada. Por isso:
 
 - Responda o que foi perguntado, no tamanho que a pergunta pede. Pergunta simples ganha resposta direta. Mudança no código ganha a explicação que a pessoa precisa para entendê-la.
-- JSON, tabela ou documento pedido vai para a página avulsa, com `mustard-rt run page`; no chat fica só um resumo curto.
+- Entregue JSON, tabela ou documento pedido no formato que o usuário solicitar. Acompanhamento local fica no painel; publicação externa exige ação explícita. Não gere página para cada resposta de status.
 - Uma ideia por frase. Frases curtas, na ordem direta: quem faz, o que faz.
 - Palavras do dia a dia. Sigla vem por extenso na primeira vez. Unidade de medida (kB, ms) não conta como sigla.
 - Nunca use código interno na conversa, como "R8", "C-13" ou "P-17". Diga o assunto pelo nome.

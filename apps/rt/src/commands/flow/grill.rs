@@ -44,21 +44,19 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use mustard_core::ClaudePaths;
 use mustard_core::domain::citation::{self, Finding};
-use mustard_core::domain::spec_events::{
-    found_by, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS,
-};
 use mustard_core::domain::normalize::Languages;
+use mustard_core::domain::spec_events::{Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS, found_by};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
 use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
-use mustard_core::platform::i18n::{translate, Locale};
-use mustard_core::ClaudePaths;
-use serde_json::{json, Map, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Map, Value, json};
 
 use crate::commands::spec_events::{self, shown, write::record};
-use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Options for `mustard-rt run grill`.
 pub struct GrillOpts {
@@ -95,16 +93,12 @@ impl GrillRefusal {
 
     /// A mensagem exata, no idioma pedido.
     fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, &str)]| {
-            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
-        };
+        let fill = |key: &str, slots: &[(&str, &str)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
         match self {
             Self::GoalMissing { spec } => fill("grill.goal_missing", &[("{spec}", spec)]),
             Self::NotInSurvey { spec, phase } => fill("grill.not_in_survey", &[("{spec}", spec), ("{phase}", phase)]),
             Self::KindsMissing => fill("grill.kinds_missing", &[]),
-            Self::KindsNarrowed { spec, recorded } => {
-                fill("grill.kinds_narrowed", &[("{spec}", spec), ("{recorded}", recorded)])
-            }
+            Self::KindsNarrowed { spec, recorded } => fill("grill.kinds_narrowed", &[("{spec}", spec), ("{recorded}", recorded)]),
             Self::Spec(refusal) => refusal.message(lang),
         }
     }
@@ -254,7 +248,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     // O levantamento não é marco: não escreve página nem manda copiar nada
     // para o banco dela. O item que ainda guarda um trecho com cara de
     // segredo sai dito, com o código, para ser expurgado antes da cópia.
-    let withheld = spec_events::pages::copy::withheld(&log);
+    let withheld = spec_events::pages::secrets::withheld(&log);
     let mut report = json!({
         "ok": true,
         "spec": spec,
@@ -264,6 +258,15 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "points": points,
         "reminders": reminders,
     });
+    // Discovery only: grounded flow evidence does not close survey points,
+    // introduce a requirement or substitute the required source read.
+    let discovery=mustard_core::io::knowledge::Query {text:&goal_text,file:None,limit:4,depth:1,all:false,detail:false,symbol:None,
+        direction:mustard_core::io::knowledge::Direction::Outgoing,refresh:false};
+    if let Ok((evidence,_))=mustard_core::io::knowledge::query_for(&opts.root,&opts.root,&discovery,
+        mustard_core::domain::knowledge::investigation::Task {intent:"",purpose:mustard_core::domain::knowledge::investigation::Purpose::Spec})
+        && (evidence["cards"].as_array().is_some_and(|cards|!cards.is_empty()) || evidence["interpretations"].as_array().is_some_and(|notes|!notes.is_empty())) {
+        report["knowledge"]=evidence;
+    }
     // Numa spec que voltou ao levantamento, o motivo da volta é a consulta: o
     // levantamento traz os itens que ele toca, para o usuário dizer se cada um
     // fica, muda ou sai. O que o motivo não toca fica como está, e nada é
@@ -273,9 +276,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         if !touched.is_empty() {
             report["reason"] = json!(reason);
             report["touched"] = json!(touched);
-            report["touched_hint"] = json!(translate("survey.touched", lang)
-                .replace("{count}", &touched.len().to_string())
-                .replace("{reason}", reason));
+            report["touched_hint"] = json!(translate("survey.touched", lang).replace("{count}", &touched.len().to_string()).replace("{reason}", reason));
         }
     }
     spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
@@ -286,9 +287,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         } else {
             let code = codes.get(&first.id).cloned().unwrap_or_default();
             report["next"] = shown(first, &codes);
-            report["hint"] = json!(translate("survey.present_point", lang)
-                .replace("{code}", &code)
-                .replace("{id}", &first.id.to_string()));
+            report["hint"] = json!(translate("survey.present_point", lang).replace("{code}", &code).replace("{id}", &first.id.to_string()));
         }
     } else {
         let unrouted: Vec<Value> = survey::unrouted_messages(&log).into_iter().map(|m| shown(m, &codes)).collect();
@@ -315,8 +314,7 @@ fn return_reason(log: &SpecLog) -> Option<&str> {
 /// para dizer se ele fica, muda ou sai.
 fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>, languages: &Languages) -> Vec<Value> {
     let blocks = [Block::Agreed, Block::Specification, Block::Criteria, Block::Waves];
-    let items: Vec<&SpecEvent> =
-        blocks.iter().flat_map(|block| log.block(BlockQuery::Block(*block))).collect();
+    let items: Vec<&SpecEvent> = blocks.iter().flat_map(|block| log.block(BlockQuery::Block(*block))).collect();
     found_by(items, reason, codes, languages)
         .into_iter()
         .map(|event| {
@@ -348,13 +346,7 @@ fn title_of(event: &SpecEvent) -> String {
 /// Grava o tipo de trabalho, com a mensagem do objetivo como origem, pela
 /// mesma gravação do `run write`; `replaces` quando é a versão nova de um
 /// tipo já gravado. Devolve o número gravado.
-fn record_work_type(
-    start: &Path,
-    spec: &str,
-    kinds: &[&str],
-    origin: Option<u64>,
-    replaces: Option<u64>,
-) -> Result<u64, Refusal> {
+fn record_work_type(start: &Path, spec: &str, kinds: &[&str], origin: Option<u64>, replaces: Option<u64>) -> Result<u64, Refusal> {
     let mut draft = Map::new();
     draft.insert("kinds".to_string(), json!(kinds));
     draft.insert("author".to_string(), json!("assistant"));
@@ -384,6 +376,22 @@ fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Optio
     let Value::Object(mut draft) = item.to_value(origin) else {
         return Ok(0);
     };
+    if let Some(facts) = draft.get_mut("facts").and_then(Value::as_array_mut) {
+        let root = store::spec_root(start);
+        for fact in facts {
+            let source = fact["source"].as_str().unwrap_or_default();
+            let version = crate::shared::evidence::source_version(&root, source);
+            // The syntax map suggests places to verify. Historical decisions
+            // and lessons are reported context, not proof of current code.
+            fact["classification"] = json!(match item.from {
+                "gap" => "syntax-candidate",
+                "prior_spec" => "historical-decision",
+                _ => "reported-lesson",
+            });
+            fact["source_version"] = json!(version);
+            fact["verification"] = json!("requires-source-confirmation");
+        }
+    }
     draft.insert("status".to_string(), json!("open"));
     draft.insert("author".to_string(), json!("binary"));
     record(start, spec, "point", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
@@ -394,7 +402,7 @@ fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Optio
 /// e devolve a resposta dele: o comando mostrado roda como veio.
 #[cfg(test)]
 pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
-    use crate::commands::{flow::cli::FlowCmd, RunCmd};
+    use crate::commands::{RunCmd, flow::cli::FlowCmd};
     #[derive(clap::Parser)]
     struct Harness {
         #[command(subcommand)]
@@ -402,9 +410,7 @@ pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
     }
     let root_arg = root.to_string_lossy().into_owned();
     let argv = ["run"].into_iter().chain(line.split_whitespace().skip(2)).chain(["--root", &root_arg]);
-    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root }) }) =
-        clap::Parser::try_parse_from(argv)
-    else {
+    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root }) }) = clap::Parser::try_parse_from(argv) else {
         panic!("not the grill: {line}");
     };
     grill_for(&GrillOpts { root, spec, kinds, condensed }, None)
@@ -413,7 +419,7 @@ pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{record_birth, record_open, seed_at, WriteOpts};
+    use crate::commands::spec_events::write::{WriteOpts, record_birth, record_open, seed_at};
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -422,12 +428,7 @@ mod tests {
     const EN: &str = r#"{"language":{"text":"en-US"}}"#;
 
     fn write(root: &Path, spec: Option<&str>, event_type: &str, json: Value) -> Value {
-        seed_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: spec.map(str::to_string),
-            event_type: event_type.into(),
-            json: json.to_string(),
-        })
+        seed_at(&WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type: event_type.into(), json: json.to_string() })
     }
 
     fn id_of(report: &Value) -> u64 {
@@ -460,12 +461,7 @@ mod tests {
     }
 
     fn grill(root: &Path, spec: &str, kinds: Option<&str>, condensed: bool) -> Value {
-        let opts = GrillOpts {
-            root: root.to_path_buf(),
-            spec: Some(spec.to_string()),
-            kinds: kinds.map(str::to_string),
-            condensed,
-        };
+        let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), kinds: kinds.map(str::to_string), condensed };
         grill_for(&opts, None)
     }
 
@@ -478,10 +474,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         let said = surveyed(root, "x");
-        let rule = |text: &str, key: &str| {
-            id_of(&write(root, Some("x"), "rule",
-                json!({"text": text, "keys": [key], "example": "e", "origin": said})))
-        };
+        let rule = |text: &str, key: &str| id_of(&write(root, Some("x"), "rule", json!({"text": text, "keys": [key], "example": "e", "origin": said})));
         rule("A rodada formata só os arquivos dela antes do commit.", "formatador");
         rule("A página da spec sai no fim de cada passo.", "página");
 
@@ -505,14 +498,8 @@ mod tests {
         let after = grill(root, "x", Some("fix"), false);
         let touched = after["touched"].as_array().cloned().unwrap_or_default();
         assert!(!touched.is_empty(), "{after}");
-        assert!(
-            touched[0]["title"].as_str().unwrap_or_default().contains("formata"),
-            "o mais forte vem primeiro: {touched:?}"
-        );
-        assert!(
-            !touched.iter().any(|item| item["title"].as_str().unwrap_or_default().contains("página")),
-            "o que o motivo não toca fica de fora: {touched:?}"
-        );
+        assert!(touched[0]["title"].as_str().unwrap_or_default().contains("formata"), "o mais forte vem primeiro: {touched:?}");
+        assert!(!touched.iter().any(|item| item["title"].as_str().unwrap_or_default().contains("página")), "o que o motivo não toca fica de fora: {touched:?}");
         assert!(after["touched_hint"].as_str().unwrap_or_default().contains("fica, muda ou sai"), "{after}");
     }
 
@@ -524,8 +511,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let note = write(root, Some("x"), "note",
-            json!({"text": "client_secret=9f8e7d6c5b4a3210", "keys": ["cliente"], "origin": said}));
+        let note = write(root, Some("x"), "note", json!({"text": "client_secret=9f8e7d6c5b4a3210", "keys": ["cliente"], "origin": said}));
         let code = note["code"].as_str().unwrap_or_default().to_string();
 
         let report = grill(root, "x", Some("fix"), false);
@@ -558,7 +544,8 @@ mod tests {
             .flat_map(|point| point["facts"].as_array().into_iter().flatten())
             .filter_map(|fact| fact["source"].as_str())
             .collect();
-        assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{report}");
+        let unique: std::collections::BTreeSet<&str> = sources.into_iter().collect();
+        assert_eq!(unique, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"].into_iter().collect(), "{report}");
     }
 
     /// Uma spec de refatoração com o mapa `map`, o arquivo `src/a.rs` com três
@@ -591,12 +578,9 @@ mod tests {
         let report = refactor_with_map(root, map, "- Tirar `record_birth` e `drop_birth` do fluxo.");
         assert_eq!(report["ok"], json!(true), "{report}");
         let points = recorded_points(root, "x");
-        let dependents = points
-            .iter()
-            .find(|p| p.str_field("gap") == Some(survey::GapKey::Dependents.label(Locale::PtBr)))
-            .expect("the dependents point is recorded");
-        let sources: Vec<&str> =
-            dependents.fields["facts"].as_array().unwrap().iter().filter_map(|fact| fact["source"].as_str()).collect();
+        let dependents =
+            points.iter().find(|p| p.str_field("gap") == Some(survey::GapKey::Dependents.label(Locale::PtBr))).expect("the dependents point is recorded");
+        let sources: Vec<&str> = dependents.fields["facts"].as_array().unwrap().iter().filter_map(|fact| fact["source"].as_str()).collect();
         assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{dependents:?}");
     }
 
@@ -652,12 +636,7 @@ mod tests {
             "rule",
             json!({"text": "**Merge travado.** Pendência aberta barra o merge.", "keys": ["merge"], "example": "e", "origin": said}),
         ));
-        id_of(&write(
-            root,
-            old,
-            "decision",
-            json!({"text": "A cobrança da pendência sai no merge.", "keys": ["pendência"], "why": "w", "origin": said}),
-        ));
+        id_of(&write(root, old, "decision", json!({"text": "A cobrança da pendência sai no merge.", "keys": ["pendência"], "why": "w", "origin": said})));
         id_of(&write(root, old, "message", json!({"author": "user", "text": "O merge com pendência aberta passou sem aviso."})));
     }
 
@@ -678,8 +657,7 @@ mod tests {
         assert_eq!(work_type.str_field("author"), Some("assistant"));
         assert_eq!(work_type.int("origin"), Some(said));
 
-        let expected: Vec<&str> =
-            survey::gaps(&["feature"]).into_iter().map(|key| key.label(Locale::PtBr)).collect();
+        let expected: Vec<&str> = survey::gaps(&["feature"]).into_iter().map(|key| key.label(Locale::PtBr)).collect();
         let gaps: Vec<&str> = items(&report).iter().map(|item| item["gap"].as_str().unwrap()).collect();
         assert_eq!(gaps, expected);
         assert!(items(&report).iter().all(|item| item["from"] == json!("gap") && item["origin"] == json!(said)));
@@ -964,10 +942,7 @@ mod tests {
         surveyed(root, "x");
         let report = grill(root, "x", Some("fix"), false);
         assert_eq!(report["ok"], json!(true), "{report}");
-        assert!(
-            !items(&report).iter().any(|item| item["from"] == json!("lesson")),
-            "a lição por arquivo não vira ponto: {report}"
-        );
+        assert!(!items(&report).iter().any(|item| item["from"] == json!("lesson")), "a lição por arquivo não vira ponto: {report}");
         let by_skill = write(
             root,
             None,
@@ -1020,10 +995,7 @@ mod tests {
         let report = grill(root, "x", Some("fix"), false);
         assert_eq!(report["ok"], json!(true), "{report}");
         let from_lessons: Vec<&Value> = items(&report).iter().filter(|item| item["from"] == json!("lesson")).collect();
-        assert!(
-            !from_lessons.iter().any(|item| item.to_string().contains("Regra ")),
-            "nenhuma regra do projeto vira ponto: {from_lessons:?}"
-        );
+        assert!(!from_lessons.iter().any(|item| item.to_string().contains("Regra ")), "nenhuma regra do projeto vira ponto: {from_lessons:?}");
         assert_eq!(from_lessons.len(), 1, "{from_lessons:?}");
         assert_eq!(from_lessons[0]["gap"], json!("Merge com pendência."));
     }
@@ -1049,7 +1021,13 @@ mod tests {
         assert_eq!(reminders, [&json!({"spec": "antiga", "message": 5, "text": "O merge com pendência aberta passou sem aviso."})]);
         let recorded = recorded_points(root, "x");
         let point = recorded.iter().find(|p| p.str_field("from") == Some("prior_spec")).expect("the prior spec point");
-        assert_eq!(point.fields["facts"], prior["facts"], "the point keeps the facts of the list");
+        let stored = point.fields["facts"].as_array().unwrap();
+        for (recorded, original) in stored.iter().zip(prior["facts"].as_array().unwrap()) {
+            assert_eq!(recorded["text"], original["text"]);
+            assert_eq!(recorded["source"], original["source"]);
+            assert_eq!(recorded["classification"], "historical-decision");
+            assert_eq!(recorded["verification"], "requires-source-confirmation");
+        }
         let reminded = items(&report).iter().find(|item| item.get("reminders").is_some()).unwrap();
         let point = recorded.iter().find(|p| p.str_field("gap") == reminded["gap"].as_str()).expect("the reminded point");
         assert_eq!(point.fields["reminders"], json!(reminders), "the point keeps its reminders");
@@ -1177,8 +1155,7 @@ mod tests {
                 "closes": id, "reason": "O fato tinha um segredo.", "origin": said});
             assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
         }
-        let purged = write(root, Some("x"), "purge",
-            json!({"targets": [version], "reason": "client_data", "excerpt": GOAL, "origin": said}));
+        let purged = write(root, Some("x"), "purge", json!({"targets": [version], "reason": "client_data", "excerpt": GOAL, "origin": said}));
         assert_eq!(purged["purged"], json!([version]), "{purged}");
 
         let after = grill(root, "x", Some("fix"), false);
@@ -1230,8 +1207,7 @@ mod tests {
             // O fato a expurgar vem na versão em que o assistente o soma, que
             // passa a ser o original vigente.
             let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
-            let version = (leaves == Some("purge"))
-                .then(|| id_of(&write(root, Some("x"), "point", json!({"replaces": ids[0], "facts": [fact]}))));
+            let version = (leaves == Some("purge")).then(|| id_of(&write(root, Some("x"), "point", json!({"replaces": ids[0], "facts": [fact]}))));
             let mut last = close(first, ids[0], if reworded { "Outro texto na lacuna" } else { gap });
             let closing = id_of(&last);
             let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));

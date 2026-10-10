@@ -37,15 +37,15 @@ pub mod segment;
 // `Theme` type - capping the module keeps that honest without leaking it.
 pub(crate) mod theme;
 
-use crate::shared::rtk_gain::{get_rtk_gain, RtkGain};
+use crate::shared::rtk_gain::{RtkGain, get_rtk_gain};
 use segment::{
-    context_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment, mustard_segment,
-    savings_segment, spend_segment, unit_segment, Segment,
+    Segment, context_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment, mustard_segment, savings_segment, spend_segment,
+    unit_segment,
 };
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use theme::{render_line, Theme, ThemeId};
+use theme::{Theme, ThemeId, render_line};
 
 /// Build the ordered segment list from the parsed payload and the `rtk gain`
 /// reading (`gain`, taken by the caller: it is the one subprocess the bar
@@ -63,10 +63,7 @@ fn build_segments(data: &Value, gain: Option<&RtkGain>, spend_dir: Option<&Path>
         .and_then(|w| w.get("current_dir"))
         .or_else(|| data.get("cwd"))
         .and_then(Value::as_str)
-        .map_or_else(
-            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            PathBuf::from,
-        );
+        .map_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), PathBuf::from);
 
     // A branch é lida uma vez: o segmento dela a mostra, e o da spec a
     // compara com o nome da spec.
@@ -86,6 +83,7 @@ fn build_segments(data: &Value, gain: Option<&RtkGain>, spend_dir: Option<&Path>
     // A segunda linha: a versão do Mustard, a economia do rtk e o modelo.
     if mustard {
         segs.push(mustard_segment());
+        segs.push(Segment::new(segment::SegmentKind::Mustard, "/mustard-panel"));
     }
     segs.extend(savings_segment(gain, lang));
     // O consumo da máquina, com ou sem spec aberta: o painel é da máquina.
@@ -112,12 +110,10 @@ const fn is_place_row(kind: segment::SegmentKind) -> bool {
 /// no trailing newline. A row whose segments are all absent is dropped rather
 /// than printed blank — with a sparse payload the bar stays a single line, the
 /// shape it had before this split.
+#[cfg(test)]
 fn render(data: &Value) -> Vec<String> {
     let spend_dir = mustard_core::io::spend::machine_dir();
-    rows(
-        ThemeId::from_env().theme(),
-        build_segments(data, get_rtk_gain().as_ref(), spend_dir.as_deref()),
-    )
+    rows(ThemeId::from_env().theme(), build_segments(data, get_rtk_gain().as_ref(), spend_dir.as_deref()))
 }
 
 /// The rows of `segs` in `theme`: the partition by [`is_place_row`], one
@@ -125,12 +121,7 @@ fn render(data: &Value) -> Vec<String> {
 fn rows(theme: &Theme, segs: Vec<Segment>) -> Vec<String> {
     let (place, spend): (Vec<Segment>, Vec<Segment>) = segs.into_iter().partition(|s| is_place_row(s.kind));
 
-    [place, spend]
-        .into_iter()
-        .filter(|group| !group.is_empty())
-        .map(|group| render_line(theme, &group))
-        .filter(|line| !line.is_empty())
-        .collect()
+    [place, spend].into_iter().filter(|group| !group.is_empty()).map(|group| render_line(theme, &group)).filter(|line| !line.is_empty()).collect()
 }
 
 /// Dispatch `mustard-rt run statusline`.
@@ -149,7 +140,10 @@ pub fn run(preview: bool) {
     }
     match serde_json::from_str::<Value>(&buf) {
         Ok(data) => {
-            for line in render(&data) {
+            let gain=get_rtk_gain();
+            crate::commands::panel::observe_statusline(&data,gain.as_ref());
+            let spend_dir=mustard_core::io::spend::machine_dir();
+            for line in rows(ThemeId::from_env().theme(),build_segments(&data,gain.as_ref(),spend_dir.as_deref())) {
                 println!("{line}");
             }
         }
@@ -202,10 +196,7 @@ mod tests {
         assert!(first.contains("30%"), "the used share of the conversation goes on the first row: {first}");
         assert!(second.contains("Opus 4.7"), "the model goes on the second: {second}");
         for gone in ["$0.42", "60k", "2.1.146", "+10-2"] {
-            assert!(
-                !first.contains(gone) && !second.contains(gone),
-                "no cost, token total, Claude Code version or changed lines ({gone}): {lines:?}"
-            );
+            assert!(!first.contains(gone) && !second.contains(gone), "no cost, token total, Claude Code version or changed lines ({gone}): {lines:?}");
         }
     }
 
@@ -216,11 +207,7 @@ mod tests {
         while let Some(start) = rest.find('\u{1b}') {
             out.push_str(&rest[..start]);
             let tail = &rest[start..];
-            let end = if tail.starts_with("\u{1b}]8;") {
-                tail.find("\u{1b}\\").map(|i| i + 2)
-            } else {
-                tail.find('m').map(|i| i + 1)
-            };
+            let end = if tail.starts_with("\u{1b}]8;") { tail.find("\u{1b}\\").map(|i| i + 2) } else { tail.find('m').map(|i| i + 1) };
             let Some(end) = end else { return out };
             rest = &tail[end..];
         }
@@ -240,12 +227,10 @@ mod tests {
         let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
         git(&["init", "-q", "."]);
         git(&["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
-        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
-            "commit", "-q", "--allow-empty", "-m", "semente"]);
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "semente"]);
         std::fs::write(root.join(".git").join("info").join("exclude"), "mustard.json\n.claude/\n").unwrap();
         std::fs::write(root.join("notas.txt"), "rascunho\n").unwrap();
-        std::fs::write(root.join("mustard.json"), format!(r#"{{"version":"0.0.1-velha","language":{{"text":"{lang}"}}}}"#))
-            .unwrap();
+        std::fs::write(root.join("mustard.json"), format!(r#"{{"version":"0.0.1-velha","language":{{"text":"{lang}"}}}}"#)).unwrap();
     }
 
     /// Os dados que o Claude Code manda à barra numa sessão de verdade, como
@@ -333,12 +318,10 @@ mod tests {
     /// Sete dias de trabalho a 120 milhões de tokens (de 20 a 26 de
     /// setembro) e um último dia fechado com `last` tokens.
     fn week_then(last: u64) -> Vec<(&'static str, u64, u64)> {
-        let mut days: Vec<(&str, u64, u64)> = [
-            "2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26",
-        ]
-        .into_iter()
-        .map(|day| (day, 300, 120_000_000))
-        .collect();
+        let mut days: Vec<(&str, u64, u64)> = ["2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26"]
+            .into_iter()
+            .map(|day| (day, 300, 120_000_000))
+            .collect();
         days.push(("2026-09-27", 300, last));
         days
     }
@@ -368,7 +351,7 @@ mod tests {
         let rows = shown_rows_with_spend(&data, &spend);
         assert_eq!(
             rows[1],
-            format!("Mustard {}  \u{26A1} rtk poupou 64%  {MINUS_25}  Opus 5 (1M context)", mustard_core::harness_version()),
+            format!("Mustard {}  /mustard-panel  \u{26A1} rtk poupou 64%  {MINUS_25}  Opus 5 (1M context)", mustard_core::harness_version()),
             "second row, between the rtk savings and the model: {rows:?}"
         );
 
@@ -504,8 +487,7 @@ mod tests {
         let project_url = "https://claude.ai/code/artifacts/projeto-portal";
         let spec_url = "https://claude.ai/code/artifacts/spec-pi-kpis-plantio";
         seed_event(&root, "pi-kpis-plantio", "state", json!({"phase": "survey", "branch": "feature/pi-kpis-plantio"}));
-        seed_event(&root, "pi-kpis-plantio", "publish",
-            json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
+        seed_event(&root, "pi-kpis-plantio", "publish", json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
         std::fs::write(
             root.join(".claude").join("spec").join("index.ndjson"),
             format!("{}\n", mustard_core::domain::spec_index::project_line(Some(project_url))),
@@ -515,9 +497,7 @@ mod tests {
         assert_eq!((data["cost"]["total_lines_added"].as_i64(), data["cost"]["total_lines_removed"].as_i64()), (Some(156), Some(23)));
 
         let segs = build_segments(&data, Some(&GAIN), None);
-        let text = |kind: segment::SegmentKind| {
-            segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
-        };
+        let text = |kind: segment::SegmentKind| segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"));
         assert_eq!(text(segment::SegmentKind::Module), link(project_url, "portal-florestal-backend"), "the project page link");
         assert_eq!(text(segment::SegmentKind::Unit), format!("\u{25b8} {}", link(spec_url, "levantamento")), "the phase carries the spec link");
 
@@ -528,7 +508,7 @@ mod tests {
                 "portal-florestal-backend  \u{2387} feature/pi-kpis-plantio ?1  \u{25b8} levantamento  \
                  \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 24%  5h49m"
                     .to_string(),
-                format!("Mustard {}  \u{26A1} rtk poupou 64%  Opus 5 (1M context)", mustard_core::harness_version()),
+                format!("Mustard {}  /mustard-panel  \u{26A1} rtk poupou 64%  Opus 5 (1M context)", mustard_core::harness_version()),
             ],
         );
         for count in ["+156", "-23"] {
@@ -548,7 +528,7 @@ mod tests {
             project_on_branch(&root, "dev", lang);
             let rows = shown_rows(&example_payload(&root));
             assert_eq!(rows.len(), 2, "{rows:?}");
-            assert_eq!(rows[1], format!("Mustard {version}  \u{26A1} {savings}  Opus 5 (1M context)"), "{lang}");
+            assert_eq!(rows[1], format!("Mustard {version}  /mustard-panel  \u{26A1} {savings}  Opus 5 (1M context)"), "{lang}");
             assert!(!rows[0].contains("Mustard"), "the version is not on the first row: {rows:?}");
         }
 
@@ -611,27 +591,35 @@ mod tests {
         let git = |args: &[&str]| assert!(mustard_core::platform::git::run(&root, args).ok, "git {args:?}");
         git(&["init", "-q", "."]);
         git(&["symbolic-ref", "HEAD", "refs/heads/feature/checkout"]);
-        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
-            "commit", "-q", "--allow-empty", "-m", "semente"]);
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "semente"]);
         std::fs::write(root.join("mustard.json"), r#"{"version":"0.0.1-velha","language":{"text":"pt-BR"}}"#).unwrap();
         let project_url = "https://claude.ai/code/artifacts/projeto-loja";
         let spec_url = "https://claude.ai/code/artifacts/spec-checkout";
         let said = seed_event(&root, "checkout", "message", json!({"author": "user", "text": "o plano"}));
         seed_event(&root, "checkout", "state", json!({"phase": "plan", "branch": "feature/checkout", "base": "dev"}));
         for n in 1..=4 {
-            seed_event(&root, "checkout", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [said],
-                "done_when": "x", "origin": said}));
+            seed_event(
+                &root,
+                "checkout",
+                "wave",
+                json!({"n": n, "text": format!("Onda {n}."), "criteria": [said],
+                "done_when": "x", "origin": said}),
+            );
         }
         // A onda 1 já saiu; as outras três seguem com tarefa, e por isso contam.
         for n in 2..=4 {
-            seed_event(&root, "checkout", "task", json!({"wave": n, "text": format!("Tarefa {n}."), "files": [],
-                "depends_on": [], "origin": said}));
+            seed_event(
+                &root,
+                "checkout",
+                "task",
+                json!({"wave": n, "text": format!("Tarefa {n}."), "files": [],
+                "depends_on": [], "origin": said}),
+            );
         }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("checkout"));
         seed_event(&root, "checkout", "state", json!({"phase": "running", "author": "binary"}));
         seed_event(&root, "checkout", "delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
-        seed_event(&root, "checkout", "publish",
-            json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
+        seed_event(&root, "checkout", "publish", json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
         std::fs::write(
             root.join(".claude").join("spec").join("index.ndjson"),
             format!("{}\n", mustard_core::domain::spec_index::project_line(Some(project_url))),
@@ -644,9 +632,7 @@ mod tests {
             "version": "2.1.267",
         });
         let segs = build_segments(&data, None, None);
-        let text = |kind: segment::SegmentKind| {
-            segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
-        };
+        let text = |kind: segment::SegmentKind| segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"));
         assert_eq!(text(segment::SegmentKind::Module), link(project_url, "loja"), "the project page link");
         assert!(text(segment::SegmentKind::Git).starts_with("\u{2387} feature/checkout"), "the branch");
         assert_eq!(

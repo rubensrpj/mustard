@@ -15,6 +15,9 @@
 # `packages/core/src/domain/ast/entry-files.toml`, pelo `name` daqui.
 #
 # Fields:
+#   lexical_functions OPTIONAL — named functions inside another callable bind
+#                 within its lexical scope. False/absent leaves visibility
+#                 unasserted (some languages declare such functions globally).
 #   name          display id, stored on each module (e.g. shown in the JSON model)
 #   extensions    file extensions that select this language (no leading dot)
 #   dir           subdirectory under queries/ holding this language's .scm files
@@ -338,6 +341,7 @@
 
 [[language]]
 name = "csharp"
+lexical_functions = true
 extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
@@ -480,6 +484,7 @@ code_markup = ["<", "@:"]
 
 [[language]]
 name = "typescript"
+lexical_functions = true
 extensions = ["ts", "mts", "cts"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
@@ -498,6 +503,7 @@ error_forms = ["throw", "*Error", "*Exception", "reject"]
 
 [[language]]
 name = "tsx"
+lexical_functions = true
 extensions = ["tsx"]
 dir = "typescript"
 extra_queries = "tsx"
@@ -519,6 +525,7 @@ error_forms = ["throw", "*Error", "*Exception", "reject"]
 # TSX lê também o JSX; as consultas são as do TypeScript e as do TSX.
 [[language]]
 name = "javascript"
+lexical_functions = true
 extensions = ["js", "jsx", "mjs", "cjs"]
 dir = "typescript"
 extra_queries = "tsx"
@@ -537,6 +544,7 @@ error_forms = ["throw", "*Error", "*Exception", "reject"]
 
 [[language]]
 name = "python"
+lexical_functions = true
 extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
@@ -550,6 +558,7 @@ error_forms = ["raise", "*Error", "*Exception"]
 
 [[language]]
 name = "rust"
+lexical_functions = true
 extensions = ["rs"]
 dir = "rust"
 grammar = "grammar_rs::LANGUAGE"
@@ -589,6 +598,7 @@ error_forms = ["throw", "*Exception", "abort"]
 
 [[language]]
 name = "dart"
+lexical_functions = true
 extensions = ["dart"]
 dir = "dart"
 grammar = "grammar_dart::LANGUAGE"
@@ -599,3 +609,12 @@ implicit_self = true
 prelude = ["print", "identical", "identityHashCode"]
 log_calls = ["print", "debugPrint", "log", "logger.*"]
 error_forms = ["throw", "*Exception", "*Error"]
+
+# Schema declarations use the same generic type/member captures as source code.
+[[language]]
+name = "prisma"
+extensions = ["prisma"]
+dir = "prisma"
+grammar = "grammar_schema::LANGUAGE"
+qualified_separators = ["."]
+global_namespace = true

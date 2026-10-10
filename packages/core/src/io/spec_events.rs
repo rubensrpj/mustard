@@ -32,7 +32,7 @@ use crate::domain::citation::{self, Finding};
 use crate::domain::spec_events::{self as model, Refusal, SpecLog};
 use crate::io::citation::DiskWorld;
 use crate::io::claude_paths::ClaudePaths;
-use crate::io::fs::lock::{read_shared, LockedFile};
+use crate::io::fs::lock::{LockedFile, read_shared};
 use crate::io::workspace;
 use crate::platform::error::Error;
 
@@ -50,10 +50,7 @@ pub fn spec_root(start: &Path) -> PathBuf {
 /// O `spec.ndjson` da spec `name` no projeto `root`.
 pub fn spec_file(root: &Path, name: &str) -> Result<PathBuf, Refusal> {
     let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
-    paths
-        .for_spec(name.trim())
-        .map(|spec| spec.spec_ndjson_path())
-        .map_err(|_| Refusal::BadSpecName { spec: name.to_string() })
+    paths.for_spec(name.trim()).map(|spec| spec.spec_ndjson_path()).map_err(|_| Refusal::BadSpecName { spec: name.to_string() })
 }
 
 /// O que uma gravação deixou no arquivo.
@@ -77,35 +74,18 @@ pub struct Written {
 }
 
 /// Grava um evento com a hora de agora. Veja [`write_at_then`].
-pub fn write(
-    path: &Path,
-    event_type: &str,
-    draft: Map<String, Value>,
-    cite_roots: &[PathBuf],
-) -> Result<Written, Refusal> {
+pub fn write(path: &Path, event_type: &str, draft: Map<String, Value>, cite_roots: &[PathBuf]) -> Result<Written, Refusal> {
     write_at_then(path, event_type, draft, cite_roots, &now(), |_| {})
 }
 
 /// Grava um evento com a hora de agora e entrega a `then` o arquivo como
 /// ficou, ainda com a trava presa. Veja [`write_at_then`].
-pub fn write_then(
-    path: &Path,
-    event_type: &str,
-    draft: Map<String, Value>,
-    cite_roots: &[PathBuf],
-    then: impl FnOnce(&SpecLog),
-) -> Result<Written, Refusal> {
+pub fn write_then(path: &Path, event_type: &str, draft: Map<String, Value>, cite_roots: &[PathBuf], then: impl FnOnce(&SpecLog)) -> Result<Written, Refusal> {
     write_at_then(path, event_type, draft, cite_roots, &now(), then)
 }
 
 /// Grava um evento com a hora `at`. Veja [`write_at_then`].
-pub fn write_at(
-    path: &Path,
-    event_type: &str,
-    draft: Map<String, Value>,
-    cite_roots: &[PathBuf],
-    at: &str,
-) -> Result<Written, Refusal> {
+pub fn write_at(path: &Path, event_type: &str, draft: Map<String, Value>, cite_roots: &[PathBuf], at: &str) -> Result<Written, Refusal> {
     write_at_then(path, event_type, draft, cite_roots, at, |_| {})
 }
 
@@ -289,8 +269,7 @@ impl LockedLog {
             event.insert("last".to_string(), Value::from(base_log.max_id()));
         }
         // O arquivo como ficaria, conferido antes de qualquer escrita.
-        let Staged { next, appended, after, id, code, effects } =
-            stage(base_content, base_log, event, asked, at, find)?;
+        let Staged { next, appended, after, id, code, effects } = stage(base_content, base_log, event, asked, at, find)?;
         guard(base_log, &after)?;
         match appended {
             // O arquivo consertado é regravado inteiro; sem conserto, só
@@ -306,16 +285,11 @@ impl LockedLog {
         // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
         // template vai junto, e a publicação sem ela é a da página antiga.
         let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
-            crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
-                .map(|url| (url, crate::domain::spec_index::is_template(e)))
+            crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE).map(|url| (url, crate::domain::spec_index::is_template(e)))
         });
         let index_warning = crate::io::spec_index::index_for(&self.path).and_then(|(index, name)| {
             crate::io::spec_index::refresh_line(&index, &name, log)
-                .and_then(|()| {
-                    project_url.map_or(Ok(()), |(url, template)| {
-                        crate::io::spec_index::set_project_url(&index, url, template)
-                    })
-                })
+                .and_then(|()| project_url.map_or(Ok(()), |(url, template)| crate::io::spec_index::set_project_url(&index, url, template)))
                 .err()
         });
         then(log);
@@ -382,11 +356,8 @@ fn stage(
     let code = model::code_after(log, &event);
     let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
 
-    let redactions = if effects.purged.is_empty() {
-        std::collections::BTreeMap::new()
-    } else {
-        model::purge_excerpts(log, &effects.purged, asked.as_deref(), find)?
-    };
+    let redactions =
+        if effects.purged.is_empty() { std::collections::BTreeMap::new() } else { model::purge_excerpts(log, &effects.purged, asked.as_deref(), find)? };
     let (next, appended) = if effects.purged.is_empty() {
         // Uma última linha pela metade fica sozinha na linha dela, e a
         // gravação começa numa linha nova.
@@ -425,11 +396,7 @@ impl<'a> DryRun<'a> {
     /// # Errors
     ///
     /// [`Refusal::Io`] quando o arquivo existe e não pode ser lido.
-    pub fn open(
-        path: &Path,
-        cite_roots: Vec<PathBuf>,
-        find: &'a dyn Fn(&str) -> Vec<String>,
-    ) -> Result<Self, Refusal> {
+    pub fn open(path: &Path, cite_roots: Vec<PathBuf>, find: &'a dyn Fn(&str) -> Vec<String>) -> Result<Self, Refusal> {
         let content = match read_shared(path) {
             Ok(content) => content,
             Err(Error::NotFound(_)) => String::new(),
@@ -527,7 +494,9 @@ fn check_citations(roots: &[PathBuf], event: &Map<String, Value>) -> Result<Vec<
     let world = DiskWorld::new(roots.to_vec(), roots.last().map(PathBuf::as_path));
     let facts = event.get("facts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     for (i, fact) in facts.iter().enumerate() {
-        let Some(source) = fact.get("source").and_then(Value::as_str) else { continue };
+        let Some(source) = fact.get("source").and_then(Value::as_str) else {
+            continue;
+        };
         let text = fact.get("text").and_then(Value::as_str).unwrap_or_default();
         for finding in citation::check(&world, source, text) {
             if let Some(refusal) = finding.refusal(i + 1) {
@@ -571,8 +540,7 @@ mod tests {
     }
 
     fn put(path: &Path, roots: &[PathBuf], event_type: &str, time: &str, draft: Value) -> Written {
-        write_at(path, event_type, obj(draft), roots, time)
-            .unwrap_or_else(|r| panic!("{event_type} was refused: {r:?}"))
+        write_at(path, event_type, obj(draft), roots, time).unwrap_or_else(|r| panic!("{event_type} was refused: {r:?}"))
     }
 
     fn ids_of(events: &[&model::SpecEvent]) -> Vec<u64> {
@@ -624,38 +592,88 @@ mod tests {
         add("work_type", "work_type", "08:42", json!({"kinds": ["refactor"], "origin": msg}));
         add("context", "context", "08:43", json!({"text": "O Rust roda rápido.", "origin": msg}));
         add("concern", "concern", "08:44", json!({"text": "Testes prendem frases.", "origin": msg}));
-        add("decision", "decision", "08:45", json!({"text": "A página sai só nos marcos.", "why": "Cada publicação gasta.", "keys": ["página"], "applies_to": {"files": ["**"]}, "origin": msg}));
+        add(
+            "decision",
+            "decision",
+            "08:45",
+            json!({"text": "A página sai só nos marcos.", "why": "Cada publicação gasta.", "keys": ["página"], "applies_to": {"files": ["**"]}, "origin": msg}),
+        );
         add("out_of_scope", "out_of_scope", "08:46", json!({"text": "Supabase.", "keys": ["servidor"], "applies_to": {"files": ["**"]}, "origin": msg}));
-        add("edge_case", "edge_case", "08:47", json!({"text": "Duas sessões gravam juntas.", "expected": "A segunda espera a trava.", "keys": ["trava"], "waves": [1], "origin": msg}));
-        let rule = add("rule", "rule", "08:48", json!({"text": "A trava confere o programa.", "example": "rm -rf pasta é barrado.", "keys": ["trava", "apagar"], "origin": msg}));
-        add("contract", "contract", "08:49", json!({"text": "A barra tem duas linhas.", "example": "dev · teste", "keys": ["barra"], "waves": [2], "origin": msg}));
+        add(
+            "edge_case",
+            "edge_case",
+            "08:47",
+            json!({"text": "Duas sessões gravam juntas.", "expected": "A segunda espera a trava.", "keys": ["trava"], "waves": [1], "origin": msg}),
+        );
+        let rule = add(
+            "rule",
+            "rule",
+            "08:48",
+            json!({"text": "A trava confere o programa.", "example": "rm -rf pasta é barrado.", "keys": ["trava", "apagar"], "origin": msg}),
+        );
+        add(
+            "contract",
+            "contract",
+            "08:49",
+            json!({"text": "A barra tem duas linhas.", "example": "dev · teste", "keys": ["barra"], "waves": [2], "origin": msg}),
+        );
         add("error", "error", "08:50", json!({"text": "Título longo.", "message": "O título passa de 60.", "keys": ["título"], "origin": msg}));
-        add("point", "point", "08:51", json!({"block": "limits", "gap": "tamanho do pedido", "from": "gap", "status": "open", "facts": [{"text": "Não há teto.", "source": "src/render.rs:2"}], "origin": msg}));
+        add(
+            "point",
+            "point",
+            "08:51",
+            json!({"block": "limits", "gap": "tamanho do pedido", "from": "gap", "status": "open", "facts": [{"text": "Não há teto.", "source": "src/render.rs:2"}], "origin": msg}),
+        );
         let old_limit = add("limit_old", "limit", "08:52", json!({"text": "Tamanho do pedido.", "value": "400 linhas", "keys": ["pedido"], "origin": msg}));
-        let c1 = add(
-            "criterion_1",
-            "criterion",
-            "08:53",
-            json!({"when": "a", "then": "b", "proof": "cargo test a", "form": "ubiquitous", "origin": msg}),
-        );
-        let c2 = add(
-            "criterion_2",
-            "criterion",
-            "08:54",
-            json!({"when": "c", "then": "d", "proof": "cargo test c", "form": "ubiquitous", "origin": msg}),
-        );
+        let c1 = add("criterion_1", "criterion", "08:53", json!({"when": "a", "then": "b", "proof": "cargo test a", "form": "ubiquitous", "origin": msg}));
+        let c2 = add("criterion_2", "criterion", "08:54", json!({"when": "c", "then": "d", "proof": "cargo test c", "form": "ubiquitous", "origin": msg}));
         add("wave_1", "wave", "08:55", json!({"n": 1, "text": "Preparo.", "criteria": [c1], "done_when": "A suíte passa.", "origin": msg}));
         let task1 = add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
         add("step", "step", "08:56", json!({"wave": 1, "item": task1, "text": "A tarefa 1 ficou pronta."}));
         add("delivered_1", "delivered", "08:57", json!({"author": "wave", "wave": 1, "text": "Texto junto.", "files": ["src/render.rs"]}));
-        add("wave_2", "wave", "08:58", json!({"n": 2, "text": "A aprovação lê o estado.", "criteria": [c2], "done_when": "A trava passa.", "depends_on": [1], "origin": msg}));
-        add("task_2", "task", "08:59", json!({"wave": 2, "text": "O portão lê a aprovação.", "files": [{"path": "src/gate.rs", "new": true}], "skill": "add-hook-rule", "covers": [rule], "origin": msg}));
-        add("skill", "skill", "09:00", json!({"name": "add-hook-rule", "action": "create", "text": "Passos da regra.", "sha": "3f9a1c2e", "examples": [{"path": "src/render.rs", "why": "mesma pasta"}, {"path": "src/gate.rs", "why": "com teste"}], "origin": msg}));
-        add("send", "send", "09:01", json!({"author": "binary", "wave": 2, "role": "wave", "text": "# teste — onda 2", "lines": 312, "chars": 21480, "items": [rule], "mustard": "0.2.0"}));
+        add(
+            "wave_2",
+            "wave",
+            "08:58",
+            json!({"n": 2, "text": "A aprovação lê o estado.", "criteria": [c2], "done_when": "A trava passa.", "depends_on": [1], "origin": msg}),
+        );
+        add(
+            "task_2",
+            "task",
+            "08:59",
+            json!({"wave": 2, "text": "O portão lê a aprovação.", "files": [{"path": "src/gate.rs", "new": true}], "skill": "add-hook-rule", "covers": [rule], "origin": msg}),
+        );
+        add(
+            "skill",
+            "skill",
+            "09:00",
+            json!({"name": "add-hook-rule", "action": "create", "text": "Passos da regra.", "sha": "3f9a1c2e", "examples": [{"path": "src/render.rs", "why": "mesma pasta"}, {"path": "src/gate.rs", "why": "com teste"}], "origin": msg}),
+        );
+        add(
+            "send",
+            "send",
+            "09:01",
+            json!({"author": "binary", "wave": 2, "role": "wave", "text": "# teste — onda 2", "lines": 312, "chars": 21480, "items": [rule], "mustard": "0.2.0"}),
+        );
         add("delivered_2", "delivered", "09:02", json!({"author": "wave", "wave": 2, "text": "O portão lê a aprovação.", "files": ["src/gate.rs"]}));
-        add("verdict", "verdict", "09:03", json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
-        add("tracking", "tracking", "09:03", json!({"author": "binary", "items": [{"item": rule, "verification": "A trava confere o programa.", "file": "src/gate.rs", "met": true}]}));
-        add("commit", "commit", "09:04", json!({"author": "binary", "sha": "5e0c7a91", "title": "fix: a aprovação sai do estado", "waves": [2], "files": ["src/gate.rs"], "repo": "."}));
+        add(
+            "verdict",
+            "verdict",
+            "09:03",
+            json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}),
+        );
+        add(
+            "tracking",
+            "tracking",
+            "09:03",
+            json!({"author": "binary", "items": [{"item": rule, "verification": "A trava confere o programa.", "file": "src/gate.rs", "met": true}]}),
+        );
+        add(
+            "commit",
+            "commit",
+            "09:04",
+            json!({"author": "binary", "sha": "5e0c7a91", "title": "fix: a aprovação sai do estado", "waves": [2], "files": ["src/gate.rs"], "repo": "."}),
+        );
         add("criterion_run", "criterion_run", "09:05", json!({"author": "binary", "criterion": c2, "result": "pass", "exit": 0, "ms": 5990}));
         add("pr_summary", "pr_summary", "09:06", json!({"text": "O portão lê o estado.", "origin": msg}));
         add("request", "request", "09:07", json!({"text": "Incluir o Windows.", "keys": ["windows"], "effect": "adjust_waves", "origin": msg}));
@@ -667,12 +685,29 @@ mod tests {
         add("call", "call", "09:12", json!({"author": "binary", "command": "round", "ms": 41, "result": "ok"}));
         add("hook", "hook", "09:13", json!({"author": "hook", "hook": "command_guard", "action": "block", "tool": "Bash", "reason": "rm -rf apaga trabalho."}));
         add("response", "response", "09:14", json!({"text": "Tirei a atualização dos projetos da Contoso.", "reply_to": msg}));
+        add("stage_run", "stage_run", "09:10", json!({"author":"binary","phase":"final","stage":"lint","result":"pass","ms":1}));
+        add(
+            "validation_failure",
+            "validation_failure",
+            "09:11",
+            json!({"author":"binary","wave":3,"result":"rejected","text":"Machine failure.","final":true,"fingerprint":"fixture"}),
+        );
         add("approved", "state", "09:15", json!({"author": "binary", "phase": "approved", "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
         let secret = add("secret", "message", "21:04", json!({"author": "user", "text": "a senha é hunter2-segredo"}));
         add("pasted", "message", "21:08", json!({"author": "user", "text": "colado por engano"}));
         add("later", "message", "21:12", json!({"author": "user", "text": "depois do intervalo"}));
-        add("limit", "limit", "21:13", json!({"text": "Tamanho do pedido.", "value": "500 linhas", "keys": ["pedido"], "replaces": old_limit, "waves": [2], "origin": msg}));
-        add("remove", "remove", "21:14", json!({"filter": {"type": "message", "from": "2026-09-11T21:03", "to": "2026-09-11T21:10"}, "reason": "Coladas por engano.", "origin": msg}));
+        add(
+            "limit",
+            "limit",
+            "21:13",
+            json!({"text": "Tamanho do pedido.", "value": "500 linhas", "keys": ["pedido"], "replaces": old_limit, "waves": [2], "origin": msg}),
+        );
+        add(
+            "remove",
+            "remove",
+            "21:14",
+            json!({"filter": {"type": "message", "from": "2026-09-11T21:03", "to": "2026-09-11T21:10"}, "reason": "Coladas por engano.", "origin": msg}),
+        );
         add("purge", "purge", "21:15", json!({"targets": [secret], "reason": "secret", "excerpt": "hunter2-segredo", "origin": msg}));
         Spec { _dir: dir, path, ids }
     }
@@ -700,15 +735,9 @@ mod tests {
         }
 
         // A single wave brings only that wave.
-        assert_eq!(
-            ids_of(&log.block(BlockQuery::Wave(2))),
-            spec.ids(&["wave_2", "task_2", "skill", "send", "delivered_2"])
-        );
-        assert_eq!(
-            ids_of(&log.block(BlockQuery::Wave(1))),
-            spec.ids(&["wave_1", "task_1", "step", "delivered_1"])
-        );
-        assert!(log.block(BlockQuery::Wave(3)).is_empty());
+        assert_eq!(ids_of(&log.block(BlockQuery::Wave(2))), spec.ids(&["wave_2", "task_2", "skill", "send", "delivered_2"]));
+        assert_eq!(ids_of(&log.block(BlockQuery::Wave(1))), spec.ids(&["wave_1", "task_1", "step", "delivered_1"]));
+        assert_eq!(ids_of(&log.block(BlockQuery::Wave(3))), spec.ids(&["validation_failure"]));
     }
 
     #[test]
@@ -731,14 +760,8 @@ mod tests {
         let got = |step: Step| ids_of(&log.step(&step));
 
         assert_eq!(got(Step::Resume), spec.ids(&["state", "publish", "copy", "approved"]));
-        assert_eq!(
-            got(Step::Close),
-            spec.ids(&["state", "criterion_1", "criterion_2", "criterion_run", "publish", "copy", "approved"])
-        );
-        assert_eq!(
-            got(Step::Review { wave: 2 }),
-            spec.ids(&["criterion_2", "wave_2", "task_2", "skill", "send", "delivered_2"])
-        );
+        assert_eq!(got(Step::Close), spec.ids(&["state", "criterion_1", "criterion_2", "criterion_run", "publish", "copy", "approved"]));
+        assert_eq!(got(Step::Review { wave: 2 }), spec.ids(&["criterion_2", "wave_2", "task_2", "skill", "send", "delivered_2"]));
         // O despacho traz a onda, os critérios dela, a especificação, os itens
         // combinados de que ela ou o projeto são donos e o que a onda de que
         // ela depende entregou — e nunca uma linha da conversa. Os itens são o
@@ -925,12 +948,9 @@ mod tests {
     /// estão, com o aviso.
     #[test]
     fn a_broken_line_that_does_not_start_as_an_event_is_left_alone() {
-        for piece in [
-            r#"{"v":1,"id":41"#,
-            r#"{"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#,
-            r#"{"v":1,"id":2,"at":"2026-09-11T09:03:00-03:00","ty"#,
-            r"lixo qualquer",
-        ] {
+        for piece in
+            [r#"{"v":1,"id":41"#, r#"{"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#, r#"{"v":1,"id":2,"at":"2026-09-11T09:03:00-03:00","ty"#, r"lixo qualquer"]
+        {
             let dir = tempfile::tempdir().unwrap();
             let (path, before) = spec_with_a_cut_line(dir.path(), piece);
             put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
@@ -1013,17 +1033,8 @@ mod tests {
 
         let unknown = write_at(&path, "licao", obj(json!({"text": "x"})), &[], &at("10:01"));
         assert_eq!(unknown.unwrap_err(), Refusal::UnknownType { found: "licao".into() });
-        let empty = write_at(
-            &path,
-            "rule",
-            obj(json!({"text": "t", "keys": ["k"], "example": "", "origin": 1})),
-            &[],
-            &at("10:02"),
-        );
-        assert_eq!(
-            empty.unwrap_err(),
-            Refusal::MissingField { event_type: "rule".into(), field: "example".into() }
-        );
+        let empty = write_at(&path, "rule", obj(json!({"text": "t", "keys": ["k"], "example": "", "origin": 1})), &[], &at("10:02"));
+        assert_eq!(empty.unwrap_err(), Refusal::MissingField { event_type: "rule".into(), field: "example".into() });
         assert_eq!(std::fs::read(&path).unwrap(), before, "a refusal never touches the file");
     }
 
@@ -1165,17 +1176,13 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/real.rs"), "fn a() {}\nfn ler_linha() {}\nfn c() {}\n").unwrap();
-        crate::io::project_map::write_text(
-            &root,
-            r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"ler_linha","line":2}]}]}"#,
-        )
-        .unwrap();
+        crate::io::project_map::write_text(&root, r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"ler_linha","line":2}]}]}"#)
+            .unwrap();
         let path = root.join("spec.ndjson");
         let roots = vec![root.clone()];
         seed_message(&path);
         let before = std::fs::read(&path).unwrap();
-        let write =
-            |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point("tamanho", source, text), &roots, &at("10:00"));
+        let write = |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point("tamanho", source, text), &roots, &at("10:00"));
         let plan = |source: &str, text: &str| citation::check(&DiskWorld::new(roots.clone(), Some(&root)), source, text);
 
         let without = write(None, "o pedido não tem teto").unwrap_err();
@@ -1252,8 +1259,7 @@ mod tests {
         let draft = obj(json!({"block": "limits", "gap": "g", "from": "gap", "status": "open", "facts": facts, "origin": 1}));
         let written = write_at(&path, "point", draft, &roots, &at("10:00")).unwrap();
         assert_eq!(written.citation_warnings, vec![(1, Finding::NoMap)]);
-        let plain =
-            write_at(&path, "point", one_fact_point("tamanho", Some("src/real.rs:2"), "sem nome"), &roots, &at("10:01"));
+        let plain = write_at(&path, "point", one_fact_point("tamanho", Some("src/real.rs:2"), "sem nome"), &roots, &at("10:01"));
         assert_eq!(plain.unwrap().citation_warnings, Vec::new(), "a point without names gets no warning");
     }
 
@@ -1292,19 +1298,12 @@ mod tests {
         // The purge: an excerpt that is not in the item is refused, and the
         // file stays byte for byte.
         let untouched = std::fs::read(&path).unwrap();
-        let missing = write_at(
-            &path,
-            "purge",
-            obj(json!({"targets": [secret], "reason": "secret", "excerpt": "outra-senha", "origin": 1})),
-            &[],
-            &at("21:22"),
-        );
+        let missing = write_at(&path, "purge", obj(json!({"targets": [secret], "reason": "secret", "excerpt": "outra-senha", "origin": 1})), &[], &at("21:22"));
         assert_eq!(missing.unwrap_err(), Refusal::PurgeExcerptNotFound { code: "MSTD-MSG-0012".into() });
         let unnamed = write_at(&path, "purge", obj(json!({"targets": [secret], "reason": "secret"})), &[], &at("21:22"));
         assert_eq!(unnamed.unwrap_err().reason(), "purge-excerpt-not-found", "no finder, no excerpt");
         assert_eq!(std::fs::read(&path).unwrap(), untouched);
-        let purge = put(&path, &[], "purge", &at("21:22"),
-            json!({"targets": [secret], "reason": "secret", "excerpt": "hunter2-segredo", "origin": 1}));
+        let purge = put(&path, &[], "purge", &at("21:22"), json!({"targets": [secret], "reason": "secret", "excerpt": "hunter2-segredo", "origin": 1}));
         assert_eq!(purge.purged, [secret]);
 
         let log = read(&path).unwrap().unwrap();
@@ -1342,8 +1341,7 @@ mod tests {
         assert!(matches!(none.unwrap_err(), Refusal::FilterMatchesNothing { .. }));
         let unknown = write_at(&path, "remove", obj(json!({"targets": [999], "reason": "r"})), &[], &at("21:31"));
         assert_eq!(unknown.unwrap_err(), Refusal::UnknownTarget { target: EventRef::Id(999) });
-        let unknown_code =
-            write_at(&path, "remove", obj(json!({"targets": ["MSTD-NOTE-0009"], "reason": "r"})), &[], &at("21:32"));
+        let unknown_code = write_at(&path, "remove", obj(json!({"targets": ["MSTD-NOTE-0009"], "reason": "r"})), &[], &at("21:32"));
         assert_eq!(unknown_code.unwrap_err(), Refusal::UnknownTarget { target: EventRef::Code("MSTD-NOTE-0009".into()) });
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
@@ -1354,17 +1352,16 @@ mod tests {
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);
         let old = put(&path, &[], "decision", &at("10:00"), json!({"text": "Publicar sempre.", "why": "w", "keys": ["página"], "origin": 1})).id;
-        let new = put(&path, &[], "decision", &at("10:01"), json!({"text": "Publicar só nos marcos.", "why": "w", "keys": ["página"], "replaces": old, "origin": 1})).id;
+        let new =
+            put(&path, &[], "decision", &at("10:01"), json!({"text": "Publicar só nos marcos.", "why": "w", "keys": ["página"], "replaces": old, "origin": 1}))
+                .id;
         let log = read(&path).unwrap().unwrap();
         assert_eq!(ids_of(&log.block(BlockQuery::Block(Block::Agreed))), [new]);
         assert_eq!(log.current(old).map(|e| e.id), Some(new));
         assert_eq!(log.hidden()[&old], Hidden::Replaced { by: new });
 
         let other = write_at(&path, "note", obj(json!({"text": "t", "keys": ["k"], "replaces": new, "origin": 1})), &[], &at("10:02"));
-        assert_eq!(
-            other.unwrap_err(),
-            Refusal::ReplacesOtherType { id: new, found: "decision".into(), event_type: "note".into() }
-        );
+        assert_eq!(other.unwrap_err(), Refusal::ReplacesOtherType { id: new, found: "decision".into(), event_type: "note".into() });
         let missing = write_at(&path, "decision", obj(json!({"text": "t", "why": "w", "keys": ["k"], "replaces": 99, "origin": 1})), &[], &at("10:03"));
         assert_eq!(missing.unwrap_err(), Refusal::UnknownTarget { target: EventRef::Id(99) });
     }
@@ -1387,8 +1384,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);
-        let written: Vec<Written> =
-            (1..=4).map(|i| put(&path, &[], "rule", &at("10:00"), rule(&format!("regra {i}")))).collect();
+        let written: Vec<Written> = (1..=4).map(|i| put(&path, &[], "rule", &at("10:00"), rule(&format!("regra {i}")))).collect();
         for (i, w) in written.iter().enumerate() {
             let code = format!("MSTD-RULE-000{}", i + 1);
             assert_eq!(w.code.as_deref(), Some(code.as_str()));
@@ -1453,10 +1449,9 @@ mod tests {
         .unwrap();
         assert_eq!(seen, [1, written.id], "the line just written is there");
         let mut called = false;
-        let refused =
-            write_at_then(&path, "remove", obj(json!({"targets": [9], "reason": "r"})), &[], &at("10:01"), |_| {
-                called = true;
-            });
+        let refused = write_at_then(&path, "remove", obj(json!({"targets": [9], "reason": "r"})), &[], &at("10:01"), |_| {
+            called = true;
+        });
         assert!(refused.is_err() && !called);
         let locked = with_locked_log(&path, |log| log.events.len()).unwrap();
         assert_eq!(locked, Some(2));
@@ -1477,8 +1472,7 @@ mod tests {
         let find = |_: &str| Vec::new();
         let (written, refused, seen, free_inside) = with_locked_writer(&path, |locked| {
             let written = locked.write_guarded("rule", obj(rule("regra")), &[], &find, |_, _| Ok(()), |_| {}).unwrap();
-            let refused = locked.write_guarded("remove", obj(json!({"targets": [9], "reason": "r"})), &[], &find,
-                |_, _| Ok(()), |_| {});
+            let refused = locked.write_guarded("remove", obj(json!({"targets": [9], "reason": "r"})), &[], &find, |_, _| Ok(()), |_| {});
             (written.id, refused.is_err(), ids_of(&locked.log().events.iter().collect::<Vec<_>>()), free())
         })
         .unwrap()
@@ -1579,8 +1573,7 @@ mod tests {
         let log = read(&path).unwrap().unwrap();
         assert_eq!(log.delivered_waves(), BTreeSet::from([2]));
         assert_eq!(log.last_by_wave("delivered"), BTreeMap::from([(2, official)]));
-        let shown: Vec<u64> =
-            log.block(BlockQuery::Block(Block::Waves)).iter().filter(|e| e.event_type == "delivered").map(|e| e.id).collect();
+        let shown: Vec<u64> = log.block(BlockQuery::Block(Block::Waves)).iter().filter(|e| e.event_type == "delivered").map(|e| e.id).collect();
         assert_eq!(shown, [official], "só a versão oficial aparece");
         assert_eq!(log.hidden()[&second], Hidden::Replaced { by: official });
         assert_eq!(log.hidden()[&first], Hidden::Returned, "a volta velha nunca volta à leitura");
@@ -1606,9 +1599,8 @@ mod tests {
         seed_message(&path);
         put_send(&path, Some(1), "10:00");
         put_send(&path, None, "10:01");
-        let verdict = |text: &str| {
-            json!({"author": "review", "final": true, "result": "approved", "text": text, "agreed": [{"item": 1, "met": true}], "returned": true})
-        };
+        let verdict =
+            |text: &str| json!({"author": "review", "final": true, "result": "approved", "text": text, "agreed": [{"item": 1, "met": true}], "returned": true});
         let first = put(&path, &[], "verdict", &at("10:02"), verdict("Primeira leitura.")).id;
         let delivery = put(&path, &[], "delivered", &at("10:03"), wave_return(1, "A onda 1 voltou.")).id;
         let last = put(&path, &[], "verdict", &at("10:04"), verdict("Sem achados.")).id;

@@ -26,11 +26,7 @@
 /// workspace version otherwise. Never empty.
 #[must_use]
 pub fn harness_version() -> String {
-    option_env!("MUSTARD_RELEASE_VERSION")
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
-        .to_string()
+    option_env!("MUSTARD_RELEASE_VERSION").map(str::trim).filter(|v| !v.is_empty()).unwrap_or(env!("CARGO_PKG_VERSION")).to_string()
 }
 
 /// The plugin name this harness ships under, as it appears on the left of the
@@ -154,12 +150,9 @@ pub fn development_rt(start: &std::path::Path, running: &std::path::Path) -> Opt
 /// program in; the compiled program out, only when it is on disk and `running`
 /// is none of the repository's own.
 #[must_use]
-pub fn development_rt_in(
-    build: &std::path::Path,
-    own: &[std::path::PathBuf],
-    running: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    let program = build.join("release").join(rt_file_name());
+pub fn development_rt_in(build: &std::path::Path, own: &[std::path::PathBuf], running: &std::path::Path) -> Option<std::path::PathBuf> {
+    let development = build.join("mustard-dev").join(rt_file_name());
+    let program = if development.is_file() { development } else { build.join("release").join(rt_file_name()) };
     if !program.is_file() {
         return None;
     }
@@ -276,10 +269,7 @@ fn newest_installed_plugin_from(raw: &str) -> Option<InstalledPlugin> {
             Some((version, install))
         })
         .max_by(|(a, _), (b, _)| compare_versions(a, b))?;
-    Some(InstalledPlugin {
-        dir: std::path::PathBuf::from(install),
-        version: version.to_string(),
-    })
+    Some(InstalledPlugin { dir: std::path::PathBuf::from(install), version: version.to_string() })
 }
 
 /// Whether `running` names a version strictly OLDER than `installed`.
@@ -297,11 +287,7 @@ pub fn is_behind(running: &str, installed: &str) -> bool {
 /// Order two dotted version strings by their numeric components. See
 /// [`is_behind`] for why a non-numeric component counts as 0.
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let parts = |v: &str| -> Vec<u64> {
-        v.split(['.', '-', '+'])
-            .map(|p| p.parse::<u64>().unwrap_or(0))
-            .collect()
-    };
+    let parts = |v: &str| -> Vec<u64> { v.split(['.', '-', '+']).map(|p| p.parse::<u64>().unwrap_or(0)).collect() };
     let (left, right) = (parts(a), parts(b));
     let width = left.len().max(right.len());
     for i in 0..width {
@@ -392,11 +378,7 @@ mod tests {
         assert_eq!(installed_harness_version_from("not json").as_deref(), None);
         assert_eq!(installed_harness_version_from("{}").as_deref(), None);
         assert_eq!(installed_harness_version_from(r#"{"plugins":{}}"#).as_deref(), None);
-        assert_eq!(
-            installed_harness_version_from(r#"{"plugins":{"other@m":[{"version":"1.0.0"}]}}"#)
-                .as_deref(),
-            None
-        );
+        assert_eq!(installed_harness_version_from(r#"{"plugins":{"other@m":[{"version":"1.0.0"}]}}"#).as_deref(), None);
     }
 
     /// The handover only ever goes from OLD to NEW: a runner equal to or ahead
@@ -411,11 +393,7 @@ mod tests {
         ]}}"#;
         assert_eq!(
             newer_installed_rt_from(raw, "0.1.50"),
-            Some(std::path::PathBuf::from(if cfg!(windows) {
-                "/plug/0.1.51/bin/mustard-rt.exe"
-            } else {
-                "/plug/0.1.51/bin/mustard-rt"
-            }))
+            Some(std::path::PathBuf::from(if cfg!(windows) { "/plug/0.1.51/bin/mustard-rt.exe" } else { "/plug/0.1.51/bin/mustard-rt" }))
         );
         assert_eq!(newer_installed_rt_from(raw, "0.1.51"), None, "equal stays in charge");
         assert_eq!(newer_installed_rt_from(raw, "0.1.52"), None, "ahead (dev build) stays in charge");
@@ -558,10 +536,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            installed_plugin_in(config.path()),
-            Some(InstalledPlugin { dir: newer, version: "0.1.10".to_string() })
-        );
+        assert_eq!(installed_plugin_in(config.path()), Some(InstalledPlugin { dir: newer, version: "0.1.10".to_string() }));
         assert_eq!(installed_plugin_in(&config.path().join("sem-registro")), None);
     }
 
@@ -570,11 +545,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let plugins = home.path().join("plugins");
         std::fs::create_dir_all(&plugins).unwrap();
-        std::fs::write(
-            plugins.join("installed_plugins.json"),
-            r#"{"plugins":{"outro@mkt":[{"installPath":"/tmp/x","version":"9.9.9"}]}}"#,
-        )
-        .unwrap();
+        std::fs::write(plugins.join("installed_plugins.json"), r#"{"plugins":{"outro@mkt":[{"installPath":"/tmp/x","version":"9.9.9"}]}}"#).unwrap();
 
         assert_eq!(installed_plugin_rt_in(home.path()), None);
     }
@@ -676,11 +647,7 @@ mod tests {
     fn home_readers() {
         let shown = |path: Option<std::path::PathBuf>| path.map_or_else(|| "-".to_string(), |p| p.display().to_string());
         let listed = |paths: Vec<std::path::PathBuf>| {
-            if paths.is_empty() {
-                "-".to_string()
-            } else {
-                std::env::join_paths(paths).expect("pastas sem o separador do PATH").to_string_lossy().into_owned()
-            }
+            if paths.is_empty() { "-".to_string() } else { std::env::join_paths(paths).expect("pastas sem o separador do PATH").to_string_lossy().into_owned() }
         };
         let root = tempfile::tempdir().unwrap();
         println!("{HOME_MARK} home={}", shown(home_dir()));
@@ -752,12 +719,8 @@ mod tests {
         let paths = |answer: &str| std::env::split_paths(answer).collect::<Vec<_>>();
         expect("vazia", &empty, "tools", &|answer| answer == "-");
         expect("vazia", &empty, "fonts", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.is_absolute()));
-        expect("preenchida", &filled, "tools", &|answer| {
-            answer != "-" && paths(answer).iter().all(|dir| dir.starts_with(fake_home.path()))
-        });
-        expect("preenchida", &filled, "fonts", &|answer| {
-            answer != "-" && (cfg!(windows) || paths(answer).iter().any(|dir| dir.starts_with(fake_home.path())))
-        });
+        expect("preenchida", &filled, "tools", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.starts_with(fake_home.path())));
+        expect("preenchida", &filled, "fonts", &|answer| answer != "-" && (cfg!(windows) || paths(answer).iter().any(|dir| dir.starts_with(fake_home.path()))));
         assert!(wrong.is_empty(), "cada leitora responde pela mesma pasta pessoal: {wrong:?}");
     }
 }

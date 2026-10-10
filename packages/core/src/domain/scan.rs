@@ -147,6 +147,13 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
+    /// Refresh structural evidence without loading a configured sense model.
+    pub fn scan_native(&self,root:&Path,out:&Path)->Result<ScanReport> {
+        let mut args=scan_args(root,out);args.push("--native".into());
+        let stdout=self.run(&args)?;
+        serde_json::from_str(last_line(&stdout)).map_err(|e|Error::check_failed(format!("scan native report: {e}")))
+    }
+
     /// Read from git the history of each declaration of `file`, in the base
     /// branch the project declares, and keep it in the map at `out` (`grain
     /// history`), following a declaration into the file it came from up to
@@ -203,6 +210,21 @@ impl Scan {
         let stdout = self.run(&["format".to_string()]).ok()?;
         let mark = stdout.trim();
         (!mark.is_empty()).then(|| mark.to_string())
+    }
+
+    /// Query the parsed syntax tree of one current, explicitly scoped file.
+    /// No model, index rebuild or language-specific dependency in the client.
+    pub fn structure(&self, root: &Path, file: &str, query: &str) -> Result<serde_json::Value> {
+        let stdout = self.run(&[
+            "structure".into(),
+            root.to_string_lossy().into_owned(),
+            "--file".into(),
+            file.into(),
+            "--query".into(),
+            query.into(),
+        ])?;
+        serde_json::from_str(&stdout)
+            .map_err(|e| Error::check_failed(format!("scan structure: {e}")))
     }
 
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
@@ -292,8 +314,16 @@ pub struct ScanReport {
     pub full: bool,
     pub read: Vec<String>,
     pub files: usize,
+    pub resources: usize,
+    pub resource_issues: Vec<ResourceIssue>,
     pub head: String,
     pub dictionary: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ResourceIssue {
+    pub file: String,
+    pub reason: String,
 }
 
 /// The last non-empty line of what a `--json` run printed, where the report

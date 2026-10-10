@@ -40,8 +40,18 @@ fn cites_the_search_with_the_text_of_grep(text: &str) -> bool {
     cited.peek().is_some()
         && cited.all(|c| c.options.is_empty())
         && text.contains("run map search \"<")
-        && !text.contains("--query")
-        && !text.contains("--intent")
+}
+
+fn cites_agent_search(text: &str) -> bool {
+    text.lines().any(|line| line.contains("run search --shell-output --intent \"<")
+        && line.contains("--purpose ") && line.contains(" -- rg -n \"<"))
+}
+
+#[test]
+fn native_task_context_does_not_change_the_literal_search_contract() {
+    assert!(cites_the_search_with_the_text_of_grep("`mustard-rt run knowledge --query q --intent task` and `mustard-rt run map search \"<pattern>\"`"));
+    assert!(!cites_the_search_with_the_text_of_grep("`mustard-rt run map search \"<pattern>\" --query q`"));
+    assert!(!cites_the_search_with_the_text_of_grep("`mustard-rt run map search \"<pattern>\" --intent task`"));
 }
 
 fn template(lang: &str, name: &str) -> String {
@@ -150,7 +160,7 @@ fn the_molds_and_the_catalog_texts_cite_search_slice_and_users() {
                 "{name} does not cite `run map {question} {option}`: {text}"
             );
         }
-        assert!(cites_the_search_with_the_text_of_grep(&text), "{name} does not cite `run map search \"<pattern>\"`: {text}");
+        assert!(cites_the_search_with_the_text_of_grep(&text) || cites_agent_search(&text), "{name} must cite a literal search gateway: {text}");
         let wrong = not_accepted(&text, &accepted);
         assert!(wrong.is_empty(), "{name} cites what `run map` does not accept: {wrong:?}");
     }
@@ -166,7 +176,13 @@ fn the_molds_list_each_map_command_with_its_moment_of_use() {
         for name in ["wave", "review"] {
             let mold = template(lang, name);
             let cited = citations(&mold);
-            for question in ["search", "summary", "slice", "users", "tests", "history"] {
+            assert!(cites_agent_search(&mold), "the {lang} `{name}` mold must use agent output, not the full diagnostic envelope");
+            let line=mold.lines().find(|line|line.contains("run search --shell-output")).unwrap();
+            assert!(line.split("`: ").nth(1).unwrap_or_default().split_whitespace().count()>=3,"the search must have a moment of use: {line}");
+            let help=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","search","--help"]).output().unwrap();
+            assert!(help.status.success());
+            for flag in ["--shell-output","--intent","--purpose"] {assert!(String::from_utf8_lossy(&help.stdout).contains(flag),"unsupported gateway option {flag}");}
+            for question in ["summary", "slice", "users", "tests", "history"] {
                 assert!(cited.iter().any(|c| c.question == question), "the {lang} `{name}` mold does not list `run map {question}`");
                 let line = mold
                     .lines()

@@ -179,7 +179,7 @@ fn leftovers_of_the_old_economy_no_longer_exist() {
     // que segurava as cinco réguas de uma vez saiu; as quatro provas próprias
     // que o cobriam continuam, cada uma no arquivo da régua que ela prova.
     assert!(
-        !source("apps/rt/src/commands/spec_events/pages/copy.rs")
+        !source("apps/rt/src/commands/spec_events/pages/secrets.rs")
             .contains("the_five_old_economy_caps_stay_out_of_the_real_paths"),
         "o teste composto das cinco réguas voltou ao módulo da página"
     );
@@ -193,8 +193,8 @@ fn leftovers_of_the_old_economy_no_longer_exist() {
             "fn a_request_far_past_the_old_line_cap_does_not_block_the_question",
         ),
         (
-            "apps/rt/src/commands/spec_events/pages/copy.rs",
-            "fn the_spend_line_sums_tokens_without_a_file_ruler",
+            "apps/rt/src/commands/flow/round/usage.rs",
+            "fn the_round_sums_every_piece_of_the_wave_agent_once",
         ),
         (
             "apps/rt/src/hooks/session/conversation_size.rs",

@@ -28,6 +28,7 @@ impl<'m, 'a> ReviewListing<'m, 'a> {
                 ("prompt.part.agreed", material.agreed.as_slice()),
                 ("prompt.part.each_delivered", material.own_delivered.as_slice()),
                 ("prompt.part.criteria", material.criteria.as_slice()),
+                ("prompt.part.validation", material.validation.as_slice()),
                 ("prompt.part.branch_changes", material.changes.as_slice()),
             ],
         }
@@ -81,6 +82,7 @@ impl Writer<'_> {
             self.part(&mut out, key, items);
         }
         self.review_execution(&mut out);
+        self.prepared_sources(&mut out);
         while out.ends_with("\n\n") {
             out.pop();
         }

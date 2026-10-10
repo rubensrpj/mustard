@@ -3,25 +3,20 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! Depois de um pedido do usuário que muda o plano de uma spec já aprovada,
-//! a página recebe uma cópia só, já com as tarefas que o pedido gerou: as
-//! gravações do meio do caminho não preparam cópia, e só a última, com
-//! `--copy`, prepara. E cada cópia troca os documentos que já estão no banco
-//! com a versão que o registro da cópia anterior guardou, sem ler a versão
-//! antes. Prova de ponta a ponta, pelo binário de verdade, num repositório
-//! temporário.
+//! Publicação externa é explícita: aprovação, rodada e mudanças do pedido
+//! preservam apenas o estado local. O comando de publicação prepara uma
+//! versão sanitizada e imutável, sem alegar transporte remoto.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 const SPEC: &str = "plano";
 const SESSION: &str = "s-plano";
 const GOAL: &str = "Somar dois números no programa.";
-const SPEC_URL: &str = "https://claude.ai/code/artifact/plano";
 
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git").args(args).current_dir(root).output().expect("git");
@@ -210,269 +205,72 @@ fn approve(project: &Project) {
     );
 }
 
-/// O carimbo do molde da página `page` que o programa monta em `lang`, como
-/// a publicação o grava.
-fn stamp_of(page: &str, lang: Locale) -> String {
-    use mustard_core::platform::page_templates::{project_page_template, spec_page_template, template_stamp};
-    let template = if page == "spec" { spec_page_template(lang) } else { project_page_template(lang) };
-    template_stamp(&template).expect("the stamp").to_string()
+
+fn no_automatic_publication(project: &Project, report: &Value) {
+    assert!(report.get("publish").is_none(), "{report}");
+    assert!(report.get("copy").is_none(), "{report}");
+    assert!(!project.root.join(".claude/spec").join(SPEC).join("copy").exists());
 }
 
-/// O que a conversa faz com a ordem de um marco: publica cada página que
-/// ainda não tem endereço e grava o endereço, com o carimbo do molde, e
-/// grava a cópia feita de cada página com o `record` que a resposta trouxe.
-fn follow(project: &Project, report: &Value) {
-    for page in report["publish"].as_array().cloned().unwrap_or_default() {
-        let name = page.as_str().unwrap_or_default();
-        let url = if name == "spec" { SPEC_URL } else { "https://claude.ai/code/artifact/projeto" };
-        project.write(
-            "publish",
-            &json!({"page": page, "milestone": "round", "ok": true, "template": true,
-                "stamp": stamp_of(name, project.lang), "url": url}),
-        );
-    }
-    for page in ["spec", "project"] {
-        if !report["copy"][page].is_null() {
-            project.write("copy", &report["copy"][page]["record"]);
-        }
-    }
-}
-
-/// Cada número de item que os lotes da cópia da spec, no disco, levam: lê
-/// todo arquivo `spec-*.json` da pasta de cópia — cada escrita aponta, em
-/// `file_path`, o arquivo com o corpo de verdade — e junta os `id` de
-/// `items` de toda escrita da coleção `ranges`.
-fn copied_items(project: &Project) -> Vec<u64> {
-    let folder = project.root.join(".claude/spec").join(SPEC).join("copy");
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&folder) else { return out };
-    let mut batches: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("spec-") && n.ends_with(".json")))
-        .collect();
-    batches.sort();
-    for path in batches {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        let Ok(writes) = serde_json::from_str::<Vec<Value>>(&text) else { continue };
-        for write in &writes {
-            if write["collection"] != json!(mustard_core::platform::page_templates::RANGES) {
-                continue;
-            }
-            let Some(file) = write["file_path"].as_str() else { continue };
-            let Ok(body_text) = std::fs::read_to_string(project.root.join(file)) else { continue };
-            let Ok(body) = serde_json::from_str::<Value>(&body_text) else { continue };
-            for item in body["items"].as_array().into_iter().flatten() {
-                if let Some(id) = item["id"].as_u64() {
-                    out.push(id);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Uma spec aprovada e já publicada recebe um pedido do usuário que muda o
-/// plano. O pedido, o critério e a regra que ele gerou são gravados sem
-/// `--copy`, e nenhuma dessas respostas traz cópia nem manda copiar: a pasta
-/// da cópia fica como a rodada a deixou. A última gravação, a tarefa, vai com
-/// `--copy`, e só ela prepara a cópia, uma vez, com os lotes calculados na
-/// hora: eles levam o pedido e tudo o que ele gerou, a tarefa inclusive.
 #[test]
-fn last_write_of_the_request_prepares_a_copy_with_the_tasks() {
+fn approval_round_and_request_do_not_export_without_an_explicit_publication() {
     let project = Project::new();
     let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
+    assert_eq!(opened["step"], json!("ask_goal"));
     survey(&project);
-    let (said, _criterion, _approval) = plan(&project);
+    let (_, _, planned) = plan(&project);
+    no_automatic_publication(&project, &planned);
     approve(&project);
+    let round = project.run(&["round", "--spec", SPEC]);
+    no_automatic_publication(&project, &round);
+    assert!(!project.root.join(".claude/mustard/publications").exists());
 
-    // A primeira rodada depois da aprovação é o marco que publica a página e
-    // a copia; a conversa segue a ordem, como faria de verdade.
-    let first_round = project.run(&["round", "--spec", SPEC]);
-    assert!(first_round["publish"].as_array().is_some_and(|p| p.iter().any(|p| p == "spec")), "{first_round}");
-    follow(&project, &first_round);
-    let before = copied_items(&project);
+    let exported = project.run(&["publish", "--spec", SPEC]);
+    assert_eq!(exported["published"], false);
+    assert_eq!(exported["prepared"], true);
+    let database = Path::new(exported["database"].as_str().unwrap());
+    let before = std::fs::read(database).unwrap();
+    let public: Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(public["spec"], SPEC);
+    assert!(public.get("consumption").is_none());
+    assert!(Path::new(exported["page"].as_str().unwrap()).is_file());
 
-    // O pedido do usuário e o que ele gerou, sem `--copy`: nada de cópia.
     let asked = user_says(&project, "Incluir também a subtração.");
-    let request = project.write(
-        "request",
-        &json!({"title": "Combinar o item", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves", "origin": asked}),
-    );
-    let request_next = request["next"].as_str().unwrap_or_default();
-    assert!(request_next.contains("--copy"), "the request says which write carries the copy: {request}");
-    let criterion = project.write(
-        "criterion",
-        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a subtração aparece", "proof": "git --version",
-            "form": "ubiquitous", "origin": asked}),
-    );
-    let rule = project.write(
-        "rule",
-        &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A subtração usa o mesmo formato da soma.", "keys": ["subtração"],
-            "example": "3 - 1 imprime 2, como 1 + 1 imprime 2.", "applies_to": {"files": ["**"]},
-            "origin": asked}),
-    );
-    for written in [&request, &criterion, &rule] {
-        assert!(written.get("copy").is_none(), "a write without --copy prepared a copy: {written}");
-        let next = written["next"].as_str().unwrap_or_default();
-        assert!(!next.contains("write copy"), "a write without --copy ordered a copy: {written}");
+    let request = project.write("request", &json!({"title":"Combinar o item", "text":"Incluir a subtração.",
+        "keys":["subtração"], "effect":"new_waves", "origin":asked}));
+    assert!(!request["next"].as_str().unwrap_or_default().contains("--copy"));
+    let criterion = project.write("criterion", &json!({"title":"Combinar o item", "when":"o programa roda", "then":"a subtração aparece",
+        "proof":"git --version", "form":"ubiquitous", "origin":asked}));
+    let task = project.write_copying("task", &json!({"agent":"- conferir pelo teste", "title":"Entregar a subtração", "text":"Subtrair dois números no programa.",
+        "files":[{"path":"src/main.rs"}], "depends_on":[], "covers":[criterion["id"]], "origin":asked}));
+    for report in [&request, &criterion, &task] {
+        no_automatic_publication(&project, report);
     }
-    assert_eq!(copied_items(&project), before, "the batches the round left stay as they were");
-
-    // A última gravação do pedido, com `--copy`: uma cópia só, com tudo.
-    let task = project.write_copying(
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a subtração", "text": "Subtrair dois números no programa.",
-            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion["id"]], "origin": asked}),
-    );
-    assert!(task["copy"].is_object(), "the last write did not prepare the copy: {task}");
-    let next = task["next"].as_str().unwrap_or_default();
-    assert!(next.contains("write copy") && next.contains(SPEC_URL), "the last write orders the copy: {task}");
-    assert!(!next.contains("write publish"), "the page already has its address: {task}");
-    let after = copied_items(&project);
-    for written in [&request, &criterion, &rule, &task] {
-        let id = written["id"].as_u64().expect("the item id");
-        assert!(!before.contains(&id), "the new item could not be in the copy before: {before:?}");
-        assert!(after.contains(&id), "the copy misses {id}: {after:?}");
-    }
-    // A faixa tocada vai inteira: o que já estava nela segue junto.
-    assert!(after.contains(&said), "the copy lost what was already in the range: {after:?}");
-    follow(&project, &task);
+    assert_eq!(std::fs::read(database).unwrap(), before, "ordinary writes never update the exported snapshot");
 }
 
-/// As escritas dos lotes da página `page` (`spec` ou `project`) que a
-/// resposta `report` mandou copiar, na ordem, como a ferramenta do banco as
-/// recebe.
-fn writes_of(project: &Project, report: &Value, page: &str) -> Vec<Value> {
-    let mut out = Vec::new();
-    for batch in report["copy"][page]["batches"].as_array().cloned().unwrap_or_default() {
-        let path = project.root.join(batch.as_str().unwrap_or_default());
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let writes: Vec<Value> = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        out.extend(writes);
-    }
-    out
-}
-
-/// O nome `coleção/doc_id` do documento de uma escrita do lote.
-fn doc_name(write: &Value) -> String {
-    format!("{}/{}", write["collection"].as_str().unwrap_or_default(), write["doc_id"].as_str().unwrap_or_default())
-}
-
-/// A versão que a escrita do documento `doc` leva em `if_version` nos lotes
-/// da página `page`; `Null` quando ela vai sem versão.
-fn if_version(project: &Project, report: &Value, page: &str, doc: &str) -> Value {
-    let writes = writes_of(project, report, page);
-    let write = writes.iter().find(|w| doc_name(w) == doc).unwrap_or_else(|| panic!("no write of {doc}: {writes:?}"));
-    write.get("if_version").cloned().unwrap_or(Value::Null)
-}
-
-/// Grava a cópia da página `page` que a resposta `report` preparou, com o
-/// `record` dela: com `version`, como a ordem manda agora, soma em
-/// `versions` essa versão para cada documento que o lote escreveu, como se o
-/// banco a tivesse devolvido; sem ela, como uma cópia gravada antes de o
-/// registro guardar as versões.
-fn record_copy(project: &Project, report: &Value, page: &str, version: Option<u64>) {
-    let mut record = report["copy"][page]["record"].clone();
-    if let Some(version) = version {
-        let versions: Map<String, Value> = writes_of(project, report, page)
-            .iter()
-            .filter(|w| w["op"] == json!("set"))
-            .map(|w| (doc_name(w), json!(version)))
-            .collect();
-        record["versions"] = Value::Object(versions);
-    }
-    project.write("copy", &record);
-}
-
-/// A parte fixa da frase que manda ler a versão de documentos, depois da
-/// lista deles.
-fn read_order(lang: Locale) -> String {
-    translate("page.copy.existing", lang).split("{docs}").nth(1).unwrap_or_default().to_string()
-}
-
-/// Uma cópia gravada com `versions` poupa a leitura da seguinte, nas duas
-/// páginas e nos dois idiomas. A aprovação publica as duas páginas e copia;
-/// a da spec é gravada com a versão que o banco devolveu a cada documento, e
-/// a do projeto como uma cópia de antes das versões. A linha da spec na
-/// página do projeto vai de novo a cada cópia em que a fase dela mudou, no
-/// mesmo endereço: a spec aprovada, e depois a primeira rodada.
-///
-/// A cópia seguinte, de uma gravação com `--copy` na spec aprovada, troca a
-/// faixa e o documento calculado da spec com a versão guardada, e a ordem
-/// pede a leitura só da linha do projeto, a única sem versão guardada.
-/// Gravadas as duas com versões novas, a primeira rodada, depois de uma nota
-/// nova, troca os três documentos com a versão mais nova, e a ordem não pede
-/// leitura nenhuma. Em cada ordem, a gravação da cópia manda guardar essas
-/// versões.
 #[test]
-fn next_copy_carries_the_stored_version_without_asking_for_a_read() {
+fn an_explicit_export_reuses_unchanged_public_state_and_versions_a_phase_change() {
     for lang in [Locale::PtBr, Locale::EnUs] {
         let project = Project::in_language(lang);
         project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
         survey(&project);
-        let (said, _criterion, first) = plan(&project);
-        let read = read_order(lang);
-        let spec_docs = ["ranges/0", "computed/current"];
-        let row = format!("specs/{SPEC}");
-
-        // A aprovação publica e copia as duas páginas: nada existe ainda no
-        // banco, e nenhuma escrita leva versão.
-        assert_eq!(first["publish"], json!(["spec", "project"]), "{lang:?}: {first}");
-        for page in ["spec", "project"] {
-            let writes = writes_of(&project, &first, page);
-            assert!(writes.iter().all(|w| w.get("if_version").is_none()), "{lang:?}: {page}: {writes:?}");
-        }
-        project.write(
-            "publish",
-            &json!({"page": "spec", "milestone": "approval", "ok": true, "template": true,
-                "stamp": stamp_of("spec", lang), "url": SPEC_URL}),
-        );
-        project.write(
-            "publish",
-            &json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
-                "stamp": stamp_of("project", lang), "url": "https://claude.ai/code/artifact/projeto"}),
-        );
-        record_copy(&project, &first, "spec", Some(1));
-        record_copy(&project, &first, "project", None);
+        let (said, _, planned) = plan(&project);
+        no_automatic_publication(&project, &planned);
+        let first = project.run(&["publish", "--spec", SPEC]);
+        let database = Path::new(first["database"].as_str().unwrap());
+        let before = std::fs::read(database).unwrap();
+        let note = project.write_copying("note", &json!({"title":"Combinar o item", "text":"Nota privada de 10/2026 que não será publicada.", "keys":["k"], "origin":said}));
+        no_automatic_publication(&project, &note);
+        let second = project.run(&["publish", "--spec", SPEC]);
+        assert_eq!(second["snapshot_id"], first["snapshot_id"], "private prose is outside the external snapshot");
+        assert_eq!(std::fs::read(database).unwrap(), before);
         approve(&project);
-
-        // A cópia seguinte: a spec troca com a versão guardada, e só a linha
-        // do projeto, sem versão guardada, é nomeada para ler.
-        let second = project.write_copying("note", &json!({"title": "Combinar o item", "text": "Nota nova.", "keys": ["k"], "origin": said}));
-        let next = second["next"].as_str().unwrap_or_default();
-        for doc in spec_docs {
-            assert_eq!(if_version(&project, &second, "spec", doc), json!(1), "{lang:?}: {doc}: {second}");
-        }
-        assert_eq!(if_version(&project, &second, "project", &row), Value::Null, "{lang:?}: {second}");
-        let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{row}`"));
-        assert!(next.contains(&named), "{lang:?}: only the row without a version is read: {next}");
-        assert_eq!(next.matches(read.as_str()).count(), 1, "{lang:?}: the spec page reads nothing: {next}");
-        for (page, phrase, name) in
-            [("spec", "page.copy.record", "page.name.spec"), ("project", "page.copy.record_project", "page.name.project")]
-        {
-            let record = translate(phrase, lang)
-                .replace("{page}", translate(name, lang))
-                .replace("{spec}", SPEC)
-                .replace("{record}", &second["copy"][page]["record"].to_string());
-            assert!(record.contains("`versions`"), "{lang:?}: {record}");
-            assert!(next.contains(&record), "{lang:?}: the order records the versions: {next}");
-        }
-        record_copy(&project, &second, "spec", Some(2));
-        record_copy(&project, &second, "project", Some(2));
-
-        // Gravadas as duas com versões, a primeira rodada, depois de uma nota
-        // nova, troca tudo com a versão mais nova, sem leitura nenhuma e sem
-        // publicar de novo.
-        project.write("note", &json!({"title": "Combinar o item", "text": "Outra nota.", "keys": ["k"], "origin": said}));
-        let third = project.run(&["round", "--spec", SPEC]);
-        assert!(third["publish"].is_null(), "{lang:?}: both pages have their address: {third}");
-        let next = third["next"].as_str().unwrap_or_default();
-        for doc in spec_docs {
-            assert_eq!(if_version(&project, &third, "spec", doc), json!(2), "{lang:?}: {doc}: {third}");
-        }
-        assert_eq!(if_version(&project, &third, "project", &row), json!(2), "{lang:?}: {third}");
-        assert!(!next.contains(read.as_str()), "{lang:?}: the order reads no version: {next}");
+        let third = project.run(&["publish", "--spec", SPEC]);
+        assert_ne!(third["snapshot_id"], first["snapshot_id"], "approval changes the public phase");
+        assert_eq!(std::fs::read(database).unwrap(), before, "the previous version stays immutable");
+        assert_eq!(third["published"], false);
+        let body = std::fs::read_to_string(third["database"].as_str().unwrap()).unwrap();
+        assert!(!body.contains("Nota privada") && !body.contains("src/main.rs") && !body.contains("casa"));
     }
 }

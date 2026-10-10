@@ -35,10 +35,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::ClaudePaths;
 use crate::io::fs;
 use crate::platform::error::Result;
 use crate::platform::i18n::SupportedLocale;
-use crate::ClaudePaths;
 
 /// Neutral placeholder returned when `buildCommand` is absent. Human-readable,
 /// not runnable, so a drafted spec never hardcodes a stack-specific build the
@@ -69,7 +69,7 @@ pub struct GitConfig {
     /// PRE-SELECTS — see [`declared_bases`](GitConfig::declared_bases). A
     /// project that never declares one pre-selects nothing, and protects
     /// nothing, until it does.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub flow: BTreeMap<String, String>,
     /// Branches that refuse a direct commit or merge, BEYOND the bases
     /// `git.flow` already declares.
@@ -110,7 +110,6 @@ pub struct GitConfig {
     #[serde(rename = "pullRequestText", default, skip_serializing_if = "Option::is_none")]
     pub pull_request_text: Option<bool>,
 }
-
 
 impl GitConfig {
     /// The bases this project REALLY declares, derived from
@@ -318,9 +317,8 @@ pub const MAX_SAME_NAME: usize = 8;
 /// mesmos números com ou sem a resposta.
 pub const SEARCH_ANSWER: bool = true;
 
-/// O filtro da busca por assunto como o `mustard.json` o escolhe. Ausente, a
-/// montagem decide pela chave da máquina; o inválido não filtra e pede o
-/// aviso.
+/// The explicit judgement provider. Missing configuration uses native rules;
+/// an environment key is a credential, never permission to start inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterSetting {
     Absent,
@@ -358,11 +356,7 @@ impl Setting {
     pub fn of(value: Option<&Value>) -> Self {
         match value {
             None | Some(Value::Null) => Self::Absent,
-            Some(value) => value
-                .as_u64()
-                .filter(|n| *n > 0)
-                .and_then(|n| usize::try_from(n).ok())
-                .map_or(Self::Invalid, Self::Set),
+            Some(value) => value.as_u64().filter(|n| *n > 0).and_then(|n| usize::try_from(n).ok()).map_or(Self::Invalid, Self::Set),
         }
     }
 
@@ -541,11 +535,7 @@ impl Runtime {
     /// Capture the current host's runtime metadata.
     #[must_use]
     pub fn detect() -> Self {
-        Self {
-            kind: "native".to_string(),
-            os: std::env::consts::OS.to_string(),
-            arch: std::env::consts::ARCH.to_string(),
-        }
+        Self { kind: "native".to_string(), os: std::env::consts::OS.to_string(), arch: std::env::consts::ARCH.to_string() }
     }
 }
 
@@ -607,6 +597,14 @@ pub struct Commands {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectConfig {
+    /// Optional assistance after native investigation. Empty by default, even
+    /// for existing projects with credentials or a legacy provider setting.
+    #[serde(skip_serializing_if = "AiConfig::is_empty")]
+    pub ai: AiConfig,
+    /// Explicit snapshot hosting. Credentials are read only from the process
+    /// environment, never from this project configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication: Option<PublicationConfig>,
     /// Git promotion flow + provider + submodule flag.
     pub git: GitConfig,
 
@@ -673,6 +671,9 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::history_commits`].
     #[serde(skip_serializing_if = "MapConfig::is_empty")]
     pub map: MapConfig,
+    /// Explicit per-purpose fallback. One purpose never enables another.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub judgement: std::collections::BTreeMap<String, Value>,
     /// A busca por assunto do mapa — veja [`SearchConfig`]. Lida só por
     /// [`ProjectConfig::search_filter`], [`ProjectConfig::search_cut_share`],
     /// [`ProjectConfig::search_exists_from`] e
@@ -729,14 +730,45 @@ pub struct ProjectConfig {
     pub extra: Map<String, Value>,
 }
 
+/// Destination for native, on-demand static publication.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PublicationConfig {
+    pub provider: String,
+    pub account_id: String,
+    pub project_name: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    /// Must be explicitly true before a configured judgement fallback may run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Value>,
+    /// Embedded local vectors are enabled when absent; explicit false opts out.
+    /// This never enables the separate paid fallback provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vectors: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl AiConfig {
+    #[must_use]
+    pub
+    fn is_empty(&self) -> bool {
+        self.fallback.is_none() && self.vectors.is_none() && self.extra.is_empty()
+    }
+}
+
 impl ProjectConfig {
     /// The canonical on-disk path: `<root>/mustard.json`, via [`ClaudePaths`].
     /// The `unwrap_or_else` is defence-in-depth — `root` should never terminate
     /// in `.claude` (the workspace resolver guarantees it).
     fn json_path(root: &Path) -> PathBuf {
-        ClaudePaths::for_project(root)
-            .map(|p| p.mustard_json_path())
-            .unwrap_or_else(|_| root.join("mustard.json"))
+        ClaudePaths::for_project(root).map(|p| p.mustard_json_path()).unwrap_or_else(|_| root.join("mustard.json"))
     }
 
     /// Whether `<root>/mustard.json` exists on disk. Lets `init`/`update`
@@ -804,12 +836,7 @@ impl ProjectConfig {
             lint: non_blank(self.lint_command.as_deref()),
             type_check: non_blank(self.type_check_command.as_deref()),
             prepare: non_blank(self.prepare_command.as_deref()),
-            build_output: self
-                .build_output
-                .iter()
-                .flatten()
-                .filter_map(|folder| non_blank(Some(folder.as_str())))
-                .collect(),
+            build_output: self.build_output.iter().flatten().filter_map(|folder| non_blank(Some(folder.as_str()))).collect(),
         }
     }
 
@@ -821,11 +848,7 @@ impl ProjectConfig {
             None => Some("git".to_string()),
             Some(raw) => {
                 let t = raw.trim();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t.to_string())
-                }
+                if t.is_empty() { None } else { Some(t.to_string()) }
             }
         }
     }
@@ -869,6 +892,26 @@ impl ProjectConfig {
     #[must_use]
     pub fn search_filter(&self) -> FilterSetting {
         FilterSetting::of(self.search.filter.as_ref())
+    }
+
+    #[must_use]
+    pub fn judgement_filter(&self, purpose: &str) -> FilterSetting {
+        self.judgement.get(purpose).and_then(|v| v.get("filter")).map_or_else(
+            || {
+                if purpose == "search" { self.search_filter() } else { FilterSetting::Absent }
+            },
+            |v| FilterSetting::of(Some(v)),
+        )
+    }
+
+    #[must_use]
+    pub fn ai_fallback_enabled(&self) -> bool {
+        self.ai.fallback.as_ref() == Some(&Value::Bool(true))
+    }
+
+    #[must_use]
+    pub fn ai_vectors_enabled(&self) -> bool {
+        self.ai.vectors.as_ref().is_none_or(|value| value == &Value::Bool(true))
     }
 
     /// `search.cut_share`: que parte da maior chance, em pontos percentuais
@@ -953,11 +996,7 @@ impl ProjectConfig {
                 if on.is_empty() || file.is_empty() {
                     return None;
                 }
-                Some(Injectable {
-                    on: on.to_ascii_lowercase(),
-                    file: file.to_string(),
-                    once: entry.once,
-                })
+                Some(Injectable { on: on.to_ascii_lowercase(), file: file.to_string(), once: entry.once })
             })
             .collect()
     }
@@ -974,10 +1013,7 @@ impl ProjectConfig {
     /// [`Language::text`] and has no verdict without it.
     #[must_use]
     pub fn language(&self) -> Language {
-        Language {
-            text: declared_locale(self.language.text.as_deref()),
-            code: declared_locale(self.language.code.as_deref()),
-        }
+        Language { text: declared_locale(self.language.text.as_deref()), code: declared_locale(self.language.code.as_deref()) }
     }
 
     /// As siglas do projeto, sem espaço em volta e em maiúsculas, porque a
@@ -1024,9 +1060,7 @@ impl ProjectConfig {
     #[must_use]
     pub fn agent_effort(&self) -> &'static str {
         let declared = self.agents.effort.as_ref().and_then(Value::as_str).map(str::trim);
-        declared
-            .and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort)))
-            .unwrap_or(DEFAULT_AGENT_EFFORT)
+        declared.and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or(DEFAULT_AGENT_EFFORT)
     }
 
     /// Escreve [`DEFAULT_AGENT_EFFORT`] em `agents.effort` quando o campo
@@ -1063,11 +1097,7 @@ fn is_model_name(raw: &str) -> bool {
 /// Trim a string-ish option, returning `None` when absent or blank.
 fn non_blank(raw: Option<&str>) -> Option<String> {
     let t = raw?.trim();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t.to_string())
-    }
+    if t.is_empty() { None } else { Some(t.to_string()) }
 }
 
 /// Test whether `pattern` (lowercased) matches `haystack` (lowercased). `*` is a
@@ -1095,10 +1125,9 @@ pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
         }
         cursor = abs + seg.len();
     }
-    if anchored_end
-        && let Some(last) = segments.iter().rev().find(|s| !s.is_empty()) {
-            return haystack.ends_with(last);
-        }
+    if anchored_end && let Some(last) = segments.iter().rev().find(|s| !s.is_empty()) {
+        return haystack.ends_with(last);
+    }
     true
 }
 
@@ -1106,6 +1135,49 @@ pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn local_vectors_default_on_and_remote_fallback_stays_explicit() {
+        let dir = tempdir().unwrap();
+        for (text,vectors) in
+            [("{}",true), (r#"{"jev":{"key":"not-a-real-key"},"search":{"filter":"jev"}}"#,true),
+             (r#"{"ai":{"fallback":"true","vectors":1}}"#,false), (r#"{"ai":{"fallback":null}}"#,true),
+             (r#"{"ai":{"vectors":false}}"#,false), (r#"{"ai":{"vectors":null}}"#,true)]
+        {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            let config = ProjectConfig::load(dir.path());
+            assert!(!config.ai_fallback_enabled());
+            assert_eq!(config.ai_vectors_enabled(),vectors,"{text}");
+        }
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"ai":{"fallback":true,"vectors":true,"future":"kept"},"search":{"filter":"jev"},"knowledge":{"provider":"retired","future":"kept"}}"#,
+        )
+        .unwrap();
+        let config = ProjectConfig::load(dir.path());
+        assert!(config.ai_fallback_enabled());
+        assert!(config.ai_vectors_enabled());
+        assert_eq!(config.judgement_filter("search"), FilterSetting::Jev);
+        assert_eq!(config.judgement_filter("wave-planning"), FilterSetting::Absent);
+        assert_eq!(config.judgement_filter("context"), FilterSetting::Absent);
+        config.write(dir.path()).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(saved["ai"]["future"], "kept");
+        assert_eq!(saved["knowledge"]["future"], "kept");
+    }
+
+    #[test]
+    fn native_publication_configuration_survives_installation_config_writes() {
+        let dir=tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"),r#"{"publication":{"provider":"cloudflare-pages","accountId":"0123456789abcdef0123456789abcdef","projectName":"my-project","futureOption":"preserve"},"custom":"preserve"}"#).unwrap();
+        let config=ProjectConfig::load(dir.path());
+        assert_eq!(config.publication.as_ref().unwrap().project_name,"my-project");
+        config.write(dir.path()).unwrap();
+        let value: Value=serde_json::from_slice(&std::fs::read(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(value["publication"]["futureOption"],"preserve");
+        assert_eq!(value["custom"],"preserve");
+        assert!(value["publication"].get("apiToken").is_none());
+    }
 
     #[test]
     fn load_absent_is_default_fail_open() {
@@ -1198,11 +1270,7 @@ mod tests {
     #[test]
     fn reads_legacy_snake_case_command_aliases() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"build_command":"make","test_command":"make test"}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"build_command":"make","test_command":"make test"}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.build_command(), Some("make".to_string()));
         assert_eq!(cfg.commands().test, Some("make test".to_string()));
@@ -1215,11 +1283,7 @@ mod tests {
     #[test]
     fn commands_treats_the_placeholder_build_command_as_absent() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            format!(r#"{{"build_command":"{BUILD_COMMAND_FALLBACK}"}}"#),
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), format!(r#"{{"build_command":"{BUILD_COMMAND_FALLBACK}"}}"#)).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert!(cfg.commands().build.is_none(), "{:?}", cfg.commands().build);
         assert_eq!(cfg.build_command(), Some(BUILD_COMMAND_FALLBACK.to_string()), "a dica continua no lugar de quem edita o mustard.json");
@@ -1248,11 +1312,7 @@ mod tests {
     #[test]
     fn unknown_keys_preserved_across_round_trip() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"buildCommand":"x","customKey":{"a":1}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"x","customKey":{"a":1}}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert!(cfg.extra.contains_key("customKey"));
         cfg.write(dir.path()).unwrap();
@@ -1477,11 +1537,7 @@ mod tests {
         assert_eq!(cfg.language().code_or_default(), SupportedLocale::EnUs, "no code language: English");
 
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"language":{"text":"en-US","code":" en-US "}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"en-US","code":" en-US "}}"#).unwrap();
         let language = ProjectConfig::load(dir.path()).language();
         assert_eq!(language.text, Some(SupportedLocale::EnUs));
         assert_eq!(language.text_or_default(), SupportedLocale::EnUs);
@@ -1498,11 +1554,7 @@ mod tests {
         // language, on either key; the names then fall back to English.
         for value in ["en", "pt", "fr-FR", "  "] {
             for key in ["text", "code"] {
-                std::fs::write(
-                    dir.path().join("mustard.json"),
-                    format!(r#"{{"language":{{"{key}":"{value}"}}}}"#),
-                )
-                .unwrap();
+                std::fs::write(dir.path().join("mustard.json"), format!(r#"{{"language":{{"{key}":"{value}"}}}}"#)).unwrap();
                 let language = ProjectConfig::load(dir.path()).language();
                 assert_eq!(language, Language::default(), "{key}: {value:?}");
                 assert_eq!(language.code_or_default(), SupportedLocale::EnUs, "{key}: {value:?}");
@@ -1536,11 +1588,7 @@ mod tests {
     #[test]
     fn the_old_language_keys_and_the_tone_are_kept_but_never_read() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"specLang":"en-US","lang":"en-US","tone":"technical"}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"specLang":"en-US","lang":"en-US","tone":"technical"}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.language(), Language::default(), "nothing is read from the old keys");
         for key in ["specLang", "lang", "tone"] {
@@ -1556,16 +1604,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig {
             inject: vec![
-                Injectable {
-                    on: "userPromptSubmit".into(),
-                    file: ".claude/mustard/orchestrator.md".into(),
-                    once: true,
-                },
-                Injectable {
-                    on: "sessionStart".into(),
-                    file: ".claude/mustard/response-style.md".into(),
-                    once: false,
-                },
+                Injectable { on: "userPromptSubmit".into(), file: ".claude/mustard/orchestrator.md".into(), once: true },
+                Injectable { on: "sessionStart".into(), file: ".claude/mustard/response-style.md".into(), once: false },
             ],
             ..Default::default()
         };
@@ -1614,11 +1654,7 @@ mod tests {
         assert!(cfg.inject.is_empty());
         assert!(cfg.injectables().is_empty());
         // `once` missing on disk → false.
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"inject":[{"on":"sessionStart","file":"a.md"}]}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"inject":[{"on":"sessionStart","file":"a.md"}]}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.injectables().len(), 1);
         assert!(!cfg.injectables()[0].once, "absent once defaults to false");
@@ -1633,17 +1669,10 @@ mod tests {
     #[test]
     fn a_stale_worktree_declaration_is_inert_and_breaks_nothing() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"buildCommand":"make","worktree":{"carry":[".env"],"link":["node_modules"]}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"make","worktree":{"carry":[".env"],"link":["node_modules"]}}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.build_command.as_deref(), Some("make"), "the rest of the config still loads");
-        assert!(
-            cfg.extra.contains_key("worktree"),
-            "the withdrawn block is an unknown key now — preserved, never interpreted",
-        );
+        assert!(cfg.extra.contains_key("worktree"), "the withdrawn block is an unknown key now — preserved, never interpreted");
     }
 
     /// Os três campos que descreviam a arquitetura em texto saíram do esquema:
@@ -1703,10 +1732,7 @@ mod tests {
         let mut dm = ProjectConfig::default();
         dm.git.flow.insert("*".into(), "develop".into());
         dm.git.flow.insert("develop".into(), "master".into());
-        assert_eq!(
-            dm.git.declared_bases(),
-            BTreeSet::from(["develop".to_string(), "master".to_string()]),
-        );
+        assert_eq!(dm.git.declared_bases(), BTreeSet::from(["develop".to_string(), "master".to_string()]),);
     }
 
     /// Um projeto que não declara fluxo não declara base nenhuma: a lista sai

@@ -91,6 +91,14 @@ jobs:
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
+      # Search tests and installed gateways use this exact checked dependency.
+      # Runners do not uniformly provide rg; never silently skip those tests.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch verified search dependency
+        run: python packaging/fetch-ripgrep.py --dest target/debug
+
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #
       # `-p scan` is here because mustard-rt's map tests run the scan compiled

@@ -19,6 +19,102 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
+    /// Execute a source search, then join its real hits with current scan evidence.
+    #[command(display_order = 30)]
+    Search {
+        #[arg(long,default_value=".")]
+        root: PathBuf,
+        /// Versioned JSON: {schema_version:1,request:{tool,input,intent,purpose,choose?}}.
+        /// Original `CLI` shape is supported. Additional tool/input pairs:
+        /// Symbol {file_path,symbol}; Trace adds direction?,depth?,target?,limit?.
+        /// Structure {file_path,query}: Tree-sitter syntax query.
+        /// References {file_path,line,column,relation?,limit?}: current `SCIP` or `LSP`;
+        /// one-based line, zero-based UTF-8 byte column; relation is definitions,
+        /// references (default) or implementations. No model calls.
+        #[arg(long,conflicts_with="args")]
+        request: Option<String>,
+        /// Specific question to establish; required for investigation or Choice.
+        #[arg(long)]
+        intent: Option<String>,
+        #[arg(long,value_parser=["locate","understand","spec","implement","validate"])]
+        purpose: Option<String>,
+        /// Permit optional configured Choice only for remaining responsibility ties.
+        #[arg(long)]
+        choose: bool,
+        /// Exact native stdout, stderr and exit code, without added context.
+        #[arg(long,conflicts_with="shell_output")]
+        raw: bool,
+        /// Agent output: lossless smaller matches/current ranges, or original tool result.
+        #[arg(long)]
+        shell_output: bool,
+        /// Native executable and arguments, after `--` (rg, grep or git grep).
+        #[arg(last=true)]
+        args: Vec<String>,
+    },
+    /// Retrieve current functions, documents, configuration and interpretations
+    /// natively, with optional configured Choice for ambiguous responsibility.
+    /// Export a report with `--markdown --out <file>`.
+    /// Optional precise index: `mustard-rt run knowledge --import-scip <index>`;
+    /// add `--source-manifest <receipt>` when source text is not embedded.
+    #[command(display_order = 28)]
+    Knowledge {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "")]
+        query: String,
+        /// What the current task is trying to establish; never rewrites a literal pattern.
+        #[arg(long, conflicts_with_all = ["symbol", "coverage", "record", "refresh", "topics", "evaluate", "responsibility"])]
+        intent: Option<String>,
+        /// Shape current evidence for discovery, planning, editing or verification.
+        #[arg(long, value_parser = ["locate", "understand", "spec", "implement", "validate"], conflicts_with_all = ["coverage", "record", "refresh", "topics", "evaluate", "responsibility"])]
+        purpose: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+        /// Exact card identity returned by discovery: <file>:<line>:<name>.
+        #[arg(long, conflicts_with_all = ["query", "file", "record", "refresh"])]
+        symbol: Option<String>,
+        /// Follow calls, consumers, or both from one exact symbol.
+        #[arg(long, requires = "symbol", value_parser = ["outgoing", "callers", "both"])]
+        direction: Option<String>,
+        /// List stale interpretations and affected sources for explicit review.
+        #[arg(long, conflicts_with_all = ["record", "symbol", "direction"])]
+        refresh: bool,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        #[arg(long, conflicts_with = "record")]
+        all: bool,
+        #[arg(long, conflicts_with = "record")]
+        markdown: bool,
+        /// Expand stored evidence and every current relation of selected symbols.
+        #[arg(long, conflicts_with = "record")]
+        detail: bool,
+        #[arg(long, conflicts_with = "record")]
+        out: Option<PathBuf>,
+        /// Explicit multi-source interpretation receipt, as a `.json` file.
+        #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out", "symbol", "direction", "refresh"])]
+        record: Option<PathBuf>,
+        /// Import an optional `SCIP` Protobuf index, without invoking an indexer.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "record", "refresh", "coverage", "topics", "evaluate", "intent", "purpose", "out", "all", "detail", "markdown", "responsibility"])]
+        import_scip: Option<PathBuf>,
+        /// Source hashes produced alongside that exact index (`JSON`).
+        #[arg(long, requires = "import_scip")]
+        source_manifest: Option<PathBuf>,
+        /// Report indexed scope, parser gaps and exclusions without inference.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "topics", "evaluate", "markdown", "all", "detail"])]
+        coverage: bool,
+        /// Compose current evidence for the topics in a JSON plan.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "evaluate"])]
+        topics: Option<PathBuf>,
+        /// Measure retrieval against an explicit JSON manifest, without a host model.
+        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "markdown", "all", "detail"])]
+        evaluate: Option<PathBuf>,
+        /// Experimental file-to-symbol selection; may regress relevance.
+        /// Optional configured Jev only resolves its remaining ambiguities.
+        #[arg(long, conflicts_with_all = ["coverage", "record", "refresh"])]
+        responsibility: bool,
+    },
     /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
     /// tool; only the blocks that changed are written again.
     /// This is the one scan of the project, and the model is the single
@@ -53,7 +149,8 @@ pub enum ScanCmd {
     /// summary of the project map, up to 3 kB; with `--file`, the parts of that
     /// file: each declaration with its kind, name and lines, and the line
     /// where its tests start), `dump` (the map database table by
-    /// table, in a fixed order, for debugging) or `note "<sentence>" --file
+    /// table, in a fixed order, for debugging), `audit` (native checks of
+    /// database/index consistency and query plans), or `note "<sentence>" --file
     /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
     /// file, or declaration, in business words, so the search finds it by
     /// them; it stays valid until the file changes, and `slice` shows it, as
@@ -130,6 +227,45 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
+        ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
+        }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
+        ),
+        ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
+            import_scip,
+            source_manifest,
+        } => {
+            super::knowledge::run(
+                &root,
+                &mustard_core::io::knowledge::Query {
+                    text: &query,
+                    file: file.as_deref(),
+                    symbol: symbol.as_deref(),
+                    refresh,
+                    limit,
+                    depth,
+                    all,
+                    detail: detail || markdown,
+                    direction: match direction.as_deref() {
+                        Some("callers") => mustard_core::io::knowledge::Direction::Callers,
+                        Some("both") => mustard_core::io::knowledge::Direction::Both,
+                        _ => mustard_core::io::knowledge::Direction::Outgoing,
+                    },
+                },
+                markdown,
+                out.as_deref(),
+                record.as_deref(),
+                super::knowledge::Modes {
+                    import_scip: import_scip.as_deref(),
+                    source_manifest: source_manifest.as_deref(),
+                    coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,
+                    task: mustard_core::domain::knowledge::investigation::Task {
+                        intent: intent.as_deref().unwrap_or_default(),
+                        purpose: purpose.as_deref().and_then(mustard_core::domain::knowledge::investigation::Purpose::parse,
+                            ).unwrap_or_default(),
+                    },
+                },
+            );
+        }
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),
     }
@@ -194,22 +330,39 @@ mod tests {
         cmd: ScanCmd,
     }
 
+    #[test]
+    fn knowledge_modes_cannot_combine_or_silently_ignore_a_query() {
+        for args in [vec!["--coverage","--topics","topics.json"],vec!["--evaluate","eval.json","--query","quartz"],
+            vec!["--topics","topics.json","--symbol","a.rs:1:run"],vec!["--coverage","--markdown"],
+            vec!["--purpose","implement","--topics","topics.json"],vec!["--intent","quartz","--responsibility"],
+            vec!["--purpose","guess"],vec!["--symbol","a.rs:1:run","--intent","quartz"],
+        ] {
+            let mut line=vec!["probe","knowledge"];line.extend(args);
+            assert!(Probe::try_parse_from(line).is_err());
+        }
+        assert!(Probe::try_parse_from(["probe","knowledge","--coverage"]).is_ok());
+        assert!(Probe::try_parse_from(["probe","knowledge","--query","quartz","--intent","restore","--purpose","implement"]).is_ok());
+    }
+
     fn opts_of(args: &[&str]) -> crate::commands::map::MapOpts {
         let mut line = vec!["probe", "map"];
         line.extend_from_slice(args);
-        map_opts(Probe::try_parse_from(line).expect("the command line parses").cmd)
+        map_opts(Probe::try_parse_from(line).expect("the command line parses").cmd,
+        )
     }
 
     /// `--described` e `--said` da linha de comando chegam às opções da busca,
     /// com `--query` e com o texto do `Grep`, e sem eles ficam vazios.
     #[test]
     fn the_description_and_the_speech_of_the_command_line_reach_the_search_options() {
-        let with_query = opts_of(&["search", "--query", "frete", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        let with_query = opts_of(&["search", "--query", "frete", "--described", "Procura o frete", "--said", "Vou olhar",
+        ]);
         assert_eq!(with_query.query.as_deref(), Some("frete"));
         assert_eq!(with_query.described.as_deref(), Some("Procura o frete"));
         assert_eq!(with_query.said.as_deref(), Some("Vou olhar"));
 
-        let with_pattern = opts_of(&["search", "frete", ".", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        let with_pattern = opts_of(&["search", "frete", ".", "--described", "Procura o frete", "--said", "Vou olhar",
+        ]);
         assert_eq!(with_pattern.grep.as_ref().map(|grep| grep.pattern.as_str()), Some("frete"));
         assert_eq!(with_pattern.described.as_deref(), Some("Procura o frete"));
         assert_eq!(with_pattern.said.as_deref(), Some("Vou olhar"));
@@ -222,7 +375,8 @@ mod tests {
     /// linha de comando não vira pasta, e a linha com o alvo segue valendo.
     #[test]
     fn examples_takes_the_target_by_file_and_never_a_task_text() {
-        let refused = Probe::try_parse_from(["probe", "map", "examples", "--task", "adicionar um comando run"]);
+        let refused = Probe::try_parse_from(["probe", "map", "examples", "--task", "adicionar um comando run",
+        ]);
         assert!(refused.is_err(), "a task text is no longer an option of the question");
         let by_file = opts_of(&["examples", "--file", "apps/rt/src/commands/pay"]);
         assert_eq!(by_file.file.as_deref(), Some("apps/rt/src/commands/pay"));

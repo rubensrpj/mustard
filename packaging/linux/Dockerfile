@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # fakeroot) e cópia (rsync).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config file curl wget ca-certificates xz-utils git \
-      rsync dpkg-dev fakeroot \
+      rsync dpkg-dev fakeroot python3 \
       libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
