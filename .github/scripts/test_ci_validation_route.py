@@ -25,7 +25,7 @@ PULLS = f"{PREFIX}/commits/{MERGE}/pulls?per_page=100"
 COMMIT = f"{PREFIX}/git/commits/{MERGE}"
 ORIGINAL = f"{PREFIX}/git/commits/{HEAD}"
 RUNS = f"{PREFIX}/actions/workflows/ci.yml/runs?" + urllib.parse.urlencode({
-    "event": "pull_request", "status": "success", "head_sha": HEAD, "per_page": 100,
+    "event": "pull_request", "head_sha": HEAD, "per_page": 100,
 })
 JOBS = f"{PREFIX}/actions/runs/123/jobs?filter=latest&per_page=100"
 ARTIFACTS = f"{PREFIX}/actions/runs/123/artifacts?per_page=100"
@@ -136,6 +136,14 @@ class ValidationRouteTests(unittest.TestCase):
                     data = fixture()
                     next(item for item in data[JOBS]["jobs"] if item["name"] == job)["conclusion"] = conclusion
                     self.assertTrue(self.evaluate(data)[0]["validate"])
+
+    def test_older_success_cannot_hide_a_later_failed_or_running_validation(self):
+        for change in ({"conclusion": "failure"}, {"status": "in_progress", "conclusion": None}):
+            with self.subTest(change=change):
+                data = fixture()
+                newest = {**data[RUNS]["workflow_runs"][0], "id": 124, **change}
+                data[RUNS]["workflow_runs"].insert(0, newest)
+                self.assertTrue(self.evaluate(data)[0]["validate"])
 
     def test_cache_only_run_cannot_approve_its_own_validation(self):
         data = fixture()

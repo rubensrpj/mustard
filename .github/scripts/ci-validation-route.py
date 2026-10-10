@@ -81,13 +81,15 @@ def route(event, branch, sha, repository, api):
             if original["tree"]["sha"] != commit["tree"]["sha"]:
                 continue
             query = urllib.parse.urlencode({
-                "event": "pull_request", "status": "success",
-                "head_sha": head, "per_page": 100,
+                "event": "pull_request", "head_sha": head, "per_page": 100,
             })
             runs = api(f"{prefix}/actions/workflows/ci.yml/runs?{query}")
-            for run in runs.get("workflow_runs", []):
-                if (run.get("event") != "pull_request" or run.get("head_sha") != head
-                        or run.get("status") != "completed" or run.get("conclusion") != "success"):
+            matching = [run for run in runs.get("workflow_runs", [])
+                        if run.get("event") == "pull_request" and run.get("head_sha") == head]
+            # GitHub returns newest first. An older success must never hide a
+            # more recent failed or still-running validation of the same head.
+            for run in matching[:1]:
+                if run.get("status") != "completed" or run.get("conclusion") != "success":
                     continue
                 # Completed PRs can disappear from run.pull_requests. Bind the
                 # proof to the actual merged head, unchanged tree and full jobs.
