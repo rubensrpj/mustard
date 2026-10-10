@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-rt"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1565,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "scan"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "clap",
