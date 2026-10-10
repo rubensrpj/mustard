@@ -264,6 +264,31 @@ fn named_source_follows_unique_callee_and_keeps_explicit_read_available() {
 }
 
 #[test]
+fn contract_members_lead_to_current_implementations_without_reading_outside_the_inventory() {
+    for (extension,port,implementation) in [
+        ("cs","public interface IArchiveStore {\n  string Read(string key);\n}\n",
+            "public class ArchiveStore : IArchiveStore {\n  public string Read(string key) { return key; }\n}\n"),
+        ("ts","export interface IArchiveStore {\n  read(key: string): string;\n}\n",
+            "export class ArchiveStore implements IArchiveStore {\n  read(key: string): string { return key; }\n}\n")
+    ] {
+        let dir=fixture();let root=dir.path();
+        let port_path=format!("src/allowed/port.{extension}");let impl_path=format!("src/allowed/store.{extension}");
+        std::fs::write(root.join(&port_path),port).unwrap();std::fs::write(root.join(&impl_path),implementation).unwrap();
+        model::scan(root,&root.join(".claude"),&[]);
+        let req=Request {input:json!({"args":["-n","--with-filename","IArchiveStore","src/allowed"]}),
+            intent:"Locate the archive storage contract and its concrete implementations".into(),..request()};
+        let answer=run(root,&req,None);
+        let related=answer.report["task_context"]["chain"]["relations"].as_array().unwrap();
+        assert!(related.iter().any(|edge|edge["relation"]=="implementation" && edge["target_source"]["file"]==impl_path),"{extension}: {related:?}");
+        assert!(related.iter().filter(|edge|edge["relation"]=="implementation").all(|edge|edge["resolution"]=="parser-declaration-association"));
+        assert_eq!(answer.report["remote_model_calls"],0);
+        let scoped=run(root,&Request{input:json!({"args":["-n","--with-filename","IArchiveStore",port_path]}),..req},None);
+        assert!(!scoped.report["task_context"]["cards"].as_array().unwrap().iter().any(|card|card["source"]["file"]==impl_path));
+        assert!(scoped.report["task_context"]["chain"]["partial"]==true);
+    }
+}
+
+#[test]
 fn incomplete_bodies_request_only_unseen_ranges_including_cropped_source_lines() {
     let dir=fixture();
     let root=dir.path();

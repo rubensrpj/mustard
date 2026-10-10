@@ -181,7 +181,7 @@ pub(super) fn investigate(
             if let Some(text) = source_text.get(&card.source.file) {
                 group.excerpts.insert(
                     card.id.clone(),
-                    investigation::selection_excerpt(card, text, None),
+                    investigation::selection_excerpt_for(card, text, group.question.as_deref().unwrap_or(&request.intent), &languages),
                 );
             }
         }
@@ -355,10 +355,50 @@ pub(super) fn investigate(
         .map(|(_, slot)| slot.clone())
         .collect();
     report["cards"] = json!(items);
-    let chain_seeds: Vec<_> = cards.iter().filter(|card| anchors.contains(&card.id) || recommendations.contains(&card.id)).cloned().collect();
+    let chain_seeds: Vec<_> = cards.iter().enumerate().filter(|(i,card)| anchors.contains(&card.id) || recommendations.contains(&card.id)
+        || (anchors.is_empty() && (bodies.contains(i) || primary.contains(&card.id))))
+        .map(|(_,card)|card.clone()).take(4).collect();
     let mut chained_items = report["cards"].as_array().cloned().unwrap_or_default();
     report["chain"] = super::chain::expand(root,tree,&scope.files,&chain_seeds,&mut chained_items,&mut matcher,request.purpose,&request.intent)?;
     report["cards"] = json!(chained_items);
+    for item in report["cards"].as_array_mut().into_iter().flatten() {
+        let missing:Vec<_>=item["source_excerpt"]["missing_ranges"].as_array().into_iter().flatten().map(|range|
+            json!({"tool":"Read","input":{"file_path":item["source"]["file"],"offset":range["line"],
+                "limit":range["end_line"].as_u64().unwrap_or(0).saturating_sub(range["line"].as_u64().unwrap_or(0))+1}})).collect();
+        item["missing_source_reads"]=json!(missing);
+        if item["initial_source_excerpt"]==true {
+            for row in item["source_excerpt"]["text"].as_str().unwrap_or_default().lines() {
+                if let Some((line,text))=row.split_once(" | ") && let Ok(line)=line.parse::<u64>() {
+                    facts.push((item["source"]["file"].as_str().unwrap_or_default().into(),line,text.into()));
+                }
+            }
+        }
+    }
+    if let Some(trace)=report["retrieval_trace"]["candidates"].as_array().cloned() {
+        report["retrieval_trace"]["candidates"]=json!(trace.into_iter().map(|mut trace| {
+            let item=report["cards"].as_array().into_iter().flatten().find(|item|item["id"]==trace["id"]);
+            trace["presentation_status"]=json!(match item {
+                Some(item) if item["initial_source_excerpt"]==true=>"source-excerpt-delivered",
+                Some(item) if item["initial_reference"]==true=>"source-range-delivered",
+                Some(_)=>"deferred-source-expansion",
+                None=>"not-in-task-presentation",
+            });trace
+        }).collect::<Vec<_>>());
+    }
+    let questions=selection::explicit_questions(&request.intent);
+    if questions.len()>1 {
+        let coverage:Vec<_>=questions.iter().enumerate().map(|(at,question)| {
+            let mut matching=Matcher::new(question,&languages).ok();
+            let refs:Vec<_>=report["cards"].as_array().into_iter().flatten()
+                .filter(|item|item["initial_reference"]==true || item["initial_source_excerpt"]==true)
+                .filter(|item|matching.as_mut().is_some_and(|matcher|!matcher.matched(&format!("{} {} {}",item["name"].as_str().unwrap_or_default(),
+                    item["signature"].as_str().unwrap_or_default(),item["source_excerpt"]["text"].as_str().unwrap_or_default())).is_empty()))
+                .map(|item|json!({"id":item["id"],"source":item["source"],"complete_body":item["initial_source_excerpt"]==true && item["source_excerpt"]["truncated"]==false})).collect();
+            json!({"question":question,"references":refs,"selection_outcome":outcomes.get(&format!("responsibility-{}",at+1)),
+                "status":"written-evidence-only; expand incomplete source; behavior unverified"})
+        }).collect();
+        report["question_coverage"]=json!(coverage);
+    }
     for step in report["chain"]["steps"].as_array().into_iter().flatten() {
         if let (Some(file),Some(line),Some(text))=(step["call_source"]["file"].as_str(),step["call_source"]["line"].as_u64(),step["call_text"].as_str()) {
             facts.push((file.into(),line,text.into()));
@@ -456,6 +496,9 @@ fn verify(root: &Path, tree: &Path, generation: &str, cards: &[Card], report: &V
             .all(|item|serde_json::from_value::<Source>(item["source"].clone()).is_ok_and(|source|knowledge::current(tree,&source,&mut hashes)))
         && report["chain"]["steps"].as_array().into_iter().flatten()
             .flat_map(|item| [&item["call_source"], &item["target_source"]])
+            .all(|source|serde_json::from_value::<Source>(source.clone()).is_ok_and(|source|knowledge::current(tree,&source,&mut hashes)))
+        && report["chain"]["relations"].as_array().into_iter().flatten()
+            .flat_map(|item| [&item["evidence_source"],&item["target_source"]])
             .all(|source|serde_json::from_value::<Source>(source.clone()).is_ok_and(|source|knowledge::current(tree,&source,&mut hashes)))
 }
 

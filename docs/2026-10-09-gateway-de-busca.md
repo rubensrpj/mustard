@@ -2,7 +2,74 @@
 
 Implementação em `codex/mustard-plano-completo`, na cópia isolada de desenvolvimento. Esta etapa sucede a investigação orientada à tarefa registrada em `2026-10-08-scan-oraculo.md`: a entrada principal pesquisa o código antes de consultar o banco. A instalação pessoal não é atualizada automaticamente.
 
-## Continuação: evidência localizada antes do julgamento — 09/10
+## Continuação: canais independentes, relações e perguntas explícitas — 09/10
+
+Esta etapa parte de `98351481520b620c5c27444f04610dc8a748440a`, em `codex/mustard-plano-completo`, na mesma cópia isolada. Implementa os cinco pontos autorizados após a avaliação do Sialia. As etapas abaixo permanecem como histórico; seus percentuais não são acumuláveis.
+
+### Implementação
+
+1. **Diagnóstico dos cortes.** Com `MUSTARD_SEARCH_TRACE=1`, cada candidato informa admissão da fonte, posição em cada canal, campos correspondentes, retenção para decisão e entrega na apresentação. A ausência de corpo, uma fonte excluída, um corte de seleção e uma declaração apenas referenciada são situações distintas. O diagnóstico não é acrescentado ao retorno comum nem ao estado pago do Jev.
+2. **Fusão de recuperação.** A ordem lexical anterior, evidências por campo e proprietários do padrão nativo votam por Reciprocal Rank Fusion, `1/(60+posição)`, com deduplicação dentro de cada canal. Antes de ler fontes, são preservados destinos dos canais independentes; depois de admitir fonte atual, a fusão é refeita antes do corte de 24 candidatos de decisão. Permanecem inventário e limites nativos de arquivos/bytes/tempo, com incompletude informada. A prioridade anterior de nomes/áreas explícitas é conservada. Isso não obriga todos os candidatos a entrar na apresentação.
+3. **Evidência por campo.** Nome, assinatura, documentação/comentários, corpo e caminho contribuem de forma distinta. Uma pista recebe somente o peso do campo mais forte; repetir a mesma palavra não multiplica votos. A intenção informa a preferência por comportamento ou definição também no canal do padrão nativo. Contêineres não recebem automaticamente o corpo de seus filhos como implementação própria. Não há dicionário de negócios, fornecedor ou projeto.
+4. **Relações para investigação.** A cadeia acompanha chamadores atuais e associações já armazenadas de membros/contratos/implementações, além das dependências únicas existentes. Interfaces podem levar aos membros e, então, às implementações. As relações do parser são candidatas, não prova de despacho ou comportamento. Um índice SCIP já importado pode fornecer relações do compilador; a cadeia não inicia um servidor LSP automaticamente e só consulta esse índice quando sua verificação permanece no inventário original. Coordenadas lexicais ambíguas são deixadas para uma consulta explícita. Há limites de hidratação, referências e corpos, com indicação de continuação parcial; as duas pontas são conferidas na fonte atual.
+5. **Perguntas e Jev.** `intent` aceita de duas a oito perguntas explícitas em linhas `- ` ou `* `, cada uma com suas próprias restrições. Prosa comum e conjunções não são divididas por heurística. Cada pergunta participa da recuperação e da seleção; a resposta informa referências e incompletude, sem inventar conclusões. `knowledge-choice-v6` compartilha candidatos, hashes e trechos idênticos entre perguntas. Grupos sem trechos atuais suficientes para comparação e snapshots conflitantes não geram chamada paga. Trechos priorizam linhas que correspondem à pergunta, conservando limites e declaração explícita de incompletude. Permanecem `SymbolSelector`, escolha configurada/solicitada, cache, abstenção, `none` e critérios de aceitação anteriores. O Jev não vira motor de busca nem gerador do scan.
+
+O contrato `schema_version:1` e o objeto `request:{tool,input,intent,purpose,choose?}` permanecem compatíveis. As instruções pt-BR/en-US e a descrição do schema Mods foram atualizadas sem ampliar os limites de texto de início de sessão. Nenhum projeto ou dependência de terceiros foi incorporado nesta etapa, nem há adaptador Codex implantado.
+
+### Fundamento e avaliação
+
+A fusão por posição segue o [RRF documentado pela Microsoft](https://learn.microsoft.com/en-us/azure/search/hybrid-search-ranking); a separação de campos considera os [sinais de símbolos/arquivos do Zoekt](https://github.com/sourcegraph/zoekt/blob/27517a30ae6df16c6e768623847fdab8f6a3bbcf/index/score.go). São conceitos adaptados ao banco e ao binário existentes, sem dependência desses serviços. Perguntas explícitas e estado compartilhado seguem [Choice](https://docs.typesafe.ai/primitives/choice) e [State](https://docs.typesafe.ai/concepts/state). A avaliação mede o conteúdo realmente entregue ao agente, como orienta a [documentação de ferramentas da Anthropic](https://www.anthropic.com/engineering/writing-tools-for-agents).
+
+Os pedidos e os rótulos de avaliação ficam separados. `gateway-project-audit.mjs` confere fonte/hash/faixa e apresentação visível, identifica ganhos/perdas e registra o ponto do corte. A nova seleção `repoqa-selection-fusion-20261009.json` foi congelada antes da implementação: dez descrições intactas por repositório, nos primeiros repositórios ainda não usados de Python/TypeScript/Rust/Go que satisfazem os limites de tamanho. Dataset, commits, pedidos e binários são identificados por SHA-256. Rótulos não entram no gateway ou no Jev. Repetições dos conjuntos anteriores são diagnósticos conhecidos.
+
+Os testes de projeto usam cópias descartáveis: nenhum código de aplicação foi alterado ou executado, nenhuma API de pagamento foi chamada e nenhuma fonte do Sialia/Florestal foi enviada a modelos. Retorno nativo preservado continua sendo garantia separada da relevância da apresentação. Mais referências ou corpos não significam economia de tokens faturados, código melhor ou uma spec correta. Essas conclusões exigem sessões completas verificadas; o preflight local não executa um modelo Claude.
+
+### Limite do planejamento da consulta
+
+O caminho é ferramenta original → ocorrências atuais → cruzamento com scan → descoberta complementar pela intenção → ordenação/relações → escolha opcional → apresentação. O índice SQLite FTS usa normalização, equivalências nativas de vocabulário e frequência; isso não equivale a compreender todas as relações da pergunta. A interceptação clássica também pode chegar sem intenção explícita. Git, histórico e relações de compilador possuem operações próprias; não se consulta todo esse conteúdo a cada ocorrência.
+
+No replay Sialia, o padrão `webhook|Webhook` em `.` com uma intenção longa sobre Safe2Pay/autenticação/assinatura/persistência gerou 294 proprietários nativos, 1.270 candidatos hidratados e 24 candidatos de decisão. A implementação `ProcessWebhookAsync` ficou na posição 27 e não chegou à apresentação. Pistas genéricas da intenção também dirigiram pesquisas a outras áreas. O próximo problema de projeto é preservar relações entre pistas e o escopo da pergunta — por exemplo, webhook **do fornecedor citado** —, separando descoberta ampla de investigação focada. Acrescentar vizinhos e mudar pesos não substitui esse planejamento. Não foi implementado um planejador semântico completo nesta etapa.
+
+O bootstrap lexical fixo dos testes públicos compara os binários com pedidos iguais e sem gabarito, mas não simula um agente formulando, observando e refinando consultas. As sete chamadas Sialia foram preparadas durante a análise. Isso limita conclusões sobre o uso real no Claude e deve permanecer explícito.
+
+### Resultados nos projetos e no Jev
+
+| Mesmo replay conhecido | Antes desta etapa | Implementação final |
+| --- | ---: | ---: |
+| Sialia: pontos visíveis / 12 | 7 | 9 (58,3% → 75%; +16,7 pontos percentuais) |
+| Sialia: corpos completos desses pontos | 1 | 3 |
+| Sialia: bytes nas sete buscas | 101.016 | 171.336 (+69,6%) |
+| Florestal: pontos exigidos / 8 | 7 | 8 (87,5% → 100%; +12,5 pontos percentuais) |
+| Florestal: corpos completos desses pontos | 2 | 3 |
+| Florestal: bytes nas oito buscas | 46.673 | 64.852 (+39,0%) |
+
+São critérios identificados durante as análises anteriores, não amostras independentes de acurácia. O Sialia ganhou consulta de estado e roteamento de provedor, sem perder pontos anteriores; continuam ausentes tokenização, implementação de negócio do webhook e desativação de subconta. O último arquivo aparece como excluído/indisponível, e os dois primeiros caem na seleção. No Florestal, `processPlanBackground` passou a ter referência visível, mas seu corpo continua incompleto. Mais cobertura veio acompanhada de mais texto; **não foi demonstrada economia geral**. Os resultados originais permaneceram iguais em 7/7 e 8/8 pedidos, com zero modelos. O baseline Sialia reutiliza seu relatório anterior do mesmo snapshot. O Florestal foi repetido nos dois braços em clones novos do mesmo commit, configuração e inventário. O avaliador passou a exigir referência/corpo na apresentação, em vez de contar todo candidato do JSON; os 8/8 foram confirmados com essa regra. Não é uma comparação controlada de latência.
+
+O piloto real `knowledge-choice-v6` repetiu os oito casos curtos anteriormente conhecidos: 8/8 corretos, quatro escolhas, dois `none` e duas abstenções, sem escolha errada aceita. Foram oito chamadas, **8.351 tokens conhecidos e US$ 0,000351 estimados**; oito repetições usaram cache sem HTTP. A versão anterior gastou 8.014 tokens nesses casos: a nova entrada aumentou **4,2%**. Esse ensaio de perguntas individuais não demonstra economia com compartilhamento entre perguntas. O teste unitário verifica que duas perguntas sobre os mesmos dois candidatos recebem duas entradas de evidência e dois trechos compartilhados, preservando suas perguntas individuais. A amostra paga é pequena, preparada e já conhecida; não calibra a precisão geral do Jev. Os critérios e limiares não foram ajustados aos resultados. A estimativa segue a tarifa configurada, não uma fatura conferida.
+
+Artefatos desta etapa: `target/search-quality-fusion-20261009/`, incluindo `sialia-final-assessment.json`, `florestal-visible-{before,after}.json`, `jev-v6/pilot.json`, apresentações, diagnósticos, hashes e logs. A primeira repetição Florestal reutilizou outra cópia local e retornou 67.812 bytes; a tabela utiliza somente o novo par com inventário igual. Os binários intermediários e finais permanecem separados para não atribuir medições a outra compilação.
+
+### Bateria pública conhecida
+
+A repetição final de Poetry/Three.js/Nom/Nuclei passou de **25/40 para 27/40** alvos visíveis (62,5% → 67,5%; +5 pontos percentuais), com **seis ganhos e quatro perdas**, e 17 → 18 corpos completos. A saída passou de **434.019 para 821.952 bytes (+89,4%)**. Recall nas cinco primeiras posições permaneceu em 42,5%; nas dez primeiras foi 45% → 47,5%. O resultado nativo permaneceu igual em 40/40 pedidos, sem modelos. O baseline foi reaproveitado do ensaio pareado desta etapa; a repetição usa os binários finais congelados. Os tempos agregados foram 153,3 s e 233,3 s, sob concorrência/cache não controlados: não demonstram aceleração nem uma penalidade causal exata. A avaliação conta entrega visível, não somente presença no JSON.
+
+O protótipo anterior com relações também atingiu 27/40, mas com 19 corpos e 819.644 bytes. Essas medições são diagnósticos conhecidos; não provam generalização. **Mais cobertura acompanhada desse crescimento de saída ainda não cumpre o objetivo de acerto com economia.** A implementação permanece na cópia de desenvolvimento para revisão, sem atualização pessoal ou publicação.
+
+### Primeira avaliação nos quatro repositórios novos
+
+Na seleção congelada PyTorch Geometric/LangChain.js/Cargo/croc, o alvo constou dos cartões em **25/40 casos nos dois braços**. Sua entrega efetivamente visível passou de **24/40 para 25/40** (60% → 62,5%; +2,5 pontos percentuais), com **três ganhos e duas perdas**, e 18 → 20 corpos completos. A saída passou de **518.240 para 1.092.557 bytes (+110,8%)**. Recall nas cinco primeiras posições permaneceu em 45%; nas dez primeiras passou de 47,5% para 50%. O resultado nativo foi preservado em 40/40, com zero modelos. Tempos agregados: 267,0 s → 304,9 s, sob concorrência/cache não controlados.
+
+Essa foi a primeira avaliação dessa seleção, congelada antes da implementação. Os resultados não orientaram alterações de ranking nesta etapa; depois de inspecionados, os casos passam a ser conhecidos. Não é a pontuação oficial do RepoQA nem uma sessão Claude. O ganho líquido de apresentação não representa aumento no número de alvos presentes nos cartões, e a quantidade de referência irrelevante ainda não possui rótulos exaustivos. **Esse resultado não aprova a estratégia para uso geral: o pequeno ganho de entrega veio com mais que o dobro do texto.** O problema prioritário permanece planejamento/foco da consulta e seleção de evidência necessária por pergunta, antes de acrescentar mais candidatos/contexto.
+
+Relatórios pareados e auditorias: `known-final/{comparison,audit}.json` e `unseen/{comparison,audit}.json`. Os binários medidos ficam em `baseline-bin`/`final-bin`, com hashes nos relatórios. Uma proteção final contra empate de declarações ao mapear implementações SCIP foi acrescentada depois desse congelamento; esses replays não importam SCIP. A proteção passou pela suíte de gateway/Clippy e está incluída no pacote recompilado. Não se atribuem os hashes dos ensaios ao executável do pacote final.
+
+### Verificações locais
+
+A suíte completa aprovou 3.966 testes Rust, com dois ignorados herdados. Depois dela, o teste adicional que impede snapshots conflitantes no estado do Jev passou junto dos outros cinco testes desse adaptador; o teste de compartilhamento também confere as perguntas individuais. Clippy estrito do workspace passou, com nova conferência do adaptador após esses ajustes. Os 16 testes do SDK Mods e a validação do plugin passaram. As instruções compactadas permanecem dentro dos limites de texto existentes.
+
+A aceitação instalou o `mustard init --yes` compilado nesta cópia em pasta realmente vazia e conferiu atualização nativa, aprendizado, paginação, preservação de resultado/erros, fallback, encaminhamento clássico, fonte atual e reconhecimento de entrega. Zero HTTP/modelos no caminho padrão. O preflight gratuito das duas tarefas JavaScript também passou; as sessões reais Claude continuam pendentes de autenticação/modelo fixo e não foram substituídas por essa prova. A instalação pessoal e os projetos originais permaneceram preservados.
+
+## Histórico: evidência localizada antes do julgamento — 09/10
 
 Esta continuação parte de `0f857a215dfd6fd31e059c289e91bd95b9b2c99d`, na mesma branch isolada. Os resultados das etapas anteriores são históricos: não se somam percentuais nem se compara um corpus com outro como se fossem o mesmo teste. O trabalho principal continua sendo o gateway e o scan; o Sialia foi utilizado somente para testar recuperação, sem alterar sua aplicação.
 

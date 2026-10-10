@@ -1,0 +1,26 @@
+{
+  "dataset_json_sha256": "bd3f7cab47283cdeccee20daea31af587b680cf8f9db192ab4da1037730cd6e2",
+  "method": "Frozen before fusion changes: first alphabetically unused repository per language, <=1000 files/8MiB UTF-8 sources. All ten unchanged descriptions. Metadata inspected only. No answers in gateway requests.",
+  "repositories": [
+    {
+      "language": "python",
+      "repo": "pyg-team/pytorch_geometric",
+      "commit": "af0f5f44d4dfa8accd898df3e8523d06b67940b0"
+    },
+    {
+      "language": "typescript",
+      "repo": "langchain-ai/langchainjs",
+      "commit": "1f4a4498b66af5910d02dd4b9d68d99aa1350548"
+    },
+    {
+      "language": "rust",
+      "repo": "rust-lang/cargo",
+      "commit": "5da28587846d6cb2694e5bb1db1b5ca327285bf7"
+    },
+    {
+      "language": "go",
+      "repo": "schollz/croc",
+      "commit": "d81116382fcb9dddb79b02ed4b0da99e7aecb2ab"
+    }
+  ]
+}

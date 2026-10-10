@@ -24,7 +24,7 @@ export default {
         },
         "intent": {
           "type": "string",
-          "description": "Specific local question. Required for investigation or choose."
+          "description": "Specific local question, or 2–8 explicit '- question' bullets separated by newlines; keep constraints per question. Required for investigation or choose."
         },
         "purpose": {
           "type": "string",

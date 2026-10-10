@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 pub mod policy;
+pub mod fusion;
 
 #[derive(Clone, Debug)]
 pub struct Ranked {
@@ -125,11 +126,13 @@ pub struct Ambiguity {
     pub key: String,
     pub candidates: Vec<Card>,
     pub excerpts: BTreeMap<String, Excerpt>,
+    /// An explicitly supplied subquestion, never inferred from project terms.
+    pub question: Option<String>,
 }
 
 impl Ambiguity {
     pub fn new(key: String, candidates: Vec<Card>) -> Self {
-        Self { key, candidates, excerpts: BTreeMap::new() }
+        Self { key, candidates, excerpts: BTreeMap::new(), question: None }
     }
 }
 
@@ -162,6 +165,21 @@ pub struct Plan {
 }
 
 pub fn responsibility(cards: &[Card], query: &str, languages: &Languages) -> Plan {
+    let questions = explicit_questions(query);
+    if questions.len() > 1 {
+        let mut plans:Vec<_>=questions.iter().map(|question|responsibility(cards,question,languages)).collect();
+        let votes=fusion::reciprocal_ranks(&plans.iter().map(|plan|plan.order.clone()).collect::<Vec<_>>());
+        let mut order:Vec<_>=votes.keys().copied().collect();
+        order.sort_by(|&a,&b|votes[&b].total_cmp(&votes[&a]).then_with(||cards[a].id.cmp(&cards[b].id)));
+        let mut groups=Vec::new();let mut recommendations=BTreeSet::new();
+        for (at,plan) in plans.iter_mut().enumerate() {
+            recommendations.extend(plan.recommendations.iter().cloned());
+            for mut group in std::mem::take(&mut plan.groups) {
+                group.key=format!("responsibility-{}",at+1);group.question=Some(questions[at].to_string());groups.push(group);
+            }
+        }
+        return Plan{order,recommendations:recommendations.into_iter().collect(),groups,basis:"explicit-subquestions; responsibility-unresolved"};
+    }
     if query.trim().is_empty() {
         return Plan { basis: "intent-missing", ..Plan::default() };
     }
@@ -176,12 +194,22 @@ pub fn responsibility(cards: &[Card], query: &str, languages: &Languages) -> Pla
         .then_with(|| cards[a.card].id.cmp(&cards[b.card].id)));
     let order: Vec<_> = ranked.iter().map(|r| r.card).collect();
     let groups = if order.len() > 1 {
-        vec![Ambiguity::new("responsibility".into(), order.iter().map(|&i| cards[i].clone()).collect())]
+        let mut group=Ambiguity::new("responsibility".into(), order.iter().map(|&i| cards[i].clone()).collect());
+        group.question=Some(query.to_string());vec![group]
     } else { vec![] };
     Plan {
         basis: if groups.is_empty() { "insufficient-comparative-evidence" } else { "structural-reading-order; responsibility-unresolved" },
         order, groups, recommendations: vec![],
     }
+}
+
+/// A host may submit a short bullet list in the existing intent field. Prose,
+/// conjunctions and constraints are not split into invented responsibilities.
+pub fn explicit_questions(query:&str)->Vec<&str> {
+    let lines:Vec<_>=query.lines().map(str::trim).filter(|line|!line.is_empty()).collect();
+    let bullets:Option<Vec<_>>=lines.iter().map(|line|line.strip_prefix("- ").or_else(||line.strip_prefix("* "))
+        .map(str::trim).filter(|line|!line.is_empty())).collect();
+    if let Some(bullets)=bullets && (2..=8).contains(&bullets.len()) {bullets} else {vec![query]}
 }
 
 /// Rank the question before applying a soft cost for repeated files. A strong
@@ -345,6 +373,19 @@ mod tests {
             let plan = responsibility(&cards[..1], query, &languages);
             assert!(plan.groups.is_empty());
             assert!(plan.recommendations.is_empty());
+        }
+    }
+
+    #[test]
+    fn only_explicit_bullets_become_independent_responsibility_questions() {
+        let cards=cards();let languages=Languages::new(["en-US"]);
+        let intent="- Which method processes the quartz beacon?\n- Which method archives the beacon?";
+        let plan=responsibility(&cards,intent,&languages);
+        assert_eq!(plan.groups.len(),2);
+        assert_eq!(plan.groups[0].key,"responsibility-1");
+        assert_eq!(plan.groups[1].question.as_deref(),Some("Which method archives the beacon?"));
+        for prose in ["Create and archive the beacon", "Question: recover quartz.\nConstraint: avoid writes."] {
+            assert_eq!(explicit_questions(prose),[prose]);
         }
     }
 

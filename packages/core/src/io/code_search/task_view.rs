@@ -179,6 +179,15 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         let _=writeln!(text,"@ {}\n{} | {}\n# Associated test mention; coverage/execution unverified.",
             test["source"]["file"].as_str().unwrap_or_default(),test["source"]["line"],test["text"].as_str().unwrap_or_default());
     }
+    for relation in context["chain"]["relations"].as_array().into_iter().flatten() {
+        let name=|key|relation[key].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
+        let _=writeln!(text,"# {}: {} -> {} [{}; runtime unverified]",relation["relation"].as_str().unwrap_or_default(),
+            name("from"),name("to"),relation["resolution"].as_str().unwrap_or_default());
+    }
+    for (at,question) in context["question_coverage"].as_array().into_iter().flatten().enumerate() {
+        let _=writeln!(text,"# Question {}: {} — {} source references; behavior unverified",at+1,
+            question["question"].as_str().unwrap_or_default(),question["references"].as_array().map_or(0,Vec::len));
+    }
     for (file,count) in deferred {
         let _=writeln!(text,"# {count} additional candidates in {file}: mustard-rt run map summary --file {}",quote(file));
     }

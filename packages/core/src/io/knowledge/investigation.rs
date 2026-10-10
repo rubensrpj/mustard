@@ -178,10 +178,17 @@ pub(crate) fn selection_excerpt(card: &Card, text: &str, hits: Option<&Vec<u64>>
     let source = &card.source;
     let lines: Vec<_> = text.lines().collect();
     let mut wanted = BTreeSet::new();
-    for line in source.line..=source.end_line.min(source.line.saturating_add(31)) { wanted.insert(line); }
-    for line in source.end_line.saturating_sub(15).max(source.line)..=source.end_line { wanted.insert(line); }
-    for &hit in hits.into_iter().flatten() {
+    for line in source.line..=source.end_line.min(source.line.saturating_add(7)) { wanted.insert(line); }
+    for line in source.end_line.saturating_sub(3).max(source.line)..=source.end_line { wanted.insert(line); }
+    // Actual distinguishing lines get space before boilerplate. Preserve
+    // declaration boundaries and explicit incompleteness for larger bodies.
+    for &hit in hits.into_iter().flatten().take(8) {
         for line in hit.saturating_sub(2).max(source.line)..=hit.saturating_add(2).min(source.end_line) { wanted.insert(line); }
+    }
+    for line in (source.line..=source.end_line.min(source.line.saturating_add(31)))
+        .chain(source.end_line.saturating_sub(15).max(source.line)..=source.end_line) {
+        if wanted.len() >= 64 {break;}
+        wanted.insert(line);
     }
     let mut content = String::new();
     let mut included = 0_u64;
@@ -197,6 +204,17 @@ pub(crate) fn selection_excerpt(card: &Card, text: &str, hits: Option<&Vec<u64>>
     }
 }
 
+pub(crate) fn selection_excerpt_for(card:&Card,text:&str,question:&str,languages:&Languages)->knowledge::selection::Excerpt {
+    let mut matcher=Matcher::new(question,languages).ok();
+    let mut hits:Vec<_>=text.lines().enumerate().filter(|(at,_)|*at as u64+1>=card.source.line && (*at as u64)<card.source.end_line)
+        .filter_map(|(at,line)|{
+            let score=matcher.as_mut().map_or(0,|matcher|matcher.matched(line).len());
+            (score>0).then_some((at as u64+1,score))
+        }).collect();
+    hits.sort_by(|a,b|b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    selection_excerpt(card,text,Some(&hits.into_iter().map(|(line,_)|line).collect()))
+}
+
 pub(super) struct File {
     text: String,
     hash: String,
@@ -209,6 +227,8 @@ pub(super) struct Investigation {
     pub report: Value,
     pub omitted: bool,
     alternatives: BTreeMap<String, Vec<Card>>,
+    admission: BTreeMap<String, &'static str>,
+    channel_trace: BTreeMap<String, Value>,
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -306,16 +326,19 @@ pub(super) fn prepare(
             json!({"operation":"intent-discovery","added_candidates":count,"partial":pool.omitted}),
         );
     }
-    if scope.is_some() {
+    let mut source_reservoir = None;
+    if let Some(scope) = scope {
         let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
         let weights=catalog::task_weights(root,question,&languages)?;
         let mut anchors:Vec<_>=cards.iter().filter(|card|anchor_names.contains(&card.name.to_lowercase())).map(|card|card.id.clone()).collect();
-        if matches!(task.purpose,Purpose::Spec|Purpose::Understand) && let Some(scope)=scope {
+        if matches!(task.purpose,Purpose::Spec|Purpose::Understand) {
             anchors.extend(knowledge::selection::area_anchors(cards,query.text,scope.seeds));
         }
-        let mut order=knowledge::selection::task_order(cards,question,&languages,&weights,&anchors);
+        let fused=knowledge::selection::fusion::rank(cards,query.text,question,&languages,&weights,&anchors,scope.seeds);
+        let mut order=fused.cards.clone();
         for &i in ranking.iter() {if !order.contains(&i) {order.push(i);}}
         *ranking=order;
+        source_reservoir=Some(fused.files(cards,query.limit.clamp(1,16)));
     }
     let mut paths = Vec::new();
     let mut seen = BTreeSet::new();
@@ -325,6 +348,13 @@ pub(super) fn prepare(
         }
         if paths.len() >= query.limit.clamp(1, 16) {
             break;
+        }
+    }
+    if let Some(reserved) = source_reservoir {
+        // Preserve the leading destinations of every independent search before
+        // source admission. This does not enlarge the agent's response budget.
+        for path in reserved {
+            if scoped(&path,query.file) && seen.insert(path.clone()) {paths.push(path);}
         }
     }
     if let Some(symbol) = query.symbol
@@ -396,6 +426,7 @@ pub(super) fn prepare(
     let mut files = BTreeMap::new();
     let mut bytes = 0;
     let mut skipped = 0;
+    let mut admission:BTreeMap<_,_>=paths.iter().map(|path|(path.clone(),"source-budget-exhausted")).collect();
     for path in &paths {
         if files.len() >= MAX_LIVE_FILES
             || bytes >= MAX_LIVE_BYTES
@@ -406,8 +437,10 @@ pub(super) fn prepare(
         }
         let Some(text) = safe_read(tree, path, &registry) else {
             skipped += 1;
+            admission.insert(path.clone(),"source-excluded-or-unavailable");
             continue;
         };
+        admission.insert(path.clone(),"source-read");
         bytes += text.len();
         let mut hits = Vec::new();
         for (at, line) in text.lines().enumerate() {
@@ -428,7 +461,8 @@ pub(super) fn prepare(
         );
     }
     omitted |= skipped > 0 || (fallback && !repository_listing);
-    if scope.is_some() {
+    let mut channel_trace = BTreeMap::new();
+    if let Some(scope) = scope {
         // Apply source admission before the display cut. An inadmissible
         // candidate must not displace readable evidence and then abort the
         // whole task after hydration. Original native occurrences stay intact.
@@ -436,7 +470,7 @@ pub(super) fn prepare(
         let question=if task.intent.trim().is_empty(){query.text}else{task.intent};
         let weights=catalog::task_weights(root,question,&languages)?;
         let mut anchors:Vec<_>=anchor_ids.iter().cloned().collect();
-        if matches!(task.purpose,Purpose::Spec|Purpose::Understand) && let Some(scope)=scope {
+        if matches!(task.purpose,Purpose::Spec|Purpose::Understand) {
             anchors.extend(knowledge::selection::area_anchors(cards,query.text,scope.seeds));
         }
         // File expansion may discover a better declaration after the initial
@@ -445,9 +479,13 @@ pub(super) fn prepare(
         let admitted:Vec<_>=cards.iter().enumerate().filter(|(_,card)|files.contains_key(&card.source.file)
             && current(tree,&card.source,hashes)).map(|(i,_)|i).collect();
         let candidates:Vec<_>=admitted.iter().map(|&i|cards[i].clone()).collect();
-        *ranking=knowledge::selection::task_order(&candidates,question,&languages,&weights,&anchors).into_iter().map(|i|admitted[i]).collect();
+        let fused=knowledge::selection::fusion::rank(&candidates,query.text,question,&languages,&weights,&anchors,scope.seeds);
+        *ranking=fused.cards.iter().map(|&i|admitted[i]).collect();
+        if std::env::var_os("MUSTARD_SEARCH_TRACE").is_some_and(|value|value=="1") {
+            for (i,card) in candidates.iter().enumerate() {channel_trace.insert(card.id.clone(),fused.trace(i));}
+        }
         phases.push(json!({"operation":"rank-after-source-expansion","admitted_candidates":admitted.len(),"ranked_candidates":ranking.len(),
-            "native_owners":scope.map_or(0,|scope|scope.seeds.len()),"ranking_method":"length-normalized distinct written clues; soft file diversification"}));
+            "native_owners":scope.seeds.len(),"ranking_method":"reciprocal rank fusion: intent, source fields, native pattern; original reading anchors preserved"}));
     }
     let mut alternatives = BTreeMap::new();
     let mut promotions = 0;
@@ -563,6 +601,7 @@ pub(super) fn prepare(
     live_only.truncate(query.limit.clamp(1, 16));
     omitted |= live_only_count > live_only.len();
     phases.push(json!({"operation":"current-source-search","files_read":files.len(),"bytes_read":bytes,"skipped_or_unavailable":skipped,
+        "files_requested":paths.len(),"files_not_selected":cards.iter().map(|card|&card.source.file).collect::<BTreeSet<_>>().iter().filter(|path|!admission.contains_key(**path)).count(),
         "fallback":fallback,"repository_listing":repository_listing,"partial":omitted}));
     phases.push(json!({"operation":"cross-check","intent_promotions":promotions,"alternative_groups":alternatives.len(),"unindexed_matches":live_only_count,"weak_complements_deferred":weak_complements}));
     let report = json!({"purpose":task.purpose,"intent":task.intent,"phases":phases,"live_matches":live_only,
@@ -574,6 +613,8 @@ pub(super) fn prepare(
         report,
         omitted,
         alternatives,
+        admission,
+        channel_trace,
     })
 }
 
@@ -637,6 +678,11 @@ pub(crate) fn current_excerpt(card: &Card, text: &str, matcher: &mut Matcher, pu
 }
 
 impl Investigation {
+    pub(super) fn trace(&self, card: &Card) -> Value {
+        let mut trace=self.channel_trace.get(&card.id).cloned().unwrap_or_else(||json!({}));
+        trace["source_admission"]=json!(self.admission.get(&card.source.file).copied().unwrap_or("not-selected-by-source-reservoir"));
+        trace
+    }
     pub(super) fn adorn(
         &self,
         card: &Card,

@@ -20,6 +20,7 @@ pub mod dossier;
 pub mod investigation;
 pub mod observations;
 pub mod precise;
+pub mod relations;
 pub(crate) mod catalog;
 pub(crate) mod references;
 mod navigation;
@@ -529,8 +530,19 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         let scoped:Vec<_>=positions.iter().map(|&i|cards[i].clone()).collect();
         let mut groups=knowledge::selection::within_files(&scoped,query,&languages,&weights);
         for group in groups.values_mut() {for rank in group {rank.card=positions[rank.card];}}
-        let ambiguities:Vec<_>=files.iter().filter_map(|path|groups.get(path).and_then(|group|knowledge::selection::ambiguity(path,group,&cards)))
+        let mut ambiguities:Vec<_>=files.iter().filter_map(|path|groups.get(path).and_then(|group|knowledge::selection::ambiguity(path,group,&cards)))
             .filter(|group|group.candidates.iter().all(|card|current(tree,&card.source,&mut hashes))).collect();
+        if selector.is_some() {
+            let registry=knowledge::resources::Registry::load().map_err(invalid)?;
+            let texts:BTreeMap<_,_>=files.iter().filter_map(|file|investigation::safe_read(tree,file,&registry).map(|text|(file,text))).collect();
+            for group in &mut ambiguities {
+                for card in &group.candidates {
+                    if let Some(text)=texts.get(&card.source.file) {
+                        group.excerpts.insert(card.id.clone(),investigation::selection_excerpt_for(card,text,query,&languages));
+                    }
+                }
+            }
+        }
         ambiguous_files=ambiguities.len();
         let decisions=if let Some(selector)=selector.filter(|_|!ambiguities.is_empty() && !all) {selector.select(query,&ambiguities)} else {knowledge::selection::Decisions::default()};
         if !decisions.usage.is_null(){selection_usage=decisions.usage;}
@@ -560,10 +572,18 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         ranking.iter().copied().filter(|&i|current(tree,&cards[i].source,&mut hashes)).take(24).map(|i|cards[i].clone()).collect()
     }else{Vec::new()};
     let rank_trace=if scope.is_some() && std::env::var_os("MUSTARD_SEARCH_TRACE").is_some_and(|value|value=="1") {
-        Some(cards.iter().enumerate().map(|(i,card)|json!({"id":card.id,"source":card.source,
-            "rank":ranking.iter().position(|ranked|*ranked==i).map(|at|at+1),
-            "source_current":current(tree,&card.source,&mut hashes),
-            "decision_retained":task_candidates.iter().any(|candidate|candidate.id==card.id)})).collect::<Vec<_>>())
+        Some(cards.iter().enumerate().map(|(i,card)| {
+            let rank=ranking.iter().position(|ranked|*ranked==i).map(|at|at+1);
+            let fresh=current(tree,&card.source,&mut hashes);
+            let retained=task_candidates.iter().any(|candidate|candidate.id==card.id);
+            let mut trace=investigation.as_ref().map_or_else(||json!({}),|native|native.trace(card));
+            trace["id"]=json!(card.id);trace["source"]=json!(card.source);trace["rank"]=json!(rank);
+            trace["source_current"]=json!(fresh);trace["decision_retained"]=json!(retained);
+            trace["decision_status"]=json!(if !fresh {"stale-source"} else if scope.is_some_and(|scope|!scope.files.contains(&card.source.file)) {"outside-request-inventory"}
+                else if trace["source_admission"]!="source-read" {"source-not-admitted"} else if rank.is_none() {"no-written-ranking-signal"}
+                else if !retained {"decision-reservoir-cut"} else {"retained-for-decision"});
+            trace
+        }).collect::<Vec<_>>())
     }else{None};
     for i in ranking.into_iter().filter(|i| file.is_none_or(|file| cards[*i].source.file == file)) {
         if selected.len() >= seed_limit {
@@ -718,7 +738,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             "native_owners_in_decision":task_candidates.iter().filter(|card|scope.seeds.contains(&card.id)).count(),
             "meaning":"Stage counts describe retrieval and source admission, not semantic correctness."});
         report["task_candidates"]=json!(task_candidates);
-        if let Some(trace)=rank_trace {report["retrieval_trace"]=json!({"method":"explicit MUSTARD_SEARCH_TRACE=1; metadata only; absent rank does not establish absence in source","candidates":trace});}
+        if let Some(trace)=rank_trace {report["retrieval_trace"]=json!({"method":"explicit MUSTARD_SEARCH_TRACE=1; per-channel ranks, source admission and decision status; not a relevance judgement","candidates":trace});}
     }
     Ok((report,map))
 }

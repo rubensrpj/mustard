@@ -29,6 +29,7 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
         let seed = seeds.iter().find(|seed| seed.outgoing.iter().any(|e| e["target"] == card.id && e["resolution"] == "unique-static-target"));
         let Some(seed) = seed else { continue; };
         let edge = seed.outgoing.iter().find(|e| e["target"] == card.id);
+        if edge.and_then(|edge|serde_json::from_value::<Source>(edge["source"].clone()).ok()).as_ref()!=Some(&card.source) {continue;}
         let call_line = edge.and_then(|e| e["call_line"].as_u64()).unwrap_or(seed.source.line);
         let call = investigation::safe_read(tree, &seed.source.file, &registry)
             .filter(|text| digest(text) == seed.source.sha256)
@@ -66,6 +67,47 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
         appended += usize::from(expand);
         if expand {covered.extend(written_slots);}
     }
+    let mut related=knowledge::relations::follow(root,tree,files,seeds,128)?;
+    // An interface's members can lead to implementations in a second native
+    // step. Keep every alternative as a candidate, never a guessed dispatch.
+    let contracts:Vec<_>=related.targets.iter().filter(|target|target.receipt["relation"]=="member"
+        && seeds.iter().any(|seed|seed.id==target.receipt["from"] && matches!(seed.kind.as_str(),"interface"|"trait")))
+        .map(|target|target.card.clone()).take(4).collect();
+    if !contracts.is_empty() {
+        let second=knowledge::relations::follow(root,tree,files,&contracts,128)?;
+        related.partial|=second.partial;related.targets.extend(second.targets);
+    }
+    let mut scored:Vec<_>=related.targets.into_iter().map(|target| {
+        let slots=matcher.matched(&crate::domain::knowledge::evidence::own_text(&target.card));
+        (target,slots.len())
+    }).collect();
+    scored.sort_by(|(a,x),(b,y)|y.cmp(x).then_with(||a.card.id.cmp(&b.card.id)));
+    let mut relations=Vec::new();let mut related_seen=BTreeSet::new();
+    let mut related_body_count=0;
+    for (target,_) in scored {
+        if !related_seen.insert(target.card.id.clone()) {continue;}
+        if relations.len()>=16 {related.partial=true;break;}
+        let card=&target.card;
+        let Some(text)=investigation::safe_read(tree,&card.source.file,&registry) else {related.partial=true;continue;};
+        let excerpt=investigation::current_excerpt(card,&text,matcher,purpose);
+        let slots=matcher.matched(excerpt["text"].as_str().unwrap_or_default());
+        let expand=related_body_count<2 && slots.iter().any(|slot|!covered.contains(slot));
+        if let Some(item)=items.iter_mut().find(|item|item["id"]==card.id) {
+            item["initial_reference"]=json!(true);
+            if expand && item["initial_source_excerpt"]!=true {
+                item["initial_source_excerpt"]=json!(true);item["source_excerpt"]=excerpt;
+                related_body_count+=1;covered.extend(slots);
+            }
+        } else {
+            let mut item=crate::domain::knowledge::summary(card);
+            item["source_excerpt"]=excerpt;item["initial_reference"]=json!(true);item["initial_source_excerpt"]=json!(expand);
+            item["recommended"]=json!(false);item["retrieval"]=target.receipt["relation"].clone();
+            item["read"]=json!({"tool":"Read","input":{"file_path":card.source.file,"offset":card.source.line,"limit":card.source.end_line-card.source.line+1}});
+            item["tests"]=json!(card.tests);items.push(item);
+            if expand {related_body_count+=1;covered.extend(slots);}
+        }
+        relations.push(target.receipt);
+    }
     let mut tests = Vec::new();
     let mut checked = BTreeSet::new();
     for seed in seeds.iter().take(4) {
@@ -79,8 +121,9 @@ pub(super) fn expand(root: &Path, tree: &Path, files: &BTreeSet<String>, seeds: 
             }
         }
     }
-    let partial=targets.len()>steps.len();
+    let partial=targets.len()>steps.len() || related.partial;
     Ok(json!({"steps":steps,"test_mentions":tests,"appended_bodies":appended,
+        "relations":relations,"related_bodies":related_body_count,
         "partial":partial,"local_model_calls":0,"remote_model_calls":0,
         "meaning":"bounded source-backed follow-ups within original inventory; no semantic completeness claim"}))
 }

@@ -23,6 +23,7 @@ for(const [ri,picked] of selection.repositories.entries()) {
    original_native_owner:(report.evidence?.current_owner_ids||[]).some(matchesId),
    complementary_native_owner:(ctx.complementary_discovery?.added_owner_ids||[]).some(matchesId),
    hydrated:ctx.retrieval_trace?Boolean(trace):null,rank_after_expansion:trace?.rank??null,decision_retained:trace?.decision_retained??null,
+   source_admission:trace?.source_admission??null,decision_status:trace?.decision_status??null,presentation_status:trace?.presentation_status??null,channel_ranks:trace?.channel_ranks??null,
    returned:Boolean(target),visible_rank:rank,complete_body:Boolean(target?.initial_source_excerpt&&target.source_excerpt?.truncated===false&&saved.view.includes(target.source_excerpt.text)),
    source_hash_verified:target?.source.sha256??null});
  }
@@ -35,9 +36,9 @@ const summary=Object.fromEntries(['baseline','current'].map(arm=>{const a=rows.f
 const regressions=[],gains=[];
 for(const row of rows.filter(r=>r.arm==='current')) {
  const before=rows.find(r=>r.arm==='baseline'&&r.repo===row.repo&&r.id===row.id);
- if(before.returned&&!row.returned)regressions.push(row);
- if(!before.returned&&row.returned)gains.push(row);
+ if(before.visible_rank!==null&&row.visible_rank===null)regressions.push(row);
+ if(before.visible_rank===null&&row.visible_rank!==null)gains.push(row);
 }
 const result={dataset_sha256:comparison.dataset_sha256,selection_sha256:comparison.selection_sha256,summary,gains,regressions,rows,
- limits:['Known function retrieval, not precision of every emitted reference or implementation correctness.','Native owner diagnostics use file/name; returned cards use declared source interval.','An absent trace rank cannot distinguish source admission from no written-clue score.','No host LLM ran; output bytes and reciprocal ranks are not billed tokens.']};
+ limits:['Known function retrieval, not precision of every emitted reference or implementation correctness.','Native owner diagnostics use file/name; returned cards use declared source interval.','Older binaries do not identify source admission and decision cuts; use explicit status fields when present.','No host LLM ran; output bytes and reciprocal ranks are not billed tokens.']};
 fs.writeFileSync(path.join(root,'audit.json'),JSON.stringify(result,null,2));console.log(JSON.stringify({summary,gains:gains.length,regressions:regressions.length},null,2));
