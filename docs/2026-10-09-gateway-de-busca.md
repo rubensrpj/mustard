@@ -69,6 +69,8 @@ A suíte completa aprovou 3.966 testes Rust, com dois ignorados herdados. Depois
 
 A aceitação instalou o `mustard init --yes` compilado nesta cópia em pasta realmente vazia e conferiu atualização nativa, aprendizado, paginação, preservação de resultado/erros, fallback, encaminhamento clássico, fonte atual e reconhecimento de entrega. Zero HTTP/modelos no caminho padrão. O preflight gratuito das duas tarefas JavaScript também passou; as sessões reais Claude continuam pendentes de autenticação/modelo fixo e não foram substituídas por essa prova. A instalação pessoal e os projetos originais permaneceram preservados.
 
+A primeira conferência do pacote recompilado no commit limpo encontrou `database is locked` na gravação de aprendizado (`native-clean.log`). Uma repetição com os demais jobs encerrados passou (`native-clean-retry.log`), incluindo instalação vazia e zero HTTP. A repetição não determina a causa do lock nem garante persistência sob concorrência. O resultado nativo permaneceu preservado; a gravação usa espera curta e pode não ocorrer quando o banco está ocupado. A falha anterior e a repetição permanecem registradas, e essa limitação herdada ainda exige correção própria.
+
 ## Histórico: evidência localizada antes do julgamento — 09/10
 
 Esta continuação parte de `0f857a215dfd6fd31e059c289e91bd95b9b2c99d`, na mesma branch isolada. Os resultados das etapas anteriores são históricos: não se somam percentuais nem se compara um corpus com outro como se fossem o mesmo teste. O trabalho principal continua sendo o gateway e o scan; o Sialia foi utilizado somente para testar recuperação, sem alterar sua aplicação.
