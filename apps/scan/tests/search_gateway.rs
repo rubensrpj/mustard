@@ -21,6 +21,38 @@ fn fixture(scan: bool) -> tempfile::TempDir {
 fn request(args: &[&str]) -> Request {
     Request::native(&args.iter().map(|v| v.to_string()).collect::<Vec<_>>()).unwrap()
 }
+
+#[cfg(unix)]
+#[test]
+fn an_aliased_checkout_crosses_current_hits_and_inventory_without_admitting_outside_sources() {
+    let real = fixture(true);
+    let links = tempfile::tempdir().unwrap();
+    let alias = links.path().join("checkout");
+    std::os::unix::fs::symlink(real.path(), &alias).unwrap();
+    let mut req = request(&["rg", "-n", "--with-filename", "first", "src"]);
+    req.intent = "persist quartz snapshot".into();
+    req.purpose = mustard_core::domain::knowledge::investigation::Purpose::Implement;
+    let answer = code_search::execute(&alias, &alias, &alias, &req, None).unwrap();
+    assert_eq!(answer.report["crossing_status"], "enriched", "{}", answer.report);
+    assert_eq!(answer.report["learning"]["status"], "stored-current-source-facts");
+    let task = &answer.report["task_context"];
+    assert!(task["cards"].as_array().unwrap().iter().any(|card| card["name"] == "first"), "{task}");
+    assert!(task["cards"].as_array().unwrap().iter().any(|card| card["name"] == "second"), "{task}");
+    assert_eq!(answer.stdout, code_search::execute_native(&alias, &req).unwrap().stdout);
+
+    let outside = links.path().join("outside.rs");
+    std::fs::write(&outside, "pub fn outside_sentinel() {}\n").unwrap();
+    std::os::unix::fs::symlink(&outside, alias.join("src/escape.rs")).unwrap();
+    let req = Request {
+        tool: "Read".into(),
+        input: json!({"file_path":"src/escape.rs"}),
+        ..req
+    };
+    let escaped = code_search::execute(&alias, &alias, &alias, &req, None).unwrap();
+    assert_eq!(escaped.stdout, b"pub fn outside_sentinel() {}");
+    assert_eq!(escaped.report["crossing_status"], "no-crossable-occurrences");
+    assert_eq!(escaped.report["learning"]["new_facts"], 0);
+}
 fn execute(
     root: &Path,
     request: &Request,
@@ -89,7 +121,7 @@ fn agent_view_preserves_pagination_and_unsupported_native_formats() {
     req.input = json!({"pattern":"let quartz","path":"src","output_mode":"content","-n":true,"head_limit":1,"offset":1});
     let answer = execute(root, &req, None);
     let view = code_search::presentation::agent(&answer, &req, root);
-    let text = String::from_utf8_lossy(&view.stdout);
+    let text = String::from_utf8_lossy(&view.stdout).replace('\\', "/");
     assert!(text.contains("src/a.rs"));
     assert!(text.contains("let quartz = 2"));
     assert!(!text.contains("let quartz = 1"),"unpaginated subprocess output must never leak");
@@ -213,7 +245,7 @@ fn new_and_changed_source_is_searched_even_when_absent_from_the_scan() {
         &request(&["rg", "-n", "--with-filename", "live_sentinel", "src"]),
         None,
     );
-    let text = String::from_utf8(answer.stdout).unwrap();
+    let text = String::from_utf8(answer.stdout).unwrap().replace('\\', "/");
     assert!(text.contains("src/new.rs:1:"));
     assert!(text.contains("src/a.rs:1:"));
     assert_eq!(
@@ -371,7 +403,9 @@ fn typed_tools_apply_paths_ranges_patterns_and_pagination() {
     req.tool = "Glob".into();
     req.input = json!({"pattern":"**/*.rs","path":"src"});
     let answer = execute(root, &req, None);
-    assert_eq!(answer.report["result"]["filenames"], json!(["src/a.rs"]));
+    let filenames: Vec<_> = answer.report["result"]["filenames"].as_array().unwrap().iter()
+        .map(|file| file.as_str().unwrap().replace('\\', "/")).collect();
+    assert_eq!(filenames, vec!["src/a.rs"]);
     let view = code_search::presentation::agent(&answer, &req, root);
     assert_eq!(serde_json::from_slice::<serde_json::Value>(&view.stdout).unwrap(), answer.report["result"]);
     assert_eq!(

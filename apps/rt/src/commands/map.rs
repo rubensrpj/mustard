@@ -3916,12 +3916,15 @@ mod tests {
         fn folder_and_glob_restrict_actual_hits_without_a_filter_call() {
             let (_dir,root)=crate::shared::word_search::scoped::project();
             let report=asked(&root,GrepSearch{folder:Some("src/frete".into()),glob:Some("*.rs".into()),..pattern("imposto")});
-            assert!(stdout(&report).contains("src/frete/calculo.rs"));
-            assert!(stdout(&report).contains("src/frete/tabela.rs"));
-            assert!(!stdout(&report).contains("src/pedido/"));
-            assert!(!stdout(&report).contains("docs/"));
+            // Native rg uses the host's separators; only the assertion's path
+            // spelling is normalized, never the gateway's native response.
+            let text=stdout(&report).replace('\\',"/");
+            assert!(text.contains("src/frete/calculo.rs"));
+            assert!(text.contains("src/frete/tabela.rs"));
+            assert!(!text.contains("src/pedido/"));
+            assert!(!text.contains("docs/"));
             let all=asked(&root,pattern("imposto"));
-            assert!(stdout(&all).contains("src/pedido/"));
+            assert!(stdout(&all).replace('\\',"/").contains("src/pedido/"));
         }
         #[test]
         fn ordinary_partial_search_does_not_record_an_inference_in_the_open_spec() {

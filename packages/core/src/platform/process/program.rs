@@ -99,15 +99,16 @@ mod tests {
 
     #[test]
     fn packaged_search_works_without_a_path_but_does_not_replace_a_callers_rg() {
-        for windows in [false, true] {
-            let name = if windows {"rg.exe"} else {"rg"};
-            let package = folder_with(&[name]);
-            let caller = folder_with(&[name]);
-            let executable = package.path().join("mustard-rt");
-            assert_eq!(location("rg", windows, "", Some(&executable)), Some(package.path().join(name)));
-            assert_eq!(location("rg", windows, &text(&caller), Some(&executable)), Some(caller.path().join(name)));
-            assert_eq!(location("git", windows, "", Some(&executable)), None);
-        }
+        // Real host paths must use the host PATH syntax: a Windows drive's
+        // colon cannot be represented in a simulated POSIX PATH string.
+        let windows = cfg!(windows);
+        let name = if windows {"rg.exe"} else {"rg"};
+        let package = folder_with(&[name]);
+        let caller = folder_with(&[name]);
+        let executable = package.path().join("mustard-rt");
+        assert_eq!(location("rg", windows, "", Some(&executable)), Some(package.path().join(name)));
+        assert_eq!(location("rg", windows, &text(&caller), Some(&executable)), Some(caller.path().join(name)));
+        assert_eq!(location("git", windows, "", Some(&executable)), None);
     }
 
     #[test]

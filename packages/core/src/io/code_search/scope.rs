@@ -16,9 +16,10 @@ pub(super) fn inventory(
     request: &Request,
     answer: &Answer,
 ) -> Result<Scope, String> {
+    let tree = tree.canonicalize().map_err(|_| "task-scope-checkout-unavailable")?;
     if request.tool == "grep" {
         return Ok(Scope {
-            files: super::occurrences(tree, cwd, request, &answer.report["result"], &answer.stdout)
+            files: super::occurrences(&tree, cwd, request, &answer.report["result"], &answer.stdout)
                 .into_iter()
                 .map(|hit| hit.0)
                 .collect(),
@@ -79,7 +80,7 @@ pub(super) fn inventory(
             continue;
         };
         if path.is_file()
-            && let Ok(relative) = path.strip_prefix(tree)
+            && let Ok(relative) = path.strip_prefix(&tree)
         {
             files.insert(relative.to_string_lossy().replace('\\', "/"));
         }

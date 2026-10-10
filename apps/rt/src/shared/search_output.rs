@@ -46,12 +46,14 @@ fn executed_context(input:&HookInput,ctx:&Ctx)->Option<String> {
     if stdout.is_empty() || stdout.len()>128*1024 {return None;}
     let parser=regex::Regex::new(r"^(.+?):([0-9]+):(.*)$").ok()?;
     let root=Path::new(&ctx.project_dir).canonicalize().ok()?;
-    let base=input.cwd.as_deref().unwrap_or(&ctx.project_dir);
+    let base=Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir)).canonicalize().ok()?;
     let mut tree=None;
     let mut found=Vec::new();
     for line in stdout.lines() {
         let capture=parser.captures(line)?;
-        let path=super::code_route::project_path(root.to_str()?,base,capture.get(1)?.as_str())?;
+        let given=base.join(capture.get(1)?.as_str()).canonicalize().ok()?;
+        let given=super::paths::canonical(given.to_str()?);
+        let path=super::code_route::project_path(root.to_str()?,base.to_str()?,&given)?;
         let canonical=path.abs.canonicalize().ok()?;
         let current_tree=path.tree.canonicalize().ok()?;
         if !canonical.starts_with(&current_tree) || tree.as_ref().is_some_and(|previous|previous!=&current_tree) {return None;}
@@ -230,6 +232,23 @@ mod tests {
         std::fs::write(root.join("src/main.rs"),"pub fn quartz() { changed(); }\n").unwrap();
         assert!(executed_context(&other,&ctx).is_none());
         assert_eq!(input.tool_input["command"],"rg -n -i -w restore src");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executed_search_owners_are_found_when_the_checkout_has_a_filesystem_alias() {
+        let real=indexed();
+        let links=tempfile::tempdir().unwrap();
+        let alias=links.path().join("checkout");
+        std::os::unix::fs::symlink(real.path(),&alias).unwrap();
+        for (at,file) in ["src/main.rs".to_string(),alias.join("src/main.rs").display().to_string()].iter().enumerate() {
+            let stdout=format!("{file}:1:pub fn quartz() {{ restore(); }}\n");
+            let (mut input,ctx)=executed(&alias,"rg -n restore src",&stdout);
+            input.agent_id=Some(format!("alias-{at}"));
+            let context=executed_context(&input,&ctx).expect("a filesystem alias must retain current owners");
+            assert!(context.contains("quartz"));
+            assert!(context.contains("current-static-owner"));
+        }
     }
 
     #[test]

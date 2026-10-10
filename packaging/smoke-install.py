@@ -73,6 +73,8 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         report = json.loads(run([binary("mustard-rt"), "run", "search", "--root", str(root), "--request", json.dumps(request)], isolated))
         assert report["ok"] is True and "quartz" in json.dumps(report["result"])
         assert report["learning"]["status"] == "stored-current-source-facts", "discovery was not persisted"
+        assert report["learning"]["new_facts"] + report["learning"]["reused_facts"] > 0, "no source facts were crossed"
+        assert report["crossing_status"] == "enriched", "installed gateway did not cross the scan"
         panel = json.loads(run([binary("mustard-rt"), "run", "panel", "--root", str(root)]))
         assert "project" in panel and "specs" in panel, "panel projection is unavailable"
         assert not list((root / ".claude").rglob("*.html")), "installation/search published an unsolicited page"

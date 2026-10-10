@@ -372,10 +372,14 @@ fn occurrences(
     stdout: &[u8],
 ) -> Vec<(String, u64, String)> {
     let mut hits = Vec::new();
+    // Both sides of containment must use the same filesystem spelling (for
+    // example macOS /var versus /private/var). A failed resolution admits no
+    // indexed evidence while the already executed native result stays intact.
+    let Ok(tree) = tree.canonicalize() else { return hits; };
     let mut paths = std::collections::BTreeMap::<String, Option<String>>::new();
     let mut push = |file: &str, line: u64, text: &str| {
         let relative=paths.entry(file.into()).or_insert_with(||cwd.join(file).canonicalize().ok()
-            .and_then(|path|path.strip_prefix(tree).ok().map(|path|path.to_string_lossy().replace('\\',"/"))));
+            .and_then(|path|path.strip_prefix(&tree).ok().map(|path|path.to_string_lossy().replace('\\',"/"))));
         let Some(relative)=relative else {return;};
         hits.push((
             relative.clone(),

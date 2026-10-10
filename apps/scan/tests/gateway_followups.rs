@@ -306,7 +306,9 @@ fn one_unavailable_source_does_not_discard_other_current_task_evidence() {
     std::fs::write(root.join("a.py"),"secret = 'fixture-placeholder'\ndef hidden():\n    return 'beacon'\n").unwrap();
     std::fs::write(root.join("b.rs"),"/// Restore revision ledger.\npub fn restore() { let beacon=1; }\n").unwrap();
     model::scan(root,&root.join(".claude"),&["--native"]);
-    let request=Request{tool:"rg".into(),input:json!({"args":["-n","--with-filename","beacon","."]}),intent:"restore revision ledger".into(),purpose:Purpose::Implement,choose:false};
+    // Two independent rg executions need an explicit order for byte parity;
+    // the default parallel walk is intentionally unordered.
+    let request=Request{tool:"rg".into(),input:json!({"args":["--sort=path","-n","--with-filename","beacon","."]}),intent:"restore revision ledger".into(),purpose:Purpose::Implement,choose:false};
     let answer=code_search::execute(root,root,root,&request,None).unwrap();let task=&answer.report["task_context"];
     assert_eq!(task["status"],"current-task-evidence","{task}");
     assert_eq!(task["investigation"]["partial"],true);
