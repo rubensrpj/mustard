@@ -6,9 +6,9 @@ Binary searches/calculates; LLM implements.
 
 - Open changes with `mustard-rt run open`, record the goal in `context`, suggest `/clear`; the resume line shows the state. Queries open no spec; other branches do not block.
 - Answer in the order of explaining from the response style. Check code/history before removing. Use `mustard-rt run answer --facts '<JSON>'`.
-- Search/read through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve arguments/scope. `intent`: local question with resource/provider + operation, not the whole goal; or 2–8 `- question` bullets with resource/constraints each. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
+- Search evidence through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve arguments/scope. `intent`: local question with resource/provider + operation, not the whole goal; or 2–8 `- question` bullets with resource/constraints each. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
 - CLI: `mustard-rt run search --shell-output --intent "<question>" --purpose spec -- rg -n "<pattern>" .`. Bash: `mustard:spec: <question>`, otherwise `locate`. `--raw`: native; `--choose`: optional Jev.
-- Reuse delivered lines/bodies; read missing ranges with `Read` (`offset`/`limit`). No ranges: `run map summary --file <file>`. Changed source: reread. References do not prove behavior.
+- Reuse delivered lines/bodies; `Read` with `offset`/`limit` is guarded and crossed without another call/AI. No ranges: `run map summary --file <file>`. Changed source: reread. References do not prove behavior.
 - `mustard-rt run knowledge`: investigation.
 
 ## Open spec

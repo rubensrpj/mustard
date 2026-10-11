@@ -8,8 +8,12 @@ use std::path::Path;
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 use serde_json::{Value, json};
+mod read;
 
 pub(crate) fn after_search(input: &HookInput, ctx: &Ctx) -> Verdict {
+    if input.tool_name.as_deref()==Some("Read") {
+        return read::context(input,ctx).map_or(Verdict::Allow,|context|Verdict::Inject {context});
+    }
     let context=executed_context(input,ctx);
     match (updated(input,ctx),context) {
         (Some(tool_output),context)=>Verdict::ToolOutput {tool_output,context},
@@ -69,15 +73,19 @@ fn executed_context(input:&HookInput,ctx:&Ctx)->Option<String> {
         let _=write!(context,"\nSearch purpose supplied by agent: {}",description.chars().take(300).collect::<String>());
     }
     // Reuse evidence within this agent/session, invalidated by source hashes.
-    if let Some(memory)=evidence_memory(&root,input.session_id.as_deref(),input.agent_id.as_deref()) {
-        let mut digest=mustard_core::io::sha256::Sha256::new();digest.update(report.to_string().as_bytes());let key=digest.hex_digest();
+    first_evidence(&root,input,&report.to_string()).then_some(context)
+}
+
+fn first_evidence(root:&Path,input:&HookInput,evidence:&str)->bool {
+    if let Some(memory)=evidence_memory(root,input.session_id.as_deref(),input.agent_id.as_deref()) {
+        let mut digest=mustard_core::io::sha256::Sha256::new();digest.update(evidence.as_bytes());let key=digest.hex_digest();
         let mut seen=std::fs::read_to_string(&memory).unwrap_or_default();
-        if seen.lines().any(|line|line==key) {return None;}
+        if seen.lines().any(|line|line==key) {return false;}
         if seen.len()>16*1024 {seen.clear();}
         seen.push_str(&key);seen.push('\n');
         let _=mustard_core::io::fs::write_atomic(memory,seen.as_bytes());
     }
-    Some(context)
+    true
 }
 
 fn evidence_memory(root:&Path,session:Option<&str>,agent:Option<&str>)->Option<std::path::PathBuf> {

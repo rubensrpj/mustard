@@ -266,15 +266,10 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
         Some("Glob") => return crate::shared::search_gateway::before_file(input,ctx).unwrap_or(Verdict::Allow),
         _ => {}
     }
-    let verdict=file_verdict_with(rules,&root,input,ctx);
-    if let Verdict::Rewrite {tool_input,note}=&verdict {
-        let changed=HookInput {tool_input:tool_input.clone(),..input.clone()};
-        if let Some(Verdict::Deny {mut reason})=crate::shared::search_gateway::before_file(&changed,ctx) {
-            if let Some(note)=note {reason.push('\n');reason.push_str(note);}
-            return Verdict::Deny {reason};
-        }
-    }
-    if matches!(verdict,Verdict::Allow) {crate::shared::search_gateway::before_file(input,ctx).unwrap_or(verdict)}else{verdict}
+    // Read already names its source and range. Preserve the host's execution,
+    // permission checks and read tracking for Edit; cross its actual result
+    // after execution rather than refusing it to ask for a second tool call.
+    file_verdict_with(rules,&root,input,ctx)
 }
 
 pub(crate) fn file_verdict(root:&str,input:&HookInput,ctx:&Ctx)->Verdict {
@@ -838,10 +833,9 @@ mod tests {
             std::fs::write(root.join("src/a.rs"), "fn sum() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
             let path = abs(root, "src/a.rs");
             match WriteGate.evaluate(&call(root, "Read", &path, None), &ctx(root)).expect("never errors") {
-                Verdict::Deny { reason } => {
-                    assert!(reason.contains("mustard-rt run search"), "{lang:?}: {reason}");
-                    assert!(reason.contains(&serde_json::to_string(&json!({"file_path":path,"limit":2})).unwrap()),"{reason}");
-                    assert!(reason.contains('3'), "{lang:?}: {reason}");
+                Verdict::Rewrite {tool_input,note} => {
+                    assert_eq!(tool_input,json!({"file_path":path,"limit":2}));
+                    assert!(note.unwrap().contains('3'), "{lang:?}");
                 }
                 other => panic!("{lang:?}: the read is cut, got {other:?}"),
             }
@@ -865,7 +859,7 @@ mod tests {
                 cwd: Some(root.to_string_lossy().into_owned()),
                 ..HookInput::default()
             };
-            assert_allowed_or_gateway(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"));
+            assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"),Verdict::Allow);
         }
     }
 
@@ -878,7 +872,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.rs"), "fn sum() {}\n").unwrap();
         let path = abs(root, "src/a.rs");
-        assert_allowed_or_gateway(gate(root, "Read", &path));
+        assert_eq!(gate(root, "Read", &path),Verdict::Allow);
     }
 
     /// Um projeto que declara `develop` e `master` no `git.flow`, num
@@ -1224,7 +1218,7 @@ mod tests {
             json!({ "file_path": abs(&root, "src/small.rs") }),
             json!({ "file_path": abs(&root, "docs/big.md") }),
         ] {
-            assert_gateway(hook_on(&root, "Read", tool_input.clone()));
+            assert_eq!(hook_on(&root, "Read", tool_input.clone()),Verdict::Allow);
         }
     }
 
@@ -1236,9 +1230,9 @@ mod tests {
         let (_dir, root) = fixture::project("{}", true);
         let short = abs(&root, "src/tested.rs");
         match hook_on(&root, "Read", json!({ "file_path": short })) {
-            Verdict::Deny {reason} => {
-                assert!(reason.contains("mustard-rt run search"));
-                assert!(reason.contains(&serde_json::to_string(&json!({"file_path":short,"limit":100})).unwrap()),"{reason}");
+            Verdict::Rewrite {tool_input,note} => {
+                assert_eq!(tool_input,json!({"file_path":short,"limit":100}));
+                assert!(note.is_some());
             }
             other => panic!("the short production part is cut, got {other:?}"),
         }
@@ -1255,7 +1249,7 @@ mod tests {
         let (_broken, garbled) = fixture::project("{}", false);
         mustard_core::io::project_map::write_text(&garbled, "isto não é um mapa").expect("garbled map");
         for root in [&bare, &garbled] {
-            assert_gateway(hook_on(root, "Read", json!({ "file_path": abs(root, "src/big.rs") })));
+            assert_eq!(hook_on(root, "Read", json!({ "file_path": abs(root, "src/big.rs") })),Verdict::Allow);
             assert_gateway(hook_on(root, "Grep", json!({ "pattern": "Alpha", "path": abs(root, "src") })));
         }
         let (_none, without) = word_search::fixture::repo("{}");
@@ -1292,7 +1286,7 @@ mod tests {
         assert!(reason.contains("--file src/big.rs"), "{reason}");
         assert!(reason.contains("Alpha 1-150, alpha 151-400."), "{reason}");
         let ranged = json!({ "file_path": abs(&copy, "src/big.rs"), "offset": 1, "limit": 10 });
-        assert_gateway(hook_on(&copy, "Read", ranged));
+        assert_eq!(hook_on(&copy, "Read", ranged),Verdict::Allow);
 
         let on_top = |count: usize, file: &str| {
             let text = std::fs::read_to_string(main.join(file)).expect("project file");
@@ -1328,7 +1322,7 @@ mod tests {
         }
 
         let (_plain, plain) = fixture::project(r#"{"language": {"text": "pt-BR"}}"#, true);
-        assert_gateway(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })));
+        assert_eq!(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })),Verdict::Allow);
     }
 
     /// A pasta de um padrão de nome sai inteira do padrão que abre com a letra

@@ -25,7 +25,7 @@ flowchart LR
 2. A **porta de busca** (`mustard-rt run search`) pesquisa o código com os parâmetros recebidos, registra achados verificados e cruza o resultado com o scan. Arquivos novos/alterados atualizam o índice estrutural sem IA. O mapa prepara expansões e referências; relações e testes candidatos não provam comportamento ou cobertura.
 3. Objetivo: **economia de contexto** — o mapa acha *onde olhar*, e o modelo confere os trechos necessários. Economia de tokens faturados deve ser medida no fluxo real.
 
-`mustard-rt run search --shell-output --intent "<tarefa>" --purpose implement -- rg -n --with-filename "<padrão>" src` retorna a busca original ou uma versão menor sem perder ocorrências, com intervalos atuais quando couberem. O Mods registra `mcp__mustard__search`; hooks encaminham entradas suportadas. Intenção não substitui o padrão. Contratos e limites: [gateway de busca](docs/2026-10-09-gateway-de-busca.md).
+`mustard-rt run search --shell-output --intent "<tarefa>" --purpose implement -- rg -n --with-filename "<padrão>" src` retorna a busca original ou uma versão menor sem perder ocorrências, com intervalos atuais quando couberem. O Mods registra `mcp__mustard__search`; hooks encaminham buscas suportadas. Leituras exatas por `Read` passam pelas proteções normais; o Mustard cruza o trecho recebido com o mapa depois, sem recusa de encaminhamento, outra chamada ou IA. Intenção não substitui o padrão. Contratos e limites: [gateway de busca](docs/2026-10-09-gateway-de-busca.md).
 
 `mustard-rt run knowledge --query "<assunto>"` permanece como consulta analítica de símbolos/documentação/configuração com linhas e hash; `--detail` expande e `--all --markdown --out levantamento.md` exporta. Referências explícitas podem conectar documentos ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade e índices sem modelo auxiliar.
 
@@ -126,13 +126,18 @@ O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods par
 |---|---|
 | `/mustard:continue` | Retoma a spec de onde parou. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
-| `/mustard-panel` | Projeto, specs, definições, ondas, execução e consumo local. Requer suporte a Mods (CLI 2.1.287+). |
+| `/mustard-panel [spec]` | Projeto, specs, definições, ondas, execução e consumo local. Requer suporte a Mods (CLI 2.1.287+; Code do Desktop 2.1.286+). |
+| `/mustard-panel --diagnose` | Mostra versão do host, plugin carregado, interfaces reconhecidas e registro do painel, sem ler conversas ou chamar IA. |
 | `/mustard-pages` | Publicação explícita de `project`, `spec [nome]` ou `report <arquivo.md>` pelo adaptador nativo Cloudflare Pages. Sem configuração, entrega arquivos locais; sem turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto e diagnostica a instalação. Para desligar o Mustard num projeto, ponha `"enabled": false` no `mustard.json`. |
 
 A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
 
 No painel, **Definições** mostra decisões, regras, critérios e tarefas completos. **Ondas** permite consultar plano, pedido exato enviado ao agente, entrega e testes. Textos extensos têm paginação. O tema segue as [diretrizes do ERP.Brain](https://github.com/atiz/erpbrain/blob/main/design/guidelines/README.md), com amarelo nas ações e seleções. **Todas as páginas e o Mods usam modo escuro fixo**, independentemente do tema do sistema. Mods adapta esse padrão aos componentes do terminal; fonte e tamanho das letras dependem do Claude Code. As páginas para navegador compartilham as cores e usam Inter, controles maiores e navegação responsiva.
+
+Ao executar o comando novamente, o Mustard recria seu painel para renovar a abertura após fechamento ou reconexão. A abertura confirma a solicitação no texto; falhas indicam o diagnóstico. A leitura inicial usa os dados locais já medidos; a recuperação do histórico das conversas acontece na seção **Consumo**, no máximo a cada 30 s enquanto ela estiver aberta. Os recibos de uso da sessão continuam sendo observados por eventos.
+
+No **Desktop conectado por SSH**, confira o Mustard no gerenciador de plugins da própria sessão e a versão do Claude Code em `/status`: atualizar a instalação do terminal não comprova que o Desktop carregou a mesma cópia. Se o painel não aparecer, execute `/mustard-panel --diagnose` nessa sessão. O registro do painel no host não comprova sua exibição no cliente. Sessões SSH aceitam plugins; já **Remote Control** exibe o painel somente no terminal de origem, e sessões **WSL** do Desktop não oferecem plugins. Veja [sessões SSH](https://code.claude.com/docs/en/desktop#ssh-sessions) e [suporte de Mods por interface](https://code.claude.com/docs/en/plugins/mods/overview#where-mods-run).
 
 A spec é selecionada no cabeçalho do painel. As definições têm filtro por categoria e busca por título, código ou texto. Em painéis estreitos, um seletor de seção substitui as abas; a leitura fica em uma coluna. O plano da onda é a visão inicial, e **Input exato enviado** preserva integralmente o pedido técnico. **Consumo** separa sessão atual, spec selecionada e histórico acumulado; medições ausentes não viram percentuais nem custos fictícios. A publicação externa fica em uma seção própria e só ocorre ao acionar a publicação.
 
