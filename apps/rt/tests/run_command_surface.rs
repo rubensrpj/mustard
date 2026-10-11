@@ -638,6 +638,58 @@ fn the_map_help_describes_the_summary_of_the_map_and_not_the_session_start() {
 /// O código das parcelas, com a palavra `parcela` só num comentário.
 const INSTALLMENTS: &str = "export function splitInstallments(total: number, count: number) {\n  // divide o total em parcela iguais\n  return Array.from({ length: count }, () => total / count);\n}\n\nexport function payInstallment(value: number) {\n  return value;\n}\n";
 
+/// Exact reproduction of the reported range. One authorized native Read is
+/// sufficient; its post-hook adds current owners without replacing its output
+/// or forcing a second model/tool turn. Configuration secrets still refuse.
+#[test]
+fn an_exact_read_range_is_not_refused_and_its_executed_excerpt_is_crossed() {
+    use std::io::Write as _;
+    let project=installments_project();let root=project.path();
+    let source=(1..=500).map(|line|match line {
+        380=>"export function processRows() {".to_string(),480=>"}".to_string(),
+        _=>format!("  // fixture source line {line}"),
+    }).collect::<Vec<_>>().join("\n")+"\n";
+    let file=root.join("src/service.ts");fs::write(&file,&source).unwrap();
+    let mut digest=mustard_core::io::sha256::Sha256::new();digest.update(source.as_bytes());
+    let mut map=serde_json::json!({"modules":[{"path":"src/service.ts","language":"typescript",
+        "analysis":{"content_sha256":digest.hex_digest(),"parse_complete":true},
+        "declarations":[{"kind":"function","name":"processRows","line":380,"end_line":480,"signature":"export function processRows()"}]}]});
+    mustard_core::domain::knowledge::enrich(&mut map);
+    mustard_core::io::project_map::write_text(root,&map.to_string()).unwrap();
+    let input=serde_json::json!({"file_path":file,"offset":388,"limit":75});
+    let hook=|event:&str,input:&serde_json::Value,response:Option<&serde_json::Value>| {
+        let mut request=serde_json::json!({"hook_event_name":event,"tool_name":"Read","cwd":root,"session_id":"native-read-range","tool_input":input});
+        if let Some(response)=response {request["tool_response"]=response.clone();}
+        let mut child=std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["on",event]).current_dir(root).env("MUSTARD_RT_DELEGATED","1")
+            .env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT")
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(request.to_string().as_bytes()).unwrap();
+        let output=child.wait_with_output().unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        output.stdout
+    };
+    let pre=hook("PreToolUse",&input,None);
+    assert!(pre.is_empty(),"no routing refusal or permission bypass: {}",String::from_utf8_lossy(&pre));
+    let response=serde_json::json!({"type":"text","file":{"filePath":file,
+        "content":source.lines().skip(387).take(75).collect::<Vec<_>>().join("\n")+"\n",
+        "startLine":388,"numLines":75,"totalLines":500}});
+    let post:serde_json::Value=serde_json::from_slice(&hook("PostToolUse",&input,Some(&response))).unwrap();
+    let context=post.pointer("/hookSpecificOutput/additionalContext").unwrap().as_str().unwrap();
+    assert!(context.contains("src/service.ts:388-462") && context.contains("processRows: 380-480"),"{context}");
+    assert!(context.len()<600 && !context.contains("fixture source line"));
+    assert!(post.pointer("/hookSpecificOutput/updatedMCPToolOutput").is_none(),"the host Read result remains its own");
+    assert!(hook("PostToolUse",&input,Some(&response)).is_empty(),"same evidence is not injected twice");
+    assert!(!root.join(".claude/judgements/attempts.ndjson").exists(),"exact reads never pay for a choice");
+    let db=mustard_core::io::map_db::MapDb::open(&mustard_core::io::project_map::model_path(root),root,&[]).unwrap();
+    let facts:i64=db.conn().query_row("SELECT COUNT(*) FROM search_facts WHERE path='src/service.ts'",[],|row|row.get(0)).unwrap();
+    assert_eq!(facts,75,"verified read lines feed the existing database");
+    drop(db);
+    fs::write(root.join("private.pem"),"private-sentinel-not-for-the-model").unwrap();
+    let secret=String::from_utf8(hook("PreToolUse",&serde_json::json!({"file_path":root.join("private.pem"),"offset":1,"limit":1}),None)).unwrap();
+    assert!(secret.contains("deny") && !secret.contains("private-sentinel-not-for-the-model"));
+}
+
 /// Um projeto no git com o código das parcelas e o mapa dele em dia: o
 /// comando do mapa e o gancho da busca leem o mesmo projeto, sem passada do
 /// scan e sem filtro.

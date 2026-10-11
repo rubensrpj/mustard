@@ -289,42 +289,27 @@ fn literal_shell(command: &str) -> bool {
     quote.is_none() && !escaped
 }
 
-/// A classic hook cannot change a tool's name. Hand off a supported project
-/// request to the registered gateway or this exact CLI request; never execute
-/// the search in a permission hook and then execute it again in the tool.
+/// A classic hook cannot change a tool's name. Hand off discovery to the
+/// intent-aware gateway. Exact Read calls stay on the host permission path;
+/// their already executed excerpts are crossed in PostToolUse instead.
 pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     if !ctx.config.search_answer() {
         return None;
     }
     let tool = input.tool_name.as_deref()?;
-    if !matches!(tool, "Grep" | "Glob" | "Read") {
+    if !matches!(tool, "Grep" | "Glob") {
         return None;
     }
-    if tool != "Read" {
-        mustard_core::platform::process::program_location("rg")?;
-    }
-    if tool == "Read"
-        && let Some(target) = super::paths::WriteTarget::classify(&ctx.project_dir, input)
-        && !matches!(
-            target.class,
-            super::paths::PathClass::Production | super::paths::PathClass::OutsideRepo
-        )
-    {
-        return None;
-    }
+    mustard_core::platform::process::program_location("rg")?;
     let cwd = input.cwd.as_deref().unwrap_or(&ctx.project_dir);
     let given = input
         .tool_input
-        .get(if tool == "Read" { "file_path" } else { "path" })
+        .get("path")
         .and_then(serde_json::Value::as_str)
         .unwrap_or(".");
     let path = super::code_route::project_path(&ctx.project_dir, cwd, given)?;
     let canonical = path.abs.canonicalize().ok()?;
     if !canonical.starts_with(path.tree.canonicalize().ok()?) {
-        return None;
-    }
-    if tool == "Read" && (!path.abs.is_file() || path.abs.metadata().ok()?.len() > 2 * 1024 * 1024)
-    {
         return None;
     }
     let mut request = Request {
@@ -335,22 +320,7 @@ pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         choose: false,
     };
     request.describe(input.tool_description().unwrap_or_default());
-    if tool == "Read" {
-        if input
-            .tool_input
-            .as_object()?
-            .keys()
-            .any(|key| !matches!(key.as_str(), "file_path" | "offset" | "limit"))
-        {
-            return None;
-        }
-        let bytes = std::fs::read(&path.abs).ok()?;
-        if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
-            return None;
-        }
-    } else {
-        mustard_core::io::code_search::arguments(&request).ok()?;
-    }
+    mustard_core::io::code_search::arguments(&request).ok()?;
     let command = format!(
         "mustard-rt run search --root {} --request {} --shell-output",
         quote(cwd),

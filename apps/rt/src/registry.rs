@@ -104,7 +104,7 @@ impl Registry {
             // leitura cortada. A primeira que responde decide.
             Module {
                 id: "write_gate",
-                applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS)), (Trigger::PostToolUse, ToolMatch::OneOf(&["Bash", "Grep"]))],
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS)), (Trigger::PostToolUse, ToolMatch::OneOf(&["Bash", "Grep", "Read"]))],
                 check: Some(Box::new(WriteGate)),
                 observer: None,
             },
@@ -296,7 +296,7 @@ mod tests {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate", "size_notice"], "{tool}");
             let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
                 &["wave_alive_observer", "glossary_witness", "size_notice"]
-            } else if tool == "Grep" {
+            } else if matches!(tool,"Grep"|"Read") {
                 &["write_gate", "wave_alive_observer", "size_notice"]
             } else {
                 &["wave_alive_observer", "size_notice"]

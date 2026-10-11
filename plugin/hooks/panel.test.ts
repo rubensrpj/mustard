@@ -1,6 +1,69 @@
 import { test, expect, mock } from 'claude-code/testing';
 import {contentPage} from './panel-content.js';
 
+test('reopening recreates the host pane and history recovery waits for Usage',async ($,on)=>{
+  const clock=mock.clock(on);mock.env(on,{});
+  const lifecycle:string[]=[], measured:boolean[]=[];
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
+  on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{}}));
+  on('ui.close',()=>{lifecycle.push('close');return {value:null};});
+  on('ui.open',()=>{lifecycle.push('open');return {value:null};});
+  on('process.run',($,e)=>{measured.push(e.argv.includes('--refresh-consumption'));
+    return {value:{exitCode:0,stdout:JSON.stringify({ok:true,schema_version:1,project:{name:'fixture'},specs:[],jev:{}}),stderr:''}};});
+  await $.session.start({cwd:'/fixture',surface:'desktop',isInteractive:true});
+  const reply=await $.command.run({command:'mustard-panel',args:''});
+  expect(reply.text).toContain('--diagnose');expect(lifecycle).toEqual(['close','open']);
+  expect(measured).toEqual([false]);
+  await $.command.run({command:'mustard-panel',args:''});
+  expect(lifecycle).toEqual(['close','open','close','open']);
+  await clock.advance(2000);expect(measured).toEqual([false,false,false]);
+  const pane=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await pane.press({key:'tab-Consumo'});await clock.advance(2000);
+  expect(measured).toEqual([false,false,false,true]);
+  await clock.advance(2000);expect(measured.at(-1)).toBe(false);
+  await pane.press({key:'close'});
+  const count=measured.length;await clock.advance(10000);expect(measured.length).toBe(count);
+});
+
+test('an opening failure leaves no poller and a later command can recover',async ($,on)=>{
+  const clock=mock.clock(on);mock.env(on,{});let attempts=0,reads=0;
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
+  on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{}}));
+  on('ui.close',()=>({value:null}));
+  on('ui.open',()=>{if(++attempts===1)throw new Error('fixture opening failed');return {value:null};});
+  on('process.run',()=>{reads++;return {value:{exitCode:0,
+    stdout:JSON.stringify({ok:true,schema_version:1,project:{name:'fixture'},specs:[],jev:{}}),stderr:''}};});
+  await $.session.start({cwd:'/fixture',surface:'desktop',isInteractive:true});
+  const failed=await $.command.run({command:'mustard-panel',args:''});
+  expect(failed.text).toContain('não concluiu');
+  await clock.advance(10000);expect(reads).toBe(0);
+  const recovered=await $.command.run({command:'mustard-panel',args:''});
+  expect(recovered.text).toContain('solicitada');expect(reads).toBe(1);
+  const pane=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await pane.press({key:'close'});
+});
+
+test('panel diagnostics reports the loaded host without opening, reading history or claiming Desktop paint',async ($,on)=>{
+  mock.env(on,{});mock.clock(on);let operations=0,surfaces=['terminal','desktop'];
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
+  on('session.surfaces',()=>({value:surfaces}));on('session.version',()=>({value:{version:'2.1.296'}}));
+  on('ui.panes',()=>({value:[{id:'mustard-panel',title:'Mustard',isShown:true,isFocused:true,isPlaced:true}]}));
+  on('ui.open',()=>{operations++;return {value:null};});
+  on('process.run',()=>{operations++;throw new Error('must not read history');});
+  on('prompt.submit',()=>{operations++;return {};});
+  on('tool.call',()=>{operations++;return {};});
+  await $.session.start({cwd:'/fixture',surface:'desktop',isInteractive:true});
+  const reply=await $.command.run({command:'mustard-panel',args:'--diagnose'});
+  expect(reply.text).toContain('2.1.296');expect(reply.text).toContain('terminal, desktop');
+  expect(reply.text).toContain('não comprova');expect(reply.context).toBeUndefined();
+  surfaces=['terminal'];
+  expect((await $.command.run({command:'mustard-panel',args:'--diagnose'})).text).toContain('não informou uma interface Desktop');
+  expect(operations).toBe(0);
+});
+
 async function clarityFixture($,on,surface:'terminal'|'desktop'|'mobile'='terminal',columns=100,bodyRows=48) {
   const clock=mock.clock(on);mock.env(on,{});
   const counts={queries:0,publications:0,turns:0};

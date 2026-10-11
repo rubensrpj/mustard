@@ -6,9 +6,9 @@ Binário busca/calcula; LLM implementa.
 
 - Abra mudanças por `mustard-rt run open`, grave o objetivo em `context`, sugira `/clear`; a linha de retomada mostra o estado. Consultas não abrem spec; branch alheia não bloqueia.
 - Responda na ordem de explicar do estilo de resposta. Confira código/histórico antes de remover. Use `mustard-rt run answer --facts '<JSON>'`.
-- Busque/leia por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve argumentos/escopo. `intent`: pergunta local com recurso/provedor + operação, sem repetir o objetivo geral; ou 2–8 itens `- pergunta` com recurso/restrições por item. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
+- Busque evidências por `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve argumentos/escopo. `intent`: pergunta local com recurso/provedor + operação, sem repetir o objetivo geral; ou 2–8 itens `- pergunta` com recurso/restrições por item. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
 - CLI: `mustard-rt run search --shell-output --intent "<pergunta>" --purpose spec -- rg -n "<padrão>" .`. Bash: `mustard:spec: <pergunta>`, senão `locate`. `--raw`: nativo; `--choose`: Jev opcional.
-- Reuse linhas/corpos confirmados; leia faixas faltantes com `Read` (`offset`/`limit`). Sem faixa: `run map summary --file <arquivo>`. Fonte mudou: releia. Referência não prova comportamento.
+- Reuse linhas/corpos confirmados; `Read` com `offset`/`limit` é protegido e cruzado sem outra chamada/IA. Sem faixa: `run map summary --file <arquivo>`. Fonte mudou: releia. Referência não prova comportamento.
 - `mustard-rt run knowledge`: dossiê.
 
 ## Spec aberta

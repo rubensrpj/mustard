@@ -63,7 +63,10 @@ async function refresh($) {
       const cwd = await $.session.cwd();
       let session;
       try { session = await $.session.id(); } catch { /* Session observation may be unavailable. */ }
-      const measure = consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000;
+      // Historical transcript recovery can be expensive on a remote host.
+      // Opening the project must not wait for it. Live host receipts remain
+      // available in every view; recover history while Usage is visible.
+      const measure = view.tab === 'Consumo' && (consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000);
       const result = await $.process.run(
         [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : []), ...(session ? ['--session', session] : []),
           ...(view.tab==='Ondas' && view.selectedWave!==undefined ? ['--wave',String(view.selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
@@ -100,13 +103,41 @@ function recordMeasurement($, measurement) {
   return measurementQueue;
 }
 async function openPanel($, name) {
-    revision++;
+    stopPanel();
     if (name) selected = name;
-    opened = true;
-    await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
-    timer?.cancel();
-    timer = $.clock.every(2000, () => { void refresh($); });
-    await refresh($);
+    try {
+      // open() on an existing id only focuses/retitles it. Explicitly reopen
+      // our pane so a reattached Desktop gets a fresh lifecycle too, including
+      // after the module was reloaded while the host retained its pane.
+      await $.ui.close({id});
+      await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
+      opened = true;
+      timer = $.clock.every(2000, () => { void refresh($); });
+      await refresh($);
+      return {text:t('Abertura do painel solicitada nesta sessão. Se não aparecer, execute /mustard-panel --diagnose.',
+        'Panel opening requested in this session. If it does not appear, run /mustard-panel --diagnose.')};
+    } catch {
+      stopPanel();
+      return {text:t('O Claude não concluiu a abertura do painel. Execute /mustard-panel --diagnose nesta mesma sessão; confira /plugin e /status. Nenhuma publicação foi feita.',
+        'Claude did not complete opening the panel. Run /mustard-panel --diagnose in this session; check /plugin and /status. Nothing was published.')};
+    }
+}
+async function panelDiagnostics($) {
+    const details=await Promise.allSettled([$.session.surfaces(),$.session.version(),$.ui.panes()]);
+    const [surfaces,version,panes]=details.map(result=>result.status==='fulfilled'?result.value:undefined);
+    const pane=panes?.find(pane=>pane.id===id);
+    const interfaces=surfaces?.length ? surfaces.join(', ') : t('nenhuma informada','none reported');
+    return {text:[
+      `Mustard · Claude Code ${version?.version || t('não informado','not reported')}`,
+      `${t('Plugin carregado','Loaded plugin')}: ${$.plugin.root}`,
+      `${t('Interfaces reconhecidas','Recognized interfaces')}: ${interfaces}`,
+      `${t('Painel registrado no host','Pane registered in host')}: ${pane?t('sim','yes'):t('não','no')}`,
+      ...(pane?[t(`Host: visível=${pane.isShown}, posicionado=${pane.isPlaced}. Isso não comprova que o Desktop desenhou o painel.`,
+        `Host: shown=${pane.isShown}, placed=${pane.isPlaced}. This does not prove Desktop painted the pane.`)]:[]),
+      ...(!surfaces?.includes('desktop')?[t('O host não informou uma interface Desktop. Em SSH, confira a sessão, /status e a versão do plugin no Desktop; Remote Control não espelha painéis.',
+        'The host did not report a Desktop interface. Over SSH, check the session, /status and the plugin version in Desktop; Remote Control does not mirror panes.')]:[]),
+      t('Este diagnóstico não lê conversas, chama IA ou publica páginas.','This diagnostic does not read conversations, call AI or publish pages.'),
+    ].join('\n')};
 }
 function stopPanel() {
     revision++;
@@ -161,15 +192,15 @@ async function publishPage($,rawArgs) {
 export function register(on) {
   on('session.start', async ($, e, next) => {
     resetEvidence();
-    await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec]', immediate: true });
+    await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec] | --diagnose', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
     await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
       inputSchema:searchSchema});
     return next(e);
   });
   on('command.run', { command: 'mustard-panel' }, async ($, e) => {
-    await openPanel($, e.args.trim() || undefined);
-    return {};
+    if (e.args.trim()==='--diagnose') return panelDiagnostics($);
+    return openPanel($, e.args.trim() || undefined);
   });
   on('command.run', { command: 'mustard-pages' }, async ($,e)=>publishPage($,e.args));
   on('tool.call',{tool:'mcp__mustard__search'},async ($,e)=>{
