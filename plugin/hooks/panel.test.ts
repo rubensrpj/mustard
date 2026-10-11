@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing';
 import {contentPage} from './panel-content.js';
 
-async function clarityFixture($,on,surface:'terminal'|'desktop'|'mobile'='terminal',columns=100) {
+async function clarityFixture($,on,surface:'terminal'|'desktop'|'mobile'='terminal',columns=100,bodyRows=48) {
   const clock=mock.clock(on);mock.env(on,{});
   const counts={queries:0,publications:0,turns:0};
   const snapshot:any={ok:true,schema_version:1,at:'2026-10-10T23:04:12.166754188Z',
@@ -31,7 +31,7 @@ async function clarityFixture($,on,surface:'terminal'|'desktop'|'mobile'='termin
   await $.session.start({cwd:'/fixture',surface,isInteractive:true});
   await $.command.run({command:'mustard-panel',args:''});
   const pane=await $.ui.mount({plugin:'mustard',surface,component:'Pane',requestId:'mustard-panel',
-    viewport:{columns:180,rows:48,docked:true},props:{id:'mustard-panel',title:'Mustard',bodyColumns:columns}});
+    viewport:{columns:180,rows:48,docked:true},props:{id:'mustard-panel',title:'Mustard',bodyColumns:columns,scroll:{bodyRows}}});
   return {pane,clock,counts,snapshot};
 }
 
@@ -110,6 +110,16 @@ test('mobile retains spec and category navigation without unsupported inputs',as
   expect(await pane.find({type:'Input'})).toBeUndefined();expect(await pane.find({type:'Select'})).toBeUndefined();
   await pane.press({key:'definition-group-rule'});
   expect(await pane.find({type:'Text',text:'Preservar a ordem das colunas.'})).toBeDefined();
+  await pane.press({key:'close'});
+});
+
+test('short inline panes compact controls instead of filling the window with the header',async ($,on)=>{
+  const {pane}=await clarityFixture($,on,'terminal',80,14);
+  expect((await pane.drawn()).props.rowGap).toBe(0);
+  expect((await pane.find({key:'panel-section'})).props.value).toBe('Projeto');
+  await pane.select({key:'panel-section',value:'Ondas'});
+  expect(await pane.find({type:'Text',text:'Criar os caminhos dos arquivos.'})).toBeDefined();
+  expect((await pane.findAll({type:'Box'})).some(box=>box.props.borderStyle==='round' && box.props.key==='control-wave-view-Plano')).toBe(false);
   await pane.press({key:'close'});
 });
 

@@ -13,9 +13,10 @@ export function panelPalette(surface) {
     ink:'whiteBright',muted:'white',line:'gray',accentText:'yellow',accentSoft:'black'} : design.dark;
 }
 
-export function renderPanel({elements,surface,columns,data,usage,problem,selected,view,publicationMessage,publishing,actions}) {
+export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,actions}) {
   const {Box,Text,Button,Select,Input,Link}=elements;
   const theme=panelPalette(surface), english=data?.project?.language==='en-US';
+  const compact=bodyRows>0 && bodyRows<24;
   const t=(pt,en)=>english?en:pt;
   const clean=value=>String(value ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g,'');
   const text=(value,props={})=>Text({children:clean(value),color:theme.ink,wrap:'wrap',...props});
@@ -35,12 +36,12 @@ export function renderPanel({elements,surface,columns,data,usage,problem,selecte
     pr_open:['PR aberto','PR open'],closed:['Fechada','Closed'],delivered:['Entregue','Delivered'],
     discarded:['Descartada','Discarded'],discarded_auto:['Descartada','Discarded']};
   const state=value=>states[value]?t(...states[value]):clean(value || t('Não informado','Not provided'));
-  const button=(key,label,onPress,{active=false,disabled=false,hotkey}={})=>Box({key:`control-${key}`,borderStyle:'round',
+  const button=(key,label,onPress,{active=false,disabled=false,hotkey}={})=>Box({key:`control-${key}`,...(compact?{}:{borderStyle:'round'}),
     borderColor:active?theme.accentText:theme.line,paddingX:1,children:[disabled?note(label):Button({key,
       label:clean(active?`${label} ✓`:label),plain:true,onPress,...(hotkey?{hotkey}:{}),hover:{color:theme.accentText,bold:true}})]});
   const row=children=>Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children});
-  const section=(title,children)=>Box({flexDirection:'column',borderStyle:'round',borderColor:theme.line,paddingX:1,
-    children:[Box({marginBottom:1,children:[text(title,{bold:true,color:theme.accentText})]}),...children]});
+  const section=(title,children)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1}),
+    children:[Box({marginBottom:compact?0:1,children:[text(title,{bold:true,color:theme.accentText})]}),...children]});
   const card=(label,value)=>Box({flexDirection:'column',borderStyle:'round',borderColor:theme.line,paddingX:1,flexGrow:1,
     children:[note(label),text(value,{bold:true})]});
   const content=(value,raw=false)=>raw ? text(value) : Box({flexDirection:'column',rowGap:1,children:clean(value).split('\n\n').map(paragraph=>{
@@ -53,7 +54,7 @@ export function renderPanel({elements,surface,columns,data,usage,problem,selecte
     button(`${prefix}-next`,t('Próxima','Next'),()=>actions.change(patch(page.page+1)),{disabled:page.page+1>=page.pages}),
   ])]:[];
   const picker=(key,label,options,value,onSelect)=>surface!=='mobile' && Select
-    ? Box({borderStyle:'round',borderColor:theme.line,paddingX:1,children:[Select({key,label,options,value,onSelect})]})
+    ? Box({...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1}),children:[Select({key,label,options,value,onSelect})]})
     : row(options.map(option=>button(`${key}-${option.value}`,option.label,()=>onSelect(option.value),{active:option.value===value})));
   const specs=data?.specs || [], spec=specs.find(item=>item.name===selected);
   const counts=item=>item?.counted_waves || [item?.waves?.filter(w=>['integrated','committed'].includes(w.status)).length || 0,item?.waves?.length || 0];
@@ -65,8 +66,8 @@ export function renderPanel({elements,surface,columns,data,usage,problem,selecte
   };
   const tabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage']];
   const rows=[row([text('MUSTARD',{bold:true,color:theme.accentText}),...(data?[text(data.project.name || 'Mustard',{bold:true})]:[])])];
-  if(data)rows.push(note(data.project.branch || t('Sem branch','No branch')));
-  if(surface!=='mobile' && columns && columns<88)rows.push(picker('panel-section',t('Seção','Section'),
+  if(data && !compact)rows.push(note(data.project.branch || t('Sem branch','No branch')));
+  if(surface!=='mobile' && (compact || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
     tabs.map(([value,pt,en])=>({value,label:t(pt,en)})),view.tab,go));
   else rows.push(row(tabs.map(([key,pt,en],index)=>button(`tab-${key}`,t(pt,en),()=>go(key),{active:view.tab===key,hotkey:String(index+1)}))));
   if(problem)rows.push(section(t('Atualização indisponível','Update unavailable'),[text(problem),note(`${t('Último estado','Last state')}: ${date(data?.at)}`)]));
@@ -279,5 +280,5 @@ export function renderPanel({elements,surface,columns,data,usage,problem,selecte
     rows.push(section(t('Publicação sob pedido','Publication on request'),children));
   }
   rows.push(note(`${t('Ao vivo','Live')} · ${date(data.at)}`));
-  return Box({flexDirection:'column',rowGap:1,padding:1,backgroundColor:theme.paper,children:rows});
+  return Box({flexDirection:'column',rowGap:compact?0:1,padding:compact?0:1,backgroundColor:theme.paper,children:rows});
 }

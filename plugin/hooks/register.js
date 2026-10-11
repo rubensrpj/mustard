@@ -262,7 +262,7 @@ export function register(on) {
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== id) return next(e);
     const redraw=()=>$.ui.invalidate('ui.render');
-    return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,
+    return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
       data,usage,problem,selected,view,publicationMessage,publishing,actions:{
         change:(patch,query=false)=>{
           Object.assign(view,patch);
