@@ -4,8 +4,8 @@
 //! quatro conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
-//! - [`reading`] — recusa leituras que expõem a chave antes de qualquer
-//!   reescrita que autorizaria a execução da linha inteira;
+//! - [`reading`] — protege leituras que expõem a chave; leitores simples são
+//!   substituídos por bytes mascarados, sem aprovar a execução da linha inteira;
 //! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
 //!   caminho do Windows (`> C:\...`), que o shell POSIX transformaria num
 //!   arquivo com nome estranho na pasta atual;
@@ -14,8 +14,8 @@
 //!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
 //!   completo;
 //!
-//! [`reading`] recusa a leitura do `mustard.json` que guarda a chave do
-//!   Jev, com o arquivo sem a chave no motivo, e responde a busca por palavra
+//! [`reading`] protege a leitura do `mustard.json` que guarda a chave do
+//!   Jev, com orientação curta nos formatos sem substituição segura, e responde a busca por palavra
 //!   em pastas de código com a marca do mapa: a resposta agrupada por função
 //!   no lugar da busca que mostra linhas, quando o mapa crava; a busca comum
 //!   com a nota do mapa junto, quando a marca é parcial (ela passa antes pelo
@@ -77,7 +77,7 @@ impl Check for CommandGuard {
             return Ok(verdict);
         }
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
-            return Ok(verdict);
+            return Ok(super::config_read::rewrite(&cmd, input, ctx).unwrap_or(verdict));
         }
         let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {

@@ -7,7 +7,6 @@ pub mod preview;
 pub mod segment;
 pub(crate) mod theme;
 
-use crate::shared::rtk_gain::get_rtk_gain;
 use segment::{Segment, context_segment, git_segment, inert_segment, model_segment, module_segment, unit_segment};
 use serde_json::Value;
 use std::io::Read;
@@ -55,7 +54,7 @@ pub fn run(preview: bool) {
     match serde_json::from_str::<Value>(&input) {
         Ok(data) => {
             // Keep recording the host measurements for the detailed panel.
-            crate::commands::panel::observe_statusline(&data, get_rtk_gain().as_ref());
+            crate::commands::panel::observe_statusline(&data);
             for line in rows(ThemeId::from_env().theme(), build_segments(&data)) {
                 println!("{line}");
             }

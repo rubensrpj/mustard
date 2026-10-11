@@ -1,146 +1,131 @@
-//! `rtk gain` normalisation — a port of `scripts/_rtk-gain.js`.
-//!
-//! The JS `_rtk-gain.js` was a shared helper, not a standalone script: it
-//! shells `rtk gain --all --format json` and normalises the result across rtk
-//! versions. This module keeps it as a helper consumed by `run statusline`.
-//!
-//! Fail-open: `rtk` missing, a timeout, or unparseable JSON yields `None`,
-//! exactly like the JS helper returning `null`.
+//! Project-scoped RTK compression, refreshed only on the usage screen.
+//! Global lifetime totals and output compression are never model savings.
 
-#[cfg(test)]
-use mustard_core::view::document::RtkDay;
 use serde_json::Value;
 use mustard_core::platform::code_tools::{MachineRunner,RunOutcome,ToolRunner};
 
-/// Normalised `rtk gain` summary — the fields the statusline segment consumes.
-#[derive(Debug, Clone)]
-pub struct RtkGain {
-    /// Total tokens saved by RTK rewrites.
-    pub saved: i64,
-    /// Average savings percentage.
-    pub pct: f64,
+/// Cached project-scoped output compression. Ordinary panel/statusline polls
+/// spawn no RTK process. A failed refresh retains the last known measurement.
+pub fn cached(root: &std::path::Path) -> Value {
+    let root=mustard_core::io::spec_events::spec_root(root);
+    let switches=mustard_core::platform::project_seed::settings::Switches::read(&root);
+    let mut view=std::fs::read_to_string(cache_path(&root)).ok()
+        .and_then(|text|serde_json::from_str::<Value>(&text).ok()).filter(Value::is_object)
+        .unwrap_or_else(||serde_json::json!({"status":"not-measured","scope":"project-directory"}));
+    view["configured"]=serde_json::json!(switches.rtk);
+    view["hook_configured"]=serde_json::json!(switches.rtk_hook);
+    view
 }
 
-/// Read a numeric field from a `serde_json` object, tolerating string numbers
-/// and the alternate key spellings `_rtk-gain.js` accepted.
-fn num(obj: &Value, keys: &[&str]) -> f64 {
-    for key in keys {
-        if let Some(v) = obj.get(*key) {
-            if let Some(n) = v.as_f64() {
-                return n;
-            }
-            if let Some(s) = v.as_str()
-                && let Ok(n) = s.parse::<f64>()
-            {
-                return n;
-            }
-        }
-    }
-    0.0
+fn cache_path(root:&std::path::Path)->std::path::PathBuf {root.join(".claude/mustard/usage/rtk.json")}
+
+pub fn refresh(root:&std::path::Path) {
+    let root=mustard_core::io::spec_events::spec_root(root);
+    let runner=MachineRunner::new(&std::env::var("PATH").unwrap_or_default()).at(&root);
+    let measured=query(&runner);
+    let mut view=retain_measurement(cached(&root),measured);
+    view["refresh_at"]=serde_json::json!(chrono::Utc::now().to_rfc3339());
+    if let Ok(bytes)=serde_json::to_vec(&view) {let _=mustard_core::io::fs::write_atomic(cache_path(&root),&bytes);}
 }
 
-/// Shell `rtk gain --all --format json` and normalise the result.
-///
-/// Returns `None` on any failure (rtk absent, non-zero exit, bad JSON), or
-/// when both `saved` and `commands` are non-positive — the JS guard
-/// `if (saved <= 0 && commands <= 0) return null`.
-#[must_use]
-pub fn get_rtk_gain() -> Option<RtkGain> {
-    let runner=MachineRunner::new(&std::env::var("PATH").unwrap_or_default());
-    let (outcome,raw)=runner.output("rtk",&["gain","--all","--format","json"],std::time::Duration::from_secs(1));
-    if outcome!=RunOutcome::Succeeded {return None;}
-    let data: Value = serde_json::from_str(&raw).ok()?;
-    // The JS reads `data.summary` when present, else `data` itself.
-    let summary = data.get("summary").unwrap_or(&data);
-
-    let saved = num(summary, &["total_saved", "saved_tokens", "savedTokens"]) as i64;
-    let pct = num(summary, &["avg_savings_pct", "savings_pct", "savingsPct"]);
-    let commands = num(summary, &["total_commands", "commands"]) as i64;
-
-    if saved <= 0 && commands <= 0 {
-        return None;
-    }
-    Some(RtkGain { saved, pct })
+fn retain_measurement(mut previous:Value, measured:Value)->Value {
+    if measured["status"]=="measured" || measured["status"]=="no-recorded-commands" {return measured;}
+    previous["refresh_status"]=measured["status"].clone();
+    previous["stale"]=serde_json::json!(true);
+    previous
 }
 
-/// Só os dias antes de `before`.
-#[cfg(test)]
-fn closed(days: Vec<RtkDay>, before: &str) -> Vec<RtkDay> {
-    days.into_iter().filter(|day| day.date.as_str() < before).collect()
-}
-
-/// Os dias da saída JSON do `rtk gain --daily`, em ordem de data. O dia sem
-/// data fica de fora.
-#[cfg(test)]
-fn parse_days(raw: &str) -> Vec<RtkDay> {
-    let Ok(data) = serde_json::from_str::<Value>(raw) else {
-        return Vec::new();
-    };
-    let whole = |v: &Value, keys: &[&str]| num(v, keys).max(0.0) as u64;
-    let mut days: Vec<RtkDay> = data
-        .get("daily")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|day| {
-            let date = day.get("date").and_then(Value::as_str)?.trim();
-            (date.len() == 10).then(|| RtkDay {
-                date: date.to_string(),
-                commands: whole(day, &["commands", "total_commands"]),
-                input: whole(day, &["input_tokens", "total_input"]),
-                saved: whole(day, &["saved_tokens", "total_saved"]),
-            })
-        })
-        .collect();
-    days.sort_by(|a, b| a.date.cmp(&b.date));
-    days
+fn query(runner:&impl ToolRunner)->Value {
+    let (outcome,raw)=runner.output("rtk",&["gain","--project","--daily","--format","json"],std::time::Duration::from_secs(3));
+    let failure=|reason|serde_json::json!({"status":reason,"scope":"project-directory"});
+    if outcome!=RunOutcome::Succeeded {return failure(match outcome {RunOutcome::TimedOut {..}=>"timed-out",_=>"unavailable"});}
+    let Ok(data)=serde_json::from_str::<Value>(&raw) else {return failure("invalid-response")};
+    let summary=data.get("summary").unwrap_or(&data);
+    // Unknown/malformed data must never look like a measured zero.
+    if !["total_commands","total_input","total_output"].iter()
+        .all(|key|summary[*key].as_f64().is_some_and(|v|v.is_finite() && v>=0.0))
+        || !["total_saved","avg_savings_pct"].iter()
+        .all(|key|summary[*key].as_f64().is_some_and(f64::is_finite)) {return failure("invalid-response");}
+    if summary["total_commands"].as_f64()==Some(0.0) {return failure("no-recorded-commands");}
+    let dates:Vec<_>=data["daily"].as_array().into_iter().flatten().filter_map(|day|day["date"].as_str())
+        .filter(|date|chrono::NaiveDate::parse_from_str(date,"%Y-%m-%d").is_ok()).collect();
+    serde_json::json!({"status":"measured","scope":"project-directory","basis":"rtk-output-bytes-divided-by-four",
+        "measured_at":chrono::Utc::now().to_rfc3339(),"commands":summary["total_commands"],
+        "input_tokens":summary["total_input"],"output_tokens":summary["total_output"],
+        "saved_tokens":summary["total_saved"],"percent":summary["avg_savings_pct"],
+        "period_start":dates.iter().min(),"period_end":dates.iter().max(),"net_model_savings_percent":null,"stale":false})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
-    /// Cada dia da saída do rtk vira um dia com os números dele, em ordem de
-    /// data; uma saída sem dias, ou que não se entende, não dá dia nenhum.
-    #[test]
-    fn the_daily_savings_come_from_the_rtk_numbers() {
-        let raw = json!({
-            "summary": {"total_commands": 3},
-            "daily": [
-                {"date": "2026-09-12", "commands": 2, "input_tokens": 1000, "output_tokens": 600, "saved_tokens": 400},
-                {"date": "2026-09-11", "commands": 1, "input_tokens": "50", "saved_tokens": 10},
-                {"commands": 9},
-            ]
-        })
-        .to_string();
-        let days = parse_days(&raw);
-        assert_eq!(
-            days,
-            [
-                RtkDay { date: "2026-09-11".into(), commands: 1, input: 50, saved: 10 },
-                RtkDay { date: "2026-09-12".into(), commands: 2, input: 1000, saved: 400 },
-            ]
-        );
-        assert!(parse_days(r#"{"summary":{"total_commands":0},"daily":[]}"#).is_empty());
-        assert!(parse_days("não é json").is_empty());
+    struct Runner { outcome:RunOutcome, raw:String }
+    impl ToolRunner for Runner {
+        fn on_path(&self,_:&str)->bool {panic!("no separate installation probe")}
+        fn run(&self,_:&str,_:&[&str])->bool {panic!("no secondary commands")}
+        fn found_off_path(&self,_:&str)->Option<std::path::PathBuf> {None}
+        fn output(&self,program:&str,args:&[&str],limit:Duration)->(RunOutcome,String) {
+            assert_eq!(program,"rtk");
+            assert_eq!(args,["gain","--project","--daily","--format","json"]);
+            assert_eq!(limit,Duration::from_secs(3));
+            (self.outcome,self.raw.clone())
+        }
     }
+    fn response()->Value {json!({"summary":{"total_commands":10,"total_input":1000,
+        "total_output":600,"total_saved":400,"avg_savings_pct":40.0},"daily":[]})}
+    fn measured(data:Value)->Value {query(&Runner{outcome:RunOutcome::Succeeded,raw:data.to_string()})}
 
-    /// O dia que ainda corre fica de fora: só os dias antes dele contam.
     #[test]
-    fn only_the_closed_days_count() {
-        let day = |date: &str| RtkDay { date: date.into(), commands: 1, input: 1, saved: 1 };
-        let days = vec![day("2026-09-15"), day("2026-09-16"), day("2026-09-17"), day("2026-09-18")];
-        let kept: Vec<String> = closed(days, "2026-09-17").into_iter().map(|d| d.date).collect();
-        assert_eq!(kept, ["2026-09-15", "2026-09-16"]);
+    fn measures_project_output_without_claiming_model_savings() {
+        let mut history=response();
+        history["daily"]=json!([{"date":"2026-10-11"},{"date":"invalid"},{"date":"2026-10-01"}]);
+        let view=measured(history);
+        assert_eq!(view["status"],"measured");
+        assert_eq!(view["scope"],"project-directory");
+        assert_eq!(view["commands"],10);
+        assert_eq!(view["saved_tokens"],400);
+        assert_eq!(view["percent"],40.0);
+        assert_eq!(view["period_start"],"2026-10-01");
+        assert_eq!(view["period_end"],"2026-10-11");
+        assert!(view["net_model_savings_percent"].is_null());
+        let mut expanded=response();
+        expanded["summary"]["total_output"]=json!(1100);
+        expanded["summary"]["total_saved"]=json!(-100);
+        expanded["summary"]["avg_savings_pct"]=json!(-10.0);
+        assert_eq!(measured(expanded)["percent"],-10.0,"growth must not become fictitious savings");
     }
-
     #[test]
-    fn num_reads_string_and_numeric() {
-        let v = json!({ "a": "12.5", "b": 7, "c": "nope" });
-        assert!((num(&v, &["a"]) - 12.5).abs() < f64::EPSILON);
-        assert!((num(&v, &["b"]) - 7.0).abs() < f64::EPSILON);
-        assert_eq!(num(&v, &["c"]), 0.0);
-        assert_eq!(num(&v, &["missing"]), 0.0);
+    fn failed_or_malformed_readings_never_become_measured_zero() {
+        for (outcome,raw,status) in [(RunOutcome::Failed,"{}","unavailable"),
+            (RunOutcome::TimedOut{after:Duration::from_secs(3)},"{}","timed-out"),
+            (RunOutcome::Succeeded,"not json","invalid-response"),
+            (RunOutcome::Succeeded,"{\"summary\":{\"total_commands\":0}}","invalid-response")] {
+            let view=query(&Runner{outcome,raw:raw.into()});
+            assert_eq!(view["status"],status);
+            assert!(view["saved_tokens"].is_null());
+        }
+        let empty=measured(json!({"total_commands":0,"total_input":0,"total_output":0,"total_saved":0,"avg_savings_pct":0}));
+        assert_eq!(empty["status"],"no-recorded-commands");
+        assert!(empty["percent"].is_null(),"no sample is not measured zero savings");
+    }
+    #[test]
+    fn cached_reads_keep_the_last_dated_measurement_after_a_timeout() {
+        let root=tempfile::tempdir().unwrap();
+        let missing=cached(root.path());
+        assert_eq!(missing["status"],"not-measured");
+        let first=measured(response());
+        let retained=retain_measurement(first.clone(),json!({"status":"timed-out"}));
+        mustard_core::io::fs::write_atomic(cache_path(root.path()),&serde_json::to_vec(&retained).unwrap()).unwrap();
+        let view=cached(root.path());
+        assert_eq!(view["percent"],40.0);
+        assert_eq!(view["measured_at"],first["measured_at"]);
+        assert_eq!(view["refresh_status"],"timed-out");
+        assert_eq!(view["stale"],true);
+        let replaced=retain_measurement(retained,first.clone());
+        assert_eq!(replaced,first);
+        assert!(replaced["refresh_status"].is_null());
     }
 }

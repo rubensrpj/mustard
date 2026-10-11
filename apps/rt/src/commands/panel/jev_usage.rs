@@ -6,6 +6,13 @@ use super::{json, Value, Path};
 /// or spends tokens just to open a pane.
 pub(super) fn configuration(root:&Path, config:&mustard_core::ProjectConfig, env:Option<String>)->Value {
     use mustard_core::io::jev_gate;
+    let env=env.or_else(|| {
+        crate::commands::flow::round::local_file_ignored(root,".claude/settings.local.json").then(|| {
+            let text=std::fs::read_to_string(root.join(".claude/settings.local.json")).ok()?;
+            let settings:Value=serde_json::from_str(&text).ok()?;
+            settings["env"][jev_gate::KEY_ENV].as_str().map(str::to_string)
+        }).flatten()
+    });
     let key=jev_gate::find_key(root,config,env);
     let fallback=config.ai_fallback_enabled();
     let mut purposes=serde_json::Map::new();
@@ -54,6 +61,13 @@ impl Ledger {
     }
 }
 fn summarize(logical: &[Value], attempts: &[Value]) -> Value {
+    let mut by_purpose=serde_json::Map::new();
+    for attempt in attempts {
+        let purpose=attempt["purpose"].as_str().unwrap_or("unknown");
+        let count=by_purpose.entry(purpose).or_insert(json!(0));
+        *count=json!(count.as_u64().unwrap_or(0)+1);
+    }
+    let last=attempts.iter().filter(|row|row["at"].as_str().is_some()).max_by_key(|row|row["at"].as_str());
     let legacy = logical.iter().filter(|row| row["physical_tracking"] != true).collect::<Vec<_>>();
     let native = logical.iter().filter(|row| row["physical_tracking"] == true).collect::<Vec<_>>();
     let missing = native.iter().any(|row| {
@@ -71,7 +85,9 @@ fn summarize(logical: &[Value], attempts: &[Value]) -> Value {
     json!({"physical_requests":requests,"known_physical_requests":known_requests,"judgements":logical.len(),
         "known_input_tokens":tokens,"requests_with_unknown_usage":unknown,
         "cost_micro_usd":if unknown==0 && !missing && known_requests>0 {Some((tokens as f64*crate::shared::jev::PRICE_PER_MILLION_INPUT_TOKENS).round() as u64)}else{None},
-        "cost_basis":"table-estimate","origin":"physical-attempt-log"})
+        "cost_basis":"table-estimate","origin":"physical-attempt-log","by_purpose":by_purpose,
+        "last_attempt":last.map(|row|json!({"at":row["at"],"purpose":row["purpose"],"status":row["status"],
+            "result":row["result"],"input_tokens":row["input_tokens"],"spec":row["spec"]}))})
 }
 #[cfg(test)]
 mod tests {
@@ -100,5 +116,21 @@ mod tests {
         assert_eq!(measured["requests_with_unknown_usage"], 1);
         assert!(measured["cost_micro_usd"].is_null());
         assert!(summarize(&logical, &attempts[..1])["physical_requests"].is_null());
+    }
+
+    #[test]
+    fn latest_provider_result_exposes_only_safe_metadata_and_cost_stays_physical() {
+        let attempts=vec![
+            json!({"request_id":"later","at":"2026-10-11T00:01:06Z","purpose":"search","status":200,
+                "result":"received","input_tokens":24848,"spec":"pi","payload":"private request body","key":"private key"}),
+            json!({"request_id":"earlier","at":"2026-10-10T00:00:00Z","purpose":"context","status":200,"input_tokens":1000})];
+        let measured=summarize(&[],&attempts);
+        assert_eq!(measured["last_attempt"]["purpose"],"search");
+        assert_eq!(measured["last_attempt"]["status"],200);
+        assert_eq!(measured["by_purpose"],json!({"context":1,"search":1}));
+        assert_eq!(measured["physical_requests"],2);
+        assert_eq!(measured["cost_micro_usd"],1086);
+        assert!(!measured.to_string().contains("private"));
+        assert!(summarize(&[],&[])["cost_micro_usd"].is_null());
     }
 }

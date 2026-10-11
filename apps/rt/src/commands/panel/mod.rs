@@ -6,6 +6,7 @@ mod jev_usage;
 mod consumption;
 mod publication;
 mod wave_usage;
+mod settings;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
 
@@ -36,36 +37,41 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
     specs.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     let branch = mustard_core::platform::git::run(start, &["branch", "--show-current"]).out();
     let mut jev_view=jev.project();
-    jev_view["configuration"]=jev_usage::configuration(&root,&mustard_core::ProjectConfig::load(&root),std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok());
+    let config=mustard_core::ProjectConfig::load(&root);
+    jev_view["configuration"]=jev_usage::configuration(&root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok());
     json!({"ok":true,"schema_version":1,"at":chrono::Utc::now().to_rfc3339(),
         "project":{"language":crate::commands::spec_events::project(&root).lang.to_string(),"version":mustard_core::harness_version(),"publication_url":spec_index::project_page_url(&root),"name":spend::project_name(&root).or_else(||root.file_name().map(|n|n.to_string_lossy().into_owned())),"branch":branch},
         "selected_spec":selected,"specs":specs,
-        "jev":jev_view,"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
+        "jev":jev_view,"rtk":crate::shared::rtk_gain::cached(&root),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
+        "retrieval":{"vectors_enabled":config.ai_vectors_enabled(),"index_present":mustard_core::io::project_map::model_path(&root).is_file()},
+        "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
         "statusline":consumption::statusline(&root,session),
         "commands":{"panel":"/mustard-panel","publish":"/mustard-pages"}})
 }
 
-pub(crate) fn observe_statusline(data:&Value,gain:Option<&crate::shared::rtk_gain::RtkGain>) {
-    consumption::observe_statusline(data,gain);
+pub(crate) fn observe_statusline(data:&Value) {
+    consumption::observe_statusline(data);
 }
 
 fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger) -> Value {
     let visible = log.visible();
     let live = wave_usage::read(root,name);
     let hidden = log.hidden();
-    let waves: Vec<Value> = log
-        .planned_waves()
-        .into_iter()
+    let planned=log.planned_waves();
+    let dispatches=log.last_dispatch_by_wave();
+    let rejected=log.last_rejected();
+    let measured_wave=|wave:u64|dispatches.get(&wave).and_then(|dispatch|wave_usage::current_at(&live,wave,*dispatch));
+    let waves: Vec<Value> = planned.iter().copied()
         .map(|wave| {
-            let measured=wave_usage::current(&live,log,wave);
+            let measured=measured_wave(wave);
             let sent = visible.iter().rev().find(|e| e.event_type == "send" && e.wave() == Some(wave));
-            let attempt=sent.map(|event|log.dispatch_position(event.id));
+            let attempt=dispatches.get(&wave).copied();
             let belongs=|id:u64|attempt.is_none_or(|start|id>start);
             let integrated = visible.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && belongs(e.id));
             let commit = visible.iter().rev().find(|e| e.event_type == "commit" && e.ints("waves").contains(&wave) && belongs(e.id));
             let received =
                 log.events.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && hidden.get(&e.id) == Some(&Hidden::Returned) && belongs(e.id));
-            let repair = log.last_rejected().get(&wave).is_some_and(|id| belongs(*id) && integrated.is_none_or(|e| e.id < *id));
+            let repair = rejected.get(&wave).is_some_and(|id| belongs(*id) && integrated.is_none_or(|e| e.id < *id));
             let status = if repair {
                 "repair-required"
             } else if commit.is_some() {
@@ -89,7 +95,7 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         .collect();
     // Conductor usage is cumulative and repeated on wave sends. Take it once.
     let caller = visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens"))
-        .chain(log.planned_waves().into_iter().filter_map(|wave|wave_usage::current(&live,log,wave)?.get("caller_tokens")?.as_u64())).max();
+        .chain(planned.iter().filter_map(|wave|measured_wave(*wave)?.get("caller_tokens")?.as_u64())).max();
     let unknown = waves.iter().filter(|w| w["tokens"].as_u64().is_none()).count();
     let tokens = if unknown == 0 && !waves.is_empty() { Some(waves.iter().filter_map(|w| w["tokens"].as_u64()).sum::<u64>()) } else { None };
     let mut breakdown=mustard_core::io::transcript::TokenBreakdown::default();
@@ -99,8 +105,8 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
     }
     let caller_breakdown=visible.iter().filter(|e|e.event_type=="send")
         .filter_map(|e|e.int("caller_tokens").zip(e.fields.get("caller_usage_breakdown")))
-        .chain(log.planned_waves().into_iter().filter_map(|wave| {
-            let usage=wave_usage::current(&live,log,wave)?;
+        .chain(planned.iter().filter_map(|wave| {
+            let usage=measured_wave(*wave)?;
             usage["caller_tokens"].as_u64().zip(usage.get("caller_usage_breakdown"))
         })).max_by_key(|(tokens,_)|*tokens).map(|(_,detail)|detail);
     let stages: Vec<Value> = visible
@@ -126,7 +132,7 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         })
         .collect();
     json!({"name":name,"goal":mustard_core::domain::spec_index::goal_of(log),"phase":State::from_log(log).phase,
-        "waves":waves,"scheduling":super::flow::round::scheduling_snapshot(root,log),"usage":{"wave_tokens":tokens,
+        "waves":waves,"scheduling":if selected {super::flow::round::scheduling_snapshot(root,log)} else {Value::Null},"usage":{"wave_tokens":tokens,
             "known_wave_tokens":waves.iter().filter_map(|wave|wave["tokens"].as_u64()).sum::<u64>(),"measured_at":live["measured_at"],
             "conductor_tokens":caller,"waves_with_unknown_usage":unknown,
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},
@@ -144,7 +150,8 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
         && !matches!(event.str_field("command"),Some("wave assembly"|"wave items"))).collect();
     let mut commands = std::collections::BTreeMap::<String, Value>::new();
     let mut totals = json!({"calls":0,"refusals":0,"input_bytes":0,"output_bytes":0,"estimated_input_tokens":0,"estimated_output_tokens":0,"calls_without_payload_measurement":0,
-        "search":{"calls":0,"enriched":0,"task_evidence":0,"fallback":0,"ms":0}});
+        "search":{"calls":0,"enriched":0,"task_evidence":0,"fallback":0,"ms":0,
+            "decision_coverage":0,"choice_gates":{},"selection_statuses":{},"local_model_calls":0,"remote_model_calls":0,"cache_hits":0,"accepted_choices":0}});
     for call in calls {
         let command = commands.entry(call.str_field("command").unwrap_or_default().into())
             .or_insert_with(|| json!({"calls":0,"refusals":0,"reasons":{}}));
@@ -166,6 +173,17 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
             for (key,field) in [("enriched","search_enriched"),("task_evidence","search_task_evidence"),("fallback","search_fallback")] {
                 if call.fields.get(field)==Some(&Value::Bool(true)){totals["search"][key]=json!(totals["search"][key].as_u64().unwrap_or(0)+1);}
             }
+            if let Some(gate)=call.str_field("search_choice_gate") {
+                totals["search"]["decision_coverage"]=json!(totals["search"]["decision_coverage"].as_u64().unwrap_or(0)+1);
+                totals["search"]["choice_gates"][gate]=json!(totals["search"]["choice_gates"][gate].as_u64().unwrap_or(0)+1);
+            }
+            if let Some(status)=call.str_field("search_selection_status") {
+                totals["search"]["selection_statuses"][status]=json!(totals["search"]["selection_statuses"][status].as_u64().unwrap_or(0)+1);
+            }
+            for (key,field) in [("local_model_calls","search_local_model_calls"),("remote_model_calls","search_remote_model_calls"),("accepted_choices","search_accepted_choices")] {
+                if let Some(value)=call.int(field) {totals["search"][key]=json!(totals["search"][key].as_u64().unwrap_or(0)+value);}
+            }
+            if call.fields.get("search_selection_cached")==Some(&Value::Bool(true)) {totals["search"]["cache_hits"]=json!(totals["search"]["cache_hits"].as_u64().unwrap_or(0)+1);}
         }
     }
     totals["by_command"] = json!(commands);
@@ -259,7 +277,27 @@ mod tests {
         let result = snapshot(dir.path(), None);
         assert_eq!(result["specs"], json!([]));
         assert_eq!(result["jev"]["cost_micro_usd"], Value::Null);
+        assert_eq!(result["retrieval"],json!({"vectors_enabled":true,"index_present":false}));
         assert!(!dir.path().join(".claude").exists());
+    }
+
+    #[test]
+    fn search_decision_coverage_does_not_invent_reasons_for_legacy_calls() {
+        let root=tempfile::tempdir().unwrap();
+        let rows=[json!({"v":1,"id":1,"type":"call","command":"search","invocation":true}),
+            json!({"v":1,"id":2,"type":"call","command":"search","invocation":true,
+                "search_choice_gate":"eligible","search_selection_status":"jev-choice",
+                "search_local_model_calls":1,"search_remote_model_calls":0,
+                "search_selection_cached":true,"search_accepted_choices":2})];
+        let log=mustard_core::domain::spec_events::parse_log(&rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"));
+        let result=operations(root.path(),"demo",&log);
+        assert_eq!(result["search"]["calls"],2);
+        assert_eq!(result["search"]["decision_coverage"],1);
+        assert_eq!(result["search"]["choice_gates"],json!({"eligible":1}));
+        assert_eq!(result["search"]["local_model_calls"],1);
+        assert_eq!(result["search"]["remote_model_calls"],0);
+        assert_eq!(result["search"]["cache_hits"],1);
+        assert_eq!(result["search"]["accepted_choices"],2);
     }
 
     #[test]

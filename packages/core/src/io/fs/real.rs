@@ -78,6 +78,14 @@ impl Fs for RealFs {
         // refuses to rename a file that still has an open handle.
         let write_result = (|| -> Result<()> {
             let mut file = File::create(&temp)?;
+            // A rewrite must not turn a private credential file into a
+            // world-readable one. Apply the existing mode before writing bytes.
+            #[cfg(unix)]
+            match fs::metadata(path) {
+                Ok(metadata) => file.set_permissions(metadata.permissions())?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
             file.write_all(contents)?;
             file.flush()?;
             if super::disk_sync() {
@@ -167,6 +175,18 @@ mod tests {
         fs().write_atomic(&path, b"first").unwrap();
         fs().write_atomic(&path, b"second").unwrap();
         assert_eq!(fs().read_to_string(&path).unwrap(), "second");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rewriting_a_private_configuration_preserves_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempdir().unwrap();let path=dir.path().join("settings.local.json");
+        std::fs::write(&path,b"old private configuration").unwrap();
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+        fs().write_atomic(&path,b"new private configuration").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,0o600);
+        assert_eq!(std::fs::read(&path).unwrap(),b"new private configuration");
     }
 
     #[test]

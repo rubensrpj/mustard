@@ -120,10 +120,11 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
         }
         let folders: Vec<PathBuf> = searched.iter().map(|path| cwd.join(path)).collect();
         if let Some(file) = config_key::swept(&folders, Path::new(&root), search.walk, &search.filters) {
+            let name=Path::new(&file).file_name().and_then(|name|name.to_str()).unwrap_or(CONFIG_FILE);
             let fix = match search.walk {
-                _ if search.git => format!("`':!{CONFIG_FILE}'`"),
-                Walk::Grep => format!("`--exclude={CONFIG_FILE}`"),
-                Walk::Rg { .. } => format!("`-g '!{CONFIG_FILE}'`"),
+                _ if search.git => format!("`':!{name}'`"),
+                Walk::Grep => format!("`--exclude={name}`"),
+                Walk::Rg { .. } => format!("`-g '!{name}'`"),
             };
             return Some(Verdict::Deny { reason: say("config_key.swept", lang, &[("{file}", &file), ("{fix}", &fix)]) });
         }
@@ -247,7 +248,8 @@ fn config_refusal(segment: &Segment, cwd: &Path, lang: mustard_core::platform::i
     named
         .chain(fed)
         .filter_map(|word| config_key::named_by(&word.text, word.text == word.raw))
-        .find_map(|path| config_key::refusal(&path, &cwd.join(&path), lang))
+        .find_map(|path| config_key::refusal(&path, &cwd.join(&path), lang)
+            .map(|_| mustard_core::translate("config_key.shell_unsupported", lang).replace("{file}", &path)))
 }
 
 /// Uma busca de texto do terminal em pastas.
@@ -818,18 +820,21 @@ mod tests {
         }
     }
 
-    /// O comando que mostraria o `mustard.json` com a chave é recusado, e o
-    /// motivo traz o arquivo com a chave trocada, nunca a chave; o que só
+    /// O leitor simples recebe uma reescrita segura; formatos não suportados
+    /// orientam sem despejar o arquivo. O que só
     /// lista o arquivo, e o arquivo sem a chave, passam.
     #[test]
     fn the_config_file_with_the_key_never_reaches_the_terminal() {
         let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
         let (_dir, root) = fixture::project(&config, true);
-        for command in ["cat mustard.json", "jq . < mustard.json", "grep -n jev ./mustard.json", "cd src && head ../mustard.json"] {
-            let reason = refused(run(&root, command), command);
-            assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
-            assert!(reason.contains(r#""key": "***""#), "{command}: {reason}");
+        for command in ["cat mustard.json", "grep -n jev ./mustard.json", "cd src && head ../mustard.json"] {
+            let Verdict::Rewrite { tool_input, note } = run(&root, command) else { panic!("expected safe rewrite: {command}"); };
+            assert!(tool_input["command"].as_str().unwrap().contains("run config-read"));
+            assert!(!tool_input.to_string().contains(fixture::FAKE_KEY));
+            assert!(note.is_none());
         }
+        let reason = refused(run(&root, "jq . < mustard.json"), "unsupported stdin script");
+        assert!(reason.contains("config-read") && !reason.contains(r#""jev""#));
         assert_eq!(run(&root, "ls mustard.json"), Verdict::Allow);
 
         let (_plain, plain) = fixture::project("{}", true);
@@ -837,13 +842,12 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_config_read_explains_why_chained_tests_were_not_run() {
+    fn a_config_read_leaves_chained_tests_in_the_original_shell() {
         let (_dir,root)=fixture::project(&format!(r#"{{"jev":{{"key":"{}"}}}}"#,fixture::FAKE_KEY),true);
-        let message=refused(run(&root,"cat mustard.json && cargo test"),"cat mustard.json && cargo test");
-        assert!(!message.contains(fixture::FAKE_KEY));
-        assert!(message.contains("***"));
-        assert!(message.contains("incluindo etapas encadeadas de teste"),"{message}");
-        assert!(message.contains("Execute o teste separadamente"),"{message}");
+        let Verdict::Rewrite { tool_input, note } = run(&root,"cat mustard.json && cargo test") else { panic!("expected safe rewrite"); };
+        assert!(tool_input["command"].as_str().unwrap().ends_with(" && cargo test"));
+        assert!(!tool_input.to_string().contains(fixture::FAKE_KEY));
+        assert!(note.is_none());
     }
     /// A busca recursiva que passaria pelo `mustard.json` com a chave é
     /// recusada com a opção que o deixa de fora, e o motivo nunca traz a
@@ -884,7 +888,7 @@ mod tests {
         for command in ["grep key *.json", "cat *", "cd src && head -5 ../m*"] {
             let reason = refused(run(&root, command), command);
             assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
-            assert!(reason.contains(r#""key": "***""#), "{command}: {reason}");
+            assert!(reason.contains("config-read") && !reason.contains(r#""jev""#), "{command}: {reason}");
         }
     }
 

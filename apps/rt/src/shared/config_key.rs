@@ -1,8 +1,9 @@
 //! `config_key` — a chave do Jev no arquivo de configuração do Mustard, que
 //! nenhuma leitura mostra.
 //!
-//! A chave mora no `mustard.json` do projeto, no campo [`JEV_KEY_FIELD`] da
-//! seção `jev`, o mesmo nome que a configuração lê. Quem lê o arquivo, pela
+//! A chave mora no `mustard.json`, no campo [`JEV_KEY_FIELD`] de `jev`, ou em
+//! `env.TYPESAFE_API_KEY` das configurações locais privadas do Claude. Quem lê
+//! esses arquivos, pela
 //! ferramenta de leitura ou pelo terminal, recebe o texto dele com o valor
 //! desse campo trocado por `***` ([`masked`]), e nunca o valor. A busca em
 //! pastas que passaria pelo arquivo e mostraria as linhas dele é recusada
@@ -15,13 +16,14 @@ use mustard_core::platform::i18n::{translate, Locale};
 
 /// O nome do arquivo de configuração do Mustard.
 pub(crate) const CONFIG_FILE: &str = "mustard.json";
+const LOCAL_SETTINGS: &str = "settings.local.json";
 
 /// O que fica no lugar do valor de cada chave.
 const HIDDEN: &str = "***";
 
 /// `true` quando o caminho termina no arquivo de configuração do Mustard.
 pub(crate) fn is_config_file(path: &str) -> bool {
-    Path::new(&path.replace('\\', "/")).file_name().and_then(|name| name.to_str()) == Some(CONFIG_FILE)
+    matches!(Path::new(&path.replace('\\', "/")).file_name().and_then(|name| name.to_str()), Some(CONFIG_FILE | LOCAL_SETTINGS))
 }
 
 /// Um pedaço do texto, para achar o campo de chave: um texto entre aspas,
@@ -69,7 +71,8 @@ pub(crate) fn masked(text: &str) -> Option<String> {
         };
         if let (Token::Text(name_start, name_end), Token::Colon, Token::Text(start, end)) = (last[0], last[1], token)
             && end > start
-            && &text[name_start..name_end] == JEV_KEY_FIELD
+            && serde_json::from_str::<String>(&text[(name_start - 1)..=name_end])
+                .is_ok_and(|name| name == JEV_KEY_FIELD || name == mustard_core::io::jev_gate::KEY_ENV)
         {
             hidden.push((start, end));
         }
@@ -144,10 +147,12 @@ pub(crate) fn named_by(text: &str, plain: bool) -> Option<String> {
     }
     let (folder, last) = text.rsplit_once('/').map_or((None, text), |(folder, last)| (Some(folder), last));
     let wild = |part: &str| part.contains(['*', '?', '{']);
-    if !plain || !wild(last) || folder.is_some_and(wild) || !may_take(last, true) {
+    let names=if folder.is_some_and(|folder|folder.ends_with(".claude")){[LOCAL_SETTINGS,CONFIG_FILE]}else{[CONFIG_FILE,LOCAL_SETTINGS]};
+    let name=names.into_iter().find(|name|may_take(last,true,name))?;
+    if !plain || !wild(last) || folder.is_some_and(wild) {
         return None;
     }
-    Some(folder.map_or_else(|| CONFIG_FILE.to_string(), |folder| format!("{folder}/{CONFIG_FILE}")))
+    Some(folder.map_or_else(|| name.to_string(), |folder| format!("{folder}/{name}")))
 }
 
 /// O arquivo de configuração com a chave pelo qual a busca em `folders`
@@ -157,17 +162,15 @@ pub(crate) fn named_by(text: &str, plain: bool) -> Option<String> {
 /// deixam o arquivo de fora, quando nenhum desses arquivos guarda a chave e
 /// em todo erro de leitura.
 pub(crate) fn swept(folders: &[PathBuf], root: &Path, walk: Walk, filters: &[NameFilter]) -> Option<String> {
-    if !reads_config(walk, filters) {
-        return None;
-    }
     let root = std::fs::canonicalize(root).ok();
-    let root_file = root.as_ref().and_then(|root| std::fs::canonicalize(root.join(CONFIG_FILE)).ok());
-    let file = folders.iter().filter_map(|folder| std::fs::canonicalize(folder).ok()).filter(|folder| folder.is_dir()).find_map(
-        |folder| {
-            let own = std::fs::canonicalize(folder.join(CONFIG_FILE)).ok();
-            own.into_iter().chain(root_file.clone()).find(|file| file.starts_with(&folder) && holds_key(file))
-        },
-    )?;
+    let file=folders.iter().filter_map(|folder|std::fs::canonicalize(folder).ok()).filter(|folder|folder.is_dir()).find_map(|folder| {
+        [CONFIG_FILE, LOCAL_SETTINGS].into_iter().filter(|name|reads_config(walk,filters,name)).find_map(|name| {
+            let own=std::fs::canonicalize(folder.join(name)).ok();
+            let relative=if name==LOCAL_SETTINGS {".claude/settings.local.json"}else{CONFIG_FILE};
+            let root_file=root.as_ref().and_then(|root|std::fs::canonicalize(root.join(relative)).ok());
+            own.into_iter().chain(root_file).find(|file|file.starts_with(&folder) && holds_key(file))
+        })
+    })?;
     Some(file_text(&file, root.as_deref()))
 }
 
@@ -187,13 +190,13 @@ fn holds_key(file: &Path) -> bool {
 /// `true` quando a busca, com os filtros `filters`, lê o arquivo de
 /// configuração ao passar pela pasta dele. Na dúvida sobre um filtro, a
 /// resposta é a que protege a chave: o de entrada casa, o de saída não.
-fn reads_config(walk: Walk, filters: &[NameFilter]) -> bool {
+fn reads_config(walk: Walk, filters: &[NameFilter], name:&str) -> bool {
     let braces = walk != Walk::Grep;
     let deciding = filters.iter().rev().find(|filter| {
         if filter.exclude {
-            surely_takes(&filter.glob, CONFIG_FILE, braces)
+            surely_takes(&filter.glob, name, braces)
         } else {
-            may_take(&filter.glob, braces)
+            may_take(&filter.glob, braces, name)
         }
     });
     if let Some(filter) = deciding {
@@ -209,12 +212,12 @@ fn reads_config(walk: Walk, filters: &[NameFilter]) -> bool {
 /// configuração: pela última parte do filtro, sem olhar maiúsculas, e sempre
 /// que o filtro usa o que esta leitura não conhece. `braces` diz se `{a,b}`
 /// vale por uma das opções, como no `rg` e no terminal.
-fn may_take(glob: &str, braces: bool) -> bool {
+fn may_take(glob: &str, braces: bool, name:&str) -> bool {
     if braces && glob.contains('{') && glob.contains('/') {
         return true;
     }
     let last = glob.rsplit('/').next().unwrap_or(glob).to_lowercase();
-    glob_fits(&last, CONFIG_FILE, braces).unwrap_or(true)
+    glob_fits(&last, name, braces).unwrap_or(true)
 }
 
 /// `true` só quando o filtro de nome `glob` casa com certeza com um arquivo
@@ -286,6 +289,25 @@ mod tests {
     /// aqui.
     const FAKE: &str = "chave-falsa-0123456789";
 
+    #[test]
+    fn private_host_keys_are_hidden_in_direct_wildcard_and_recursive_reads() {
+        let dir=tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        let text=format!(r#"{{"env":{{"TYPESAFE_API_K\u0045Y":"{FAKE}"}},"rtk":true}}"#);
+        let file=dir.path().join(".claude/settings.local.json");
+        std::fs::write(&file,&text).unwrap();
+        let shown=masked(&text).unwrap();
+        assert!(!shown.contains(FAKE));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&shown).unwrap()["env"][mustard_core::io::jev_gate::KEY_ENV],HIDDEN);
+        assert!(is_config_file(&file.to_string_lossy()));
+        assert_eq!(named_by(".claude/*.json",true).as_deref(),Some(".claude/settings.local.json"));
+        let folders=[dir.path().to_path_buf()];
+        assert_eq!(swept(&folders,dir.path(),Walk::Grep,&[]).as_deref(),Some(".claude/settings.local.json"));
+        assert!(swept(&folders,dir.path(),Walk::Grep,&[NameFilter{exclude:true,glob:LOCAL_SETTINGS.into()}]).is_none());
+        assert!(swept(&folders,dir.path(),Walk::Rg{unignored:false},&[]).is_none());
+        assert!(swept(&folders,dir.path(),Walk::Rg{unignored:true},&[]).is_some());
+    }
+
     /// O valor do campo que a configuração lê como chave sai trocado, em
     /// qualquer altura do arquivo; um campo de nome parecido e o resto do
     /// texto ficam como estavam.
@@ -342,7 +364,7 @@ mod tests {
     /// Os filtros escritos como no `rg`: `!` no começo deixa de fora.
     fn reads(walk: Walk, globs: &[&str]) -> bool {
         let filters: Vec<NameFilter> = globs.iter().map(|glob| NameFilter::rg(glob)).collect();
-        reads_config(walk, &filters)
+        reads_config(walk, &filters, CONFIG_FILE)
     }
 
     /// Os filtros de nome decidem como o `grep` e o `rg` decidem, conferido

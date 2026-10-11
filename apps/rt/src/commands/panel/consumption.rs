@@ -32,7 +32,7 @@ fn statusline_path(root: &Path, session: &str) -> std::path::PathBuf {
         .join(format!("{}.json", hash.hex_digest()))
 }
 
-pub(super) fn observe_statusline(data: &Value, gain: Option<&crate::shared::rtk_gain::RtkGain>) {
+pub(super) fn observe_statusline(data: &Value) {
     let Some(session) = data["session_id"].as_str() else {
         return;
     };
@@ -48,8 +48,7 @@ pub(super) fn observe_statusline(data: &Value, gain: Option<&crate::shared::rtk_
     }
     let view = json!({"measured_at":chrono::Utc::now().to_rfc3339(),"origin":"host-statusline",
         "model":data["model"]["display_name"],"duration_ms":data["cost"]["total_duration_ms"],
-        "api_duration_ms":data["cost"]["total_api_duration_ms"],"context":data["context_window"],
-        "rtk":gain.map(|gain|json!({"saved_tokens":gain.saved,"percent":gain.pct}))});
+        "api_duration_ms":data["cost"]["total_api_duration_ms"],"context":data["context_window"]});
     if let Ok(bytes) = serde_json::to_vec(&view) {
         let _ = mustard_core::io::fs::write_atomic(statusline_path(&root, session), &bytes);
     }

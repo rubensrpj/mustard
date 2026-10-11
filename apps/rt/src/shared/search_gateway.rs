@@ -52,6 +52,7 @@ pub(crate) fn answer(
                 }
             }
         }
+        answer.report["choice_gate"]=json!("native-operation");
         return Ok(answer);
     }
     let selector = if request.choose && !request.intent.trim().is_empty() {
@@ -119,7 +120,21 @@ pub(crate) fn answer(
         let computed:u64=local_refreshes.iter().filter_map(|refresh|refresh["computed_vectors"].as_u64()).sum();
         answer.report["local_index_refresh"]=json!({"attempts":local_refreshes,"computed_vectors":computed,"remote_model_calls":0});
     }
+    answer.report["choice_gate"]=json!(choice_gate(&root,request,selector.is_some()));
     Ok(answer)
+}
+
+fn choice_gate(root:&Path,request:&Request,provider:bool)->&'static str {
+    use mustard_core::domain::knowledge::investigation::Purpose;
+    if request.tool=="Read" {return "exact-read";}
+    if request.purpose==Purpose::Locate {return "locate";}
+    if !request.choose {return "not-requested";}
+    if request.intent.trim().is_empty() {return "missing-intent";}
+    if provider {return "eligible";}
+    let config=mustard_core::ProjectConfig::load(root);
+    if !config.ai_fallback_enabled() {return "ai-fallback-disabled";}
+    if !mustard_core::io::jev_gate::setting_allows(config.judgement_filter("search")) {return "purpose-not-configured";}
+    "provider-unavailable"
 }
 
 fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> {
@@ -248,7 +263,7 @@ pub(crate) fn before_bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     })
 }
 
-fn literal_shell(command: &str) -> bool {
+pub(crate) fn literal_shell(command: &str) -> bool {
     let mut quote = None;
     let mut escaped = false;
     for c in command.chars() {
@@ -337,6 +352,26 @@ pub(crate) fn before_file(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn choice_diagnostics_distinguish_exact_native_and_configured_investigations() {
+        use mustard_core::domain::knowledge::investigation::Purpose;
+        let dir=tempfile::tempdir().unwrap();
+        let mut request=Request{tool:"Read".into(),input:json!({"file_path":"x.rs"}),
+            intent:"Understand behavior".into(),purpose:Purpose::Understand,choose:true};
+        assert_eq!(choice_gate(dir.path(),&request,true),"exact-read");
+        request.tool="Grep".into();request.purpose=Purpose::Locate;
+        assert_eq!(choice_gate(dir.path(),&request,true),"locate");
+        request.purpose=Purpose::Understand;request.choose=false;
+        assert_eq!(choice_gate(dir.path(),&request,true),"not-requested");
+        request.choose=true;
+        assert_eq!(choice_gate(dir.path(),&request,true),"eligible");
+        assert_eq!(choice_gate(dir.path(),&request,false),"ai-fallback-disabled");
+        std::fs::write(dir.path().join("mustard.json"),r#"{"ai":{"fallback":true}}"#).unwrap();
+        assert_eq!(choice_gate(dir.path(),&request,false),"purpose-not-configured");
+        std::fs::write(dir.path().join("mustard.json"),r#"{"ai":{"fallback":true},"judgement":{"search":{"filter":"jev"}}}"#).unwrap();
+        assert_eq!(choice_gate(dir.path(),&request,false),"provider-unavailable");
+    }
+
     fn call(root: &Path, tool: &str, value: serde_json::Value) -> (HookInput, Ctx) {
         let root = root.to_string_lossy().to_string();
         (
@@ -473,5 +508,12 @@ mod tests {
             .err()
             .expect("secret refused before reading");
         assert!(!error.contains("hidden-sentinel"));
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        std::fs::write(dir.path().join(".claude/settings.local.json"),r#"{"env":{"TYPESAFE_API_KEY":"private-env-sentinel"}}"#).unwrap();
+        let mut req=req;
+        req.input["file_path"]=json!(".claude/settings.local.json");
+        let error=answer(dir.path(),&req).err().expect("private Jev key refused before reading");
+        assert!(!error.contains("private-env-sentinel"));
+        assert!(error.contains("***"));
     }
 }

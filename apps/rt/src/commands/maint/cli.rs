@@ -21,6 +21,19 @@ use crate::commands::{maint};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum MaintCmd {
+    /// Read configuration with the key masked, optionally through a text reader.
+    #[command(display_order = 40)]
+    ConfigRead {
+        /// Configuration file to read.
+        #[arg(long)]
+        file: PathBuf,
+        /// Supported text reader; defaults to an unfiltered read.
+        #[arg(long, default_value = "cat")]
+        reader: String,
+        /// Reader arguments as a `JSON` array, without the configuration filename.
+        #[arg(long, default_value = "[]")]
+        args_json: String,
+    },
     /// Recolhe as cópias descartáveis que os agentes deixam no diretório
     /// temporário (ou no `scratchpad/` de uma sessão do Claude Code): pasta
     /// com cópia deste projeto ou `target/` de compilação, sem mudança há
@@ -102,6 +115,9 @@ pub enum MaintCmd {
 /// Dispatch one `maint`-family `run` subcommand.
 pub fn dispatch(cmd: MaintCmd) {
     match cmd {
+        MaintCmd::ConfigRead { file, reader, args_json } => {
+            maint::config_read::run(&file, &reader, &args_json);
+        }
         MaintCmd::ScratchGc { dry_run, apply, path } => {
             // `dry_run` vale `true` por padrão e o `conflicts_with_all` recusa
             // `--dry-run` junto de `--apply` OU de `--path`: quando um dos dois

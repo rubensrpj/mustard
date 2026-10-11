@@ -6,8 +6,10 @@ proves that the gateway can use its packaged rg; no fake executable or skipped
 search can satisfy this check. Never changes a user's Claude configuration.
 """
 import argparse
+from contextlib import closing
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import tarfile
@@ -48,6 +50,9 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         env = os.environ.copy()
         env["MUSTARD_CLAUDE_BIN"] = str(root / "no-host-session")
         env["MUSTARD_SPEND_DIR"] = str(root / "spend")
+        env["CLAUDE_CONFIG_DIR"] = str(root / "isolated-claude")
+        env["MUSTARD_RT_DELEGATED"] = "1"
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
         for name in ("TYPESAFE_API_KEY", "JEV_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR"):
             env.pop(name, None)
 
@@ -62,6 +67,33 @@ def smoke(bin_dir, version, bootstrap_archive=None):
             assert version in run([binary(name), "--version"]), "installed version differs"
         run([binary("rtk"), "--version"])
         run([binary("rg"), "--version"])
+        installed = json.loads(run([binary("mustard-rt"), "run", "upsert"]))
+        assert installed["installation"]["scan"]["ok"] is True, "installation did not prepare its index"
+        assert installed["installation"]["project_ready"] is True, "required project components were not installed"
+        assert installed["installation"]["host_ready"] is False, "missing host was presented as ready"
+        assert installed["installation"]["complete"] is False, "an incomplete host was presented as complete"
+        settings = json.loads((root / ".claude/settings.local.json").read_text())
+        assert any(h.get("command") == "rtk hook claude" for group in settings["hooks"]["PreToolUse"] for h in group["hooks"]), "RTK hook missing from installation"
+        hook = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(root), "tool_input": {"command": "git status --short"}}
+        rewritten = subprocess.run([binary("rtk"), "hook", "claude"], input=json.dumps(hook), cwd=root, env=env, text=True, capture_output=True, timeout=10)
+        assert "rtk git status" in json.loads(rewritten.stdout)["hookSpecificOutput"]["updatedInput"]["command"], "installed RTK hook did not rewrite"
+        config = json.loads((root / "mustard.json").read_text())
+        config.update(version="0.0.0", installationChoice="preserve")
+        (root / "mustard.json").write_text(json.dumps(config))
+        updated = json.loads(run([binary("mustard-rt"), "run", "upsert"]))
+        assert updated["installation"]["scan"]["ok"] is True
+        assert updated["installation"]["scan"]["read"] == 0, "an unchanged project was read again"
+        config = json.loads((root / "mustard.json").read_text())
+        assert config["version"] == version and config["installationChoice"] == "preserve", "update lost version or personal choices"
+        assert config["ai"]["fallback"] is False, "installation enabled paid AI"
+        assert (root / ".claude/mustard/installation.json").is_file(), "installation receipt missing"
+        run([binary("mustard"), "init", "--yes"])
+        receipt = json.loads((root / ".claude/mustard/installation.json").read_text())
+        assert receipt["version"] == version and receipt["scan"]["ok"] is True, "CLI skipped native verification"
+        assert receipt["host_ready"] is False and receipt["complete"] is False, "CLI hid the missing host"
+        with closing(sqlite3.connect(root / ".claude/grain.db")) as db:
+            assert db.execute("SELECT count(*) FROM code_vectors").fetchone()[0] > 0, "embedded model was not applied"
+        assert not (root / ".claude/judgements/attempts.ndjson").exists(), "installation called a remote model"
         run([binary("scan"), "scan", str(root), "--out", str(root / ".claude/grain.db"), "--json"])
         assert (root / ".claude/grain.db").is_file(), "scan did not create its database"
         raw = [binary("mustard-rt"), "run", "search", "--root", str(root), "--raw", "--", "rg", "-n", "--with-filename", "quartz", "src"]
@@ -77,8 +109,18 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         assert report["crossing_status"] == "enriched", "installed gateway did not cross the scan"
         panel = json.loads(run([binary("mustard-rt"), "run", "panel", "--root", str(root)]))
         assert "project" in panel and "specs" in panel, "panel projection is unavailable"
+        settings = json.loads(run([binary("mustard-rt"), "run", "settings"]))
+        assert settings["ok"] and settings["values"]["vectors"] is True
+        patch = {"schema_version": 1, "revision": settings["revision"], "changes": {"rtk": False, "agent_effort": "high"}}
+        saved = json.loads(run([binary("mustard-rt"), "run", "settings", "--json", json.dumps(patch)]))
+        assert saved["ok"] and saved["saved"], "installed settings could not be applied"
+        local = json.loads((root / ".claude/settings.local.json").read_text())
+        assert not any(h.get("command") == "rtk hook claude" for group in local.get("hooks", {}).get("PreToolUse", []) for h in group["hooks"])
+        assert "effort: high" in (root / ".claude/agents/mustard/wave.md").read_text(), "agent choice was not applied"
+        assert json.loads((root / "mustard.json").read_text())["installationChoice"] == "preserve"
+        assert not (root / ".claude/judgements/attempts.ndjson").exists(), "settings called paid AI"
         assert not list((root / ".claude").rglob("*.html")), "installation/search published an unsolicited page"
-    print("PASS: installed versions, scan, native/typed search without PATH, learning and local panel; no AI or publication")
+    print("PASS: fresh install/update, local vectors, RTK hook, honest readiness, native/typed search without PATH, learning and panel; no paid AI or publication")
 
 
 if __name__ == "__main__":

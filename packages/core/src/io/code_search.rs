@@ -119,6 +119,7 @@ pub fn enrich(
         match task::investigate(root,tree,cwd,request,answer,if request.choose {selector}else{None}) {
             Ok(context)=>{
                 answer.report["remote_model_calls"]=context["remote_model_calls"].clone();
+                answer.report["local_model_calls"]=context["local_model_calls"].clone();
                 answer.report["task_context"]=context;
             },
             Err(reason)=>answer.report["task_context"]=json!({"status":"native-fallback","reason":reason,"remote_model_calls":0}),

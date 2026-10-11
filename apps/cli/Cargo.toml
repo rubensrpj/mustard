@@ -33,9 +33,9 @@ mustard-core = { path = "../../packages/core" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,

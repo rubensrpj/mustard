@@ -103,14 +103,44 @@ test('usage shows incomplete wave subtotals and explains disabled Jev without ma
   snapshot.specs[0].usage={known_wave_tokens:1234,waves_with_unknown_usage:3,measured_at:'2026-10-10T23:04:12Z'};
   snapshot.jev.configuration={purposes:{search:{reason:'ai-fallback-disabled'},'wave-planning':{reason:'purpose-not-configured'}}};
   await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await pane.select({key:'usage-section',value:'Ondas'});
   expect(await pane.find({type:'Text',text:'Subtotal das ondas medidas: 1.234 tokens'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'3 ondas ainda sem medição; subtotal incompleto.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Medição por onda'})).toBeDefined();
   expect(await pane.find({type:'Text',text:/Totais acumulados.*cache relido/})).toBeDefined();
+  await pane.select({key:'usage-section',value:'Jev'});
   expect(await pane.find({type:'Text',text:'Busca: Desligado: ai.fallback não está habilitado.'})).toBeDefined();
   snapshot.jev.configuration.purposes.search={reason:'configured',enabled:true};
   await clock.advance(2000);
   expect(await pane.find({type:'Text',text:'Busca: Habilitado sob critério; não é acionado em toda busca.'})).toBeDefined();
+  expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);await pane.press({key:'close'});
+});
+
+test('usage separates measured RTK output and Jev cost from unproven total savings',async ($,on)=>{
+  const {pane,clock,counts,snapshot}=await clarityFixture($,on,'desktop',72,20);
+  snapshot.rtk={status:'measured',configured:true,hook_configured:true,scope:'project-directory',
+    commands:8635,input_tokens:7456308,output_tokens:4576286,saved_tokens:2880729,percent:38.6,
+    measured_at:'2026-10-11T00:01:06Z'};
+  snapshot.jev={physical_requests:1,cost_micro_usd:1044,
+    configuration:{purposes:{search:{reason:'configured',enabled:true}}},
+    last_attempt:{purpose:'search',status:200,at:'2026-10-11T00:01:06Z'}};
+  snapshot.specs[0].operations={search:{calls:33,decision_coverage:2,choice_gates:{eligible:1,'exact-read':1},
+    local_model_calls:1,cache_hits:1,accepted_choices:1}};
+  await clock.advance(2000);await pane.select({key:'panel-section',value:'Consumo'});
+  expect(await pane.find({type:'Text',text:'Economia total do modelo: ainda não comprovada.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'RTK: 38,6% de redução estimada na saída deste projeto'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Jev: 1 chamadas no projeto · $0.0010 estimados'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeUndefined();
+  await pane.select({key:'usage-section',value:'RTK'});
+  expect(await pane.find({type:'Text',text:'Comandos registrados: 8.635'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Hook configurado para comandos compatíveis.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:/não é redução da fatura/})).toBeDefined();
+  await pane.select({key:'usage-section',value:'Jev'});
+  expect(await pane.find({type:'Text',text:/Última chamada: search · sucesso/})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Buscas com diagnóstico nesta spec: 2/33'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Leitura exata: 1'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Cache reaproveitado: 1 · escolhas aceitas: 1'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:/abrir este painel não faz chamada paga/})).toBeDefined();
   expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);await pane.press({key:'close'});
 });
 
@@ -123,10 +153,14 @@ test('project scope, unknown measurements and explicit publication remain clear'
   expect(await pane.find({type:'Text',text:/RTK|desconhecido|T23:04|https:\/\/example/})).toBeUndefined();
   expect(await pane.find({key:'publish'})).toBeUndefined();
   await pane.press({key:'tab-Consumo'});
+  expect(await pane.find({type:'Text',text:'Economia total do modelo: ainda não comprovada.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'RTK: medição deste projeto indisponível.'})).toBeDefined();
+  await pane.select({key:'usage-section',value:'Histórico'});
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Acumulado do histórico disponível; inclui hoje parcialmente.'})).toBeDefined();
+  await pane.select({key:'usage-section',value:'Jev'});
   expect(await pane.find({type:'Text',text:'Nenhuma chamada registrada neste projeto.'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:/RTK|desconhecido%|T23:04/})).toBeUndefined();
+  expect(await pane.find({type:'Text',text:/desconhecido%|T23:04/})).toBeUndefined();
   expect(counts.publications).toBe(0);expect(counts.turns).toBe(0);
   await pane.press({key:'close'});
 });
@@ -293,6 +327,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   expect(await pane.find({type:'Text',text:'T-2 · Consumer'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Arquivo reservado: 1'})).toBeDefined();
   await pane.press({key:'tab-Consumo'});
+  await pane.select({key:'usage-section',value:'Ondas'});
   expect(await pane.find({type:'Text',text:'Consumo das ondas ainda não medido.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:/desconhecido%/})).toBeUndefined();
   await clock.advance(2000);
@@ -334,7 +369,9 @@ test('host measurements persist natively and official context percent renders wi
   await $.command.run({command:'mustard-panel',args:''});
   const pane=await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
   await pane.press({key:'tab-Consumo'});
+  await pane.select({key:'usage-section',value:'Sessão'});
   expect(await pane.find({type:'Text',text:'Contexto da sessão: 12% · 24.000/200.000 tokens'})).toBeDefined();
+  await pane.select({key:'usage-section',value:'Histórico'});
   expect(await pane.find({type:'Text',text:'Claude estimado nas sessões observadas: $0.5000'})).toBeDefined();
   expect(turns).toBe(0);
   await pane.press({key:'close'});
@@ -508,4 +545,19 @@ test('report publication preserves the requested document path without calling t
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const result=await $.command.run({command:'mustard-pages',args:'report "reports/Resumo gestor.md"'});
   expect(result.text).toContain('report-version');expect(turns).toBe(0);
+});
+
+
+test('installation details do not present an old receipt as verification of this version',async ($,on)=>{
+  const {pane,clock,snapshot,counts}=await clarityFixture($,on);
+  (snapshot as any).installation={version:'0.0.0',complete:true,checks:[{component:'scan',ready:false,remedy:'run mustard-rt run scan'}]};
+  await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await pane.select({key:'usage-section',value:'Detalhes'});
+  expect(await pane.find({type:'Text',text:'Instalação incompleta: execute /mustard:upsert e confira as pendências.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'scan: run mustard-rt run scan'})).toBeDefined();
+  (snapshot as any).installation={version:snapshot.project.version,complete:true,checks:[]};
+  await clock.advance(2000);
+  expect(await pane.find({type:'Text',text:'Instalação conferida para esta versão.'})).toBeDefined();
+  expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);
+  await pane.press({key:'close'});
 });

@@ -1,9 +1,10 @@
 import design from '../ui/theme.js';
 import {definitionNames,definitionText,waveText,contentPage} from './panel-content.js';
+import {settingsPanel} from './panel-settings.js';
 
 export const initialPanelView = () => ({tab:'Projeto',definitionGroup:'context',definitionQuery:'',definitionPage:0,
   selectedDefinition:undefined,selectedWave:undefined,waveView:'Plano',contentOffset:0,technicalOffset:0,
-  showTechnical:false,showUsageDetails:false,showPublications:false});
+  showTechnical:false,usageView:'Resumo',showPublications:false,settingsGroup:'Busca'});
 
 // The terminal's ANSI palette can quantize dark RGB surfaces into medium gray.
 // Use real black there; desktop keeps the shared web palette. Borders and labels
@@ -13,7 +14,7 @@ export function panelPalette(surface) {
     ink:'whiteBright',muted:'white',line:'gray',accentText:'yellow',accentSoft:'black'} : design.dark;
 }
 
-export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,actions}) {
+export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,settings,actions}) {
   const {Box,Text,Button,Select,Input,Link}=elements;
   const theme=panelPalette(surface), english=data?.project?.language==='en-US';
   const compact=bodyRows>0 && bodyRows<24;
@@ -64,7 +65,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ? (spec?.waves?.find(w=>['running','repair-required','received'].includes(w.status)) || spec?.waves?.[0])?.wave : view.selectedWave;
     actions.change({tab,contentOffset:0,...(tab==='Ondas'?{selectedWave:wave}:{})},tab==='Ondas' && wave!==undefined);
   };
-  const tabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage']];
+  const tabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage'],['Configurações','Configurações','Settings']];
   const rows=[row([text('MUSTARD',{bold:true,color:theme.accentText}),...(data?[text(data.project.name || 'Mustard',{bold:true})]:[])])];
   if(data && !compact)rows.push(note(data.project.branch || t('Sem branch','No branch')));
   if(surface!=='mobile' && (compact || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
@@ -72,8 +73,9 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
   else rows.push(row(tabs.map(([key,pt,en],index)=>button(`tab-${key}`,t(pt,en),()=>go(key),{active:view.tab===key,hotkey:String(index+1)}))));
   if(problem)rows.push(section(t('Atualização indisponível','Update unavailable'),[text(problem),note(`${t('Último estado','Last state')}: ${date(data?.at)}`)]));
   if(!data)return Box({flexDirection:'column',padding:1,backgroundColor:theme.paper,children:[...rows,text(t('Carregando projeto…','Loading project…'))]});
-  if(specs.length)rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
-  if(view.tab!=='Projeto' && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
+  if(specs.length && view.tab!=='Configurações')rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
+  if(!['Projeto','Configurações'].includes(view.tab) && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
+  if(view.tab==='Configurações')rows.push(settingsPanel(settings,actions,{t,text,note,row,section,button,picker},view.settingsGroup));
 
   if(view.tab==='Projeto') {
     if(spec)rows.push(section(t('Trabalho atual','Current work'),[
@@ -190,6 +192,34 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
   }
 
   if(view.tab==='Consumo') {
+    const usageView=view.usageView || 'Resumo', rtk=data.rtk || {}, jev=data.jev || {};
+    rows.push(picker('usage-section',t('Medição','Measurement'),[
+      ['Resumo','Resumo','Overview'],['Sessão','Sessão','Session'],['Ondas','Ondas','Waves'],
+      ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
+    ].map(([value,pt,en])=>({value,label:t(pt,en)})),usageView,value=>actions.change({usageView:value})));
+    if(usageView==='Resumo')rows.push(section(t('O Mustard está economizando?','Is Mustard saving tokens?'),[
+      text(t('Economia total do modelo: ainda não comprovada.','Total model savings: not proven yet.'),{bold:true}),
+      note(t('Falta uma comparação de trabalho equivalente com e sem Mustard.','A comparison of equivalent work with and without Mustard is missing.')),
+      text(rtk.status==='measured'?`RTK: ${fmt(rtk.percent)}% ${t('de redução estimada na saída deste projeto','estimated reduction in this project’s output')}`:
+        t('RTK: medição deste projeto indisponível.','RTK: project measurement unavailable.')),
+      text(`Jev: ${fmt(jev.physical_requests)} ${t('chamadas no projeto','project requests')}${jev.cost_micro_usd!=null?' · '+money(jev.cost_micro_usd)+' '+t('estimados','estimated'):''}`),
+      ...(spec?.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Claude nesta spec · equivalente API','Claude for this spec · API equivalent')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
+      note(t('RTK mede compressão de saída. Custos e totais de tokens não provam economia.','RTK measures output compression. Costs and token totals do not prove savings.')),
+    ]));
+    if(usageView==='RTK')rows.push(section(t('RTK neste projeto','RTK for this project'),[
+      text(rtk.configured===false?t('Filtro desligado na configuração.','Filter disabled in configuration.'):
+        rtk.hook_configured===true?t('Hook configurado para comandos compatíveis.','Hook configured for supported commands.'):
+          t('Hook não confirmado; confira o diagnóstico da instalação.','Hook not confirmed; check installation diagnostics.')),
+      ...(rtk.status==='measured'?[
+        text(`${t('Comandos registrados','Recorded commands')}: ${fmt(rtk.commands)}`),
+        ...(rtk.period_start && rtk.period_end?[note(`${t('Período do histórico RTK','RTK history period')}: ${rtk.period_start} → ${rtk.period_end}`)]:[]),
+        text(`${t('Saída original → filtrada','Original → filtered output')}: ${fmt(rtk.input_tokens)} → ${fmt(rtk.output_tokens)} tokens`),
+        text(`${t('Redução estimada da saída','Estimated output reduction')}: ${fmt(rtk.percent)}% · ${fmt(rtk.saved_tokens)} tokens`),
+        note(`${t('Medição','Measurement')}: ${date(rtk.measured_at)}${rtk.stale?' · '+t('atualização falhou; mostrando última medição','refresh failed; showing last measurement'):''}`),
+      ]:[text(rtk.status==='no-recorded-commands'?t('Nenhum comando RTK registrado neste diretório; ainda não há amostra para calcular economia.','No RTK commands recorded in this directory; no sample to calculate savings yet.'):
+        t('Sem medição válida. Isso não significa economia zero.','No valid measurement. This does not mean zero savings.'))]),
+      note(t('Histórico do diretório deste projeto; cópias externas de ondas podem ficar fora. Estimativa do RTK por bytes/4; não é redução da fatura nem do contexto inteiro.','History for this project directory; external wave checkouts may be excluded. RTK bytes/4 estimate; not a reduction in billing or the whole context.')),
+    ]));
     const session=[],context=usage?.context;
     if(context) {
       const percent=context.percent ?? context.percentUsed;
@@ -198,10 +228,9 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     const observed=data.statusline;
     if(observed?.model)session.push(text(`${t('Modelo','Model')}: ${observed.model}`));
     if(observed?.duration_ms!=null)session.push(note(`${t('Duração','Duration')}: ${Math.round(observed.duration_ms/60000)} min`));
-    if(observed?.rtk?.percent!=null && observed.rtk.saved_tokens!=null)session.push(text(`RTK: ${fmt(observed.rtk.percent)}% · ${fmt(observed.rtk.saved_tokens)} ${t('tokens poupados pelo RTK','tokens saved by RTK')}`));
     if(usage?.cost?.usd!=null)session.push(text(`${t('Custo equivalente de API nesta sessão','API-equivalent cost this session')}: $${usage.cost.usd}`));
-    if(session.length)rows.push(section(t('Sessão atual','Current session'),session));
-    if(spec)rows.push(section(t('Spec selecionada','Selected spec'),[
+    if(usageView==='Sessão' && session.length)rows.push(section(t('Sessão atual','Current session'),session));
+    if(usageView==='Ondas' && spec)rows.push(section(t('Spec selecionada','Selected spec'),[
       text(spec.name,{bold:true}),
       ...(spec.usage?.wave_tokens!=null?[text(`${t('Ondas','Waves')}: ${fmt(spec.usage.wave_tokens)} tokens`)]:[note(t(spec.usage?.known_wave_tokens>0?'Total das ondas ainda incompleto.':'Consumo das ondas ainda não medido.',spec.usage?.known_wave_tokens>0?'Wave total is still incomplete.':'Wave usage has not been measured yet.'))]),
       ...(spec.usage?.wave_tokens==null && spec.usage?.known_wave_tokens>0?[text(`${t('Subtotal das ondas medidas','Measured waves subtotal')}: ${fmt(spec.usage.known_wave_tokens)} tokens`),
@@ -212,10 +241,10 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ...(spec.usage?.measured_at?[note(`${t('Medição das ondas','Wave measurement')}: ${date(spec.usage.measured_at)}`)]:[]),
       ...(spec.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Custo equivalente de API observado','Observed API-equivalent cost')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
     ]));
-    if(spec?.waves.length)rows.push(section(t('Medição por onda','Usage per wave'),spec.waves.map(wave=>text(
+    if(usageView==='Ondas' && spec?.waves.length)rows.push(section(t('Medição por onda','Usage per wave'),spec.waves.map(wave=>text(
       `${t('Onda','Wave')} ${wave.wave} · ${state(wave.status)} · ${fmt(wave.tokens)}${wave.tokens!=null?' tokens':''}`))));
     const history=data.consumption;
-    rows.push(section(t('Histórico observado','Observed history'),[
+    if(usageView==='Histórico')rows.push(section(t('Histórico observado','Observed history'),[
       note(t('Acumulado do histórico disponível; inclui hoje parcialmente.','Accumulated available history; includes partial data for today.')),
       ...(history?.available?[row([card(t('Este projeto · tokens','This project · tokens'),short(history.project_tokens)),
         card(t('Toda a máquina · tokens','Whole machine · tokens'),short(history.machine_tokens))])]:[note(t('Histórico ainda não disponível.','History is not available yet.'))]),
@@ -223,7 +252,6 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ...(data.claude_cost?.known_micro_usd!=null?[text(`${t('Claude estimado nas sessões observadas','Estimated Claude cost in observed sessions')}: ${money(data.claude_cost.known_micro_usd)}`)]:[]),
       note(t('Custos Claude são estimativas equivalentes de API; não são cobranças da assinatura nem medidas de economia.','Claude costs are API-equivalent estimates, not subscription charges or measured savings.')),
     ]));
-    const jev=data.jev || {};
     const jevConfig=jev.configuration, reasons={
       'ai-fallback-disabled':['Desligado: ai.fallback não está habilitado.','Disabled: ai.fallback is not enabled.'],
       'purpose-not-configured':['Sem filtro Jev configurado para esta finalidade.','No Jev filter configured for this purpose.'],
@@ -235,15 +263,40 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       const entry=jevConfig.purposes?.[purpose];
       if(entry)jevStatus.push(text(`${label}: ${reasons[entry.reason]?t(...reasons[entry.reason]):entry.reason}`));
     }
-    rows.push(section('Jev',[...jevStatus,...(jev.physical_requests===0?[text(t('Nenhuma chamada registrada neste projeto.','No recorded requests in this project.'))]:[
+    const searchUsage=spec?.operations?.search;
+    const gateLabels={'exact-read':['Leitura exata','Exact read'],locate:['Busca literal','Literal search'],
+      'not-requested':['Escolha não solicitada','Choice not requested'],'missing-intent':['Sem intenção','Missing intent'],
+      eligible:['Elegível para escolha','Eligible for choice'],'ai-fallback-disabled':['IA remota desligada','Remote AI disabled'],
+      'purpose-not-configured':['Finalidade não configurada','Purpose not configured'],'provider-unavailable':['Provedor indisponível','Provider unavailable'],
+      'native-operation':['Operação nativa','Native operation']};
+    if(usageView==='Jev')rows.push(section('Jev',[...jevStatus,...(jev.physical_requests===0?[text(t('Nenhuma chamada registrada neste projeto.','No recorded requests in this project.'))]:[
       text(`${t('Chamadas registradas no projeto','Recorded project requests')}: ${fmt(jev.physical_requests)}`),
       ...(jev.cost_micro_usd!=null?[text(`${t('Custo estimado','Estimated cost')}: ${money(jev.cost_micro_usd)}`)]:[note(t('Custo ainda não medido.','Cost has not been measured yet.'))]),
-    ])]));
-    rows.push(button('usage-details',t(view.showUsageDetails?'Ocultar detalhamento':'Ver detalhamento das medições',view.showUsageDetails?'Hide measurement details':'Read measurement details'),
-      ()=>actions.change({showUsageDetails:!view.showUsageDetails})));
-    if(view.showUsageDetails) {
+    ]),
+      ...(jev.last_attempt?[text(`${t('Última chamada','Latest request')}: ${jev.last_attempt.purpose || t('finalidade não registrada','purpose not recorded')} · ${jev.last_attempt.status>=200 && jev.last_attempt.status<300?t('sucesso','success'):t('falha ou resultado não confirmado','failed or unconfirmed')} · ${date(jev.last_attempt.at)}`)]:[]),
+      ...(searchUsage?.decision_coverage?[
+        text(`${t('Buscas com diagnóstico nesta spec','Searches with diagnostics in this spec')}: ${fmt(searchUsage.decision_coverage)}/${fmt(searchUsage.calls)}`),
+        ...Object.entries(searchUsage.choice_gates || {}).map(([gate,count])=>text(`${gateLabels[gate]?t(...gateLabels[gate]):gate}: ${fmt(count)}`)),
+        text(`${t('Cache reaproveitado','Cache reused')}: ${fmt(searchUsage.cache_hits)} · ${t('escolhas aceitas','accepted choices')}: ${fmt(searchUsage.accepted_choices)}`),
+        note(`${t('Inferências locais registradas nas buscas','Recorded local inferences in searches')}: ${fmt(searchUsage.local_model_calls)}`),
+        note(t('Cobertura parcial: o histórico anterior não explica as decisões e não foi preenchido com suposições.','Partial coverage: older history does not explain decisions and was not filled with assumptions.')),
+      ]:[note(t('Diagnóstico por busca ainda não disponível; as novas consultas passam a registrar o motivo.','Per-search diagnostics not available yet; new queries record the reason.'))]),
+      note(t('Leituras exatas e buscas literais seguem nativas. Jev só escolhe entre alternativas quando a finalidade está habilitada e a busca precisa dessa decisão.','Exact reads and literal searches stay native. Jev chooses between alternatives only when the purpose is enabled and the search needs that decision.')),
+      note(t('Custo Jev estimado pela tabela; abrir este painel não faz chamada paga.','Jev cost is estimated from the pricing table; opening this panel makes no paid request.')),
+    ]));
+    if(usageView==='Detalhes') {
       rows.push(section(t('Origem e cobertura','Sources and coverage'),[
         text(`Mustard ${data.project.version || t('versão não informada','version not provided')}`),
+        text(data.installation?.complete===true && data.installation.version===data.project?.version?t('Instalação conferida para esta versão.','Installation verified for this version.'):
+          data.installation?t('Instalação incompleta: execute /mustard:upsert e confira as pendências.','Installation incomplete: run /mustard:upsert and inspect outstanding components.'):
+          t('Instalação ainda não conferida: execute /mustard:upsert.','Installation not yet verified: run /mustard:upsert.')),
+        ...(Array.isArray(data.installation?.checks)?data.installation.checks.filter(check=>check.ready!==true).map(check=>note(`${check.component}: ${check.remedy}`)):[]),
+        ...(data.retrieval?[
+          text(data.retrieval.index_present?t('Scan: índice presente; buscas conferem o código atual.','Scan: index present; searches verify current source.'):
+            t('Scan: índice ausente neste projeto. Execute /mustard:upsert e atualize o scan.','Scan: index missing in this project. Run /mustard:upsert and refresh the scan.')),
+          text(data.retrieval.vectors_enabled?t('Modelo semântico local: habilitado para investigações.','Local semantic model: enabled for investigations.'):
+            t('Modelo semântico local: desligado na configuração.','Local semantic model: disabled in configuration.')),
+        ]:[]),
         ...(history?.available?[text(`${t('Projeto','Project')}: ${fmt(history.project_tokens)} tokens · ${t('máquina','machine')}: ${fmt(history.machine_tokens)} tokens`)]:[]),
         ...(observed?.measured_at?[note(`${t('Observação da sessão','Session observation')}: ${date(observed.measured_at)}`)]:[]),
         ...(data.claude_cost?.unattributed_micro_usd!=null?[text(`${t('Custo sem atribuição segura a spec','Cost without safe spec attribution')}: ${money(data.claude_cost.unattributed_micro_usd)}`)]:[]),
@@ -266,7 +319,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ]));
     }
   }
-  if(!spec && !['Projeto','Consumo'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
+  if(!spec && !['Projeto','Consumo','Configurações'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
   if(publicationMessage && (publicationMessage.name===selected || ['project','report'].includes(publicationMessage.name)))rows.push(text(publicationMessage.text));
   rows.push(row([button('refresh',t('Atualizar','Refresh'),actions.refresh,{hotkey:'r'}),
     button('publications',t('Publicação externa','External publication'),()=>actions.change({showPublications:!view.showPublications}),{active:view.showPublications}),
