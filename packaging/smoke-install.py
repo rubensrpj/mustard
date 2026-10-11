@@ -6,6 +6,7 @@ proves that the gateway can use its packaged rg; no fake executable or skipped
 search can satisfy this check. Never changes a user's Claude configuration.
 """
 import argparse
+from contextlib import closing
 import json
 import os
 import sqlite3
@@ -90,7 +91,7 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         receipt = json.loads((root / ".claude/mustard/installation.json").read_text())
         assert receipt["version"] == version and receipt["scan"]["ok"] is True, "CLI skipped native verification"
         assert receipt["host_ready"] is False and receipt["complete"] is False, "CLI hid the missing host"
-        with sqlite3.connect(root / ".claude/grain.db") as db:
+        with closing(sqlite3.connect(root / ".claude/grain.db")) as db:
             assert db.execute("SELECT count(*) FROM code_vectors").fetchone()[0] > 0, "embedded model was not applied"
         assert not (root / ".claude/judgements/attempts.ndjson").exists(), "installation called a remote model"
         run([binary("scan"), "scan", str(root), "--out", str(root / ".claude/grain.db"), "--json"])
