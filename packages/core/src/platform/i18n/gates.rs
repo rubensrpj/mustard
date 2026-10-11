@@ -251,6 +251,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A leitura do arquivo de configuração que guarda a chave do Jev
         // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
         // o arquivo inteiro, já sem o valor da chave.
+        ("config_key.shell_unsupported", Locale::PtBr) => {
+            "[Mustard] Leitura de {file} bloqueada para proteger a chave. Esse formato de comando não permite substituição segura. Nenhuma etapa foi executada. Use `mustard-rt run config-read --file '{file}'` para ler a configuração mascarada e execute as outras etapas separadamente."
+        }
+        ("config_key.shell_unsupported", Locale::EnUs) => {
+            "[Mustard] Reading {file} was blocked to protect the key. This command format cannot be safely rewritten. No step was executed. Use `mustard-rt run config-read --file '{file}'` to read the masked configuration and run other steps separately."
+        }
         ("config_key.hidden", Locale::PtBr) => {
             "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
              arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original."

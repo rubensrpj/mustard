@@ -17,6 +17,7 @@ mod approval_refusal_explains;
 mod clean_exit;
 mod command_frontmatter;
 mod command_guard;
+mod config_read;
 mod development_build_handover;
 mod doctor_follows_config_dir;
 mod doctor_known_events;

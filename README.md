@@ -184,6 +184,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
 
+Leituras simples de `mustard.json` por `cat`, `grep`, `egrep`, `fgrep`, `head` e `tail` recebem os bytes com a chave mascarada, preservando o filtro, as linhas e o resultado do comando. O hook reescreve somente essa leitura; pipes, `&&`, `||`, consultas ao Git e testes continuam no shell, sob as permissões normais. Nenhuma chave é copiada para arquivo temporário e essa operação não usa IA. Para consultar diretamente: `mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'`. Sem `--reader` e `--args-json`, o comando mostra a configuração mascarada inteira. Formatos que exigem scripts, expansão ou vários arquivos permanecem bloqueados com uma mensagem curta, sem despejar a configuração.
+
 ```jsonc
 {
   // "flow" é OPCIONAL e não restringe nada: ele apenas pré-seleciona a base

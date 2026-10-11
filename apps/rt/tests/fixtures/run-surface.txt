@@ -1,6 +1,7 @@
 answer
 clean
 close
+config-read
 discard
 doctor
 grill

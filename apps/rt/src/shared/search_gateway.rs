@@ -248,7 +248,7 @@ pub(crate) fn before_bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     })
 }
 
-fn literal_shell(command: &str) -> bool {
+pub(crate) fn literal_shell(command: &str) -> bool {
     let mut quote = None;
     let mut escaped = false;
     for c in command.chars() {
