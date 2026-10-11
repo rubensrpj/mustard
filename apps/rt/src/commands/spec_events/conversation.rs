@@ -171,8 +171,21 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
         measured.insert("search_enriched".into(),json!(report["crossing_status"]=="enriched"));
         measured.insert("search_task_evidence".into(),json!(report["task_context"]["cards"].as_array().is_some_and(|cards|!cards.is_empty())));
         measured.insert("search_fallback".into(),json!(report["task_context"]["status"]=="native-fallback" || report["crossing_status"]!="enriched"));
+        // Safe decision metadata only: never persist intent, code, candidates or keys.
+        for (field,value) in search_decisions(report) {measured.insert(field,value);}
     }
     record_measured_call(root, command, named, session.as_deref(), started, report, measured)
+}
+
+fn search_decisions(report:&Value)->Map<String,Value> {
+    let mut fields=Map::new();
+    for (field,path) in [("search_tool","/tool"),("search_purpose","/purpose"),
+        ("search_choice_gate","/choice_gate"),("search_local_model_calls","/task_context/local_model_calls"),
+        ("search_remote_model_calls","/remote_model_calls"),("search_selection_status","/task_context/selection/status"),
+        ("search_selection_cached","/task_context/selection/cached"),("search_accepted_choices","/task_context/selection/accepted_choices")] {
+        if let Some(value)=report.pointer(path).filter(|value|!value.is_null()) {fields.insert(field.into(),value.clone());}
+    }
+    fields
 }
 
 fn transport_metrics(args:&[String],output:&str)->Map<String,Value> {
@@ -314,6 +327,21 @@ mod tests {
         assert!(record_call(root,"open",Some("medicao"),Instant::now(),&json!({"ok":true,"kind":"feature"})).is_some());
         assert_eq!(events_of(root,"medicao","call").len(),2,"the domain's work kind is not a CLI parse error");
         assert_eq!(recorded_operations(root,"medicao").events.len(),8);
+    }
+
+    #[test]
+    fn search_decision_metadata_keeps_native_local_cache_and_remote_outcomes_without_payloads() {
+        let report=json!({"tool":"Grep","purpose":"implement","choice_gate":"eligible","intent":"private prompt",
+            "remote_model_calls":0,"task_context":{"local_model_calls":1,"cards":["private code"],
+                "selection":{"status":"jev-choice","cached":true,"accepted_choices":1,"key":"private key"}}});
+        let metrics=search_decisions(&report);
+        assert_eq!(metrics["search_local_model_calls"],1);
+        assert_eq!(metrics["search_remote_model_calls"],0);
+        assert_eq!(metrics["search_choice_gate"],"eligible");
+        assert_eq!(metrics["search_selection_cached"],true);
+        assert!(!serde_json::to_string(&metrics).unwrap().contains("private"));
+        let unknown=search_decisions(&json!({"remote_model_calls":null}));
+        assert!(unknown.is_empty(),"historical unknown usage must not become measured zero");
     }
 
     /// Um projeto com a spec `spec` aberta e o checkout na branch dela.

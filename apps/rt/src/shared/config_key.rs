@@ -69,7 +69,8 @@ pub(crate) fn masked(text: &str) -> Option<String> {
         };
         if let (Token::Text(name_start, name_end), Token::Colon, Token::Text(start, end)) = (last[0], last[1], token)
             && end > start
-            && &text[name_start..name_end] == JEV_KEY_FIELD
+            && serde_json::from_str::<String>(&text[(name_start - 1)..=name_end])
+                .is_ok_and(|name| name == JEV_KEY_FIELD)
         {
             hidden.push((start, end));
         }

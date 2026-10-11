@@ -72,6 +72,7 @@ pub fn dispatch(cmd: PanelCmd) {
         ),
         PanelCmd::Panel { root, spec, refresh_consumption, session, wave } => {
             let refresh=refresh_consumption.then(||{
+                crate::shared::rtk_gain::refresh(&root);
                 let machine=crate::commands::spec::spend::Machine::here();
                 let mut refresh=crate::commands::spec::spend::spend_at(
                     &crate::commands::spec::spend::SpendOpts{root:root.clone(),publish:false,republish:false,url:None},&machine);

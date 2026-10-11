@@ -104,8 +104,17 @@ pub(crate) fn segments(cmd: &str) -> Vec<Segment> {
     read_line(cmd, 0)
 }
 
+/// Byte ranges of outer simple commands. Nested substitutions are inspected
+/// by `segments`, but never rewritten as if they belonged to the outer shell.
+pub(crate) fn command_ranges(cmd: &str) -> Vec<std::ops::Range<usize>> {
+    let mut reader = Reader { chars: cmd.chars().collect(), pos: 0, heredocs: Vec::new(), ranges: Vec::new(), track_ranges: true };
+    reader.list(Close::End, 0);
+    let offsets: Vec<_> = cmd.char_indices().map(|(at, _)| at).chain(std::iter::once(cmd.len())).collect();
+    reader.ranges.into_iter().map(|r| offsets[r.start]..offsets[r.end]).collect()
+}
+
 fn read_line(cmd: &str, depth: usize) -> Vec<Segment> {
-    let mut reader = Reader { chars: cmd.chars().collect(), pos: 0, heredocs: Vec::new() };
+    let mut reader = Reader { chars: cmd.chars().collect(), pos: 0, heredocs: Vec::new(), ranges: Vec::new(), track_ranges: false };
     reader.list(Close::End, depth)
 }
 
@@ -151,6 +160,8 @@ struct Reader {
     chars: Vec<char>,
     pos: usize,
     heredocs: Vec<Heredoc>,
+    ranges: Vec<std::ops::Range<usize>>,
+    track_ranges: bool,
 }
 
 impl Reader {
@@ -181,6 +192,7 @@ impl Reader {
         let mut out = Vec::new();
         let mut cur = Pending::default();
         let mut parens = 0usize;
+        let mut range_start = self.pos;
         while let Some(c) = self.peek(0) {
             let before = self.pos;
             match c {
@@ -188,12 +200,16 @@ impl Reader {
                 '\\' if self.peek(1) == Some('\n') => self.advance(2),
                 '\n' => {
                     self.advance(1);
+                    if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    range_start = self.pos;
                     self.heredoc_bodies(&mut out, depth);
                 }
                 '\r' | ';' => {
                     self.advance(1);
+                    if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    range_start = self.pos;
                 }
                 '&' if self.peek(1) == Some('>') => self.redirect(&mut cur, String::new(), close, depth),
                 '&' | '|' => {
@@ -203,19 +219,25 @@ impl Reader {
                         self.advance(1);
                     }
                     cur.piped = c == '|' && second != Some('|');
+                    if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    range_start = self.pos;
                 }
                 '<' | '>' if self.peek(1) != Some('(') => {
                     self.redirect(&mut cur, String::new(), close, depth);
                 }
                 '(' => {
                     self.advance(1);
+                    if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    range_start = self.pos;
                     parens += 1;
                 }
                 ')' => {
                     self.advance(1);
+                    if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    range_start = self.pos;
                     if parens > 0 {
                         parens -= 1;
                     } else if close == Close::Paren {
@@ -224,6 +246,7 @@ impl Reader {
                 }
                 '`' if close == Close::Backtick => {
                     self.advance(1);
+                    if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
                     return out;
                 }
@@ -246,6 +269,7 @@ impl Reader {
                 self.advance(1);
             }
         }
+        if depth == 0 && self.track_ranges { self.ranges.push(range_start..self.pos); }
         finish(&mut cur, &mut out, depth);
         out
     }
@@ -527,7 +551,7 @@ impl Reader {
 /// next character as text. The body is read on its own, so a quote left open
 /// inside a substitution never reaches past the body.
 fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
-    let mut reader = Reader { chars: body.chars().collect(), pos: 0, heredocs: Vec::new() };
+    let mut reader = Reader { chars: body.chars().collect(), pos: 0, heredocs: Vec::new(), ranges: Vec::new(), track_ranges: false };
     let mut inner = Vec::new();
     let mut text = Word::default();
     while let Some(c) = reader.peek(0) {

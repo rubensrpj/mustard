@@ -491,6 +491,25 @@ impl SpecLog {
         self.get(id).filter(|e| !hidden.contains_key(&e.id))
     }
 
+    /// Resolve a batch of references against one immutable event snapshot.
+    /// Includes missing older IDs referenced by replacements, with the same
+    /// removal, return and cycle rules as `current`. No mutable cache survives
+    /// a change to the log.
+    #[must_use]
+    pub fn current_versions(&self) -> BTreeMap<u64, &SpecEvent> {
+        let replaced_by:BTreeMap<u64,u64>=self.replacements(&self.removals()).into_iter().collect();
+        let hidden=self.hidden();
+        let events:BTreeMap<u64,&SpecEvent>=self.events.iter().map(|event|(event.id,event)).collect();
+        let ids:BTreeSet<_>=events.keys().chain(replaced_by.keys()).copied().collect();
+        ids.into_iter().filter_map(|original| {
+            let mut id=original;
+            for _ in 0..=self.events.len() {
+                match replaced_by.get(&id) {Some(next)=>id = *next,None=>break}
+            }
+            events.get(&id).filter(|event|!hidden.contains_key(&event.id)).map(|event|(original,*event))
+        }).collect()
+    }
+
     /// As ondas que já têm registro de entrega. O que elas fizeram está
     /// provado pelo código que entrou, e não pelo texto que o descreveu. A
     /// volta que a rodada ainda não assumiu não conta: está fora da leitura.
@@ -874,6 +893,24 @@ impl SpecLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_current_versions_match_individual_resolution_across_removals_and_returns() {
+        let cases=[
+            "{\"id\":1,\"type\":\"task\"}\n{\"id\":2,\"type\":\"task\",\"replaces\":1}\n{\"id\":3,\"type\":\"task\",\"replaces\":2}",
+            "{\"id\":3,\"type\":\"task\",\"replaces\":1}\n{\"id\":4,\"type\":\"remove\",\"targets\":[3]}",
+            "{\"id\":1,\"type\":\"task\"}\n{\"id\":2,\"type\":\"task\",\"replaces\":1}\n{\"id\":3,\"type\":\"remove\",\"targets\":[2],\"gives_back\":true}",
+            "{\"id\":1,\"type\":\"delivered\",\"returned\":true}\n{\"id\":2,\"type\":\"task\"}",
+            "{\"id\":1,\"type\":\"task\",\"replaces\":2}\n{\"id\":2,\"type\":\"task\",\"replaces\":1}",
+        ];
+        for content in cases {
+            let log=parse_log(content);
+            let versions=log.current_versions();
+            for id in 0..6 {
+                assert_eq!(versions.get(&id).map(|event|event.id),log.current(id).map(|event|event.id),"reference {id}: {content}");
+            }
+        }
+    }
 
     #[test]
     fn a_broken_line_is_skipped_by_number_and_the_rest_is_read() {
