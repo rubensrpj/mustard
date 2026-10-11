@@ -1,9 +1,10 @@
 import design from '../ui/theme.js';
 import {definitionNames,definitionText,waveText,contentPage} from './panel-content.js';
+import {settingsPanel} from './panel-settings.js';
 
 export const initialPanelView = () => ({tab:'Projeto',definitionGroup:'context',definitionQuery:'',definitionPage:0,
   selectedDefinition:undefined,selectedWave:undefined,waveView:'Plano',contentOffset:0,technicalOffset:0,
-  showTechnical:false,usageView:'Resumo',showPublications:false});
+  showTechnical:false,usageView:'Resumo',showPublications:false,settingsGroup:'Busca'});
 
 // The terminal's ANSI palette can quantize dark RGB surfaces into medium gray.
 // Use real black there; desktop keeps the shared web palette. Borders and labels
@@ -13,7 +14,7 @@ export function panelPalette(surface) {
     ink:'whiteBright',muted:'white',line:'gray',accentText:'yellow',accentSoft:'black'} : design.dark;
 }
 
-export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,actions}) {
+export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,settings,actions}) {
   const {Box,Text,Button,Select,Input,Link}=elements;
   const theme=panelPalette(surface), english=data?.project?.language==='en-US';
   const compact=bodyRows>0 && bodyRows<24;
@@ -64,7 +65,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ? (spec?.waves?.find(w=>['running','repair-required','received'].includes(w.status)) || spec?.waves?.[0])?.wave : view.selectedWave;
     actions.change({tab,contentOffset:0,...(tab==='Ondas'?{selectedWave:wave}:{})},tab==='Ondas' && wave!==undefined);
   };
-  const tabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage']];
+  const tabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage'],['Configurações','Configurações','Settings']];
   const rows=[row([text('MUSTARD',{bold:true,color:theme.accentText}),...(data?[text(data.project.name || 'Mustard',{bold:true})]:[])])];
   if(data && !compact)rows.push(note(data.project.branch || t('Sem branch','No branch')));
   if(surface!=='mobile' && (compact || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
@@ -72,8 +73,9 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
   else rows.push(row(tabs.map(([key,pt,en],index)=>button(`tab-${key}`,t(pt,en),()=>go(key),{active:view.tab===key,hotkey:String(index+1)}))));
   if(problem)rows.push(section(t('Atualização indisponível','Update unavailable'),[text(problem),note(`${t('Último estado','Last state')}: ${date(data?.at)}`)]));
   if(!data)return Box({flexDirection:'column',padding:1,backgroundColor:theme.paper,children:[...rows,text(t('Carregando projeto…','Loading project…'))]});
-  if(specs.length)rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
-  if(view.tab!=='Projeto' && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
+  if(specs.length && view.tab!=='Configurações')rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
+  if(!['Projeto','Configurações'].includes(view.tab) && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
+  if(view.tab==='Configurações')rows.push(settingsPanel(settings,actions,{t,text,note,row,section,button,picker},view.settingsGroup));
 
   if(view.tab==='Projeto') {
     if(spec)rows.push(section(t('Trabalho atual','Current work'),[
@@ -285,6 +287,10 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     if(usageView==='Detalhes') {
       rows.push(section(t('Origem e cobertura','Sources and coverage'),[
         text(`Mustard ${data.project.version || t('versão não informada','version not provided')}`),
+        text(data.installation?.complete===true && data.installation.version===data.project?.version?t('Instalação conferida para esta versão.','Installation verified for this version.'):
+          data.installation?t('Instalação incompleta: execute /mustard:upsert e confira as pendências.','Installation incomplete: run /mustard:upsert and inspect outstanding components.'):
+          t('Instalação ainda não conferida: execute /mustard:upsert.','Installation not yet verified: run /mustard:upsert.')),
+        ...(Array.isArray(data.installation?.checks)?data.installation.checks.filter(check=>check.ready!==true).map(check=>note(`${check.component}: ${check.remedy}`)):[]),
         ...(data.retrieval?[
           text(data.retrieval.index_present?t('Scan: índice presente; buscas conferem o código atual.','Scan: index present; searches verify current source.'):
             t('Scan: índice ausente neste projeto. Execute /mustard:upsert e atualize o scan.','Scan: index missing in this project. Run /mustard:upsert and refresh the scan.')),
@@ -313,7 +319,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ]));
     }
   }
-  if(!spec && !['Projeto','Consumo'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
+  if(!spec && !['Projeto','Consumo','Configurações'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
   if(publicationMessage && (publicationMessage.name===selected || ['project','report'].includes(publicationMessage.name)))rows.push(text(publicationMessage.text));
   rows.push(row([button('refresh',t('Atualizar','Refresh'),actions.refresh,{hotkey:'r'}),
     button('publications',t('Publicação externa','External publication'),()=>actions.change({showPublications:!view.showPublications}),{active:view.showPublications}),

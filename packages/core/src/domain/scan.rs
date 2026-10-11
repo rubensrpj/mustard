@@ -147,6 +147,24 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
+    /// Installation refresh, bounded by the installer's remaining time.
+    /// Uses the same companion binary, arguments and decoder as `scan`.
+    ///
+    /// # Errors
+    /// A failed/timed-out child, an exhausted deadline or an invalid report.
+    pub fn scan_with_deadline(&self, root: &Path, out: &Path, runner: &impl crate::platform::code_tools::ToolRunner, limit: std::time::Duration) -> Result<ScanReport> {
+        use crate::platform::code_tools::RunOutcome;
+        if limit.is_zero() { return Err(Error::check_failed("installation scan budget exhausted")); }
+        let args=scan_args(root,out);
+        let borrowed:Vec<_>=args.iter().map(String::as_str).collect();
+        let (status,stdout)=runner.output(&self.binary,&borrowed,limit);
+        match status {
+            RunOutcome::Succeeded=>parse_scan_report(&stdout),
+            RunOutcome::TimedOut{..}=>Err(Error::check_failed("installation scan timed out; run mustard-rt run scan, then retry upsert")),
+            RunOutcome::Failed=>Err(Error::check_failed("installation scan failed; run mustard-rt run scan for the diagnostic")),
+        }
+    }
+
     /// Refresh structural evidence without loading a configured sense model.
     pub fn scan_native(&self,root:&Path,out:&Path)->Result<ScanReport> {
         let mut args=scan_args(root,out);args.push("--native".into());
@@ -341,6 +359,21 @@ fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    #[cfg(unix)]
+    fn installation_scan_obeys_its_deadline_and_does_not_spawn_when_exhausted() {
+        let dir=tempfile::tempdir().unwrap();
+        let scan=script_scan(dir.path(),"bounded-scan","touch called; exec sleep 10");
+        let runner=crate::platform::code_tools::MachineRunner::new("/usr/bin:/bin").at(dir.path());
+        let root=Path::new("repo");let out=Path::new("map.db");
+        assert!(scan.scan_with_deadline(root,out,&runner,std::time::Duration::ZERO).is_err());
+        assert!(!dir.path().join("called").exists());
+        let start=std::time::Instant::now();
+        assert!(scan.scan_with_deadline(root,out,&runner,std::time::Duration::from_millis(30)).unwrap_err().to_string().contains("timed out"));
+        assert!(start.elapsed()<std::time::Duration::from_secs(2));
+        assert!(dir.path().join("called").exists());
+    }
 
     #[test]
     fn scan_args_shape() {

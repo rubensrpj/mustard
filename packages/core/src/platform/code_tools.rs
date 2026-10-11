@@ -567,6 +567,9 @@ pub fn ensure_code_tools_in<R: ToolRunner>(
             for verb in ["install", "enable"] {
                 match budget.run("claude", &["plugin", verb, &plugin]) {
                     RunOutcome::Succeeded => {}
+                    // Recent Claude versions return a failure for an already
+                    // enabled plugin. Confirm state; never accept error prose.
+                    RunOutcome::Failed if verb == "enable" && plugin_enabled(&plugin, &budget) => {}
                     RunOutcome::Failed => warnings.push(if verb == "install" {
                         CodeToolWarning::PluginNotInstalled { language: language.clone(), plugin: plugin.clone() }
                     } else {
@@ -582,6 +585,12 @@ pub fn ensure_code_tools_in<R: ToolRunner>(
         }
     }
     warnings
+}
+
+fn plugin_enabled(plugin:&str,budget:&Budget<'_,impl ToolRunner>)->bool {
+    let (outcome,text)=budget.output("claude",&["plugin","list","--json"]);
+    outcome==RunOutcome::Succeeded && serde_json::from_str::<serde_json::Value>(&text).ok()
+        .and_then(|value|value.as_array().cloned()).is_some_and(|rows|rows.iter().any(|row|row["id"]==plugin && row["enabled"]==true))
 }
 
 /// Põe o programa da tabela no `PATH` e respondendo: se ele já está e
@@ -867,6 +876,7 @@ const OUTPUT_GRACE: Duration = Duration::from_millis(500);
 pub struct MachineRunner {
     path_env: String,
     cwd: Option<PathBuf>,
+    native_runtime: bool,
     home: Option<PathBuf>,
     /// Se o sistema é o Windows: decide o separador do `PATH` e o nome com
     /// que o programa aparece numa pasta. Vem da compilação; o teste o troca
@@ -881,6 +891,7 @@ impl MachineRunner {
         Self {
             path_env: path_env.to_string(),
             cwd: None,
+            native_runtime: false,
             home: home_dir(),
             windows: cfg!(windows),
         }
@@ -890,6 +901,14 @@ impl MachineRunner {
     #[must_use]
     pub fn at(mut self, cwd: &Path) -> Self {
         self.cwd = Some(cwd.to_path_buf());
+        self
+    }
+
+    /// Inspect the actual companion, without handing over to a development
+    /// build or another installed runtime. Does not change the caller's env.
+    #[must_use]
+    pub fn without_runtime_delegation(mut self) -> Self {
+        self.native_runtime = true;
         self
     }
 
@@ -910,6 +929,7 @@ impl MachineRunner {
         let file = program_file(program, self.windows, &self.path_env).unwrap_or_else(|| PathBuf::from(program));
         let mut command = Command::new(file);
         if let Some(cwd) = &self.cwd { command.current_dir(cwd); }
+        if self.native_runtime { command.env("MUSTARD_RT_DELEGATED", "1"); }
         let Ok(mut child) = command.args(args)
             .env("PATH", &self.path_env)
             .stdin(Stdio::null())
@@ -1031,6 +1051,7 @@ mod tests {
         timing_out: Vec<&'static str>,
         taking: Vec<(&'static str, Duration)>,
         listing: &'static str,
+        plugins: &'static str,
         off_path: Vec<(&'static str, &'static str)>,
         log: std::cell::RefCell<Vec<String>>,
         budget: Duration,
@@ -1049,6 +1070,7 @@ mod tests {
                 timing_out: Vec::new(),
                 taking: Vec::new(),
                 listing: "",
+                plugins: "",
                 off_path: Vec::new(),
                 log: std::cell::RefCell::new(Vec::new()),
                 budget: STEP_BUDGET,
@@ -1064,6 +1086,26 @@ mod tests {
         fn with_wide_budget(mut self) -> Self {
             self.budget = COMMAND_DEADLINE * 10;
             self
+        }
+    }
+
+    #[test]
+    fn an_enable_refusal_is_success_only_when_the_host_confirms_that_plugin_enabled() {
+        let project=tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("package.json"),"{}").unwrap();
+        let model=crate::io::project_map::model_path(project.path());
+        for (plugins,ready) in [
+            (r#"[{"id":"typescript-lsp@claude-plugins-official","enabled":true}]"#,true),
+            (r#"[{"id":"typescript-lsp@claude-plugins-official","enabled":false}]"#,false),
+            (r#"[{"id":"another-plugin","enabled":true}]"#,false),
+            ("not-json",false),
+        ] {
+            let mut runner=FakeRunner::new(&["claude","node","typescript-language-server"]);
+            runner.failing.push("claude plugin enable");
+            runner.plugins=plugins;
+            let warnings=ensure_code_tools(project.path(),&model,&runner);
+            assert_eq!(warnings.is_empty(),ready,"{plugins}: {warnings:?}");
+            assert!(runner.log.borrow().iter().any(|line|line=="claude plugin list --json"));
         }
     }
 
@@ -1119,7 +1161,10 @@ mod tests {
         fn output(&self, program: &str, args: &[&str], limit: Duration) -> (RunOutcome, String) {
             let outcome = self.run_outcome(program, args, limit);
             let listed = program == "dotnet" && args.starts_with(&["tool", "list"]);
-            let text = if listed && outcome == RunOutcome::Succeeded { self.listing.to_string() } else { String::new() };
+            let text = if outcome != RunOutcome::Succeeded { String::new() }
+                else if listed { self.listing.to_string() }
+                else if program == "claude" && args == ["plugin","list","--json"] { self.plugins.to_string() }
+                else { String::new() };
             (outcome, text)
         }
 
@@ -1370,6 +1415,7 @@ mod tests {
         let windows = MachineRunner {
             path_env: String::new(),
             cwd: None,
+            native_runtime: false,
             home: Some(windows_home.path().to_path_buf()),
             windows: true,
         };
@@ -1383,6 +1429,7 @@ mod tests {
         let linux = MachineRunner {
             path_env: String::new(),
             cwd: None,
+            native_runtime: false,
             home: Some(linux_home.path().to_path_buf()),
             windows: false,
         };

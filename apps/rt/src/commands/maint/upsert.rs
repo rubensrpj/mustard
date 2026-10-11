@@ -84,11 +84,15 @@
 //! `searchWarning`, naming the command that fills it later; it never stops
 //! the upsert.
 //!
+//! The index is refreshed before language preparation, with the same deadline.
+//! The final installation receipt checks companions and the installed host;
+//! its timestamp identifies this verification, and incomplete stays explicit.
+//!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
 //! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings`, on a
 //! failed search `searchWarning` and, while unasked, `localFilesFound`
 //! appended — deterministic
-//! (fixed field order, no timestamps, project-root-relative names only), per
+//! (fixed field order outside the dated verification receipt), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
 //!
@@ -144,6 +148,8 @@ use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 // two drift the day the host moves the file, and this side would degrade to a
 // permanent skip nobody could see.
 use mustard_core::{claude_config_dir, INSTALLED_PLUGINS, PLUGIN_NAME};
+
+mod completion;
 
 /// How long one refresh step may take, at most. Both steps reach the network
 /// (the marketplace update is a git fetch), so an unbounded wait would hang the
@@ -251,6 +257,10 @@ struct Report {
     /// `mustard.json` não tem `localFiles`; vazia quando não há nenhum.
     #[serde(skip_serializing_if = "Option::is_none")]
     local_files_found: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installation: Option<serde_json::Value>,
+    #[serde(skip)]
+    scan: Option<serde_json::Value>,
 }
 
 /// As respostas da pessoa que a instalação grava no `mustard.json`, pelas
@@ -281,8 +291,13 @@ pub fn run(opts: &UpsertOpts) {
     // The code-tool commands find and spawn their programs against this
     // process's own PATH, the way `mustard init` hands the same step its own.
     let path_env = std::env::var("PATH").unwrap_or_default();
-    match upsert(&root, opts, &MachineRunner::new(&path_env), refresh_plugin) {
-        Ok(outcome) => {
+    let runner=MachineRunner::new(&path_env).at(&root).without_runtime_delegation();
+    let started=std::time::Instant::now();
+    match upsert_with_index(&root, opts, &runner, refresh_plugin, |root,budget| {
+        crate::commands::scan::scan_at(root,None,false,None,|root,out|mustard_core::Scan::locate().scan_with_deadline(root,out,&runner,budget.remaining()))
+    }) {
+        Ok(mut outcome) => {
+            outcome.installation=Some(completion::finish(&root,&outcome,&runner,UPSERT_BUDGET.saturating_sub(started.elapsed())));
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
             println!("{json}");
@@ -321,11 +336,12 @@ pub fn run(opts: &UpsertOpts) {
 /// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
 /// a canned refresh, so what they drive is the same sequence the command runs.
 /// The refresh is handed the [`UPSERT_BUDGET`] it shares with the code tools.
-fn upsert<R: ToolRunner>(
+fn upsert_with_index<R: ToolRunner>(
     root: &Path,
     opts: &UpsertOpts,
     runner: &R,
     refresh: impl FnOnce(&Path, &Budget<'_, R>) -> PluginRefresh,
+    index: impl FnOnce(&Path, &Budget<'_, R>) -> serde_json::Value,
 ) -> mustard_core::platform::error::Result<Report> {
     // Unconditional. The mode is not read from anywhere and not asked for
     // anywhere: a harness that installs itself into someone else's repository
@@ -367,13 +383,21 @@ fn upsert<R: ToolRunner>(
     // run, and comes back as the sentence with its command.
     let budget = Budget::start(runner, UPSERT_BUDGET);
     let plugin_refresh = refresh(root, &budget);
+    // Discover every subproject before choosing its language tools. A root
+    // manifest alone misses nested backends on the first installation.
+    let scan=Some(index(root,&budget));
     let code_tool_warnings =
         code_tools::ensure_code_tools_in(root, &mustard_core::io::project_map::model_path(root), &budget)
             .iter()
             .map(ToString::to_string)
             .collect();
 
-    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, local_files_found })
+    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, local_files_found, installation:None,scan })
+}
+
+#[cfg(test)]
+fn upsert<R:ToolRunner>(root:&Path,opts:&UpsertOpts,runner:&R,refresh:impl FnOnce(&Path,&Budget<'_,R>)->PluginRefresh)->mustard_core::platform::error::Result<Report> {
+    upsert_with_index(root,opts,runner,refresh,|_,_|serde_json::json!({"ok":false,"reason":"test-index-not-provided"}))
 }
 
 /// Grava no `mustard.json` as respostas que vieram em `opts`: o comando de
@@ -964,6 +988,8 @@ mod tests {
             code_tool_warnings: Vec::new(),
             search_warning: None,
             local_files_found: None,
+            installation: None,
+            scan: None,
         };
         let first = serde_json::to_string_pretty(&outcome).expect("serialize");
         let second = serde_json::to_string_pretty(&outcome).expect("serialize again");

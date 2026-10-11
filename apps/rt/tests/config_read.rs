@@ -7,6 +7,26 @@ use serde_json::{json, Value};
 const SECRET: &str = "synthetic-Jev-key-719235";
 const CONFIG: &str = "{\n  \"git\": {\"flow\": {\"*\": \"develop\"}},\n  \"testCommand\": \"pnpm test --roots '<rootDir>/src'\",\n  \"lintCommand\": \"pnpm lint --ignore-pattern .claude/\",\n  \"jev\": {\"key\": \"synthetic-Jev-key-719235\"}\n}\n";
 
+#[test]
+fn private_host_environment_keys_are_masked_without_changing_the_file() {
+    let dir=tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".claude")).unwrap();
+    std::fs::write(dir.path().join("mustard.json"),"{}").unwrap();
+    let private=json!({"env":{"TYPESAFE_API_KEY":SECRET},"rtk":true}).to_string();
+    let file=".claude/settings.local.json";
+    std::fs::write(dir.path().join(file),&private).unwrap();
+    let response=hook(dir.path(),"cat .claude/settings.local.json; echo finished");
+    assert!(!response.to_string().contains(SECRET));
+    let command=response["hookSpecificOutput"]["updatedInput"]["command"].as_str().expect("masked native reader");
+    assert!(command.contains("config-read") && command.ends_with("; echo finished"));
+    let output=native(dir.path(),file,"cat",json!([]));
+    assert!(output.status.success());
+    let shown=String::from_utf8(output.stdout).unwrap();
+    assert!(!shown.contains(SECRET));
+    assert_eq!(serde_json::from_str::<Value>(&shown).unwrap()["env"]["TYPESAFE_API_KEY"],"***");
+    assert_eq!(std::fs::read_to_string(dir.path().join(file)).unwrap(),private);
+}
+
 fn hook(root: &Path, command: &str) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["on", "PreToolUse"])
         .current_dir(root).env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT")

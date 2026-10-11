@@ -3,6 +3,15 @@ use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum PanelCmd {
+    /// Read safe project settings, or apply an explicit versioned patch.
+    #[command(display_order = 31)]
+    Settings {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// {schema_version:1,revision,changes:{vectors,jev,rtk,...}}; never credentials.
+        #[arg(long)]
+        json: Option<String>,
+    },
     /// Publish an explicit static snapshot using the configured native destination.
     #[command(display_order = 27)]
     Publish {
@@ -46,6 +55,7 @@ pub enum PanelCmd {
 
 pub fn dispatch(cmd: PanelCmd) {
     match cmd {
+        PanelCmd::Settings {root,json} => println!("{}",super::settings::run(&root,json.as_deref())),
         PanelCmd::Publish {
             root,
             spec,
