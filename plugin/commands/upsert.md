@@ -1,13 +1,13 @@
 ---
-description: Install, update or diagnose Mustard in this project; also use when /mustard:* is blocked because mustard.json is absent.
+description: Install, update or diagnose Mustard; use if /mustard:* is blocked because mustard.json is absent.
 argument-hint: [--doctor]
 ---
 # /mustard:upsert — the installation door
 
 ## Install or update
 
-1. Run `mustard-rt run upsert`. It writes `mustard.json`, `.claude/settings.local.json`, `.claude/.gitignore`, `.claude/mustard/session-map.md`, `.claude/agents/mustard/wave.md` and `.claude/agents/mustard/review.md`, hidden from this clone's git. Nothing is committed. External pages require explicit publication; historical resources remain readable.
-2. Relay `created`, `updated`, `preserved`, `migrated`. Settings and config preserve personal choices. Session-map and agents always match the shipped text in `language.text`; unchanged copies are `preserved`.
+1. Run `mustard-rt run upsert`. It writes `mustard.json`, `.claude/settings.local.json`, `.claude/.gitignore`, `.claude/mustard/session-map.md`, `.claude/agents/mustard/wave.md` and `.claude/agents/mustard/review.md`, hidden from git, without commits. Publish external pages only on request; retain historical resources.
+2. Relay `created`, `updated`, `preserved`, `migrated`. Settings and config preserve personal choices. For session-map and agents, every run lays the shipped text down again in `language.text`; equal copies are `preserved`.
 
 3. Relay `pluginRefresh` version/restart or skip reason, and `codeToolWarnings` commands/failures/timeouts.
 4. Relay `cleanup`/`cleaned` by file: obsolete `CLAUDE.md`/team settings entries removed, `cleaned.swapped` deny rules to commit, `cleaned.pending` Guards to test or drop. `unmarked` files were untouched; the person decides.
@@ -16,7 +16,7 @@ argument-hint: [--doctor]
 
 ## Doctor
 
-`mustard-rt run doctor` only reads; each failing check names its fix. `--check <name>` runs one, `--residue` also seeks dead references, `--json` answers in JSON.
+`mustard-rt run doctor` only reads and names fixes. `--check <name>` runs one check, `--residue` seeks dead references, `--json` answers in JSON.
 
 `mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'` filters masked keys. Supported shell reads rewrite automatically; other readers are refused.
 
