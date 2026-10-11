@@ -21,9 +21,8 @@
 //!      statusLine / plansDirectory …), rtk's hook following
 //!      `mustard.json#rtk`, and Claude Code's own signature off; plugin
 //!      enablement is NOT planted (user-scope choice);
-//!    - `mustard/session-map.md`, `mustard/pages/*.html` and
-//!      `agents/mustard/*.md` — the session map, the two page templates and
-//!      the two agents, always rewritten, in the language of
+//!    - `mustard/session-map.md` and `agents/mustard/*.md` — the session map
+//!      and the two agents, always rewritten, in the language of
 //!      `language.text`;
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!
@@ -49,7 +48,7 @@
 //!    isso acontece pelo `/mustard:upsert`, depois que a pessoa diz sim à
 //!    lista.
 //!
-//! Nothing is staged or committed, and nothing is written outside the project:
+//! This library entry stages or commits nothing and writes only in the project:
 //! `~/.claude/` is never touched. A re-run re-stamps `mustard.json#version`,
 //! and in a repository that versions the file the new stamp is a change for the
 //! person to commit.
@@ -199,7 +198,6 @@ fn init_with_scan(
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
         println!("    mustard/session-map.md — the session map, delivered at session start per mustard.json#inject");
-        println!("    mustard/pages/*.html — the spec page and project page templates, in the project's text language");
         println!("    agents/mustard/*.md — the mustard-wave and mustard-review agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");
