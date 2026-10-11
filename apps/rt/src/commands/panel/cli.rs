@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug, Subcommand)]
 pub enum PanelCmd {
     /// Read safe project settings, or apply an explicit versioned patch.
+    #[command(display_order = 31)]
     Settings {
         #[arg(long, default_value = ".")]
         root: PathBuf,

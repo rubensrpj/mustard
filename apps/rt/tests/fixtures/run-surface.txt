@@ -25,6 +25,7 @@ resume
 round
 scan
 search
+settings
 spend
 statusline
 upsert
