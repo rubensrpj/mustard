@@ -23,28 +23,23 @@ fn known_run_subcommands() -> std::collections::BTreeSet<String> {
 /// and `mustard-rt run <cmd>` command string references a known event or
 /// subcommand.
 pub(super) fn check_wiring(claude_dir: &Path) -> CheckResult {
-    let settings_path = claude_dir.join("settings.json");
-    let text = match fs::read_to_string(&settings_path) {
-        Ok(t) => t,
-        Err(e) => {
-            return CheckResult::warn(
-                "wiring",
-                vec![format!("cannot read settings.json: {e}")],
-            )
+    let mut broken = Vec::new();
+    let mut found = false;
+    for name in ["settings.json", "settings.local.json"] {
+        let path = claude_dir.join(name);
+        if !path.exists() { continue; }
+        found = true;
+        match fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(json) => collect_commands_from_json(&json, &mut broken),
+                Err(error) => broken.push(format!("{name} is not valid JSON: {error}")),
+            },
+            Err(error) => broken.push(format!("cannot read {name}: {error}")),
         }
-    };
-    let json: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            return CheckResult::fail(
-                "wiring",
-                vec![format!("settings.json is not valid JSON: {e}")],
-            )
-        }
-    };
-
-    let mut broken: Vec<String> = Vec::new();
-    collect_commands_from_json(&json, &mut broken);
+    }
+    if !found {
+        return CheckResult::warn("wiring", vec!["no settings.json or settings.local.json; run mustard-rt run upsert".into()]);
+    }
 
     if broken.is_empty() {
         CheckResult::ok("wiring")
@@ -108,6 +103,21 @@ mod tests {
     use super::super::Status;
     use super::*;
     use crate::commands::doctor::doctor::tests::*;
+
+    #[test]
+    fn wiring_checks_private_settings_without_requiring_shared_settings() {
+        let dir=tempdir().unwrap();
+        let claude=dir.path();
+        make_minimal_settings(claude,"mustard-rt on PreToolUse");
+        std::fs::rename(claude.join("settings.json"),claude.join("settings.local.json")).unwrap();
+        assert_eq!(check_wiring(claude).status,Status::Ok);
+        make_minimal_settings(claude,"mustard-rt run dead-script");
+        assert_eq!(check_wiring(claude).status,Status::Fail,"local settings must not hide a broken shared entry");
+        std::fs::remove_file(claude.join("settings.json")).unwrap();
+        let text=std::fs::read_to_string(claude.join("settings.local.json")).unwrap().replace("PreToolUse","NonExistentEvent");
+        std::fs::write(claude.join("settings.local.json"),text).unwrap();
+        assert_eq!(check_wiring(claude).status,Status::Fail);
+    }
 
     #[test]
     fn wiring_clean_settings_is_ok() {

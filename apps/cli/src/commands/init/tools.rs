@@ -9,12 +9,9 @@
 //! here writes rtk's own configuration: its hook lives in the project's
 //! `.claude/settings.local.json`, written by the seed.
 //!
-//! [`ensure_code_tools`] carries no language name and no step of its own — it
-//! hands the machine to `mustard_core::platform::code_tools::ensure_code_tools`,
-//! the step the project update runs too, and prints what comes back. It never
-//! `cfg!(test)`-skips: it takes the `PATH` it searches and spawns against as a
-//! parameter instead, and a test points that parameter at fake programs in a
-//! temporary directory rather than touching the real machine.
+//! [`complete_installation`] finishes through the native update door, sharing
+//! its index, tool, plugin and version checks. Library seeding stays private
+//! to the project; only the CLI performs machine preparation.
 
 use std::path::Path;
 use std::process::Command;
@@ -128,93 +125,37 @@ fn install_ripgrep() -> bool {
     false
 }
 
-/// Ensure every language `project_root` involves has its code tool set up —
-/// the program a language-server plugin drives, and the plugin itself from
-/// Claude Code's official catalog — the same best-effort shape
-/// [`ensure_ripgrep`] already applies to `rg`.
-///
-/// The step itself lives in `mustard_core::platform::code_tools::ensure_code_tools`,
-/// shared with the project update, so the two can never drift apart. This
-/// wrapper only hands it the machine — every program found and spawned against
-/// `path_env` — and prints each warning it returns, the command to run by hand
-/// included. Nothing here aborts: `init` always finishes.
-pub(crate) fn ensure_code_tools(project_root: &Path, model_path: &Path, path_env: &str) {
-    use mustard_core::platform::code_tools::{self, MachineRunner};
-
-    let runner = MachineRunner::new(path_env);
-    for warning in code_tools::ensure_code_tools(project_root, model_path, &runner) {
-        println!("  {warning}");
+/// The binary install and plugin update finish through the same native door.
+/// Library callers keep the pure project-seeding contract; cancellation and
+/// dry-run never reach this step.
+pub(crate) fn complete_installation(root: &Path) -> anyhow::Result<()> {
+    let file = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
+    let sibling = std::env::current_exe()?.parent().map(|parent|parent.join(file));
+    let Some(program) = sibling.filter(|path|path.is_file()) else {
+        return incomplete(root,"native companion missing");
+    };
+    let version=Command::new(&program).arg("--version").env("MUSTARD_RT_DELEGATED","1").output()?;
+    if !version.status.success() || !String::from_utf8_lossy(&version.stdout).split_whitespace().any(|part|part==mustard_core::harness_version()) {
+        return incomplete(root,"native companion version differs from this CLI");
     }
+    let output = Command::new(program).args(["run","upsert"])
+        .env("MUSTARD_RT_DELEGATED","1").current_dir(root).output()?;
+    anyhow::ensure!(output.status.success(), "native installation failed; run mustard-rt run upsert");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let receipt = report.get("installation").ok_or_else(||anyhow::anyhow!("native installation returned no verification; run mustard-rt run upsert"))?;
+    println!("{}",serde_json::to_string_pretty(receipt)?);
+    if let Some(warnings)=report["codeToolWarnings"].as_array() {
+        for warning in warnings { if let Some(text)=warning.as_str() { println!("  {text}"); } }
+    }
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Grava em `dir` um programa falso chamado `name`, que anota os próprios
-    /// argumentos em `log` em vez de instalar qualquer coisa. No Windows é um
-    /// `.cmd`, extensão que o executor da máquina procura; fora dele, um
-    /// script de shell com o nome puro.
-    fn write_fake_program(dir: &Path, name: &str, log: &Path) {
-        let (file, script) = if cfg!(windows) {
-            (format!("{name}.cmd"), format!("@echo off\r\necho %0 %* >> \"{}\"\r\nexit /b 0\r\n", log.display()))
-        } else {
-            (name.to_string(), format!("#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n", log.display()))
-        };
-        crate::executable::write_executable(&dir.join(file), &script);
-    }
-
-    /// The proof: a Rust project, with every real toolchain replaced by a
-    /// fake `rustup` and a fake `claude` at the front of `PATH`. Neither
-    /// `rust-analyzer` nor the fake `rustup`/`claude` install anything real —
-    /// the log file proves the install command and both plugin commands ran,
-    /// with the exact plugin id the table declares for rust.
-    ///
-    /// Unix only: the install spawns each program by its bare name, and
-    /// Windows starts a `.cmd` through the shell, not through the direct
-    /// spawn this fake program relies on.
-    #[test]
-    #[cfg(unix)]
-    fn the_install_sets_up_the_code_tool_of_each_language() {
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        let model_path = mustard_core::io::project_map::model_path(project.path());
-
-        let bin = tempfile::tempdir().unwrap();
-        let log = bin.path().join("log.txt");
-        write_fake_program(bin.path(), "rustup", &log);
-        write_fake_program(bin.path(), "claude", &log);
-        // rust-analyzer stays absent: the "not on PATH" branch runs too.
-
-        let path_env = bin.path().display().to_string();
-        ensure_code_tools(project.path(), &model_path, &path_env);
-
-        let logged = std::fs::read_to_string(&log).unwrap();
-        assert!(logged.contains("rustup component add rust-analyzer"), "{logged}");
-        assert!(logged.contains("claude") && logged.contains("plugin install rust-analyzer-lsp@claude-plugins-official"), "{logged}");
-        assert!(logged.contains("plugin enable rust-analyzer-lsp@claude-plugins-official"), "{logged}");
-    }
-
-    /// A language the catalog does not cover — Dart is the named example in
-    /// the spec, reachable only through the scanned model's stack registry
-    /// (`flutter` → `dart`); Java reaches the very same "no catalog entry"
-    /// branch through the manifest probe alone, so it proves the same rule
-    /// without spawning the external `scan` binary a fabricated model would
-    /// need. Neither language ever reaches a program/plugin command; each
-    /// only gets its own notice, so the fake log stays untouched.
-    #[test]
-    fn a_language_without_a_catalog_entry_gets_a_no_plugin_notice_instead_of_an_install_attempt() {
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(project.path().join("pom.xml"), "<project></project>\n").unwrap();
-        let model_path = mustard_core::io::project_map::model_path(project.path());
-
-        let bin = tempfile::tempdir().unwrap();
-        let log = bin.path().join("log.txt");
-        write_fake_program(bin.path(), "claude", &log);
-        let path_env = bin.path().display().to_string();
-
-        ensure_code_tools(project.path(), &model_path, &path_env);
-
-        assert!(!log.is_file(), "no program should have been spawned for a language with no catalog entry");
-    }
+fn incomplete(root:&Path,reason:&str)->anyhow::Result<()> {
+    let receipt=serde_json::json!({"schema_version":1,"version":mustard_core::harness_version(),
+        "complete":false,"project_ready":false,"host_ready":false,"provider_verified":false,
+        "checks":[{"component":"native-installer","ready":false,"reason":reason,"remedy":"reinstall the complete Mustard bundle, then run mustard-rt run upsert"}]});
+    let text=serde_json::to_string_pretty(&receipt)?;
+    mustard_core::io::fs::write_atomic(root.join(".claude/mustard/installation.json"),text.as_bytes())?;
+    println!("{text}");
+    Ok(())
 }

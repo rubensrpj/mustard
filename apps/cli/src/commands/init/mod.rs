@@ -98,7 +98,7 @@ mod questions;
 mod seeding;
 mod tools;
 
-pub(crate) use tools::{ensure_code_tools, ensure_ripgrep, probe_rtk};
+pub(crate) use tools::{complete_installation, ensure_ripgrep, probe_rtk};
 
 use questions::ExistingAction;
 
@@ -332,7 +332,7 @@ fn refresh_search(project: &Path, out: &mut impl Write) {
 /// word of the INSTALL; what trails it is tool setup, not project state.
 /// Keep these two commands here regardless; they are what the direct run needs.
 fn print_next_steps() {
-    println!("\nDone!\n");
+    println!("\nProject files prepared.\n");
     println!("Next:");
     println!("  1. Install the plugin INSIDE Claude Code — type these two lines there,");
     println!("     not in this terminal (already installed? nothing to do):");

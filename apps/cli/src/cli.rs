@@ -94,7 +94,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run })?;
             // Environment acts live HERE, never in the library: putting software
             // on the operator's machine is something a library call must never
-            // take on its caller's behalf. Nothing here writes under `~/.claude/`.
+            // take on its caller's behalf. The native door reports plugin updates.
             //
             // The condition is `Installed`, not "no error". `Ok` used to cover
             // the operator answering Cancel to an existing `.claude/` — and on
@@ -103,9 +103,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             // the caller can tell the two apart.
             if outcome == init::InitOutcome::Installed {
                 init::ensure_ripgrep();
-                let model_path = mustard_core::io::project_map::model_path(&cwd);
-                let path_env = std::env::var("PATH").unwrap_or_default();
-                init::ensure_code_tools(&cwd, &model_path, &path_env);
+                init::complete_installation(&cwd)?;
             }
             Ok(())
         }

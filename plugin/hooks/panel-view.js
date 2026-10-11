@@ -285,6 +285,10 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     if(usageView==='Detalhes') {
       rows.push(section(t('Origem e cobertura','Sources and coverage'),[
         text(`Mustard ${data.project.version || t('versão não informada','version not provided')}`),
+        text(data.installation?.complete===true && data.installation.version===data.project?.version?t('Instalação conferida para esta versão.','Installation verified for this version.'):
+          data.installation?t('Instalação incompleta: execute /mustard:upsert e confira as pendências.','Installation incomplete: run /mustard:upsert and inspect outstanding components.'):
+          t('Instalação ainda não conferida: execute /mustard:upsert.','Installation not yet verified: run /mustard:upsert.')),
+        ...(Array.isArray(data.installation?.checks)?data.installation.checks.filter(check=>check.ready!==true).map(check=>note(`${check.component}: ${check.remedy}`)):[]),
         ...(data.retrieval?[
           text(data.retrieval.index_present?t('Scan: índice presente; buscas conferem o código atual.','Scan: index present; searches verify current source.'):
             t('Scan: índice ausente neste projeto. Execute /mustard:upsert e atualize o scan.','Scan: index missing in this project. Run /mustard:upsert and refresh the scan.')),

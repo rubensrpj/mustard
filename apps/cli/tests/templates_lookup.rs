@@ -104,6 +104,9 @@ fn init_runs_in_an_empty_project_without_any_folder_of_molds() {
         "the install seeds .claude/settings.local.json",
     );
     assert!(project.join("mustard.json").is_file(), "the install writes mustard.json");
+    let receipt:serde_json::Value=serde_json::from_str(&fs::read_to_string(project.join(".claude/mustard/installation.json")).expect("verification receipt")).expect("valid receipt");
+    assert_eq!(receipt["complete"],false,"a standalone CLI must not claim the entire bundle is installed");
+    assert_eq!(receipt["checks"][0]["component"],"native-installer");
     assert!(!project.join(".github").exists(), "the install seeds nothing under .github/");
     assert_eq!(
         fs::read_to_string(project.join(".git/config")).expect("read git config"),

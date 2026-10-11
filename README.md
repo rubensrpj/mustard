@@ -129,7 +129,7 @@ O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods par
 | `/mustard-panel [spec]` | Projeto, specs, definições, ondas, execução e consumo local. Requer suporte a Mods (CLI 2.1.287+; Code do Desktop 2.1.286+). |
 | `/mustard-panel --diagnose` | Mostra versão do host, plugin carregado, interfaces reconhecidas e registro do painel, sem ler conversas ou chamar IA. |
 | `/mustard-pages` | Publicação explícita de `project`, `spec [nome]` ou `report <arquivo.md>` pelo adaptador nativo Cloudflare Pages. Sem configuração, entrega arquivos locais; sem turno do modelo. |
-| `/mustard:upsert` | Instala ou atualiza o Mustard no projeto e diagnostica a instalação. Para desligar o Mustard num projeto, ponha `"enabled": false` no `mustard.json`. |
+| `/mustard:upsert` | Instala ou atualiza arquivos, índice e ferramentas do projeto. `installation.complete` só é verdadeiro quando a conferência da versão termina sem componentes pendentes; o Mods mostra esse resultado. Para desligar, use `"enabled": false` no `mustard.json`. |
 
 A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
 

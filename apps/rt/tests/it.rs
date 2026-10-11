@@ -25,6 +25,7 @@ mod end_to_end_flow;
 mod final_review_crosses_agreed;
 mod hooks_never_break_the_session;
 mod installer_switches;
+mod upsert_installation;
 mod installs_nothing;
 mod map_created_when_missing;
 mod map_of_another_scan;

@@ -546,3 +546,18 @@ test('report publication preserves the requested document path without calling t
   const result=await $.command.run({command:'mustard-pages',args:'report "reports/Resumo gestor.md"'});
   expect(result.text).toContain('report-version');expect(turns).toBe(0);
 });
+
+
+test('installation details do not present an old receipt as verification of this version',async ($,on)=>{
+  const {pane,clock,snapshot,counts}=await clarityFixture($,on);
+  (snapshot as any).installation={version:'0.0.0',complete:true,checks:[{component:'scan',ready:false,remedy:'run mustard-rt run scan'}]};
+  await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await pane.select({key:'usage-section',value:'Detalhes'});
+  expect(await pane.find({type:'Text',text:'Instalação incompleta: execute /mustard:upsert e confira as pendências.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'scan: run mustard-rt run scan'})).toBeDefined();
+  (snapshot as any).installation={version:snapshot.project.version,complete:true,checks:[]};
+  await clock.advance(2000);
+  expect(await pane.find({type:'Text',text:'Instalação conferida para esta versão.'})).toBeDefined();
+  expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);
+  await pane.press({key:'close'});
+});
