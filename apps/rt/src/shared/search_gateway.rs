@@ -508,5 +508,12 @@ mod tests {
             .err()
             .expect("secret refused before reading");
         assert!(!error.contains("hidden-sentinel"));
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        std::fs::write(dir.path().join(".claude/settings.local.json"),r#"{"env":{"TYPESAFE_API_KEY":"private-env-sentinel"}}"#).unwrap();
+        let mut req=req;
+        req.input["file_path"]=json!(".claude/settings.local.json");
+        let error=answer(dir.path(),&req).err().expect("private Jev key refused before reading");
+        assert!(!error.contains("private-env-sentinel"));
+        assert!(error.contains("***"));
     }
 }

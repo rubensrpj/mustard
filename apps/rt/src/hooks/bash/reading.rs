@@ -120,10 +120,11 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
         }
         let folders: Vec<PathBuf> = searched.iter().map(|path| cwd.join(path)).collect();
         if let Some(file) = config_key::swept(&folders, Path::new(&root), search.walk, &search.filters) {
+            let name=Path::new(&file).file_name().and_then(|name|name.to_str()).unwrap_or(CONFIG_FILE);
             let fix = match search.walk {
-                _ if search.git => format!("`':!{CONFIG_FILE}'`"),
-                Walk::Grep => format!("`--exclude={CONFIG_FILE}`"),
-                Walk::Rg { .. } => format!("`-g '!{CONFIG_FILE}'`"),
+                _ if search.git => format!("`':!{name}'`"),
+                Walk::Grep => format!("`--exclude={name}`"),
+                Walk::Rg { .. } => format!("`-g '!{name}'`"),
             };
             return Some(Verdict::Deny { reason: say("config_key.swept", lang, &[("{file}", &file), ("{fix}", &fix)]) });
         }
