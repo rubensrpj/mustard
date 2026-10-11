@@ -47,12 +47,14 @@ use crate::domain::spec_state::State;
 use crate::platform::i18n::{Locale, translate};
 
 mod changed;
+mod dispatch;
 mod request;
 mod review;
 mod rules;
 mod summary;
 
 pub use changed::TaskChange;
+pub use dispatch::ReadDispatch;
 pub use request::listed;
 pub use review::listed_final_review;
 pub use rules::{ROOT_RULES_FILE, RulesFile, carries_project_rules, project_rules_section, touched_by};

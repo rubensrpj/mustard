@@ -150,6 +150,7 @@ mod stops;
 mod summary_wave;
 mod test_warnings;
 mod usage;
+mod environment;
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
 // e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
@@ -175,6 +176,7 @@ use crate::shared::spec_state::session_from_env;
 pub(crate) use answer::{RoundRefusal, agents_refreshed, read_command, wave_dispatch};
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::Kept;
+pub(crate) use usage::snapshot as usage_snapshot;
 pub(crate) use queue::{backlog_left, open_review, open_sends, send_revision, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix};
 pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};

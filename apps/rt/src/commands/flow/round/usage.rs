@@ -64,13 +64,13 @@ impl Usage {
 /// `USAGE` chegou depois de assumidas —, trocando o de cada uma: o do agente
 /// da onda, no arquivo dele, e o da conversa principal, o mesmo para todas,
 /// no ramo da spec desde o começo dela. Sem a pasta da sessão, nada é medido.
-pub(super) fn measure_usage<'u>(log: &SpecLog, caller: Caller<'_>, waves: impl IntoIterator<Item = (u64, &'u mut Usage)>) {
+pub(super) fn measure_usage<'u>(root: &Path, log: &SpecLog, caller: Caller<'_>, waves: impl IntoIterator<Item = (u64, &'u mut Usage)>) {
     let Some(session) = caller.config_dir.zip(caller.session).and_then(|(dir, id)| transcript::session_dir(dir, id)) else {
         return;
     };
     let main = main_usage(log, &session);
     for (wave, usage) in waves {
-        let own = wave_usage(log, &session, wave);
+        let own = wave_usage(root, log, &session, wave);
         *usage = Usage {
             model_used: own.as_ref().and_then(|own| own.model.clone()),
             steps: own.as_ref().map(|own| own.steps),
@@ -93,6 +93,17 @@ pub(super) fn usage_missing(wave: u64, lang: Locale) -> Value {
     })
 }
 
+/// Read-only live measurement. The panel caches this projection separately
+/// from the event log; observing a running agent never changes its dispatch.
+pub(crate) fn snapshot(root: &Path, log: &SpecLog, session: &str, config: &Path) -> Value {
+    let mut waves: Vec<_> = log.planned_waves().into_iter().map(|wave|(wave,Usage::default())).collect();
+    measure_usage(root, log, Caller {session:Some(session),config_dir:Some(config)}, waves.iter_mut().map(|(n,u)|(*n,u)));
+    json!({"measured_at":chrono::Utc::now().to_rfc3339(),"waves":waves.into_iter().filter_map(|(wave,usage)| {
+        let send = log.visible().into_iter().rev().find(|event|event.event_type=="send" && event.wave()==Some(wave))?;
+        Some(json!({"wave":wave,"dispatch":log.dispatch_position(send.id),"usage":usage.fields()}))
+    }).collect::<Vec<_>>()})
+}
+
 /// O consumo do agente que recebeu o pedido da onda `wave`, no arquivo dele:
 /// o agente cujo pedido abre com a primeira linha do texto do envio que
 /// despachou a onda e que começou depois dele, procurado na pasta da sessão
@@ -102,13 +113,16 @@ pub(super) fn usage_missing(wave: u64, lang: Locale) -> Value {
 /// ([`transcript::agent_pieces`]); a linha repetida entre dois pedaços conta
 /// uma vez, como toda resposta e todo uso de ferramenta. `None` quando o
 /// arquivo não é achado ou nenhum pedaço se lê.
-fn wave_usage(log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Usage> {
+fn wave_usage(root: &Path, log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Usage> {
     let sends: Vec<_> = log.events.iter().filter(|e| e.event_type == "send" && e.wave() == Some(wave) && log.dispatch_position(e.id) == e.id).collect();
     let mut pieces = std::collections::BTreeSet::new();
     for (at, sent) in sends.iter().enumerate() {
         let title = sent.str_field("text")?.lines().next()?;
+        let spec = mustard_core::domain::wave_prompt::wave_of_title(title, Locale::PtBr)
+            .or_else(|| mustard_core::domain::wave_prompt::wave_of_title(title, Locale::EnUs))?.0;
+        let read = mustard_core::domain::wave_prompt::ReadDispatch { spec, wave, root: mustard_core::io::wave_prompt::shown(root) };
         let until = sends.get(at + 1).map(|s| s.at());
-        let files = transcript::wave_agent_files(session, title, sent.at(), until);
+        let files = transcript::wave_agent_files(session, title, sent.at(), until, &read);
         if files.is_empty() {
             return None;
         }
@@ -117,7 +131,8 @@ fn wave_usage(log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Us
         }
     }
     let texts: Vec<String> = pieces.into_iter().map(std::fs::read_to_string).collect::<Result<_, _>>().ok()?;
-    (!texts.is_empty()).then(|| transcript::usage_of(texts.iter().flat_map(|t| t.lines())))
+    let usage=transcript::usage_of(texts.iter().flat_map(|t| t.lines()));
+    (usage.model.is_some() || usage.tokens>0).then_some(usage)
 }
 
 /// O consumo da conversa principal: as linhas dela no ramo da spec, desde o
@@ -227,7 +242,9 @@ pub(super) mod tests {
         let platform = tempdir().unwrap();
         let config = platform.path();
         session(config, "-tmp-obra", "antiga", &instant(sent, -1_000));
-        agent(config, "-tmp-obra", "antiga/subagents/agent-onda.jsonl", &instant(sent, 200), &prompt, "r1", [2, 100, 1_000, 40]);
+        let read = format!("Idiomas deste projeto.\n\nLeia o seu pedido com: mustard-rt run read request-1 --root {} --spec x\nConclua e entregue.",mustard_core::io::wave_prompt::shown(root));
+        agent(config, "-tmp-obra", "antiga/subagents/agent-onda.jsonl", &instant(sent, 200), &read, "r1", [2, 100, 1_000, 40]);
+        agent(config, "-tmp-obra", "antiga/subagents/agent-outro-root.jsonl", &instant(sent, 100), &read.replace(&mustard_core::io::wave_prompt::shown(root),"/another/project"), "foreign", [90_000,0,0,0]);
         agent(config, "-tmp-obra", "antiga/subagents/agent-antes.jsonl", &instant(sent, -1), &prompt, "a1", [9_000, 0, 0, 0]);
         agent(config, "-tmp-obra", "antiga/subagents/agent-depois.jsonl", &instant(sent, 201), &prompt, "d1", [7_000, 0, 0, 0]);
         session(config, "-tmp-obra", "nova", &instant(sent, 50));

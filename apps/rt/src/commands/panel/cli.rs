@@ -76,6 +76,7 @@ pub fn dispatch(cmd: PanelCmd) {
                 let mut refresh=crate::commands::spec::spend::spend_at(
                     &crate::commands::spec::spend::SpendOpts{root:root.clone(),publish:false,republish:false,url:None},&machine);
                 refresh["project"]=super::consumption::refresh_history(&root,&machine);
+                refresh["waves"]=super::wave_usage::refresh(&root,spec.as_deref(),session.as_deref(),machine.config.as_deref());
                 refresh
             });
             let mut result=super::snapshot_session(&root,spec.as_deref(),session.as_deref());

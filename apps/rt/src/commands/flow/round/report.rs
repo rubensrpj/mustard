@@ -242,7 +242,7 @@ pub(crate) fn take_report_with_mine(
         return Ok(taken);
     }
     let measured = report.waves.iter_mut().map(|w| (w.wave, &mut w.usage));
-    measure_usage(&fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
+    measure_usage(root, &fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
     let mut taken = take_returns(start, root, spec, report, &fresh, lang, mine, held_lock, &cut)?;
     waiting.append(&mut taken.waiting);
     taken.warnings.splice(0..0, waiting.iter().map(|one| one.warning(lang)).chain(unmeasured));
