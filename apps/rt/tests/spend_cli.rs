@@ -194,12 +194,10 @@ fn a_closed_day_is_counted_once_today_stays_partial_and_republish_prepares_every
     assert!(all.get("copy").is_none() && all.get("order").is_none());
 }
 
-/// A barra de status mostra o consumo contra a média lido do arquivo dos dias
-/// fechados: sete dias de 120 milhões de tokens e um último de 90 milhões dão
-/// menos 25%, com o link do painel. Sem o arquivo, a barra não traz o
-/// indicador, mesmo com conversas na máquina: ela só lê o arquivo.
+/// A barra mantém uma linha de estado; a comparação com sete dias fechados
+/// fica no painel local. Ler ambos preserva o histórico sem publicar página.
 #[test]
-fn the_status_bar_shows_the_consumption_against_the_average_with_the_panel_link() {
+fn historical_consumption_stays_in_the_panel_without_expanding_the_status_bar() {
     let scene = Scene::new();
     let panel = "https://claude.ai/code/artifact/painel-do-consumo";
     let payload = json!({"workspace": {"current_dir": scene.project.to_string_lossy()}, "model": {"display_name": "Opus 5"}})
@@ -218,10 +216,13 @@ fn the_status_bar_shows_the_consumption_against_the_average_with_the_panel_link(
         .unwrap();
 
     let shown = bar(&scene);
-    assert!(
-        shown.contains(&format!("\u{1b}]8;;{panel}\u{1b}\\")) && shown.contains("consumo \u{2212}25% vs média de 7 dias"),
-        "the label links the panel: {shown:?}"
-    );
+    assert!(shown.contains("loja") && shown.contains("Opus 5") && shown.lines().count()==1, "compact current state: {shown:?}");
+    assert!(!shown.contains(panel) && !shown.contains("consumo") && !shown.contains("/mustard-panel"), "history belongs in Mods: {shown:?}");
+    let before=std::fs::read(scene.spend.join("ledger.json")).unwrap();
+    let snapshot:Value=serde_json::from_str(&scene.rt(&["run","panel"],"")).unwrap();
+    assert_eq!(snapshot["consumption"]["trend"]["change_percent"],-25);
+    assert_eq!(std::fs::read(scene.spend.join("ledger.json")).unwrap(),before,"observing keeps the recorded history");
+    assert!(!scene.spend.join("page.html").exists(),"observing never prepares an external page");
     std::fs::remove_file(scene.spend.join("ledger.json")).unwrap();
     assert!(!bar(&scene).contains("consumo"), "the file is gone, so is the indicator");
 }
