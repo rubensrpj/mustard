@@ -1,13 +1,10 @@
 import searchSchema from './search-schema.js';
 import {completeDelivery} from './delivery-check.js';
-import {definitionNames,definitionText,waveText,contentPage} from './panel-content.js';
-import design from '../ui/theme.js';
+import {renderPanel,initialPanelView} from './panel-view.js';
 // Local observation only. Runtime events remain the source of truth; the
 // poller coalesces overlapping reads and never calls a model or search tool.
 let timer, eventTimer, busy = false, opened = false, data, problem, selected, usage, revision = 0;
-let tab = 'Projeto';
-let definitionGroup='context', definitionPage=0, selectedWave, waveView='Plano', contentOffset=0;
-let selectedDefinition, technicalOffset=0, showTechnical=false;
+let view=initialPanelView();
 let publishing = false, publicationMessage;
 let runtimeBinary;
 let consumptionMeasuredAt;
@@ -69,7 +66,7 @@ async function refresh($) {
       const measure = consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000;
       const result = await $.process.run(
         [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : []), ...(session ? ['--session', session] : []),
-          ...(tab==='Ondas' && selectedWave!==undefined ? ['--wave',String(selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
+          ...(view.tab==='Ondas' && view.selectedWave!==undefined ? ['--wave',String(view.selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
         { cwd, timeoutMs: measure ? 30000 : 10000 });
       if (result.exitCode !== 0) throw new Error(result.stderr || 'Consulta local falhou');
       const next = JSON.parse(result.stdout);
@@ -106,7 +103,7 @@ async function openPanel($, name) {
     revision++;
     if (name) selected = name;
     opened = true;
-    await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true });
+    await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
     timer?.cancel();
     timer = $.clock.every(2000, () => { void refresh($); });
     await refresh($);
@@ -166,7 +163,7 @@ export function register(on) {
     resetEvidence();
     await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec]', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
-    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. choose=true permits optional Jev only for unresolved responsibility alternatives; exact identities stay native. The adapter supplies the contract version.',
+    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
       inputSchema:searchSchema});
     return next(e);
   });
@@ -185,7 +182,12 @@ export function register(on) {
     // permissions, classic hooks and the shell sandbox still apply. A process
     // launched directly by a mod would bypass that boundary.
     const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
-    const envelope={schema_version:1,request};
+    // The binary decides whether a source-backed ambiguity actually exists.
+    // Allow that decision for investigations without requiring the conductor
+    // to remember a flag. Literal lookup, exact reads and explicit opt-outs
+    // keep the native path. Project-level Jev authorization still applies.
+    const choose=request.choose ?? (request.purpose!=='locate' && ['rg','grep','Grep','Glob'].includes(request.tool));
+    const envelope={schema_version:1,request:{...request,choose}};
     const agent=e.agentId || 'main';
     const epoch=evidenceEpoch;
     try {
@@ -251,243 +253,32 @@ export function register(on) {
     resetEvidence();
     stopPanel();
     data = undefined;
-    selected=selectedWave=selectedDefinition=usage=problem=undefined;
-    tab='Projeto';definitionGroup='context';definitionPage=contentOffset=technicalOffset=0;showTechnical=false;
+    selected=usage=problem=undefined;
+    view=initialPanelView();
     consumptionMeasuredAt = undefined;
     publicationMessage = undefined;
     return next(e);
   });
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== id) return next(e);
-    const { Box, Text, Button } = await $.ui.resolve(e);
-    const theme=design.dark, accent=theme.accentText;
-    const clean = value => String(value ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
-    const text = (value, props = {}) => {
-      const {dimColor,...styles}=props;
-      return Text({children:clean(value),wrap:'wrap',color:dimColor?theme.muted:theme.ink,...styles});
-    };
-    const button = (key, label, action, props = {}) => {
-      const {disabled,...styles}=props;
-      return disabled ? text(label,{dimColor:true}) : Button({key,label:clean(label),onPress:action,...styles});
-    };
-    const redraw = () => $.ui.invalidate('ui.render');
-    const fmt = n => n === null || n === undefined ? t('desconhecido','unknown') : Number(n).toLocaleString(data?.project?.language || 'pt-BR');
-    const money = n => n == null ? t('desconhecido','unknown') : '$' + (n / 1000000).toFixed(4);
-    const state = name => {
-      const names = {
-        survey:['Levantamento','Survey'], plan:['Planejamento','Planning'], planned:['Planejada','Planned'],
-        approved:['Aprovada','Approved'], running:['Em execução','Running'], received:['Retorno recebido','Return received'],
-        integrated:['Integrada','Integrated'], committed:['Comitada','Committed'], 'repair-required':['Conserto necessário','Repair required'],
-        qa:['Validação','Validation'], reviewing:['Revisão','Review'], review:['Revisão','Review'],
-        pr:['Pull request','Pull request'], closed:['Fechada','Closed'], delivered:['Entregue','Delivered'],
-        discarded:['Descartada','Discarded'], discarded_auto:['Descartada','Discarded'],
-      };
-      return names[name] ? t(...names[name]) : clean(name || t('desconhecido','unknown'));
-    };
-    const section = (title, children) => Box({ flexDirection:'column', paddingX:1,rowGap:1,
-      children:[text(title,{bold:true}), ...children] });
-    // Markdown uses the host's reply palette and exposes no color override.
-    // Native Text keeps content legible in our fixed dark panel even when
-    // the host uses a light theme. Raw agent inputs/returns stay exact.
-    const content = (value, raw=false) => raw ? text(value) : Box({flexDirection:'column',rowGap:1,
-      children:clean(value).split('\n\n').map(paragraph=>{
-        const label=paragraph.match(/^\*\*([^\n]+)\*\*\n([\s\S]*)$/);
-        return label ? Box({flexDirection:'column',children:[text(label[1],{bold:true}),text(label[2])]}) : text(paragraph);
-      })});
-    const pageControls = (prefix,page,change) => page.pages>1 ? [Box({flexDirection:'row',columnGap:1,children:[
-      button(`${prefix}-prev`,t('Anterior','Previous'),()=>{change(page.page-1);redraw();},{disabled:page.page===0}),
-      text(`${page.page+1}/${page.pages}`),
-      button(`${prefix}-next`,t('Próxima parte','Next part'),()=>{change(page.page+1);redraw();},{disabled:page.page+1>=page.pages}),
-    ]})] : [];
-    const card = (label, value, detail) => Box({ flexDirection:'column', flexGrow:1, flexShrink:1, minWidth:16,
-      backgroundColor:theme.surface, paddingX:2,paddingY:1, children:[text(label,{dimColor:true}),
-      text(value,{bold:true}), ...(detail ? [text(detail,{dimColor:true})] : [])] });
-    const progress = (done, total) => {
-      if (!total) return t('Nenhuma onda planejada','No planned waves');
-      const filled = Math.round(Math.min(1,done/total)*12);
-      return `${'━'.repeat(filled)}${'─'.repeat(12-filled)} ${done}/${total}`;
-    };
-    const spec = data?.specs.find(s => s.name === selected);
-    const tabs = ['Projeto','Specs','Definições','Ondas','Execução','Consumo'];
-    const rows = [Box({flexDirection:'column',children:[
-      text('MUSTARD',{bold:true,color:accent}),
-      text(t('Seu projeto, do combinado à entrega','Your project, from agreement to delivery'),{dimColor:true}),
-    ]}), Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,backgroundColor:theme.sidebar,children:tabs.map((name,i) =>
-      Box({key:`nav-${name}`,paddingX:1,backgroundColor:tab===name?theme.accentSoft:theme.sidebar,children:[
-        button(`tab-${name}`, `${tab===name?'● ':''}${t(name,({Projeto:'Project',Specs:'Specs',Definições:'Definitions',Ondas:'Waves',Execução:'Execution',Consumo:'Usage'})[name])}`,
-          () => {tab=name;contentOffset=0;redraw();if(name==='Ondas' && selectedWave!==undefined)void refresh($);},{plain:true,dimColor:tab!==name,hotkey:String(i+1)})]}) )})];
-    if (problem) rows.push(section(t('Consulta indisponível','Query unavailable'),[
-      text(problem),text(`${t('Último estado','Last state')}: ${data?.at || t('nenhum','none')}.`,{dimColor:true})]));
-    if (!data) return Box({flexDirection:'column',rowGap:1,children:[...rows,text(t('Aguardando estado local…','Waiting for local state…'))]});
-    rows.push(text(`${data.project.name || 'Mustard'} · ${data.project.branch || t('sem branch','no branch')}`,{bold:true}));
-    const updated=new Date(data.at);
-    rows.push(text(`Mustard ${data.project.version || ''} · ${t('Atualizado','Updated')} ${Number.isNaN(updated.valueOf())?data.at:updated.toLocaleString(data.project.language || 'pt-BR')}`,{dimColor:true}));
-    if(spec && !['Projeto','Specs'].includes(tab)) rows.push(Box({flexDirection:'column',children:[
-      text(`${spec.name} · ${state(spec.phase)}`,{bold:true,color:accent}),text(spec.goal || ''),
-      button('change-spec',t('Trocar especificação','Change specification'),()=>{tab='Specs';redraw();},{plain:true}),
-    ]}));
-    if (tab === 'Projeto') {
-      if (data.statusline) rows.push(section(t('Statusline da sessão','Session statusline'),[
-        text(`${t('Modelo','Model')}: ${data.statusline.model || fmt(null)} · ${t('duração','duration')}: ${data.statusline.duration_ms == null ? fmt(null) : Math.round(data.statusline.duration_ms/60000)+' min'}`),
-        text(`${t('RTK poupou','RTK saved')}: ${fmt(data.statusline.rtk?.percent)}% · ${fmt(data.statusline.rtk?.saved_tokens)} tokens`),
-        text(`${t('Última observação','Last observation')}: ${data.statusline.measured_at}`,{dimColor:true}),
-      ]));
-      const waves = data.specs.flatMap(s => s.waves);
-      const done = waves.filter(w => ['integrated','committed'].includes(w.status)).length;
-      rows.push(Box({flexDirection:'row',flexWrap:'wrap',children:[
-        card('Specs',fmt(data.specs.length)),card(t('Ondas concluídas','Completed waves'),progress(done,waves.length)),
-      ]}));
-      if(spec) rows.push(section(t('Spec deste checkout','Current checkout spec'),[
-        text(`${spec.name} · ${state(spec.phase)}`,{bold:true}),text(spec.goal || ''),
-        button('open-current-definitions',t('Ver o que foi definido','Read specification'),()=>{tab='Definições';redraw();},{plain:true}),
-        button('open-current-waves',t('Ver ondas e pedidos enviados','Read waves and sent inputs'),()=>{tab='Ondas';redraw();if(selectedWave!==undefined)void refresh($);},{plain:true}),
-      ]));
-      rows.push(section(t('Especificações do projeto','Project specifications'), data.specs.length
-        ? data.specs.map(s => button(`project-${s.name}`,`${s.name} · ${state(s.phase)}`,() => {
-          selected=s.name;selectedWave=selectedDefinition=undefined;definitionPage=contentOffset=0;revision++;tab='Definições';redraw();void refresh($);
-        },{plain:true})) : [text(t('Nenhuma spec registrada','No recorded specs'),{dimColor:true})]));
-    }
-    if (tab === 'Specs') {
-      rows.push(section(t('Selecionar spec','Select a spec'),data.specs.length ? data.specs.map(s =>
-        button(`spec-${s.name}`,`${s.name===selected?'●':'○'} ${s.name} · ${state(s.phase)}`,() => {
-          selected=s.name;selectedWave=selectedDefinition=undefined;definitionPage=contentOffset=0;revision++;tab='Definições';redraw();void refresh($);
-        },{plain:true})) : [text(t('Nenhuma spec registrada','No recorded specs'),{dimColor:true})]));
-    }
-    if (tab === 'Execução') {
-      if (spec) {
-        rows.push(section(t('Validações da spec','Spec validation'),[
-          text(`${t('Validação final','Final validation')}: ${spec.final_validation_valid == null ? t('desconhecida','unknown') : spec.final_validation_valid ? t('válida','valid') : t('pendente','pending')}`),
-          text(`${t('Revisão','Review')}: ${spec.review_approved ? t('aprovada','approved') : t('pendente','pending')}`)]));
-        if (spec.scheduling) {
-          const queue=spec.scheduling;
-          const reasons={ready:['Pronta para agrupamento','Ready for grouping'],dependencies:['Aguarda dependências','Waiting for dependencies'],
-            'file-reservation':['Arquivo reservado','File reserved'],capacity:['Aguarda vaga','Waiting for capacity'],
-            'missing-criteria':['Falta vínculo com critério','Missing acceptance criterion'],
-            'cleanup-last':['Limpeza aguarda implementação','Cleanup waits for implementation'],
-            'spec-not-running':['Spec fora de execução','Spec is not running']};
-          rows.push(section(t('Fila de trabalho','Work queue'),[
-            text(`${fmt(queue.backlog)} ${t('tarefas no backlog','backlog tasks')} · ${fmt(queue.ready)} ${t('prontas','ready')}`),
-            text(`${t('Vagas de ondas','Wave slots')}: ${fmt(queue.occupied_wave_slots)}/${fmt(queue.capacity)}`,{dimColor:true}),
-            ...queue.tasks.map(item=>text(`${item.task} · ${item.title || ''} · ${reasons[item.reason] ? t(...reasons[item.reason]) : clean(item.reason)}${item.dependencies?.length ? ': '+item.dependencies.join(', ') : ''}${item.holding_waves?.length ? ': '+item.holding_waves.join(', ') : ''}`)),
-            ...(queue.omitted_tasks ? [text(`${fmt(queue.omitted_tasks)} ${t('outras tarefas','other tasks')}`,{dimColor:true})] : []),
-            text(t('Relações do código são conferidas ao despachar.','Code relationships are verified at dispatch.'),{dimColor:true}),
-          ]));
-        }
-        const done=spec.waves.filter(w => ['integrated','committed'].includes(w.status)).length;
-        rows.push(section(t('Ondas','Waves'),[text(progress(done,spec.waves.length),{color:accent}),
-          ...spec.waves.map(w => Box({flexDirection:'column',marginBottom:1,children:[
-            text(`${t('Onda','Wave')} ${w.wave} · ${state(w.status)}`,{bold:true}),
-            text(`${fmt(w.tokens)} tokens · ${w.model || w.configured_model || t('modelo desconhecido','unknown model')}`,{dimColor:true}),
-            ...(w.commit ? [text(w.commit,{dimColor:true})] : [])]}))]));
-        if (spec.stages.length) rows.push(section(t('Validação por etapa','Stage validation'),spec.stages.map(s =>
-          text(`${s.phase} · ${s.stage}: ${s.result} · ${fmt(s.ms)} ms`))));
-        if (spec.undeclared_commands.length) rows.push(text(`${t('Comandos não declarados','Undeclared commands')}: ${spec.undeclared_commands.join(', ')}`,{dimColor:true}));
-      }
-    }
-    if (tab==='Definições' && spec) {
-      const definitions=spec.definitions || {};
-      const groups=Object.keys(definitionNames).filter(key=>definitions[key]?.length);
-      if(!definitions[definitionGroup]?.length)definitionGroup=groups[0] || 'context';
-      rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:groups.map(key=>
-        button(`definition-${key}`,`${t(...definitionNames[key])} (${definitions[key].length})`,()=>{
-          definitionGroup=key;definitionPage=contentOffset=technicalOffset=0;selectedDefinition=undefined;showTechnical=false;redraw();
-        },{plain:true,dimColor:definitionGroup!==key}))}));
-      const items=definitions[definitionGroup] || [], pages=Math.max(1,Math.ceil(items.length/8));
-      definitionPage=Math.max(0,Math.min(definitionPage,pages-1));
-      if(!items.length)rows.push(text(t('Nenhuma definição registrada nesta spec.','No definitions recorded in this spec.')));
-      const visibleItems=items.slice(definitionPage*8,definitionPage*8+8);
-      if(!visibleItems.some(item=>(item.code || item.id)===selectedDefinition))selectedDefinition=visibleItems[0]?.code || visibleItems[0]?.id;
-      rows.push(Box({flexDirection:'column',children:visibleItems.map(item=>button(`item-${item.code || item.id}`,
-        `${(item.code || item.id)===selectedDefinition?'●':'○'} ${item.title || item.gap || item.code || item.id}`,
-        ()=>{selectedDefinition=item.code || item.id;contentOffset=technicalOffset=0;showTechnical=false;redraw();},{plain:true}))}));
-      const item=visibleItems.find(item=>(item.code || item.id)===selectedDefinition);
-      if(item) {
-        const page=contentPage(definitionText(item,data.project.language==='en-US'),contentOffset);
-        const technical=contentPage(item.agent,technicalOffset);
-        rows.push(section(`${item.title || t(...definitionNames[definitionGroup])} · ${item.code || item.id}`,[
-          content(page.text),...pageControls('definition-body',page,value=>{contentOffset=value;}),
-          ...(item.agent ? [button(`technical-${item.code}`,t(showTechnical?'Ocultar detalhes técnicos':'Ver detalhes técnicos',showTechnical?'Hide technical details':'Show technical details'),()=>{
-            showTechnical=!showTechnical;technicalOffset=0;redraw();
-          },{plain:true}),...(showTechnical?[content(technical.text,true),...pageControls('definition-technical',technical,value=>{technicalOffset=value;})]:[])] : []),
-        ]));
-      }
-      if(pages>1)rows.push(Box({flexDirection:'row',columnGap:1,children:[
-        button('definitions-prev',t('Itens anteriores','Previous items'),()=>{definitionPage--;contentOffset=0;showTechnical=false;redraw();},{disabled:definitionPage===0}),
-        text(`${definitionPage+1}/${pages}`),button('definitions-next',t('Próximos itens','Next items'),()=>{definitionPage++;contentOffset=0;showTechnical=false;redraw();},{disabled:definitionPage+1>=pages}),
-      ]}));
-    }
-    if(tab==='Ondas' && spec) {
-      if(!spec.waves.length) rows.push(text(t('As ondas ainda não foram agrupadas. Consulte as tarefas e os critérios em Definições.','Waves have not been grouped yet. See tasks and acceptance criteria in Definitions.')));
-      rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:spec.waves.map(w=>
-        button(`wave-${w.wave}`,`${t('Onda','Wave')} ${w.wave} · ${state(w.status)}`,()=>{
-          selectedWave=w.wave;waveView='Plano';contentOffset=0;revision++;redraw();void refresh($);
-        },{plain:true,dimColor:selectedWave!==w.wave}))}));
-      if(selectedWave!==undefined) {
-        rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:['Plano','Pedido','Entrega','Testes'].map(view=>
-          button(`wave-view-${view}`,t(view,({Plano:'Plan',Pedido:'Sent input',Entrega:'Return',Testes:'Tests'})[view]),()=>{
-            waveView=view;contentOffset=0;redraw();
-          },{plain:true,dimColor:waveView!==view}))}));
-        const detail=data.wave_detail?.spec===selected && data.wave_detail.wave===selectedWave?data.wave_detail:undefined;
-        if(!detail)rows.push(text(t('Carregando conteúdo da onda…','Loading wave content…')));
-        else {
-          const page=contentPage(waveText(detail,waveView,data.project.language==='en-US'),contentOffset);
-          if(waveView==='Entrega' && detail.delivery && !detail.delivery_integrated)rows.push(text(t('Retorno recebido · aguardando validação do orquestrador','Return received · awaiting orchestrator validation'),{color:accent}));
-          rows.push(content(page.text,waveView!=='Plano'));
-          if(page.pages>1)rows.push(Box({flexDirection:'row',columnGap:1,children:[
-            button('content-prev',t('Anterior','Previous'),()=>{contentOffset--;redraw();},{disabled:page.page===0}),
-            text(`${page.page+1}/${page.pages}`),button('content-next',t('Próxima parte','Next part'),()=>{contentOffset++;redraw();},{disabled:page.page+1>=page.pages}),
-          ]}));
-        }
-      }
-    }
-    if (tab === 'Consumo') {
-      rows.push(section(t('Consumo geral','Overall usage'),[
-        text(`${t('Projeto','Project')}: ${data.consumption?.available ? fmt(data.consumption.project_tokens) : fmt(null)} tokens · ${t('máquina','machine')}: ${data.consumption?.available ? fmt(data.consumption.machine_tokens) : fmt(null)} tokens`),
-        text(`${t('Última medição','Last measurement')}: ${data.consumption?.measured_at || fmt(null)} · ${t('hoje é parcial','today is partial')}`,{dimColor:true}),
-        text(`${t('Claude estimado nas sessões observadas','Estimated Claude cost in observed sessions')}: ${money(data.claude_cost?.known_micro_usd)}`),
-        text(`${t('Custo sem atribuição segura a spec','Cost without safe spec attribution')}: ${money(data.claude_cost?.unattributed_micro_usd)}`,{dimColor:true}),
-        text(t('Estimativa equivalente de API; não é cobrança da assinatura. Histórico sem medição de custo permanece desconhecido.','API-equivalent estimate, not subscription billing. Historical cost without a measurement remains unknown.'),{dimColor:true}),
-      ]));
-      rows.push(Box({flexDirection:'row',flexWrap:'wrap',children:[
-        card(t('Chamadas Jev','Jev requests'),fmt(data.jev.physical_requests)),
-        card(t('Custo Jev estimado','Estimated Jev cost'),money(data.jev.cost_micro_usd)),
-      ]}));
-      rows.push(text(`${fmt(data.jev.known_input_tokens)} ${t('tokens conhecidos','known tokens')} · ${fmt(data.jev.requests_with_unknown_usage)} ${t('chamadas com uso desconhecido','requests with unknown usage')}`,{dimColor:true}));
-      if (spec) rows.push(section(spec.name,[
-        text(`${t('Ondas','Waves')}: ${fmt(spec.usage.wave_tokens)} tokens · ${t('condutor','conductor')}: ${fmt(spec.usage.conductor_tokens)} tokens`),
-        text(`${t('Jev atribuído à spec','Jev attributed to spec')}: ${fmt(spec.jev?.known_physical_requests)} ${t('tentativas físicas','physical attempts')} · ${money(spec.jev?.cost_micro_usd)}`),
-        text(`${t('Claude estimado atribuído à spec','Estimated Claude cost attributed to spec')}: ${money(spec.usage.claude_cost?.known_micro_usd)}`),
-        ...(spec.usage.known_wave_breakdown ? [text(`${t('Entrada','Input')}: ${fmt(spec.usage.known_wave_breakdown.input_tokens)} · ${t('saída','output')}: ${fmt(spec.usage.known_wave_breakdown.output_tokens)} · ${t('cache criado/lido','cache written/read')}: ${fmt(spec.usage.known_wave_breakdown.cache_creation_input_tokens)}/${fmt(spec.usage.known_wave_breakdown.cache_read_input_tokens)}`),
-          text(`${fmt(spec.usage.waves_with_unknown_breakdown)} ${t('ondas sem detalhamento','waves without usage details')} · ${fmt(spec.usage.known_wave_breakdown.responses_with_partial_usage)} ${t('respostas com uso parcial','responses with partial usage')}`,{dimColor:true})] : []),
-      ]));
-      if(spec?.operations)rows.push(section(t('Uso do Mustard nesta spec','Mustard usage in this spec'),[
-        text(`${fmt(spec.operations.calls)} ${t('chamadas','calls')} · ${fmt(spec.operations.refusals)} ${t('recusas','refusals')}`),
-        text(`${t('Entrada/saída estimadas das chamadas medidas','Estimated input/output in measured calls')}: ${fmt(spec.operations.estimated_input_tokens)}/${fmt(spec.operations.estimated_output_tokens)} tokens`),
-        text(`${fmt(spec.operations.calls_without_payload_measurement)} ${t('chamadas sem medida de conteúdo','calls without payload measurements')}`,{dimColor:true}),
-        text(t('Estimativa pelo tamanho do texto; não mede cobrança nem economia do modelo.','Text-size estimate; does not measure model billing or savings.'),{dimColor:true}),
-        ...(spec.operations.search?.calls ? [text(`${t('Buscas','Searches')}: ${fmt(spec.operations.search.calls)} · ${fmt(spec.operations.search.enriched)} ${t('cruzadas com o índice','crossed with the index')} · ${fmt(spec.operations.search.task_evidence)} ${t('com evidência para a tarefa','with task evidence')} · ${fmt(spec.operations.search.fallback)} ${t('com retorno nativo de reserva','with native fallback')}`),
-          text(t('Encontrar referências não comprova que elas resolveram a tarefa. Economia real exige comparação com uma sessão equivalente.','Finding references does not prove they solved the task. Real savings require an equivalent session comparison.'),{dimColor:true})] : []),
-        ...Object.entries(spec.operations.by_command || {}).map(([command,value])=>text(`${command}: ${fmt(value.calls)} · ${fmt(value.refusals)} ${t('recusas','refusals')}`)),
-      ]));
-      const session = [];
-      if (usage?.context) session.push(text(`${t('Contexto da sessão','Session context')}: ${fmt(usage.context.percent ?? usage.context.percentUsed)}% · ${fmt(usage.context.tokens)}/${fmt(usage.context.window)} tokens`));
-      if (usage?.cost?.usd != null) session.push(text(`${t('Custo estimado informado pelo Claude','Estimated cost reported by Claude')}: $${usage.cost.usd}`));
-      if (data.claude_cost?.model) session.push(text(`${t('Modelo','Model')}: ${data.claude_cost.model}`));
-      for (const limit of usage?.rateLimits || []) session.push(text(`${limit.kind || limit.label || limit.name || t('Janela','Window')}: ${fmt(limit.percentUsed)}% · reset ${limit.resetsAt || t('desconhecido','unknown')}`));
-      if (session.length) rows.push(section(t('Sessão atual','Current session'),session));
-    }
-    if (data.project.publication_url) rows.push(text(`${t('Projeto publicado','Published project')}: ${data.project.publication_url}`));
-    if (spec?.publication?.url) rows.push(text(`${t('Última publicação','Last publication')}: ${spec.publication.url}`));
-    if (publicationMessage && (publicationMessage.name === selected || ['project','report'].includes(publicationMessage.name))) rows.push(text(publicationMessage.text));
-    rows.push(text(t('Atualização local a cada 2 s · publicação somente a pedido','Local update every 2 s · publish on request'),{dimColor:true}));
-    rows.push(Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children:[
-      button('refresh',t('Atualizar','Refresh'),() => {void refresh($);},{hotkey:'r'}),
-      button('publish',t('Publicar spec','Publish spec'),async () => {
-        if (selected) await publishPage($,'spec '+selected);
-      },{hotkey:'p',disabled:publishing || !selected}),
-      button('publish-project',t('Publicar projeto','Publish project'),async ()=>{await publishPage($,'project');},{disabled:publishing}),
-      button('close',t('Fechar','Close'),async () => {stopPanel();await $.ui.close({id});},{hotkey:'q'}),
-    ]}));
-    return Box({flexDirection:'column',rowGap:1,padding:1,backgroundColor:theme.paper,children:rows});
+    const redraw=()=>$.ui.invalidate('ui.render');
+    return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
+      data,usage,problem,selected,view,publicationMessage,publishing,actions:{
+        change:(patch,query=false)=>{
+          Object.assign(view,patch);
+          if(query)revision++;
+          redraw();
+          if(query)void refresh($);
+        },
+        selectSpec:name=>{
+          selected=name;const tab=view.tab;view={...initialPanelView(),tab};
+          if(tab==='Ondas'){const waves=data?.specs?.find(spec=>spec.name===name)?.waves || [];
+            view.selectedWave=(waves.find(wave=>['running','repair-required','received'].includes(wave.status)) || waves[0])?.wave;}
+          revision++;redraw();void refresh($);
+        },
+        refresh:()=>{void refresh($);},
+        publish:args=>publishPage($,args),
+        close:async()=>{stopPanel();await $.ui.close({id});},
+      }});
   });
 }

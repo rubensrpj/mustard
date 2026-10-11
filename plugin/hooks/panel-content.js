@@ -29,9 +29,14 @@ export function waveText(detail, view, english=false) {
   if (view==='Pedido') return detail.request ?? (english ? 'No request has been sent to an agent for this wave yet.' : 'Esta onda ainda não tem um pedido enviado ao agente.');
   if (view==='Entrega') return detail.delivery?.text ?? (english ? 'No return received yet.' : 'Nenhum retorno recebido ainda.');
   if (view==='Testes') {
-    const entries=[...(detail.steps || []),...(detail.tests || [])];
-    return entries.length ? entries.map(item=>[item.item || item.criterion || '', item.text || JSON.stringify(item,null,2)].filter(Boolean).join('\n')).join('\n\n')
-      : english ? 'No task validation recorded yet.' : 'Nenhuma validação de tarefa registrada ainda.';
+    const sections=[];
+    if(detail.steps?.length)sections.push(`**${english?'Agent records · not independent execution evidence':'Registros do agente · não comprovam execução independente'}**\n`+
+      detail.steps.map(item=>[item.item || '',item.text || JSON.stringify(item,null,2)].filter(Boolean).join('\n')).join('\n\n'));
+    if(detail.tests?.length)sections.push(`**${english?'Criterion proofs executed by Mustard':'Provas de critério executadas pelo Mustard'}**\n`+
+      detail.tests.map(item=>[item.criterion || '',item.result==='pass'?(english?'Passed':'Aprovada'):item.result==='fail'?(english?'Failed':'Falhou'):item.result || '',
+        item.command || '',item.output || ''].filter(Boolean).join('\n')).join('\n\n'));
+    else sections.push(english?'No criterion proof executed by Mustard for this wave yet.':'Nenhuma prova de critério executada pelo Mustard nesta onda.');
+    return sections.join('\n\n');
   }
   const plan=detail.plan;
   if (!plan) return english ? 'No plan recorded.' : 'Nenhum plano registrado.';

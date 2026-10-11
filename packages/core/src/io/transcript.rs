@@ -353,7 +353,7 @@ pub fn wave_agent_file(session_dir: &Path, title: &str, sent: &str) -> Option<Pa
 }
 
 #[must_use]
-pub fn wave_agent_files(session: &Path, title: &str, sent: &str, until: Option<&str>) -> Vec<PathBuf> {
+pub fn wave_agent_files(session: &Path, title: &str, sent: &str, until: Option<&str>, read: &crate::domain::wave_prompt::ReadDispatch) -> Vec<PathBuf> {
     let Some(since) = utc(sent) else {
         return Vec::new();
     };
@@ -362,8 +362,12 @@ pub fn wave_agent_files(session: &Path, title: &str, sent: &str, until: Option<&
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .flat_map(|entry| agent_openings(&entry.path(), since))
-        .filter(|(_, heading, at)| heading == title.trim_end() && *at >= since && end.is_none_or(|end| *at < end))
+        .flat_map(|entry| agent_requests(&entry.path(), since))
+        .filter(|(_, text, at)| {
+            let identity=crate::domain::wave_prompt::ReadDispatch::of(text);
+            let matches=identity.as_ref().map_or_else(||!text.contains("mustard-rt run read request-") && heading_of(text)==title.trim_end(),|identity|identity==read);
+            matches && *at >= since && end.is_none_or(|end| *at < end)
+        })
         .collect();
     // One native send owns one dispatch. A different agent with the same
     // heading is not evidence of another authorized attempt. Retries have
@@ -411,12 +415,19 @@ pub fn agent_pieces(file: &Path) -> Vec<PathBuf> {
 /// conversa dele não existe ou não traz carimbo.
 #[must_use]
 pub fn agent_opening(transcript: &Path, agent: &str) -> Option<(String, DateTime<Utc>)> {
+    agent_request(transcript, agent).map(|(text, at)| (heading_of(&text).to_string(), at))
+}
+
+/// The original first request, including language instructions and its native
+/// read command. Never searches later tool output for an identity.
+#[must_use]
+pub fn agent_request(transcript: &Path, agent: &str) -> Option<(String, DateTime<Utc>)> {
     let name = format!("agent-{agent}.jsonl");
     if agent.is_empty() || Path::new(&name).file_name() != Some(std::ffi::OsStr::new(&name)) {
         return None;
     }
     let file = transcript.with_extension("").join("subagents").join(name);
-    agent_pieces(&file).first().and_then(|piece| opening(piece))
+    agent_pieces(&file).first().and_then(|piece| request_opening(piece))
 }
 
 /// O primeiro carimbo do arquivo em `path`. Lê só até achá-lo: ele vem na
@@ -448,6 +459,10 @@ where
 /// mudou desde `sent` fica de fora sem ser aberto: ele não tem linha depois do
 /// envio.
 fn agent_openings(session_dir: &Path, sent: DateTime<Utc>) -> impl Iterator<Item = (PathBuf, String, DateTime<Utc>)> + use<> {
+    agent_requests(session_dir, sent).map(|(path, text, at)| (path, heading_of(&text).to_string(), at))
+}
+
+fn agent_requests(session_dir: &Path, sent: DateTime<Utc>) -> impl Iterator<Item = (PathBuf, String, DateTime<Utc>)> + use<> {
     let floor = SystemTime::from(sent);
     std::fs::read_dir(session_dir.join("subagents"))
         .into_iter()
@@ -457,8 +472,8 @@ fn agent_openings(session_dir: &Path, sent: DateTime<Utc>) -> impl Iterator<Item
         .map(|entry| entry.path())
         .filter(|path| is_agent_file(path))
         .filter_map(|path| {
-            let (heading, started) = opening(&path)?;
-            Some((path, heading, started))
+            let (text, started) = request_opening(&path)?;
+            Some((path, text, started))
         })
 }
 
@@ -480,7 +495,7 @@ pub fn heading_of(text: &str) -> &str {
 
 /// A primeira linha da primeira mensagem do agente e o primeiro carimbo do
 /// arquivo. Lê só o começo: as duas coisas vêm nas primeiras linhas.
-fn opening(path: &Path) -> Option<(String, DateTime<Utc>)> {
+fn request_opening(path: &Path) -> Option<(String, DateTime<Utc>)> {
     let file = std::fs::File::open(path).ok()?;
     let mut heading: Option<String> = None;
     let mut started: Option<DateTime<Utc>> = None;
@@ -496,7 +511,7 @@ fn opening(path: &Path) -> Option<(String, DateTime<Utc>)> {
             && let Some(message) = &line.message
         {
             let first = message.content.as_ref().and_then(Content::text).unwrap_or_default();
-            heading = Some(heading_of(first).to_string());
+            heading = Some(first.to_string());
         }
         if let (Some(heading), Some(started)) = (&heading, started) {
             return Some((heading.clone(), started));

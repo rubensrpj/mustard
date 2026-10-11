@@ -152,7 +152,7 @@ pub(super) fn record_rejections(
             continue;
         }
         let mut usage = Usage::default();
-        measure_usage(log, caller, std::iter::once((wave, &mut usage)));
+        measure_usage(&mustard_core::io::spec_events::spec_root(start), log, caller, std::iter::once((wave, &mut usage)));
         if usage.tokens.is_none() {
             warnings.push(usage_missing(wave, lang));
         }

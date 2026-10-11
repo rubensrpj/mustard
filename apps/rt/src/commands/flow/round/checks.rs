@@ -90,6 +90,7 @@ pub(super) fn ensure_checks_pass(root: &Path, spec: &str, waves: &[WaveReport], 
     let Some(command) = mustard_core::ProjectConfig::load(root).commands().build else {
         return Ok(());
     };
+    super::environment::prepare(root,spec,lang)?;
     let out = run_build_command(&command, root);
     super::super::validation::record_run(root, spec, "delivery", "build", &command, &out).map_err(RoundRefusal::Refused)?;
     if out.result != "pass" {

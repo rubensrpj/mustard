@@ -1,17 +1,15 @@
 //! Statusline theme model — palette, separator, and the `render_line`
 //! function that turns a `&[Segment]` into the final ANSI string.
 //!
-//! Six themes are shipped as `pub const` items:
-//! `DEFAULT`, `MINIMAL`, `TOKYO_NIGHT`, `CATPPUCCIN`, `PASTEL_POWERLINE`,
-//! `GRUVBOX_RAINBOW`. Selection is via the `MUSTARD_STATUSLINE_THEME` env var
-//! (case-insensitive, hyphens/underscores accepted). Unknown / unset →
-//! `Catppuccin`.
+//! Mustard is the yellow/neutral default and needs no Nerd Font.
+//! Six optional palettes remain selectable with MUSTARD_STATUSLINE_THEME.
+//! Unknown or unset values use Mustard.
 //!
 //! Powerline themes require a Nerd Font in the terminal — the U+E0B0 right-
 //! arrow glyph used for segment transitions renders as tofu otherwise. The
 //! escape hatch is `MUSTARD_STATUSLINE_THEME=default`.
 
-use super::segment::{Segment, SegmentKind, SEGMENT_KIND_COUNT};
+use super::segment::{SEGMENT_KIND_COUNT, Segment, SegmentKind};
 use std::fmt::Write as _;
 
 /// Env-var read by [`ThemeId::from_env`].
@@ -137,6 +135,7 @@ impl Theme {
 /// The complete list of shipped themes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeId {
+    Mustard,
     Default,
     Minimal,
     TokyoNight,
@@ -148,6 +147,7 @@ pub enum ThemeId {
 impl ThemeId {
     /// Every theme, in preview order.
     pub const ALL: &'static [ThemeId] = &[
+        ThemeId::Mustard,
         ThemeId::Default,
         ThemeId::Minimal,
         ThemeId::TokyoNight,
@@ -160,6 +160,7 @@ impl ThemeId {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
+            ThemeId::Mustard => "mustard",
             ThemeId::Default => "default",
             ThemeId::Minimal => "minimal",
             ThemeId::TokyoNight => "tokyo-night",
@@ -174,6 +175,7 @@ impl ThemeId {
     pub fn parse(raw: &str) -> Option<Self> {
         let norm = raw.trim().to_ascii_lowercase().replace('_', "-");
         match norm.as_str() {
+            "mustard" => Some(ThemeId::Mustard),
             "default" => Some(ThemeId::Default),
             "minimal" => Some(ThemeId::Minimal),
             "tokyo-night" | "tokyonight" => Some(ThemeId::TokyoNight),
@@ -184,21 +186,18 @@ impl ThemeId {
         }
     }
 
-    /// Read [`ENV_VAR`] and pick a theme; fall back to [`ThemeId::Catppuccin`]
+    /// Read [`ENV_VAR`] and pick a theme; fall back to [`ThemeId::Mustard`]
     /// when unset, empty, or unknown.
     #[must_use]
     pub fn from_env() -> Self {
-        std::env::var(ENV_VAR)
-            .ok()
-            .as_deref()
-            .and_then(Self::parse)
-            .unwrap_or(ThemeId::Catppuccin)
+        std::env::var(ENV_VAR).ok().as_deref().and_then(Self::parse).unwrap_or(ThemeId::Mustard)
     }
 
     /// Resolve to the static `Theme` definition.
     #[must_use]
     pub fn theme(self) -> &'static Theme {
         match self {
+            ThemeId::Mustard => &MUSTARD,
             ThemeId::Default => &DEFAULT,
             ThemeId::Minimal => &MINIMAL,
             ThemeId::TokyoNight => &TOKYO_NIGHT,
@@ -297,6 +296,22 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 // Module, Git, Context, Duration, Savings, Mustard, Model, Unit, Inert,
 // Spend.
 
+/// Mustard: yellow identity and neutral text, no colored background blocks.
+pub const MUSTARD: Theme = Theme {
+    #[cfg(test)]
+    id: ThemeId::Mustard,
+    separator: Separator::Pipe,
+    requires_nerdfont: false,
+    styles: [
+        Style::fg_bold(Color::Ansi(3)),
+        Style::fg(Color::Ansi(7)),
+        Style::fg(Color::Ansi(7)),
+        Style::fg(Color::Ansi(7)),
+        Style::fg_bold(Color::Ansi(3)),
+        Style::fg_bold(Color::Ansi(1)),
+    ],
+};
+
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
 pub const DEFAULT: Theme = Theme {
@@ -305,28 +320,12 @@ pub const DEFAULT: Theme = Theme {
     separator: Separator::Pipe,
     requires_nerdfont: false,
     styles: [
-        // Module — bold white
         Style::fg_bold(Color::Ansi(7)),
-        // Git — cyan
         Style::fg(Color::Ansi(6)),
-        // Context — green (theme default; cost-segment-style override happens
-        // at builder time for the % threshold)
         Style::fg(Color::Ansi(2)),
-        // Duration — gray (bright black)
-        Style::fg(Color::Ansi(8)),
-        // Savings — green
-        Style::fg(Color::Ansi(2)),
-        // Mustard — green: the running version, head of the second row
-        Style::fg(Color::Ansi(2)),
-        // Model — blue
         Style::fg(Color::Ansi(4)),
-        // Unit — cyan: where the operator stopped
         Style::fg(Color::Ansi(6)),
-        // Inert — red: the plugin is off, so no hook runs at all
         Style::fg(Color::Ansi(1)),
-        // Spend — yellow; override_fg turns it green when the last closed
-        // day came in under the average.
-        Style::fg(Color::Ansi(3)),
     ],
 };
 
@@ -350,26 +349,12 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
     styles: [
-        // Module — base on mauve, bold (the head cap)
         Style::pl_bold(Color::Rgb(0x1e, 0x1e, 0x2e), Color::Rgb(0xcb, 0xa6, 0xf7)),
-        // Git — green on crust
         Style::pl(Color::Rgb(0xa6, 0xe3, 0xa1), Color::Rgb(0x18, 0x18, 0x25)),
-        // Context — sapphire on crust
         Style::pl(Color::Rgb(0x74, 0xc7, 0xec), Color::Rgb(0x18, 0x18, 0x25)),
-        // Duration — text on crust
-        Style::pl(Color::Rgb(0xcd, 0xd6, 0xf4), Color::Rgb(0x11, 0x11, 0x1b)),
-        // Savings — yellow on crust
-        Style::pl(Color::Rgb(0xf9, 0xe2, 0xaf), Color::Rgb(0x18, 0x18, 0x25)),
-        // Mustard — green on crust
-        Style::pl(Color::Rgb(0xa6, 0xe3, 0xa1), Color::Rgb(0x18, 0x18, 0x25)),
-        // Model — base on sapphire (mirrors module cap, balances the line)
         Style::pl_bold(Color::Rgb(0x1e, 0x1e, 0x2e), Color::Rgb(0x74, 0xc7, 0xec)),
-        // Unit — sky on crust: where the operator stopped
         Style::pl(Color::Rgb(0x89, 0xdc, 0xeb), Color::Rgb(0x11, 0x11, 0x1b)),
-        // Inert — crust on red: the harness is not running
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf3, 0x8b, 0xa8)),
-        // Spend — peach on crust: the machine's consumption
-        Style::pl(Color::Rgb(0xfa, 0xb3, 0x87), Color::Rgb(0x18, 0x18, 0x25)),
     ],
 };
 
@@ -383,26 +368,12 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
     styles: [
-        // Module — bg on blue, bold (head cap)
         Style::pl_bold(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0x7a, 0xa2, 0xf7)),
-        // Git — green on bg-storm
         Style::pl(Color::Rgb(0x9e, 0xce, 0x6a), Color::Rgb(0x24, 0x28, 0x3b)),
-        // Context — cyan on bg-storm
         Style::pl(Color::Rgb(0x7d, 0xcf, 0xff), Color::Rgb(0x24, 0x28, 0x3b)),
-        // Duration — fg on bg
-        Style::pl(Color::Rgb(0xc0, 0xca, 0xf5), Color::Rgb(0x1a, 0x1b, 0x26)),
-        // Savings — yellow on bg-storm
-        Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x24, 0x28, 0x3b)),
-        // Mustard — green on bg-storm
-        Style::pl(Color::Rgb(0x9e, 0xce, 0x6a), Color::Rgb(0x24, 0x28, 0x3b)),
-        // Model — bg on magenta (mirrors module cap on the right side)
         Style::pl_bold(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xbb, 0x9a, 0xf7)),
-        // Unit — cyan on bg-storm: where the operator stopped
         Style::pl(Color::Rgb(0x7d, 0xcf, 0xff), Color::Rgb(0x24, 0x28, 0x3b)),
-        // Inert — bg on red: the harness is not running
         Style::pl(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xf7, 0x76, 0x8e)),
-        // Spend — magenta on bg-storm: the machine's consumption
-        Style::pl(Color::Rgb(0xbb, 0x9a, 0xf7), Color::Rgb(0x24, 0x28, 0x3b)),
     ],
 };
 
@@ -415,26 +386,12 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
     styles: [
-        // Module — crust on pastel pink, bold
         Style::pl_bold(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf5, 0xc2, 0xe7)),
-        // Git — crust on pastel peach
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xfa, 0xb3, 0x87)),
-        // Context — crust on pastel yellow
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf9, 0xe2, 0xaf)),
-        // Duration — crust on pastel green
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xa6, 0xe3, 0xa1)),
-        // Savings — crust on pastel teal
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x94, 0xe2, 0xd5)),
-        // Mustard — crust on pastel mauve
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xcb, 0xa6, 0xf7)),
-        // Model — crust on pastel lavender
         Style::pl_bold(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xb4, 0xbe, 0xfe)),
-        // Unit — crust on pastel sky: where the operator stopped
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x89, 0xdc, 0xeb)),
-        // Inert — crust on pastel red: the harness is not running
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf3, 0x8b, 0xa8)),
-        // Spend — crust on pastel peach: the machine's consumption
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xfa, 0xb3, 0x87)),
     ],
 };
 
@@ -448,26 +405,12 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
     styles: [
-        // Module — bg on yellow, bold (head)
         Style::pl_bold(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd7, 0x99, 0x21)),
-        // Git — bg on green
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x98, 0x97, 0x1a)),
-        // Context — bg on aqua
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x68, 0x9d, 0x6a)),
-        // Duration — fg on bg0_h
-        Style::pl(Color::Rgb(0xeb, 0xdb, 0xb2), Color::Rgb(0x1d, 0x20, 0x21)),
-        // Savings — bg on orange
-        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd6, 0x5d, 0x0e)),
-        // Mustard — bg on aqua-dim
-        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x83, 0xa5, 0x98)),
-        // Model — bg on red (right-side accent)
         Style::pl_bold(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xcc, 0x24, 0x1d)),
-        // Unit — bg on aqua: where the operator stopped
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x68, 0x9d, 0x6a)),
-        // Inert — bg on red: the harness is not running
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xcc, 0x24, 0x1d)),
-        // Spend — bg on yellow: the machine's consumption
-        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd7, 0x99, 0x21)),
     ],
 };
 
@@ -486,6 +429,7 @@ mod tests {
 
     #[test]
     fn theme_id_parse_normalizes_input() {
+        assert_eq!(ThemeId::parse("mustard"), Some(ThemeId::Mustard));
         assert_eq!(ThemeId::parse("default"), Some(ThemeId::Default));
         assert_eq!(ThemeId::parse(" DEFAULT "), Some(ThemeId::Default));
         assert_eq!(ThemeId::parse("Tokyo_Night"), Some(ThemeId::TokyoNight));
@@ -500,7 +444,7 @@ mod tests {
         // If someone adds a ThemeId variant they must also add it to ALL,
         // otherwise it won't show up in --preview. Spot-checking length keeps
         // that honest.
-        assert_eq!(ThemeId::ALL.len(), 6);
+        assert_eq!(ThemeId::ALL.len(), 7);
     }
 
     #[test]
@@ -524,10 +468,7 @@ mod tests {
 
     #[test]
     fn render_pipe_contains_pipe_separator() {
-        let segs = vec![
-            seg(SegmentKind::Module, "mustard"),
-            seg(SegmentKind::Git, "dev"),
-        ];
+        let segs = vec![seg(SegmentKind::Module, "mustard"), seg(SegmentKind::Git, "dev")];
         let out = render_line(&DEFAULT, &segs);
         assert!(out.contains("mustard"));
         assert!(out.contains("dev"));
@@ -536,10 +477,7 @@ mod tests {
 
     #[test]
     fn render_whitespace_has_no_pipe() {
-        let segs = vec![
-            seg(SegmentKind::Module, "mustard"),
-            seg(SegmentKind::Git, "dev"),
-        ];
+        let segs = vec![seg(SegmentKind::Module, "mustard"), seg(SegmentKind::Git, "dev")];
         let out = render_line(&MINIMAL, &segs);
         assert!(out.contains("mustard"));
         assert!(out.contains("dev"));
@@ -574,38 +512,14 @@ mod tests {
         assert_eq!(render_line(&CATPPUCCIN, &[]), "");
     }
 
-    /// O indicador do consumo tem cor nos seis temas: nos de cor chapada
-    /// (`default` e `minimal`) sai amarelo e, abaixo da média, verde; nos de
-    /// powerline sai na cor própria do tema, sem o verde, que não se mistura
-    /// com a paleta fixa.
-    #[test]
-    fn the_consumption_indicator_is_drawn_in_every_theme() {
-        use crate::commands::statusline::segment::spend_indicator;
-        use mustard_core::SupportedLocale;
-        let above = spend_indicator(12, None, SupportedLocale::PtBr);
-        let below = spend_indicator(-25, None, SupportedLocale::PtBr);
-        for theme in [&DEFAULT, &MINIMAL] {
-            let (up, down) = (render_line(theme, std::slice::from_ref(&above)), render_line(theme, std::slice::from_ref(&below)));
-            assert!(up.contains("\x1b[33m") && up.contains("consumo +12%"), "yellow above the average: {up:?}");
-            assert!(down.contains("\x1b[32m") && !down.contains("\x1b[33m"), "green below it: {down:?}");
-        }
-        for (theme, fg, bg) in [
-            (&CATPPUCCIN, "\x1b[38;2;250;179;135m", "\x1b[48;2;24;24;37m"),
-            (&TOKYO_NIGHT, "\x1b[38;2;187;154;247m", "\x1b[48;2;36;40;59m"),
-            (&PASTEL_POWERLINE, "\x1b[38;2;17;17;27m", "\x1b[48;2;250;179;135m"),
-            (&GRUVBOX_RAINBOW, "\x1b[38;2;40;40;40m", "\x1b[48;2;215;153;33m"),
-        ] {
-            let down = render_line(theme, std::slice::from_ref(&below));
-            assert!(down.contains(fg) && down.contains(bg) && down.contains("consumo \u{2212}25%"), "{down:?}");
-            assert!(!down.contains("\x1b[32m"), "the green override is for flat themes only: {down:?}");
-        }
-    }
-
     #[test]
     fn render_honors_segment_override_fg() {
         // override_fg should win over the theme's per-kind fg. Easiest to
         // verify with the default theme where fg sequences are short.
-        let mut s = seg(SegmentKind::Context, "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591} 90%");
+        let mut s = seg(
+            SegmentKind::Context,
+            "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591} 90%",
+        );
         s.override_fg = Some(Color::Ansi(1)); // red
         let out = render_line(&DEFAULT, &[s]);
         assert!(out.contains("\x1b[31m"), "override fg sequence missing from {out:?}");

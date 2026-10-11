@@ -5,6 +5,7 @@ pub mod cli;
 mod jev_usage;
 mod consumption;
 mod publication;
+mod wave_usage;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
 
@@ -34,10 +35,12 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
     }
     specs.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     let branch = mustard_core::platform::git::run(start, &["branch", "--show-current"]).out();
+    let mut jev_view=jev.project();
+    jev_view["configuration"]=jev_usage::configuration(&root,&mustard_core::ProjectConfig::load(&root),std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok());
     json!({"ok":true,"schema_version":1,"at":chrono::Utc::now().to_rfc3339(),
         "project":{"language":crate::commands::spec_events::project(&root).lang.to_string(),"version":mustard_core::harness_version(),"publication_url":spec_index::project_page_url(&root),"name":spend::project_name(&root).or_else(||root.file_name().map(|n|n.to_string_lossy().into_owned())),"branch":branch},
         "selected_spec":selected,"specs":specs,
-        "jev":jev.project(),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
+        "jev":jev_view,"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
         "statusline":consumption::statusline(&root,session),
         "commands":{"panel":"/mustard-panel","publish":"/mustard-pages"}})
 }
@@ -48,11 +51,13 @@ pub(crate) fn observe_statusline(data:&Value,gain:Option<&crate::shared::rtk_gai
 
 fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger) -> Value {
     let visible = log.visible();
+    let live = wave_usage::read(root,name);
     let hidden = log.hidden();
     let waves: Vec<Value> = log
         .planned_waves()
         .into_iter()
         .map(|wave| {
+            let measured=wave_usage::current(&live,log,wave);
             let sent = visible.iter().rev().find(|e| e.event_type == "send" && e.wave() == Some(wave));
             let attempt=sent.map(|event|log.dispatch_position(event.id));
             let belongs=|id:u64|attempt.is_none_or(|start|id>start);
@@ -76,13 +81,15 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
             };
             json!({"wave":wave,"status":status,"commit":commit.and_then(|e|e.str_field("sha")),
             "summary":integrated.and_then(|e|e.str_field("text")),
-            "tokens":sent.and_then(|e|e.int("tokens")),"model":sent.and_then(|e|e.str_field("model_used")),
-            "usage_breakdown":sent.and_then(|e|e.fields.get("usage_breakdown")),
+            "tokens":measured.and_then(|u|u["tokens"].as_u64()).or_else(||sent.and_then(|e|e.int("tokens"))),
+            "model":measured.and_then(|u|u["model_used"].as_str()).or_else(||sent.and_then(|e|e.str_field("model_used"))),
+            "usage_breakdown":measured.and_then(|u|u.get("usage_breakdown")).or_else(||sent.and_then(|e|e.fields.get("usage_breakdown"))),
             "configured_model":sent.and_then(|e|e.str_field("model")),"effort":sent.and_then(|e|e.str_field("effort"))})
         })
         .collect();
     // Conductor usage is cumulative and repeated on wave sends. Take it once.
-    let caller = visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens")).max();
+    let caller = visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens"))
+        .chain(log.planned_waves().into_iter().filter_map(|wave|wave_usage::current(&live,log,wave)?.get("caller_tokens")?.as_u64())).max();
     let unknown = waves.iter().filter(|w| w["tokens"].as_u64().is_none()).count();
     let tokens = if unknown == 0 && !waves.is_empty() { Some(waves.iter().filter_map(|w| w["tokens"].as_u64()).sum::<u64>()) } else { None };
     let mut breakdown=mustard_core::io::transcript::TokenBreakdown::default();
@@ -90,7 +97,12 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
     for wave in &waves {
         if let Ok(detail)=serde_json::from_value::<mustard_core::io::transcript::TokenBreakdown>(wave["usage_breakdown"].clone()) {breakdown.combine(&detail);}else{detail_unknown+=1;}
     }
-    let caller_breakdown=visible.iter().filter(|e|e.event_type=="send").max_by_key(|e|e.int("caller_tokens")).and_then(|e|e.fields.get("caller_usage_breakdown"));
+    let caller_breakdown=visible.iter().filter(|e|e.event_type=="send")
+        .filter_map(|e|e.int("caller_tokens").zip(e.fields.get("caller_usage_breakdown")))
+        .chain(log.planned_waves().into_iter().filter_map(|wave| {
+            let usage=wave_usage::current(&live,log,wave)?;
+            usage["caller_tokens"].as_u64().zip(usage.get("caller_usage_breakdown"))
+        })).max_by_key(|(tokens,_)|*tokens).map(|(_,detail)|detail);
     let stages: Vec<Value> = visible
         .iter()
         .filter(|e| e.event_type == "stage_run")
@@ -114,7 +126,9 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         })
         .collect();
     json!({"name":name,"goal":mustard_core::domain::spec_index::goal_of(log),"phase":State::from_log(log).phase,
-        "waves":waves,"scheduling":super::flow::round::scheduling_snapshot(root,log),"usage":{"wave_tokens":tokens,"conductor_tokens":caller,"waves_with_unknown_usage":unknown,
+        "waves":waves,"scheduling":super::flow::round::scheduling_snapshot(root,log),"usage":{"wave_tokens":tokens,
+            "known_wave_tokens":waves.iter().filter_map(|wave|wave["tokens"].as_u64()).sum::<u64>(),"measured_at":live["measured_at"],
+            "conductor_tokens":caller,"waves_with_unknown_usage":unknown,
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},
         "stages":stages,"final_validation_valid":if selected {Some(super::flow::validation::reusable(root,log))} else {None},
         "counted_waves":wave_counts(log),

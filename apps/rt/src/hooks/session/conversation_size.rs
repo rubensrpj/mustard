@@ -319,7 +319,9 @@ fn wave_opened(path: &Path, lang: Locale) -> Option<(String, u64)> {
         .lines()
         .map_while(Result::ok)
         .find_map(|line| user_text(&serde_json::from_str::<Value>(&line).ok()?))
-        .and_then(|first| wave_of_title(heading_of(&first), lang))
+        .and_then(|first| wave_of_title(heading_of(&first), lang).or_else(|| {
+            mustard_core::domain::wave_prompt::ReadDispatch::of(&first).map(|read| (read.spec, read.wave))
+        }))
 }
 
 /// A leitura da conversa do agente, nos pedaços `pieces`, do mais antigo ao
