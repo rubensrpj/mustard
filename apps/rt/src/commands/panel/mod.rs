@@ -55,19 +55,21 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
     let visible = log.visible();
     let live = wave_usage::read(root,name);
     let hidden = log.hidden();
-    let waves: Vec<Value> = log
-        .planned_waves()
-        .into_iter()
+    let planned=log.planned_waves();
+    let dispatches=log.last_dispatch_by_wave();
+    let rejected=log.last_rejected();
+    let measured_wave=|wave:u64|dispatches.get(&wave).and_then(|dispatch|wave_usage::current_at(&live,wave,*dispatch));
+    let waves: Vec<Value> = planned.iter().copied()
         .map(|wave| {
-            let measured=wave_usage::current(&live,log,wave);
+            let measured=measured_wave(wave);
             let sent = visible.iter().rev().find(|e| e.event_type == "send" && e.wave() == Some(wave));
-            let attempt=sent.map(|event|log.dispatch_position(event.id));
+            let attempt=dispatches.get(&wave).copied();
             let belongs=|id:u64|attempt.is_none_or(|start|id>start);
             let integrated = visible.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && belongs(e.id));
             let commit = visible.iter().rev().find(|e| e.event_type == "commit" && e.ints("waves").contains(&wave) && belongs(e.id));
             let received =
                 log.events.iter().rev().find(|e| e.event_type == "delivered" && e.wave() == Some(wave) && hidden.get(&e.id) == Some(&Hidden::Returned) && belongs(e.id));
-            let repair = log.last_rejected().get(&wave).is_some_and(|id| belongs(*id) && integrated.is_none_or(|e| e.id < *id));
+            let repair = rejected.get(&wave).is_some_and(|id| belongs(*id) && integrated.is_none_or(|e| e.id < *id));
             let status = if repair {
                 "repair-required"
             } else if commit.is_some() {
@@ -91,7 +93,7 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         .collect();
     // Conductor usage is cumulative and repeated on wave sends. Take it once.
     let caller = visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens"))
-        .chain(log.planned_waves().into_iter().filter_map(|wave|wave_usage::current(&live,log,wave)?.get("caller_tokens")?.as_u64())).max();
+        .chain(planned.iter().filter_map(|wave|measured_wave(*wave)?.get("caller_tokens")?.as_u64())).max();
     let unknown = waves.iter().filter(|w| w["tokens"].as_u64().is_none()).count();
     let tokens = if unknown == 0 && !waves.is_empty() { Some(waves.iter().filter_map(|w| w["tokens"].as_u64()).sum::<u64>()) } else { None };
     let mut breakdown=mustard_core::io::transcript::TokenBreakdown::default();
@@ -101,8 +103,8 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
     }
     let caller_breakdown=visible.iter().filter(|e|e.event_type=="send")
         .filter_map(|e|e.int("caller_tokens").zip(e.fields.get("caller_usage_breakdown")))
-        .chain(log.planned_waves().into_iter().filter_map(|wave| {
-            let usage=wave_usage::current(&live,log,wave)?;
+        .chain(planned.iter().filter_map(|wave| {
+            let usage=measured_wave(*wave)?;
             usage["caller_tokens"].as_u64().zip(usage.get("caller_usage_breakdown"))
         })).max_by_key(|(tokens,_)|*tokens).map(|(_,detail)|detail);
     let stages: Vec<Value> = visible
@@ -128,7 +130,7 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
         })
         .collect();
     json!({"name":name,"goal":mustard_core::domain::spec_index::goal_of(log),"phase":State::from_log(log).phase,
-        "waves":waves,"scheduling":super::flow::round::scheduling_snapshot(root,log),"usage":{"wave_tokens":tokens,
+        "waves":waves,"scheduling":if selected {super::flow::round::scheduling_snapshot(root,log)} else {Value::Null},"usage":{"wave_tokens":tokens,
             "known_wave_tokens":waves.iter().filter_map(|wave|wave["tokens"].as_u64()).sum::<u64>(),"measured_at":live["measured_at"],
             "conductor_tokens":caller,"waves_with_unknown_usage":unknown,
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},

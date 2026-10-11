@@ -1,6 +1,5 @@
 //! Local live usage cache. Never rewrites authoritative sends or executes a
 //! wave. An old measurement cannot migrate to a different dispatch attempt.
-use mustard_core::domain::spec_events::SpecLog;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -38,16 +37,11 @@ pub(super) fn refresh(start: &Path, selected: Option<&str>, session: Option<&str
     result.map_or_else(|reason| json!({"ok":false,"reason":reason}), |()| json!({"ok":true}))
 }
 
-pub(super) fn current<'a>(cache: &'a Value, log: &SpecLog, wave: u64) -> Option<&'a Value> {
-    let send = log
-        .visible()
-        .into_iter()
-        .rev()
-        .find(|event| event.event_type == "send" && event.wave() == Some(wave))?;
+pub(super) fn current_at(cache:&Value,wave:u64,dispatch:u64)->Option<&Value> {
     cache["waves"]
         .as_array()?
         .iter()
-        .find(|row| row["wave"] == wave && row["dispatch"] == log.dispatch_position(send.id))
+        .find(|row| row["wave"] == wave && row["dispatch"] == dispatch)
         .map(|row| &row["usage"])
 }
 
@@ -58,10 +52,10 @@ mod tests {
     fn live_measurements_are_bound_to_the_dispatch_and_not_its_numeric_wave_alone() {
         let log = mustard_core::domain::spec_events::parse_log("{\"v\":1,\"id\":1,\"type\":\"send\",\"wave\":1}\n");
         let cache = json!({"waves":[{"wave":1,"dispatch":1,"usage":{"tokens":123}}]});
-        assert_eq!(current(&cache, &log, 1).unwrap()["tokens"], 123);
+        assert_eq!(current_at(&cache, 1, log.last_dispatch_by_wave()[&1]).unwrap()["tokens"], 123);
         let next = mustard_core::domain::spec_events::parse_log(
             "{\"v\":1,\"id\":1,\"type\":\"send\",\"wave\":1}\n{\"v\":1,\"id\":2,\"type\":\"send\",\"wave\":1,\"resends\":1}\n",
         );
-        assert!(current(&cache, &next, 1).is_none());
+        assert!(current_at(&cache, 1, next.last_dispatch_by_wave()[&1]).is_none());
     }
 }
