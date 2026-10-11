@@ -6,6 +6,7 @@ mod jev_usage;
 mod consumption;
 mod publication;
 mod wave_usage;
+mod settings;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
 

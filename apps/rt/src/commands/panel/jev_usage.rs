@@ -6,6 +6,13 @@ use super::{json, Value, Path};
 /// or spends tokens just to open a pane.
 pub(super) fn configuration(root:&Path, config:&mustard_core::ProjectConfig, env:Option<String>)->Value {
     use mustard_core::io::jev_gate;
+    let env=env.or_else(|| {
+        crate::commands::flow::round::local_file_ignored(root,".claude/settings.local.json").then(|| {
+            let text=std::fs::read_to_string(root.join(".claude/settings.local.json")).ok()?;
+            let settings:Value=serde_json::from_str(&text).ok()?;
+            settings["env"][jev_gate::KEY_ENV].as_str().map(str::to_string)
+        }).flatten()
+    });
     let key=jev_gate::find_key(root,config,env);
     let fallback=config.ai_fallback_enabled();
     let mut purposes=serde_json::Map::new();

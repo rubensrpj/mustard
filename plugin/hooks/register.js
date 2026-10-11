@@ -6,6 +6,7 @@ import {renderPanel,initialPanelView} from './panel-view.js';
 let timer, eventTimer, busy = false, opened = false, data, problem, selected, usage, revision = 0;
 let view=initialPanelView();
 let publishing = false, publicationMessage;
+let settings,settingsRevision=0;
 let runtimeBinary;
 let consumptionMeasuredAt;
 let measurementQueue = Promise.resolve();
@@ -52,6 +53,39 @@ function inputContractError(schema,value,path) {
 async function runtime($) {
   if (!runtimeBinary) runtimeBinary = `${$.plugin.root}/bin/mustard-rt${await $.env.get('OS') === 'Windows_NT' ? '.exe' : ''}`;
   return runtimeBinary;
+}
+async function settingsOperation($,operation='load') {
+  if(settings?.busy || !opened)return;
+  const ticket=settingsRevision;
+  settings={...settings,busy:true,error:undefined,message:undefined};
+  $.ui.invalidate('ui.render');
+  try {
+    const cwd=await $.session.cwd();
+    let args=['run','settings','--root',cwd],scan=false;
+    if(operation==='save')args.push('--json',JSON.stringify({schema_version:1,revision:settings.revision,changes:settings.changes}));
+    if(operation==='scan') {scan=true;args=['run','scan','--root',cwd];}
+    const result=await $.process.run([await runtime($),...args],{cwd,timeoutMs:scan?110000:10000});
+    if(!opened || ticket!==settingsRevision)return;
+    if(result.exitCode!==0)throw new Error('settings-operation-failed');
+    const value=JSON.parse(result.stdout);
+    if(value.ok!==true || (!scan && value.schema_version!==1)) {
+      settings={...settings,...(value.saved?{...value,loaded:true}:{}),error:typeof value.reason==='string'?value.reason:'settings-operation-failed'};
+      return;
+    }
+    if(scan) {
+      settings={...settings,busy:false,message:['Índice atualizado.','Index updated.']};
+      // Refresh safe availability without disturbing saved choices.
+      const fresh=await $.process.run([await runtime($),'run','settings','--root',cwd],{cwd,timeoutMs:10000});
+      if(!opened || ticket!==settingsRevision)return;
+      const next=JSON.parse(fresh.stdout);
+      if(fresh.exitCode===0 && next.ok===true && next.schema_version===1)settings={...next,loaded:true,changes:{},message:settings.message};
+    } else {
+      settings={...value,loaded:true,changes:{},message:operation==='save'?
+        ['Configurações salvas. Mudanças de agentes valem nas próximas execuções.','Settings saved. Agent changes apply to future runs.']:undefined};
+    }
+    void refresh($);
+  } catch {if(opened && ticket===settingsRevision)settings={...settings,error:'settings-operation-failed'};}
+  finally {if(opened && ticket===settingsRevision){settings={...settings,busy:false};$.ui.invalidate('ui.render');}}
 }
 const id = 'mustard-panel';
 function t(pt,en) { return data?.project?.language === 'en-US' ? en : pt; }
@@ -114,6 +148,7 @@ async function openPanel($, name) {
       opened = true;
       timer = $.clock.every(2000, () => { void refresh($); });
       await refresh($);
+      if(view.tab==='Configurações')await settingsOperation($);
       return {text:t('Abertura do painel solicitada nesta sessão. Se não aparecer, execute /mustard-panel --diagnose.',
         'Panel opening requested in this session. If it does not appear, run /mustard-panel --diagnose.')};
     } catch {
@@ -140,6 +175,7 @@ async function panelDiagnostics($) {
     ].join('\n')};
 }
 function stopPanel() {
+    settingsRevision++;settings=undefined;
     revision++;
     opened = false;
     timer?.cancel();
@@ -286,6 +322,7 @@ export function register(on) {
     data = undefined;
     selected=usage=problem=undefined;
     view=initialPanelView();
+    settings=undefined;settingsRevision++;
     consumptionMeasuredAt = undefined;
     publicationMessage = undefined;
     return next(e);
@@ -294,11 +331,12 @@ export function register(on) {
     if (e.requestId !== id) return next(e);
     const redraw=()=>$.ui.invalidate('ui.render');
     return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
-      data,usage,problem,selected,view,publicationMessage,publishing,actions:{
+      data,usage,problem,selected,view,publicationMessage,publishing,settings,actions:{
         change:(patch,query=false)=>{
           Object.assign(view,patch);
           if(query)revision++;
           redraw();
+          if(patch.tab==='Configurações' && !settings?.loaded)void settingsOperation($);
           if(query)void refresh($);
         },
         selectSpec:name=>{
@@ -308,6 +346,15 @@ export function register(on) {
           revision++;redraw();void refresh($);
         },
         refresh:()=>{void refresh($);},
+        editSetting:(field,value)=>{
+          if(!settings?.loaded || settings.busy)return;
+          const changes={...settings.changes};
+          if(value===settings.values[field])delete changes[field];else changes[field]=value;
+          settings={...settings,changes,error:undefined,message:undefined};redraw();
+        },
+        reloadSettings:()=>{void settingsOperation($);},
+        saveSettings:()=>{void settingsOperation($,'save');},
+        scanSettings:()=>{void settingsOperation($,'scan');},
         publish:args=>publishPage($,args),
         close:async()=>{stopPanel();await $.ui.close({id});},
       }});

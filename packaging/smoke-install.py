@@ -109,6 +109,16 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         assert report["crossing_status"] == "enriched", "installed gateway did not cross the scan"
         panel = json.loads(run([binary("mustard-rt"), "run", "panel", "--root", str(root)]))
         assert "project" in panel and "specs" in panel, "panel projection is unavailable"
+        settings = json.loads(run([binary("mustard-rt"), "run", "settings"]))
+        assert settings["ok"] and settings["values"]["vectors"] is True
+        patch = {"schema_version": 1, "revision": settings["revision"], "changes": {"rtk": False, "agent_effort": "high"}}
+        saved = json.loads(run([binary("mustard-rt"), "run", "settings", "--json", json.dumps(patch)]))
+        assert saved["ok"] and saved["saved"], "installed settings could not be applied"
+        local = json.loads((root / ".claude/settings.local.json").read_text())
+        assert not any(h.get("command") == "rtk hook claude" for group in local.get("hooks", {}).get("PreToolUse", []) for h in group["hooks"])
+        assert "effort: high" in (root / ".claude/agents/mustard/wave.md").read_text(), "agent choice was not applied"
+        assert json.loads((root / "mustard.json").read_text())["installationChoice"] == "preserve"
+        assert not (root / ".claude/judgements/attempts.ndjson").exists(), "settings called paid AI"
         assert not list((root / ".claude").rglob("*.html")), "installation/search published an unsolicited page"
     print("PASS: fresh install/update, local vectors, RTK hook, honest readiness, native/typed search without PATH, learning and panel; no paid AI or publication")
 
