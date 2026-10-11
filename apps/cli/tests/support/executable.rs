@@ -8,9 +8,8 @@
 //! sem motivo. Gravado por um shell à parte, o arquivo nunca fica aberto neste
 //! processo, e já está fechado em todo lugar quando o shell sai.
 //!
-//! Um arquivo por pacote, como `manifest_dir.rs`: os testes da pasta `tests/`
-//! o trazem pelo caminho, e os de dentro de `src/`, pelo módulo que a raiz do
-//! pacote declara só para teste.
+//! Um arquivo por pacote, como `manifest_dir.rs`: os testes de integração
+//! que precisam de programas falsos o trazem pelo caminho.
 
 use std::path::Path;
 
