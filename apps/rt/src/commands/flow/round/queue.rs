@@ -189,6 +189,7 @@ pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
 pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     let planned = log.planned_waves();
     let verdicts = log.verdicts_by_wave();
+    let dispatches=log.last_dispatch_by_wave();
     let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
         if let Some(n) = delivered.wave() {
@@ -203,7 +204,7 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
             // despachou a onda, e não com a versão mais nova dele: a versão
             // que só traz o consumo, gravada depois de uma entrega ou de uma
             // reprovação, não reabre a onda.
-            let sent = log.dispatch_position(*sent);
+            let sent = dispatches.get(n).copied().unwrap_or(*sent);
             let ids = deliveries.get(n).map(Vec::as_slice).unwrap_or_default();
             if ids.iter().any(|id| *id > sent) {
                 return false;
@@ -580,7 +581,11 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 /// (`done_waves`) — e se traz a marca de prioridade.
 pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
-    log.visible()
+    let visible=log.visible();
+    let current=log.current_versions();
+    let by_code:BTreeMap<_,_>=visible.iter().filter(|event|event.event_type=="task")
+        .filter_map(|event|codes.get(&event.id).map(|code|(code,event.id))).collect();
+    visible
         .into_iter()
         .filter(|e| e.event_type == "task")
         .map(|task| {
@@ -590,7 +595,12 @@ pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> V
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(|value| backlog_task_ref(log, &codes, value))
+                .filter_map(|value| {
+                    let raw=match EventRef::from_value(value)? {
+                        EventRef::Id(id)=>id,EventRef::Code(code)=>*by_code.get(&code)?,
+                    };
+                    current.get(&raw).filter(|event|event.event_type=="task").map(|event|event.id)
+                })
                 .collect();
             let done = task.wave().is_some_and(|w| done_waves.contains(&w));
             // A marca de prioridade é lida do evento, como o usuário a deu: o
