@@ -218,7 +218,8 @@ pub(super) fn history(root: &Path, dir: Option<&Path>) -> Value {
     json!({"available":own_ledger.counted_through.is_some(),"project_tokens":sum(&own),"machine_tokens":if ledger.counted_through.is_some(){Some(sum(&rows))}else{None},
         "counted_through":own_ledger.counted_through,"measured_at":own_ledger.measured_at,"machine_measured_at":ledger.measured_at,
         "today_partial":true,"today_measured":own_ledger.measured_at.is_some() && own_ledger.open_day.as_deref()==Some(today.as_str()),
-        "project_days":own,"project_scope":"canonical-project-root","origin":"deduplicated-transcripts","cost_micro_usd":null})
+        "project_days":own,"project_scope":"canonical-project-root","origin":"deduplicated-transcripts","cost_micro_usd":null,
+        "trend":mustard_core::domain::spend::trend(&ledger.rows).map(|trend|json!({"change_percent":trend.change_percent}))})
 }
 
 /// Cache exact project history separately from the legacy machine ledger,

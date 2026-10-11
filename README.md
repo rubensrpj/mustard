@@ -37,6 +37,10 @@ A busca também usa identificadores dentro das funções e textos fixos completo
 
 > O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. As operações auxiliares funcionam sem IA por padrão. Jev exige `ai.fallback: true` e um filtro explícito por finalidade; vetores exigem `ai.vectors: true`. Credenciais/configurações antigas não ativam inferência. A interface de provedor e o cache versionado permanecem disponíveis para uma exceção avaliada. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
 
+Para habilitar Jev apenas na escolha entre responsabilidades na busca, use `"ai":{"fallback":true}` e `"judgement":{"search":{"filter":"jev"}}` no `mustard.json`, além da chave local. No Mods, investigações por Grep/rg/Glob permitem essa escolha automaticamente; o binário só a solicita quando há alternativas sustentadas por código atual. `locate`, leituras e referências exatas seguem nativas; `choose:false` desativa a escolha naquela chamada. Ondas e contexto exigem filtros próprios. O painel mostra a configuração por finalidade, sem tratar uma chave presente como serviço validado ou crédito confirmado. O uso segue as [perguntas atômicas e decisões tipadas do Jev](https://docs.typesafe.ai/introduction).
+
+O consumo das ondas é atualizado localmente por conversa e tentativa de despacho, inclusive quando o pedido começa com instruções de idioma. Medições parciais aparecem como subtotal; a observação não altera os envios da spec. Antes do build integrado, um cliente Prisma cujos modelos/tipos diferem do schema atual é regenerado pelo script de geração já declarado pelo projeto. Sem script ou sem correção confirmada, a rodada preserva as entregas e informa um problema de preparo, sem atribuí-lo aos agentes.
+
 ---
 
 ## Instalação
@@ -129,6 +133,10 @@ O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods par
 A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
 
 No painel, **Definições** mostra decisões, regras, critérios e tarefas completos. **Ondas** permite consultar plano, pedido exato enviado ao agente, entrega e testes. Textos extensos têm paginação. O tema segue as [diretrizes do ERP.Brain](https://github.com/atiz/erpbrain/blob/main/design/guidelines/README.md), com amarelo nas ações e seleções. **Todas as páginas e o Mods usam modo escuro fixo**, independentemente do tema do sistema. Mods adapta esse padrão aos componentes do terminal; fonte e tamanho das letras dependem do Claude Code. As páginas para navegador compartilham as cores e usam Inter, controles maiores e navegação responsiva.
+
+A spec é selecionada no cabeçalho do painel. As definições têm filtro por categoria e busca por título, código ou texto. Em painéis estreitos, um seletor de seção substitui as abas; a leitura fica em uma coluna. O plano da onda é a visão inicial, e **Input exato enviado** preserva integralmente o pedido técnico. **Consumo** separa sessão atual, spec selecionada e histórico acumulado; medições ausentes não viram percentuais nem custos fictícios. A publicação externa fica em uma seção própria e só ocorre ao acionar a publicação.
+
+A statusline usa uma linha com spec/fase/andamento, modelo e percentual de contexto. Sem spec, mostra projeto e branch. Versão, duração e medições detalhadas ficam no painel. A paleta padrão `mustard` usa amarelo e texto neutro, sem exigir Nerd Font; os temas alternativos continuam disponíveis por `MUSTARD_STATUSLINE_THEME`.
 
 ---
 

@@ -59,7 +59,7 @@ use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _, State};
 use mustard_core::domain::wave_prompt::{carries_project_rules, language_line, project_rules_section, wave_of_title, wave_title};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::transcript::{agent_opening, heading_of};
+use mustard_core::io::transcript::{agent_request, heading_of};
 use mustard_core::io::wave_prompt::{Flight, project_rules, prompts, touched_files};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
@@ -202,8 +202,14 @@ fn fix_message(input: &HookInput, ctx: &Ctx) -> Verdict {
     let project = crate::commands::spec_events::project(Path::new(&root));
     let lang = project.lang;
     let agent = input.tool_input.get("to").and_then(Value::as_str).unwrap_or_default();
-    let destination = input.transcript_path().and_then(|transcript| agent_opening(Path::new(transcript), agent));
-    let Some(((spec, wave), started)) = destination.and_then(|(heading, started)| Some((wave_of_title(&heading, lang)?, started))) else {
+    let destination = input.transcript_path().and_then(|transcript| agent_request(Path::new(transcript), agent));
+    let Some(((spec, wave), started)) = destination.and_then(|(text, started)| {
+        let identity = wave_of_title(heading_of(&text), lang).or_else(|| {
+            let read = mustard_core::domain::wave_prompt::ReadDispatch::of(&text)?;
+            (read.root == mustard_core::io::wave_prompt::shown(&project.root)).then_some((read.spec, read.wave))
+        })?;
+        Some((identity, started))
+    }) else {
         return Verdict::Allow;
     };
     let Ok(log) = spec_log(&project.root, &spec, lang) else {
@@ -303,6 +309,10 @@ fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
     let prompt = dispatch_prompt(input);
     if let Some((spec, wave)) = wave_of_title(heading_of(prompt), language.text_or_default()) {
         return wave_dispatch(input, Path::new(&root), &spec, wave);
+    }
+    if let Some(read) = mustard_core::domain::wave_prompt::ReadDispatch::of(prompt)
+        && read.root == mustard_core::io::wave_prompt::shown(&mustard_core::io::spec_events::spec_root(Path::new(&root))) {
+        return wave_dispatch(input, Path::new(&root), &read.spec, read.wave);
     }
     let line = language_line(&language);
     let mut text = if prompt.contains(&line) { prompt.to_string() } else { format!("{line}\n\n{prompt}") };
@@ -644,6 +654,8 @@ mod tests {
         let title = assembled(root).lines().next().unwrap_or_default().to_string();
         assert_eq!(title, "# x — onda 1");
         let command = "Leia o seu pedido inteiro com o comando abaixo:\n\nmustard-rt run read request-1 --root /r --spec x";
+        let read_only=format!("Leia o seu pedido com: mustard-rt run read request-1 --root {} --spec x",mustard_core::io::wave_prompt::shown(root));
+        assert_eq!(denied(dispatch_to(root,"mustard-wave",&read_only)),say("subagent.wave_not_running",Locale::PtBr,&[("{spec}","x"),("{wave}","1")]));
 
         for agent in ["mustard-wave", "mustard-review"] {
             assert_eq!(

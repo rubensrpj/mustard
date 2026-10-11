@@ -1,5 +1,26 @@
 import { test, expect, mock } from 'claude-code/testing';
 
+test('investigative discovery permits native ambiguity decisions while exact requests and opt-outs stay native',async ($,on)=>{
+  mock.env(on,{});
+  on('session.start',($,e)=>({cwd:e.cwd}));on('session.cwd',()=>({value:'/fixture'}));
+  on('command.register',()=>({value:null}));on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  const routed=[];
+  on('tool.call',{tool:'Bash'},($,e)=>{
+    routed.push(JSON.parse(e.command.match(/--request '(.*?)' --shell-output/)[1]).request);
+    return {result:{stdout:'native evidence',stderr:''}};
+  });
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  const requests=[
+    {tool:'Grep',input:{pattern:'import'},intent:'',purpose:'locate'},
+    {tool:'Grep',input:{pattern:'import'},intent:'Which method completes import?',purpose:'spec'},
+    {tool:'Grep',input:{pattern:'import'},intent:'Which method completes import?',purpose:'spec',choose:false},
+    {tool:'Read',input:{file_path:'/fixture/service.ts',offset:10,limit:5},intent:'Read the implementation',purpose:'understand'},
+  ];
+  for(const request of requests)await $.tool.call({tool:'mcp__mustard__search',request});
+  expect(routed.map(r=>r.choose)).toEqual([false,true,false,false]);
+  for(let i=0;i<requests.length;i++)expect(routed[i].input).toEqual(requests[i].input);
+});
+
 test('gateway tool transports task evidence and intent through host permissions',async ($,on)=>{
   mock.env(on,{});
   let shellCalls=0,processCalls=0,registrations=0;

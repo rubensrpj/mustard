@@ -38,7 +38,7 @@ export default {
         },
         "choose": {
           "type": "boolean",
-          "description": "Optional responsibility Choice after native triage. Default false."
+          "description": "Optional responsibility Choice after native triage. By default, investigative rg/grep/Grep/Glob requests permit Jev only for unresolved source-backed alternatives when the project enables it. Literal locate and exact read/symbol tools stay native. Set false to opt out."
         }
       },
       "required": [

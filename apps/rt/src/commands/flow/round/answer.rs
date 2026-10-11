@@ -39,6 +39,8 @@ use crate::shared::spec_state::{DiskSpecState, checkout};
 pub(crate) enum RoundRefusal {
     /// Uma recusa do arquivo de eventos.
     Refused(Refusal),
+    /// Generated project artifacts need preparation, not agent rework.
+    PreparationRequired(Value),
     /// Uma linha do relatório não se entende.
     BadReport { detail: String },
     /// Uma linha do relatório não traz um campo obrigatório.
@@ -158,6 +160,7 @@ impl RoundRefusal {
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
+            Self::PreparationRequired(detail) => detail["reason"].as_str().unwrap_or("round-preparation-required").into(),
             Self::WaveLoop { .. } => "waves-loop".into(),
             Self::BadReport { .. } => "round-bad-report".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
@@ -249,6 +252,7 @@ impl RoundRefusal {
             Self::RejectedCommitted { wave, sha } => fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())]),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
             Self::CheckFailed(failure) => failure.message(lang),
+            Self::PreparationRequired(detail) => detail["hint"].as_str().unwrap_or_default().into(),
             Self::CriterionProofFailed { code, command, output } => {
                 fill("round.criterion_proof_failed", &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())])
             }
@@ -268,6 +272,7 @@ impl RoundRefusal {
         // a página para trás, sem ninguém mandado copiá-la.
         let mut out = match self {
             Self::WaveLoop { answered, .. } if answered.is_object() => answered.clone(),
+            Self::PreparationRequired(detail) => detail.clone(),
             _ => json!({}),
         };
         out["ok"] = json!(false);

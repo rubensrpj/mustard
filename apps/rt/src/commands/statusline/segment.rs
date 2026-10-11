@@ -7,7 +7,6 @@
 //! default. Theme renderers honor it.
 
 use super::theme::Color;
-use crate::shared::rtk_gain::RtkGain;
 use crate::shared::spec_state::DiskSpecState;
 use mustard_core::SupportedLocale;
 use mustard_core::domain::spec_state::SpecState;
@@ -24,24 +23,14 @@ pub enum SegmentKind {
     Module = 0,
     Git = 1,
     Context = 2,
-    Duration = 3,
-    Savings = 4,
-    /// A versão do Mustard que roda, no começo da segunda linha. Ocupa a casa
-    /// do custo, que saiu da barra.
-    Mustard = 5,
-    Model = 6,
-    /// A spec desta sessão, a fase dela e o andamento das ondas.
-    Unit = 7,
+    Model = 3,
+    Unit = 4,
     /// The plugin is installed but switched off, so no hook runs.
-    Inert = 8,
-    /// O consumo de tokens da máquina: o último dia de trabalho fechado contra
-    /// a média dos dias de trabalho de antes, como link para o painel do
-    /// consumo — na segunda linha, depois da economia do rtk.
-    Spend = 9,
+    Inert = 5,
 }
 
-/// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 10;
+/// Count of kinds, shared with each theme's style table.
+pub const SEGMENT_KIND_COUNT: usize = 6;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -60,7 +49,11 @@ pub struct Segment {
 impl Segment {
     #[must_use]
     pub fn new(kind: SegmentKind, text: impl Into<String>) -> Self {
-        Self { kind, text: text.into(), override_fg: None }
+        Self {
+            kind,
+            text: text.into(),
+            override_fg: None,
+        }
     }
 }
 
@@ -75,8 +68,7 @@ impl Segment {
 #[must_use]
 pub fn module_segment(cwd: &Path) -> Segment {
     let module = cwd.file_name().map_or_else(|| "?".to_string(), |n| n.to_string_lossy().to_string());
-    // A mesma leitura com que o início da sessão decide se manda publicar a
-    // página do projeto: link na barra e silêncio no início andam juntos.
+    // Use only an already recorded publication; drawing never publishes.
     let text = match mustard_core::io::spec_index::project_page_url(cwd) {
         Some(url) => hyperlink(&url, &module),
         None => module,
@@ -121,20 +113,21 @@ pub fn git_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Git, format!("\u{2387} {branch}{suffix}")))
 }
 
-/// `██░░░░░░░░ 24%` — o uso da conversa num número só: o já usado, 100 menos
-/// `context_window.remaining_percentage`, o mesmo que a barrinha de 10 casas
-/// desenha. O total em tokens e o aviso de 200 mil ficam de fora: repetiam o
-/// mesmo dado de outro jeito. `None` sem o campo.
+/// The context used by this session, labelled and colored by pressure.
 #[must_use]
-pub fn context_segment(data: &Value) -> Option<Segment> {
-    let rem = data.get("context_window")?.get("remaining_percentage")?.as_f64()?;
+pub fn context_segment(data: &Value, lang: SupportedLocale) -> Option<Segment> {
+    let context = data.get("context_window")?;
+    let rem = context
+        .get("remaining_percentage")
+        .and_then(Value::as_f64)
+        .or_else(|| context.get("used_percentage").and_then(Value::as_f64).map(|used| 100.0 - used))?;
+    if !rem.is_finite() {
+        return None;
+    }
     let remaining = (rem.round() as i64).clamp(0, 100);
     let used = 100 - remaining;
-    let bar_len = 10i64;
-    let cells = ((used as f64 / 100.0) * bar_len as f64).round() as i64;
-    let cells = cells.clamp(0, bar_len);
-    let bar = format!("{}{}", "\u{2588}".repeat(cells as usize), "\u{2591}".repeat((bar_len - cells) as usize));
-    let mut s = Segment::new(SegmentKind::Context, format!("{bar} {used}%"));
+    let label = if lang == SupportedLocale::EnUs { "context" } else { "contexto" };
+    let mut s = Segment::new(SegmentKind::Context, format!("{label} {used}%"));
     // A cor pelo que sobra: vermelho forte abaixo de 20%, vermelho abaixo de
     // 40%, amarelo abaixo de 60%.
     if remaining < 20 {
@@ -147,93 +140,15 @@ pub fn context_segment(data: &Value) -> Option<Segment> {
     Some(s)
 }
 
-/// O tempo da sessão: `5h49m` de uma hora em diante, `2m5s` ou `45s` abaixo
-/// dela. A parte zerada da direita some (`5h`, `2m`). `None` com a duração
-/// zerada ou ausente.
-#[must_use]
-pub fn duration_segment(data: &Value) -> Option<Segment> {
-    let dur_ms = data.get("cost")?.get("total_duration_ms")?.as_i64()?;
-    if dur_ms <= 0 {
-        return None;
-    }
-    let h = dur_ms / 3_600_000;
-    let m = (dur_ms % 3_600_000) / 60_000;
-    let s = (dur_ms % 60_000) / 1000;
-    let text = if h > 0 {
-        if m > 0 { format!("{h}h{m}m") } else { format!("{h}h") }
-    } else if m > 0 {
-        if s > 0 { format!("{m}m{s}s") } else { format!("{m}m") }
-    } else {
-        format!("{s}s")
-    };
-    Some(Segment::new(SegmentKind::Duration, text))
-}
-
-/// `⚡ rtk poupou 64%` — a economia do rtk, no idioma do projeto. `gain` é a
-/// leitura do `rtk gain`, feita por quem desenha; `None` quando o rtk não tem
-/// nada a dizer.
-#[must_use]
-pub fn savings_segment(gain: Option<&RtkGain>, lang: SupportedLocale) -> Option<Segment> {
-    let gain = gain?;
-    if gain.saved <= 0 && gain.pct <= 0.0 {
-        return None;
-    }
-    let pct = gain.pct.round() as i64;
-    let label = mustard_core::translate("statusline.rtk", lang).replace("{pct}", &pct.to_string());
-    Some(Segment::new(SegmentKind::Savings, format!("\u{26A1} {label}")))
-}
-
-/// `consumo −25% vs média de 7 dias` — o consumo de tokens do último dia de
-/// trabalho fechado da máquina (o mais novo com 100 ações ou mais) contra a
-/// média dos sete dias de trabalho anteriores a ele, como link para o painel
-/// do consumo.
-///
-/// Lê só o arquivo dos dias fechados que fica em `dir` (a pasta do gasto da
-/// máquina, lida do ambiente por quem desenha): nunca abre uma conversa, para
-/// a barra não ficar mais lenta. `None` sem pasta, sem arquivo, com o arquivo
-/// ilegível, sem o endereço do painel, sem dia de trabalho fechado e sem dia de
-/// trabalho anterior a ele: o indicador some, e o resto da barra sai igual.
-#[must_use]
-pub fn spend_segment(dir: Option<&Path>, lang: SupportedLocale) -> Option<Segment> {
-    let ledger = mustard_core::io::spend::load(dir?).ok()?;
-    // Um endereço com caractere de controle (arquivo editado à mão) quebraria
-    // a sequência do link e sujaria a barra.
-    let url = ledger.url.as_deref().filter(|url| !url.chars().any(char::is_control))?;
-    let trend = mustard_core::domain::spend::trend(&ledger.rows)?;
-    Some(spend_indicator(trend.change_percent, Some(url), lang))
-}
-
-/// O indicador do consumo para a variação `change` (em percentual, com sinal),
-/// no idioma `lang`: o texto inteiro é o link para `url`, quando ele existe.
-/// Abaixo da média é bom e sai em verde nos temas de cor chapada.
-#[must_use]
-pub fn spend_indicator(change: i64, url: Option<&str>, lang: SupportedLocale) -> Segment {
-    let signed = match change {
-        0 => "0%".to_string(),
-        change if change < 0 => format!("\u{2212}{}%", change.unsigned_abs()),
-        change => format!("+{change}%"),
-    };
-    let label = mustard_core::translate("statusline.spend", lang).replace("{change}", &signed);
-    let text = url.map_or_else(|| label.clone(), |url| hyperlink(url, &label));
-    let mut segment = Segment::new(SegmentKind::Spend, text);
-    if change < 0 {
-        segment.override_fg = Some(Color::Ansi(2)); // green: spending under the average
-    }
-    segment
-}
-
-/// `Mustard 0.2.0` — a versão do Mustard que roda, no começo da segunda linha.
-/// Quem desenha só a pede num projeto com o Mustard.
-#[must_use]
-pub fn mustard_segment() -> Segment {
-    Segment::new(SegmentKind::Mustard, format!("Mustard {}", mustard_core::harness_version()))
-}
-
 /// `Opus 4.7` etc. Strips the `Claude ` / `claude-` prefix to keep the line
 /// tight.
 #[must_use]
 pub fn model_segment(data: &Value) -> Segment {
-    let raw = data.get("model").and_then(|m| m.get("display_name").or_else(|| m.get("id"))).and_then(Value::as_str).unwrap_or("Claude");
+    let raw = data
+        .get("model")
+        .and_then(|m| m.get("display_name").or_else(|| m.get("id")))
+        .and_then(Value::as_str)
+        .unwrap_or("Claude");
     let short = raw.strip_prefix("Claude ").or_else(|| raw.strip_prefix("claude-")).unwrap_or(raw);
     Segment::new(SegmentKind::Model, short.to_string())
 }
@@ -283,8 +198,9 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
         if matches!(phase, "approved" | "running")
             && let Some((delivered, total)) = wave_progress(cwd, &slug)
         {
-            let progress =
-                mustard_core::translate("statusline.wave", lang).replace("{delivered}", &delivered.to_string()).replace("{total}", &total.to_string());
+            let progress = mustard_core::translate("statusline.wave", lang)
+                .replace("{delivered}", &delivered.to_string())
+                .replace("{total}", &total.to_string());
             let _ = write!(text, " {progress}");
         }
     }
@@ -321,7 +237,11 @@ fn hyperlink(url: &str, label: &str) -> String {
 pub fn plugin_switched_off(settings: &Path) -> Option<bool> {
     let text = std::fs::read_to_string(settings).ok()?;
     let json: Value = serde_json::from_str(&text).ok()?;
-    json.get("enabledPlugins")?.as_object()?.iter().find(|(key, _)| key.split('@').next() == Some("mustard")).map(|(_, value)| value.as_bool() == Some(false))
+    json.get("enabledPlugins")?
+        .as_object()?
+        .iter()
+        .find(|(key, _)| key.split('@').next() == Some("mustard"))
+        .map(|(_, value)| value.as_bool() == Some(false))
 }
 
 /// `⨯ harness inerte` — the plugin is installed and switched off.
@@ -505,7 +425,11 @@ mod tests {
         );
         for branch in [Some("feature/outro-nome-v2"), Some("dev"), None] {
             let linked = unit_segment(root, branch).expect("a published unit reaches the bar");
-            assert_eq!(linked.text, format!("\u{25b8} {} levantamento", hyperlink(url, "outro-nome")), "only the name is the link ({branch:?})");
+            assert_eq!(
+                linked.text,
+                format!("\u{25b8} {} levantamento", hyperlink(url, "outro-nome")),
+                "only the name is the link ({branch:?})"
+            );
         }
     }
 
@@ -531,7 +455,10 @@ mod tests {
         let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
         seed("state", json!({"phase": "running", "author": "binary"}));
         let said = seed("message", json!({"author": "user", "text": "o plano"}));
-        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+        let crit = seed(
+            "criterion",
+            json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}),
+        );
         for n in 1..=8 {
             let author = if n % 2 == 0 { "binary" } else { "assistant" };
             seed(
@@ -592,8 +519,11 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
         assert_eq!(module_segment(&root).text, "loja");
         let url = "https://claude.ai/code/artifacts/projeto";
-        std::fs::write(root.join(".claude").join("spec").join("index.ndjson"), format!("{}\n", mustard_core::domain::spec_index::project_line(Some(url))))
-            .unwrap();
+        std::fs::write(
+            root.join(".claude").join("spec").join("index.ndjson"),
+            format!("{}\n", mustard_core::domain::spec_index::project_line(Some(url))),
+        )
+        .unwrap();
         let linked = module_segment(&root);
         assert_eq!(linked.text, hyperlink(url, "loja"));
         assert_eq!(visible(&linked.text), "loja");
@@ -622,7 +552,11 @@ mod tests {
         assert_eq!(verdict(None), None, "no settings file: unanswerable, not green");
         assert_eq!(verdict(Some("{ not json")), None, "unparseable: unanswerable");
         assert_eq!(verdict(Some(r#"{"enabledPlugins":{}}"#)), None, "unlisted: unanswerable");
-        assert_eq!(verdict(Some(r#"{"enabledPlugins":{"mustard@mustard-local":true}}"#)), Some(false), "an enabled plugin is measured as running");
+        assert_eq!(
+            verdict(Some(r#"{"enabledPlugins":{"mustard@mustard-local":true}}"#)),
+            Some(false),
+            "an enabled plugin is measured as running"
+        );
         // The marketplace suffix varies by install, so the name before `@` decides.
         assert_eq!(
             verdict(Some(r#"{"enabledPlugins":{"other@x":true,"mustard@whatever":false}}"#)),
@@ -638,57 +572,19 @@ mod tests {
         assert_eq!(m.kind, SegmentKind::Module);
     }
 
-    /// O uso da conversa é um número só, o já usado, o mesmo que a barrinha
-    /// desenha: sobram 70%, então 30% e três casas cheias; sobram 76%, então
-    /// 24% e duas casas. O total em tokens e o aviso de 200 mil não aparecem.
     #[test]
-    fn context_segment_shows_only_the_used_share_like_the_bar() {
-        let seg = context_segment(&json!({
-            "exceeds_200k_tokens": true,
-            "context_window": {
-                "remaining_percentage": 70,
-                "total_input_tokens": 250_000,
-                "total_output_tokens": 10_000,
-            }
-        }))
-        .unwrap();
-        assert_eq!(seg.text, "\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 30%");
-        // 70% left is above all thresholds → no override, even past 200k.
-        assert!(seg.override_fg.is_none());
-
-        let seg = context_segment(&json!({ "context_window": { "remaining_percentage": 76 } })).unwrap();
-        assert_eq!(seg.text, "\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 24%");
-    }
-
-    #[test]
-    fn context_segment_low_pct_overrides_fg_red() {
-        let seg = context_segment(&json!({
-            "context_window": { "remaining_percentage": 10 }
-        }))
-        .unwrap();
-        assert!(seg.override_fg.is_some());
-    }
-
-    #[test]
-    fn duration_segment_formats_minutes() {
-        let seg = duration_segment(&json!({ "cost": { "total_duration_ms": 125_000 } })).unwrap();
-        assert_eq!(seg.text, "2m5s");
-    }
-
-    /// De uma hora em diante, o tempo sai em horas e minutos, sem os
-    /// segundos; abaixo de uma hora, como antes.
-    #[test]
-    fn duration_segment_formats_hours_and_minutes() {
-        let at = |ms: i64| duration_segment(&json!({ "cost": { "total_duration_ms": ms } })).unwrap().text;
-        assert_eq!(at((5 * 3600 + 49 * 60 + 12) * 1000), "5h49m");
-        assert_eq!(at(3_600_000), "1h");
-        assert_eq!(at(3_599_000), "59m59s");
-        assert_eq!(at(45_000), "45s");
-    }
-
-    #[test]
-    fn duration_segment_none_when_zero() {
-        assert!(duration_segment(&json!({ "cost": { "total_duration_ms": 0 } })).is_none());
+    fn context_labels_usage_and_preserves_pressure_color() {
+        let context = |remaining| json!({"context_window":{"remaining_percentage":remaining}});
+        assert_eq!(context_segment(&context(76), SupportedLocale::PtBr).unwrap().text, "contexto 24%");
+        assert_eq!(context_segment(&context(93), SupportedLocale::EnUs).unwrap().text, "context 7%");
+        assert!(context_segment(&context(10), SupportedLocale::PtBr).unwrap().override_fg.is_some());
+        assert!(context_segment(&json!({}), SupportedLocale::PtBr).is_none());
+        assert_eq!(
+            context_segment(&json!({"context_window":{"used_percentage":7}}), SupportedLocale::EnUs)
+                .unwrap()
+                .text,
+            "context 7%"
+        );
     }
 
     #[test]
@@ -700,45 +596,5 @@ mod tests {
         // Fallback when both are absent
         let s = model_segment(&json!({}));
         assert_eq!(s.text, "Claude");
-    }
-
-    /// O indicador leva a variação com o sinal: menos 25% com o sinal de
-    /// menos de verdade (U+2212) e em verde, mais 12% com o `+` e sem cor
-    /// própria, zero sem sinal; o texto inteiro é o link do painel, e sem o
-    /// endereço (a prévia) sai sem link.
-    #[test]
-    fn the_indicator_signs_the_change_and_links_the_whole_label_to_the_panel() {
-        let panel = "https://claude.ai/code/artifacts/painel";
-        let below = spend_indicator(-25, Some(panel), SupportedLocale::PtBr);
-        assert_eq!(visible(&below.text), "consumo \u{2212}25% vs média de 7 dias");
-        assert_eq!(below.text, hyperlink(panel, "consumo \u{2212}25% vs média de 7 dias"));
-        assert_eq!(below.override_fg, Some(Color::Ansi(2)), "under the average is good: green");
-
-        let above = spend_indicator(12, Some(panel), SupportedLocale::EnUs);
-        assert_eq!(visible(&above.text), "usage +12% vs 7-day average");
-        assert_eq!(above.override_fg, None);
-        assert_eq!(spend_indicator(0, None, SupportedLocale::PtBr).text, "consumo 0% vs média de 7 dias");
-        assert_eq!(spend_indicator(-25, None, SupportedLocale::PtBr).text, "consumo \u{2212}25% vs média de 7 dias", "no address, no link");
-    }
-
-    /// O indicador lê só o arquivo dos dias fechados: com ele e o endereço do
-    /// painel guardados, a variação sai da conta do último dia contra a média
-    /// dos de antes; sem a pasta, sem o arquivo ou sem endereço, nada.
-    #[test]
-    fn the_indicator_reads_only_the_closed_days_file() {
-        use mustard_core::domain::spend::{DayRow, Ledger};
-        let dir = tempfile::tempdir().unwrap();
-        assert!(spend_segment(None, SupportedLocale::PtBr).is_none(), "no machine folder");
-        assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no file yet");
-
-        let day = |day: &str, tokens: u64| DayRow { day: day.into(), project: "loja".into(), actions: 200, tokens, ..DayRow::default() };
-        let mut ledger = Ledger { rows: vec![day("2026-09-26", 200), day("2026-09-27", 150)], ..Ledger::default() };
-        std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
-        assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no panel address");
-
-        ledger.url = Some("https://claude.ai/code/artifacts/painel".into());
-        std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
-        let shown = spend_segment(Some(dir.path()), SupportedLocale::PtBr).expect("the indicator");
-        assert_eq!(visible(&shown.text), "consumo \u{2212}25% vs média de 7 dias", "150 against an average of 200");
     }
 }

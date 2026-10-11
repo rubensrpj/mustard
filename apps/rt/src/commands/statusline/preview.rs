@@ -6,39 +6,20 @@
 
 use std::fmt::Write as _;
 
-use super::segment::{
-    context_segment, duration_segment, model_segment, mustard_segment, savings_segment, spend_indicator, Segment,
-    SegmentKind,
-};
-use super::theme::{render_line, ThemeId};
-use crate::shared::rtk_gain::RtkGain;
+use super::segment::{Segment, SegmentKind, context_segment, model_segment};
+use super::theme::{ThemeId, render_line};
 use mustard_core::SupportedLocale;
 
-/// O exemplo fixo: a barra aprovada, de uma sessão no levantamento, com os
-/// rótulos em `lang`. O tempo, o uso da conversa, a versão do Mustard, a
-/// economia do rtk, o indicador do consumo (menos 25% contra a média, sem
-/// link, porque a prévia não tem painel) e o modelo saem dos próprios
-/// construtores; o projeto, a branch e a spec são forjados, porque os
-/// construtores deles leem o estado vivo.
+/// Preview the same compact shape the live statusline uses.
 fn synthetic_segments(lang: SupportedLocale) -> Vec<Segment> {
-    let payload = serde_json::json!({
-        "model": { "display_name": "Opus 5 (1M context)" },
-        "cost": { "total_duration_ms": (5 * 60 + 49) * 60_000 },
-        "context_window": { "remaining_percentage": 76 },
-    });
-    let phase = mustard_core::translate("page.phase.survey", lang);
-    let mut segs = vec![
-        Segment::new(SegmentKind::Module, "portal-florestal-backend"),
-        Segment::new(SegmentKind::Git, "\u{2387} feature/pi-kpis-plantio ?1"),
-        Segment::new(SegmentKind::Unit, format!("\u{25b8} {phase}")),
+    let payload = serde_json::json!({"model":{"display_name":"Sonnet 5.5"},"context_window":{"remaining_percentage":76}});
+    let phase = mustard_core::translate("page.phase.running", lang);
+    let mut segments = vec![
+        Segment::new(SegmentKind::Unit, format!("pi-cardapio-original · {phase}")),
+        model_segment(&payload),
     ];
-    segs.extend(context_segment(&payload));
-    segs.extend(duration_segment(&payload));
-    segs.push(mustard_segment());
-    segs.extend(savings_segment(Some(&RtkGain { saved: 356_500_000, pct: 64.0 }), lang));
-    segs.push(spend_indicator(-25, None, lang));
-    segs.push(model_segment(&payload));
-    segs
+    segments.extend(context_segment(&payload, lang));
+    segments
 }
 
 /// O texto da face: para cada tema, a linha do nome, marcada quando ele pede
@@ -70,24 +51,17 @@ mod tests {
     use super::*;
     use crate::commands::statusline::theme::ThemeId;
 
-    /// A prévia acompanha a barra: o exemplo aprovado, com a fase, o uso da
-    /// conversa, o tempo em horas, a versão do Mustard, a economia do rtk e o
-    /// indicador do consumo no idioma pedido, e sem o custo.
     #[test]
-    fn synthetic_segments_follow_the_approved_example() {
-        let text = |lang| synthetic_segments(lang).iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("  ");
-        let version = mustard_core::harness_version();
-        assert_eq!(
-            text(SupportedLocale::PtBr),
-            format!(
-                "portal-florestal-backend  \u{2387} feature/pi-kpis-plantio ?1  \u{25b8} levantamento  \
-                 \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 24%  5h49m  \
-                 Mustard {version}  \u{26A1} rtk poupou 64%  consumo \u{2212}25% vs média de 7 dias  Opus 5 (1M context)"
-            )
-        );
-        let english = text(SupportedLocale::EnUs);
-        assert!(english.contains("\u{25b8} survey  ") && english.contains("\u{26A1} rtk saved 64%"), "{english}");
-        assert!(english.contains("usage \u{2212}25% vs 7-day average  Opus 5"), "{english}");
+    fn preview_matches_the_compact_live_statusline() {
+        for (lang, context) in [(SupportedLocale::PtBr, "contexto 24%"), (SupportedLocale::EnUs, "context 24%")] {
+            let segments = synthetic_segments(lang);
+            assert_eq!(segments.len(), 3);
+            let text = segments.iter().map(|segment| segment.text.clone()).collect::<Vec<_>>().join(" ");
+            assert!(text.contains(context) && text.contains("pi-cardapio-original") && text.contains("Sonnet 5.5"));
+            for absent in ["Mustard 0.", "vs média", "rtk poupou", "5h49m"] {
+                assert!(!text.contains(absent), "{text}");
+            }
+        }
     }
 
     /// A barra tem mais de um tema, alguns pedem a fonte especial e outros
@@ -106,21 +80,9 @@ mod tests {
                 (label.trim_end_matches(" (Nerd Font)").trim_end(), label.ends_with(" (Nerd Font)"))
             })
             .collect();
-        let expected: Vec<(&str, bool)> =
-            ThemeId::ALL.iter().map(|id| (id.name(), id.theme().requires_nerdfont)).collect();
+        let expected: Vec<(&str, bool)> = ThemeId::ALL.iter().map(|id| (id.name(), id.theme().requires_nerdfont)).collect();
         assert_eq!(labels, expected, "{shown}");
         assert_eq!(shown.lines().filter(|line| line.starts_with("  ")).count(), ThemeId::ALL.len(), "{shown}");
-    }
-
-    /// A prévia mostra o indicador do consumo em cada tema, no idioma do
-    /// projeto, com o exemplo de menos 25% contra a média.
-    #[test]
-    fn the_preview_shows_the_consumption_indicator_on_every_theme() {
-        let shown = preview_text(SupportedLocale::PtBr);
-        let with_it = shown.lines().filter(|line| line.starts_with("  ") && line.contains("consumo \u{2212}25% vs média de 7 dias")).count();
-        assert_eq!(with_it, ThemeId::ALL.len(), "{shown}");
-        let english = preview_text(SupportedLocale::EnUs);
-        assert!(english.lines().filter(|line| line.contains("usage \u{2212}25% vs 7-day average")).count() == ThemeId::ALL.len(), "{english}");
     }
 
     #[test]

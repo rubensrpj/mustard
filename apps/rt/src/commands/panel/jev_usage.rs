@@ -2,6 +2,24 @@
 //! never count as extra payment. Historical/incomplete records stay unknown.
 use super::{json, Value, Path};
 
+/// Configuration readiness is not a network/credit check. Never prints a key
+/// or spends tokens just to open a pane.
+pub(super) fn configuration(root:&Path, config:&mustard_core::ProjectConfig, env:Option<String>)->Value {
+    use mustard_core::io::jev_gate;
+    let key=jev_gate::find_key(root,config,env);
+    let fallback=config.ai_fallback_enabled();
+    let mut purposes=serde_json::Map::new();
+    for purpose in ["search","wave-planning","context"] {
+        let setting=config.judgement_filter(purpose);
+        let reason=if !fallback {"ai-fallback-disabled"}
+            else if !jev_gate::setting_allows(setting) {"purpose-not-configured"}
+            else if let Err(error)=&key {error.reason()}
+            else {"configured"};
+        purposes.insert(purpose.into(),json!({"enabled":reason=="configured","reason":reason}));
+    }
+    json!({"fallback_enabled":fallback,"usable_key":key.is_ok(),"purposes":purposes,"provider_verified":false})
+}
+
 fn rows(path: std::path::PathBuf) -> Vec<Value> {
     std::fs::read_to_string(path)
         .ok()
@@ -58,6 +76,20 @@ fn summarize(logical: &[Value], attempts: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_key_alone_never_looks_enabled_and_readiness_never_claims_verified_credit() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::write(root.join("mustard.json"),r#"{"jev":{"key":"private"}}"#).unwrap();
+        let off=configuration(root,&mustard_core::ProjectConfig::load(root),None);
+        assert_eq!(off["purposes"]["search"]["reason"],"ai-fallback-disabled");
+        assert!(!off.to_string().contains("private"));
+        std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":true},"judgement":{"search":{"filter":"jev"}}}"#).unwrap();
+        let ready=configuration(root,&mustard_core::ProjectConfig::load(root),Some("private".into()));
+        assert_eq!(ready["purposes"]["search"]["enabled"],true);
+        assert_eq!(ready["purposes"]["context"]["reason"],"purpose-not-configured");
+        assert_eq!(ready["provider_verified"],false);
+        assert_eq!(configuration(root,&mustard_core::ProjectConfig::load(root),None)["purposes"]["search"]["reason"],"missing_key");
+    }
     #[test]
     fn a_retry_counts_each_physical_attempt_without_double_billing_the_logical_success() {
         let logical = vec![json!({"request_id":"r","attempts":2,"physical_tracking":true,"input_tokens":1000})];
