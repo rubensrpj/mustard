@@ -73,7 +73,7 @@ async function settingsOperation($,operation='load') {
       return;
     }
     if(scan) {
-      settings={...settings,busy:false,message:['Índice atualizado.','Index updated.']};
+      settings={...settings,message:['Índice atualizado.','Index updated.']};
       // Refresh safe availability without disturbing saved choices.
       const fresh=await $.process.run([await runtime($),'run','settings','--root',cwd],{cwd,timeoutMs:10000});
       if(!opened || ticket!==settingsRevision)return;
