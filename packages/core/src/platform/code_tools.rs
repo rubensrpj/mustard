@@ -866,6 +866,7 @@ const OUTPUT_GRACE: Duration = Duration::from_millis(500);
 /// a etapa inteira, o orçamento [`STEP_BUDGET`].
 pub struct MachineRunner {
     path_env: String,
+    cwd: Option<PathBuf>,
     home: Option<PathBuf>,
     /// Se o sistema é o Windows: decide o separador do `PATH` e o nome com
     /// que o programa aparece numa pasta. Vem da compilação; o teste o troca
@@ -879,9 +880,17 @@ impl MachineRunner {
     pub fn new(path_env: &str) -> Self {
         Self {
             path_env: path_env.to_string(),
+            cwd: None,
             home: home_dir(),
             windows: cfg!(windows),
         }
+    }
+
+    /// Set the subprocess directory without changing the caller's directory.
+    #[must_use]
+    pub fn at(mut self, cwd: &Path) -> Self {
+        self.cwd = Some(cwd.to_path_buf());
+        self
     }
 
     /// As pastas de ferramenta do usuário, sob a pasta pessoal; nenhuma
@@ -899,8 +908,9 @@ impl MachineRunner {
     /// A saída só é lida quando `capture` pede: sem isso, nada a prende.
     fn spawn_and_wait(&self, program: &str, args: &[&str], limit: Duration, capture: bool) -> (RunOutcome, String) {
         let file = program_file(program, self.windows, &self.path_env).unwrap_or_else(|| PathBuf::from(program));
-        let Ok(mut child) = Command::new(file)
-            .args(args)
+        let mut command = Command::new(file);
+        if let Some(cwd) = &self.cwd { command.current_dir(cwd); }
+        let Ok(mut child) = command.args(args)
             .env("PATH", &self.path_env)
             .stdin(Stdio::null())
             .stdout(if capture { Stdio::piped() } else { Stdio::null() })
@@ -1335,6 +1345,18 @@ mod tests {
         assert!(!runner.on_path(""));
     }
 
+    #[test]
+    fn a_project_query_sets_only_the_child_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status().unwrap().success());
+        let parent = std::env::current_dir().unwrap();
+        let runner = MachineRunner::new(&std::env::var("PATH").unwrap_or_default()).at(dir.path());
+        let (outcome, output) = runner.output("git", &["rev-parse", "--show-toplevel"], Duration::from_secs(3));
+        assert_eq!(outcome, RunOutcome::Succeeded);
+        assert_eq!(Path::new(output.trim()).canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+        assert_eq!(std::env::current_dir().unwrap(), parent);
+    }
+
     /// Ferramenta instalada na pasta de ferramentas do usuário, fora do
     /// `PATH`, é achada pelo nome que o sistema dá ao arquivo: no Windows, com
     /// a extensão de executável; nos outros sistemas, pelo nome puro. Sem
@@ -1347,6 +1369,7 @@ mod tests {
         std::fs::write(windows_bin.join("rg.exe"), "").unwrap();
         let windows = MachineRunner {
             path_env: String::new(),
+            cwd: None,
             home: Some(windows_home.path().to_path_buf()),
             windows: true,
         };
@@ -1359,6 +1382,7 @@ mod tests {
         std::fs::write(linux_bin.join("rg"), "").unwrap();
         let linux = MachineRunner {
             path_env: String::new(),
+            cwd: None,
             home: Some(linux_home.path().to_path_buf()),
             windows: false,
         };

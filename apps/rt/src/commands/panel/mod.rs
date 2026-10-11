@@ -36,17 +36,19 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
     specs.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     let branch = mustard_core::platform::git::run(start, &["branch", "--show-current"]).out();
     let mut jev_view=jev.project();
-    jev_view["configuration"]=jev_usage::configuration(&root,&mustard_core::ProjectConfig::load(&root),std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok());
+    let config=mustard_core::ProjectConfig::load(&root);
+    jev_view["configuration"]=jev_usage::configuration(&root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok());
     json!({"ok":true,"schema_version":1,"at":chrono::Utc::now().to_rfc3339(),
         "project":{"language":crate::commands::spec_events::project(&root).lang.to_string(),"version":mustard_core::harness_version(),"publication_url":spec_index::project_page_url(&root),"name":spend::project_name(&root).or_else(||root.file_name().map(|n|n.to_string_lossy().into_owned())),"branch":branch},
         "selected_spec":selected,"specs":specs,
-        "jev":jev_view,"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
+        "jev":jev_view,"rtk":crate::shared::rtk_gain::cached(&root),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
+        "retrieval":{"vectors_enabled":config.ai_vectors_enabled(),"index_present":mustard_core::io::project_map::model_path(&root).is_file()},
         "statusline":consumption::statusline(&root,session),
         "commands":{"panel":"/mustard-panel","publish":"/mustard-pages"}})
 }
 
-pub(crate) fn observe_statusline(data:&Value,gain:Option<&crate::shared::rtk_gain::RtkGain>) {
-    consumption::observe_statusline(data,gain);
+pub(crate) fn observe_statusline(data:&Value) {
+    consumption::observe_statusline(data);
 }
 
 fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger) -> Value {
@@ -144,7 +146,8 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
         && !matches!(event.str_field("command"),Some("wave assembly"|"wave items"))).collect();
     let mut commands = std::collections::BTreeMap::<String, Value>::new();
     let mut totals = json!({"calls":0,"refusals":0,"input_bytes":0,"output_bytes":0,"estimated_input_tokens":0,"estimated_output_tokens":0,"calls_without_payload_measurement":0,
-        "search":{"calls":0,"enriched":0,"task_evidence":0,"fallback":0,"ms":0}});
+        "search":{"calls":0,"enriched":0,"task_evidence":0,"fallback":0,"ms":0,
+            "decision_coverage":0,"choice_gates":{},"selection_statuses":{},"local_model_calls":0,"remote_model_calls":0,"cache_hits":0,"accepted_choices":0}});
     for call in calls {
         let command = commands.entry(call.str_field("command").unwrap_or_default().into())
             .or_insert_with(|| json!({"calls":0,"refusals":0,"reasons":{}}));
@@ -166,6 +169,17 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
             for (key,field) in [("enriched","search_enriched"),("task_evidence","search_task_evidence"),("fallback","search_fallback")] {
                 if call.fields.get(field)==Some(&Value::Bool(true)){totals["search"][key]=json!(totals["search"][key].as_u64().unwrap_or(0)+1);}
             }
+            if let Some(gate)=call.str_field("search_choice_gate") {
+                totals["search"]["decision_coverage"]=json!(totals["search"]["decision_coverage"].as_u64().unwrap_or(0)+1);
+                totals["search"]["choice_gates"][gate]=json!(totals["search"]["choice_gates"][gate].as_u64().unwrap_or(0)+1);
+            }
+            if let Some(status)=call.str_field("search_selection_status") {
+                totals["search"]["selection_statuses"][status]=json!(totals["search"]["selection_statuses"][status].as_u64().unwrap_or(0)+1);
+            }
+            for (key,field) in [("local_model_calls","search_local_model_calls"),("remote_model_calls","search_remote_model_calls"),("accepted_choices","search_accepted_choices")] {
+                if let Some(value)=call.int(field) {totals["search"][key]=json!(totals["search"][key].as_u64().unwrap_or(0)+value);}
+            }
+            if call.fields.get("search_selection_cached")==Some(&Value::Bool(true)) {totals["search"]["cache_hits"]=json!(totals["search"]["cache_hits"].as_u64().unwrap_or(0)+1);}
         }
     }
     totals["by_command"] = json!(commands);
@@ -259,7 +273,27 @@ mod tests {
         let result = snapshot(dir.path(), None);
         assert_eq!(result["specs"], json!([]));
         assert_eq!(result["jev"]["cost_micro_usd"], Value::Null);
+        assert_eq!(result["retrieval"],json!({"vectors_enabled":true,"index_present":false}));
         assert!(!dir.path().join(".claude").exists());
+    }
+
+    #[test]
+    fn search_decision_coverage_does_not_invent_reasons_for_legacy_calls() {
+        let root=tempfile::tempdir().unwrap();
+        let rows=[json!({"v":1,"id":1,"type":"call","command":"search","invocation":true}),
+            json!({"v":1,"id":2,"type":"call","command":"search","invocation":true,
+                "search_choice_gate":"eligible","search_selection_status":"jev-choice",
+                "search_local_model_calls":1,"search_remote_model_calls":0,
+                "search_selection_cached":true,"search_accepted_choices":2})];
+        let log=mustard_core::domain::spec_events::parse_log(&rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"));
+        let result=operations(root.path(),"demo",&log);
+        assert_eq!(result["search"]["calls"],2);
+        assert_eq!(result["search"]["decision_coverage"],1);
+        assert_eq!(result["search"]["choice_gates"],json!({"eligible":1}));
+        assert_eq!(result["search"]["local_model_calls"],1);
+        assert_eq!(result["search"]["remote_model_calls"],0);
+        assert_eq!(result["search"]["cache_hits"],1);
+        assert_eq!(result["search"]["accepted_choices"],2);
     }
 
     #[test]

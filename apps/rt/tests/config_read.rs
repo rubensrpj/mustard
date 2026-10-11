@@ -26,7 +26,7 @@ fn native(root: &Path, file: &str, reader: &str, args: Value) -> std::process::O
 }
 
 fn shell(root: &Path, command: &str) -> std::process::Output {
-    Command::new("bash").args(["-c", command]).current_dir(root).output().unwrap()
+    mustard_rt::util::platform::build_shell_command(command).current_dir(root).output().unwrap()
 }
 
 #[test]
@@ -81,7 +81,8 @@ fn masked_reads_preserve_no_match_conditions_and_read_latest_bytes() {
         assert!(out.status.success(), "{original}: {}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(String::from_utf8(out.stdout).unwrap(), expected, "{original}");
     }
-    assert_eq!(native(dir.path(), "mustard.json", "grep", json!(["absent"])).status.code(), Some(1));
+    let result = hook(dir.path(), "grep absent mustard.json");
+    assert_eq!(shell(dir.path(), result["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap()).status.code(), Some(1));
     let result = hook(dir.path(), "cat mustard.json");
     std::fs::write(dir.path().join("mustard.json"), r#"{"jev":{"k\u0065y":"changed-secret-81"},"new":true}"#).unwrap();
     let out = shell(dir.path(), result["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap());

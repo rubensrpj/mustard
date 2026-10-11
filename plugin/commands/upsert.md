@@ -18,6 +18,8 @@ argument-hint: [--doctor]
 
 `mustard-rt run doctor` only reads; each failing check names its fix. `--check <name>` runs one, `--residue` also seeks dead references, `--json` answers in JSON.
 
+To inspect configuration without exposing credentials, use `mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'`. The native reader masks keys before filtering and preserves the reader's exit code. Supported shell reads are rewritten automatically; scripts and unsupported readers remain refused. Keep tests and other chained commands in their original order.
+
 ## Upkeep
 
 - `mustard-rt run scan` updates the project map from what changed, never writing to git; `--full` also rewrites each subproject's map.
