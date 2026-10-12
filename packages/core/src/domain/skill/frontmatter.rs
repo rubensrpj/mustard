@@ -1,10 +1,11 @@
 //! O cabeçalho YAML de um `SKILL.md`, lido no que o Mustard usa dele.
 //!
-//! Toda skill — as de base que o instalador leva e as que o scan escreve em
-//! `{subprojeto}/.claude/skills/` — abre com um bloco de cabeçalho entre duas
+//! Uma skill em `{subprojeto}/.claude/skills/` abre com um bloco de cabeçalho entre duas
 //! linhas `---`. O Mustard lê dele a descrição, que a busca de skill, o pedido
 //! da onda e a lista do agente mostram, e o campo `source`, que o censo da
-//! branch usa para distinguir a skill que o scan escreveu. Qualquer outra chave
+//! branch usa para distinguir uma skill de origem antiga do scan. O scan atual
+//! não gera skills; arquivos adotados com `source: manual` continuam pessoais.
+//! Qualquer outra chave
 //! cai em [`SkillFrontmatter::extra`] e não é conferida: uma skill escrita para
 //! um Mustard futuro não quebra o leitor de hoje.
 //!
