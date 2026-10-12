@@ -761,9 +761,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id))
             .and_then(|send|send.fields.get("expertise"))
             .and_then(|value|serde_json::from_value::<crate::io::expertise::workflow::Selection>(value.clone()).ok()));
-    let preferred = stored.as_ref().and_then(|selection|selection.profiles.first()).map(String::as_str);
-    let expertise = crate::io::expertise::workflow::select(root,&files,preferred,
-        stored.as_ref().map_or("native",|s|s.source.as_str()));
+    let expertise = crate::io::expertise::workflow::restore(root,&files,stored.as_ref());
     // Explicit skills and scoped skills of the touched area. The latter
     // must survive native-tool interception and ignored worktree files.
     let mut named = skills_named(log, wave);

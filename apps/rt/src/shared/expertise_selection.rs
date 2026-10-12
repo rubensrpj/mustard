@@ -87,11 +87,19 @@ fn select_with(
         return plans;
     };
     for (wave, candidates) in peers {
+        let files = mustard_core::domain::wave_prompt::wave_files(log, wave);
+        let current = workflow::candidates(root, &files);
+        plans.insert(wave, workflow::select(root, &files, None, "native"));
         let answer = &doc["answers"][format!("w{wave}")];
         let Some(n) = confident_option(answer, candidates.len()) else {
             continue;
         };
-        let files = mustard_core::domain::wave_prompt::wave_files(log, wave);
+        if !current
+            .iter()
+            .any(|p| p.name == candidates[n].name && p.reviewed == candidates[n].reviewed)
+        {
+            continue;
+        }
         plans.insert(
             wave,
             workflow::select(
@@ -187,6 +195,25 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(selected[&1].profiles, vec!["validation"]);
         assert_eq!(selected[&1].source, "jev");
+        let changed = select_with(root, &log, &[1], &|_| {
+            let mut profile = expertise::list(root)
+                .unwrap()
+                .into_iter()
+                .find(|p| p.name == "validation")
+                .unwrap();
+            profile
+                .procedure
+                .push_str(" Follow the newly reviewed contract.");
+            let draft = expertise::record(root, &profile).unwrap();
+            expertise::review(root, &profile.name, draft["fingerprint"].as_str().unwrap()).unwrap();
+            Some(
+                json!({"answers":{"w1":{"choice":"p1","confidence":0.9,"probabilities":{"p0":0.05,"p1":0.9,"insufficient":0.05}}}}),
+            )
+        });
+        assert_eq!(
+            changed[&1].source, "native",
+            "a re-reviewed procedure changed during the call"
+        );
         std::fs::write(root.join("AGENTS.md"), "Require shared schema helpers.\n").unwrap();
         let stale = select_with(root, &log, &[1], &|_| {
             panic!("stale alternatives must not be sent")

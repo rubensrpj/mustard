@@ -133,6 +133,23 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
     }
 }
 
+/// A saved preference belongs to the exact reviewed evidence it compared.
+/// Re-reviewing a changed procedure with the same name cannot revive it.
+pub fn restore(root: &Path, files: &[String], stored: Option<&Selection>) -> Selection {
+    if let Some(stored) = stored {
+        let current = select(
+            root,
+            files,
+            stored.profiles.first().map(String::as_str),
+            &stored.source,
+        );
+        if current.fingerprint == stored.fingerprint {
+            return current;
+        }
+    }
+    select(root, files, None, "native")
+}
+
 /// Export only the selected assets. Manual files are preserved by the export
 /// ledger. File creation is not proof that a live host discovered an agent.
 pub fn prepare(
@@ -233,7 +250,7 @@ mod tests {
     }
     #[test]
     fn unknown_selection_never_activates_a_profile_and_exports_are_reused() {
-        let (dir, p) = crate::io::expertise::tests::fixture();
+        let (dir, mut p) = crate::io::expertise::tests::fixture();
         let root = dir.path();
         let draft = record(root, &p).unwrap();
         review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
@@ -247,6 +264,14 @@ mod tests {
             second["selection"]["fingerprint"]
         );
         assert!(prepare(root, &files, "unknown", None, "native").is_err());
+        let selected = select(root, &files, Some(&p.name), "jev");
+        assert_eq!(restore(root, &files, Some(&selected)).source, "jev");
+        p.procedure.push_str(" Check the changed procedure.");
+        let draft = record(root, &p).unwrap();
+        review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
+        let renewed = restore(root, &files, Some(&selected));
+        assert_eq!(renewed.source, "native");
+        assert_ne!(renewed.fingerprint, selected.fingerprint);
     }
 
     #[test]
