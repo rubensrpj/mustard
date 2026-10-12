@@ -60,9 +60,15 @@ pub fn ambiguous(root: &Path, files: &[String]) -> Vec<Profile> {
                 paths,
             ))
         })
-        .take(4)
         .collect();
-    if peers.len() > 1 { peers } else { Vec::new() }
+    // Include every equally valid alternative, plus the abstention option.
+    // A partial shortlist could hide the right procedure. An oversized
+    // taxonomy stays native; the caller also bounds the complete payload.
+    if (2..=254).contains(&peers.len()) {
+        peers
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &str) -> Selection {
@@ -207,10 +213,21 @@ mod tests {
         let choice = select(root, &files, Some(&p.name), "jev");
         assert_eq!(choice.profiles, vec![p.name.clone()]);
         assert_eq!(choice.source, "jev");
+        for n in 0..3 {
+            p.name = format!("alternative-{n}");
+            p.procedure.push_str(" Check another distinct contract.");
+            let draft = record(root, &p).unwrap();
+            review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
+        }
+        assert_eq!(
+            ambiguous(root, &files).len(),
+            5,
+            "do not silently omit valid procedures"
+        );
         std::fs::write(root.join("AGENTS.md"), "Require project schemas.\n").unwrap();
         let stale = select(root, &files, Some(&p.name), "jev");
         assert!(stale.profiles.is_empty());
-        assert_eq!(stale.pending_review.len(), 3);
+        assert_eq!(stale.pending_review.len(), 6);
         assert_eq!(stale.uncovered_files, files);
         assert_eq!(stale.source, "native");
     }

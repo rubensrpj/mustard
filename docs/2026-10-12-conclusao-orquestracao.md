@@ -10,7 +10,7 @@ Especializar e reutilizar é adequado; multiplicar agentes ou gerar skills a cad
 - [Claude: skills e arquivos de referência](https://code.claude.com/docs/en/skills#add-supporting-files): instruções focadas e detalhes sob demanda.
 - [Codex: práticas de skills](https://learn.chatgpt.com/docs/build-skills#best-practices): uma função por skill, entradas/saídas claras e teste dos gatilhos.
 - [Codex: subagentes](https://learn.chatgpt.com/docs/agent-configuration/subagents): cada agente faz seu próprio trabalho de modelo e ferramentas; reduzir o contexto do pai não comprova redução dos tokens totais.
-- [Jev: perguntas atômicas](https://docs.typesafe.ai/introduction): classificação/seleção com perguntas delimitadas; o binário combina as respostas. Classificar um relato não comprova sua verdade.
+- [Jev: perguntas atômicas](https://docs.typesafe.ai/introduction): classificação/seleção com perguntas delimitadas; o binário combina as respostas. Classificar um relato não comprova sua verdade. [Choice](https://docs.typesafe.ai/primitives/choice) orienta comparar o conjunto completo de alternativas e permitir abstenção; o Mustard não trunca silenciosamente perfis válidos. Se o conjunto/payload excede o contrato, mantém a seleção nativa sem chamada.
 
 ## Comportamento implementado
 
