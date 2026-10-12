@@ -1138,19 +1138,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              criteria. So they stay out of the waves, and the tasks that depend on them wait. Record a version \
              of each one, with `replaces` and the items in `covers`, so they enter the assembly."
         }
-        // O aviso da rodada: o teto de gasto do mês segurou o Jev, e a rodada
-        // seguiu sem ele.
-        ("round.jev_over_budget", Locale::PtBr) => {
-            "O teto de gasto do mês segurou o Jev nesta rodada, porque o gasto do mês mais a chamada passaria \
-             dele. Sem o Jev, a rodada monta as ondas pelos arquivos de cada tarefa, e o pedido leva os itens de \
-             sempre. O teto é jev.monthly_budget_usd no mustard.json, com 10 dólares quando ele não diz."
-        }
-        ("round.jev_over_budget", Locale::EnUs) => {
-            "The monthly budget held the Jev back in this round, because the spend of the month plus the call \
-             would pass it. Without the Jev, the round builds the waves from the files of each task, and the \
-             request carries the usual items. The budget is jev.monthly_budget_usd in mustard.json, 10 dollars \
-             when it says nothing."
-        }
         // O aviso da rodada e do fechamento: os agentes do projeto estavam
         // com outro texto e voltaram ao deste programa, ou não puderam voltar.
         ("round.agents_refreshed", Locale::PtBr) => {
@@ -1814,7 +1801,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 237, 0x50c3_c7e8_2ba4_0e8f);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 236, 0xa35f_d90f_f898_dce7);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2052,7 +2039,6 @@ mod tests {
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
-            ("round.jev_over_budget", &[][..]),
             ("round.agents_refreshed", &["{files}"][..]),
             ("round.agents_not_refreshed", &["{detail}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),

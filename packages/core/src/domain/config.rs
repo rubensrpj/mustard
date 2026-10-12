@@ -251,9 +251,6 @@ impl ScanConfig {
 /// dele em toda leitura do arquivo: um nome só para as duas.
 pub const JEV_KEY_FIELD: &str = "key";
 
-/// O nome do campo do teto de gasto do mês dentro da seção `jev`, em dólares.
-pub const JEV_BUDGET_FIELD: &str = "monthly_budget_usd";
-
 /// A seção `jev` do `mustard.json`: a chave do serviço que dá nota aos
 /// candidatos da busca por assunto, em `jev.key`. É segredo: o `Debug` não a
 /// escreve, e a serialização do tipo não a leva. Só a gravação do próprio
@@ -275,13 +272,6 @@ impl JevConfig {
         self.raw.as_ref()?.get(JEV_KEY_FIELD)?.as_str().map(str::trim).filter(|key| !key.is_empty())
     }
 
-    /// O teto de gasto do mês escrito em `jev.monthly_budget_usd`, em dólares;
-    /// `None` quando falta ou não é um número de zero para cima. Zero vale: é
-    /// o Jev desligado.
-    #[must_use]
-    pub fn monthly_budget_usd(&self) -> Option<f64> {
-        self.raw.as_ref()?.get(JEV_BUDGET_FIELD)?.as_f64().filter(|usd| usd.is_finite() && *usd >= 0.0)
-    }
 }
 
 impl std::fmt::Debug for JevConfig {
@@ -945,14 +935,6 @@ impl ProjectConfig {
         self.jev.key()
     }
 
-    /// `jev.monthly_budget_usd`: quanto o Jev pode gastar por mês, em dólares;
-    /// `None` quando falta ou não é um número de zero para cima, e quem lê usa
-    /// o padrão dele.
-    #[must_use]
-    pub fn jev_monthly_budget_usd(&self) -> Option<f64> {
-        self.jev.monthly_budget_usd()
-    }
-
     /// `scan.max_same_name`: o teto do nome comum que vale, e se o valor
     /// escrito era inválido (zero, negativo ou texto), caso em que vale o
     /// padrão, [`MAX_SAME_NAME`], e quem lê avisa.
@@ -1491,7 +1473,7 @@ mod tests {
             assert!(!cfg.unreadable, "{text}: a chave fora de forma não torna o arquivo ilegível");
         }
 
-        let cfg = load(&format!(r#"{{"language": {{"text": "pt-BR"}}, "jev": {{"key": "{KEY}", "nota": 1}}}}"#));
+        let cfg = load(&format!(r#"{{"language": {{"text": "pt-BR"}}, "jev": {{"key": "{KEY}", "nota": 1, "monthly_budget_usd": 0}}}}"#));
         assert!(!format!("{cfg:?}").contains(KEY), "{cfg:?}");
         assert!(!format!("{:?}", cfg.jev).contains(KEY));
         let serialized = serde_json::to_string(&cfg).unwrap();
@@ -1499,7 +1481,7 @@ mod tests {
 
         cfg.write(dir.path()).unwrap();
         let written: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("mustard.json")).unwrap()).unwrap();
-        assert_eq!(written["jev"], serde_json::json!({"key": KEY, "nota": 1}));
+        assert_eq!(written["jev"], serde_json::json!({"key": KEY, "nota": 1, "monthly_budget_usd": 0}));
         assert_eq!(written["language"]["text"], "pt-BR");
         assert_eq!(ProjectConfig::load(dir.path()).jev_key(), Some(KEY));
 

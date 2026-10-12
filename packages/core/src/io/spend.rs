@@ -347,64 +347,6 @@ fn jev_calls(root: &Path, range: &Range) -> Vec<JevCall> {
     found
 }
 
-/// O custo que a linha `line` de uma spec grava, com o dia dela: só o evento
-/// `call` que traz `cost_micro_usd`. A linha que não cita os dois nem chega a
-/// ser lida como JSON, e são quase todas: uma spec longa passa de dezenas de
-/// megabytes, e quem pergunta o gasto do mês não pode relê-la inteira.
-fn call_cost(line: &str) -> Option<(String, u64)> {
-    if !line.contains("\"type\":\"call\"") || !line.contains("\"cost_micro_usd\"") {
-        return None;
-    }
-    let event: serde_json::Value = serde_json::from_str(line).ok()?;
-    if event.get("type")?.as_str()? != "call" {
-        return None;
-    }
-    Some((day_of_stamp(event.get("at")?.as_str()?)?, event.get("cost_micro_usd")?.as_u64()?))
-}
-
-/// O que as chamadas ao Jev gravadas nas specs vivas de `root` custaram no mês
-/// `month`, em milionésimos de dólar. A spec que não mudou desde o começo do
-/// mês não tem chamada dele e nem chega a ser aberta.
-fn spec_month_micro_usd(root: &Path, month: &str) -> u64 {
-    let floor = day_start(&format!("{month}-01")).map(SystemTime::from);
-    crate::io::spec_index::live_spec_files(root)
-        .into_iter()
-        .filter(|(_, path)| {
-            let changed = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
-            floor.is_none_or(|floor| changed.is_none_or(|at| at >= floor))
-        })
-        .filter_map(|(_, path)| read_shared(&path).ok())
-        .map(|text| text.lines().filter_map(call_cost).filter(|(day, _)| month_of(day) == month).fold(0, |sum: u64, (_, cost)| sum.saturating_add(cost)))
-        .fold(0, u64::saturating_add)
-}
-
-/// O que o Jev custou no mês `month` (`AAAA-MM`, no fuso do gasto), em
-/// milionésimos de dólar: as chamadas gravadas nas specs do projeto de `root`,
-/// de qualquer comando, e, vindo da pasta da máquina em `ledger_dir`, quando
-/// há, as chamadas soltas do projeto e o que os outros projetos dela gastaram
-/// nos dias que o arquivo do gasto já fechou. As linhas do próprio projeto no
-/// arquivo ficam de fora: as specs e as chamadas soltas trazem o mesmo gasto,
-/// e até hoje.
-#[must_use]
-pub fn jev_month_micro_usd(root: &Path, ledger_dir: Option<&Path>, month: &str) -> u64 {
-    let home = project_home(root);
-    let own = project_name(root);
-    let elsewhere = ledger_dir.and_then(|dir| load(dir).ok()).map_or(0, |ledger| {
-        ledger
-            .rows
-            .iter()
-            .filter(|row| month_of(&row.day) == month && Some(&row.project) != own.as_ref())
-            .fold(0, |sum: u64, row| sum.saturating_add(row.jev_cost_micro_usd))
-    });
-    let loose = ledger_dir.map_or(0, |dir| {
-        loose_calls(dir)
-            .into_iter()
-            .filter(|(project, call)| Some(project) == own.as_ref() && month_of(&call.day) == month)
-            .fold(0, |sum: u64, (_, call)| sum.saturating_add(call.cost_micro_usd))
-    });
-    spec_month_micro_usd(&home, month).saturating_add(elsewhere).saturating_add(loose)
-}
-
 /// As linhas de hoje, o dia aberto: contadas agora, nas conversas de
 /// `config_dir` e nas chamadas soltas da pasta da máquina `ledger_dir`, e
 /// marcadas como parciais. Hoje nunca vai para o arquivo dos dias fechados; a
@@ -653,18 +595,8 @@ mod tests {
         assert_eq!(fs::read_to_string(ledger_path(&folder)).unwrap(), "{ não é json", "the refusal leaves the file alone");
     }
 
-    /// O gasto do Jev no mês soma só as chamadas dele: as do mês pedido, de
-    /// qualquer comando e de qualquer spec do projeto; as de outro mês, as que
-    /// não gastaram, a leitura de um item e o texto que só cita o custo ficam
-    /// de fora, a spec que não mudou desde o começo do mês nem se abre, e o
-    /// painel de gasto soma o mesmo mês pelo mesmo número. Dos outros projetos
-    /// da máquina entra o que o arquivo do gasto já fechou no mês pedido; as
-    /// linhas do próprio projeto, que as specs dele já trazem, e as de outro
-    /// mês ficam de fora, e um arquivo ilegível vale como ausente. As chamadas
-    /// feitas sem spec entram no mês do projeto delas e no painel, cada uma
-    /// no seu mês, e a linha que não se lê fica de fora.
     #[test]
-    fn the_month_of_jev_spend_counts_only_that_months_billed_calls_and_matches_the_panel() {
+    fn the_panel_keeps_jev_costs_by_month_and_project_without_a_spending_gate() {
         let dir = tempdir().unwrap();
         let config = dir.path().join("config");
         let root = project(dir.path(), "meu-projeto");
@@ -701,39 +633,13 @@ mod tests {
         let before_october = SystemTime::from(day_start("2026-09-15").unwrap());
         fs::File::options().write(true).open(&old).unwrap().set_modified(before_october).unwrap();
 
-        // O mês de outubro vem sem o fim de setembro, sem o que não gastou e
-        // sem a spec que ninguém mexe desde antes do mês.
-        let october = jev_month_micro_usd(&root, None, "2026-10");
-        assert_eq!(october, 900 + 400 + 50, "{october}");
-        assert_eq!(jev_month_micro_usd(&root, None, "2026-09"), 5_000, "the earlier month keeps its own call");
-        assert_eq!(jev_month_micro_usd(&root, None, "2026-08"), 0);
-
-        // O painel soma o mesmo mês pelo mesmo número (menos a spec que a
-        // leitura leve nem abre).
+        // O painel preserva custos reais registrados, mesmo em arquivos antigos.
+        let october = 900 + 400 + 50;
         let rows = count(&config, None, &range(Some("2026-10-01"), "2026-10-31"));
         let panel: u64 = rows.iter().map(|row| row.jev_cost_micro_usd).sum();
         assert_eq!(panel, october + 60_000, "the panel also reads the file nobody touched");
 
-        // Os outros projetos da máquina gastam do mesmo teto; o próprio
-        // projeto no arquivo não conta duas vezes, e o mês passado, só no dele.
         let machine = dir.path().join("spend");
-        let row =
-            |day: &str, project: &str, cost: u64| DayRow { day: day.to_string(), project: project.to_string(), jev_cost_micro_usd: cost, ..DayRow::default() };
-        update(&machine, |ledger| {
-            ledger.rows = vec![
-                row("2026-10-01", "outro", 700),
-                row("2026-10-02", "terceiro", 30),
-                row("2026-10-02", "meu-projeto", 9_999),
-                row("2026-09-30", "outro", 8_888),
-            ];
-        })
-        .unwrap();
-        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 730);
-        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-09"), 5_000 + 8_888);
-
-        // As chamadas sem spec: a do próprio projeto entra no mês dela e no
-        // painel; a de outro projeto entra no painel, e no teto só pelo
-        // arquivo do gasto, quando o dia dela fechar.
         let loose = |project: &str, at: &str, cost: u64| {
             let call = LooseCall { project: project.to_string(), at: at.to_string(), tokens: 10, cost_micro_usd: cost };
             append_loose(&machine, &call).unwrap();
@@ -743,14 +649,9 @@ mod tests {
         loose("outro", "2026-10-03T10:00:00-03:00", 4_000);
         let mut file = fs::File::options().append(true).open(machine.join(LOOSE_CALLS)).unwrap();
         std::io::Write::write_all(&mut file, b"{ \"cost_micro_usd\": 50000 }\n").unwrap();
-        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 730 + 2_000);
-        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-09"), 5_000 + 8_888 + 3_000);
         let rows = count(&config, Some(&machine), &range(Some("2026-10-01"), "2026-10-31"));
         let panel_of = |project: &str| rows.iter().filter(|row| row.project == project).map(|row| row.jev_cost_micro_usd).sum::<u64>();
         assert_eq!((panel_of("meu-projeto"), panel_of("outro")), (october + 60_000 + 2_000, 4_000));
-
-        fs::write(ledger_path(&machine), "{ não é json").unwrap();
-        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 2_000, "an unreadable file counts as absent");
     }
 
     /// O gasto de um projeto só é a linha que a conta da máquina dá a ele,

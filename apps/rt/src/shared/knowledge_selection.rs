@@ -89,7 +89,7 @@ impl SymbolSelector for KnowledgeSelector {
             Ok(doc) => doc,
             Err(error) => {
                 return Decisions {
-                    usage: json!({"status":"native-fallback","reason":error.reason(),"remote_model_calls":if matches!(error,FilterError::TooLarge{..}|FilterError::OverBudget){json!(0)}else{Value::Null},
+                    usage: json!({"status":"native-fallback","reason":error.reason(),"remote_model_calls":if matches!(error,FilterError::TooLarge{..}){json!(0)}else{Value::Null},
                 "usage_complete":false,"input_tokens":null,"cost_micro_usd":null,"physical_attempts":"consult judgement ledger"}),
                     ..Decisions::default()
                 };
