@@ -136,7 +136,11 @@ try {
   assert.ok(routed.permissionDecisionReason.includes(JSON.stringify(typed.input)));
   const noTools=path.join(temporary,'no-native-search');
   fs.mkdirSync(noTools);
-  const unavailable=cp.spawnSync(path.join(bin,'mustard-rt'),['on','PreToolUse'],{cwd:root,env:{...env,PATH:noTools},
+  // A packaged runtime may carry rg beside itself. Isolate the executable
+  // too, so an empty PATH really represents an unavailable native search.
+  const standalone=path.join(noTools,process.platform==='win32'?'mustard-rt.exe':'mustard-rt');
+  fs.copyFileSync(path.join(bin,'mustard-rt'),standalone);
+  const unavailable=cp.spawnSync(standalone,['on','PreToolUse'],{cwd:root,env:{...env,PATH:noTools},
     input:JSON.stringify({hook_event_name:'PreToolUse',tool_name:'Grep',cwd:root,tool_input:typed.input})});
   assert.equal(unavailable.status,0,unavailable.stderr.toString());
   const passed=unavailable.stdout.toString().trim()?JSON.parse(unavailable.stdout):{};

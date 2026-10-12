@@ -77,9 +77,6 @@ def route(event, branch, sha, repository, api):
             head = pr["head"]["sha"]
             if len(parents) != 2 or parents[1]["sha"] != head:
                 continue
-            original = api(f"{prefix}/git/commits/{head}")
-            if original["tree"]["sha"] != commit["tree"]["sha"]:
-                continue
             query = urllib.parse.urlencode({
                 "event": "pull_request", "head_sha": head, "per_page": 100,
             })
@@ -92,7 +89,10 @@ def route(event, branch, sha, repository, api):
                 if run.get("status") != "completed" or run.get("conclusion") != "success":
                     continue
                 # Completed PRs can disappear from run.pull_requests. Bind the
-                # proof to the actual merged head, unchanged tree and full jobs.
+                # proof to the actual merged head, tested tree and full jobs.
+                # The PR head need not have the merge's tree: an updated base
+                # (for example the release version) is included in the tested
+                # synthetic merge and must not cause redundant validation.
                 jobs = api(f"{prefix}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100")
                 approved = {
                     job["name"] for job in jobs.get("jobs", [])

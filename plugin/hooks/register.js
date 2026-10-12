@@ -143,7 +143,7 @@ async function openPanel($, name) {
       // open() on an existing id only focuses/retitles it. Explicitly reopen
       // our pane so a reattached Desktop gets a fresh lifecycle too, including
       // after the module was reloaded while the host retained its pane.
-      await $.ui.close({id});
+      try { await $.ui.close({id}); } catch { /* A detached/reloaded host may no longer know this pane. Still attempt open. */ }
       await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
       opened = true;
       timer = $.clock.every(2000, () => { void refresh($); });

@@ -185,6 +185,19 @@ pub struct JevFilter {
 }
 
 impl JevFilter {
+    pub(crate) fn for_orchestration(root: &Path, spec: &str) -> Option<Self> {
+        let config=ProjectConfig::load(root);
+        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter("wave-planning")) { return None; }
+        let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
+        let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); Some(filter)
+    }
+
+    pub(crate) fn choose_orchestration(&self, payload: &str) -> Result<Value,FilterError> {
+        validate_wire_size(payload)?;
+        self.send_all_for(&[payload.to_string()],Instant::now()+self.timeouts.response,Purpose::WavePlanning)?
+            .into_iter().next().ok_or_else(||FilterError::Unreadable("missing orchestration choice".into()))
+    }
+
     /// Knowledge uses the same authorization, cache and attempt ledger
     /// as other search decisions, without enabling context or wave judgement.
     pub(crate) fn for_knowledge(root:&Path)->Option<Self> {

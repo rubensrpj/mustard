@@ -68,6 +68,10 @@ pub mod dag;
 /// compilação dele, em primeiro e em segundo plano.
 pub mod development_build;
 pub(crate) mod evidence;
+pub(crate) mod expertise_selection;
+pub(crate) mod host_observation;
+pub(crate) mod integration_health;
+pub(crate) mod return_triage;
 pub mod jev;
 pub(crate) mod knowledge_selection;
 pub mod judgement;

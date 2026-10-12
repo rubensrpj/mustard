@@ -461,6 +461,7 @@ pub const TYPES: &[TypeSpec] = &[
             opt("search_selection_cached", Kind::Bool),
             opt("search_accepted_choices", Kind::Int),
             opt("knowledge_cached", Kind::Bool),
+            opt("knowledge_pending", Kind::Bool),
             opt("knowledge_session_model_calls", Kind::Int),
             opt("knowledge_local_model_calls", Kind::Int),
             opt("knowledge_remote_model_calls", Kind::Int),
@@ -717,6 +718,7 @@ pub const TYPES: &[TypeSpec] = &[
             // An unresolved external condition or a returned plan that must
             // be revised. A new task version removes this explicit hold.
             opt("blocked_by", Kind::Text),
+            opt("retry_guard", Kind::Object),
             opt("covers", Kind::Refs),
             opt("must_read", Kind::List),
             // As tarefas de que esta depende, pelo número ou pelo código;
@@ -793,6 +795,7 @@ pub const TYPES: &[TypeSpec] = &[
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
+            opt("expertise", Kind::Object),
             // O modelo e o esforço pedidos para o agente, no envio; o que ele
             // usou de verdade, os passos que deu e os tokens que gastou só se
             // sabem na volta, e entram na versão nova do mesmo envio

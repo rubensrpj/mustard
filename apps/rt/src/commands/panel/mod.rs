@@ -40,12 +40,15 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
     let mut jev_view=jev.project();
     let config=mustard_core::ProjectConfig::load(&root);
     jev_view["configuration"]=jev_usage::configuration(&root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok());
+    let integration_health=crate::shared::integration_health::snapshot(&root);
     json!({"ok":true,"schema_version":1,"at":chrono::Utc::now().to_rfc3339(),
         "project":{"language":crate::commands::spec_events::project(&root).lang.to_string(),"version":mustard_core::harness_version(),"publication_url":spec_index::project_page_url(&root),"name":spend::project_name(&root).or_else(||root.file_name().map(|n|n.to_string_lossy().into_owned())),"branch":branch},
         "selected_spec":selected,"specs":specs,
         "jev":jev_view,"rtk":crate::shared::rtk_gain::cached(&root),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
         "retrieval":{"vectors_enabled":config.ai_vectors_enabled(),"index_present":mustard_core::io::project_map::model_path(&root).is_file()},
         "knowledge":knowledge_usage::snapshot(&root),
+        "hosts":integration_health["hosts"],
+        "integration_health":integration_health,
         "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
         "statusline":consumption::statusline(&root,session),
         "commands":{"panel":"/mustard-panel","publish":"/mustard-pages"}})
@@ -92,7 +95,8 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
             "tokens":measured.and_then(|u|u["tokens"].as_u64()).or_else(||sent.and_then(|e|e.int("tokens"))),
             "model":measured.and_then(|u|u["model_used"].as_str()).or_else(||sent.and_then(|e|e.str_field("model_used"))),
             "usage_breakdown":measured.and_then(|u|u.get("usage_breakdown")).or_else(||sent.and_then(|e|e.fields.get("usage_breakdown"))),
-            "configured_model":sent.and_then(|e|e.str_field("model")),"effort":sent.and_then(|e|e.str_field("effort"))})
+            "configured_model":sent.and_then(|e|e.str_field("model")),"effort":sent.and_then(|e|e.str_field("effort")),
+            "expertise":sent.and_then(|e|e.fields.get("expertise"))})
         })
         .collect();
     // Conductor usage is cumulative and repeated on wave sends. Take it once.
@@ -263,6 +267,9 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
     safe_value(json!({"spec":name,"wave":wave,"plan":planned.map(|event| &event.fields),
         "user_input":user_input,"request":sent.and_then(|event|event.str_field("text")),
         "request_recorded":sent.is_some(),"sent_at":sent.map(|event|event.at()),
+        "expertise":sent.and_then(|event|event.fields.get("expertise")),
+        "skills":sent.and_then(|event|event.fields.get("skills")),
+        "executor_requested":sent.and_then(|event|event.str_field("agent")),
         "delivery":received.map(|event|&event.fields),"delivery_integrated":received.is_some_and(|event|visible.iter().any(|current|current.id==event.id)),
         "steps":steps,"tasks":tasks,"criteria":criteria,"tests":tests}))
 }

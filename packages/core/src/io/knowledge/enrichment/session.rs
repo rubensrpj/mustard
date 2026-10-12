@@ -91,8 +91,26 @@ pub fn prepare_session(root: &Path, tree: &Path, query: &str, file: Option<&str>
     }
     let folder = directory(root);
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-    let _lock = LockedFile::exclusive_if_free(&folder.join(format!("{id}.lock"))).map_err(|e| e.to_string())?.ok_or("knowledge-session-busy-retry")?;
+    let analysis_id=analysis_identity(&prepared);
+    let _lock = LockedFile::exclusive_if_free(&folder.join(format!("analysis-{analysis_id}.lock"))).map_err(|e| e.to_string())?.ok_or("knowledge-session-busy-retry")?;
+    // Another process can have completed the work while evidence was read.
+    if let Some(note)=cached(root,tree,&prepared)? {
+        return Ok(json!({"ok":true,"cached":true,"interpretation":note,"session_model_calls":0,"remote_model_calls":0,"local_model_calls":0}));
+    }
+    let pending_path=folder.join(format!("analysis-{analysis_id}.pending"));
+    if let Ok(pending)=fs::read_to_string(&pending_path)
+        && pending.len()==64 && pending.bytes().all(|b|b.is_ascii_hexdigit())
+        && let Ok(bytes)=std::fs::read(folder.join(format!("{pending}.json")))
+        && bytes.len()<=100_000
+        && let Ok(previous)=serde_json::from_slice::<Prepared>(&bytes)
+        && identity(&previous)?==pending && analysis_identity(&previous)==analysis_id {
+        return Ok(json!({"ok":true,"cached":false,"pending":true,"request_id":pending,
+            "session_model_calls":0,"remote_model_calls":0,"local_model_calls":0,
+            "next":"Reuse the existing delegation; do not start a second analysis. Complete its receipt, or cancel explicitly with knowledge --cancel-session <request_id> if no agent owns it."}));
+    }
+    let _request_lock = LockedFile::exclusive_if_free(&folder.join(format!("{id}.lock"))).map_err(|e| e.to_string())?.ok_or("knowledge-session-busy-retry")?;
     fs::write_atomic(folder.join(format!("{id}.json")), &serde_json::to_vec(&prepared).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    fs::write_atomic(pending_path,id.as_bytes()).map_err(|e|e.to_string())?;
     Ok(json!({"ok":true,"cached":false,"request_id":id,"session_model_calls":0,"remote_model_calls":0,"local_model_calls":0,
         "evidence_bytes":prepared.sources.iter().map(|e|e.excerpt.len()).sum::<usize>(),
         "delegation":{"host":host,"requested_model":model,"model_family":if host=="claude" {"haiku"} else {"luna"},
@@ -108,6 +126,23 @@ pub fn prepare_session(root: &Path, tree: &Path, query: &str, file: Option<&str>
             "input_tokens":null,"output_tokens":null},
         "usage_instruction":"Resolve the latest available Haiku/Luna in the current host and request medium effort. Report actual model, effort and full input only if exposed; otherwise keep inherit/null and do not claim compliance. Never infer usage from excerpt length.",
         "next":"Delegate only if interpretation is needed. Submit the result with mustard-rt run knowledge --complete-session <receipt.json>. Never launch claude/codex or a generation API."}))
+}
+
+/// Release only an unfinished preparation. Cancellation does not remove a
+/// completed interpretation or invalidate its reusable evidence.
+pub fn cancel_session(root:&Path,id:&str)->Result<Value,String> {
+    if id.len()!=64 || !id.bytes().all(|b|b.is_ascii_hexdigit()) {return Err("knowledge-session-invalid-request-id".into());}
+    let folder=directory(root);
+    let bytes=std::fs::read(folder.join(format!("{id}.json"))).map_err(|e|e.to_string())?;
+    if bytes.len()>100_000 {return Err("knowledge-session-request-too-large".into());}
+    let prepared:Prepared=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+    if identity(&prepared)?!=id {return Err("knowledge-session-request-changed".into());}
+    let analysis_id=analysis_identity(&prepared);
+    let _lock=LockedFile::exclusive_if_free(&folder.join(format!("analysis-{analysis_id}.lock"))).map_err(|e|e.to_string())?.ok_or("knowledge-session-busy-retry")?;
+    let path=folder.join(format!("analysis-{analysis_id}.pending"));
+    let released=fs::read_to_string(&path).ok().as_deref()==Some(id);
+    if released {std::fs::remove_file(path).map_err(|e|e.to_string())?;}
+    Ok(json!({"ok":true,"request_id":id,"released":released,"session_model_calls":0,"remote_model_calls":0,"local_model_calls":0}))
 }
 
 /// Validate every supplied source again, including uncited excerpts. The
@@ -147,6 +182,20 @@ pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> R
 mod tests {
     use super::*;
     use super::super::tests::{fixture, index};
+
+    #[test]
+    fn pending_analysis_is_shared_across_hosts_and_can_be_explicitly_released() {
+        let dir=fixture(); index(dir.path());
+        let first=prepare_session(dir.path(),dir.path(),"backup",None,4,"claude",None).unwrap();
+        let second=prepare_session(dir.path(),dir.path(),"backup",None,4,"codex",Some("gpt-6-luna")).unwrap();
+        assert_eq!(second["pending"],true); assert_eq!(second["request_id"],first["request_id"]);
+        assert!(second.get("delegation").is_none());
+        let id=first["request_id"].as_str().unwrap();
+        assert_eq!(cancel_session(dir.path(),id).unwrap()["released"],true);
+        assert_eq!(cancel_session(dir.path(),id).unwrap()["released"],false);
+        let next=prepare_session(dir.path(),dir.path(),"backup",None,4,"codex",None).unwrap();
+        assert!(next.get("delegation").is_some()); assert!(next.get("pending").is_none());
+    }
 
     #[test]
     fn changed_mandatory_rules_withdraw_reuse_and_reject_pending_completion() {
