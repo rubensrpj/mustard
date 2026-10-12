@@ -60,11 +60,15 @@ fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Out
     }
     let mut outcome = Outcome::allow();
     if codex && trigger == Trigger::SessionStart {
+        if !input.is_subagent() && input.raw.get("source").and_then(serde_json::Value::as_str)
+            .is_some_and(|source| ["clear", "compact"].contains(&source)) {
+            crate::hooks::session::conversation_size::reset_conductor_notice(input, &root);
+        }
         outcome.fold(Verdict::Inject { context: "[Mustard] Use the mustard MCP search tool or mustard-rt run search for code discovery; preserve native arguments and include intent/purpose. Run mustard-rt run resume for an active spec. Reuse current knowledge before enrichment; isolated Haiku/Luna analysis is limited to 100000 full input tokens. Use the current session's native subagents, never a new CLI process or generation API.".into() });
         return outcome;
     }
     for module in registry.applicable(trigger, tool) {
-        if codex && !["command_guard", "write_gate", "subagent_inject", "approval_witness"].contains(&module.id) { continue; }
+        if codex && !["command_guard", "write_gate", "subagent_inject", "approval_witness", "size_notice", "precompact_notice"].contains(&module.id) { continue; }
         run_module(module, input, &ctx, &root, &mut outcome);
     }
     // A resposta barrada também é gravada, antes do complemento que o
