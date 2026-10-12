@@ -1033,7 +1033,7 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
 pub const PROOF_COMMANDS: &[&str] = &[
     "bash", "bun", "bundle", "cabal", "cargo", "cmake", "composer", "ctest", "dart", "deno", "docker", "dotnet", "echo", "elixir", "env", "flutter", "git",
     "go", "gradle", "gradlew", "grep", "jest", "just", "make", "mix", "mocha", "mvn", "ninja", "node", "npm", "npx", "php", "phpunit", "pnpm", "poetry",
-    "printf", "pytest", "python", "python3", "rake", "rg", "rspec", "rtk", "ruby", "rustc", "sbt", "sh", "stack", "swift", "task", "tox", "tsc", "uv",
+    "printf", "pytest", "python", "python3", "rake", "rg", "rspec", "rtk", "ruby", "rustc", "sbt", "sh", "stack", "swift", "task", "taskset", "tox", "tsc", "uv",
     "vitest", "yarn", "zig", "zsh",
 ];
 
@@ -1377,6 +1377,18 @@ mod tests {
     use super::*;
     use crate::domain::spec_events::{BlockQuery, SpecLog, Step, parse_log, render_line, stamp};
     use serde_json::{Value, json};
+
+    #[test]
+    fn test_commands_with_cpu_affinity_are_valid_proofs_without_accepting_test_names() {
+        for proof in [
+            "taskset -c 0-3 ./node_modules/.bin/jest --roots src --runTestsByPath src/example.spec.ts",
+            "CI=true taskset -c 0-3 pnpm test",
+        ] {
+            assert_eq!(proof_rule("MSTD-CRIT-0009", proof), Ok(()), "{proof}");
+        }
+        assert!(!proof_is_command("matches the source sheet"));
+        assert!(!proof_is_command("enforces limits"));
+    }
 
     /// Um arquivo de eventos escrito à mão, uma linha por evento.
     fn log(events: &[(&str, Value)]) -> SpecLog {
