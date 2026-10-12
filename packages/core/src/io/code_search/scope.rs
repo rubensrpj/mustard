@@ -10,6 +10,15 @@ pub(super) struct Scope {
     pub clues: String,
 }
 
+/// Output limits preserve file scope but cannot prove exhaustive occurrences.
+pub(super) fn limited_output(request: &Request) -> bool {
+    request.tool == "rg" && request.input["args"].as_array().into_iter().flatten()
+        .filter_map(serde_json::Value::as_str).any(|arg|
+            ["-m","--max-count","-M","--max-columns"].contains(&arg)
+            || arg.starts_with("--max-count=") || arg.starts_with("--max-columns=")
+            || ["-m","-M"].iter().any(|flag|arg.strip_prefix(flag).is_some_and(|n|!n.is_empty() && n.bytes().all(|b|b.is_ascii_digit()))))
+}
+
 pub(super) fn inventory(
     tree: &Path,
     cwd: &Path,
@@ -147,6 +156,10 @@ fn rg_clues(args: &serde_json::Value) -> String {
                 "--context",
                 "--after-context",
                 "--before-context",
+                "-m",
+                "--max-count",
+                "-M",
+                "--max-columns",
             ]
             .contains(&arg)
         {
@@ -194,7 +207,8 @@ fn rg_inventory(source: &[&str]) -> Result<Vec<String>, String> {
                 | "--no-ignore-parent" | "--no-ignore-global" | "--no-ignore-dot" | "--follow"
                 | "--one-file-system" => args.push(arg.into()),
                 "-e" | "--regexp" | "--sort" | "--sortr" | "--color" | "-A" | "-B" | "-C"
-                | "--context" | "--after-context" | "--before-context" => {
+                | "--context" | "--after-context" | "--before-context"
+                | "-m" | "--max-count" | "-M" | "--max-columns" => {
                     if attached.is_none() {
                         source.get(at).ok_or("task-scope-missing-option-value")?;
                         at += 1;
@@ -218,7 +232,10 @@ fn rg_inventory(source: &[&str]) -> Result<Vec<String>, String> {
                 | "--multiline"
                 | "--multiline-dotall"
                 | "--pcre2"
+                | "--max-columns-preview"
+                | "--no-messages"
                 | "--text" => {}
+                _ if ["-m","-M"].iter().any(|flag|arg.strip_prefix(flag).is_some_and(|n|!n.is_empty() && n.bytes().all(|b|b.is_ascii_digit()))) => {}
                 _ if arg.starts_with('-')
                     && !arg.starts_with("--")
                     && arg[1..].chars().all(|c| "niIsFwlHhUPa".contains(c)) => {}
@@ -321,5 +338,15 @@ mod tests {
                 .unwrap(),
             "src"
         );
+    }
+
+    #[test]
+    fn result_limits_do_not_change_file_scope_or_become_semantic_clues() {
+        for limits in [vec!["--max-count=60","--max-columns=120"],vec!["-m","60","-M","120"],vec!["-m60","-M120"]] {
+            let args:Vec<_>=limits.into_iter().chain(["--glob","*.rs","needle","src"]).collect();
+            assert_eq!(rg_inventory(&args).unwrap(),["--files","--null","--glob","*.rs","--","src"]);
+            assert_eq!(rg_clues(&serde_json::json!(args)),"needle");
+        }
+        assert!(rg_inventory(&["--max-count"]).is_err());
     }
 }

@@ -159,7 +159,7 @@ pub(super) fn investigate(
     if !unavailable.is_empty() {report["investigation"]["partial"]=json!(true);}
     let anchors=selection::nominal_anchors(&cards,&scope.clues,&seeds);
     let literal_name=!scope.clues.is_empty() && scope.clues.chars().all(|c|c.is_alphanumeric() || c=='_');
-    let crossing_complete=answer.report["evidence"]["unmapped_occurrences"]==0
+    let crossing_complete=!scope::limited_output(request) && answer.report["evidence"]["unmapped_occurrences"]==0
         && answer.report["evidence"]["omitted_occurrences"]==0
         && answer.report["result"]["truncated"]!=true
         && seeds.iter().all(|id|cards.iter().any(|card|card.id==*id));

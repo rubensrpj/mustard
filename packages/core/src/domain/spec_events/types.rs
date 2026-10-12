@@ -796,6 +796,7 @@ pub const TYPES: &[TypeSpec] = &[
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
             opt("expertise", Kind::Object),
+            opt("host", Kind::Text),
             // O modelo e o esforço pedidos para o agente, no envio; o que ele
             // usou de verdade, os passos que deu e os tokens que gastou só se
             // sabem na volta, e entram na versão nova do mesmo envio

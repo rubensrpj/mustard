@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 /// pasta de configuração da plataforma, onde ela grava o arquivo de conversa
 /// dessa sessão e os dos agentes que a sessão abriu. As duas são resolvidas
 /// na entrada do comando, e o teste passa as dele sem mexer no ambiente. Sem
-/// a pasta ou sem a sessão, o consumo não é medido.
+/// a pasta, só os recibos explícitos de transcript podem medir a onda.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Caller<'a> {
     pub session: Option<&'a str>,
@@ -65,15 +65,18 @@ impl Usage {
 /// da onda, no arquivo dele, e o da conversa principal, o mesmo para todas,
 /// no ramo da spec desde o começo dela. Sem a pasta da sessão, nada é medido.
 pub(super) fn measure_usage<'u>(root: &Path, log: &SpecLog, caller: Caller<'_>, waves: impl IntoIterator<Item = (u64, &'u mut Usage)>) {
-    let Some(session) = caller.config_dir.zip(caller.session).and_then(|(dir, id)| transcript::session_dir(dir, id)) else {
-        return;
-    };
-    let main = main_usage(log, &session);
+    let session = (crate::shared::host_observation::caller_host(root,caller.session)!="codex").then_some(caller.config_dir.zip(caller.session)).flatten().and_then(|(dir, id)| transcript::session_dir(dir, id));
+    let main = session.as_deref().and_then(|session|main_usage(log,session));
     for (wave, usage) in waves {
-        let own = wave_usage(root, log, &session, wave);
+        let spec=log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id)).and_then(|e|e.str_field("text"))
+            .and_then(|text|mustard_core::domain::wave_prompt::ReadDispatch::of(text).map(|r|r.spec)
+                .or_else(||text.lines().next().and_then(|heading|mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::PtBr).or_else(||mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::EnUs))).map(|r|r.0)));
+        let native=spec.as_deref().and_then(|spec|crate::shared::host_observation::wave_usage(root,spec,log,wave));
+        let own = native.as_ref().map(|measured|measured.usage.clone())
+            .or_else(||session.as_deref().and_then(|session|wave_usage(root, log, session, wave)));
         *usage = Usage {
             model_used: own.as_ref().and_then(|own| own.model.clone()),
-            steps: own.as_ref().map(|own| own.steps),
+            steps: native.as_ref().map_or_else(||own.as_ref().map(|own|own.steps),|measured|measured.steps),
             tokens: own.as_ref().map(|own| own.tokens),
             caller_steps: main.as_ref().map(|main| main.steps),
             caller_tokens: main.as_ref().map(|main| main.tokens),
@@ -95,9 +98,11 @@ pub(super) fn usage_missing(wave: u64, lang: Locale) -> Value {
 
 /// Read-only live measurement. The panel caches this projection separately
 /// from the event log; observing a running agent never changes its dispatch.
-pub(crate) fn snapshot(root: &Path, log: &SpecLog, session: &str, config: &Path) -> Value {
-    let mut waves: Vec<_> = log.planned_waves().into_iter().map(|wave|(wave,Usage::default())).collect();
-    measure_usage(root, log, Caller {session:Some(session),config_dir:Some(config)}, waves.iter_mut().map(|(n,u)|(*n,u)));
+pub(crate) fn snapshot(root: &Path, log: &SpecLog, session: Option<&str>, config: Option<&Path>) -> Value {
+    // Meter actual sends, including work later removed from the plan.
+    // A retired task must not erase its already incurred usage.
+    let mut waves: Vec<_> = log.last_by_wave("send").keys().map(|wave|(*wave,Usage::default())).collect();
+    measure_usage(root, log, Caller {session,config_dir:config}, waves.iter_mut().map(|(n,u)|(*n,u)));
     json!({"measured_at":chrono::Utc::now().to_rfc3339(),"waves":waves.into_iter().filter_map(|(wave,usage)| {
         let send = log.visible().into_iter().rev().find(|event|event.event_type=="send" && event.wave()==Some(wave))?;
         Some(json!({"wave":wave,"dispatch":log.dispatch_position(send.id),"usage":usage.fields()}))

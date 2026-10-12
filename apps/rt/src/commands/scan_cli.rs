@@ -153,7 +153,7 @@ pub enum ScanCmd {
         /// Report indexed scope, parser gaps and exclusions without inference.
         #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "topics", "evaluate", "markdown", "all", "detail"])]
         coverage: bool,
-        /// Compose current evidence for the topics in a JSON plan.
+        /// Compose current evidence from a JSON topic plan, or `auto` for scan areas.
         #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "evaluate"])]
         topics: Option<PathBuf>,
         /// Measure retrieval against an explicit JSON manifest, without a host model.

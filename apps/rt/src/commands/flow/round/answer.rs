@@ -770,7 +770,8 @@ pub(super) fn run_entered_round(
     let orphans = orphaned_waves(&log);
     let away = running.keys().chain(orphans.keys()).chain(&next).copied().collect();
     let specializations = crate::shared::expertise_selection::select(root,&spec,&log,&next);
-    let flight = Flight { running: away, copies, choices, specializations };
+    let host = crate::shared::host_observation::caller_host(root, caller.session);
+    let flight = Flight { host: Some(host.into()), running: away, copies, choices, specializations };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -795,6 +796,7 @@ pub(super) fn run_entered_round(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
+        draft.insert("host".into(), json!(host));
         // O nome do agente, `wave` em toda onda, de uma tarefa ou de várias,
         // e não o molde dele, que mora no projeto: a resposta desta rodada o
         // repete, para quem despacha saber qual chamar. O pedido e o modelo
@@ -876,7 +878,20 @@ pub(super) fn run_entered_round(
         // As ondas em andamento de agora, e não as do envio anterior: a
         // rodada que reenvia já sabe quem está em curso ([`flight`]).
         let running: Vec<(u64, Vec<String>)> = flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(&log, *n))).collect();
-        let text = resend_text(prior.str_field("text").unwrap_or_default(), &running, &steps, lang);
+        let mut text = resend_text(prior.str_field("text").unwrap_or_default(), &running, &steps, lang);
+        let migrated = prior.str_field("host").unwrap_or("claude") != host;
+        let current = built.iter().find(|prompt| prompt.wave == wave);
+        if migrated && current.is_none() {
+            warnings.push(json!({"reason":"resend-host-context-missing","wave":wave,
+                "hint":"The dispatch host changed, but the current wave context is unavailable. Restore the wave in the approved plan before resending; no task or model family was guessed."}));
+            continue;
+        }
+        // Preserve the approved task and repair history. Only transport
+        // settings and managed references change when another host resumes it.
+        if migrated && let Some(prompt) = current {
+            let skills = prompt.skills.iter().filter_map(|skill| skill["path"].as_str()).collect::<Vec<_>>().join("\n");
+            text.push_str(&resend_host_settings(host, &prompt.model, &prompt.effort, &skills, lang));
+        }
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
@@ -899,6 +914,13 @@ pub(super) fn run_entered_round(
             draft.insert("read_items".into(), read_items.clone());
         }
         for field in ["skills","expertise"] {if let Some(value)=prior.fields.get(field) {draft.insert(field.into(),value.clone());}}
+        draft.insert("host".into(), json!(host));
+        if migrated && let Some(prompt) = current {
+            draft.insert("model".into(), json!(prompt.model));
+            draft.insert("effort".into(), json!(prompt.effort));
+            draft.insert("skills".into(), json!(prompt.skills));
+            draft.insert("expertise".into(), json!(prompt.expertise));
+        }
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));
         draft.insert("resends".into(), json!(previous));
@@ -1048,6 +1070,15 @@ fn request_command(root: &Path, spec: &str, wave: u64) -> String {
     read_command(root, spec, &format!("request-{wave}"))
 }
 
+/// This footer overrides host-specific settings without rewriting task scope.
+fn resend_host_settings(host: &str, model: &str, effort: &str, skills: &str, lang: Locale) -> String {
+    if lang == Locale::PtBr {
+        format!("\n\n## Retomada em outro host\nHost atual: {host}. Modelo efetivo solicitado: {model}; esforço: {effort}. Estas opções e as referências abaixo substituem as opções de host anteriores; a tarefa aprovada e as regras do projeto continuam vigentes. `inherit` usa as configurações da sessão, sem pedir um modelo de outra família.\nSkills atuais (leitura ainda não confirmada):\n{skills}\n")
+    } else {
+        format!("\n\n## Resume in another host\nCurrent host: {host}. Requested effective model: {model}; effort: {effort}. These settings and references replace earlier host settings; the approved task and project rules still apply. `inherit` uses session settings without requesting another model family.\nCurrent skills (reading remains unconfirmed):\n{skills}\n")
+    }
+}
+
 /// O texto com que o condutor despacha a onda `wave`: o título do pedido
 /// dela, na primeira linha, e o comando que o lê, o mesmo de
 /// `dispatch[].read`. O gancho do despacho troca por ele o texto que o
@@ -1104,6 +1135,30 @@ mod tests {
     use super::*;
     use crate::commands::flow::round::slots::live_copy;
     use crate::commands::flow::round::tests::*;
+
+    #[test]
+    fn another_host_resumes_the_same_task_with_its_own_transport_settings() {
+        let dir = tempdir().unwrap(); let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(first["ok"], true, "{first}");
+        let prior = sends_of(root).pop().unwrap();
+        assert_eq!(prior.str_field("host"), Some("claude"));
+        let original = prior.str_field("text").unwrap().to_string();
+        let input = serde_json::from_value(json!({"cwd":root,"hook_event_name":"SessionStart","session_id":"codex-resume"})).unwrap();
+        crate::shared::host_observation::observe(root,"codex","SessionStart",&input);
+        let opts = RoundOpts {root:root.into(),spec:Some("x".into()),report:Some(line("PAUSED",json!({"wave":1})))};
+        let out = crate::commands::flow::round::round_in(&opts,Caller {session:Some("codex-resume"),config_dir:None});
+        assert_eq!(out["ok"],true,"{out}");
+        let send = sends_of(root).pop().unwrap();
+        assert_eq!(send.str_field("host"),Some("codex"));
+        assert_eq!(send.str_field("model"),Some("inherit"));
+        assert_eq!(send.str_field("effort"),Some("inherit"));
+        assert_eq!(send.int("resends"),Some(prior.id));
+        let text = send.str_field("text").unwrap();
+        assert!(text.starts_with(&original),"the approved task is retained verbatim");
+        assert!(text.contains("Host atual: codex"),"{text}");
+    }
 
     /// A rodada é quem despacha a onda de conserto que a porta do pull
     /// request reprovado abre numa obra já fechada: é por ela que o conserto

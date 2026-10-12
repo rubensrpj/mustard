@@ -165,7 +165,7 @@ fn template(lang: &str, name: &str) -> String {
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
 /// do caso em que o "antes" falha quando o critério diz "só depois de".
 #[test]
-fn the_project_receives_exactly_two_agents_in_its_text_language() {
+fn the_project_receives_managed_agents_in_its_text_language() {
     for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
@@ -173,7 +173,7 @@ fn the_project_receives_exactly_two_agents_in_its_text_language() {
         let agents = files_under(&root.join(".claude/agents"));
         assert_eq!(
             agents,
-            ["mustard/review.md", "mustard/wave.md"],
+            ["mustard/analysis.md", "mustard/review.md", "mustard/wave.md"],
             "the {lang} project got another set of agent texts",
         );
         for name in ["wave", "review"] {
@@ -304,7 +304,7 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     names.sort();
     assert_eq!(
         names,
-        ["mustard-review", "mustard-wave", "review"],
+        ["mustard-analysis", "mustard-review", "mustard-wave", "review"],
         "two agents share a name",
     );
 

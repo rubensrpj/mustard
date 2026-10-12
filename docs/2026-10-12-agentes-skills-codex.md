@@ -1,6 +1,6 @@
 # Agentes, skills e análise reutilizável
 
-Esta etapa amplia o scan e o preparo das ondas sem iniciar outro processo de modelo. A versão 0.2.14 já contém a revisão por onda, os bloqueios persistentes e a retirada do teto mensal do Jev. O código desta etapa deve passar pelos testes de Linux, macOS e Windows antes da promoção.
+Esta etapa amplia o scan e o preparo das ondas sem iniciar outro processo de modelo. A versão 0.2.14 já contém a revisão por onda, os bloqueios persistentes e a retirada do teto mensal do Jev. A v0.2.16 passou pelos testes dos três sistemas; a continuação e sua evidência estão em [validação final](2026-10-12-validacao-final.md).
 
 ## Fluxo implementado
 
@@ -32,6 +32,8 @@ mustard-rt run knowledge --query "Como esta operação preserva a transação?" 
 mustard-rt run knowledge --complete-session receipt.json
 ```
 
+A instalação acrescenta `mustard-analysis`: Haiku/medium no Claude e Luna/medium em `.codex/agents/mustard-analysis.toml`. O preparo indica esse agente e a ferramenta nativa do host. Prefira o agente apenas se descoberto pela sessão; ausência não autoriza outro CLI/API.
+
 O preparo devolve o contrato de delegação e de recibo. `cached: true` dispensa o subagente. Caso contrário, a sessão usa sua própria ferramenta de agente, com contexto isolado e somente o pacote pertinente; o binário não invoca `claude -p`, outro CLI ou API de geração. O recibo inclui `request_id`, modelo efetivo quando conhecido, resultado JSON com citações e tokens expostos pelo host. Uma conclusão já obtida pela onda pode entrar em `knowledge` na entrega; não delegar sua leitura novamente.
 
 ## Validade e consumo
@@ -47,7 +49,7 @@ O preparo devolve o contrato de delegação e de recibo. `cached: true` dispensa
 
 O instalador Codex configura o MCP de busca, hooks locais e agentes/skill nativos, preservando configurações manuais. O MCP devolve conteúdo textual e compartilha o contrato da busca; não declara um output schema incompatível com a própria resposta. O adaptador verifica todos os arquivos de um patch antes de autorizar a operação e preserva argumentos da ferramenta original.
 
-Hooks novos ou modificados exigem a revisão de confiança **do próprio Codex**, em `/hooks`. Instalação concluída não prova que o host os ativou. Não se reutiliza telemetria nem testemunha de aprovação de uma conversa Claude como se fosse Codex. O adaptador cobre busca, proteção de comandos/arquivos e preparo de despacho; a telemetria de uso e a captura de aprovações da sessão Codex precisam de validação própria do host. O Mods continua sendo interface do Claude; no Codex, existe o comando nativo de painel.
+Hooks novos ou modificados exigem a revisão de confiança **do próprio Codex**, em `/hooks`. Instalação concluída não prova que o host os ativou. Não se reutiliza telemetria nem testemunha de aprovação de uma conversa Claude como se fosse Codex. O adaptador cobre busca, proteção de comandos/arquivos e preparo de despacho; a telemetria de uso e a captura de aprovações da sessão Codex precisam de validação própria do host. O Mods continua sendo interface do Claude; no Codex, existe o comando nativo de painel. O despacho/exportação usa o host do chamador; reenvio em outro host conserva o texto aprovado e acrescenta apenas opções/referências atuais. O executor Codex herda modelo/effort da sessão, sem solicitar nomes da família Claude.
 
 Agentes novos podem depender da descoberta pelo host. Em uma sessão com ondas em andamento, usar o executor genérico com a skill escolhida até o novo perfil ficar disponível; não reiniciar a sessão automaticamente. Testes locais dos contratos não comprovam seleção real de Haiku/Luna, renderização no Desktop por SSH nem economia líquida. Esta última exige comparar trabalho equivalente, incluindo preparo, Jev, implementação, revisão e retrabalho.
 

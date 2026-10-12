@@ -27,7 +27,7 @@ use crate::shared::context::session::spec_for_session;
 /// As variáveis de ambiente que dizem a sessão, na ordem em que valem: a do
 /// Mustard, a que o Claude Code põe no ambiente dos comandos, e a antiga. O
 /// único lugar que as lê.
-const SESSION_VARS: &[&str] = &["MUSTARD_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"];
+const SESSION_VARS: &[&str] = &["MUSTARD_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"];
 
 /// The session id the `run` face was handed through the environment, by the
 /// order of [`SESSION_VARS`]. Never a guess from the newest session folder,
@@ -37,6 +37,10 @@ const SESSION_VARS: &[&str] = &["MUSTARD_SESSION_ID", "CLAUDE_CODE_SESSION_ID", 
 #[must_use]
 pub(crate) fn session_from_env() -> Option<String> {
     session_from(|key| std::env::var(key).ok())
+}
+
+pub(crate) fn is_codex_session(session: Option<&str>) -> bool {
+    session.is_some() && std::env::var("CODEX_THREAD_ID").ok().filter(|s|!s.is_empty()).as_deref()==session
 }
 
 /// A sessão que `var` diz, pela ordem de [`SESSION_VARS`]; uma variável em
@@ -236,6 +240,7 @@ mod tests {
         assert_eq!(session_from(env(&[("MUSTARD_SESSION_ID", "m")])).as_deref(), Some("m"));
         assert_eq!(session_from(env(&[("CLAUDE_CODE_SESSION_ID", "cc")])).as_deref(), Some("cc"));
         assert_eq!(session_from(env(&[("CLAUDE_SESSION_ID", "old")])).as_deref(), Some("old"));
+        assert_eq!(session_from(env(&[("CODEX_THREAD_ID", "cx")])).as_deref(), Some("cx"));
         let all = env(&[("MUSTARD_SESSION_ID", "m"), ("CLAUDE_CODE_SESSION_ID", "cc"), ("CLAUDE_SESSION_ID", "old")]);
         assert_eq!(session_from(all).as_deref(), Some("m"));
         let claude = env(&[("CLAUDE_CODE_SESSION_ID", "cc"), ("CLAUDE_SESSION_ID", "old")]);

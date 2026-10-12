@@ -785,7 +785,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         agents.sort();
-        assert_eq!(agents, ["review.md", "wave.md"], "the install left another set of agents");
+        assert_eq!(agents, ["analysis.md", "review.md", "wave.md"], "the install left another set of agents");
+        let analysis=fs::read_to_string(claude.join("agents/mustard/analysis.md")).unwrap();
+        assert!(analysis.contains("model: haiku\n") && analysis.contains("effort: medium\n"));
+        assert!(analysis.contains("100.000") && !analysis.contains("model: sonnet\n"));
         assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
     }
 
