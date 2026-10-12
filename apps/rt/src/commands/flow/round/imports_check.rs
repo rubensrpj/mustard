@@ -159,6 +159,7 @@ fn import_line(root: &Path, after: &ProjectMap, file: &str, target: &str) -> usi
 #[cfg(test)]
 pub(super) mod tests {
     use serde_json::{json, Value};
+    use mustard_core::io::spec_events as store;
     use tempfile::tempdir;
 
     use super::super::tests::{approved_with, delivered, round, round_with_mine, write};
@@ -339,7 +340,7 @@ pub(super) mod tests {
     /// veio, e a mensagem a outro agente também. Quando a onda grava a entrega
     /// de novo, o trecho da volta velha não volta ao agente.
     #[test]
-    fn a_fix_message_to_a_wave_agent_carries_only_what_the_round_returned() {
+    fn a_fix_message_carries_the_native_repair_and_preserves_conductor_instructions() {
         use mustard_core::domain::model::contract::Verdict;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -361,7 +362,11 @@ pub(super) mod tests {
         let asked = "Conserte a importação e rode a suíte inteira antes, por favor.";
         match hook_message(root, &transcript, "onda1", asked) {
             Verdict::Rewrite { tool_input, note } => {
-                assert_eq!(tool_input["message"], json!(section), "só o trecho da onda");
+                let message = tool_input["message"].as_str().unwrap();
+                assert!(message.starts_with(section) && message.contains(asked), "{message}");
+                let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+                let sent = log.get(*log.last_by_wave("send").get(&1).unwrap()).unwrap();
+                assert!(sent.str_field("text").unwrap().contains(asked));
                 assert_eq!((tool_input["to"].clone(), tool_input["summary"].clone()), (json!("onda1"), json!("conserto")));
                 assert_eq!(note, Some(translate("subagent.fix_replaced", Locale::PtBr).replace("{wave}", "1")));
             }

@@ -16,13 +16,28 @@ use serde_json::{json, Value};
 
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/review.rs"]
+mod wave_review;
 
 fn rt(root: &Path, args: &[&str]) -> Command {
+    let mut owned: Vec<String> = args.iter().map(|arg| (*arg).into()).collect();
+    if matches!(args.first(), Some(&"round" | &"close")) {
+        let spec = args.windows(2).find(|pair| pair[0] == "--spec").map(|pair| pair[1]).unwrap_or("teste");
+        let previous = args.windows(2).find(|pair| pair[0] == "--report").map(|pair| pair[1]).unwrap_or_default();
+        let report = wave_review::review_report(root, spec, previous, |wave| {
+            let out = rt(root, &["review-wave", "--wave", &wave.to_string(), "--spec", spec]).output().expect("view diff");
+            stdout_json(&out)
+        });
+        if !report.is_empty() {
+            if let Some(at) = owned.iter().position(|arg| arg == "--report") { owned[at + 1] = report }
+            else { owned.extend(["--report".into(), report]); }
+        }
+    }
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
     // O ambiente de quem roda a suíte não chega ao serviço do Jev: a rodada o
     // chamaria de verdade.
     cmd.arg("run")
-        .args(args)
+        .args(&owned)
         .arg("--root")
         .arg(root)
         .current_dir(root)

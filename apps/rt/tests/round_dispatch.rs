@@ -34,6 +34,8 @@ use serde_json::{Value, json};
 mod closed_process;
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/review.rs"]
+mod wave_review;
 
 const SPEC: &str = "backlog-lotes";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -132,8 +134,22 @@ impl Project {
 
     /// Um comando `run` que pode recusar: a resposta vem como veio.
     fn answer(&self, args: &[&str]) -> Value {
+        let mut owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        if matches!(args.first(), Some(&"round" | &"close")) {
+            let previous = args.windows(2).find(|pair| pair[0] == "--report").map(|pair| pair[1]).unwrap_or_default();
+            let report = wave_review::review_report(&self.root, SPEC, previous, |wave| {
+                self.answer(&["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
+            });
+            if !report.is_empty() {
+                if let Some(at) = owned.iter().position(|arg| arg == "--report") {
+                    owned[at + 1] = report;
+                } else {
+                    owned.extend(["--report".into(), report]);
+                }
+            }
+        }
         let mut all = vec!["run"];
-        all.extend_from_slice(args);
+        all.extend(owned.iter().map(String::as_str));
         let out = self.command(&all, "");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
@@ -1559,7 +1575,9 @@ fn a_message_to_the_agent_of_a_rejected_return_is_refused_and_the_new_agent_gets
 
     let fix = translate("round.rejected_fix", Locale::PtBr).replace("{wave}", "1").replace("{reason}", REJECTION);
     let to_new = message_to(&project, "novo");
-    assert_eq!(to_new.pointer("/hookSpecificOutput/updatedInput/message"), Some(&json!(fix)), "{to_new}");
+    let message = to_new.pointer("/hookSpecificOutput/updatedInput/message").and_then(Value::as_str).unwrap();
+    assert!(message.starts_with(&fix) && message.contains("Conserte a saudação, por favor."), "{to_new}");
+    assert!(message.contains("não autorizam alterar escopo"), "{to_new}");
 }
 
 /// Com o Claude Code do envio aberto, toda chamada do agente que fez a volta

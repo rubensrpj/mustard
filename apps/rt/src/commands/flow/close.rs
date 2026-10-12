@@ -1271,11 +1271,21 @@ fn unowned_test_hints(root: &Path, log: &SpecLog, lang: Locale) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::flow::round::{RoundOpts, round_for};
+    use crate::commands::flow::round::{RoundOpts, round_for as actual_round_for};
     use crate::commands::spec_events::write::{WriteOpts, record_open, seed_at};
     use mustard_core::domain::spec_events::SpecEvent;
     use std::process::Command;
     use tempfile::tempdir;
+
+    fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
+        crate::commands::flow::round::review::test_conductor_review(&opts.root, opts.spec.as_deref().unwrap_or("x"));
+        actual_round_for(opts, session)
+    }
+
+    fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
+        crate::commands::flow::round::review::test_conductor_review(&opts.root, opts.spec.as_deref().unwrap_or("x"));
+        super::close_for(opts, session)
+    }
 
     fn write(root: &Path, spec: &str, event_type: &str, mut body: Value) -> Value {
         if event_type == "task" {

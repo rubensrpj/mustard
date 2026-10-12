@@ -49,6 +49,8 @@ pub(crate) fn snapshot(root: &Path, log: &SpecLog) -> Value {
                 .any(|other| !other.done && log.get(other.id).is_some_and(|e| !is_cleanup(e)));
         let reason = if !active {
             "spec-not-running"
+        } else if entry.blocked {
+            "task-blocked"
         } else if uncovered.contains(id) {
             "missing-criteria"
         } else if !dependencies.is_empty() {
@@ -68,7 +70,7 @@ pub(crate) fn snapshot(root: &Path, log: &SpecLog) -> Value {
         if rows.len() < 40 {
             rows.push(
                 json!({"task":code(*id),"title":task.str_field("title"),"reason":reason,
-            "dependencies":dependencies,"holding_waves":holders}),
+            "dependencies":dependencies,"holding_waves":holders,"blocked_by":task.str_field("blocked_by")}),
             );
         }
     }

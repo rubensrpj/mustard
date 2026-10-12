@@ -2863,12 +2863,12 @@ mod tests {
         for (lang, wave, review) in [
             (
                 Locale::PtBr,
-                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "verificação do vermelho (o que foi cortado"],
+                ["Prove o vermelho", "comando/hook", "não só um helper", "teste e vermelho de cada critério"],
                 ["confira o recibo vigente", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
             ),
             (
                 Locale::EnUs,
-                ["is born red", "the command or the hook event", "not only in the helper function", "red verification (what was cut"],
+                ["Prove the red", "command/hook", "not only a helper", "each criterion's test and red verification"],
                 ["check the current receipt", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
             ),
         ] {

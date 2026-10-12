@@ -123,6 +123,22 @@ fn marker_path(project_dir: &str, session_id: Option<&str>, marker_name: &str) -
     Some(session_dir(project_dir, session_id)?.join(marker_name))
 }
 
+/// Notices with an unchanged state need not consume the renewed context.
+/// Missing or unwritable markers always allow delivery.
+pub(super) fn notice_seen(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) -> bool {
+    marker_path(&root.to_string_lossy(), session, &format!("notice-{name}"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|seen| seen == fingerprint)
+}
+
+pub(super) fn remember_notice(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) {
+    let Some(path) = marker_path(&root.to_string_lossy(), session, &format!("notice-{name}")) else { return };
+    let Some(parent) = path.parent() else { return };
+    if fs::create_dir_all(parent).is_ok() {
+        let _ = fs::write_atomic(&path, fingerprint.as_bytes());
+    }
+}
+
 /// Persist one delivery marker, best-effort (an unwritable marker never blocks
 /// the injection — it only means a `once` entry may deliver again).
 fn write_marker(project_dir: &str, session_id: Option<&str>, marker_name: &str) {

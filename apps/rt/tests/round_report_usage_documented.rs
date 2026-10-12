@@ -46,3 +46,11 @@ fn round_help_documents_the_rejected_line() {
     let help = round_help();
     assert!(help.contains(r#"<REJECTED>{"wave":1,"reason":"…"}</REJECTED>"#), "{help}");
 }
+
+#[test]
+fn round_help_explains_that_usage_does_not_approve_code() {
+    let help = round_help();
+    for field in ["review-wave", "REVIEWED", "fingerprint", "note", "`USAGE`", "sozinho não aprova"] {
+        assert!(help.contains(field), "missing {field}: {help}");
+    }
+}

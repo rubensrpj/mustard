@@ -111,6 +111,9 @@ pub(super) fn outgoing(
     // dele, e despachá-la seria um pedido sem nada dentro — o backlog já
     // reempacota numa onda nova a tarefa que ela perdeu.
     let planned = log.planned_waves();
+    let blocked: BTreeSet<u64> = log.visible().into_iter()
+        .filter(|event| event.event_type == "task" && event.str_field("blocked_by").is_some())
+        .filter_map(SpecEvent::wave).collect();
     let mut depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
         if let Some(n) = wave.wave().filter(|n| planned.contains(n)) {
@@ -150,7 +153,8 @@ pub(super) fn outgoing(
         if whole_tree_out || (!holding.contains(&n) && fresh >= slots) {
             break;
         }
-        if stuck.contains_key(&n) || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d)) {
+        if stuck.contains_key(&n) || blocked.contains(&n)
+            || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d) || blocked.contains(d)) {
             continue;
         }
         let files: Vec<&String> = graph.files.get(&n).into_iter().flatten().collect();
@@ -606,7 +610,8 @@ pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> V
             // A marca de prioridade é lida do evento, como o usuário a deu: o
             // Jev não a julga.
             let priority = task.str_field("priority").is_some_and(|reason| !reason.trim().is_empty());
-            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done, priority }
+            let blocked = task.str_field("blocked_by").is_some();
+            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done, blocked, priority }
         })
         .collect()
 }
@@ -3743,6 +3748,12 @@ mod tests {
         assert_eq!(task_now(root, &c).wave(), None, "C ainda depende de B");
         std::fs::write(root.join("src/d.rs"), "fn one() {}\n// D terminou.\n").unwrap();
         returned(root, json!({"wave":2,"text":"D saiu.","files":["src/d.rs"],"commit":"mostrar soma"}));
+        let held = round(root, "x", None);
+        assert!(waves_in(&held, "dispatch").is_empty(), "the same blocked plan cannot be retried: {held}");
+        assert!(task_now(root, &b).str_field("blocked_by").is_some());
+        let mut revised = super::super::report::backlog_return(&task_now(root, &b));
+        revised.remove("blocked_by");
+        crate::commands::spec_events::write::record(root, "x", "task", revised, mustard_core::domain::spec_state::PhaseWriter::Binary).unwrap();
         let next = round(root, "x", None);
         assert_eq!(waves_in(&next, "dispatch"), vec![3], "sai B, nunca a onda entregue: {next}");
         assert_eq!(task_now(root, &b).wave(), Some(3));

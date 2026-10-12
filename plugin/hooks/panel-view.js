@@ -177,12 +177,13 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       const reasons={ready:['Pronta para agrupamento','Ready for grouping'],dependencies:['Aguarda dependências','Waiting for dependencies'],
         'file-reservation':['Arquivo reservado','File reserved'],capacity:['Aguarda vaga','Waiting for capacity'],
         'missing-criteria':['Falta vínculo com critério','Missing acceptance criterion'],'cleanup-last':['Limpeza aguarda implementação','Cleanup waits for implementation'],
+        'task-blocked':['Tarefa impedida; revise a condição antes de reenviar','Task blocked; revise the condition before dispatch'],
         'spec-not-running':['Spec fora de execução','Spec is not running']};
       rows.push(section(t('Fila de trabalho','Work queue'),[
         text(`${fmt(queue.backlog)} ${t('tarefas no backlog','backlog tasks')} · ${fmt(queue.ready)} ${t('prontas','ready')}`),
         note(`${t('Ondas em execução','Running waves')}: ${fmt(queue.occupied_wave_slots)}/${fmt(queue.capacity)}`),
         ...queue.tasks.map(item=>Box({flexDirection:'column',children:[text(`${item.task} · ${item.title || ''}`,{bold:true}),
-          note(`${reasons[item.reason]?t(...reasons[item.reason]):state(item.reason)}${item.dependencies?.length?': '+item.dependencies.join(', '):''}${item.holding_waves?.length?': '+item.holding_waves.join(', '):''}`)]})),
+          note(`${reasons[item.reason]?t(...reasons[item.reason]):state(item.reason)}${item.blocked_by?': '+item.blocked_by:''}${item.dependencies?.length?': '+item.dependencies.join(', '):''}${item.holding_waves?.length?': '+item.holding_waves.join(', '):''}`)]})),
         ...(queue.omitted_tasks?[note(`${fmt(queue.omitted_tasks)} ${t('outras tarefas','other tasks')}`)]:[]),
       ]));
     }

@@ -2,8 +2,8 @@
 //! do projeto, e o caminho de uma chamada — conferir a fase, fechar o que
 //! voltou, entregar ao orquestrador os candidatos da onda que ainda não tem
 //! escolha, despachar as ondas prontas e dizer o que fazer em seguida. A
-//! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
-//! agente de teste dedicado que o fechamento pede, uma vez por obra.
+//! rodada exige a revisão do diff de cada onda antes do commit; a revisão
+//! final dedicada continua no fechamento da obra.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -930,9 +930,8 @@ pub(super) fn run_entered_round(
     // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
     // ou nomear as tarefas presas, quando o backlog ainda tem tarefa;
     // esperar o veredito, quando a revisão final segue aberta; ou fechar,
-    // com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
-    // quem confere o trabalho é o agente de teste dedicado que o fechamento
-    // pede, uma vez por obra.
+    // com tudo entregue e aprovado e o backlog vazio. A revisão do diff da
+    // onda antecede o commit; a revisão final permanece no fechamento.
     let report_back = super::checks::report_back(root, lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
@@ -2706,11 +2705,10 @@ mod tests {
         assert_eq!(log_of(root).current(id).and_then(|task| task.wave()), Some(1), "the task stays in its wave");
     }
 
-    /// A mudança que a onda manda terminada em ponto aparece no aviso da
-    /// mudança registrada com um ponto só; a que vem sem ponto ganha o da
-    /// frase.
+    /// Each changed plan remains held independently, including when no
+    /// changes_decision field was supplied.
     #[test]
-    fn a_change_ending_in_a_period_shows_one_period_in_the_recorded_change() {
+    fn plan_changes_in_two_waves_are_both_held_before_commit() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
@@ -2720,10 +2718,10 @@ mod tests {
         let bare = json!({"wave": 2, "text": "Parei.", "replan": "Dividir a onda em três", "undone": []});
         assert_eq!(returned(root, bare)["ok"], json!(true));
         let out = round(root, "x", None);
-        let warnings: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("plan-changed")).collect();
-        let hint_of = |wave: u64| warnings.iter().find(|w| w["wave"] == json!(wave)).and_then(|w| w["hint"].as_str()).unwrap_or_default().to_string();
-        assert!(hint_of(1).contains("A mudança: Dividir a onda em duas. Conte-a"), "{out}");
-        assert!(hint_of(2).contains("A mudança: Dividir a onda em três. Conte-a"), "{out}");
-        assert!(!hint_of(1).contains(".."), "{out}");
+        let waves: Vec<_> = out["warnings"].as_array().into_iter().flatten()
+            .filter(|warning| warning["reason"] == "wave-plan-does-not-work")
+            .map(|warning| warning["wave"].clone()).collect();
+        assert_eq!(waves, [json!(1), json!(2)], "{out}");
+        assert!(log_of(root).last_by_wave("delivered").is_empty());
     }
 }

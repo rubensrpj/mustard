@@ -167,6 +167,7 @@ pub(crate) struct BacklogTask<N> {
     pub(crate) depends_on: BTreeSet<N>,
     pub(crate) files: BTreeSet<String>,
     pub(crate) done: bool,
+    pub(crate) blocked: bool,
     pub(crate) priority: bool,
 }
 
@@ -201,7 +202,7 @@ pub(crate) fn ready_tasks<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> Vec<N> {
     let done: BTreeSet<&N> = tasks.iter().filter(|t| t.done).map(|t| &t.id).collect();
     let unlocks = |id: &N| -> usize { tasks.iter().filter(|t| t.depends_on.contains(id)).count() };
 
-    let mut ready: Vec<&BacklogTask<N>> = tasks.iter().filter(|t| !t.done && t.depends_on.iter().all(|d| done.contains(d))).collect();
+    let mut ready: Vec<&BacklogTask<N>> = tasks.iter().filter(|t| !t.done && !t.blocked && t.depends_on.iter().all(|d| done.contains(d))).collect();
     ready.sort_by(|a, b| unlocks(&b.id).cmp(&unlocks(&a.id)).then_with(|| a.id.cmp(&b.id)));
     ready.into_iter().map(|t| t.id.clone()).collect()
 }
@@ -622,6 +623,7 @@ fn chain_dependents<N: Ord + Clone>(
             let crosses_another = |files: &BTreeSet<String>| batches.iter().enumerate().any(|(other, b)| other != at && sets_cross(files, &b.files));
             let entering = waiting.iter().filter_map(|id| by_id.get(id).copied()).find(|task| {
                 !task.done
+                    && !task.blocked
                     && !placed.contains(&task.id)
                     && task.depends_on.iter().all(|d| done.contains(d) || batch.tasks.contains(d))
                     && (sets_cross(&task.files, &batch.files) || (sizing.is_some() && task.depends_on.iter().any(|d| batch.tasks.contains(d))))
@@ -724,7 +726,7 @@ mod tests {
     /// Uma tarefa do backlog, para os testes: número, dependências, arquivos e
     /// se já está entregue ou aprovada.
     fn task(id: u32, depends_on: &[u32], files: &[&str], done: bool) -> BacklogTask<u32> {
-        BacklogTask { id, depends_on: depends_on.iter().copied().collect(), files: files.iter().map(|f| f.to_string()).collect(), done, priority: false }
+        BacklogTask { id, depends_on: depends_on.iter().copied().collect(), files: files.iter().map(|f| f.to_string()).collect(), done, blocked: false, priority: false }
     }
 
     /// A tarefa `task` com a marca de prioridade.
@@ -754,6 +756,19 @@ mod tests {
 
         let tied = [task(5, &[], &[], false), task(3, &[], &[], false)];
         assert_eq!(ready_tasks(&tied), vec![3, 5], "sem ninguém destravado, decide o número");
+    }
+
+    #[test]
+    fn blocked_tasks_and_their_dependents_stay_out_of_native_batches() {
+        let mut held = task(2, &[1], &["a.rs"], false);
+        held.blocked = true;
+        let mut external = task(4, &[], &["b.rs"], false);
+        external.blocked = true;
+        let tasks = [task(1, &[], &["a.rs"], false), held, task(3, &[2], &["a.rs"], false), external];
+        let ready = ready_tasks(&tasks);
+        assert_eq!(ready, vec![1]);
+        let batches = pack_batches(&tasks, &ready, &[2, 3, 4], &BTreeSet::new());
+        assert_eq!(batch_tasks(&batches), vec![vec![1]], "sharing files cannot bypass a blocker");
     }
 
     /// Três tarefas prontas sem arquivo em comum saem em três lotes, um

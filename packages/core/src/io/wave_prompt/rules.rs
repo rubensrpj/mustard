@@ -127,16 +127,23 @@ fn markdown_under(root: &Path, folder: &str) -> Vec<String> {
 /// se lê passa, e a leitura das regras o deixa de fora como os outros.
 fn in_scope(root: &Path, path: &str, touched: &[String]) -> bool {
     let Ok(text) = std::fs::read_to_string(root.join(path)) else { return true };
-    let Some(patterns) = scoped_paths(&text) else { return true };
+    matches_paths(&text, touched).unwrap_or(true)
+}
+
+/// Explicit paths use the same matcher for rules and skills. An absent
+/// scope is distinct from a scope that does not match: unscoped skills
+/// remain opt-in, while unscoped rules apply to the project.
+pub(super) fn matches_paths(text: &str, touched: &[String]) -> Option<bool> {
+    let patterns = scoped_paths(text)?;
     let matchers: Vec<_> = patterns
         .iter()
         .filter_map(|pattern| GlobBuilder::new(pattern).literal_separator(true).backslash_escape(true).build().ok())
         .map(|glob| glob.compile_matcher())
         .collect();
-    touched.iter().map(|file| file.trim().replace('\\', "/")).any(|file| {
+    Some(touched.iter().map(|file| file.trim().replace('\\', "/")).any(|file| {
         let file = file.strip_prefix("./").unwrap_or(&file);
         matchers.iter().any(|matcher| matcher.is_match(file))
-    })
+    }))
 }
 
 /// Os padrões do campo `paths:` do cabeçalho YAML de uma regra, lidos como o
