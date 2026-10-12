@@ -174,6 +174,16 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
         // Safe decision metadata only: never persist intent, code, candidates or keys.
         for (field,value) in search_decisions(report) {measured.insert(field,value);}
     }
+    if command=="knowledge" {
+        // Caller-reported usage is separate from Jev billing and host
+        // telemetry. Never persist excerpts, prompt text or receipt contents.
+        for (field,path) in [("cached","/cached"),("session_model_calls","/session_model_calls"),
+            ("local_model_calls","/local_model_calls"),("remote_model_calls","/remote_model_calls"),
+            ("host","/host"),("model","/model"),("effort","/effort"),("effort_observed","/effort_observed"),("input_tokens","/input_tokens"),("output_tokens","/output_tokens"),
+            ("context_target_observed","/context/target_observed"),("api_context_tier","/context/api_reference/tier")] {
+            if let Some(value)=report.pointer(path).filter(|v|!v.is_null()) {measured.insert(format!("knowledge_{field}"),value.clone());}
+        }
+    }
     record_measured_call(root, command, named, session.as_deref(), started, report, measured)
 }
 
@@ -209,7 +219,7 @@ fn transport_metrics(args:&[String],output:&str)->Map<String,Value> {
 /// função de quem monta a cena dela (`crate::shared::word_search::Record`).
 /// A chamada que usou o Jev e não ficou numa spec, por não haver uma ou pela
 /// gravação recusada, deixa os tokens e o custo dele no arquivo das chamadas
-/// soltas da máquina, e o gasto dela entra no teto do mês do mesmo jeito.
+/// soltas da máquina. Esses registros não representam saldo do provedor.
 pub(crate) fn record_measured_call(
     root: &Path,
     command: &str,
@@ -242,6 +252,14 @@ pub(crate) fn recorded_operations(root:&Path,spec:&str)->mustard_core::domain::s
     operations_path(root,spec).and_then(|path|mustard_core::io::spec_events::read(&path).ok().flatten()).unwrap_or_default()
 }
 
+fn project_operations_path(root:&Path)->std::path::PathBuf {
+    mustard_core::io::spec_events::spec_root(root).join(".claude/mustard/operations/.project.ndjson")
+}
+
+pub(crate) fn project_operations(root:&Path)->mustard_core::domain::spec_events::SpecLog {
+    mustard_core::io::spec_events::read(&project_operations_path(root)).ok().flatten().unwrap_or_default()
+}
+
 /// A gravação de [`record_measured_call`] na spec do relatório, na que a
 /// chamada nomeou ou na atual; `None` sem nenhuma delas ou com a gravação
 /// recusada.
@@ -261,8 +279,9 @@ fn record_in_call_spec(
         .map(str::trim)
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
-        .or_else(|| conversation_spec(root, session))?;
-    DiskSpecState::new(root).log(&spec)?;
+        .or_else(|| conversation_spec(root, session));
+    if let Some(spec) = &spec { DiskSpecState::new(root).log(spec)?; }
+    else if command != "knowledge" { return None; }
     let ok = report.get("ok").and_then(Value::as_bool) == Some(true);
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut fields = json!({
@@ -277,8 +296,11 @@ fn record_in_call_spec(
     }
     let mut fields = draft(fields);
     fields.extend(measured);
+    let Some(spec) = spec else {
+        return mustard_core::io::spec_events::write(&project_operations_path(root),"call",fields,&[]).ok().map(|event|event.id);
+    };
     let argument_failure = !ok && matches!(reason,Some("duplicate-option"|"invalid-arguments"));
-    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search")) || argument_failure {
+    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search"|"knowledge")) || argument_failure {
         let path=operations_path(root,&spec)?;
         return mustard_core::io::spec_events::write(&path,"call",fields,&[]).ok().map(|recorded|recorded.id);
     }
@@ -342,6 +364,25 @@ mod tests {
         assert!(!serde_json::to_string(&metrics).unwrap().contains("private"));
         let unknown=search_decisions(&json!({"remote_model_calls":null}));
         assert!(unknown.is_empty(),"historical unknown usage must not become measured zero");
+    }
+
+    #[test]
+    fn knowledge_usage_is_separate_from_billing_and_keeps_no_source_payload() {
+        let dir=project_on("interpretacao");
+        let report=json!({"ok":true,"host":"codex","model":"gpt-6-luna","session_model_calls":1,
+            "input_tokens":100_001,"output_tokens":null,"remote_model_calls":0,"cached":false,
+            "context":{"target_observed":false,"api_reference":{"tier":"standard"}},
+            "interpretation":{"text":"private code sentinel"},"request":{"prompt":"private prompt sentinel"}});
+        assert!(record_output_call(dir.path(),"knowledge",Some("interpretacao"),Instant::now(),&report,&report.to_string()).is_some());
+        assert!(events_of(dir.path(),"interpretacao","call").is_empty(),"observations do not consume spec IDs");
+        let log=recorded_operations(dir.path(),"interpretacao");
+        let fields=&log.events[0].fields;
+        assert_eq!(fields["knowledge_input_tokens"],100_001);
+        assert_eq!(fields["knowledge_api_context_tier"],"standard");
+        assert_eq!(fields["knowledge_context_target_observed"],false);
+        for absent in ["tokens","cost_micro_usd","knowledge_output_tokens","interpretation","request"] {assert!(!fields.contains_key(absent),"{absent}");}
+        let text=json!(fields).to_string();
+        assert!(!text.contains("private code sentinel") && !text.contains("private prompt sentinel"));
     }
 
     /// Um projeto com a spec `spec` aberta e o checkout na branch dela.

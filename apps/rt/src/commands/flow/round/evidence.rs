@@ -123,6 +123,7 @@ mod tests {
             depends_on: vec![],
             reads: vec![],
             criteria: BTreeSet::from([1]),
+            expertise: Vec::new(),
         }
     }
     fn scan_fixture(root: &Path) {

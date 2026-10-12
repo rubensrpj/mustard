@@ -435,14 +435,29 @@ pub const GLOSSARY: MapBlock = written(block!("glossary", version 1, {
 /// velha, e quem lê o trecho a reescreve. Quem grava e lê é `io::map_notes`.
 /// Não se refaz do código: fica fora de [`BLOCKS`] e, na troca de versão, é
 /// convertido, nunca apagado.
-pub const NOTES: MapBlock = written(block!("notes", version 1, {
-    "notes" at list(&["notes"]) => ["file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text]
+pub const NOTES: MapBlock = notes_with_hash(block!("notes", version 2, {
+    "notes" at list(&["notes"]) => ["file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text, "sha256" Text]
 }));
+const fn notes_with_hash(mut block: MapBlock) -> MapBlock {
+    block.block.kind = Kind::Written(convert_notes);
+    block
+}
+fn convert_notes(conn: &Connection, version: u32) -> Result<()> {
+    if version < 2 { conn.execute_batch("ALTER TABLE notes ADD COLUMN sha256 TEXT;")?; }
+    Ok(())
+}
 
 /// Multi-source interpretations remain separate from extracted syntax and
 /// survive scans. Every source hash must match before retrieval can use one.
 pub const KNOWLEDGE_NOTES: MapBlock = written(block!("knowledge_notes", version 1, {
     "knowledge_notes" at list(&["knowledge_notes"]) => ["id" Text, "payload" Text]
+}));
+
+/// Reviewed procedures and native navigation profiles share the project's
+/// database. Scans preserve them; their source hashes govern reuse.
+pub const EXPERTISE: MapBlock = written(block!("expertise", version 1, {
+    "expertise" at list(&["expertise"]) => ["id" Text, "payload" Text],
+    "expertise_exports" at list(&["expertise_exports"]) => ["id" Text, "payload" Text]
 }));
 
 /// O bloco declarado por [`block!`] como escrito: convertido na troca de
@@ -515,12 +530,12 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
 /// das specs, o do glossário e o das notas de sentido.
-const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES];
+const DECLARED: [&MapBlock; 14] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES, &EXPERTISE];
 
 /// Os mesmos blocos, como o banco os abre.
-pub(crate) const DB_BLOCKS: [Block; 16] =
+pub(crate) const DB_BLOCKS: [Block; 17] =
     [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
-    crate::io::knowledge::precise::BLOCK];
+    crate::io::knowledge::precise::BLOCK, EXPERTISE.block];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -2516,6 +2531,8 @@ mod tests {
                 "glossary_marks",
                 "notes",
                 "knowledge_notes",
+                "expertise",
+                "expertise_exports",
                 "blocks"
             ]
         );

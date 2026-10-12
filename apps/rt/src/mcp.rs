@@ -1,0 +1,101 @@
+//! Minimal stdio MCP transport over the same versioned search contract as the
+//! CLI and Mods. Content is always text; no conflicting output schema.
+use std::io::{BufRead, Write};
+use std::path::Path;
+use serde_json::{Value, json};
+
+fn error(id: Value, code: i32, message: &str) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
+}
+
+fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Value> {
+    if message["jsonrpc"] != "2.0" || !message["method"].is_string() {
+        return Some(error(message.get("id").cloned().unwrap_or(Value::Null), -32600, "Invalid JSON-RPC request"));
+    }
+    let id = message.get("id")?.clone(); // Valid notifications never receive replies.
+    if message["jsonrpc"] != "2.0" || !message["method"].is_string() || !(id.is_string() || id.is_number()) {
+        return Some(error(id, -32600, "Invalid JSON-RPC request"));
+    }
+    let result = match message["method"].as_str().unwrap_or_default() {
+        "initialize" => {
+            *initialized = true;
+            let requested = message["params"]["protocolVersion"].as_str().unwrap_or_default();
+            let protocol = if ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"].contains(&requested) { requested } else { "2025-11-25" };
+            json!({"protocolVersion":protocol,"capabilities":{"tools":{"listChanged":false}},
+                "serverInfo":{"name":"mustard","version":env!("MUSTARD_VERSION_FULL")},
+                "instructions":"Code search preserves native tool arguments. Include a short intent and purpose; choose enables optional configured Jev only for remaining ambiguity."})
+        }
+        "ping" => json!({}),
+        _ if !*initialized => return Some(error(id, -32002, "Initialize the server first")),
+        "tools/list" => json!({"tools":[{"name":"search","description":"Search or read current project code using native arguments, crossed with indexed functions, callers, contracts, tests and source-bound interpretations. Preserve native scope; use locate for literal searches.",
+            "inputSchema":mustard_core::domain::code_search::contract::schema()}]}),
+        "tools/call" => {
+            if message["params"]["name"] != "search" { return Some(error(id, -32602, "Unknown tool")); }
+            let started = std::time::Instant::now();
+            let mut arguments = message["params"]["arguments"].clone();
+            // The shared Mods contract omits this transport envelope version.
+            if arguments.get("request").is_some() && arguments.get("schema_version").is_none() { arguments["schema_version"] = json!(1); }
+            let result = mustard_core::domain::code_search::Request::from_json(&arguments.to_string())
+                .and_then(|request| crate::shared::search_gateway::answer(root, &request).map(|answer| (answer, request)));
+            match result {
+                Ok((answer, request)) => {
+                    let view = mustard_core::io::code_search::presentation::agent(&answer, &request, root);
+                    let mut text = String::from_utf8_lossy(&view.stdout).into_owned();
+                    if !answer.stderr.is_empty() { text.push_str(&String::from_utf8_lossy(&answer.stderr)); }
+                    let _ = crate::commands::spec_events::conversation::record_output_call(root, "search", None, started, &answer.report, &text);
+                    json!({"content":[{"type":"text","text":text}],"isError":answer.report["ok"] != true})
+                }
+                Err(reason) => {
+                    let report = json!({"ok":false,"reason":reason});
+                    let _ = crate::commands::spec_events::conversation::record_output_call(root, "search", None, started, &report, &report.to_string());
+                    json!({"content":[{"type":"text","text":report.to_string()}],"isError":true})
+                }
+            }
+        }
+        _ => return Some(error(id, -32601, "Method not found")),
+    };
+    Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
+}
+
+pub(crate) fn run(root: &Path) {
+    let input = std::io::stdin(); let mut output = std::io::stdout().lock(); let mut initialized = false;
+    for line in input.lock().lines() {
+        let Ok(line) = line else { break; };
+        let reply = if line.len() > 1_048_576 { Some(error(Value::Null, -32600, "Message exceeds 1 MiB")) }
+            else { match serde_json::from_str::<Value>(&line) {
+                Ok(value) if value.is_object() => response(root, &value, &mut initialized),
+                Ok(_) => Some(error(Value::Null, -32600, "Invalid JSON-RPC request")),
+                Err(_) => Some(error(Value::Null, -32700, "Invalid JSON")),
+            }};
+        if let Some(reply) = reply && writeln!(output, "{reply}").and_then(|()| output.flush()).is_err() { break; }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn search_transport_returns_text_for_read_grep_and_errors() {
+        let dir = tempfile::tempdir().unwrap(); let root = dir.path();
+        std::fs::write(root.join("a.rs"), "fn restore() {}\n").unwrap();
+        let mut initialized = false;
+        let msg = |method: &str, params: Value| json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
+        assert_eq!(response(root, &msg("tools/list", json!({})), &mut initialized).unwrap()["error"]["code"], -32002);
+        let init = response(root, &msg("initialize", json!({"protocolVersion":"2025-11-25"})), &mut initialized).unwrap();
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+        let tools = response(root, &msg("tools/list", json!({})), &mut initialized).unwrap();
+        assert!(tools["result"]["tools"][0].get("outputSchema").is_none());
+        for (tool, input) in [("Read", json!({"file_path":root.join("a.rs"),"offset":1,"limit":1})),
+            ("Grep", json!({"pattern":"restore","path":root,"output_mode":"content"}))] {
+            let result = response(root, &msg("tools/call", json!({"name":"search","arguments":{"request":{"tool":tool,"input":input,"intent":"Read restoration function","purpose":"locate"}}})), &mut initialized).unwrap();
+            assert_eq!(result["result"]["isError"], false, "{result}");
+            assert!(result["result"]["content"][0]["text"].as_str().unwrap().contains("restore"));
+        }
+        let bad = response(root, &msg("tools/call", json!({"name":"search","arguments":{}})), &mut initialized).unwrap();
+        assert_eq!(bad["result"]["isError"], true);
+        let empty=response(root,&msg("tools/call",json!({"name":"search","arguments":{"request":{"tool":"Grep","input":{"pattern":"not_present_anywhere","path":root},"intent":"Literal lookup","purpose":"locate"}}})),&mut initialized).unwrap();
+        assert_eq!(empty["result"]["isError"],false,"no matches is a successful native search");
+        assert!(response(root, &json!({"jsonrpc":"2.0","method":"notifications/initialized"}), &mut initialized).is_none());
+        assert_eq!(response(root, &json!({"unexpected":true}), &mut initialized).unwrap()["error"]["code"], -32600);
+    }
+}

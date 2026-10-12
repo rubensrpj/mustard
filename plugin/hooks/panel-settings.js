@@ -45,6 +45,10 @@ export function settingsPanel(state,actions,{t,text,note,row,section,button,pick
     picker('setting-agent-model',t('Modelo','Model'),models.map(value=>({value,label:value})),values.agent_model,value=>{if(!state.busy)actions.editSetting('agent_model',value);}),
     picker('setting-agent-effort',t('Esforço','Effort'),['low','medium','high','xhigh','max'].map(value=>({value,label:value})),values.agent_effort,value=>{if(!state.busy)actions.editSetting('agent_effort',value);}),
     note(t('Aplica-se aos próximos agentes. Os agentes em execução mantêm o modelo atual.','Applies to new agents. Running agents keep their current model.')),
+    picker('setting-session-claude',t('Análise pontual · Claude','Targeted analysis · Claude'),[...new Set([values.session_claude_model||'haiku','haiku','inherit'])].map(value=>({value,label:value})),values.session_claude_model||'haiku',value=>{if(!state.busy)actions.editSetting('session_claude_model',value);}),
+    picker('setting-session-codex',t('Análise pontual · Codex','Targeted analysis · Codex'),[...new Set([values.session_codex_model||'gpt-6-luna','gpt-6-luna','inherit'])].map(value=>({value,label:value})),values.session_codex_model||'gpt-6-luna',value=>{if(!state.busy)actions.editSetting('session_codex_model',value);}),
+    note(t('Haiku/Luna: versão mais recente disponível na sessão, esforço médio e até 100 mil tokens de entrada total por análise isolada. Só quando faltar interpretação; reutilize enquanto as fontes e regras estiverem iguais. Preferência não comprova a execução.','Haiku/Luna: latest version available in the session, medium effort and up to 100K full input tokens per isolated analysis. Only for missing interpretation; reuse while sources and rules match. Preference is not proof of execution.')),
+
   ]));
   if(group==='Busca')result.push(section(t('Índice do projeto','Project index'),[
     note(state.index_present?t('Índice disponível. Atualize após habilitar o modelo para preparar os vetores.','Index available. Update after enabling the model to prepare vectors.'):

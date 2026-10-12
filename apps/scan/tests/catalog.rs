@@ -144,7 +144,7 @@ fn derived_catalogue_rebuild_preserves_sources_and_reviewed_notes() {
     let source = serde_json::from_value(report["cards"][0]["source"].clone()).unwrap();
     knowledge::record(
         root,
-        &knowledge::Interpretation {
+        &knowledge::Interpretation { rule_context: None,
             id: "receipt".into(),
             title: "Conferência".into(),
             text: "Checked evidence".into(),

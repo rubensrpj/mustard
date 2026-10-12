@@ -4,7 +4,7 @@ use std::path::Path;
 use mustard_core::{ProjectConfig,domain::config::{AGENT_EFFORTS,FilterSetting}};
 use serde_json::{Value,json};
 
-const FIELDS:[&str;10]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer"];
+const FIELDS:[&str;12]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer","session_claude_model","session_codex_model"];
 const PURPOSES:[(&str,&str);3]=[("jev_search","search"),("jev_wave_planning","wave-planning"),("jev_context","context")];
 
 pub(super) fn run(start:&Path,patch:Option<&str>)->Value {
@@ -30,6 +30,8 @@ fn read(root:&Path)->Value {
     if config.unreadable {return refused("settings-unreadable");}
     let mut values=json!({"enabled":config.enabled(),"rtk":config.rtk(),"vectors":config.ai_vectors_enabled(),
         "jev":config.ai_fallback_enabled(),"agent_model":config.agent_model(),"agent_effort":config.agent_effort(),"search_answer":config.search_answer()});
+    values["session_claude_model"]=json!(config.ai.session_models.get("claude").map_or("haiku",String::as_str));
+    values["session_codex_model"]=json!(config.ai.session_models.get("codex").map_or("gpt-6-luna",String::as_str));
     for (field,purpose) in PURPOSES {values[field]=json!(config.judgement_filter(purpose)==FilterSetting::Jev);}
     let switches=mustard_core::Switches::read(root);
     json!({"ok":true,"schema_version":1,"revision":revision(root,&text),"values":values,
@@ -40,7 +42,7 @@ fn read(root:&Path)->Value {
 
 fn valid(field:&str,value:&Value)->bool {
     match field {
-        "agent_model"=>value.as_str().is_some_and(|name|name.len()<=160 && !name.is_empty() && name.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'.'|'_'|':'|'/'|'-'|'['|']'))),
+        "agent_model" | "session_claude_model" | "session_codex_model"=>value.as_str().is_some_and(|name|name.len()<=160 && !name.is_empty() && name.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'.'|'_'|':'|'/'|'-'|'['|']'))),
         "agent_effort"=>value.as_str().is_some_and(|effort|AGENT_EFFORTS.contains(&effort)),
         _=>FIELDS.contains(&field) && value.is_boolean(),
     }
@@ -70,7 +72,9 @@ fn apply(root:&Path,text:&str)->Value {
     for (field,value) in changes {
         let path:Vec<&str>=match field.as_str() {
             "vectors"=>vec!["ai","vectors"],"jev"=>vec!["ai","fallback"],
-            "agent_model"=>vec!["agents","model"],"agent_effort"=>vec!["agents","effort"],
+            "agent_model"=>vec!["agents","model"],
+            "session_claude_model"=>vec!["ai","sessionModels","claude"],
+            "session_codex_model"=>vec!["ai","sessionModels","codex"],"agent_effort"=>vec!["agents","effort"],
             "search_answer"=>vec!["search","answer"],
             _=>vec![field.as_str()],
         };

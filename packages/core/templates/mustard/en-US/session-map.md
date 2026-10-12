@@ -10,6 +10,7 @@ Binary searches; LLM implements.
 - CLI: `mustard-rt run search --shell-output --intent "<question>" --purpose spec -- rg -n "<pattern>" .`. Bash: `mustard:spec: <question>`. `--choose`: optional Jev.
 - Reuse current excerpts; `Read` with `offset`/`limit` crosses evidence without AI. No range: `run map summary --file <file>`. Reread changed sources; references do not prove behavior.
 - `mustard-rt run knowledge`: investigation.
+- Missing analysis: `run knowledge --prepare-session claude --query "<question>"`.
 
 ## Open spec
 
