@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) trait WaveJudge: Send + Sync + std::fmt::Debug {
     fn judge_backlog(&self, board: &Board) -> Result<Judged, FilterError>;
     fn judge_items(&self, board: &ItemsBoard) -> Result<ItemsJudged, FilterError>;
-    fn held_by_budget(&self) -> bool;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

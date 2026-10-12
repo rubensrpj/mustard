@@ -1204,19 +1204,21 @@ fn without_a_key_the_wave_leaves_in_the_same_round_with_the_default_items() {
 }
 
 // ---------------------------------------------------------------------------
-// O teto do mês do Jev, de ponta a ponta
+// Crédito do serviço, cache e continuidade nativa, de ponta a ponta
 // ---------------------------------------------------------------------------
 
 /// Um Jev de mentira que responde à busca: cada candidato com chance de 0,9,
 /// a existência também, e `input_tokens` tokens de entrada cobrados.
 fn answering_searches(input_tokens: u64) -> FakeJev {
-    FakeJev::start(move |asked| {
-        let ids = asked["questions"]["where"]["criteria"].as_object().map(|criteria| criteria.keys().cloned().collect::<Vec<_>>());
-        let chances: serde_json::Map<String, Value> = ids.unwrap_or_default().into_iter().map(|id| (id, json!(0.9))).collect();
-        let answers = json!({"where": {"type": "choice", "choice": "c000", "probabilities": chances},
-            "exists": {"type": "noul", "noul": 0.9}});
-        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": input_tokens, "output_tokens": 0}}))
-    })
+    FakeJev::start(move |asked| (200, search_answer(asked, input_tokens)))
+}
+
+fn search_answer(asked: &Value, input_tokens: u64) -> Value {
+    let ids = asked["questions"]["where"]["criteria"].as_object().map(|criteria| criteria.keys().cloned().collect::<Vec<_>>());
+    let chances: serde_json::Map<String, Value> = ids.unwrap_or_default().into_iter().map(|id| (id, json!(0.9))).collect();
+    let answers = json!({"where": {"type": "choice", "choice": "c000", "probabilities": chances},
+        "exists": {"type": "noul", "noul": 0.9}});
+    json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": input_tokens, "output_tokens": 0}})
 }
 
 /// Grava o mapa do projeto em dia, com as duas funções de `src/main.rs`: a
@@ -1244,12 +1246,8 @@ fn mapped(project: &Project) {
     mustard_core::io::project_map::write_text(root, &map.to_string()).expect("the map");
 }
 
-/// A busca feita sem spec deixa o custo do Jev no arquivo da máquina, e ele
-/// conta no teto do mês: a primeira busca custa 10,08 dólares, mais que o
-/// teto padrão de 10, e a segunda responde só com o mapa, com o aviso do
-/// teto, sem pedido nenhum ao serviço.
 #[test]
-fn a_search_without_a_spec_spends_from_the_month_and_the_spent_month_answers_from_the_map_alone() {
+fn historical_spending_does_not_block_search_and_cached_answers_still_avoid_http() {
     let jev = answering_searches(240_000_000);
     let mut project = Project::new();
     project.jev = Some(jev.url.clone());
@@ -1258,29 +1256,28 @@ fn a_search_without_a_spec_spends_from_the_month_and_the_spent_month_answers_fro
     let search = |query| project.run(&["map", "search", "--query", query, "--root", &root]);
 
     let first = search("texto da saudação");
-    assert_eq!(first["filter"], json!("jev"), "the month had budget left: {first}");
+    assert_eq!(first["filter"], json!("jev"), "the provider answers: {first}");
     assert_eq!(jev.all_requests().len(), 1);
 
     let cached = search("texto da saudação");
-    assert_eq!(cached["filter"], "jev", "a cached judgement needs no new budget: {cached}");
+    assert_eq!(cached["filter"], "jev", "the cached judgement is reused: {cached}");
     assert_eq!(jev.all_requests().len(), 1, "reuse sent no new physical request");
     let second = search("texto da saudação novamente");
-    assert!(second.get("filter").is_none() && second.get("pieces").is_none(), "{second}");
-    assert!(second["files"].as_array().is_some_and(|files| !files.is_empty()), "the map answers: {second}");
-    assert_eq!(second["warnings"], json!([translate("map.search.over_budget", Locale::PtBr)]), "{second}");
-    assert_eq!(jev.all_requests().len(), 1, "the spent month sent nothing more to the service");
+    assert_eq!(second["filter"], "jev", "recorded spending cannot block a new decision: {second}");
+    assert!(second["pieces"].as_array().is_some_and(|pieces| !pieces.is_empty()), "{second}");
+    assert_eq!(jev.all_requests().len(), 2, "a different query reaches the provider");
 }
 
-/// Com o mês já gasto por uma chamada gravada de 10 dólares, o teto padrão, a
-/// rodada não pergunta nada ao Jev, que juntaria as três tarefas e levaria a
-/// regra de outro arquivo: a montagem é a por arquivo, o pedido leva os itens
-/// do padrão, e a rodada avisa que o teto segurou o Jev.
 #[test]
-fn once_the_month_is_spent_the_round_assembles_and_picks_the_items_without_the_jev() {
+fn legacy_zero_budget_and_old_spending_do_not_block_wave_planning_or_context() {
     let jev = judging_items(|_| 0.9);
     let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
     let (project, _, said, tasks) = judged_project(&files, &jev);
     let (project_code, other_code) = two_rules(&project, said);
+    let config_path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["jev"] = json!({"monthly_budget_usd": 0});
+    std::fs::write(config_path, config.to_string()).unwrap();
     project.seed(
         "call",
         &json!({"author": "binary", "command": "map search", "ms": 900, "result": "ok", "filter": "jev", "tokens": 238_095_238,
@@ -1289,15 +1286,65 @@ fn once_the_month_is_spent_the_round_assembles_and_picks_the_items_without_the_j
 
     let out = project.run(&["round", "--spec", SPEC]);
 
-    assert!(jev.all_requests().is_empty(), "nothing reached the service: {:?}", jev.all_requests());
-    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "the assembly by file");
+    assert!(!jev.all_requests().is_empty(), "the provider receives new decisions");
+    assert_eq!(batch_orders(&project), vec![tasks], "planning uses the provider judgement");
     let log = project.log();
     let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
     let prompt = sent.str_field("text").expect("the request");
-    assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "the default items: {prompt}");
-    assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
+    assert!(prompt.contains(&project_code) && prompt.contains(&other_code), "context uses the provider judgement: {prompt}");
+    assert!(sent.fields.get("analysis").is_some(), "{:?}", sent.fields);
     let reasons: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().map(|warning| &warning["reason"]).collect();
-    assert_eq!(reasons, [&json!("jev-over-budget")], "{out}");
+    assert!(reasons.is_empty(), "no invented spending warning: {out}");
+}
+
+#[test]
+fn a_credit_refusal_preserves_native_search_and_recharging_restores_judgement() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let available = Arc::new(AtomicBool::new(false));
+    let credit = Arc::clone(&available);
+    let jev = FakeJev::start(move |asked| {
+        if credit.load(Ordering::SeqCst) {
+            (200, search_answer(asked, 700))
+        } else {
+            (402, json!({"error": "credit unavailable"}))
+        }
+    });
+    let mut project = Project::new();
+    project.jev = Some(jev.url.clone());
+    mapped(&project);
+    let root = project.root.to_string_lossy().to_string();
+    let search = || project.run(&["map", "search", "--query", "texto da saudação", "--root", &root]);
+    let refused = search();
+    assert!(refused.get("filter").is_none(), "the failed provider does not replace native evidence: {refused}");
+    assert!(refused["files"].as_array().is_some_and(|files| !files.is_empty()), "{refused}");
+    assert_eq!(jev.all_requests().len(), 1, "credit refusal is not retried");
+    available.store(true, Ordering::SeqCst);
+    let restored = search();
+    assert_eq!(restored["filter"], "jev", "the failure does not become a permanent block: {restored}");
+    assert_eq!(search()["filter"], "jev");
+    assert_eq!(jev.all_requests().len(), 2, "the successful decision is cached");
+}
+
+#[test]
+fn a_credit_refusal_keeps_round_planning_and_context_native_and_records_the_failures() {
+    let jev = FakeJev::start(|_| (402, json!({"error": "credit unavailable"})));
+    let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
+    let (project, _, said, tasks) = judged_project(&files, &jev);
+    let (project_code, other_code) = two_rules(&project, said);
+    let out = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(out["ok"], true, "the round continues: {out}");
+    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]]);
+    let log = project.log();
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+    let prompt = sent.str_field("text").unwrap();
+    assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "native context is preserved: {prompt}");
+    let attempts = std::fs::read_to_string(project.root.join(".claude/judgements/attempts.ndjson")).unwrap();
+    let rows: Vec<Value> = attempts.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(rows.len(), jev.all_requests().len());
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|row| row["status"] == 402 && row["attempt"] == 1 && row["error"] == "no_credit"));
+    assert!(rows.iter().any(|row| row["purpose"] == "wave-planning"));
+    assert!(rows.iter().any(|row| row["purpose"] == "context"));
 }
 
 /// O arquivo que a tarefa das provas da reprovação cria.

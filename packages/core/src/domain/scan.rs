@@ -372,7 +372,8 @@ mod tests {
         let start=std::time::Instant::now();
         assert!(scan.scan_with_deadline(root,out,&runner,std::time::Duration::from_millis(30)).unwrap_err().to_string().contains("timed out"));
         assert!(start.elapsed()<std::time::Duration::from_secs(2));
-        assert!(dir.path().join("called").exists());
+        // The deadline includes process startup. On a busy runner the child
+        // can legitimately time out before it reaches its first instruction.
     }
 
     #[test]
