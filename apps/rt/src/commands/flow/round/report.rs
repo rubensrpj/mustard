@@ -282,6 +282,7 @@ fn take_returns(
     // segura só a própria onda.
     super::review::validate_paths(&report.waves)?;
     let (mut warnings, mut refused) = check_against_copies(root, log, &mut report.waves, lang);
+    warnings.extend(super::stops::triage_returns(root,spec,log,&report.waves,lang));
     refused.extend(super::review::hold_unreviewed(root, spec, log, &mut report.waves, &report.reviewed, lang));
     // A junção de cada cópia é decidida antes de qualquer gravação. A entrega
     // com um trecho que ela não resolve fica de fora, com o repositório

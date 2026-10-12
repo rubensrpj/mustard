@@ -148,7 +148,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
           ()=>actions.change({selectedWave:w.wave,waveView:'Plano',contentOffset:0},true),{active:view.selectedWave===w.wave}))));
       if(view.selectedWave===undefined)rows.push(note(t('Selecione uma onda para ver plano, input, entrega e testes.','Select a wave to read its plan, input, return and tests.')));
       else {
-        const names={Plano:['Plano e tarefas','Plan and tasks'],Pedido:['Input exato enviado','Exact sent input'],Entrega:['Entrega','Return'],Testes:['Testes','Tests']};
+        const names={Plano:['Plano e tarefas','Plan and tasks'],Pedido:['Input exato enviado','Exact sent input'],Perfil:['Agente e skills','Agent and skills'],Entrega:['Entrega','Return'],Testes:['Testes','Tests']};
         rows.push(row(Object.entries(names).map(([value,label])=>button(`wave-view-${value}`,t(...label),
           ()=>actions.change({waveView:value,contentOffset:0}),{active:view.waveView===value}))));
         const detail=data.wave_detail?.spec===selected && data.wave_detail.wave===view.selectedWave?data.wave_detail:undefined;
@@ -212,6 +212,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       rows.push(section(t('Análises reutilizáveis','Reusable analyses'),[
         text(`${t('Concluídas por subagente da sessão','Completed by session subagent')}: ${fmt(analysis.completed_analyses)}`),
         text(`${t('Consultas que reutilizaram análise válida','Queries reusing a current analysis')}: ${fmt(analysis.reused_operations)}`),
+        text(`${t('Delegações duplicadas evitadas','Duplicate delegations avoided')}: ${fmt(analysis.pending_delegations_reused)}`),
         text(`${t('Falhas registradas','Recorded failures')}: ${fmt(analysis.failures)}`),
         text(`${t('Entrada/saída informadas nos recibos','Receipt-reported input/output')}: ${fmt(analysis.reported_input_tokens)}/${fmt(analysis.reported_output_tokens)} tokens`),
         note(`${t('Análises sem entrada medida','Analyses without measured input')}: ${fmt(analysis.analyses_with_unknown_input)} · ${t('acima de 100 mil','above 100K')}: ${fmt(analysis.over_target)}`),
@@ -303,6 +304,22 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       note(t('Custo Jev estimado pela tabela; abrir este painel não faz chamada paga.','Jev cost is estimated from the pricing table; opening this panel makes no paid request.')),
     ]));
     if(usageView==='Detalhes') {
+      const health=data.integration_health;
+      if(health)rows.push(section(t('Funcionamento das integrações','Integration health'),[
+        text(`${t('Versão em execução / configuração','Running / configured version')}: ${health.running_version || '—'} / ${health.project_version || '—'}`),
+        text(`RTK: ${health.rtk?.enabled ? (health.rtk?.executable_available && health.rtk?.configuration_matches?t('configurado e executável disponível','configured and executable available'):t('habilitado com instalação incompleta','enabled with incomplete installation')):t('desligado','disabled')}`),
+        text(`Jev: ${health.jev?.credential_available?t('credencial disponível; uso depende da finalidade','credential available; use depends on purpose'):t('credencial indisponível','credential unavailable')}`),
+        text(`${t('Vetores locais indexados','Indexed local vectors')}: ${fmt(health.vectors?.indexed_chunks)} · ${t('documentos','documents')}: ${fmt(health.vectors?.indexed_documents)}`),
+        ...((health.issues || []).length?[note(`${t('Pendências da instalação','Installation issues')}: ${health.issues.map(issue=>({
+          'configuration-unreadable':t('configuração ilegível','unreadable configuration'),
+          'project-version-drift':t('configuração de outra versão','configuration version differs'),
+          'installation-unverified-for-running-version':t('versão atual sem recibo de instalação completo','running version lacks a complete installation receipt'),
+          'rtk-incomplete':t('RTK incompleto','RTK incomplete'),
+          'jev-credential-unavailable':t('chave Jev indisponível','Jev key unavailable'),
+        })[issue] || issue).join(' · ')}`)]:[]),
+        ...((health.hosts?.observations || []).map(host=>text(`${host.host}: ${t('último evento','last event')} ${host.last_event} · ${date(host.at)} · ${fmt(host.tool_failures)} ${t('falhas observadas','observed failures')}`))),
+        note(t('Configuração não comprova execução. Eventos confirmam hooks observados; ausência de medição permanece desconhecida. Este diagnóstico não chama IA.','Configuration does not prove execution. Events confirm observed hooks; missing measurements remain unknown. This diagnostic does not call AI.')),
+      ]));
       rows.push(section(t('Origem e cobertura','Sources and coverage'),[
         text(`Mustard ${data.project.version || t('versão não informada','version not provided')}`),
         text(data.installation?.complete===true && data.installation.version===data.project?.version?t('Instalação conferida para esta versão.','Installation verified for this version.'):

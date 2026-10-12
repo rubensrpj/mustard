@@ -23,9 +23,15 @@ fn assets(root: &Path, profile: &Profile, host: &str) -> Result<Vec<(String, Str
         "claude" => {
             // Executor constraints are the same compiled template as the generic
             // agent; specialization cannot remove task/proof/scope protections.
-            let agent = crate::platform::seeds::with_agent_settings(body, config.agent_settings())
-                .replacen("name: mustard-wave", &format!("name: {name}"), 1)
-                .replacen("description: Implements only the wave requested by the binary.", &format!("description: {description}"), 1);
+            let configured = crate::platform::seeds::with_agent_settings(body, config.agent_settings());
+            let (header, text) = configured.strip_prefix("---\n").and_then(|body| body.split_once("\n---"))
+                .ok_or("expertise-executor-template-invalid")?;
+            let header = header.lines().map(|line| {
+                if line.starts_with("name:") { format!("name: {name}") }
+                else if line.starts_with("description:") { format!("description: {description}") }
+                else {line.to_owned()}
+            }).collect::<Vec<_>>().join("\n");
+            let agent = format!("---\n{header}\n---{text}");
             Ok(vec![(format!(".claude/skills/{name}/SKILL.md"), skill),
                 (format!(".claude/agents/{name}.md"), format!("{agent}\n\nSpecialization: follow `{}` for the requested area; mandatory rules and wave scope take precedence.\n", format_args!(".claude/skills/{name}/SKILL.md")))])
         }

@@ -56,14 +56,34 @@ pub fn setting_allows(setting: FilterSetting) -> bool {
 }
 
 /// A chave do projeto em `root`: `env` (o valor de [`KEY_ENV`], que quem
-/// chama lê) no ambiente; sem ela, `jev.key` do `mustard.json` que `config`
-/// leu. Sem nenhuma das duas, [`FilterError::MissingKey`]; com a do arquivo
+/// chama lê) no ambiente; sem ela, o env local privado e então `jev.key`
+/// do `mustard.json` que `config` leu. Sem chave, [`FilterError::MissingKey`]; com a do arquivo
 /// que o git guarda, [`FilterError::KeyInGit`].
 ///
 /// # Errors
 /// A chave que falta ou que o git guarda, como acima.
 pub fn find_key(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<FoundKey, FilterError> {
+    let env=env.filter(|s|!s.trim().is_empty()).or_else(|| local_environment_key(root)).or_else(|| {
+        let top=crate::platform::git::run(root,&["rev-parse","--show-toplevel"]).out()?;
+        let top=Path::new(top.trim());
+        if top==root || !root.canonicalize().ok()?.starts_with(top.canonicalize().ok()?) {return None;}
+        local_environment_key(top)
+    });
     key_from(env, config.jev_key(), || tracked_by_git(root))
+}
+
+/// Claude applies local env settings to its children; a native CLI or Codex
+/// may not. Resolve the same private project credential for every consumer.
+/// A tracked, unignored or linked-outside file is never a credential source.
+fn local_environment_key(root:&Path)->Option<String> {
+    const FILE:&str=".claude/settings.local.json";
+    if crate::platform::git::run(root,&["ls-files","--error-unmatch","--",FILE]).ok
+        || !crate::platform::git::run(root,&["check-ignore","-q","--",FILE]).ok {return None;}
+    let path=root.join(FILE);
+    if !path.canonicalize().ok()?.starts_with(root.canonicalize().ok()?) {return None;}
+    if path.metadata().ok()?.len()>1_048_576 {return None;}
+    let value:serde_json::Value=serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    value["env"][KEY_ENV].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned)
 }
 
 /// A escolha da chave, sobre o valor do ambiente e o do `mustard.json`; o
@@ -94,6 +114,22 @@ fn tracked_by_git(root: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_cli_uses_the_same_private_local_environment_key_as_the_host() {
+        let dir=tempfile::tempdir().unwrap(); let root=dir.path();
+        assert!(crate::platform::git::run(root,&["init","-q"]).ok);
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".gitignore"),".claude/settings.local.json\n").unwrap();
+        std::fs::write(root.join(".claude/settings.local.json"),json!({"env":{KEY_ENV:"private-test-key"}}).to_string()).unwrap();
+        let config=ProjectConfig::load(root);
+        assert_eq!(find_key(root,&config,None).unwrap().value(),"private-test-key");
+        assert_eq!(find_key(root,&config,Some("explicit-env".into())).unwrap().value(),"explicit-env");
+        let nested=root.join("apps/admin");std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(find_key(&nested,&ProjectConfig::load(&nested),None).unwrap().value(),"private-test-key");
+        assert!(crate::platform::git::run(root,&["add","-f","--",".claude/settings.local.json"]).ok);
+        assert_eq!(find_key(root,&config,None).unwrap_err(),FilterError::MissingKey);
+    }
 
     #[test]
     fn the_environment_key_comes_before_the_project_file() {

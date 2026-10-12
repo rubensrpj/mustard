@@ -174,10 +174,10 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
         // Safe decision metadata only: never persist intent, code, candidates or keys.
         for (field,value) in search_decisions(report) {measured.insert(field,value);}
     }
-    if command=="knowledge" {
+    if ["knowledge","expertise"].contains(&command) {
         // Caller-reported usage is separate from Jev billing and host
         // telemetry. Never persist excerpts, prompt text or receipt contents.
-        for (field,path) in [("cached","/cached"),("session_model_calls","/session_model_calls"),
+        for (field,path) in [("cached","/cached"),("pending","/pending"),("session_model_calls","/session_model_calls"),
             ("local_model_calls","/local_model_calls"),("remote_model_calls","/remote_model_calls"),
             ("host","/host"),("model","/model"),("effort","/effort"),("effort_observed","/effort_observed"),("input_tokens","/input_tokens"),("output_tokens","/output_tokens"),
             ("context_target_observed","/context/target_observed"),("api_context_tier","/context/api_reference/tier")] {
@@ -300,7 +300,7 @@ fn record_in_call_spec(
         return mustard_core::io::spec_events::write(&project_operations_path(root),"call",fields,&[]).ok().map(|event|event.id);
     };
     let argument_failure = !ok && matches!(reason,Some("duplicate-option"|"invalid-arguments"));
-    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search"|"knowledge")) || argument_failure {
+    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search"|"knowledge"|"expertise")) || argument_failure {
         let path=operations_path(root,&spec)?;
         return mustard_core::io::spec_events::write(&path,"call",fields,&[]).ok().map(|recorded|recorded.id);
     }

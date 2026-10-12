@@ -1,5 +1,27 @@
 import { test, expect, mock } from 'claude-code/testing';
-import {contentPage} from './panel-content.js';
+import {contentPage,waveText} from './panel-content.js';
+
+test('a lost pane reference does not prevent a fresh Desktop opening',async ($,on)=>{
+  mock.clock(on);mock.env(on,{});let opens=0,closes=0;
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
+  on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{}}));
+  on('ui.close',()=>{if(++closes===1)throw new Error('pane no longer exists');return {value:null};});
+  on('ui.open',()=>{opens++;return {value:null};});
+  on('process.run',()=>({value:{exitCode:0,stdout:JSON.stringify({ok:true,schema_version:1,project:{name:'fixture'},specs:[],jev:{}}),stderr:''}}));
+  await $.session.start({cwd:'/fixture',surface:'desktop',isInteractive:true});
+  expect((await $.command.run({command:'mustard-panel',args:''})).text).toContain('solicitada');
+  expect(opens).toBe(1);
+  const pane=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await pane.press({key:'close'});
+});
+
+test('wave specialization distinguishes delivery from independent reading evidence',()=>{
+  const content=waveText({expertise:{source:'jev-cache',reason:'fit',preferred_agent:'mustard-database',profiles:['database'],pending_review:[],uncovered_files:[]},
+    skills:[{name:'database',path:'.claude/skills/database/SKILL.md',read_confirmed:null}]},'Perfil',false);
+  expect(content).toContain('mustard-database');expect(content).toContain('database');
+  expect(content).toContain('sem confirmação independente');expect(content).toContain('Critério da escolha');
+});
 
 test('reopening recreates the host pane and history recovery waits for Usage',async ($,on)=>{
   const clock=mock.clock(on);mock.env(on,{});

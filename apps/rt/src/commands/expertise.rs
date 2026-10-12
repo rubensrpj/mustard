@@ -1,8 +1,25 @@
 use std::path::Path;
 use mustard_core::io::expertise;
 
-pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>, export: Option<&str>, host: &str, files: &[String]) {
+#[allow(clippy::too_many_arguments)]
+pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>, export: Option<&str>, prepare: bool,
+    prepare_session:Option<&str>,complete_session:Option<&Path>,query:Option<&str>,host: &str, files: &[String]) {
+    let started=std::time::Instant::now();
     let result = (|| {
+        if prepare_session.is_some() || complete_session.is_some() {
+            if files.len()>1 {return Err("expertise-session-accepts-one-file-scope".into());}
+            let query=query.ok_or("expertise-short-task-required")?;
+            let file=files.first().map(String::as_str);
+            if let Some(host)=prepare_session {
+                let config=mustard_core::ProjectConfig::load(root);
+                return expertise::authoring::prepare(root,query,file,host,config.ai.session_models.get(host).map(String::as_str));
+            }
+            if let Some(path)=complete_session {
+                if std::fs::metadata(path).map_err(|e|e.to_string())?.len()>100_000 {return Err("expertise-receipt-too-large".into());}
+                let receipt=serde_json::from_slice(&std::fs::read(path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                return expertise::authoring::complete(root,query,file,&receipt);
+            }
+        }
         if sync { return expertise::sync(root); }
         if let Some(file) = record {
             let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
@@ -15,10 +32,29 @@ pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>,
             return expertise::review(root, name, fingerprint);
         }
         if let Some(name) = export { return expertise::export(root, name, host); }
+        if prepare {
+            let mut prepared=expertise::workflow::prepare(root,files,host,None,"native")?;
+            if let Some(query)=query {
+                let current=expertise::workflow::candidates(root,files);
+                if !current.iter().any(|profile|profile.origin=="authored") {
+                    let config=mustard_core::ProjectConfig::load(root);
+                    prepared["procedure_preparation"]=expertise::authoring::prepare(root,query,None,host,
+                        config.ai.session_models.get(host).map(String::as_str))?;
+                }
+            }
+            return Ok(prepared);
+        }
         expertise::report(root, files)
     })();
     match result {
-        Ok(value) => println!("{value}"),
-        Err(reason) => { println!("{}", serde_json::json!({"ok":false,"reason":reason})); std::process::exit(1); }
+        Ok(value) => {
+            super::spec_events::conversation::record_output_call(root,"expertise",None,started,&value,&value.to_string());
+            println!("{value}");
+        }
+        Err(reason) => {
+            let value=serde_json::json!({"ok":false,"reason":reason});
+            super::spec_events::conversation::record_output_call(root,"expertise",None,started,&value,&value.to_string());
+            println!("{value}"); std::process::exit(1);
+        }
     }
 }

@@ -85,6 +85,9 @@ pub struct WavePrompt {
     /// no padrão. A montagem não tem sessão: quem despacha o pedido decide
     /// onde o aviso sai e quantas vezes.
     pub bad_settings: Vec<BadSetting>,
+    /// Current task-scoped selection; requested agent is not host discovery.
+    pub expertise: crate::io::expertise::workflow::Selection,
+    pub skills: Vec<Value>,
 }
 
 /// Um número do `mustard.json` que o pedido leu e que não vale — zero,
@@ -101,6 +104,7 @@ pub struct BadSetting {
 /// As ondas que estão fora, como quem monta os pedidos as vê.
 #[derive(Debug, Default)]
 pub struct Flight {
+    pub specializations: BTreeMap<u64, crate::io::expertise::workflow::Selection>,
     /// As ondas em andamento — a rodada conta também as que saem junto nela.
     /// O pedido de cada onda lista as outras, com os arquivos delas.
     pub running: BTreeSet<u64>,
@@ -753,6 +757,11 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let tree = execution.copy.as_ref().map_or(root, |copy| Path::new(&copy.path));
     let prepared = prepared::for_tasks(root, tree, &of_type("task"));
     let files = wave_files(log, wave);
+    let stored = context.flight.specializations.get(&wave).cloned().or_else(||
+        log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id))
+            .and_then(|send|send.fields.get("expertise"))
+            .and_then(|value|serde_json::from_value::<crate::io::expertise::workflow::Selection>(value.clone()).ok()));
+    let expertise = crate::io::expertise::workflow::restore(root,&files,stored.as_ref());
     // Explicit skills and scoped skills of the touched area. The latter
     // must survive native-tool interception and ignored worktree files.
     let mut named = skills_named(log, wave);
@@ -809,7 +818,13 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // missing scoped guide and retain the generic executor for live sessions
     // that have not discovered newly exported agent definitions yet.
     if chosen.is_empty() {
-        chosen.extend(crate::io::expertise::wave_skills(root, &files).into_iter().map(|(name, text, path)| (name, Some((text, path)))));
+        for name in &expertise.profiles {
+            if let Ok(out) = crate::io::expertise::export(root,name,"claude")
+                && let Some(path) = out["skill"].as_str()
+                && let Ok(text) = std::fs::read_to_string(root.join(path)) {
+                chosen.push((format!("mustard-{name}"),Some((text,root.join(path)))));
+            }
+        }
     }
     for (name, source) in &chosen {
         let Some((text, file)) = source else {
@@ -857,6 +872,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         prepared,
     };
     let text = wave_prompt::write(&material, lang);
+    let skills=material.skills.iter().map(|skill|serde_json::json!({"name":skill.name,"path":skill.path,
+        "stale_at_dispatch":skill.stale,"read_confirmed":null})).collect();
     let lines = wave_prompt::count_lines(&text);
     // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
     // molde com esse nome mora no projeto, e o envio grava só o nome.
@@ -864,7 +881,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let model = context.base.requested_model().to_string();
     let effort = context.base.requested_effort().to_string();
     let listed = wave_prompt::listed(&material);
-    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new() }
+    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new(), expertise, skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -932,6 +949,8 @@ fn skill_folders(root: &Path, files: &[String]) -> Vec<PathBuf> {
     }
     folders
 }
+
+pub fn has_scoped_skill(root:&Path,files:&[String])->bool { !scoped_skills(root,files).is_empty() }
 
 fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)> {
     let mut found = Vec::new();
