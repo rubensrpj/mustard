@@ -4,6 +4,7 @@ close
 config-read
 discard
 doctor
+expertise
 grill
 help
 index
@@ -27,6 +28,7 @@ round
 scan
 search
 settings
+setup-codex
 spend
 statusline
 upsert

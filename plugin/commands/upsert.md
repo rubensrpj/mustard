@@ -6,7 +6,7 @@ argument-hint: [--doctor]
 
 ## Install or update
 
-1. Run `mustard-rt run upsert`. It writes `mustard.json`, `.claude/settings.local.json`, `.claude/.gitignore`, `.claude/mustard/session-map.md`, `.claude/agents/mustard/wave.md` and `.claude/agents/mustard/review.md`, hidden from git, without commits. Publish external pages only on request; retain historical resources.
+1. Run `mustard-rt run upsert`. It updates local config, hooks, `session-map.md` and `agents/mustard`, without commits. Publish pages only on request; retain historical resources.
 2. Relay `created`, `updated`, `preserved`, `migrated`. Settings and config preserve personal choices. For session-map and agents, every run lays the shipped text down again in `language.text`; equal copies are `preserved`.
 
 3. Relay `installation.complete` and failures; false is incomplete. Index precedes language tools. Relay `pluginRefresh` version/restart or skip and `codeToolWarnings` with commands.

@@ -47,6 +47,31 @@ pub struct Interpretation {
     /// Origin supplied by the person/agent that actually read the evidence.
     pub origin: String,
     pub sources: Vec<Source>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_context: Option<RuleContext>,
+}
+
+/// Expanded instructions bind interpretation reuse, including nested includes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleContext {
+    pub files: Vec<String>,
+    pub sha256: String,
+}
+impl RuleContext {
+    pub fn of(root: &Path, files: &[String]) -> Self {
+        let files: Vec<_> = files.iter().cloned().collect::<BTreeSet<_>>().into_iter().collect();
+        let mut hash = Sha256::new();
+        for rule in crate::io::wave_prompt::project_rules(root, &files) {
+            hash.update(rule.path.as_bytes()); hash.update(b"\0");
+            hash.update(rule.text.as_bytes()); hash.update(b"\0");
+        }
+        Self { files, sha256: hash.hex_digest() }
+    }
+    pub fn current(&self, root: &Path) -> bool { *self == Self::of(root, &self.files) }
+}
+fn rules_current(root: &Path, note: &Interpretation) -> bool {
+    note.rule_context.as_ref().is_none_or(|context| context.current(root))
 }
 
 fn note_card(note: &Interpretation) -> Card {
@@ -169,7 +194,7 @@ pub fn record_at(root: &Path, tree: &Path, note: &Interpretation) -> Result<Valu
         return Err(invalid("knowledge-invalid-interpretation"));
     }
     let mut hashes = BTreeMap::new();
-    if note
+    if !rules_current(tree, note) || note
         .sources
         .iter()
         .any(|source| !current(tree, source, &mut hashes))
@@ -378,7 +403,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         return Ok((refresh::report(tree, &notes, query, file, limit, all, detail, &languages, &mut hashes), map));
     }
     let mut resources = resources::retrieve_in(root, tree, options, &mut hashes, scope)?;
-    let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| note.sources.iter().all(|source| current(tree, source, &mut hashes)));
+    let (fresh, stale): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| rules_current(tree, note) && note.sources.iter().all(|source| current(tree, source, &mut hashes)));
     let mut index_unavailable = false;
     let exact_name = scope.is_none() && symbol.is_none() && catalog::exact_name(root,options)?;
     let discovery = if scope.is_none() && symbol.is_none() && !exact_name && !query.trim().is_empty() {
@@ -781,7 +806,7 @@ pub fn for_source(root: &Path, tree: &Path, file: &str, name: &str) -> Value {
                         && (name.is_empty() || cards.iter().any(|card| card.source.line <= source.end_line && source.line <= card.source.end_line))
                 })
             })
-            .filter(|note| note.sources.iter().all(|source| current(tree, source, &mut hashes)))
+            .filter(|note| rules_current(tree, note) && note.sources.iter().all(|source| current(tree, source, &mut hashes)))
             .collect();
         notes.sort_by_key(|note| (note.status != "reviewed",note.id.clone()));
         notes.truncate(2);
@@ -932,7 +957,7 @@ use super::*;
             "declarations":[{"name":"run","kind":"function","line":1,"end_line":1}]}]});
         knowledge::enrich(&mut raw);store::write_text(root,&raw.to_string()).unwrap();
         for (id,status) in [("a-hypothesis","hypothesis"),("b-hypothesis","hypothesis"),("z-reviewed","reviewed")] {
-            record(root,&Interpretation{id:id.into(),title:"quartz beacon".into(),text:"Quarzt archive handles the beacon.".into(),status:status.into(),origin:"review-fixture".into(),sources:vec![source(root,"a.rs"),source(root,"b.rs")]}).unwrap();
+            record(root,&Interpretation{id:id.into(),title:"quartz beacon".into(),text:"Quarzt archive handles the beacon.".into(),status:status.into(),origin:"review-fixture".into(),sources:vec![source(root,"a.rs"),source(root,"b.rs")],rule_context:None}).unwrap();
         }
         assert_eq!(for_source(root,root,"a.rs","")["interpretations"][0]["status"],"reviewed");
         let plan=dossier::Plan{title:"Project".into(),topics:vec![dossier::Topic{id:"archive".into(),title:"Archive".into(),query:"quartz beacon".into(),file:None}]};
@@ -956,6 +981,7 @@ use super::*;
             text: "Restores a plan".into(),
             status: "reviewed".into(),
             origin: "fixture-review".into(),
+            rule_context: None,
             sources: vec![source(dir.path(), "a.rs"), source(dir.path(), "b.rs")],
         };
         record(dir.path(), &note).unwrap();

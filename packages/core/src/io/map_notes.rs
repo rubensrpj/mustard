@@ -14,12 +14,12 @@
 //! escrita. Ninguém refaz a nota a partir do código: quem a escreve é o
 //! agente, e a busca nunca chama modelo nenhum para escrevê-la.
 //!
-//! **A nota envelhece com o arquivo.** Ela vale enquanto o blob do arquivo no
-//! mapa for o que ela guardou. O arquivo que mudou, ou que saiu do mapa, deixa
+//! **A nota envelhece com o arquivo.** Ela vale enquanto o SHA-256 do arquivo
+//! no mapa for o do conteúdo que ela guardou. O arquivo que mudou, ou que saiu do mapa, deixa
 //! a nota velha: ela fica gravada e visível para quem lê o trecho, que a
 //! reescreve, mas não entra mais na busca, porque uma nota que já não descreve
 //! o código acharia o arquivo pelo motivo errado. Fora do git o mapa não tem
-//! blob, e a nota não envelhece.
+//! blob; o hash SHA-256 do conteúdo mantém a mesma invalidação fora do git.
 //!
 //! Onde a nota entra na busca — no índice de palavras e no texto compilado de
 //! cada declaração, de onde saem os vetores de sentido — quem lê é
@@ -88,6 +88,12 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
     let Some(blob) = blob else {
         return Err(MapRefusal::UnknownFile { file });
     };
+    let indexed: Option<String> = db.conn().query_row("SELECT json_extract(analysis, '$.content_sha256') FROM texts WHERE path=?1", [&file], |row| row.get(0)).optional().map_err(|err| unreadable(err.into()))?.flatten();
+    let sha256 = indexed.filter(|sha| sha.len() == 64).ok_or_else(|| MapRefusal::MapUnreadable { detail: "note-needs-current-scan".into() })?;
+    let source = crate::domain::knowledge::Source { file: file.clone(), line: 1, end_line: 1, sha256: sha256.clone() };
+    if !crate::io::knowledge::current(root, &source, &mut Default::default()) {
+        return Err(MapRefusal::MapUnreadable { detail: "note-source-changed; scan before recording".into() });
+    }
     if !name.is_empty() {
         let declared = db
             .conn()
@@ -101,7 +107,7 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
     let note = Note { file, name, text, spec: new.spec.trim().to_string(), stale: false };
     db.write(|tx| {
         tx.execute("DELETE FROM notes WHERE file = ?1 AND name = ?2", params![note.file, note.name])?;
-        tx.execute("INSERT INTO notes(file, name, text, spec, blob) VALUES (?1, ?2, ?3, ?4, ?5)", params![note.file, note.name, note.text, note.spec, blob])?;
+        tx.execute("INSERT INTO notes(file, name, text, spec, blob, sha256) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![note.file, note.name, note.text, note.spec, blob, sha256])?;
         refresh_files(tx, &[note.file.as_str()])?;
         map_revision::bump(tx)?;
         Ok(())
@@ -130,8 +136,8 @@ pub fn of_at(model: &Path, file: &str, name: &str) -> std::result::Result<Option
     let found = db
         .conn()
         .query_row(
-            "SELECT n.text, n.spec, f.path IS NULL OR f.blob IS NOT n.blob FROM notes n \
-             LEFT JOIN files f ON f.path = n.file WHERE n.file = ?1 AND n.name = ?2",
+            "SELECT n.text, n.spec, f.path IS NULL OR n.sha256 IS NULL OR json_extract(t.analysis, '$.content_sha256') IS NOT n.sha256 FROM notes n \
+             LEFT JOIN files f ON f.path = n.file LEFT JOIN texts t ON t.path = n.file WHERE n.file = ?1 AND n.name = ?2",
             [&file, name.trim()],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?)),
         )
@@ -175,7 +181,7 @@ mod tests {
     /// número malformado sem dizer nada de CPF, de CNPJ nem de cadastro, e
     /// mais dois arquivos de outro assunto.
     fn modules(ids_blob: &str) -> Value {
-        json!({ "modules": [
+        let mut raw = json!({ "modules": [
             {"path": "src/ids.rs", "blob": ids_blob, "declarations": [
                 function("check_digits", 1, "Rejects a malformed number."),
                 function("strip_marks", 10, "Removes dots and dashes.")]},
@@ -183,13 +189,27 @@ mod tests {
                 function("charge_invoice", 1, "Charge the customer invoice with the tax.")]},
             {"path": "src/config.rs", "blob": "config-1", "declarations": [
                 function("parse_config", 1, "Parse the configuration file.")]}
-        ]})
+        ]});
+        for module in raw["modules"].as_array_mut().unwrap() {
+            module["analysis"] = json!({"content_sha256":digest(code(module["blob"].as_str().unwrap()).as_bytes())});
+        }
+        raw
+    }
+    fn code(blob: &str) -> String { format!("// {blob}\nfn sample() {{}}\n") }
+    fn digest(bytes: &[u8]) -> String { let mut hash=crate::io::sha256::Sha256::new(); hash.update(bytes); hash.hex_digest() }
+    fn source_files(root: &Path, raw: &Value) {
+        for module in raw["modules"].as_array().unwrap() {
+            let path=root.join(module["path"].as_str().unwrap());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, code(module["blob"].as_str().unwrap_or("ids-1"))).unwrap();
+        }
     }
 
     /// Um projeto gravado como o scan grava, com o arquivo de ids no blob dado.
     fn saved(ids_blob: &str) -> TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"vectors":true}}"#).unwrap();
+        source_files(dir.path(), &modules(ids_blob));
         save_at(&model_path(dir.path()), &modules(ids_blob), "scan 1", &languages()).unwrap();
         dir
     }
@@ -197,6 +217,7 @@ mod tests {
     /// O scan que grava de novo o mesmo projeto, agora com o arquivo de ids no
     /// blob dado.
     fn rescanned(dir: &TempDir, ids_blob: &str) {
+        source_files(dir.path(), &modules(ids_blob));
         save_at(&model_path(dir.path()), &modules(ids_blob), "scan 2", &languages()).unwrap();
         fill_at(&model_path(dir.path()), dir.path()).unwrap();
     }
@@ -293,15 +314,27 @@ mod tests {
         assert_eq!(triaged(&dir, ASK).first().map(String::as_str), Some("src/ids.rs"));
     }
 
-    /// Num mapa sem blob (fora do git), a nota vale e não envelhece: a busca a
-    /// acha, ela não vem como velha, e a passada seguinte do scan não a apaga.
+    #[test]
+    fn legacy_notes_survive_migration_but_are_not_restamped_as_current() {
+        let dir=saved("ids-1");let model=model_path(dir.path());
+        write(&model,dir.path(),&note_of("src/ids.rs","",NOTE)).unwrap();
+        let db=crate::io::project_map::open_existing(&model).unwrap();
+        db.conn().execute_batch("ALTER TABLE notes DROP COLUMN sha256; UPDATE blocks SET version=1 WHERE name='notes';").unwrap();
+        drop(db);
+        let old=of_at(&model,"src/ids.rs","").unwrap().unwrap();
+        assert!(old.stale,"an old note has no evidence of having read the current bytes");
+        assert_eq!(old.text,NOTE,"migration preserves its content for inspection");
+        write(&model,dir.path(),&note_of("src/ids.rs","",NOTE)).unwrap();
+        assert!(!of_at(&model,"src/ids.rs","").unwrap().unwrap().stale);
+    }
+
+    /// Without git, actual content hashes retain and invalidate notes equally.
     #[test]
     fn a_map_without_blobs_keeps_its_note_fresh() {
         let dir = tempfile::tempdir().unwrap();
-        let bare = json!({ "modules": [
-            {"path": "src/ids.rs", "declarations": [function("check_digits", 1, "Rejects a malformed number.")]},
-            {"path": "src/invoice.rs", "declarations": [function("charge_invoice", 1, "Charge the customer invoice.")]}
-        ]});
+        let mut bare = modules("ids-1");
+        source_files(dir.path(), &bare);
+        for module in bare["modules"].as_array_mut().unwrap() { module.as_object_mut().unwrap().remove("blob"); }
         let model = model_path(dir.path());
         save_at(&model, &bare, "scan 1", &languages()).unwrap();
         write(&model, dir.path(), &note_of("src/ids.rs", "", NOTE)).unwrap();
@@ -310,6 +343,12 @@ mod tests {
         save_at(&model, &bare, "scan 2", &languages()).unwrap();
         assert!(!of_at(&model, "src/ids.rs", "").unwrap().unwrap().stale);
         assert_eq!(searched(&dir, ASK).first().map(String::as_str), Some("src/ids.rs"));
+        std::fs::write(dir.path().join("src/ids.rs"), "fn changed() {}\n").unwrap();
+        assert!(write(&model, dir.path(), &note_of("src/ids.rs", "", NOTE)).is_err());
+        bare["modules"][0]["analysis"]["content_sha256"] = json!(digest(b"fn changed() {}\n"));
+        save_at(&model, &bare, "scan 3", &languages()).unwrap();
+        assert!(of_at(&model, "src/ids.rs", "").unwrap().unwrap().stale);
+        assert!(searched(&dir, ASK).is_empty());
     }
 
     /// O arquivo que saiu do mapa deixa a nota velha, e ela não é achada.

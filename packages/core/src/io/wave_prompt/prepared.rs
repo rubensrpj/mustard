@@ -143,7 +143,7 @@ mod tests {
         crate::domain::knowledge::enrich(&mut raw);
         crate::io::project_map::write_text(root,&raw.to_string()).unwrap();
         let source=|file:&str|crate::domain::knowledge::Source{file:file.into(),line:1,end_line:1,sha256:digest(text.as_bytes())};
-        let note=crate::io::knowledge::Interpretation{id:"multi-source".into(),title:"Process".into(),text:"A uses B.".into(),status:"hypothesis".into(),origin:"fixture".into(),sources:vec![source("a.rs"),source("b.rs")]};
+        let note=crate::io::knowledge::Interpretation{id:"multi-source".into(),title:"Process".into(),text:"A uses B.".into(),status:"hypothesis".into(),origin:"fixture".into(),sources:vec![source("a.rs"),source("b.rs")],rule_context:None};
         crate::io::knowledge::record(root,&note).unwrap();
         let first=component(root,root,"a.rs#run");
         assert_eq!(first.knowledge["interpretations"][0]["id"],"multi-source");

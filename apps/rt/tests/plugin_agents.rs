@@ -615,7 +615,7 @@ fn section<'a>(body: &'a str, header: &str) -> &'a str {
 /// num item só que as leituras que não dependem uma da outra — ler, buscar,
 /// listar, ler a spec pelo binário ou ler pelo terminal — saiam juntas: em
 /// várias chamadas numa resposta ou em vários trechos num comando só do
-/// terminal, porque cada resposta relê a conversa inteira do agente.
+/// terminal, reduzindo idas ao modelo sem afirmar como o host cobra o cache.
 #[test]
 fn the_wave_agent_asks_for_independent_reads_together_in_one_response() {
     for (lang, header, said) in [
@@ -627,7 +627,7 @@ fn the_wave_agent_asks_for_independent_reads_together_in_one_response() {
                 "várias chamadas numa resposta",
                 "(Read, Grep, Glob, `mustard-rt run read` ou o terminal)",
                 "vários trechos num comando só do terminal",
-                "relê a conversa inteira",
+                "reduza idas ao modelo",
             ],
         ),
         (
@@ -638,7 +638,7 @@ fn the_wave_agent_asks_for_independent_reads_together_in_one_response() {
                 "several calls in one response",
                 "(Read, Grep, Glob, `mustard-rt run read` or the terminal)",
                 "several excerpts in a single terminal command",
-                "rereads the whole conversation",
+                "reduce model round trips",
             ],
         ),
     ] {
@@ -965,7 +965,7 @@ fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_r
                 assert!(!agent.contains(obsolete), "{lang} {name}: obsolete search instruction {obsolete}");
             }
             for line in agent.lines().filter(|line|line.contains("--query") || line.contains("--intent")) {
-                assert!(line.contains("run search"),"task context belongs to the gateway, separate from the literal pattern: {line}");
+                assert!(line.contains("run search") || line.contains("run knowledge"),"literal patterns belong to the search gateway; explicit questions may retrieve knowledge: {line}");
             }
             assert!(agent.contains("run search") && agent.contains("--purpose"),"{lang} {name}: task-oriented evidence must be available");
         }

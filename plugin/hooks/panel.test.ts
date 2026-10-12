@@ -98,6 +98,17 @@ async function clarityFixture($,on,surface:'terminal'|'desktop'|'mobile'='termin
   return {pane,clock,counts,snapshot};
 }
 
+test('analysis receipts and profile reuse stay separate from net savings and Jev billing',async ($,on)=>{
+  const {pane,clock,counts,snapshot}=await clarityFixture($,on);
+  snapshot.knowledge={analysis:{completed_analyses:2,reused_operations:5,failures:1,reported_input_tokens:9000,reported_output_tokens:300,analyses_with_unknown_input:1,over_target:0},catalog:{available:true,active:3,inactive:1,native_navigation:2}};
+  await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await pane.select({key:'usage-section',value:'Análises'});
+  expect(await pane.find({type:'Text',text:'Consultas que reutilizaram análise válida: 5'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Perfis válidos: 3 · inativos ou aguardando revisão: 1'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:/não somar novamente ao consumo/})).toBeDefined();
+  expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);await pane.press({key:'close'});
+});
+
 test('usage shows incomplete wave subtotals and explains disabled Jev without making calls',async ($,on)=>{
   const {pane,clock,counts,snapshot}=await clarityFixture($,on);
   snapshot.specs[0].usage={known_wave_tokens:1234,waves_with_unknown_usage:3,measured_at:'2026-10-10T23:04:12Z'};

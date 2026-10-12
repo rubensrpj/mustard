@@ -3,6 +3,7 @@
 
 pub mod cli;
 mod jev_usage;
+mod knowledge_usage;
 mod consumption;
 mod publication;
 mod wave_usage;
@@ -44,6 +45,7 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
         "selected_spec":selected,"specs":specs,
         "jev":jev_view,"rtk":crate::shared::rtk_gain::cached(&root),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
         "retrieval":{"vectors_enabled":config.ai_vectors_enabled(),"index_present":mustard_core::io::project_map::model_path(&root).is_file()},
+        "knowledge":knowledge_usage::snapshot(&root),
         "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
         "statusline":consumption::statusline(&root,session),
         "commands":{"panel":"/mustard-panel","publish":"/mustard-pages"}})

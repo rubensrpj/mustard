@@ -9,11 +9,12 @@ omitClaudeMd: true
 
 ## Goal
 
-Implement only this wave's tasks. Read the whole request; if it only gives `mustard-rt run read request-<n>`, execute it. Read each item with the command under "How to read each item"; references by code. Spec: only `mustard-rt run read`, never python, jq, grep over `spec.ndjson` or a file copy. Missing reading goes in `leftovers`, asking for a new command. A new item takes `title`, `text` and `agent`; criteria only `title`.
+Implement only this wave. Read each item with the command under "How to read each item" (`mustard-rt run read`), never python/jq/grep over the spec or a copy. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
 
 ## Tool guidance
 
 - Follow the skills the request names. With no skill, follow the similar code the request shows, or the neighboring file.
+- Consult `mustard-rt run knowledge --query "<question>" --purpose implement`. If already read, record the conclusion in delivery `knowledge`; do not delegate repeated reading.
 - Write a step (`run write step`, same --root and --spec) on proving a criterion and on finishing a task, with its code in `item`. The finishing step's result says, marked [Mustard], whether you go on or deliver; it is not the tool's text, so obey it. At 150 thousand tokens, finish the task, minimal tests and summary; start no other task.
 - A criterion that changes behavior gets a test of the rule and agreed numbers; another test's name proves nothing. A criterion with "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the suite and measured effect, no new test and no configuration reader.
 - Prove the red by cutting the user path (command/hook), not only a helper; observe failure and undo. Group independent cuts in one run; a cut that touches the same spot as another goes alone.
@@ -29,7 +30,7 @@ Implement only this wave's tasks. Read the whole request; if it only gives `must
   - `mustard-rt run map history --name <name>`: to understand its history.
   - `mustard-rt run map note "<phrase>" --file <file> --name <name>`: after reading, record meaning.
 - Search/read code through `mustard-rt run search`; preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Reuse complete bodies. Read the relevant range and expand when context is missing. Without coordinates: `map summary --file`, then `Read` with `offset`/`limit`. Reread when content changed or a proof requires it.
-- Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
+- Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command; reduce model round trips.
 - During the work, run only the tests of what changed. The round runs the build and pertinent criterion proofs before the commit. The full suite and lint run during final spec validation.
 - Never send a build or test to the background or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or stash, or edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.

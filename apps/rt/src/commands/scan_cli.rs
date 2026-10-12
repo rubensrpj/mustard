@@ -19,6 +19,30 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
+    /// Reuse project-specific profiles, with native navigation from the scan.
+    /// Authored procedures are drafts until reviewed by exact fingerprint.
+    #[command(display_order = 32)]
+    Expertise {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Refresh navigation profiles from current indexed sources; no inference.
+        #[arg(long, conflicts_with_all = ["record", "review", "export"]) ]
+        sync: bool,
+        /// Record an authored profile manifest as a draft.
+        #[arg(long, conflicts_with_all = ["review", "export"]) ]
+        record: Option<PathBuf>,
+        /// Review `<name>:<fingerprint>` after inspecting the procedure and sources.
+        #[arg(long, conflicts_with = "export")]
+        review: Option<String>,
+        /// Export an active profile's skill and agent to the selected host.
+        #[arg(long)]
+        export: Option<String>,
+        #[arg(long, requires = "export", value_parser = ["claude", "codex"], default_value = "claude")]
+        host: String,
+        /// Only profiles matching the task's files.
+        #[arg(long)]
+        file: Vec<String>,
+    },
     /// Execute a source search, then join its real hits with current scan evidence.
     #[command(display_order = 30)]
     Search {
@@ -95,6 +119,17 @@ pub enum ScanCmd {
         /// Explicit multi-source interpretation receipt, as a `.json` file.
         #[arg(long, conflicts_with_all = ["query", "file", "all", "markdown", "detail", "out", "symbol", "direction", "refresh"])]
         record: Option<PathBuf>,
+        /// Prepare bounded code evidence for a native subagent of the current
+        /// session. Does not launch a model or require a generation `API` key.
+        #[arg(long, value_parser = ["claude", "codex"], conflicts_with_all = ["complete_session", "record", "import_scip", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose"])]
+        prepare_session: Option<String>,
+        /// Preferred model of that host; unavailable models fall back to
+        /// inheritance in the current session, never to another process.
+        #[arg(long, requires = "prepare_session")]
+        session_model: Option<String>,
+        /// Validate a session receipt and store its source-bound interpretation.
+        #[arg(long, conflicts_with_all = ["prepare_session", "record", "import_scip", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
+        complete_session: Option<PathBuf>,
         /// Import an optional `SCIP` Protobuf index, without invoking an indexer.
         #[arg(long, conflicts_with_all = ["query", "file", "symbol", "record", "refresh", "coverage", "topics", "evaluate", "intent", "purpose", "out", "all", "detail", "markdown", "responsibility"])]
         import_scip: Option<PathBuf>,
@@ -227,12 +262,14 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
+        ScanCmd::Expertise { root, sync, record, review, export, host, file } =>
+            super::expertise::run(&root, sync, record.as_deref(), review.as_deref(), export.as_deref(), &host, &file),
         ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
         }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
         ),
         ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
             import_scip,
-            source_manifest,
+            source_manifest, prepare_session, session_model, complete_session,
         } => {
             super::knowledge::run(
                 &root,
@@ -255,6 +292,7 @@ pub fn dispatch(cmd: ScanCmd) {
                 out.as_deref(),
                 record.as_deref(),
                 super::knowledge::Modes {
+                    prepare_session: prepare_session.as_deref(), session_model: session_model.as_deref(), complete_session: complete_session.as_deref(),
                     import_scip: import_scip.as_deref(),
                     source_manifest: source_manifest.as_deref(),
                     coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,

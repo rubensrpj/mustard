@@ -9,11 +9,12 @@ omitClaudeMd: true
 
 ## Objetivo
 
-Implemente só a onda. Leia o pedido inteiro (`mustard-rt run read request-<n>`). Leia cada item pelo comando de "Como ler cada item"; referências por código. Spec só por `mustard-rt run read`, nunca python/jq/grep de `spec.ndjson` ou cópia. Leitura ausente: `leftovers` pedindo comando novo. Item novo leva `title`, `text` e `agent`; critério só `title`.
+Implemente só a onda. Leia inteiro cada item pelo comando de "Como ler cada item" (`mustard-rt run read`), nunca python/jq/grep da spec ou cópia. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
 
 ## Orientação sobre ferramentas
 
 - Siga as skills que o pedido indica. Sem skill, siga o código parecido que o pedido mostra, ou o arquivo vizinho.
+- Consulte `mustard-rt run knowledge --query "<dúvida>" --purpose implement`. Se já leu, registre a conclusão em `knowledge` na entrega; não delegue a leitura repetida.
 - Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o código dela no `item`. O resultado do passo de término traz, com a marca [Mustard], se você segue ou entrega; o texto não é da ferramenta, e você o obedece. Aos 150 mil tokens, conclua a tarefa, testes mínimos e resumo; não comece outra.
 - Critério que muda comportamento ganha um teste da regra e números combinados; nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e efeito medido, sem teste novo nem leitor de configuração.
 - Prove o vermelho cortando o caminho do usuário (comando/hook), não só um helper; observe falhar e desfaça. Agrupe cortes independentes numa execução; o corte que mexe no mesmo trecho de outro vai sozinho.
@@ -29,9 +30,9 @@ Implemente só a onda. Leia o pedido inteiro (`mustard-rt run read request-<n>`)
   - `mustard-rt run map history --name <nome>`: para entender o histórico.
   - `mustard-rt run map note "<frase>" --file <arquivo> --name <nome>`: após ler, registre sentido.
 - Pesquise/leia código por `mustard-rt run search`; preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Reaproveite corpos completos. Leia a faixa pertinente e expanda se faltar contexto. Sem coordenadas: `map summary --file`, depois `Read` com `offset`/`limit`. Releia quando o conteúdo mudou ou a prova exigir.
-- Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
+- Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal; reduza idas ao modelo.
 - Durante o trabalho, rode só os testes do que mudou. A rodada executa o build e as provas pertinentes antes do commit. A suíte inteira e o lint ficam na validação final da spec.
-- Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
+- Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos: um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor, troque de branch nem use o stash, e nunca edite os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
 - Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; o nome de teste segue o idioma do código.
 

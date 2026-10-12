@@ -196,7 +196,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     const usageView=view.usageView || 'Resumo', rtk=data.rtk || {}, jev=data.jev || {};
     rows.push(picker('usage-section',t('Medição','Measurement'),[
       ['Resumo','Resumo','Overview'],['Sessão','Sessão','Session'],['Ondas','Ondas','Waves'],
-      ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
+      ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Análises','Análises','Analyses'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
     ].map(([value,pt,en])=>({value,label:t(pt,en)})),usageView,value=>actions.change({usageView:value})));
     if(usageView==='Resumo')rows.push(section(t('O Mustard está economizando?','Is Mustard saving tokens?'),[
       text(t('Economia total do modelo: ainda não comprovada.','Total model savings: not proven yet.'),{bold:true}),
@@ -207,6 +207,23 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ...(spec?.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Claude nesta spec · equivalente API','Claude for this spec · API equivalent')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
       note(t('RTK mede compressão de saída. Custos e totais de tokens não provam economia.','RTK measures output compression. Costs and token totals do not prove savings.')),
     ]));
+    if(usageView==='Análises') {
+      const analysis=data.knowledge?.analysis || {},catalog=data.knowledge?.catalog || {};
+      rows.push(section(t('Análises reutilizáveis','Reusable analyses'),[
+        text(`${t('Concluídas por subagente da sessão','Completed by session subagent')}: ${fmt(analysis.completed_analyses)}`),
+        text(`${t('Consultas que reutilizaram análise válida','Queries reusing a current analysis')}: ${fmt(analysis.reused_operations)}`),
+        text(`${t('Falhas registradas','Recorded failures')}: ${fmt(analysis.failures)}`),
+        text(`${t('Entrada/saída informadas nos recibos','Receipt-reported input/output')}: ${fmt(analysis.reported_input_tokens)}/${fmt(analysis.reported_output_tokens)} tokens`),
+        note(`${t('Análises sem entrada medida','Analyses without measured input')}: ${fmt(analysis.analyses_with_unknown_input)} · ${t('acima de 100 mil','above 100K')}: ${fmt(analysis.over_target)}`),
+        note(t('Haiku e Luna: orçamento fixo de 100 mil tokens de entrada total por análise isolada. Recibos são declarados pela sessão; não somar novamente ao consumo do modelo.','Haiku and Luna: fixed 100K full-input budget per isolated analysis. Receipts are reported by the session; do not add them again to model usage.')),
+        note(t('Reutilização evita repetir uma interpretação. Economia líquida ainda exige comparação equivalente.','Reuse avoids repeating an interpretation. Net savings still require an equivalent comparison.')),
+      ]));
+      rows.push(section(t('Agentes e skills do projeto','Project agents and skills'),catalog.available?[
+        text(`${t('Perfis válidos','Current profiles')}: ${fmt(catalog.active)} · ${t('inativos ou aguardando revisão','inactive or awaiting review')}: ${fmt(catalog.inactive)}`),
+        note(`${t('Perfis nativos de navegação','Native navigation profiles')}: ${fmt(catalog.native_navigation)}`),
+        note(t('Procedimentos específicos exigem revisão; referências mudadas retiram o perfil da seleção.','Specific procedures require review; changed references withdraw the profile from selection.')),
+      ]:[note(t('Catálogo indisponível; atualize o scan.','Catalog unavailable; refresh the scan.'))]));
+    }
     if(usageView==='RTK')rows.push(section(t('RTK neste projeto','RTK for this project'),[
       text(rtk.configured===false?t('Filtro desligado na configuração.','Filter disabled in configuration.'):
         rtk.hook_configured===true?t('Hook configurado para comandos compatíveis.','Hook configured for supported commands.'):

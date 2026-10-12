@@ -1527,7 +1527,7 @@ mod tests {
     fn project_with_ids(blob: &str) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/ids.rs"), "pub fn check_digits(number: &str) -> bool {\n    number.len() == 11\n}\n").unwrap();
+        std::fs::write(dir.path().join("src/ids.rs"), ids_code(blob)).unwrap();
         std::fs::write(dir.path().join("mustard.json"), r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
         write_ids_map(dir.path(), blob);
         dir
@@ -1535,8 +1535,9 @@ mod tests {
 
     /// Os módulos do projeto de ids, com o arquivo de ids no blob dado.
     fn ids_modules(blob: &str) -> Value {
+        let mut hash=mustard_core::io::sha256::Sha256::new(); hash.update(ids_code(blob).as_bytes());
         json!({"modules": [
-          {"path": "src/ids.rs", "loc": 3, "blob": blob, "declarations": [
+          {"path": "src/ids.rs", "loc": 3, "blob": blob, "analysis":{"content_sha256":hash.hex_digest()}, "declarations": [
             {"kind": "function", "name": "check_digits", "line": 1, "end_line": 3,
              "signature": "pub fn check_digits(number: &str) -> bool"}]},
           {"path": "src/invoice.rs", "loc": 9, "blob": "invoice-1", "declarations": [
@@ -1545,6 +1546,8 @@ mod tests {
         ]})
     }
 
+    fn ids_code(blob: &str) -> String { format!("pub fn check_digits(number: &str) -> bool {{\n    number.len() == 11\n}}\n// {blob}\n") }
+
     fn write_ids_map(root: &Path, blob: &str) {
         store::write_text(root, &ids_modules(blob).to_string()).unwrap();
     }
@@ -1552,6 +1555,7 @@ mod tests {
     /// O scan que grava de novo o mesmo projeto, com o arquivo de ids no blob
     /// dado: as notas escritas ficam.
     fn rescan_ids_map(root: &Path, blob: &str) {
+        std::fs::write(root.join("src/ids.rs"), ids_code(blob)).unwrap();
         let languages = Languages::new(["pt-BR", "en-US"]);
         store::save_at(&store::model_path(root), &ids_modules(blob), "scan 2", &languages).unwrap();
         mustard_core::io::map_meaning::fill_at(&store::model_path(root), root).unwrap();

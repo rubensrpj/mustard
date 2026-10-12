@@ -14,7 +14,7 @@ use crate::domain::wave_prompt::{touched_by, RulesFile, ROOT_RULES_FILE};
 
 /// Os arquivos de regras de uma pasta, na ordem em que entram. O
 /// `CLAUDE.local.md`, que é pessoal, fica de fora.
-const FOLDER_RULES: [&str; 2] = [ROOT_RULES_FILE, ".claude/CLAUDE.md"];
+const FOLDER_RULES: [&str; 4] = [ROOT_RULES_FILE, ".claude/CLAUDE.md", "AGENTS.md", "AGENTS.override.md"];
 
 /// A pasta das regras avulsas, só na raiz: cada `.md` dela, em qualquer
 /// nível, entra, se vale para a obra ([`in_scope`]).
@@ -41,7 +41,9 @@ pub fn project_rules(root: &Path, touched: &[String]) -> Vec<RulesFile> {
     let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
     let mut out = Vec::new();
     for folder in &folders {
-        let mut paths: Vec<String> = FOLDER_RULES.iter().map(|name| joined(folder, name)).collect();
+        let mut paths: Vec<String> = FOLDER_RULES.iter()
+            .filter(|name| **name != "AGENTS.md" || !root.join(joined(folder,"AGENTS.override.md")).is_file())
+            .map(|name| joined(folder, name)).collect();
         if folder.is_empty() {
             paths.extend(markdown_under(root, ROOT_RULES_DIR).into_iter().filter(|path| in_scope(root, path, touched)));
         }

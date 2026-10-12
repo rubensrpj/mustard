@@ -24,6 +24,14 @@ pub enum Command {
     On {
         /// O nome do evento, como `PreToolUse` ou `Stop`.
         event: String,
+        /// Host protocol; Codex normalizes tools and has distinct lifecycle output.
+        #[arg(long, default_value = "claude", value_parser = ["claude", "codex"])]
+        host: String,
+    },
+    /// Native stdio search server for the host's existing session.
+    Mcp {
+        #[arg(long, default_value = ".")]
+        root: std::path::PathBuf,
     },
     /// Roda um comando. Recebe argumentos, não o stdin.
     Run {
