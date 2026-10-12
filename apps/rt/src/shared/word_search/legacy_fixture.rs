@@ -107,8 +107,10 @@ const SNIPPET_BUDGET: usize = 5000;
 /// dos 10 mil que o gancho aceita de uma vez.
 const ANSWER_LIMIT: usize = 9000;
 
-/// O tempo que a busca própria tem: passando dele, a busca comum roda.
-const BUDGET: Duration = Duration::from_millis(800);
+/// Historical engine used only by tests. Do not confuse the loaded runner's
+/// git startup time with a ranking failure; production uses the current
+/// gateway and retains its own latency policy.
+const BUDGET: Duration = Duration::from_secs(10);
 
 /// O maior arquivo lido, em bytes; o maior que isso é dado, não código.
 const MAX_FILE_BYTES: u64 = 1_000_000;

@@ -950,6 +950,11 @@ pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
     count_line_of(&ledger, &today(None), lang)
 }
 
+/// Identity and content, rather than just the count, for session notices.
+pub(crate) fn notice_state(root: &Path) -> String {
+    serde_json::to_string(&open_items_of(root)).unwrap_or_default()
+}
+
 
 /// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
 /// início de sessão, a cobrança de fim de turno, a abertura e o merge da

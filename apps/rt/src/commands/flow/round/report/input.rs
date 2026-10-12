@@ -36,8 +36,17 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     }
     let usage_bodies = tagged(raw, USAGE_LINE);
     let paused_bodies = tagged(raw, PAUSED_LINE);
+    let mut reviewed = Vec::new();
+    for body in tagged(raw, "REVIEWED") {
+        let (wave, fields) = line_object(body, "REVIEWED")?;
+        let wave = wave.ok_or(RoundRefusal::LineField { line: "REVIEWED", field: "wave" })?;
+        let text = |key| fields.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+        let fingerprint = text("fingerprint").ok_or(RoundRefusal::LineField { line: "REVIEWED", field: "fingerprint" })?;
+        let note = text("note").ok_or(RoundRefusal::LineField { line: "REVIEWED", field: "note" })?;
+        reviewed.push(super::super::review::Approval { wave, fingerprint: fingerprint.into(), note: note.into() });
+    }
     let rejected = rejected_lines(raw)?;
-    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty() && rejected.is_empty();
+    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty() && rejected.is_empty() && reviewed.is_empty();
     if unmarked && !raw.trim().is_empty() {
         let shown: String = raw.trim().chars().take(80).collect();
         return Err(RoundRefusal::BadReport { detail: shown });
@@ -57,5 +66,5 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         let wave = wave.ok_or(RoundRefusal::LineField { line: PAUSED_LINE, field: "wave" })?;
         paused.push(wave);
     }
-    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage, rejected })
+    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage, rejected, reviewed })
 }

@@ -33,7 +33,7 @@ use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
-use super::stops::{HeldReturn, hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns};
+use super::stops::{HeldReturn, hold_waiting_changes, tasks_returned, undone_of, undone_returns};
 use super::usage::{Caller, Usage, measure_usage, usage_missing};
 use super::{checks::ensure_checks_pass, fixes::keep_fixes, fixes::prove_criteria, size_check::in_body};
 use crate::commands::review::qa_run::ProofFault;
@@ -57,8 +57,8 @@ const PAUSED_LINE: &str = "PAUSED";
 const USAGE_LINE: &str = "USAGE";
 
 /// A mudança de plano que um agente propõe: a mudança e, quando ela troca uma
-/// decisão do usuário, qual. Só com a decisão trocada a rodada para e pede o
-/// clique; sem ela a mudança segue e fica registrada.
+/// decisão do usuário, qual. Toda proposta aguarda aceite antes de entrar;
+/// omitir a decisão não autoriza mudar o plano aprovado.
 pub(crate) struct PlanChange {
     pub change: String,
     pub decision: Option<String>,
@@ -125,6 +125,7 @@ pub(crate) struct Report {
     /// obra: a rodada grava a reprovação, presa à volta pendente da onda, e a
     /// segura fora do commit à espera de um agente novo.
     pub rejected: Vec<(u64, String)>,
+    pub reviewed: Vec<super::review::Approval>,
 }
 
 /// O que a rodada fez com um relatório.
@@ -279,7 +280,9 @@ fn take_returns(
     // que esta ainda não comitou nem põe a mudança dela no commit desta. Cada
     // volta é conferida contra a cópia dela antes da junção: a recusada
     // segura só a própria onda.
+    super::review::validate_paths(&report.waves)?;
     let (mut warnings, mut refused) = check_against_copies(root, log, &mut report.waves, lang);
+    refused.extend(super::review::hold_unreviewed(root, spec, log, &mut report.waves, &report.reviewed, lang));
     // A junção de cada cópia é decidida antes de qualquer gravação. A entrega
     // com um trecho que ela não resolve fica de fora, com o repositório
     // principal intacto para ela, e o resto do relatório segue.
@@ -398,10 +401,6 @@ fn take_returns(
     // rodada: a mudança aceita pode pedir uma decisão nova ou uma tarefa
     // reescrita antes da rodada seguinte.
     warnings.extend(report.waves.iter().filter_map(|wave| tasks_returned(wave, lang)));
-    // A mudança de plano que não troca decisão do usuário seguiu sem
-    // pergunta: a resposta manda contá-la na entrega, entre as decisões que o
-    // assistente tomou sozinho.
-    warnings.extend(report.waves.iter().filter_map(|wave| plan_changed_alone(wave, lang)));
     let commit = match made {
         Some((made, title)) => {
             let mut commit = record_commit(start, root, spec, &made.sha, &title, &waves, &files)?;
@@ -507,7 +506,7 @@ pub(super) fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
 /// dela: segura só a própria onda. A volta que quem conduz a obra reprovou
 /// ([`held_rejection`]) também vem à parte, a cada rodada, enquanto for a última
 /// da onda: só a volta nova a desfaz.
-fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>) {
+pub(super) fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>) {
     let hidden = log.hidden();
     let mut waves = Vec::new();
     let mut refused = Vec::new();
@@ -598,7 +597,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
     let field = |item: &Value, key: &str| item.get(key).and_then(Value::as_str).map(|t| t.trim().to_string());
     let proofs = listed("proofs").iter().filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?))).collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
-    let (undone, taken_elsewhere) = undone_of(log, wave, fields, replan.is_some())?;
+    let (undone, taken_elsewhere) = undone_of(log, wave, fields, replan.is_some() || text("blocked_by").is_some())?;
     let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
@@ -1038,6 +1037,9 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
             let mut draft = Map::new();
             draft.insert("wave".into(), json!(wave));
             draft.insert("text".into(), json!(report.delivered));
+            if let Some(blocked) = report.returns.last().and_then(|id| check.log().get(*id)).and_then(|e| e.str_field("blocked_by")) {
+                draft.insert("blocked_by".into(), json!(blocked));
+            }
             if wave == report.wave
                 && let Some(knowledge) = check
                     .log()
@@ -3566,6 +3568,7 @@ mod tests {
     /// A rodada de sempre, com a sessão `sessao` e a pasta de configuração da
     /// plataforma `config`, como a entrada do comando as resolve.
     fn round_measured(root: &Path, report: &str, config: &Path) -> Value {
+        super::super::review::test_conductor_review(root, "x");
         crate::commands::flow::round::round_in(
             &crate::commands::flow::round::RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(report.to_string()) },
             Caller { session: Some("sessao"), config_dir: Some(config) },

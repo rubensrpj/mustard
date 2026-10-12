@@ -2,11 +2,11 @@
 //! pergunta ao usuário; a volta recusada por uma conferência dela, ou
 //! reprovada por quem conduz a obra, que segura só a própria onda; e o plano
 //! que muda — a onda replanejada depois do
-//! pedido e a mudança de plano que um agente propõe. A mudança que não troca
-//! decisão do usuário segue e fica registrada; a que troca só segue com o
-//! clique do usuário e, enquanto espera, segura só a onda dela. As tarefas
+//! pedido e a mudança de plano que um agente propõe. Toda mudança do plano
+//! aprovado espera o clique do usuário e segura só a onda dela. As tarefas
 //! que a onda não fez voltam ao backlog quando a rodada assume a volta, menos
-//! a que outra onda já levou, que fica com ela.
+//! a que outra onda já levou, que fica com ela. Uma tarefa devolvida por
+//! impedimento permanece bloqueada até ser revisada.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +14,7 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use super::answer::{RoundRefusal, without_final_period};
+use super::answer::RoundRefusal;
 use super::report::{PlanChange, WaveReport, backlog_return};
 use super::sent_tasks::sent_tasks;
 
@@ -174,14 +174,12 @@ impl HeldReturn {
     }
 }
 
-/// Tira das voltas `waves` as que trocam uma decisão do usuário sem o "Aceitar"
-/// dele gravado em `log`, e devolve cada uma com a recusa que manda perguntar
-/// ([`HeldReturn`]). A mudança de plano que não troca decisão nenhuma não é
-/// segurada. Depois do clique, a rodada seguinte assume a volta como qualquer
-/// outra.
+/// Holds proposed changes to the approved plan until the user's acceptance.
+/// Omitting a decision field does not grant authorization. Accepting the
+/// proposal does not clear the blocked condition on its unfinished tasks.
 pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -> Vec<HeldReturn> {
     hold_refused(waves, |wave| {
-        let Some(PlanChange { change, decision: Some(_) }) = &wave.replan else {
+        let Some(PlanChange { change, .. }) = &wave.replan else {
             return Ok(());
         };
         let code = replan_code(wave.wave, change);
@@ -326,6 +324,9 @@ pub(super) fn undone_of(log: &SpecLog, wave: u64, fields: &Map<String, Value>, r
 fn undone_return(task: &SpecEvent, wave: u64, change: Option<&str>, lang: Locale) -> Map<String, Value> {
     let mut draft = backlog_return(task);
     if let Some(change) = change {
+        // A different wave cannot resolve the same plan merely by retrying.
+        // Keep it visible in the backlog until a revised task clears the hold.
+        draft.insert("blocked_by".into(), json!(change));
         let line = translate("round.returned_change", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim());
         append_agent_line(&mut draft, &line);
     }
@@ -355,7 +356,8 @@ pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) 
     let mut out = Vec::new();
     for wave in waves {
         for task in wave.undone.iter().filter_map(|(id, _)| log.get(*id)) {
-            let change = wave.replan.as_ref().map(|plan| plan.change.as_str());
+            let change = wave.returns.last().and_then(|id| log.get(*id)).and_then(|event| event.str_field("blocked_by"))
+                .or_else(|| wave.replan.as_ref().map(|plan| plan.change.as_str()));
             out.push((wave.wave, undone_return(task, wave.wave, change, lang)));
         }
     }
@@ -372,19 +374,6 @@ pub(super) fn tasks_returned(wave: &WaveReport, lang: Locale) -> Option<Value> {
         let hint = translate("round.tasks_returned", lang).replace("{wave}", &wave.wave.to_string()).replace("{tasks}", &codes.join(", "));
         json!({ "reason": "tasks-returned", "wave": wave.wave, "tasks": codes, "hint": hint })
     })
-}
-
-/// O aviso da resposta da rodada de que a onda mudou o plano sem trocar
-/// decisão do usuário: a rodada seguiu sem perguntar, e a mudança vai na
-/// entrega, entre as decisões que o assistente tomou sozinho. `None` quando a
-/// onda não muda o plano ou quando a mudança troca uma decisão, que o usuário
-/// decidiu.
-pub(super) fn plan_changed_alone(wave: &WaveReport, lang: Locale) -> Option<Value> {
-    let PlanChange { change, decision: None } = wave.replan.as_ref()? else {
-        return None;
-    };
-    let hint = translate("round.replan_recorded", lang).replace("{wave}", &wave.wave.to_string()).replace("{change}", &without_final_period(change));
-    Some(json!({ "reason": "plan-changed", "wave": wave.wave, "hint": hint }))
 }
 
 #[cfg(test)]
@@ -588,12 +577,9 @@ mod tests {
         assert_eq!(clicked["question"], json!(mine), "a frase gravada é a que o usuário leu: {clicked}");
     }
 
-    /// A mudança de plano que não troca decisão do usuário não pede clique: a
-    /// rodada assume a volta, comita o que a onda entregou, grava a mudança na
-    /// entrega e manda contá-la entre as decisões que o assistente tomou
-    /// sozinho. A decisão em branco não chega aqui: a gravação a recusa.
+    /// Omitting changes_decision cannot authorize a change to an approved plan.
     #[test]
-    fn a_plan_change_that_swaps_no_decision_goes_on_without_a_click_and_is_told_as_decided_alone() {
+    fn a_plan_change_without_a_decision_field_still_waits_before_commit() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
@@ -601,6 +587,8 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
+        let session = "s-plan-without-decision";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
         std::fs::write(copy_of(root, 1).join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
         let change = "Dividir a soma em duas funções.";
         let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
@@ -609,13 +597,17 @@ mod tests {
 
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(change_asked(&out).is_null(), "sem decisão trocada não há clique a esperar: {out}");
-        assert_eq!(official_deliveries(root), BTreeSet::from([1]), "{out}");
-        assert_eq!(last_commit_files(root), "src/a.rs", "{out}");
-        let noted = warning_of(&out, "plan-changed");
-        assert_eq!(noted["wave"], json!(1), "{noted}");
-        let hint = noted["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("Dividir a soma em duas funções") && hint.contains("O que eu decidi sozinho"), "{hint}");
+        let asked = change_asked(&out);
+        assert_eq!(asked["wave"], 1, "{out}");
+        assert!(official_deliveries(root).is_empty(), "{out}");
+        let again = round(root, "x", None);
+        assert_eq!(change_asked(&again)["header"], asked["header"]);
+        assert!(official_deliveries(root).is_empty());
+        click(root, session, QUESTION, asked["header"].as_str().unwrap(), "Aceitar");
+        let accepted = round(root, "x", None);
+        assert_eq!(accepted["ok"], true, "{accepted}");
+        assert_eq!(official_deliveries(root), BTreeSet::from([1]));
+        assert_eq!(last_commit_files(root), "src/a.rs");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let recorded = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("a entrega");
         assert_eq!(recorded.str_field("replan"), Some(change), "a mudança fica gravada na entrega");
@@ -649,7 +641,7 @@ mod tests {
         }
         assert!(!shown.contains("Pergunta pronta") && stopped.get("question").is_none(), "{shown}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("três frases curtas") && hint.contains("no sim e no não"), "a regra da pergunta: {hint}");
+        assert!(hint.contains("Aceitar") && hint.contains("Recusar") && hint.contains("efeito da mudança"), "a regra da pergunta: {hint}");
     }
 
     /// A cópia gravada no último envio da onda `n` da spec `x`.
@@ -667,6 +659,30 @@ mod tests {
     /// As ondas com a entrega oficial gravada na spec `x`.
     fn official_deliveries(root: &Path) -> BTreeSet<u64> {
         store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap().delivered_waves()
+    }
+
+    #[test]
+    fn an_external_impediment_without_replanning_is_not_dispatched_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let task = log.visible().into_iter().find(|e| e.event_type == "task").unwrap();
+        let code = log.codes().get(&task.id).unwrap().clone();
+        let out = returned(root, json!({"wave":1,"text":"Acesso ainda não verificado.","blocked_by":"Aguardar acesso autorizado à fonte","undone":[code]}));
+        assert_eq!(out["ok"], true, "{out}");
+        let accepted = round(root, "x", None);
+        assert_eq!(accepted["ok"], true, "{accepted}");
+        for _ in 0..3 {
+            let again = round(root, "x", None);
+            assert!(again["dispatch"].as_array().unwrap().is_empty(), "{again}");
+        }
+        let log = store::read(&path).unwrap().unwrap();
+        let current = log.current(task.id).unwrap();
+        assert_eq!(current.str_field("blocked_by"), Some("Aguardar acesso autorizado à fonte"));
+        assert!(super::super::queue::backlog_left(&log).contains(&current.id));
     }
 
     /// Duas ondas voltam na mesma rodada, e uma pede novo plano: a outra é
@@ -786,6 +802,7 @@ mod tests {
         assert_eq!(returned(root, done)["ok"], json!(true));
 
         let opts = crate::commands::flow::close::CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() };
+        super::super::review::test_conductor_review(root, "x");
         let closed = crate::commands::flow::close::close_for(&opts, None);
         assert_eq!(closed["reason"], json!("wave-plan-does-not-work"), "{closed}");
         assert_eq!(closed["header"], json!(replan_code(1, change)), "{closed}");
@@ -1205,8 +1222,10 @@ mod tests {
                 assert_eq!(tool_input["prompt"], json!(exact), "só o título e o comando");
                 assert_eq!(tool_input["subagent_type"], json!("mustard-wave"));
                 assert_eq!(tool_input["description"], json!("onda"));
-                let said = translate("subagent.dispatch_replaced", Locale::PtBr).replace("{wave}", "1");
-                assert_eq!(note, Some(said));
+                assert!(note.is_some_and(|text| text.contains("instruções adicionais foram gravadas")));
+                let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+                let sent = log.get(*log.last_by_wave("send").get(&1).unwrap()).unwrap();
+                assert!(sent.str_field("text").unwrap().contains("rode a suíte inteira antes de entregar"));
             }
             other => panic!("the dispatch is rewritten, got {other:?}"),
         }

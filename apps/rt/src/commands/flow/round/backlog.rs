@@ -182,6 +182,7 @@ pub(crate) fn dispatch_backlog(
     let waiting: Vec<u64> = backlog_left_without(log, &undone)
         .into_iter()
         .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !cleanup(id) && !bare(id))
+        .filter(|id| !population.iter().any(|task| task.id == *id && task.blocked))
         .collect();
     // O arquivo de cada onda do plano que ainda não terminou: em andamento,
     // por sair, mantida ou com conserto pendente.

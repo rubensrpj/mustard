@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/review.rs"]
+mod wave_review;
 
 const SPEC: &str = "revisao";
 const SESSION: &str = "s-revisao";
@@ -105,8 +107,22 @@ impl Project {
 
     /// Um comando `run` que pode recusar: a resposta vem como veio.
     fn answer(&self, args: &[&str]) -> Value {
+        let mut owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        if matches!(args.first(), Some(&"round" | &"close")) {
+            let previous = args.windows(2).find(|pair| pair[0] == "--report").map(|pair| pair[1]).unwrap_or_default();
+            let report = wave_review::review_report(&self.root, SPEC, previous, |wave| {
+                self.answer(&["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
+            });
+            if !report.is_empty() {
+                if let Some(at) = owned.iter().position(|arg| arg == "--report") {
+                    owned[at + 1] = report;
+                } else {
+                    owned.extend(["--report".into(), report]);
+                }
+            }
+        }
         let mut all = vec!["run"];
-        all.extend_from_slice(args);
+        all.extend(owned.iter().map(String::as_str));
         let out = self.command(&all, "");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text)

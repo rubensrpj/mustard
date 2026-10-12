@@ -239,15 +239,15 @@ fn the_wave_molds_say_a_small_failure_is_fixed_in_the_wave() {
         (
             "pt-BR",
             [
-                "Falha pequena nos arquivos da tarefa ou nos vizinhos se conserta na onda, com um teste que falha sem o conserto.",
-                "Só vira sobra o que pede decisão do usuário ou toca outra área.",
+                "falha pequena da tarefa/vizinhos se corrige com teste que caia sem a correção.",
+                "Decisão do usuário ou outra área vira sobra.",
             ],
         ),
         (
             "en-US",
             [
-                "A small failure in the task's files or their neighbors is fixed in the wave, with a test that fails without the fix.",
-                "Only what needs the user's decision or touches another area becomes a leftover.",
+                "small failures in the task/neighbors get a fix and a test that fails without it.",
+                "User decisions or another area become leftovers.",
             ],
         ),
     ] {

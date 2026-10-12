@@ -49,21 +49,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O texto do condutor trocado pelo que o Mustard monta: o recado diz
         // o que saiu.
         ("subagent.dispatch_replaced", Locale::PtBr) => {
-            "[Mustard] O despacho da onda {wave} saiu só com o título e o comando de leitura. O texto a \
-             mais foi tirado. O que a onda precisa saber se grava na spec, e o pedido dela já traz."
+            "[Mustard] O despacho da onda {wave} saiu só com o título e o comando de leitura. Leia o pedido completo \
+             gravado na spec; instruções adicionais são preservadas nele antes do envio."
         }
         ("subagent.dispatch_replaced", Locale::EnUs) => {
             "[Mustard] The dispatch of wave {wave} went out with only the title and the read command. \
-             The extra text was taken out. What the wave needs to know is recorded in the spec, and its \
-             request already carries it."
+             Read the complete request recorded in the spec; additional instructions are \
+             preserved there before sending."
         }
         ("subagent.fix_replaced", Locale::PtBr) => {
-            "[Mustard] A mensagem ao agente da onda {wave} saiu só com o que a rodada devolveu para ela. \
-             O texto a mais foi tirado. O que a onda precisa saber se grava na spec."
+            "[Mustard] A mensagem ao agente da onda {wave} inclui o conserto da rodada e suas instruções \
+             adicionais, preservadas no pedido. Elas não substituem as regras do projeto."
         }
         ("subagent.fix_replaced", Locale::EnUs) => {
-            "[Mustard] The message to the agent of wave {wave} went out with only what the round sent \
-             back for it. The extra text was taken out. What the wave needs to know is recorded in the spec."
+            "[Mustard] The message to wave {wave} includes the round repair and your additional instructions, \
+             preserved in the request. They do not override project rules."
         }
         // A onda recusada que espera um agente novo: a frase que abre o
         // trecho de conserto ao agente novo e o recado ao condutor. Elas valem
@@ -613,7 +613,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 102, 0x9d07_8283_e244_ee9b);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 102, 0x470f_ab72_d3f9_ca5e);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

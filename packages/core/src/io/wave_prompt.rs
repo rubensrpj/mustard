@@ -753,7 +753,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let tree = execution.copy.as_ref().map_or(root, |copy| Path::new(&copy.path));
     let prepared = prepared::for_tasks(root, tree, &of_type("task"));
     let files = wave_files(log, wave);
-    // As skills que as tarefas nomeiam.
+    // Explicit skills and scoped skills of the touched area. The latter
+    // must survive native-tool interception and ignored worktree files.
     let mut named = skills_named(log, wave);
     named.sort();
     // Os arquivos de leitura de cada tarefa: os que ela declara em
@@ -798,20 +799,26 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
     let mut stale_skills = Vec::new();
-    for name in &named {
-        let Some((text, file)) = read_skill(root, &files, name) else {
+    let mut chosen: Vec<_> = named.iter().map(|name| (name.clone(), read_skill(root, &files, name))).collect();
+    for (name, text, file) in scoped_skills(root, &files) {
+        if !chosen.iter().any(|(_, source)| source.as_ref().is_some_and(|(_, path)| path == &file)) {
+            chosen.push((name, Some((text, file))));
+        }
+    }
+    for (name, source) in &chosen {
+        let Some((text, file)) = source else {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
             continue;
         };
-        if let Err(refusal) = check_skill(&text, |cited| cited_exists(root, map, cited)) {
+        if let Err(refusal) = check_skill(text, |cited| cited_exists(root, map, cited)) {
             bad_skills.push((name.clone(), refusal));
             continue;
         }
-        let stale = cited_changed_after(map, &text, &file);
+        let stale = cited_changed_after(map, text, file);
         if stale {
             stale_skills.push(name.clone());
         }
-        skills.push(Skill { name: name.clone(), when: when_to_use(&text), path: shown(&file), stale });
+        skills.push(Skill { name: name.clone(), when: when_to_use(text), path: shown(file), stale });
     }
 
     let material = Material {
@@ -890,6 +897,17 @@ fn skill_file(name: &str) -> String {
 /// skills fica fora do git, então a cópia da onda não a tem, e o agente só a
 /// abre de primeira pelo projeto principal.
 fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, PathBuf)> {
+    for folder in skill_folders(root, files) {
+        let path = folder.join(".claude").join("skills").join(name).join("SKILL.md");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let absolute = std::path::absolute(&path).unwrap_or(path);
+            return Some((text, absolute));
+        }
+    }
+    None
+}
+
+fn skill_folders(root: &Path, files: &[String]) -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = Vec::new();
     for file in files {
         let mut folder = root.join(file);
@@ -902,14 +920,28 @@ fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, Path
     if !folders.contains(&root.to_path_buf()) {
         folders.push(root.to_path_buf());
     }
-    for folder in folders {
-        let path = folder.join(".claude").join("skills").join(name).join("SKILL.md");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let absolute = std::path::absolute(&path).unwrap_or(path);
-            return Some((text, absolute));
+    folders
+}
+
+fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)> {
+    let mut found = Vec::new();
+    for folder in skill_folders(root, files) {
+        let Ok(entries) = std::fs::read_dir(folder.join(".claude/skills")) else { continue };
+        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path().join("SKILL.md")).collect();
+        paths.sort();
+        for path in paths {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(front) = crate::domain::skill::frontmatter::parse(&text) else { continue };
+            // A manual-only procedure must not run through automatic scope selection.
+            if front.extra.get("disable-model-invocation").and_then(Value::as_str)
+                .is_some_and(|value| ["true", "yes", "on", "1"].iter().any(|truth| value.eq_ignore_ascii_case(truth)))
+                || rules::matches_paths(&text, files) != Some(true) { continue; }
+            let Some(name) = path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) else { continue };
+            let absolute = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+            found.push((name.to_string(), text, absolute));
         }
     }
-    None
+    found
 }
 
 /// Quando usar a skill, tirado da descrição do frontmatter dela e reduzido a
@@ -1256,6 +1288,32 @@ mod tests {
         assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("skills/subtrair/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
+    }
+
+    #[test]
+    fn scoped_skills_reach_the_wave_without_a_task_name_and_without_unrelated_procedures() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (area, name, scope, disabled) in [
+            ("", "root-contract", "apps/rt/**", false),
+            ("apps/rt", "area-contract", "apps/rt/src/**", false),
+            ("apps/rt", "other-contract", "apps/cli/**", false),
+            ("apps/rt", "manual-procedure", "apps/rt/**", true),
+        ] {
+            write_skill(root, area, name, &format!("---\nname: {name}\ndescription: Current area contract.\npaths:\n  - {scope}\ndisable-model-invocation: {disabled}\nsource: manual\n---\n\nOnly read this body when needed.\n"));
+        }
+        let log = log_of(&[
+            ("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":1,"text":"Somar","files":[{"path":"apps/rt/src/a.rs"}]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        for name in ["root-contract", "area-contract"] {
+            assert!(built[0].text.contains(&format!("skills/{name}/SKILL.md")), "{}", built[0].text);
+        }
+        for hidden in ["other-contract", "manual-procedure", "Only read this body when needed."] {
+            assert!(!built[0].text.contains(hidden), "{}", built[0].text);
+        }
+        assert!(built[0].bad_skills.is_empty());
     }
 
     /// Um item revisto entra na lista do pedido só na versão nova, com o

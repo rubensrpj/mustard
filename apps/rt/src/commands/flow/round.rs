@@ -151,6 +151,7 @@ mod summary_wave;
 mod test_warnings;
 mod usage;
 mod environment;
+pub(crate) mod review;
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
 // e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
@@ -402,6 +403,7 @@ mod tests {
     }
 
     pub(super) fn round(root: &Path, spec: &str, report: Option<&str>) -> Value {
+        review::test_conductor_review(root, spec);
         round_for(&RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) }, None)
     }
 
@@ -422,6 +424,7 @@ mod tests {
     /// leitura de entrada `entry` ([`round_entry`]), pelo caminho de
     /// [`round`]: a mesma resposta que ele daria.
     pub(super) fn round_from(root: &Path, report: Option<&str>, entry: Result<answer::Entry, RoundRefusal>) -> Value {
+        review::test_conductor_review(root, "x");
         let project = spec_events::project(root);
         let opts = round_opts(root, report);
         entry
@@ -451,6 +454,7 @@ mod tests {
         report: Option<&str>,
         mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
     ) -> Value {
+        review::test_conductor_review(root, spec);
         let opts = RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
         let project = spec_events::project(&opts.root);
         match answer::run_round_with_mine(&opts, &project.root, project.lang, Caller::default(), mine) {

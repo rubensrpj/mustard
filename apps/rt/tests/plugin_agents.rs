@@ -343,21 +343,21 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
         (
             "pt-BR",
             [
-                "Para o item que nenhuma tarefa da onda faz e que só vale para os arquivos dela",
-                "`met:true` quer dizer que ele continua valendo depois da sua mudança",
-                "`met:false` só quando a mudança o quebra ou quando a tarefa que o faz ficou por fazer",
+                "Sem tarefa da onda para realizá-lo",
+                "`met:true` confirma que a mudança preserva a regra",
+                "Quebra ou tarefa não feita",
                 "vira tarefa no backlog",
-                "ou entra na de `undone`",
+                "salvo cobertura pendente existente",
             ],
         ),
         (
             "en-US",
             [
-                "For an item no task of the wave does and that only holds for its files",
-                "`met:true` means it still holds after your change",
-                "`met:false` only when the change undoes it or when the task that does it was not done",
-                "becomes a backlog task",
-                "or joins the one in `undone`",
+                "Without a wave task implementing it",
+                "`met:true` confirms the change preserves the rule",
+                "Broken rule or undone task",
+                "becomes backlog work",
+                "unless already covered by an unfinished task",
             ],
         ),
     ];
@@ -669,8 +669,8 @@ fn wave_headers(lang: &str) -> (&'static str, &'static str) {
 #[test]
 fn wave_template_puts_in_the_task_the_file_the_change_requires() {
     for (lang, said, gone) in [
-        ("pt-BR", ["entra no trabalho", "antes de explorar", "`files`", "`replan`", "`undone`"], "arquivo que falta"),
-        ("en-US", ["is part of the work", "before exploring", "`files`", "`replan`", "`undone`"], "a missing file"),
+        ("pt-BR", ["entra em", "antes de explorar", "`files`", "`replan`", "`undone`"], "arquivo que falta"),
+        ("en-US", ["go in", "before exploring", "`files`", "`replan`", "`undone`"], "a missing file"),
     ] {
         let name = "wave";
         let body = template(lang, name);
@@ -686,9 +686,9 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 /// mesma onda o que a própria mudança deixou sem uso, com o teste que só
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
-/// grava, só com o título e o detalhe: toda sobra vai ao backlog da spec, e o
+/// grava, só com o título e o detalhe: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
-/// sobra que só muda comentário, documentação ou texto de ajuda leva a marca
+/// sobra que só de comentário/documentação/ajuda leva a marca
 /// de limpeza, que a rodada segura para o fim da obra.
 #[test]
 fn boundary_says_to_remove_what_the_change_left_unused() {
@@ -696,24 +696,24 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
         (
             "pt-BR",
             [
-                "deixa sem uso",
-                "com o teste só dele",
-                "sai na mesma onda",
-                "outra onda em andamento, não edite",
-                "backlog da spec",
-                "só muda comentário, documentação ou texto de ajuda",
+                "tornados inúteis",
+                "código e testes",
+                "na mesma onda",
+                "Não edite arquivo de onda em andamento",
+                "backlog",
+                "só de comentário/documentação/ajuda",
                 "`\"cleanup\":true`",
             ],
         ),
         (
             "en-US",
             [
-                "leaves unused",
-                "with the test only it had",
-                "goes in the same wave",
-                "another running wave, do not edit",
-                "spec backlog",
-                "only changes a comment, documentation or help text",
+                "made unused",
+                "code and tests",
+                "in the same wave",
+                "Do not edit a running wave's files",
+                "backlog",
+                "Comment/documentation/help-only",
                 "`\"cleanup\":true`",
             ],
         ),

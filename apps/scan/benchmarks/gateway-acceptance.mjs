@@ -49,7 +49,7 @@ try {
   const sessionMap=fs.readFileSync(path.join(root,'.claude/mustard/session-map.md'),'utf8');
   assert.ok(sessionMap.includes('{request:{tool,input,intent,purpose,choose?}}'));
   assert.ok(sessionMap.includes('mustard:spec:'));
-  assert.ok(sessionMap.includes('linhas/corpos') || sessionMap.includes('lines/bodies'));
+  assert.ok(sessionMap.includes('Reuse trechos atuais') || sessionMap.includes('Reuse current excerpts'));
   assert.ok(sessionMap.includes('offset') && sessionMap.includes('limit'));
   const configFile = path.join(root, 'mustard.json');
   const config = JSON.parse(fs.readFileSync(configFile));

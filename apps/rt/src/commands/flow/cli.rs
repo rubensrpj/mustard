@@ -116,9 +116,25 @@ pub enum FlowCmd {
         /// dela vai a linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
         /// com o motivo: a rodada segura a volta fora do commit, a onda espera
         /// um agente novo, e o motivo vai a ele.
+        /// Código exige revisão prévia por `run review-wave`. Depois de ler
+        /// o diff e conferir regras/testes, aceite com
+        /// `<REVIEWED>{"wave":1,"fingerprint":"…","note":"…"}</REVIEWED>`.
+        /// `USAGE` sozinho não aprova; alteração invalida a revisão.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Prepara e mostra o diff real da onda para revisão antes do commit.
+    /// Depois de ler o diff, passe `REVIEWED` com wave, fingerprint e note no
+    /// relatório da rodada. Mudança posterior invalida a revisão.
+    #[command(display_order = 22)]
+    ReviewWave {
+        #[arg(long)]
+        wave: u64,
+        #[arg(long)]
+        spec: Option<String>,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -286,6 +302,10 @@ pub fn dispatch(cmd: FlowCmd) {
         FlowCmd::Round { spec, report, root } => {
             let opts = flow::round::RoundOpts { root, spec, report };
             flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
+        }
+        FlowCmd::ReviewWave { wave, spec, root } => {
+            let out = flow::round::review::view_at(&root, spec.as_deref(), wave);
+            flow::answer("review-wave", &root, spec.as_deref(), started, &out);
         }
         FlowCmd::Close { spec, report, pending_later, root } => {
             let opts = flow::close::CloseOpts { root, spec, report, pending_later };

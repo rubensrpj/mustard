@@ -47,6 +47,8 @@ use serde_json::{json, Value};
 
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/review.rs"]
+mod wave_review;
 #[path = "support/executable.rs"]
 mod executable;
 
@@ -488,8 +490,22 @@ impl Project {
 
     /// Um comando `run` que pode recusar: a resposta vem como veio.
     fn answer(&self, args: &[&str]) -> Value {
+        let mut owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        if matches!(args.first(), Some(&"round" | &"close")) {
+            let previous = args.windows(2).find(|pair| pair[0] == "--report").map(|pair| pair[1]).unwrap_or_default();
+            let report = wave_review::review_report(&self.root, SPEC, previous, |wave| {
+                self.answer(&["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
+            });
+            if !report.is_empty() {
+                if let Some(at) = owned.iter().position(|arg| arg == "--report") {
+                    owned[at + 1] = report;
+                } else {
+                    owned.extend(["--report".into(), report]);
+                }
+            }
+        }
         let mut all = vec!["run"];
-        all.extend_from_slice(args);
+        all.extend(owned.iter().map(String::as_str));
         let out = self.command(&all, "");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text)
@@ -729,14 +745,14 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     assert_eq!(state.phase, Some("pr_open"), "{pr}");
 
     let expected: BTreeMap<String, usize> =
-        [("open", 1), ("grill", 1), ("plan", 1), ("round", 2), ("close", 2), ("pr-open", 1)]
+        [("open", 1), ("grill", 1), ("plan", 1), ("review-wave", 1), ("round", 2), ("close", 2), ("pr-open", 1)]
             .into_iter()
             .map(|(command, count)| (command.to_string(), count))
             .collect();
     // A leitura que o agente faz do pedido dele é dele, e não um passo do fluxo.
     let mut seen = calls(&project);
     assert!(seen.remove("read").is_some_and(|reads| reads > 0), "the agent read what its request lists: {seen:?}");
-    assert_eq!(seen, expected, "each flow step is one call, the approval none and closing two");
+    assert_eq!(seen, expected, "each flow step is one call, with one native diff review and closing two");
 
     let folder = project.root.join(".claude/spec").join(SPEC);
     let mut names: Vec<String> = std::fs::read_dir(&folder)
