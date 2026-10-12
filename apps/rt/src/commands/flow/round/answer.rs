@@ -723,6 +723,15 @@ pub(super) fn run_entered_round(
             return Err(RoundRefusal::WaveLoop { cycle, answered });
         }
     };
+    let mut specialization_preparation=Vec::new();
+    for wave in &ready {
+        let files=wave_files(&log,*wave);
+        if log.block(BlockQuery::Wave(*wave)).iter().any(|task|task.str_field("skill").is_some()) {continue;}
+        let query=mustard_core::domain::wave_prompt::tasks_text(&log,*wave);
+        if let Some(mut preparation)=mustard_core::io::expertise::workflow::dispatch_preparation(root,&files,&query) {
+            preparation["wave"]=json!(wave);specialization_preparation.push(preparation);
+        }
+    }
     // A escolha dos itens do pedido, antes da cópia: o Jev julga, uma chamada
     // por onda, o item do projeto todo, o dos arquivos dela e o sem ligação
     // com ela, e a onda sai nesta mesma rodada, sem esperar quem conduz. Sem
@@ -760,7 +769,8 @@ pub(super) fn run_entered_round(
     // não está em andamento, como no gancho que monta o mesmo pedido.
     let orphans = orphaned_waves(&log);
     let away = running.keys().chain(orphans.keys()).chain(&next).copied().collect();
-    let flight = Flight { running: away, copies, choices };
+    let specializations = crate::shared::expertise_selection::select(root,&spec,&log,&next);
+    let flight = Flight { running: away, copies, choices, specializations };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -792,6 +802,8 @@ pub(super) fn run_entered_round(
         // enviado.
         let agent = prompt.agent.clone();
         draft.insert("agent".into(), json!(agent));
+        draft.insert("expertise".into(), json!(prompt.expertise));
+        draft.insert("skills".into(), json!(prompt.skills));
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("model".into(), json!(prompt.model));
         draft.insert("effort".into(), json!(prompt.effort));
@@ -820,7 +832,9 @@ pub(super) fn run_entered_round(
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent }));
+        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent,
+            "expertise":prompt.expertise,"preferred_agent":prompt.expertise.preferred_agent,
+            "agent_selection":"Use preferred_agent only if available in the current host. Otherwise use mustard-wave; the same selected skills are in the request." }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -884,6 +898,7 @@ pub(super) fn run_entered_round(
         if let Some(read_items) = prior.fields.get("read_items") {
             draft.insert("read_items".into(), read_items.clone());
         }
+        for field in ["skills","expertise"] {if let Some(value)=prior.fields.get(field) {draft.insert(field.into(),value.clone());}}
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));
         draft.insert("resends".into(), json!(previous));
@@ -1005,6 +1020,7 @@ pub(super) fn run_entered_round(
         "dispatch": dispatched,
         "running": running,
     });
+    if !specialization_preparation.is_empty() {out["specialization_preparation"]=json!(specialization_preparation);}
     if entering {
         out["phase"] = json!("running");
     }

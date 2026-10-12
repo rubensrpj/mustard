@@ -13,6 +13,8 @@ use crate::io::{knowledge, project_map, sha256::Sha256};
 
 mod export;
 pub use export::export;
+pub mod workflow;
+pub mod authoring;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,11 +29,14 @@ pub struct Profile {
     pub origin: String,
     #[serde(default)]
     pub reviewed: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub rule_context: Option<knowledge::RuleContext>,
 }
 
 pub fn fingerprint(profile: &Profile) -> String {
     let mut copy = profile.clone();
     copy.reviewed = None;
+    copy.rule_context = None;
     digest(&serde_json::to_vec(&copy).unwrap_or_default())
 }
 
@@ -104,6 +109,7 @@ pub fn record(root: &Path, profile: &Profile) -> Result<Value, String> {
     validate(root, profile)?;
     let mut draft = profile.clone();
     draft.reviewed = None;
+    draft.rule_context=Some(knowledge::RuleContext::of(root,&draft.sources.iter().map(|s|s.file.clone()).collect::<Vec<_>>()));
     if let Some(old) = list(root)?.into_iter().find(|p| p.name == profile.name) {
         if old.origin != "authored" { return Err("expertise-native-name-reserved".into()); }
         if fingerprint(&old) == fingerprint(&draft) { draft.reviewed = old.reviewed; }
@@ -117,12 +123,14 @@ pub fn review(root: &Path, name: &str, expected: &str) -> Result<Value, String> 
     validate(root, &profile)?;
     if profile.origin != "authored" || review_fingerprint(root,&profile) != expected { return Err("expertise-review-fingerprint-mismatch".into()); }
     profile.reviewed = Some(expected.into());
+    profile.rule_context=Some(knowledge::RuleContext::of(root,&profile.sources.iter().map(|s|s.file.clone()).collect::<Vec<_>>()));
     save(root, &profile)?;
     Ok(json!({"ok":true,"name":name,"active":true,"fingerprint":expected}))
 }
 
 pub fn active(root: &Path, profile: &Profile) -> bool {
-    sources_current(root, profile) && (profile.origin == "native-navigation" || profile.origin == "authored" && profile.reviewed.as_deref() == Some(review_fingerprint(root,profile).as_str()))
+    sources_current(root, profile) && profile.rule_context.as_ref().is_none_or(|rules|rules.current(root))
+        && (profile.origin == "native-navigation" || profile.origin == "authored" && profile.reviewed.as_deref() == Some(review_fingerprint(root,profile).as_str()))
 }
 
 pub fn matches(profile: &Profile, files: &[String]) -> bool {
@@ -163,7 +171,7 @@ pub fn sync(root: &Path) -> Result<Value, String> {
         if existing.iter().any(|p| p.name == name && p.origin != "native-navigation") { continue; }
         let profile = Profile { name, description: format!("Navigate the project's {role} area; use current examples and mandatory project rules."), paths,
             procedure: "Use Mustard to inspect current examples, callers, contracts and tests for this task. Compare neighboring implementations before changing code. Static similarity is not a business rule. Follow all mandatory project/spec rules. Work only on the assigned task; stop for a missing decision or access. Run its pertinent tests and return evidence.".into(),
-            sources: examples, origin: "native-navigation".into(), reviewed: None };
+            sources: examples, origin: "native-navigation".into(), reviewed: None, rule_context:None };
         changed += usize::from(save(root, &profile)?);
     }
     // Withdraw obsolete native roles, without deleting a manually maintained file.
@@ -180,18 +188,6 @@ pub fn report(root: &Path, files: &[String]) -> Result<Value, String> {
     let profiles: Vec<_> = list(root)?.into_iter().filter(|p| files.is_empty() || matches(p, files)).map(|p|
         json!({"fingerprint":review_fingerprint(root,&p),"active":active(root,&p),"profile":p})).collect();
     Ok(json!({"ok":true,"profiles":profiles,"model_calls":0}))
-}
-
-/// Used by the wave request. Only matching, current profiles become skills;
-/// the generic executor is retained when a host has not discovered new agents.
-pub fn wave_skills(root: &Path, files: &[String]) -> Vec<(String, String, std::path::PathBuf)> {
-    selected(root, files).into_iter().filter_map(|profile| {
-        let report = export(root, &profile.name, "claude").ok()?;
-        let path = report["skill"].as_str()?;
-        let absolute = root.join(path);
-        let text = std::fs::read_to_string(&absolute).ok()?;
-        Some((format!("mustard-{}", profile.name), text, absolute))
-    }).collect()
 }
 
 /// Dynamic agents get the same dispatch checks only while the registry and

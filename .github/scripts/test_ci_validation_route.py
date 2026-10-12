@@ -116,6 +116,20 @@ class ValidationRouteTests(unittest.TestCase):
         data[COMMIT]["tree"]["sha"] = BASE
         self.assertTrue(self.evaluate(data)[0]["validate"])
 
+    def test_base_version_update_reuses_the_actual_tested_merge_tree(self):
+        data = fixture()
+        data[ORIGINAL]["tree"]["sha"] = BASE
+        result, calls = self.evaluate(data)
+        self.assertFalse(result["validate"])
+        self.assertNotIn(ORIGINAL, calls)
+        self.assertIn(DOWNLOAD, calls)
+
+    def test_base_update_without_matching_tested_tree_still_requires_validation(self):
+        data = fixture()
+        data[ORIGINAL]["tree"]["sha"] = BASE
+        data[DOWNLOAD] = archive(tree=BASE)
+        self.assertTrue(self.evaluate(data)[0]["validate"])
+
     def test_actual_pr_checkout_must_match_even_if_head_matches(self):
         data = fixture()
         data[DOWNLOAD] = archive(tree=BASE)
@@ -167,7 +181,7 @@ class ValidationRouteTests(unittest.TestCase):
                 self.assertTrue(self.evaluate(data)[0]["validate"])
 
     def test_api_failure_or_invalid_response_falls_back_to_tests(self):
-        for endpoint in fixture():
+        for endpoint in (key for key in fixture() if key != ORIGINAL):
             for invalid in (OSError("unavailable"), None, []):
                 with self.subTest(endpoint=endpoint, invalid=invalid):
                     data = fixture()

@@ -20,6 +20,23 @@ fn normalized(input: &HookInput) -> HookInput {
             if let Some(message) = copy.tool_input.get("message").cloned() { copy.tool_input["prompt"] = message; }
             if let Some(agent) = copy.tool_input.get("agent_type").cloned() { copy.tool_input["subagent_type"] = agent; }
         }
+        Some("request_user_input") => {
+            // The host's actual PostToolUse answer is the witness. Never
+            // reinterpret assistant prose or a Claude transcript as Codex input.
+            if let Some(questions)=input.tool_input.get("questions").and_then(Value::as_array) {
+                let mut answers=serde_json::Map::new();
+                for question in questions {
+                    let (Some(id),Some(text))=(question["id"].as_str(),question["question"].as_str()) else {continue;};
+                    if questions.iter().filter(|q| q["id"].as_str()==Some(id)).count()!=1
+                        || questions.iter().filter(|q| q["question"].as_str()==Some(text)).count()!=1 {continue;}
+                    if let Some(selected)=input.raw.pointer("/tool_response/answers").and_then(|a|a.get(id)).and_then(|a|a.get("answers")).and_then(Value::as_array) {
+                        answers.insert(text.into(),json!(selected));
+                    }
+                }
+                copy.tool_name=Some("AskUserQuestion".into());
+                copy.raw["tool_response"]=json!({"answers":answers});
+            }
+        }
         _ => {}
     }
     copy
@@ -104,13 +121,45 @@ fn output(event: &str, outcome: &Outcome) -> Option<String> {
     }
     if !context.is_empty() { specific["additionalContext"] = json!(context.join("\n\n")); }
     if specific.as_object().is_some_and(|value| value.len() == 1) { return None; }
-    if !["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"].contains(&event) { return None; }
+    if !["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop"].contains(&event) { return None; }
     Some(json!({"hookSpecificOutput":specific}).to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_post_tool_answer_records_approval_through_the_native_witness() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() { return; }
+        use mustard_core::io::spec_events as store;
+        let dir=tempfile::tempdir().unwrap(); let root=dir.path();
+        std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let path=store::spec_file(root,"epic").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        store::write(&path,"state",json!({"phase":"plan","branch":"feature/epic","base":"dev"}).as_object().unwrap().clone(),&[]).unwrap();
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(),"codex-witness","epic");
+        let input:HookInput=serde_json::from_value(json!({"cwd":root,"hook_event_name":"PostToolUse","session_id":"codex-witness","tool_name":"request_user_input",
+            "tool_input":{"questions":[{"id":"approval","header":"Spec","question":"Aprovar esta spec?","options":[{"label":"Aprovar"},{"label":"Ajustar"}]}]},
+            "tool_response":{"answers":{"approval":{"answers":["Aprovar"]}}}})).unwrap();
+        codex("PostToolUse",&input);
+        let log=store::read(&path).unwrap().unwrap();
+        assert!(log.events.iter().any(|e|e.event_type=="state" && e.str_field("phase")==Some("approved") && e.str_field("author")==Some("user")));
+    }
+    #[test]
+    fn codex_question_witness_requires_a_native_correlated_answer() {
+        let input:HookInput=serde_json::from_value(json!({"tool_name":"request_user_input",
+            "tool_input":{"questions":[{"id":"approval","question":"Aprova?","options":[{"label":"Aprovar"},{"label":"Ajustar"}]}]},
+            "tool_response":{"answers":{"approval":{"answers":["Aprovar"]},"unrelated":{"answers":["Aprovar"]}}}})).unwrap();
+        let canonical=normalized(&input); assert_eq!(canonical.ask_answers().items.len(),1);
+        assert_eq!(canonical.ask_answers().items[0].labels,vec!["Aprovar"]);
+        let mut duplicate=input.clone();
+        duplicate.tool_input["questions"]=json!([{"id":"approval","question":"Aprova?"},{"id":"approval","question":"Outra?"}]);
+        assert!(normalized(&duplicate).ask_answers().items.is_empty());
+        duplicate.tool_input["questions"]=json!([{"id":"approval","question":"Aprova?"},{"id":"other","question":"Aprova?"}]);
+        assert!(normalized(&duplicate).ask_answers().items.is_empty());
+        let mut absent=input; absent.raw["tool_response"]=json!({"text":"The user approved"});
+        assert!(normalized(&absent).ask_answers().items.is_empty());
+    }
     #[test]
     fn a_mixed_patch_checks_every_file_and_respects_disabled_hooks() {
         let dir=tempfile::tempdir().unwrap(); let root=dir.path();

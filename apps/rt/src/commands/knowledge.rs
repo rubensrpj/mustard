@@ -5,6 +5,7 @@ mod evaluation;
 
 pub struct Modes<'a> { pub import_scip: Option<&'a Path>,
     pub prepare_session: Option<&'a str>, pub session_model: Option<&'a str>, pub complete_session: Option<&'a Path>,
+    pub cancel_session: Option<&'a str>,
     pub source_manifest: Option<&'a Path>,
     pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
@@ -24,6 +25,9 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         tree.as_path()
     } else {anchor.as_path()};
     let answer: Result<String, String> = (|| {
+        if let Some(id)=modes.cancel_session {
+            return mustard_core::io::knowledge::enrichment::cancel_session(root,id).map(|v|v.to_string());
+        }
         if let Some(host) = modes.prepare_session {
             let config = mustard_core::domain::config::ProjectConfig::load(&anchor);
             let model = modes.session_model.or_else(|| config.ai.session_models.get(host).map(String::as_str));

@@ -358,10 +358,40 @@ pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) 
         for task in wave.undone.iter().filter_map(|(id, _)| log.get(*id)) {
             let change = wave.returns.last().and_then(|id| log.get(*id)).and_then(|event| event.str_field("blocked_by"))
                 .or_else(|| wave.replan.as_ref().map(|plan| plan.change.as_str()));
-            out.push((wave.wave, undone_return(task, wave.wave, change, lang)));
+            let draft=guarded_return(task,wave.wave,!wave.files.is_empty(),change,lang);
+            out.push((wave.wave,draft));
         }
     }
     out
+}
+
+fn guarded_return(task:&SpecEvent,wave:u64,has_changes:bool,change:Option<&str>,lang:Locale)->Map<String,Value> {
+    let mut draft=undone_return(task,wave,change,lang);
+    if !has_changes && change.is_none() {
+        let context=json!([task.fields.get("title"),task.fields.get("user"),task.fields.get("agent")]).to_string();
+        let mut hash=mustard_core::io::sha256::Sha256::new(); hash.update(context.as_bytes());
+        let fingerprint=hash.hex_digest();
+        if task.fields.get("retry_guard").and_then(|v|v["fingerprint"].as_str())==Some(fingerprint.as_str()) {
+            let hold=if lang==Locale::PtBr {"Tarefa devolvida sem mudança novamente. Confira os insumos atuais e revise ou divida a tarefa antes de tentar outra vez."}
+        else {"Task returned without changes again. Verify current inputs and revise or split the task before retrying."};
+            draft=undone_return(task,wave,Some(hold),lang);
+        }
+        draft.insert("retry_guard".into(),json!({"fingerprint":fingerprint,"wave":wave}));
+    } else {draft.remove("retry_guard");}
+    draft
+}
+
+pub(super) fn triage_returns(root:&std::path::Path,spec:&str,log:&SpecLog,waves:&[WaveReport],lang:Locale)->Vec<Value> {
+    let evidence:Vec<_>=waves.iter().map(|wave|crate::shared::return_triage::Evidence {
+        wave:wave.wave,assignment:mustard_core::domain::wave_prompt::tasks_text(log,wave.wave),summary:wave.delivered.clone(),
+        has_changes:!wave.files.is_empty(),explicit_replan:wave.replan.is_some(),explicit_undone:!wave.undone.is_empty(),
+        explicit_blocker:wave.returns.last().and_then(|id|log.get(*id)).and_then(|e|e.str_field("blocked_by")).is_some(),
+    }).collect();
+    crate::shared::return_triage::classify(root,spec,&evidence).into_iter().map(|mut warning| {
+        warning["reason"]=json!("no-change-return-needs-verification");
+        if lang==Locale::PtBr {warning["hint"]=json!("Retorno sem mudança: confira as condições externas atuais e os recibos de teste. Divida ou bloqueie o trabalho não concluído antes de outro despacho. A classificação do relato não comprova suas afirmações.");}
+        warning
+    }).collect()
 }
 
 /// O aviso da resposta da rodada de que as tarefas que a volta `wave` não
@@ -683,6 +713,19 @@ mod tests {
         let current = log.current(task.id).unwrap();
         assert_eq!(current.str_field("blocked_by"), Some("Aguardar acesso autorizado à fonte"));
         assert!(super::super::queue::backlog_left(&log).contains(&current.id));
+    }
+
+    #[test]
+    fn repeated_empty_undone_work_requires_revision_instead_of_another_agent() {
+        let task=SpecEvent{id:1,event_type:"task".into(),line:1,fields:json!({"title":"Export","user":"Preserve input","agent":"Implement export","files":[],"depends_on":[]}).as_object().unwrap().clone()};
+        let first=guarded_return(&task,1,false,None,Locale::EnUs);
+        assert!(!first.contains_key("blocked_by"));
+        let mut retried=task.clone();retried.fields=first;
+        let second=guarded_return(&retried,2,false,None,Locale::EnUs);
+        assert!(second.contains_key("blocked_by"));
+        retried.fields.insert("agent".into(),json!("Use newly supplied local input"));
+        assert!(!guarded_return(&retried,3,false,None,Locale::EnUs).contains_key("blocked_by"));
+        assert!(!guarded_return(&task,1,true,None,Locale::EnUs).contains_key("retry_guard"));
     }
 
     /// Duas ondas voltam na mesma rodada, e uma pede novo plano: a outra é

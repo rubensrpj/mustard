@@ -55,13 +55,16 @@ fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Out
     let registry = Registry::new();
     let tool = input.tool_name.as_deref();
     let root = PathBuf::from(&ctx.project_dir);
+    if let Some(event)=input.hook_event_name.as_deref() {
+        crate::shared::host_observation::observe(&root,if codex {"codex"} else {"claude"},event,input);
+    }
     let mut outcome = Outcome::allow();
     if codex && trigger == Trigger::SessionStart {
         outcome.fold(Verdict::Inject { context: "[Mustard] Use the mustard MCP search tool or mustard-rt run search for code discovery; preserve native arguments and include intent/purpose. Run mustard-rt run resume for an active spec. Reuse current knowledge before enrichment; isolated Haiku/Luna analysis is limited to 100000 full input tokens. Use the current session's native subagents, never a new CLI process or generation API.".into() });
         return outcome;
     }
     for module in registry.applicable(trigger, tool) {
-        if codex && !["command_guard", "write_gate", "subagent_inject"].contains(&module.id) { continue; }
+        if codex && !["command_guard", "write_gate", "subagent_inject", "approval_witness"].contains(&module.id) { continue; }
         run_module(module, input, &ctx, &root, &mut outcome);
     }
     // A resposta barrada também é gravada, antes do complemento que o

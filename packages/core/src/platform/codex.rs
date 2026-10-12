@@ -55,7 +55,7 @@ pub fn install(root: &Path) -> Result<Value, String> {
     let mut hooks = read_object(&hook_path)?;
     if hooks.get("hooks").is_none() { hooks["hooks"] = json!({}); }
     if !hooks["hooks"].is_object() { return Err("codex-install-invalid-hook-map".into()); }
-    for event in ["SessionStart", "PreToolUse", "PostToolUse"] {
+    for event in ["SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd"] {
         let command = format!("mustard-rt on {event} --host codex");
         if hooks["hooks"].get(event).is_none() { hooks["hooks"][event] = json!([]); }
         let entries = hooks["hooks"][event].as_array_mut().ok_or("codex-install-invalid-hook-list")?;

@@ -13,6 +13,22 @@ const WEIGHTS: &[u8] = include_bytes!("../../assets/code-meaning/model.safetenso
 const CONFIG: &[u8] = include_bytes!("../../assets/code-meaning/config.json");
 // Pinned encoder + document recipe + output quantization. Never mix encoders.
 const MODEL: &str = "potion-code-16M-v2:e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:ast-v1:i8";
+/// Cheap read-only inventory. Does not initialize the encoder or generate
+/// vectors; source bytes are verified by each actual search, not this count.
+pub fn status(root:&Path)->Value {
+    let enabled=crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled();
+    let counts=(|| {
+        let conn=Connection::open_with_flags(crate::io::project_map::model_path(root),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        if !table_exists(&conn,"code_vector_files").ok()? {return None;}
+        let documents:i64=conn.query_row("SELECT COUNT(*) FROM code_vector_files WHERE model=?1",[MODEL],|r|r.get(0)).ok()?;
+        let chunks:i64=conn.query_row("SELECT COUNT(*) FROM code_vectors v JOIN code_vector_files f ON f.path=v.path AND f.model=?1 JOIN knowledge_symbols s ON s.id=v.id AND s.sha256=v.sha256",[MODEL],|r|r.get(0)).ok()?;
+        Some((documents,chunks))
+    })();
+    serde_json::json!({"enabled":enabled,"model_embedded":!WEIGHTS.is_empty() && !TOKENIZER.is_empty(),"model":MODEL,
+        "indexed_documents":counts.map(|c|c.0),"indexed_chunks":counts.map(|c|c.1),
+        "status":if !enabled {"disabled"}else if counts.is_some_and(|c|c.1>0){"indexed"}else{"index-not-populated"},
+        "source_validity":"checked during search","model_calls":0})
+}
 const BLOCK: Block = Block {name:"code-meaning",version:1,tables:&["code_vectors","code_vector_files"],
     schema:"CREATE TABLE code_vectors(id TEXT NOT NULL,chunk INTEGER NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(id,chunk)) WITHOUT ROWID; CREATE INDEX code_vectors_path ON code_vectors(path); CREATE TABLE code_vector_files(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,model TEXT NOT NULL) WITHOUT ROWID;",kind:Kind::Rebuilt(empty)};
 #[allow(clippy::unnecessary_wraps)]

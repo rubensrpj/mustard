@@ -226,6 +226,11 @@ struct Check {
 /// que o `--check` aceita na linha de comando, a escolha dele, a mensagem de
 /// conferência desconhecida e a rodada inteira.
 const CHECKS: &[Check] = &[
+    Check {runs:Runs::Named("integrations"),check:|place| {
+        let report=crate::shared::integration_health::snapshot(&place.project().root);
+        if report["ok"]==true {CheckResult::ok("integrations")}
+        else {CheckResult::warn("integrations",vec![report.to_string()])}
+    }},
     Check { runs: Runs::Round, check: |place| check_wiring(&place.claude_dir) },
     // Antes do desvio dos moldes: a leitura dele só vale quando o binário que
     // a faz é o instalado, e um arranque parado torna suspeita toda versão
