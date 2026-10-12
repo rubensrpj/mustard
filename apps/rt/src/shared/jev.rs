@@ -939,6 +939,7 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
             "agent": without_secrets(&task.agent),
             "files": task.files,
             "reads": task.reads,
+            "expertise": task.expertise,
         })
     };
     let mut kinds = Map::new();
@@ -2307,6 +2308,7 @@ mod tests {
             depends_on: Vec::new(),
             reads: Vec::new(),
             criteria: std::collections::BTreeSet::new(),
+            expertise: Vec::new(),
         }
     }
 

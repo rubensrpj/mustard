@@ -11,4 +11,5 @@ pub mod i18n;
 pub mod process;
 pub mod project_seed;
 pub mod seeds;
+pub mod codex;
 pub mod time;

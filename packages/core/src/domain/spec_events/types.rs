@@ -451,6 +451,27 @@ pub const TYPES: &[TypeSpec] = &[
             opt("output_bytes", Kind::Int),
             opt("estimated_input_tokens", Kind::Int),
             opt("estimated_output_tokens", Kind::Int),
+            // Safe gateway/session observations, without code, prompts or keys.
+            opt("search_tool", Kind::Text),
+            opt("search_purpose", Kind::Text),
+            opt("search_choice_gate", Kind::Text),
+            opt("search_local_model_calls", Kind::Int),
+            opt("search_remote_model_calls", Kind::Int),
+            opt("search_selection_status", Kind::Text),
+            opt("search_selection_cached", Kind::Bool),
+            opt("search_accepted_choices", Kind::Int),
+            opt("knowledge_cached", Kind::Bool),
+            opt("knowledge_session_model_calls", Kind::Int),
+            opt("knowledge_local_model_calls", Kind::Int),
+            opt("knowledge_remote_model_calls", Kind::Int),
+            opt("knowledge_host", Kind::Text),
+            opt("knowledge_model", Kind::Text),
+            opt("knowledge_effort", Kind::Text),
+            opt("knowledge_effort_observed", Kind::Bool),
+            opt("knowledge_input_tokens", Kind::Int),
+            opt("knowledge_output_tokens", Kind::Int),
+            opt("knowledge_context_target_observed", Kind::Bool),
+            opt("knowledge_api_context_tier", Kind::Text),
             // A busca que chamou o filtro: qual (`jev`, ou `jev:<motivo>` na
             // falha), o tempo dele, os tokens de entrada, o custo em
             // milionésimos de dólar (a soma de todos os pedidos), quantos

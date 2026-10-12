@@ -337,7 +337,7 @@ fn map_dump_brings_one_entry_per_table() {
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
             "graph", "fan_in", "history_base", "history_paths", "commits", "resource_files", "lineage_files", "lineage_commits",
             "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "blocks"
+            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "expertise", "expertise_exports", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );
@@ -637,6 +637,52 @@ fn the_map_help_describes_the_summary_of_the_map_and_not_the_session_start() {
 
 /// O código das parcelas, com a palavra `parcela` só num comentário.
 const INSTALLMENTS: &str = "export function splitInstallments(total: number, count: number) {\n  // divide o total em parcela iguais\n  return Array.from({ length: count }, () => total / count);\n}\n\nexport function payInstallment(value: number) {\n  return value;\n}\n";
+
+/// The CLI prepares evidence without invoking a model, accepts a current
+/// session's result even above the context target, and reuses it. Code
+/// changes invalidate the receipt instead of silently restamping its hash.
+#[test]
+fn knowledge_session_protocol_supports_both_hosts_and_checks_current_sources() {
+    for (host,model) in [("claude","claude-haiku-5-5"),("codex","gpt-6-luna")] {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let source="fn restore() { /* restores a backup */ }\n";
+        fs::write(root.join("backup.rs"),source).unwrap();
+        fs::write(root.join("mustard.json"),serde_json::json!({"ai":{"fallback":false,"sessionModels":{host:model}}}).to_string()).unwrap();
+        let mut digest=mustard_core::io::sha256::Sha256::new();digest.update(source.as_bytes());
+        let mut map=serde_json::json!({"modules":[{"path":"backup.rs","language":"rust",
+            "analysis":{"content_sha256":digest.hex_digest(),"parse_complete":true},
+            "declarations":[{"name":"restore","kind":"function","line":1,"end_line":1,"signature":"fn restore()"}]}]});
+        mustard_core::domain::knowledge::enrich(&mut map);
+        mustard_core::io::project_map::write_text(root,&map.to_string()).unwrap();
+        let run=|args:&[&str]| {
+            let out=std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","knowledge","--root"])
+                .arg(root).args(args).current_dir(root).env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT").output().unwrap();
+            let report:serde_json::Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|e|panic!("{e}: {}",String::from_utf8_lossy(&out.stdout)));
+            (out.status.success(),report)
+        };
+        let args=["--query","backup","--prepare-session",host];
+        let (ok,prepared)=run(&args);assert!(ok,"{prepared}");
+        assert_eq!(prepared["delegation"]["requested_model"],model,"preference comes from mustard.json");
+        assert_eq!(prepared["session_model_calls"],0);
+        assert_eq!(prepared["context_target_tokens"],100_000);
+        let receipt=serde_json::json!({"request_id":prepared["request_id"],"model":model,"input_tokens":300_000,
+            "result":{"title":"Restore","text":"Restores a backup [s0].","source_ids":["s0"]}});
+        let path=root.join("receipt.json");fs::write(&path,receipt.to_string()).unwrap();
+        let complete=["--complete-session",path.to_str().unwrap()];
+        let (ok,done)=run(&complete);assert!(ok,"{done}");
+        assert_eq!(done["session_model_calls"],1);
+        assert_eq!(done["remote_model_calls"],0);
+        assert_eq!(done["interpretation"]["status"],"hypothesis");
+        assert_eq!(done["context"]["api_reference"]["tier"],"long");
+        assert_eq!(done["context"]["target_observed"],false);
+        assert_eq!(done["context"]["subscription_cost"],"unknown");
+        assert_eq!(run(&args).1["cached"],true);
+        assert_eq!(run(&complete).1["session_model_calls"],0);
+        fs::write(root.join("backup.rs"),"fn restore() { /* different */ }\n").unwrap();
+        let (ok,failed)=run(&complete);assert!(!ok,"{failed}");
+        assert_eq!(failed["detail"],"knowledge-source-changed-during-generation");
+    }
+}
 
 /// Exact reproduction of the reported range. One authorized native Read is
 /// sufficient; its post-hook adds current owners without replacing its output

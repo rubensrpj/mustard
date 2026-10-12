@@ -21,6 +21,13 @@ use crate::commands::{maint};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum MaintCmd {
+    /// Configure project-local Codex search, hooks and native agents; then review
+    /// changed hooks with `/hooks` in Codex. No new model process or `API` key.
+    #[command(display_order = 33)]
+    SetupCodex {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Read configuration with the key masked, optionally through a text reader.
     #[command(display_order = 40)]
     ConfigRead {
@@ -115,6 +122,12 @@ pub enum MaintCmd {
 /// Dispatch one `maint`-family `run` subcommand.
 pub fn dispatch(cmd: MaintCmd) {
     match cmd {
+        MaintCmd::SetupCodex { root } => {
+            match mustard_core::platform::codex::install(&root) {
+                Ok(result) => println!("{result}"),
+                Err(reason) => { println!("{}",serde_json::json!({"ok":false,"reason":reason})); std::process::exit(1); }
+            }
+        }
         MaintCmd::ConfigRead { file, reader, args_json } => {
             maint::config_read::run(&file, &reader, &args_json);
         }

@@ -50,7 +50,8 @@ pub(crate) fn fresh(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<Fre
     });
     let mut statement = conn.prepare(&format!(
         "SELECT n.file, n.name, n.text, d.line, d.rowid FROM notes n \
-         JOIN files f ON f.path = n.file AND f.blob IS n.blob \
+         JOIN files f ON f.path = n.file \
+         JOIN texts t ON t.path = n.file AND n.sha256 IS NOT NULL AND json_extract(t.analysis, '$.content_sha256') = n.sha256 \
          LEFT JOIN decls d ON d.file = n.file AND d.name = n.name AND n.name <> '' \
          WHERE (n.name = '' OR d.rowid IS NOT NULL){only} ORDER BY n.rowid, d.rowid"
     ))?;

@@ -805,6 +805,12 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             chosen.push((name, Some((text, file))));
         }
     }
+    // Prefer an existing project procedure. Native profiles only fill a
+    // missing scoped guide and retain the generic executor for live sessions
+    // that have not discovered newly exported agent definitions yet.
+    if chosen.is_empty() {
+        chosen.extend(crate::io::expertise::wave_skills(root, &files).into_iter().map(|(name, text, path)| (name, Some((text, path)))));
+    }
     for (name, source) in &chosen {
         let Some((text, file)) = source else {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
@@ -898,11 +904,15 @@ fn skill_file(name: &str) -> String {
 /// abre de primeira pelo projeto principal.
 fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, PathBuf)> {
     for folder in skill_folders(root, files) {
-        let path = folder.join(".claude").join("skills").join(name).join("SKILL.md");
+      for directory in [".claude/skills", ".agents/skills"] {
+        let path = folder.join(directory).join(name).join("SKILL.md");
         if let Ok(text) = std::fs::read_to_string(&path) {
+            if crate::domain::skill::frontmatter::parse(&text).ok().and_then(|front|front.source()).as_deref() == Some("mustard-expertise")
+                && !crate::io::expertise::is_skill(root, name, &path) { continue; }
             let absolute = std::path::absolute(&path).unwrap_or(path);
             return Some((text, absolute));
         }
+      }
     }
     None
 }
@@ -926,12 +936,16 @@ fn skill_folders(root: &Path, files: &[String]) -> Vec<PathBuf> {
 fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)> {
     let mut found = Vec::new();
     for folder in skill_folders(root, files) {
-        let Ok(entries) = std::fs::read_dir(folder.join(".claude/skills")) else { continue };
+      for directory in [".claude/skills", ".agents/skills"] {
+        let Ok(entries) = std::fs::read_dir(folder.join(directory)) else { continue };
         let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path().join("SKILL.md")).collect();
         paths.sort();
         for path in paths {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             let Ok(front) = crate::domain::skill::frontmatter::parse(&text) else { continue };
+            // Managed entries are selected through their current registry,
+            // never rediscovered as manual skills after withdrawal.
+            if front.source().as_deref() == Some("mustard-expertise") { continue; }
             // A manual-only procedure must not run through automatic scope selection.
             if front.extra.get("disable-model-invocation").and_then(Value::as_str)
                 .is_some_and(|value| ["true", "yes", "on", "1"].iter().any(|truth| value.eq_ignore_ascii_case(truth)))
@@ -940,6 +954,7 @@ fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)
             let absolute = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
             found.push((name.to_string(), text, absolute));
         }
+      }
     }
     found
 }

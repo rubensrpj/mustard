@@ -35,6 +35,14 @@ use mustard_core::io::workspace::workspace_root;
 /// casa, e o resultado é um `Allow`.
 #[must_use]
 pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
+    run_for_host(trigger, input, false)
+}
+
+pub(crate) fn run_codex_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
+    run_for_host(trigger, input, true)
+}
+
+fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Outcome {
     let Some(trigger) = trigger else {
         return Outcome::allow();
     };
@@ -48,7 +56,12 @@ pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
     let tool = input.tool_name.as_deref();
     let root = PathBuf::from(&ctx.project_dir);
     let mut outcome = Outcome::allow();
+    if codex && trigger == Trigger::SessionStart {
+        outcome.fold(Verdict::Inject { context: "[Mustard] Use the mustard MCP search tool or mustard-rt run search for code discovery; preserve native arguments and include intent/purpose. Run mustard-rt run resume for an active spec. Reuse current knowledge before enrichment; isolated Haiku/Luna analysis is limited to 100000 full input tokens. Use the current session's native subagents, never a new CLI process or generation API.".into() });
+        return outcome;
+    }
     for module in registry.applicable(trigger, tool) {
+        if codex && !["command_guard", "write_gate", "subagent_inject"].contains(&module.id) { continue; }
         run_module(module, input, &ctx, &root, &mut outcome);
     }
     // A resposta barrada também é gravada, antes do complemento que o

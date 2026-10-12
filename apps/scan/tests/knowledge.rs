@@ -304,7 +304,7 @@ fn refresh_queue_is_scoped_and_keeps_old_claims_out_of_current_evidence() {
         .iter()
         .map(|card| serde_json::from_value(card["source"].clone()).unwrap())
         .collect();
-    let note = Interpretation {
+    let note = Interpretation { rule_context: None,
         id: "recovery".into(),
         title: "Recuperação de desastre".into(),
         text: "O plano é recuperado e persiste.".into(),
@@ -443,7 +443,7 @@ fn interpretations_survive_rescans_but_never_survive_a_source_change_as_current(
         .iter()
         .map(|card| serde_json::from_value(card["source"].clone()).unwrap())
         .collect();
-    let note = Interpretation {
+    let note = Interpretation { rule_context: None,
         id: "restore-plan".into(),
         title: "Recuperação de desastre".into(),
         text: "O backup restaura o plano e o persiste.".into(),
@@ -547,7 +547,7 @@ fn prepared_knowledge_checks_every_interpretation_source_in_the_wave() {
         .iter()
         .map(|card| serde_json::from_value(card["source"].clone()).unwrap())
         .collect();
-    let note = Interpretation {
+    let note = Interpretation { rule_context: None,
         id: "prepared".into(),
         title: "Restore".into(),
         text: "Recover and persist the plan.".into(),
@@ -755,7 +755,7 @@ fn prepared_evidence_keeps_a_compact_interpretation_and_tracks_hidden_edits() {
         .unwrap()
         .0["cards"][0]["source"]
         .clone();
-    let mut note = Interpretation {
+    let mut note = Interpretation { rule_context: None,
         id: "persistence".into(),
         title: "Persistência".into(),
         text: "Parte comum. ".repeat(90),

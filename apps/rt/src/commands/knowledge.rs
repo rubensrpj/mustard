@@ -4,6 +4,7 @@ use std::path::Path;
 mod evaluation;
 
 pub struct Modes<'a> { pub import_scip: Option<&'a Path>,
+    pub prepare_session: Option<&'a str>, pub session_model: Option<&'a str>, pub complete_session: Option<&'a Path>,
     pub source_manifest: Option<&'a Path>,
     pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
@@ -14,6 +15,7 @@ fn read_manifest<T:serde::de::DeserializeOwned>(path:&Path)->Result<T,String> {
 }
 
 pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown: bool, out: Option<&Path>, record: Option<&Path>, modes:Modes<'_>) {
+    let started=std::time::Instant::now();
     let start = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
     let anchor = mustard_core::io::spec_events::spec_root(&start);
     let git = mustard_core::platform::git::run(&start, &["rev-parse", "--show-toplevel"]);
@@ -22,6 +24,15 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         tree.as_path()
     } else {anchor.as_path()};
     let answer: Result<String, String> = (|| {
+        if let Some(host) = modes.prepare_session {
+            let config = mustard_core::domain::config::ProjectConfig::load(&anchor);
+            let model = modes.session_model.or_else(|| config.ai.session_models.get(host).map(String::as_str));
+            return mustard_core::io::knowledge::enrichment::prepare_session(root, &tree, query.text, query.file, query.limit, host, model).map(|v|v.to_string());
+        }
+        if let Some(path) = modes.complete_session {
+            let receipt = read_manifest(path)?;
+            return mustard_core::io::knowledge::enrichment::complete_session(root, &tree, &receipt).map(|v|v.to_string());
+        }
         if let Some(index) = modes.import_scip {
             return mustard_core::io::knowledge::precise::import(
                 root,
@@ -74,12 +85,17 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         Ok(text)
     })();
     match answer {
-        Ok(text) => println!("{text}"),
+        Ok(text) => {
+            let mut report:serde_json::Value=serde_json::from_str(&text).unwrap_or_else(|_|json!({"ok":true}));
+            if report.get("ok").is_none() {report["ok"]=json!(true);}
+            super::spec_events::conversation::record_output_call(&anchor,"knowledge",None,started,&report,&text);
+            println!("{text}");
+        }
         Err(detail) => {
-            println!(
-                "{}",
-                json!({"ok":false,"reason":"knowledge-unavailable","detail":detail,"hint": "Refresh scan or use an exact search; missing evidence does not prove missing functionality." })
-            );
+            let report=json!({"ok":false,"reason":"knowledge-unavailable","detail":detail,"hint": "Refresh scan or use an exact search; missing evidence does not prove missing functionality." });
+            let text=report.to_string();
+            super::spec_events::conversation::record_output_call(&anchor,"knowledge",None,started,&report,&text);
+            println!("{text}");
             std::process::exit(1);
         }
     }

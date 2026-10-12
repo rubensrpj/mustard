@@ -43,6 +43,8 @@ mod report;
 // whole of `src/` being tested twice without taking those five with it — see
 // the module doc for the measurement that motivated it.
 mod hook_output;
+mod host;
+mod mcp;
 mod commands;
 mod shared;
 mod util;
@@ -102,8 +104,13 @@ fn main() {
         Command::Run { command } => commands::dispatch(command),
         // Uma entrada que não se lê vira uma entrada vazia, que todo gancho
         // deixa passar: a regra de nunca falhar mora aqui, uma vez.
-        Command::On { event } => {
+        Command::Mcp { root } => mcp::run(&root),
+        Command::On { event, host } => {
             let input = read_stdin_input();
+            if host == "codex" {
+                if let Some(output) = self::host::codex(&event, &input) { println!("{output}"); }
+                return;
+            }
             let outcome = dispatch::run_event(Trigger::from_event_name(&event), &input);
             // O nome do evento volta como veio: o Claude Code recusa a
             // resposta cujo `hookEventName` não é o do evento que ele chamou.

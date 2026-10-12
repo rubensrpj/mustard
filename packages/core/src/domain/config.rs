@@ -741,6 +741,10 @@ pub struct AiConfig {
     /// This never enables the separate paid fallback provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vectors: Option<Value>,
+    /// Optional preferred models for interpretation by the current host
+    /// session. These never enable an API or launch a CLI process.
+    #[serde(rename = "sessionModels", skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_models: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -749,7 +753,7 @@ impl AiConfig {
     #[must_use]
     pub
     fn is_empty(&self) -> bool {
-        self.fallback.is_none() && self.vectors.is_none() && self.extra.is_empty()
+        self.fallback.is_none() && self.vectors.is_none() && self.session_models.is_empty() && self.extra.is_empty()
     }
 }
 

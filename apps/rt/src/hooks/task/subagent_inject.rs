@@ -326,8 +326,10 @@ fn dispatch_prompt(input: &HookInput) -> &str {
 
 /// Se o despacho vai a um agente do Mustard: o `subagent_type` é `mustard-`
 /// seguido do nome de um dos agentes que o instalador grava.
-fn to_mustard_agent(input: &HookInput) -> bool {
-    input.tool_input.get("subagent_type").and_then(Value::as_str).and_then(|kind| kind.strip_prefix("mustard-")).is_some_and(|name| AGENT_NAMES.contains(&name))
+fn to_mustard_agent(input: &HookInput, root: &Path) -> bool {
+    input.tool_input.get("subagent_type").and_then(Value::as_str).is_some_and(|kind|
+        kind.strip_prefix("mustard-").is_some_and(|name| AGENT_NAMES.contains(&name))
+        || mustard_core::io::expertise::is_agent(root, kind, input.raw["mustard_host"].as_str().unwrap_or("claude")))
 }
 
 /// O despacho com `text` no lugar do texto da tarefa e os outros campos como
@@ -373,7 +375,7 @@ fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// ([`review_rules`]). O resto passa como veio.
 fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
-    if !to_mustard_agent(input) || !ProjectConfig::exists(Path::new(&root)) {
+    if !to_mustard_agent(input, Path::new(&root)) || !ProjectConfig::exists(Path::new(&root)) {
         return Verdict::Allow;
     }
     let language = ctx.config.language();

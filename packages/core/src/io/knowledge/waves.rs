@@ -74,6 +74,7 @@ pub fn capture(
             text: note.text,
             status: "hypothesis".into(),
             origin: format!("spec:{spec}/delivery:{delivery}"),
+            rule_context: Some(super::RuleContext::of(tree, &note.sources.iter().map(|source|source.file.clone()).collect::<Vec<_>>())),
             sources: note.sources,
         };
         recorded.push(super::record_at(root, tree, &note).map_err(|e| format!("{e:?}"))?);

@@ -46,6 +46,8 @@ use mustard_rt::commands::RunCmd;
 /// reachable some OTHER way — it mirrors a documented sibling, it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
 const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
+    ("knowledge", "complete-session", "prepared-session JSON returns this command with its exact receipt contract; tested by current_session_enrichment_is_reusable_and_never_upgrades_a_hypothesis, so do not preload it on every turn"),
+    ("knowledge", "session-model", "prepared-session JSON explains this preference override on demand; tested with its native protocol, while docs/2026-10-12-agentes-skills-codex.md documents the complete flow"),
     (
         "map",
         "described",
