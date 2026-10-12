@@ -846,35 +846,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.formatter_missing", Locale::PtBr) => "O projeto usa {name} e ele não foi achado: os arquivos da rodada ficaram sem formatar.",
         ("round.formatter_missing", Locale::EnUs) => "The project uses {name} and it was not found: the round's files were left unformatted.",
         ("round.replan", Locale::PtBr) => {
-            "A onda {wave} diz que a mudança de plano dela troca uma decisão do usuário. A \
-             rodada não segue com ela sem o sim dele. Leia na volta da onda qual é a mudança e \
-             qual decisão ela troca. Faça ao usuário a pergunta com opções, com \"{yes}\" e \
-             \"{no}\", e ponha {code} no cabeçalho dela. É o cabeçalho que diz qual mudança o \
-             clique decide. Escreva o enunciado pelo estilo de resposta: no máximo três frases \
-             curtas. Nada de nome de arquivo, de símbolo nem de número de laboratório. Diga o \
-             que muda para o usuário no sim e no não. Com o aceite, voltam à fila as tarefas \
-             que a onda não fez: {tasks}. O sim é o clique em \"{yes}\": depois dele, repita a \
-             rodada com o mesmo relatório."
+            "A onda {wave} propôs mudar o plano aprovado e ficou fora do commit. Leia a entrega e \
+             pergunte ao usuário com opções \"{yes}\"/\"{no}\" e cabeçalho {code}, explicando o efeito \
+             da mudança. Após o aceite, revise as tarefas pendentes ({tasks}) antes de repetir a \
+             rodada; o clique não resolve acesso nem reescreve tarefa."
         }
         ("round.replan", Locale::EnUs) => {
-            "Wave {wave} says its plan change swaps a decision of the user's. The round does not \
-             go on with it without their yes. Read in the wave's return what the change is and \
-             which decision it swaps. Ask the user a question with options, with \"{yes}\" and \
-             \"{no}\", and put {code} in its header. The header is what says which change the \
-             click decides. Write the question by the answer style: at most three short \
-             sentences. Use no file name, symbol or lab number. Say what changes for the user on \
-             yes and on no. On acceptance, the tasks the wave did not do go back to the queue: \
-             {tasks}. The yes is the click on \"{yes}\": after it, run the round again with the \
-             same report."
-        }
-        ("round.replan_recorded", Locale::PtBr) => {
-            "A onda {wave} mudou o plano sem trocar decisão do usuário, e a rodada seguiu sem \
-             perguntar. A mudança: {change}. Conte-a na entrega, em \"O que eu decidi sozinho\"."
-        }
-        ("round.replan_recorded", Locale::EnUs) => {
-            "Wave {wave} changed the plan without swapping a decision of the user's, and the round \
-             went on without asking. The change: {change}. Tell it in the delivery, under \"What I \
-             decided on my own\"."
+            "Wave {wave} proposed changing the approved plan and was held outside the commit. Read \
+             the delivery and ask the user with options \"{yes}\"/\"{no}\" and header {code}, explaining \
+             the effect of the change. After acceptance, revise pending tasks ({tasks}) before \
+             repeating the round; a click does not resolve access or rewrite a task."
         }
         ("round.no_tasks", Locale::PtBr) => "nenhuma",
         ("round.no_tasks", Locale::EnUs) => "none",
@@ -1058,32 +1039,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.next.copy_file", Locale::PtBr) => "Leia `{path}` e siga as instruções de lá.",
         ("round.next.copy_file", Locale::EnUs) => "Read `{path}` and follow the instructions there.",
         ("round.report", Locale::PtBr) => {
-            "Quando voltarem, cada agente já terá gravado a própria volta na spec, e a rodada a \
-             assume. O de onda grava com `mustard-rt run write delivered`, o revisor com \
-             `mustard-rt run write verdict`. Quando cada agente de onda terminar, rode a rodada de \
-             novo com uma linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, \
-             só com o número da onda. Quando você reprovar a volta de uma onda, mande a linha \
-             `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` no lugar da `USAGE` dela, com o seu \
-             motivo. A rodada segura a volta fora do commit e leva o motivo a um agente novo da \
-             onda. O consumo de cada onda e o seu a rodada mede nos arquivos de \
-             conversa que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
-             `commit` de cada entrega. Quando a volta de um agente não estiver na spec, mande o \
-             agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele."
+            "Ao terminar, o agente grava com `mustard-rt run write delivered`; o revisor, com \
+             `mustard-rt run write verdict`. Sem volta, mande o agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele. \
+             Rode a rodada com `--report '…'`, uma `<USAGE>{\"wave\":1}</USAGE>` por onda. \
+             Antes de aceitar código, leia `run review-wave` e acrescente `REVIEWED` com fingerprint e note; \
+             para recusar, use `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` no lugar da `USAGE`. \
+             A recusa preserva a cópia e passa o motivo a um agente novo. Consumo vem das conversas, nunca de números digitados. Commit usa `commit` da entrega."
         }
         ("round.report", Locale::EnUs) => {
-            "When they come back, each agent has already recorded its own return in the spec, and \
-             the round takes it over. The wave agent records with `mustard-rt run write delivered`, \
-             the reviewer with `mustard-rt run write verdict`. When each wave agent finishes, run \
-             the round again with one line per wave, all in the same `--report '…'`: \
-             `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. When you reject a wave's \
-             return, send the line `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` instead of \
-             its `USAGE`, with your reason. The round keeps the return out of the commit and takes \
-             the reason to a new agent of the wave. The \
-             round measures each wave's usage and yours from the conversation files the platform \
-             records, never from a typed number. The round builds the commit from each delivery's \
-             `commit`. When an \
-             agent's return is not in the spec, have the agent record it again through the tool. \
-             Never assemble it from its prose."
+            "On finishing, the agent records with `mustard-rt run write delivered`; the reviewer, with \
+             `mustard-rt run write verdict`. Missing return: have the agent record it again through the tool. Never assemble it from its prose. \
+             Run the round with `--report '…'`, one `<USAGE>{\"wave\":1}</USAGE>` per wave. \
+             Before accepting code, read `run review-wave` and add `REVIEWED` with fingerprint and note; \
+             to reject, use `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>` instead of `USAGE`. \
+             Rejection preserves the copy and sends the reason to a new agent. Usage comes from conversations, never typed numbers. Commits use the delivery’s `commit`."
         }
         ("round.report.checks", Locale::PtBr) => {
             "A rodada valida o build e as provas pertinentes antes do commit. O fechamento valida \
@@ -1137,19 +1106,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Backlog tasks {tasks} cover no item (`covers`). A wave carries the items its tasks cover as its \
              criteria. So they stay out of the waves, and the tasks that depend on them wait. Record a version \
              of each one, with `replaces` and the items in `covers`, so they enter the assembly."
-        }
-        // O aviso da rodada: o teto de gasto do mês segurou o Jev, e a rodada
-        // seguiu sem ele.
-        ("round.jev_over_budget", Locale::PtBr) => {
-            "O teto de gasto do mês segurou o Jev nesta rodada, porque o gasto do mês mais a chamada passaria \
-             dele. Sem o Jev, a rodada monta as ondas pelos arquivos de cada tarefa, e o pedido leva os itens de \
-             sempre. O teto é jev.monthly_budget_usd no mustard.json, com 10 dólares quando ele não diz."
-        }
-        ("round.jev_over_budget", Locale::EnUs) => {
-            "The monthly budget held the Jev back in this round, because the spend of the month plus the call \
-             would pass it. Without the Jev, the round builds the waves from the files of each task, and the \
-             request carries the usual items. The budget is jev.monthly_budget_usd in mustard.json, 10 dollars \
-             when it says nothing."
         }
         // O aviso da rodada e do fechamento: os agentes do projeto estavam
         // com outro texto e voltaram ao deste programa, ou não puderam voltar.
@@ -1814,7 +1770,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 237, 0x50c3_c7e8_2ba4_0e8f);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 235, 0xadc7_a463_e0c8_332d);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2017,7 +1973,6 @@ mod tests {
             ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
             ("round.replan", &["{wave}", "{yes}", "{no}", "{code}", "{tasks}"][..]),
-            ("round.replan_recorded", &["{wave}", "{change}"][..]),
             ("round.no_tasks", &[][..]),
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
@@ -2052,7 +2007,6 @@ mod tests {
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
-            ("round.jev_over_budget", &[][..]),
             ("round.agents_refreshed", &["{files}"][..]),
             ("round.agents_not_refreshed", &["{detail}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),

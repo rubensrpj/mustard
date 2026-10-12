@@ -28,7 +28,6 @@ use mustard_core::io::jev_gate;
 use serde_json::{Map, Value, json};
 
 use crate::shared::dag::{Judgement, TaskKind};
-use crate::shared::jev_budget::Budget;
 use crate::shared::paths::sensitive_pattern;
 use crate::shared::secret::without_secrets;
 use crate::shared::task_size;
@@ -181,22 +180,18 @@ pub struct JevFilter {
     key: JevKey,
     endpoint: String,
     timeouts: Timeouts,
-    /// O que sobra do teto do mês; sem ele, só nos testes, nada segura a
-    /// chamada.
-    budget: Option<Budget>,
     cache: Option<PathBuf>,
     spec: Option<String>,
 }
 
 impl JevFilter {
-    /// Knowledge uses the same authorization, budget, cache and attempt ledger
+    /// Knowledge uses the same authorization, cache and attempt ledger
     /// as other search decisions, without enabling context or wave judgement.
     pub(crate) fn for_knowledge(root:&Path)->Option<Self> {
         let config=ProjectConfig::load(root);
         if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter("search")) {return None;}
         let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
-        let ledger=mustard_core::io::spend::machine_dir();
-        let mut filter=Self::new(root,loaded.key,Budget::open(root,&config,ledger.as_deref()));
+        let mut filter=Self::new(root,loaded.key);
         let session=crate::shared::spec_state::session_from_env();
         filter.spec=crate::shared::spec_state::active_spec(&root.to_string_lossy(),session.as_deref());
         Some(filter)
@@ -209,23 +204,14 @@ impl JevFilter {
     }
 
     /// O filtro com a chave do projeto, no endereço do serviço: o de
-    /// [`JEV_URL`], ou o que [`URL_ENV`] diz. Toda chamada dele desconta de
-    /// `budget`.
+    /// [`JEV_URL`], ou o que [`URL_ENV`] diz. O saldo é controlado pelo serviço.
     #[must_use]
-    pub fn new(root: &Path, key: JevKey, budget: Budget) -> Self {
+    pub fn new(root: &Path, key: JevKey) -> Self {
         let url = std::env::var(URL_ENV).ok().map(|url| url.trim().to_string()).filter(|url| !url.is_empty());
         Self {
-            budget: Some(budget),
             cache: Some(mustard_core::io::spec_events::spec_root(root).join(".claude/judgements")),
             ..Self::at(key, url.as_deref().unwrap_or(JEV_URL))
         }
-    }
-
-    /// Se o teto do mês já recusou uma chamada deste filtro, ou de uma cópia
-    /// dele.
-    #[must_use]
-    pub fn held_by_budget(&self) -> bool {
-        self.budget.as_ref().is_some_and(Budget::refused)
     }
 
     fn at(key: JevKey, endpoint: &str) -> Self {
@@ -233,7 +219,6 @@ impl JevFilter {
             key,
             endpoint: endpoint.to_string(),
             timeouts: Timeouts { connect: CONNECT_TIMEOUT, response: RESPONSE_TIMEOUT },
-            budget: None,
             cache: None,
             spec: None,
         }
@@ -290,9 +275,8 @@ impl JevFilter {
     /// Todos os pedidos de `payloads` ao mesmo tempo, cada um na sua linha de
     /// execução e todos até `deadline`. Os documentos voltam na ordem dos
     /// pedidos; a falha de um deles é a falha de todos, e vale a do primeiro
-    /// na ordem. É a porta de toda chamada ao serviço: o custo estimado de
-    /// todos os pedidos juntos se reserva no teto do mês antes de o primeiro
-    /// sair, e, passando do que sobra, nenhum sai.
+    /// na ordem. O cache evita novas chamadas para decisões já válidas;
+    /// recusas do serviço seguem para a alternativa nativa de quem chamou.
     fn send_all(&self, payloads: &[String], deadline: Instant) -> Result<Vec<Value>, FilterError> {
         self.send_all_for(payloads, deadline, Purpose::Search)
     }
@@ -300,12 +284,6 @@ impl JevFilter {
     fn send_all_for(&self, payloads: &[String], deadline: Instant, purpose: Purpose) -> Result<Vec<Value>, FilterError> {
         let service = JudgementService::new(self, self.cache.as_deref());
         let cached: Vec<_> = payloads.iter().map(|payload| service.cached(&JudgementRequest { purpose, payload })).collect();
-        if let Some(budget) = &self.budget {
-            let estimate =
-                payloads.iter().zip(&cached).filter(|(_, cached)| cached.is_none()).map(|(payload, _)| cost_micro_usd(estimated_tokens(payload))).sum();
-            budget.reserve(estimate)?;
-        }
-        let initially_cached = cached.iter().map(Option::is_some).collect::<Vec<_>>();
         // Join every job before returning an error: successful physical
         // requests have already been recorded by the service, including
         // when a different batch fails.
@@ -323,16 +301,6 @@ impl JevFilter {
                 .collect();
             let results: Vec<_> =
                 running.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err(FilterError::Network("a request thread failed".into())))).collect();
-            if let Some(budget) = &self.budget {
-                let unused = results
-                    .iter()
-                    .zip(&initially_cached)
-                    .zip(payloads)
-                    .filter(|((result, initial), _)| !**initial && result.as_ref().is_ok_and(|doc| doc.pointer("/_mustard/cached") == Some(&Value::Bool(true))))
-                    .map(|(_, payload)| cost_micro_usd(estimated_tokens(payload)))
-                    .sum();
-                budget.release_cached(unused);
-            }
             results.into_iter().collect()
         })
     }
@@ -344,9 +312,6 @@ impl WaveJudge for JevFilter {
     }
     fn judge_items(&self, board: &ItemsBoard) -> Result<ItemsJudged, FilterError> {
         JevFilter::judge_items(self, board)
-    }
-    fn held_by_budget(&self) -> bool {
-        JevFilter::held_by_budget(self)
     }
 }
 
@@ -877,12 +842,6 @@ fn wave_key(n: u64) -> String {
 pub(crate) struct WavesJev {
     pub(crate) filter: Option<std::sync::Arc<dyn WaveJudge>>,
     pub(crate) key_in_git: bool,
-    pub(crate) over_budget: bool,
-}
-impl WavesJev {
-    pub(crate) fn held_by_budget(&self) -> bool {
-        self.over_budget || self.filter.as_ref().is_some_and(|filter| filter.held_by_budget())
-    }
 }
 pub(crate) fn for_waves(root: &Path, spec: &str) -> WavesJev {
     for_purpose(root, "wave-planning", Some(spec))
@@ -893,27 +852,23 @@ pub(crate) fn for_context(root: &Path, spec: &str) -> WavesJev {
 fn for_purpose(root: &Path, purpose: &str, spec: Option<&str>) -> WavesJev {
     let config = ProjectConfig::load(root);
     if cfg!(test) {
-        return WavesJev { filter: None, ..purpose_filter(root, &config, None, None, purpose, spec) };
+        return WavesJev { filter: None, ..purpose_filter(root, &config, None, purpose, spec) };
     }
-    let ledger = mustard_core::io::spend::machine_dir();
-    purpose_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok(), ledger.as_deref(), purpose, spec)
+    purpose_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok(), purpose, spec)
 }
 #[cfg(test)]
-fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger: Option<&Path>) -> WavesJev {
-    purpose_filter(root, config, env, ledger, "wave-planning", None)
+fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> WavesJev {
+    purpose_filter(root, config, env, "wave-planning", None)
 }
-fn purpose_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger: Option<&Path>, purpose: &str, spec: Option<&str>) -> WavesJev {
+fn purpose_filter(root: &Path, config: &ProjectConfig, env: Option<String>, purpose: &str, spec: Option<&str>) -> WavesJev {
     if !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose)) {
         return WavesJev::default();
     }
     match key_in(root, config, env) {
         Ok(loaded) => {
-            let budget = Budget::open(root, config, ledger);
-            // Even a spent budget can reuse a valid cached answer. Missing
-            // answers still pass through the existing reservation gate.
-            let mut filter = JevFilter::new(root, loaded.key, budget);
+            let mut filter = JevFilter::new(root, loaded.key);
             filter.spec = spec.map(str::to_string);
-            WavesJev { over_budget: filter.budget.as_ref().is_some_and(Budget::is_spent), filter: Some(std::sync::Arc::new(filter)), ..WavesJev::default() }
+            WavesJev { filter: Some(std::sync::Arc::new(filter)), ..WavesJev::default() }
         }
         Err(error) => WavesJev { key_in_git: error == FilterError::KeyInGit, ..WavesJev::default() },
     }
@@ -1980,6 +1935,39 @@ mod tests {
     }
 
     #[test]
+    fn missing_credit_is_recorded_once_and_a_later_decision_can_recover_and_cache() {
+        let service = FakeService::start(|number, body| {
+            if number == 0 {
+                Reply::json(402, &json!({"error": format!("credit unavailable {SECRET}")}))
+            } else {
+                Reply::json(200, &sure_answer(body))
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let mut filter = service.filter();
+        filter.cache = Some(dir.path().into());
+        let asked = request(vec![candidate(1)]);
+        let error = filter.filter(&asked).unwrap_err();
+        assert_eq!(error, FilterError::Refused { status: 402 });
+        assert_eq!(error.reason(), "no_credit");
+        assert_eq!(service.received().len(), 1, "a credit refusal is not retried");
+
+        let recovered = filter.filter(&asked).unwrap();
+        assert_eq!(recovered.usage.requests, 1, "a failed decision was not cached");
+        let cached = filter.filter(&asked).unwrap();
+        assert_eq!(cached.usage.requests, 0);
+        assert_eq!(service.received().len(), 2, "a successful decision is reused");
+
+        let text = std::fs::read_to_string(dir.path().join("attempts.ndjson")).unwrap();
+        assert!(!text.contains(SECRET) && !text.contains("credit unavailable"));
+        let rows: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0]["status"].clone(), rows[0]["attempt"].clone(), rows[0]["error"].clone()), (json!(402), json!(1), json!("no_credit")));
+        assert!(rows[0]["input_tokens"].is_null(), "unreported usage stays unknown");
+        assert_eq!(rows[1]["status"], 200);
+    }
+
+    #[test]
     fn too_many_requests_repeats_twice_and_gives_up() {
         let service = FakeService::start(|_, _| Reply { status: 429, headers: vec![("Retry-After", "0".to_string())], body: "{}".to_string() });
         let error = service.filter().filter(&request(vec![candidate(1)])).unwrap_err();
@@ -2264,12 +2252,12 @@ mod tests {
                 None,
                 Locale::PtBr,
                 &loaded,
-                &|at, config| crate::shared::search_door::assembled(at, config, env.clone(), None),
+                &|at, config| crate::shared::search_door::assembled(at, config, env.clone()),
                 &mut warnings,
             );
 
             assert_eq!(searched.is_some(), expected, "the search: {name}");
-            assert!(waves_filter(root.path(), &loaded, env.clone(), None).filter.is_none(), "search never enables wave assembly: {name}");
+            assert!(waves_filter(root.path(), &loaded, env.clone()).filter.is_none(), "search never enables wave assembly: {name}");
         }
     }
 
@@ -2301,7 +2289,7 @@ mod tests {
                 assert!(mustard_core::platform::git::run(root.path(), &["init", "-q"]).ok);
                 assert!(mustard_core::platform::git::run(root.path(), &["add", "mustard.json"]).ok);
             }
-            let waves = waves_filter(root.path(), &ProjectConfig::load(root.path()), env.map(str::to_string), None);
+            let waves = waves_filter(root.path(), &ProjectConfig::load(root.path()), env.map(str::to_string));
             assert_eq!(waves.filter.is_some(), filter, "the filter: {name}");
             assert_eq!(waves.key_in_git, flagged, "the git flag: {name}");
         }
@@ -2569,101 +2557,6 @@ mod tests {
         assert!(sent.contains("Fix the login."), "the rest of the text still goes");
     }
 
-    // -- o teto de gasto do mês ----------------------------------------------
-
-    /// Abaixo do teto as três chamadas saem — a busca, a montagem e a escolha
-    /// dos itens —; passando do que sobra no mês nenhuma sai, e o serviço não
-    /// recebe pedido nenhum; e o que sobra se gasta a cada chamada do mesmo
-    /// processo, a estimativa de cada uma contra o que restou. A montagem das
-    /// ondas sabe que o teto segurou o Jev só depois da chamada recusada.
-    #[test]
-    fn the_calls_go_out_only_while_the_estimate_fits_what_is_left_of_the_month() {
-        let start = |left: u64| {
-            let service = FakeService::start(|_, body| {
-                if body["questions"].get("i11").is_some() {
-                    chances_answer(body, |_| 0.5)
-                } else if body["questions"].as_object().is_some_and(|q| q.keys().any(|key| key.starts_with("tipo_") || key.starts_with("blk_"))) {
-                    Reply::json(200, &judged_answer())
-                } else {
-                    Reply::json(200, &sure_answer(body))
-                }
-            });
-            let filter = JevFilter { budget: Some(Budget::of(left)), ..service.filter() };
-            (service, filter)
-        };
-        let items = ItemsBoard { tasks: vec![board_task(5, &["a.rs"])], items: vec![board_item(11)] };
-        let search = request(vec![candidate(1), candidate(2)]);
-
-        let held = |filter: &JevFilter| WavesJev { filter: Some(std::sync::Arc::new(filter.clone())), ..WavesJev::default() }.held_by_budget();
-
-        let (service, filter) = start(10_000_000);
-        assert!(filter.filter(&search).is_ok() && filter.judge_backlog(&board()).is_ok() && filter.judge_items(&items).is_ok());
-        assert_eq!(service.received().len(), 5, "search, two profiles, interference and context reached the service");
-        assert!(!held(&filter), "no call was refused");
-
-        let (service, filter) = start(1);
-        assert!(!held(&filter), "nothing is held before a call");
-        assert_eq!(filter.filter(&search).unwrap_err(), FilterError::OverBudget);
-        assert!(held(&filter), "the refused call holds the Jev");
-        assert_eq!(filter.judge_backlog(&board()).unwrap_err(), FilterError::OverBudget);
-        assert_eq!(filter.judge_items(&items).unwrap_err(), FilterError::OverBudget);
-        assert!(service.received().is_empty(), "nothing went to the service: {:?}", service.received());
-
-        let one: u64 = backlog_payloads(&board()).unwrap().iter().map(|p| cost_micro_usd(estimated_tokens(p))).sum();
-        let (service, filter) = start(one + one / 2);
-        assert!(filter.judge_backlog(&board()).is_ok());
-        assert_eq!(filter.judge_backlog(&board()).unwrap_err(), FilterError::OverBudget, "the first call took its estimate");
-        assert_eq!(service.received().len(), 3, "only the first planning operation went out");
-    }
-
-    /// A busca dividida em vários pedidos reserva a estimativa de todos antes
-    /// de o primeiro sair: faltando um milionésimo para o último, nenhum chega
-    /// ao serviço; com a soma exata, todos saem, e nada mais sobra no mês.
-    #[test]
-    fn a_divided_search_reserves_every_request_before_the_first_goes_out() {
-        let (_project, asked) = big_request(150, 40);
-        let context = Context::of(&asked);
-        let batches = divide(&asked, &context).unwrap();
-        assert!(batches.len() >= 2, "the search is divided: {}", batches.len());
-        let all: u64 = batches.iter().map(|batch| cost_micro_usd(estimated_tokens(&independent_body(&batch.state, &context, &batch.at).to_string()))).sum();
-        let start = |left: u64| {
-            let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
-            let budget = Budget::of(left);
-            let filter = JevFilter { budget: Some(budget.clone()), ..service.filter() };
-            (service, filter, budget)
-        };
-
-        let (service, filter, _) = start(all - 1);
-        assert_eq!(filter.filter(&asked).unwrap_err(), FilterError::OverBudget);
-        assert!(service.received().is_empty(), "no part went out: {}", service.received().len());
-
-        let (service, filter, budget) = start(all);
-        assert!(filter.filter(&asked).is_ok());
-        assert_eq!(service.received().len(), batches.len(), "every part went out");
-        assert!(budget.is_spent(), "the reservation took the whole estimate");
-    }
-
-    /// O teto já gasto vale como sem chave na montagem das ondas: sem filtro e
-    /// sem aviso de chave. Com sobra, o filtro entra.
-    #[test]
-    fn spent_budget_preserves_the_adapter_for_cached_judgements() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            root.path().join("mustard.json"),
-            r#"{"ai":{"fallback":true},"judgement":{"wave-planning":{"filter":"jev"}},"jev": {"monthly_budget_usd": 0}}"#,
-        )
-        .unwrap();
-        let spent = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
-        assert!(spent.filter.is_some() && spent.over_budget && !spent.key_in_git);
-
-        std::fs::write(
-            root.path().join("mustard.json"),
-            r#"{"ai":{"fallback":true},"judgement":{"wave-planning":{"filter":"jev"}},"jev": {"monthly_budget_usd": 5}}"#,
-        )
-        .unwrap();
-        let open = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
-        assert!(open.filter.is_some());
-    }
     #[test]
     fn intrinsic_profiles_survive_reassignment_but_change_when_the_full_task_changes() {
         let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));

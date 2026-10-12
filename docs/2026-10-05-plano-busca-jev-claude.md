@@ -172,17 +172,17 @@ Contratos e problemas confirmados:
 
 - A busca do hook já chama Jev somente quando a triagem é parcial e há candidatos; consultas repetidas idênticas possuem memória por sessão/agente. Apesar desses controles, a seleção do mapa reúne listas inteiras sem teto de candidatos. Cada candidato leva declaração completa, documentação e histórico; a divisão em lotes amplia as requisições. Limitar somente a resposta entregue ao Claude não reduz essa entrada paga.
 - A memória existente evita nova intervenção na mesma busca daquele agente; não guarda julgamentos reutilizáveis entre agentes, sessões ou ondas. Cache de decisão precisa de conteúdo/snapshot, objetivo, consulta/flags, modelo e versão das perguntas; compartilhar uma resposta entre conversas não significa compartilhar tokens de contexto do Claude.
-- `jev.monthly_budget_usd` existe e tem padrão US$ 10. A configuração atual deste checkout não declara esse campo nem `search.filter`. O padrão é mensal, sem teto diário/spec/busca. A reserva é atômica entre threads do mesmo processo, mas processos concorrentes podem ler o mesmo saldo antes de registrar gastos.
+- Atualização em 12/10/2026: o teto mensal interno foi removido por decisão do usuário. O histórico mede consumo, sem bloquear chamadas. Configurações antigas de `jev.monthly_budget_usd` são preservadas como dados sem efeito. A recusa real do provedor mantém a operação nativa e fica registrada; falta de crédito não dispara repetição da mesma tentativa.
 - Se um lote falha, `send_all` devolve erro do conjunto. A medição do chamador não preserva o uso dos lotes que tiveram sucesso antes dessa falha; a reserva não reconcilia a diferença entre estimativa e uso efetivo. Uso ausente aparece como zero no parser. São lacunas de contabilização a investigar na conciliação, não prova de que explicam todo o valor faltante.
-- `search.filter: "none"` e orçamento mensal zero já impedem Jev também na formação das ondas e na escolha dos itens, pois a habilitação é compartilhada. Mantêm os caminhos locais de fallback. Ainda não existe nessa porta um controle independente para desligar só o Jev das buscas e preservá-lo nas ondas.
+- Atualização em 12/10/2026: busca, planejamento de ondas e contexto têm habilitação independente por finalidade. A chave sozinha não ativa chamadas, e o antigo orçamento mensal zero não as impede.
 
-Direção corrigida após o esclarecimento do usuário: a solução deve reduzir trabalho sem utilidade, preservando o Jev onde ele melhora a condução da spec. Os controles de orçamento existentes são uma característica do runtime; não propor novos tetos diários/spec como resposta principal. A entrada deixa de ser determinada por “todos os candidatos cabem em vários lotes” e passa a ser determinada pela pergunta, pelo escopo e pelas evidências que permitem respondê-la.
+Direção corrigida após o esclarecimento do usuário: a solução deve reduzir trabalho sem utilidade, preservando o Jev onde ele melhora a condução da spec. O antigo controle de orçamento foi removido; não propor novos tetos diários/spec como resposta principal. A entrada deixa de ser determinada por “todos os candidatos cabem em vários lotes” e passa a ser determinada pela pergunta, pelo escopo e pelas evidências que permitem respondê-la.
 
 A entrega 2 permanece P0 por redesenhar a decisão da busca: ferramenta original e scan fazem recuperação; Jev julga pertinência onde isso muda a próxima ação. A quantidade recuperada depende da qualidade e cobertura da seleção, não de um número arbitrário de candidatos. O agente conserva acesso à busca original e à expansão do conteúdo quando houver evidência faltante. As políticas detalhadas por etapa estão na seção 6.
 
 Os usos de ondas custaram pouco neste recorte, mas também precisam evitar reavaliação desnecessária. A melhoria deve ser medida por contexto descoberto, tarefa/spec aceita, retrabalho e custo total Claude + Jev. Menos requisições isoladamente não demonstra ganho. Conciliar registros e fornecedor continua necessário para explicar o gasto; essa medição não depende de criar novos limites. Nenhuma configuração foi alterada nem chamada paga ao Jev foi feita nesta auditoria.
 
-Referências: [registro da spec](/home/rubens/projetos/atiz/mustard/.claude/spec/levantamento-sem-script/spec.ndjson), [seleção sem teto](/home/rubens/projetos/atiz/mustard/packages/core/src/io/map_search.rs:930), [entrada do julgamento](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/search_door.rs:335), [envio e reserva](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/jev.rs:311), [orçamento por processo](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/jev_budget.rs:1), [teto padrão](/home/rubens/projetos/atiz/mustard/packages/core/src/io/jev_gate.rs:68) e [memória por agente](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/word_search.rs:303).
+Referências: [registro da spec](/home/rubens/projetos/atiz/mustard/.claude/spec/levantamento-sem-script/spec.ndjson), [seleção sem teto](/home/rubens/projetos/atiz/mustard/packages/core/src/io/map_search.rs:930), [entrada do julgamento](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/search_door.rs:335), [envio e registro](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/jev.rs:311) e [memória por agente](/home/rubens/projetos/atiz/mustard/apps/rt/src/shared/word_search.rs:303).
 
 ## 3. Processo desejado
 
@@ -620,7 +620,7 @@ Referências do acoplamento atual: [interface de busca](/home/rubens/projetos/at
 
 ### Entrega 1 — contratos corretos e medição da utilidade do Jev (P0)
 
-Arquivos: `reading.rs`, `write_gate.rs`, `word_search.rs`, `word_search/ruler.rs`, `hook_output.rs`, `jev.rs`, `jev_budget.rs`, `jev_gate.rs`, medição/persistência de chamadas e contrato de hooks.
+Arquivos: `reading.rs`, `write_gate.rs`, `word_search.rs`, `word_search/ruler.rs`, `hook_output.rs`, `jev.rs`, `jev_gate.rs`, medição/persistência de chamadas e contrato de hooks.
 
 Entregar proteção para chamadas compostas e flags desconhecidas, distinção mapa/ocorrência, intervalos exatos e snippets centrados no hit. Iniciar compactação PostToolUse com feature flag e teste na versão real do Claude Code. A capacidade existe na documentação atual, mas exige objeto compatível com a ferramenta e prova de que a substituição foi aceita. [Contrato oficial de saída](https://code.claude.com/docs/en/hooks).
 
@@ -875,3 +875,173 @@ Os 24 testes existentes executados nesta revisão verificam a prosa distribuída
 **Avaliação honesta:** há oportunidades concretas de reduzir redescoberta, turnos e retrabalho nos Markdown. O tamanho estático deles, isoladamente, não explica os 106,7 milhões de tokens registrados nas buscas do Jev. A maior economia provável continua na necessidade da chamada, recuperação dos candidatos e estado enviado. As instruções precisam acompanhar essa correção para que os agentes aproveitem o contexto preparado; percentual de ganho continua dependente de comparação real.
 
 Na preparação para execução pelo Claude, foram inspecionados os deltas até `32fcf441` de resposta atômica, retomada, campos opcionais e prioridade, e o complemento de orientação de fechamento em `05e1b1f2`, sem nova execução de testes nem alteração de código. A autoria da implementação e a validação independente estão definidas na seção 0.
+
+## 10. Auditoria da sessão real de 12/10/2026
+
+Esta seção registra o que foi conferido no produto `0.2.13` e na spec `pi-cardapio-original` do portal-florestal-backend. Não significa que as correções abaixo já estejam instaladas. O backend, sua spec e suas ondas em execução não foram alterados nesta auditoria.
+
+### 10.1. Skills: geração, adoção e entrega
+
+O scan atual grava declarações, relações, recursos, padrões e histórico no mapa do projeto; não gera `SKILL.md` de padrões. O antigo agrupamento por sufixos foi retirado. As nove skills locais do Puzzle têm marca histórica `metadata.generated_by: scan`, mas também `source: manual` e uma nota de adoção e reescrita manual. Devem ser preservadas como conteúdo do usuário, sem regeneração nem exclusão pela marca antiga.
+
+Hoje o plano procura skills existentes pela descrição e pode avisar `task-could-name-a-skill`. O pedido de execução inclui apenas a skill explicitamente nomeada em `task.skill`: nome, descrição e caminho absoluto para leitura, sem o corpo. O campo local `paths` dessas skills não é aplicado por essa seleção. As sete entradas das ondas 12 a 18 contêm `taskset`, mas não nomeiam `puzzle-schema-pattern` nem `puzzle-type-pattern`. Isso comprova ausência no pedido, não comprova que nenhum agente tenha lido a skill por outra via.
+
+Regras obrigatórias devem ser entregues deterministamente, separadas de procedimentos opcionais. O runtime já lê `CLAUDE.md`, `.claude/CLAUDE.md` e regras da raiz em `.claude/rules`, filtradas por caminhos. Uma melhoria futura deve permitir identificar todas as skills aplicáveis, preservar escolha explícita e informar quais foram efetivamente entregues. Não se deve despejar todas as skills de todas as áreas em toda onda nem transformar um padrão observado em obrigação sem uma regra do projeto. A documentação oficial distingue os corpos de skills, carregados quando usados, das instruções do projeto: [skills](https://code.claude.com/docs/en/skills), [regras](https://code.claude.com/docs/en/memory).
+
+### 10.2. Evidências e correções pontuais
+
+- Cinco das sete ondas, 13, 14, 15, 17 e 18, não alteraram arquivos. Seus recibos de uso somam 317.650 tokens de entrada, saída e criação de cache, além de 3.836.859 tokens de leitura de cache. O total processado é 4.154.509; nenhum desses números representa cobrança da assinatura nem tamanho de uma única janela de contexto. Uma validação sem alteração pode ser útil; repetir bloqueio conhecido sem mudança de condição é o defeito demonstrado.
+- A entrega da onda 17 declara que não refez a consulta ao bucket. Portanto, o bloqueio citado ali é histórico e não prova o acesso no instante da nova entrega. Não há fundamento para gravá-lo como verificação atual.
+- A onda 16 tem recibo nativo `stage_run` 1039, de 08:27:42, com `stage: criterion-proof`, `result: pass`, saída zero e comando Jest iniciado por `taskset -c 0-3`, anterior ao commit. A lista `proofs` vazia da entrega não prova ausência de execução: ela lista provas adicionais, enquanto os critérios também são executados pela rodada. O gravador omitia `taskset` entre comandos aceitos; a correção acrescenta o comando e uma regressão que continua recusando nomes de testes apresentados como comando.
+- A retomada enumerava ondas vazias que a rodada já desconsiderava. A correção usa a mesma projeção `planned_waves`, com regressão para uma onda 9 vazia e uma onda 18 vigente.
+- O teto mensal interno do Jev é retirado a pedido do usuário. Gastos históricos e a opção antiga `jev.monthly_budget_usd` não impedem chamadas. Cache, autorização, seleção criteriosa e medição permanecem. Uma recusa de crédito do serviço causa alternativa nativa, sem repetir a mesma chamada; uma decisão posterior pode voltar ao Jev após recarga. Testes cobrem busca, montagem de ondas, escolha de contexto, registros e recuperação, sem gasto real no serviço.
+
+### 10.3. Prioridades restantes e prova exigida
+
+1. **Bloqueios antes do despacho.** Representar dependências de acesso, dados e decisão como estado persistente da tarefa. Uma devolução bloqueada não deve virar tarefa pronta sem evidência de mudança da condição ou reescrita autorizada. Separar tarefas mistas antes de despachar. Comprovar que uma tarefa bloqueada não reaparece como onda equivalente e que tarefas independentes continuam.
+2. **Revisão antes do commit.** Vincular a revisão ao diff efetivo e à revisão do código; mudar o diff invalida a revisão. Expansão de escopo hoje é aviso, não impedimento. A aprovação não deve se resumir ao envio de `<USAGE>`. Provar recusa, correção e nova revisão, mantendo as verificações nativas anteriores ao commit.
+3. **Mudança de plano e fatos atuais.** O bloqueio de decisão atual depende do preenchimento de `changes_decision`; sua ausência não comprova autorização. Mudanças em regras, valores e critérios precisam de origem verificável. Fatos externos devem registrar fonte, momento e se são observados ou históricos, sem renovar a data de uma observação copiada. Testar mudança de semântica sem esse campo e relatório apoiado somente em resumo antigo.
+4. **Regras e referências consistentes.** Entregar regras obrigatórias ao executor e ao revisor, incluindo regras por área. O uso de dados e a limpeza de arquivos devem seguir a mesma autorização e configuração em todas as ondas. Há duplicação real de `LandRow` e `CapacityRow` em dois serviços; contagens por expressão regular não estabelecem alcance da migração para schemas nem autorizam refatoração global.
+5. **Despacho e provas claros.** O hook substitui a prosa pelo pedido canônico; não se confirmou truncamento arbitrário. Avisar antes da substituição e oferecer instruções adicionais persistidas e rastreáveis, sujeitas às regras do projeto. Mostrar na entrega os recibos das provas executadas, diferenciando critérios, provas adicionais e relato sem execução.
+6. **Menos ruído e medição honesta.** Resumir a rodada por resultado, impedimento e próximo passo; deixar detalhes completos consultáveis. Avisos inalterados de pendências e branches devem reaparecer quando houver ação ou mudança relevante. Separar tokens de entrada, saída, leitura e criação de cache; mostrar tentativas, falhas e recuperação. Economia total requer trabalho equivalente com e sem Mustard, não apenas compressão do RTK.
+
+Esses itens permanecem pendentes até implementação e testes específicos. Jev pode ajudar a classificar relevância e compatibilidade; não substitui autorização do usuário, detecção de bloqueios, comprovação de testes ou aprovação do diff.
+
+### 10.4. Escopo integral e acompanhamento das correções
+
+O pedido abrange todos os relatos, não apenas o teto do Jev, `taskset` e a retomada. Estados abaixo distinguem implementação local, correção já existente e validação ainda necessária. Uma alteração local não está instalada nem publicada por constar nesta tabela.
+
+| Solicitação | Situação conferida em 12/10 |
+| --- | --- |
+| Reunir falhas de forma em uma recusa | Já existe em 0.2.13, com regressão de campos, clareza e forma juntos. |
+| `answer --facts` sem versão manual do ponto | Já existe em 0.2.13; resposta e fechamento atômicos. |
+| Evitar revisão repetida de bloco sem mudança | Já existe em 0.2.13, com teste dos três blocos unitários. |
+| Corrigir contrato de saída da busca MCP | Correção anterior em 0.2.13; manter testes do contrato no pacote instalado. |
+| Opção duplicada com erro JSON útil | Já existe em 0.2.13, com teste da CLI. |
+| Resolver códigos estáveis em leitura, substituição e referências | Correção anterior; suíte de eventos precisa permanecer verde. Código identifica o item; número identifica a versão. |
+| Fechar ponto sem parecer outro ponto | Correção anterior; preservar identidade e histórico de versões. |
+| Mascarar só leitura de config sem cancelar comandos encadeados | Já existe em 0.2.13; regressão preserva pipes, sufixos e execução única. |
+| Orquestrador: avisos em 200 mil, depois a cada 100 mil | Já existe em 0.2.13, sem alterar a regra para agentes. |
+| Agente: 150 mil impede nova tarefa, não interrompe tarefa/teste/resumo | Já existe em 0.2.13, com testes de entrega após conclusão. |
+| Prisma desatualizado não virar retrabalho do agente | Já existe em 0.2.13: preparação declarada e recusa de ambiente sem reprovar a onda. |
+| Aceitar prova com `taskset` e usar a onda vigente na retomada | Primeira entrega, PR #309. |
+| Retirar teto mensal do Jev, manter critério, cache e alternativa nativa | Primeira entrega, PR #309. Saldo do provedor não é inferido pelo gasto local. |
+| Não repetir tarefas impedidas nem misturadas | Segunda entrega: `blocked_by` em tarefa/retorno, exclusão determinística da seleção nativa e do quadro enviado ao Jev, bloqueio também das dependentes. Reescrita da tarefa limpa o impedimento; aceite de plano sozinho não o limpa. |
+| Não aceitar mudança de plano só porque `changes_decision` foi omitido | Segunda entrega: toda proposta de mudança espera a testemunha do aceite; ondas independentes seguem. |
+| Revisar cada diff antes do commit | Segunda entrega: `review-wave`, recibo nativo e `REVIEWED` com fingerprint e conclusão. `USAGE` não aprova; alterar entrega, arquivos, regras aplicáveis, itens combinados ou base relevante exige nova leitura. O comando mostra escopo planejado, arquivos adicionais e regras atuais. Não se afirma que um recibo prova a qualidade intelectual da revisão. |
+| Entregar skills por área, preservar manuais e antigas adotadas | Segunda entrega: seleção por `paths`, além de `task.skill`, sem corpo completo nem procedimentos com `disable-model-invocation`. O scan não gera essas skills. |
+| Regra zod e compartilhamento PI/PCP | Duplicação confirmada; não foi alterado código do backend em uso. As skills locais possuem escopos específicos: a seleção por caminhos não transforma regra de schemas em obrigação para todo serviço. O alcance precisa constar da regra/spec do projeto e ser conferido no diff. |
+| Não descartar instruções adicionais no despacho | Segunda entrega: gravar o suplemento no envio antes do despacho, inclusive reenvio e mensagem de conserto; erro de gravação impede a perda silenciosa. A instrução não autoriza ampliar escopo nem substituir regra. |
+| Provas realmente visíveis, distintas do relato | Segunda entrega: recibos `stage_run/criterion-proof` passam a registrar critério e ondas e entram no detalhe do painel. Lista `proofs` da entrega continua sendo de comandos adicionais. Ausência de registro antigo não pode ser inventada retroativamente. |
+| Fato externo copiado não virar fato atual | Instrução de verificação atual, momento, fonte e ressalva incorporada ao agente. Ainda falta comprovação nativa independente para afirmações externas arbitrárias; o binário não pode garantir a verdade de prosa livre. |
+| Regra uniforme para dados do bucket e limpeza | Instrução comum distribuída aos agentes, respeitando origem já autorizada, autenticação e leitura mínima. Limpeza e acesso reais exigem recibos/checagem; não foram executados no backend durante a auditoria. |
+| Pendências/branches inalteradas não repetir na retomada | Segunda entrega: deduplicação por sessão e conteúdo/identidade; estado alterado ou sessão nova volta a avisar. Só avisos efetivamente entregues recebem marca. |
+| Relatórios curtos, próximos passos claros | Mensagens de replanejamento e instruções recorrentes da rodada reduzidas; mapa de sessão compactado para preservar retomada dentro de 3 kB. Ainda avaliar saída completa de rodada/retomada com casos reais; detalhes devem continuar acessíveis por leitura específica. |
+| Consumo, falhas, Jev, RTK e economia compreensíveis | Painel 0.2.13 já separa medição, estimativas, compressão RTK e economia total não comprovada. Conferir atribuição de agentes, tentativas/falhas e diretórios em todos os projetos após instalar. |
+| Configurações no Mods | Aba existente em 0.2.13; teto retirado não precisa de controle novo. Manter configuração de modelo, Jev, RTK e atributos sem exibir chave. |
+| Painel amigável, definições, input e texto de ondas, escuro/amarelo | Layout e navegação já alterados em 0.2.13; validar a experiência no host real Windows/SSH. Contratos automatizados não substituem essa verificação visual. |
+| Statusline compacta e acesso ao painel | Implementação anterior; conferir apresentação real junto ao Mods sem reintroduzir informação detalhada na barra. |
+| Publicação externa só sob pedido, projeto/spec/análises com mesmo layout | Implementação anterior; nenhuma rodada ou retomada passa a publicar. Configuração permanece em `mustard.json`. |
+| Scan agnóstico: busca nativa, mapa, funções, comentários, git, grafo, modelo e Jev criteriosos | Arquitetura anterior preservada. Novos ganhos de acerto/custo exigem repetir os cenários Florestal e Sialia com respostas de referência e medir leitura adicional; não foram presumidos a partir de testes unitários. |
+| Instalador, atualização, dev/main e releases nos três sistemas | Primeira entrega tem CI próprio; segunda entrega ainda precisa da suíte completa e CI do seu HEAD. Nenhuma publicação pode ser chamada de completa enquanto houver pendência de validação. |
+
+As verificações de segurança não usam Jev para decidir autorização, bloquear tarefas conhecidas, comprovar execução ou aceitar código. Jev permanece um classificador/seletor de candidatos ambíguos. A correção dos desperdícios identificados começa no estado e nos contratos do binário, não em aumentar chamadas de IA.
+
+### 10.5. Próxima etapa autorizada: Jev na orquestração
+
+Após concluir as correções, aplicar julgamentos tipados às ambiguidades que possam causar retrabalho: agrupamento de tarefas prontas, seleção de evidências/procedimentos complementares e classificação das devoluções. Dependências, reservas, bloqueios conhecidos, regras obrigatórias, autorização, execução de testes e aprovação do diff permanecem verificações nativas. Perguntas atômicas recebem apenas o estado pertinente; cache acompanha conteúdo e rubrica, falhas usam a alternativa nativa e não viram decisões negativas permanentes. Medir chamadas, tokens, falhas e custo em relação ao trabalho aceito, sem confundir compressão com economia total.
+
+O scan atual não gera `SKILL.md`. A etapa deve avaliar a passagem de padrões observados no banco para orientações reutilizáveis com fontes e validade, preservando skills manuais. Reconhecer repetição não basta para impor um padrão como regra. Não declarar essa geração pronta apenas porque skills antigas conservam a marca histórica do scan.
+
+## 11. Agentes e skills preparados pelo projeto e pela tarefa
+
+Atualização de escopo em 12/10/2026: o usuário autorizou implementar esta etapa e sua integração com Codex. Quando um modelo redigir orientação, usar a sessão atual e seus subagentes; não abrir outro processo de `claude`, `codex`, usar `claude -p` ou exigir chave de API para essa redação. Jev continua com sua credencial já configurada, exclusivamente para julgamentos tipados. Esta seção especifica a etapa; sua existência não significa que ela já esteja implementada.
+
+### 11.1. Diagnóstico e finalidade
+
+O instalador atual semeia somente `mustard-wave` e `mustard-review` (`packages/core/src/platform/seeds.rs`). `io/wave_prompt.rs` atribui `agent = "wave"` a toda onda. O campo `agent` dos itens é orientação técnica em texto, não uma seleção de executor. O scan mantém declarações, relações, unidades de projeto, recursos e sinais de tecnologia. A montagem usa padrões de importação, exemplos e receitas; ainda não converte esses dados em agentes e skills reutilizáveis.
+
+A correção local desta entrega seleciona skills existentes pelos arquivos da tarefa, além das explicitamente nomeadas. A geração antiga por agrupamento de nomes foi retirada: não basta reinstalá-la. A nova etapa precisa produzir procedimentos úteis, sustentados por evidências atuais, sem transformar frequência no código em decisão do usuário.
+
+O objetivo é preparar melhor cada onda e também sua formação: reduzir descoberta repetida, instruções irrelevantes, violações de regras e devoluções. O nome de um especialista sozinho não melhora o modelo nem comprova economia.
+
+### 11.2. Ciclo acordado: descobrir, reutilizar, atualizar ou criar
+
+1. Durante o levantamento, o scan oferece capacidades e procedimentos candidatos para orientar a decomposição da spec. Isso não altera seu escopo aprovado.
+2. Depois da aprovação, preparar os perfis das tarefas: primeiro procurar agentes e skills existentes; reutilizar os compatíveis e atuais, atualizar somente o material gerenciado que perdeu validade e criar o que falta.
+3. Antes de formar/despachar uma onda, conferir rapidamente a revisão da tarefa, fontes, regras, tecnologias e ferramentas. Sem mudança pertinente, reutilizar a preparação, sem nova chamada a modelo.
+4. Uma mudança em outra área do projeto não invalida todo o catálogo. Mudança em fonte citada invalida o trecho dependente e seus perfis consumidores.
+5. Após a entrega aceita e revisada, atualizar evidências e lições verificadas. Um relato do agente, ou uma repetição de resumo antigo, não vira fato automaticamente.
+
+Reutilizar o agente significa reutilizar sua definição e preparo. Ondas distintas continuam com contexto delimitado; continuar a mesma conversa serve ao conserto da mesma onda, não a acumular todas as tarefas do projeto.
+
+### 11.3. Separar fatos, regras, procedimentos e execução
+
+| Material | Origem e função |
+| --- | --- |
+| Evidência do scan | Arquivo, símbolo, linhas atuais, importação, relação, manifesto, versão e hash. Indica também limitações e referências não resolvidas. |
+| Regra obrigatória | Instrução explícita do projeto/usuário. Sempre entregue quando aplicável; não passa por descarte do Jev. |
+| Padrão observado | Prática encontrada em fontes atuais, com exemplos e contraexemplos. Orientação descritiva, sem autoridade para impor migração. |
+| Skill | Procedimento recorrente, com gatilho, escopo, referências, comandos e resultado esperado. Carregar detalhes conforme a necessidade. |
+| Perfil de agente | Responsabilidade, ferramentas efetivamente disponíveis, limites, skills pertinentes e contrato de entrega. |
+| Preparação da tarefa | Seleção concreta de perfil, regras, skills, evidências e testes candidatos, vinculada à versão da tarefa. |
+
+As definições ficam independentes de Claude/Codex no núcleo. Adaptadores produzem os arquivos e pedidos próprios de cada host. Skills manuais e agentes do usuário são preservados; nomes iguais, escopos divergentes ou instruções incompatíveis precisam ser identificados, nunca sobrescritos silenciosamente.
+
+### 11.4. Especialização útil e formação das ondas
+
+| Exemplo de perfil | O que a preparação precisa identificar |
+| --- | --- |
+| Persistência | ORM efetivamente usado, schema/migrações, consultas, transações, contratos compartilhados e comandos de geração/teste. Não concede acesso novo a banco ou credenciais. |
+| API e aplicação | Entradas, serviços chamados, validação, serialização, tratamento de erros e testes do fluxo. |
+| Componentes React | Biblioteca e versões presentes, componentes reutilizáveis, estado/formulários, contratos da API e testes de componentes. |
+| Design e experiência | Design system declarado, tokens, tema, acessibilidade, responsividade e referências visuais. Presença de React não define o estilo visual. |
+| Validação | Critérios, regras aplicáveis, alterações reais e provas executáveis. Independência da implementação quando a revisão exigir. |
+
+Esses exemplos não são uma taxonomia fechada nem criam todos os perfis em qualquer projeto. Detectar .NET, React ou uma ferramenta de banco não autoriza deduzir uma regra específica de negócio.
+
+A criação das ondas considera capacidades, skills, referências e testes compartilhados, além do tipo de trabalho. Dependências, reservas, condições externas conhecidas e prontidão permanecem verificações nativas. Afinidade não permite agrupar trabalho impedido nem paralelizar alterações incompatíveis. Uma mudança transversal pode ser dividida por contratos claros entre persistência, API e interface; quando isso só acrescentar coordenação e contexto, uma onda combina as skills necessárias. Não aumentar a quantidade de agentes por princípio.
+
+O pedido deve registrar o perfil usado e por que foi escolhido, inclusive quando usa o executor geral. Não reutilizar o campo textual `agent` dos itens como identificador; manter compatibilidade dos eventos antigos e acrescentar campos tipados próprios quando necessário.
+
+### 11.5. Trabalho nativo, Jev e redação pela sessão
+
+O binário resolve catálogo, existência, compatibilidade de arquivos, regras, hashes, atualização incremental, montagem de arquivos, referências, prontidão e comandos repetitivos. Não delegar isso a Python produzido pelo modelo nem pedir ao modelo que releia todo o repositório.
+
+Jev pode escolher entre perfis candidatos já válidos, avaliar pertinência de uma skill complementar e compatibilidade de tarefas para agrupamento. Recebe somente o estado pertinente e perguntas atômicas, com escolhas/avaliações tipadas; resultado validado e cache por conteúdo, rubrica e provedor. Não redige skills, não cria regras, não aprova diffs, não certifica execução de testes e não decide se uma autorização existe. Essa separação segue os [primitivos e perguntas atômicas do Jev](https://docs.typesafe.ai/introduction).
+
+Se faltar interpretação para um procedimento, produzir um pedido compacto de redação com as fontes selecionadas. A sessão atual delega a um subagente e recebe um resultado estruturado; o binário confere referências, escopo e validade antes de incorporá-lo. No Claude, o modelo solicitado pode ser Haiku quando disponível na sessão. No Codex, usar um modelo disponível no próprio host, configurável e com herança como alternativa. Não prometer Haiku dentro de Codex. Ausência do modelo ou de subagentes não pode abrir outra sessão ou cobrança por API silenciosamente; conservar a alternativa nativa e informar o preparo que falta.
+
+A chamada do subagente continua consumindo a franquia da sessão. A economia precisa incluir a redação, sua revisão, os julgamentos do Jev, a execução e o retrabalho. Não executar um criador a cada onda.
+
+### 11.6. Integrações com Claude Code e Codex
+
+Claude permite agentes específicos do projeto e skills associadas; o campo `skills` de um agente pré-carrega o corpo inteiro, portanto não listar todas as skills ali. Usar um núcleo pequeno obrigatório e referências carregadas conforme a tarefa. O Mustard usa `omitClaudeMd`, então a preparação precisa garantir as instruções aplicáveis mesmo sem carregamento automático. Conferir a versão e a descoberta de agentes na sessão; não reiniciar uma sessão com ondas em andamento para registrar um perfil. [Documentação de subagentes](https://code.claude.com/docs/en/sub-agents), [skills](https://code.claude.com/docs/en/skills).
+
+Codex possui definições de agentes próprias e descobre skills em `.agents/skills`. Exportar o mesmo conhecimento por adaptador, sem copiar frontmatter exclusivo do Claude como se fosse suportado. `agents/openai.yaml` de uma skill é metadado de apresentação, não a definição de um subagente. A integração deve instalar apenas os arquivos gerenciados, preservar configuração existente e reutilizar a busca MCP e os comandos nativos. [Skills do Codex](https://learn.chatgpt.com/docs/build-skills), [subagentes do Codex](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+
+Adicionar adaptação de eventos e argumentos quando usar os hooks do Codex. `exec_command`, `apply_patch` e `spawn_agent` não têm os mesmos argumentos de Bash, Edit e Agent do Claude. Não afirmar equivalência de interceptação ou de consumo apenas por instalar arquivos: testar entrada, reescrita, bloqueio, despacho, retorno e medição nos contratos do host. Manter limitações visíveis quando um evento não estiver disponível. [Hooks do Codex](https://learn.chatgpt.com/docs/hooks), [configuração MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
+O reconhecimento de agentes gerenciados nos hooks hoje usa dois nomes fixos. A nova integração deve usar um registro validado de perfis e manter os mesmos portões de onda, revisão e acesso. Dar um novo nome ao agente não pode contornar essas verificações. Restrições por pasta são verificações de operações, não garantias criadas por uma frase no prompt.
+
+### 11.7. O que aproveitar dos criadores e projetos públicos
+
+O [Skill Creator da Anthropic](https://github.com/anthropics/skills/blob/main/skills/skill-creator/SKILL.md) orienta criar, avaliar contra uma execução sem a skill e iterar; também testa gatilhos positivos e negativos. O [agent-creator do plugin-dev oficial](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/plugin-dev/agents/agent-creator.md) existe e organiza responsabilidade, instruções, ferramentas e validação. São processos de autoria, não componentes que entendem automaticamente o banco do Mustard.
+
+Adotar dessas referências descrições precisas, fronteiras de responsabilidade, validação e avaliação comparativa. Não copiar o comprimento sugerido de um prompt como meta de qualidade: o [guia recente da OpenAI sobre skills](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra) recomenda revisar instruções acumuladas e usar referências progressivas. A especificação [Agent Skills](https://agentskills.io/specification) oferece um formato compartilhado para essa organização.
+
+Os exemplos de [React da Vercel](https://github.com/vercel-labs/agent-skills/blob/main/skills/react-best-practices/SKILL.md) e [Postgres da Supabase](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/SKILL.md) mostram procedimentos por domínio com referências específicas. Aproveitar a organização e avaliar conteúdo pertinente à tecnologia e versão presentes. Não importar uma biblioteca inteira nem impor regras externas sobre uma decisão explícita do projeto. Nenhum projeto de terceiro foi incorporado por esta análise.
+
+### 11.8. Entregas, validação e acompanhamento
+
+1. Fechar e publicar a correção da segurança das ondas antes de depender da especialização. Em 12/10, a implementação local passou em 4.039 testes, com dois ignorados, e Clippy do workspace com todos os alvos. Ainda não é release.
+2. Implementar catálogo comum, procedência, atualização incremental e seleção/reutilização de agentes e skills existentes; conferir as regras obrigatórias e nomes/escopos.
+3. Integrar a preparação com tarefas aprovadas e formação das ondas, sem mudar seu escopo por conta própria; registrar seleção e validade no despacho.
+4. Integrar redação opcional pelo subagente da sessão e validação nativa do resultado. Usar Jev nos candidatos ambíguos, com rastreio e alternativa nativa.
+5. Implementar adaptadores Claude e Codex, instalação idempotente e testes de contrato dos respectivos hooks, ferramentas, MCP e agentes.
+6. Mostrar no painel o perfil, skills selecionadas/lidas quando observável, fontes, reutilização/atualização/criação, chamadas e falhas. Distinguir material entregue de confirmação de leitura.
+7. Comparar o Mustard corrigido genérico, o mesmo executor com skills selecionadas e o executor especializado. Manter modelo, tarefa e revisão equivalentes para separar o efeito da preparação do efeito de trocar o modelo.
+
+Os testes precisam cobrir banco/API/React/design, tarefas transversais, nomes ambíguos, skill manual, regra obrigatória, fonte mudada, ausência de scan, modelo indisponível, impedimento externo e ausência de crédito no Jev. Incluir casos em que uma skill não deve entrar. Usar snapshots isolados dos projetos, sem alterar a spec em execução no backend.
+
+Medir sucesso na primeira entrega, violações de regra, devoluções, consultas/leitura de código, tokens de entrada/saída/cache, custo de preparação/Jev, tempo e custo por tarefa aceita. Calcular economia contra a execução equivalente, incluindo todas as chamadas. Não prometer percentual antes dessa medição; retirar combinações que aumentem custo sem ganho de qualidade. Checagens nativas verdes não substituem a validação do despacho e da descoberta de agentes numa sessão real de cada host.

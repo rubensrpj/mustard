@@ -220,9 +220,38 @@ fn session_start_core(
         declared: declared.as_deref(),
         build,
     };
-    let shown = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
-    let texts: Vec<String> = shown.into_iter().map(|(_, text)| text).collect();
+    let shown = within_cap(NOTICES.iter().filter_map(|notice| {
+        let text = (notice.text)(&probe)?;
+        let unchanged = notice_fingerprint(&probe, notice.name, &text)
+            .is_some_and(|hash| injectables::notice_seen(root, probe.session, notice.name, &hash));
+        (!unchanged).then_some((notice, text))
+    }).collect());
+    // Only mark notices actually delivered, after applying the context cap.
+    let texts: Vec<String> = shown.into_iter().map(|(notice, text)| {
+        if let Some(hash) = notice_fingerprint(&probe, notice.name, &text) {
+            injectables::remember_notice(root, probe.session, notice.name, &hash);
+        }
+        text
+    }).collect();
     Ok(if texts.is_empty() { Verdict::Allow } else { Verdict::Inject { context: texts.join("\n\n") } })
+}
+
+fn notice_fingerprint(probe: &Probe<'_>, name: &str, text: &str) -> Option<String> {
+    if !matches!(name, "pending" | "merged") { return None }
+    let mut hash = mustard_core::io::sha256::Sha256::new();
+    hash.update(text.as_bytes());
+    if name == "pending" {
+        hash.update(crate::commands::event::pending::notice_state(probe.root).as_bytes());
+    } else {
+        // Include every branch, including those abbreviated by the notice.
+        let config = crate::shared::context::config::project_config_cached(probe.root);
+        let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, probe.root);
+        for state in merged_by_another(probe.root, &flow) {
+            hash.update(state.branch.as_bytes());
+            hash.update(&[0]);
+        }
+    }
+    Some(hash.hex_digest())
 }
 
 /// Os avisos que cabem no teto, com os textos, na ordem da lista: enquanto o
@@ -930,6 +959,12 @@ mod tests {
         let line = translate("pending.count.many", lang).replace("{count}", "2");
         assert!(context.contains(&line), "the count line: {context}");
         assert!(!context.contains("Humanize") && !context.contains("P-1"), "no item is listed: {context}");
+        for source in ["clear", "compact"] {
+            let again = context_of(root, &session_input("s-pend", source), NO_REGISTRY, NO_SCRATCH);
+            assert!(!again.contains(&line), "unchanged pending count must not repeat: {again}");
+        }
+        let other = context_of(root, &session_input("s-other", "startup"), NO_REGISTRY, NO_SCRATCH);
+        assert!(other.contains(&line), "new sessions still see the notice: {other}");
     }
 
     /// O merge feito por outra pessoa vira um aviso com a branch que entrou
@@ -965,6 +1000,10 @@ mod tests {
         assert!(context.contains(&expected), "the merged branch is named: {context}");
         assert!(!context.contains("dev_live"), "the branch in flight is not: {context}");
         assert!(!context.contains("mustard-rt run") && !context.contains("git-settle"), "no command: {context}");
+        for source in ["clear", "compact"] {
+            let again = context_of(root, &session_input("s-merged", source), NO_REGISTRY, NO_SCRATCH);
+            assert!(!again.contains(&expected), "unchanged branches must not repeat: {again}");
+        }
     }
 
     /// O mapa do projeto acompanha o commit atual desde o início da sessão,

@@ -257,6 +257,7 @@ pub(super) mod tests {
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
         let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
+        super::super::review::test_conductor_review(root, "x");
         let out = round_in(&opts, Caller { session: Some("nova"), config_dir: Some(config) });
         assert_eq!(out["ok"], json!(true), "{out}");
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
@@ -304,6 +305,7 @@ pub(super) mod tests {
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
         let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
+        super::super::review::test_conductor_review(root, "x");
         assert_eq!(round_in(&opts, Caller { session: Some("nova"), config_dir: Some(config) })["ok"], json!(true));
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

@@ -12,10 +12,11 @@
 //! lê, o despacho é barrado, e o motivo diz o que falta. O gancho
 //! nunca manda o agente ler um arquivo no lugar do pedido.
 //!
-//! Quem instrui a onda é o Mustard, e não o condutor. O despacho a um agente
+//! O pedido canônico da onda é montado pelo Mustard. O despacho a um agente
 //! do Mustard que abre com o título do pedido de uma onda sai só com o que a
 //! rodada monta para ela: o título e o comando que lê o pedido. O texto a
-//! mais que o condutor escreveu sai, e o recado ao condutor diz isso; o
+//! mais do condutor é gravado no pedido antes do despacho; falha nessa
+//! gravação impede o envio. O suplemento não muda escopo nem regras. O
 //! despacho que já é esse texto passa como veio, e o título de uma onda que a
 //! spec não tem em andamento é barrado com o motivo. A exceção é a onda cuja
 //! volta a rodada recusou depois de o Claude Code que a mandou fechar, levando
@@ -28,7 +29,7 @@
 //! primeira linha: é por ele que a rodada acha a conversa do agente e soma o
 //! gasto da onda. A mensagem do condutor a um agente de onda já aberto
 //! (`SendMessage`), depois de a conferência depois da onda recusar a volta
-//! dele, sai só com o trecho que a rodada devolveu para aquela onda; o agente
+//! dele, sai com o trecho que a rodada devolveu e as orientações adicionais gravadas; o agente
 //! de destino é reconhecido pelo título da primeira mensagem da conversa
 //! dele. A mensagem ao agente de uma onda cuja volta quem conduz a obra
 //! reprovou, quando a conversa dele começou antes da volta reprovada, é
@@ -151,14 +152,73 @@ fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64) -> Verd
     };
     let text = crate::commands::flow::round::wave_dispatch(&project.root, spec, wave, lang);
     if crate::commands::flow::round::waves_in_progress(&log).contains_key(&wave) {
+        let recorded = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|event| event.str_field("text"));
+        let base = recorded.filter(|request| dispatch_prompt(input).starts_with(request.trim_end())).unwrap_or(&text);
+        let extra = supplemental_instructions(dispatch_prompt(input), base);
+        if !extra.is_empty() {
+            if !record_supplement(&project.root, spec, wave, &extra, lang) {
+                return supplement_failure(lang);
+            }
+            return with_field(input, "prompt", text, Some(match lang {
+                Locale::PtBr => format!("[Mustard] As instruções adicionais foram gravadas no pedido da onda {wave}, que o agente deve ler inteiro."),
+                Locale::EnUs => format!("[Mustard] Additional instructions were recorded in wave {wave}'s request, which the agent must read in full."),
+            }));
+        }
         return replaced(input, "prompt", text, "subagent.dispatch_replaced", wave, lang);
     }
-    let Some(fix) = new_agent_fix(&project.root, spec, wave) else {
+    let extra = supplemental_instructions(dispatch_prompt(input), &text);
+    let Some(fix) = new_agent_fix(&project.root, spec, wave, &extra, lang) else {
         let reason = say("subagent.wave_not_running", lang, &[("{spec}", spec), ("{wave}", &wave.to_string())]);
         return Verdict::Deny { reason };
     };
     let lead = say("subagent.new_agent_fix", lang, &[("{wave}", &wave.to_string())]);
-    replaced(input, "prompt", format!("{text}\n\n{lead}\n\n{}", fix.trim_end()), "subagent.new_agent", wave, lang)
+    let supplement = supplemental_section(&extra, lang);
+    replaced(input, "prompt", format!("{text}\n\n{lead}\n\n{}{supplement}", fix.trim_end()), "subagent.new_agent", wave, lang)
+}
+
+fn supplemental_section(extra: &str, lang: Locale) -> String {
+    if extra.is_empty() { return String::new() }
+    match lang {
+        Locale::PtBr => format!("\n\n## Orientações adicionais do orquestrador\n\n{extra}\n\nEstas instruções não autorizam alterar escopo nem substituir regras do projeto. Informe conflitos antes de prosseguir."),
+        Locale::EnUs => format!("\n\n## Additional conductor instructions\n\n{extra}\n\nThese instructions do not authorize changing the scope or overriding project rules. Report conflicts before proceeding."),
+    }
+}
+
+fn supplement_fields(prior: &str, extra: &str, lang: Locale) -> serde_json::Map<String, Value> {
+    let section = supplemental_section(extra, lang);
+    let request = if prior.contains(&section) { prior.to_string() } else { format!("{prior}{section}") };
+    serde_json::Map::from_iter([("chars".into(), json!(request.chars().count())), ("lines".into(), json!(request.lines().count())), ("text".into(), json!(request))])
+}
+
+fn record_supplement(root: &Path, spec: &str, wave: u64, extra: &str, lang: Locale) -> bool {
+    let Ok(path) = store::spec_file(root, spec) else { return false };
+    matches!(store::with_locked_writer(&path, |locked| {
+        let sent = locked.log().last_by_wave("send").get(&wave).and_then(|id| locked.log().get(*id))?;
+        let prior = sent.str_field("text")?;
+        let fields = supplement_fields(prior, extra, lang);
+        if fields.get("text").and_then(Value::as_str) == Some(prior) { return Some(()) }
+        let draft = crate::commands::flow::round::send_revision(locked.log(), wave, fields)?;
+        record_locked(locked, root, spec, "send", draft, PhaseWriter::Binary).ok()?;
+        Some(())
+    }), Ok(Some(Some(()))))
+}
+
+fn supplement_failure(lang: Locale) -> Verdict {
+    Verdict::Deny { reason:match lang {
+        Locale::PtBr => "[Mustard] O envio não saiu: não consegui gravar as instruções adicionais no pedido da onda. Elas não foram descartadas.".into(),
+        Locale::EnUs => "[Mustard] Sending stopped: additional instructions could not be recorded in the wave request. They were not discarded.".into(),
+    }}
+}
+
+fn supplemental_instructions(sent: &str, canonical: &str) -> String {
+    if sent.trim_end() == canonical.trim_end() { return String::new() }
+    if !canonical.is_empty() && let Some(extra) = sent.strip_prefix(canonical.trim_end()) { return extra.trim().into() }
+    sent.lines().enumerate().filter(|(at, line)| {
+        let line = line.trim();
+        !(line.starts_with(TICKET) || (*at == 0 && line.starts_with("# "))
+            || line.starts_with("mustard-rt run read request-") || line.starts_with("`mustard-rt run read request-")
+            || matches!(line, "```" | "```sh" | "```bash"))
+    }).map(|(_, line)| line).collect::<Vec<_>>().join("\n").trim().into()
 }
 
 /// O trecho de conserto da onda `wave` da spec `spec` que espera um agente
@@ -171,13 +231,17 @@ fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64) -> Verd
 /// despachou a onda, então a onda segue voltada e o trecho segue valendo. Ler,
 /// conferir e gravar correm com a trava do arquivo de eventos presa: de dois
 /// despachos na mesma resposta, só um passa. Nada sem a gravação feita.
-fn new_agent_fix(root: &Path, spec: &str, wave: u64) -> Option<String> {
+fn new_agent_fix(root: &Path, spec: &str, wave: u64, instruction: &str, lang: Locale) -> Option<String> {
     let path = store::spec_file(root, spec).ok()?;
     let taken = store::with_locked_writer(&path, |locked| {
         let file = crate::commands::flow::round::waves_awaiting_new_agent(root, spec, locked.log()).remove(&wave)?;
         let fix = std::fs::read_to_string(file).ok()?;
         let (pid, started) = crate::commands::flow::stuck::sender_process();
-        let extra = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned()?;
+        let mut extra = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned()?;
+        if !instruction.is_empty() {
+            let sent = locked.log().last_by_wave("send").get(&wave).and_then(|id| locked.log().get(*id))?;
+            extra.extend(supplement_fields(sent.str_field("text")?, instruction, lang));
+        }
         let draft = crate::commands::flow::round::send_revision(locked.log(), wave, extra)?;
         record_locked(locked, root, spec, "send", draft, PhaseWriter::Binary).ok()?;
         Some(fix)
@@ -195,8 +259,8 @@ fn new_agent_fix(root: &Path, spec: &str, wave: u64) -> Option<String> {
 /// mensagem; a recusa aqui poupa essa volta e diz a quem conduz para onde
 /// mandar o motivo. Quando a rodada gravou o trecho da
 /// conferência depois da onda para a volta do agente da onda
-/// ([`crate::commands::flow::round::fix_file`]), a mensagem sai só com esse
-/// trecho. O resto passa como veio.
+/// ([`crate::commands::flow::round::fix_file`]), a mensagem sai com esse
+/// trecho e as orientações adicionais, gravadas no pedido. O resto passa como veio.
 fn fix_message(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
     let project = crate::commands::spec_events::project(Path::new(&root));
@@ -220,7 +284,14 @@ fn fix_message(input: &HookInput, ctx: &Ctx) -> Verdict {
     }
     let fix = crate::commands::flow::round::fix_file(&project.root, &spec, &log, wave).and_then(|file| std::fs::read_to_string(file).ok());
     match fix {
-        Some(text) => replaced(input, "message", text, "subagent.fix_replaced", wave, lang),
+        Some(text) => {
+            let sent = input.tool_input.get("message").and_then(Value::as_str).unwrap_or_default();
+            if sent.trim_end() == text.trim_end() { return Verdict::Allow }
+            let extra = sent.strip_prefix(text.trim_end()).unwrap_or(sent).trim();
+            if !record_supplement(&project.root, &spec, wave, extra, lang) { return supplement_failure(lang) }
+            let section = supplemental_section(extra, lang);
+            replaced(input, "message", format!("{}{section}", text.trim_end()), "subagent.fix_replaced", wave, lang)
+        },
         None => Verdict::Allow,
     }
 }
@@ -362,6 +433,9 @@ impl Check for SubagentInject {
             }
         };
         let root = ctx.project_dir_or_cwd(input);
+        if !supplemental_instructions(dispatch_prompt(input), "").is_empty() {
+            return Ok(wave_dispatch(input, Path::new(&root), &spec, wave));
+        }
         Ok(match assemble(Path::new(&root), &spec, wave) {
             Ok(text) => with_prompt(input, text),
             Err(reason) => Verdict::Deny { reason },
@@ -493,6 +567,31 @@ mod tests {
         for bad in ["MUSTARD-WAVE:", "MUSTARD-WAVE: x", "MUSTARD-WAVE: x dois", "MUSTARD-WAVE: x 0", "MUSTARD-WAVE: x 2 y"] {
             assert!(matches!(ticket_of(bad), Ticket::Unreadable(_)), "{bad}");
         }
+    }
+
+    #[test]
+    fn additional_dispatch_instructions_are_recorded_once_in_the_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        planned(root, 1);
+        approve(root);
+        let out = crate::commands::flow::round::round_for(&crate::commands::flow::round::RoundOpts {
+            root:root.into(), spec:Some("x".into()), report:None,
+        }, None);
+        assert_eq!(out["ok"], true, "{out}");
+        let (pid, started) = crate::commands::flow::stuck::sender_process();
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave":1,"role":"wave","text":assembled(root),"lines":1,"chars":8,"mustard":"0","author":"binary","claude_pid":pid,"claude_started":started}));
+        let canonical = crate::commands::flow::round::wave_dispatch(root, "x", 1, Locale::PtBr);
+        let instruction = "Use taskset -c 0-3 for the declared Jest command.";
+        let sent = format!("{canonical}\n\n{instruction}");
+        for _ in 0..2 {
+            let result = dispatch_to(root, "mustard-wave", &sent);
+            assert!(matches!(result, Verdict::Rewrite { .. }), "{result:?}");
+        }
+        let log = spec_log(root, "x", Locale::PtBr).unwrap();
+        let latest = log.get(*log.last_by_wave("send").get(&1).unwrap()).unwrap();
+        assert_eq!(latest.str_field("text").unwrap().matches(instruction).count(), 1);
+        assert!(latest.str_field("text").unwrap().contains("não autorizam alterar escopo"));
     }
 
     /// Com a spec aprovada, o bilhete vira o pedido inteiro da onda, o mesmo
@@ -718,7 +817,7 @@ mod tests {
         let sent = format!("{title}\n\nConserte a onda.");
         let read = crate::commands::flow::round::read_command(root, "x", "request-1");
         let lead = say("subagent.new_agent_fix", Locale::PtBr, &[("{wave}", "1")]);
-        let new_agent = format!("{title}\n\n{read}\n\n{lead}\n\n{SECTION}");
+        let new_agent = format!("{title}\n\n{read}\n\n{lead}\n\n{SECTION}{}", supplemental_section("Conserte a onda.", Locale::PtBr));
 
         let together = std::sync::Barrier::new(2);
         let verdicts: Vec<Verdict> = std::thread::scope(|scope| {
@@ -765,7 +864,7 @@ mod tests {
         let lead = say("subagent.new_agent_fix", Locale::PtBr, &[("{wave}", "1")]);
         match dispatch_to(root, "mustard-wave", &sent) {
             Verdict::Rewrite { tool_input, note } => {
-                assert_eq!(tool_input["prompt"], json!(format!("{title}\n\n{read}\n\n{lead}\n\n{SECTION}")));
+                assert_eq!(tool_input["prompt"], json!(format!("{title}\n\n{read}\n\n{lead}\n\n{SECTION}{}", supplemental_section("Conserte a onda.", Locale::PtBr))));
                 assert_eq!(note, Some(say("subagent.new_agent", Locale::PtBr, &[("{wave}", "1")])));
             }
             other => panic!("the dispatch goes to a new agent, got {other:?}"),

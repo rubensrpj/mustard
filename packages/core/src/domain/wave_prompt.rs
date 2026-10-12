@@ -1033,7 +1033,7 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
 pub const PROOF_COMMANDS: &[&str] = &[
     "bash", "bun", "bundle", "cabal", "cargo", "cmake", "composer", "ctest", "dart", "deno", "docker", "dotnet", "echo", "elixir", "env", "flutter", "git",
     "go", "gradle", "gradlew", "grep", "jest", "just", "make", "mix", "mocha", "mvn", "ninja", "node", "npm", "npx", "php", "phpunit", "pnpm", "poetry",
-    "printf", "pytest", "python", "python3", "rake", "rg", "rspec", "rtk", "ruby", "rustc", "sbt", "sh", "stack", "swift", "task", "tox", "tsc", "uv",
+    "printf", "pytest", "python", "python3", "rake", "rg", "rspec", "rtk", "ruby", "rustc", "sbt", "sh", "stack", "swift", "task", "taskset", "tox", "tsc", "uv",
     "vitest", "yarn", "zig", "zsh",
 ];
 
@@ -1377,6 +1377,18 @@ mod tests {
     use super::*;
     use crate::domain::spec_events::{BlockQuery, SpecLog, Step, parse_log, render_line, stamp};
     use serde_json::{Value, json};
+
+    #[test]
+    fn test_commands_with_cpu_affinity_are_valid_proofs_without_accepting_test_names() {
+        for proof in [
+            "taskset -c 0-3 ./node_modules/.bin/jest --roots src --runTestsByPath src/example.spec.ts",
+            "CI=true taskset -c 0-3 pnpm test",
+        ] {
+            assert_eq!(proof_rule("MSTD-CRIT-0009", proof), Ok(()), "{proof}");
+        }
+        assert!(!proof_is_command("matches the source sheet"));
+        assert!(!proof_is_command("enforces limits"));
+    }
 
     /// Um arquivo de eventos escrito à mão, uma linha por evento.
     fn log(events: &[(&str, Value)]) -> SpecLog {
@@ -2851,12 +2863,12 @@ mod tests {
         for (lang, wave, review) in [
             (
                 Locale::PtBr,
-                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "verificação do vermelho (o que foi cortado"],
+                ["Prove o vermelho", "comando/hook", "não só um helper", "teste e vermelho de cada critério"],
                 ["confira o recibo vigente", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
             ),
             (
                 Locale::EnUs,
-                ["is born red", "the command or the hook event", "not only in the helper function", "red verification (what was cut"],
+                ["Prove the red", "command/hook", "not only a helper", "each criterion's test and red verification"],
                 ["check the current receipt", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
             ),
         ] {

@@ -2,8 +2,8 @@
 //! do projeto, e o caminho de uma chamada — conferir a fase, fechar o que
 //! voltou, entregar ao orquestrador os candidatos da onda que ainda não tem
 //! escolha, despachar as ondas prontas e dizer o que fazer em seguida. A
-//! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
-//! agente de teste dedicado que o fechamento pede, uma vez por obra.
+//! rodada exige a revisão do diff de cada onda antes do commit; a revisão
+//! final dedicada continua no fechamento da obra.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -729,12 +729,6 @@ pub(super) fn run_entered_round(
     // Jev, ou com a chamada falhando, o pedido leva o padrão.
     let context_jev = crate::shared::jev::for_context(root, &spec);
     let choices = choose_items(&opts.root, &spec, &log, &ready, context_jev.filter.as_deref());
-    // Depois da última chamada ao Jev: o teto de gasto do mês que o segurou,
-    // já gasto na montagem ou recusando uma chamada, sai num aviso, uma vez
-    // por sessão, como na busca.
-    if (waves_jev.held_by_budget() || context_jev.held_by_budget()) && first_warning(root, session, "round.jev_over_budget") {
-        warnings.push(json!({ "reason": "jev-over-budget", "hint": translate("round.jev_over_budget", lang) }));
-    }
     dispatch_timing.passed();
     drop(dispatch_timing);
     let go = ready;
@@ -936,9 +930,8 @@ pub(super) fn run_entered_round(
     // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
     // ou nomear as tarefas presas, quando o backlog ainda tem tarefa;
     // esperar o veredito, quando a revisão final segue aberta; ou fechar,
-    // com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
-    // quem confere o trabalho é o agente de teste dedicado que o fechamento
-    // pede, uma vez por obra.
+    // com tudo entregue e aprovado e o backlog vazio. A revisão do diff da
+    // onda antecede o commit; a revisão final permanece no fechamento.
     let report_back = super::checks::report_back(root, lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
@@ -1592,43 +1585,6 @@ mod tests {
             assert_eq!(out["ok"], json!(true), "{name}: {out}");
             assert!(key_in_git_warnings(&out).is_empty(), "{name}: {out}");
         }
-    }
-
-    /// O teto de gasto do mês já gasto segura o Jev: a rodada monta as ondas
-    /// sem ele e avisa, uma vez só na sessão, no idioma do projeto; outra
-    /// sessão ouve de novo. Abaixo do teto, nenhum aviso.
-    #[test]
-    fn the_round_warns_once_per_session_when_the_month_budget_holds_the_jev() {
-        let budget_warnings = |out: &Value| -> Vec<Value> {
-            let all = out["warnings"].as_array().cloned().unwrap_or_default();
-            all.into_iter().filter(|w| w["reason"] == json!("jev-over-budget")).collect()
-        };
-        // A chave mora num `mustard.json` que o git não guarda: com ela, só o
-        // teto segura o Jev.
-        let work = |root: &Path, config: &str| {
-            work_with_the_project_file(root, config);
-            git_at(root, &["rm", "--cached", "-q", "mustard.json"]);
-        };
-        for (language, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            work(root, &format!(r#"{{"language": {{"text": "{language}"}}, "jev": {{"key": "k", "monthly_budget_usd": 0}}}}"#));
-            let out = round_in_session(root, Some("sessao-1"));
-            assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{language}: the round goes on: {out}");
-            let hints: Vec<Value> = budget_warnings(&out).into_iter().map(|w| w["hint"].clone()).collect();
-            assert_eq!(hints, vec![json!(translate("round.jev_over_budget", lang))], "{language}: {out}");
-            let again = round_in_session(root, Some("sessao-1"));
-            assert!(budget_warnings(&again).is_empty(), "{language}: one warning per session: {again}");
-            let other = round_in_session(root, Some("sessao-2"));
-            assert_eq!(budget_warnings(&other).len(), 1, "{language}: another session warns: {other}");
-        }
-
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        work(root, r#"{"jev": {"key": "k", "monthly_budget_usd": 5}}"#);
-        let out = round_in_session(root, Some("sessao-1"));
-        assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
-        assert!(budget_warnings(&out).is_empty(), "below the budget: {out}");
     }
 
     /// Uma spec aprovada sem onda nenhuma, com `src/a.rs` e `src/b.rs` no
@@ -2749,11 +2705,10 @@ mod tests {
         assert_eq!(log_of(root).current(id).and_then(|task| task.wave()), Some(1), "the task stays in its wave");
     }
 
-    /// A mudança que a onda manda terminada em ponto aparece no aviso da
-    /// mudança registrada com um ponto só; a que vem sem ponto ganha o da
-    /// frase.
+    /// Each changed plan remains held independently, including when no
+    /// changes_decision field was supplied.
     #[test]
-    fn a_change_ending_in_a_period_shows_one_period_in_the_recorded_change() {
+    fn plan_changes_in_two_waves_are_both_held_before_commit() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
@@ -2763,10 +2718,10 @@ mod tests {
         let bare = json!({"wave": 2, "text": "Parei.", "replan": "Dividir a onda em três", "undone": []});
         assert_eq!(returned(root, bare)["ok"], json!(true));
         let out = round(root, "x", None);
-        let warnings: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("plan-changed")).collect();
-        let hint_of = |wave: u64| warnings.iter().find(|w| w["wave"] == json!(wave)).and_then(|w| w["hint"].as_str()).unwrap_or_default().to_string();
-        assert!(hint_of(1).contains("A mudança: Dividir a onda em duas. Conte-a"), "{out}");
-        assert!(hint_of(2).contains("A mudança: Dividir a onda em três. Conte-a"), "{out}");
-        assert!(!hint_of(1).contains(".."), "{out}");
+        let waves: Vec<_> = out["warnings"].as_array().into_iter().flatten()
+            .filter(|warning| warning["reason"] == "wave-plan-does-not-work")
+            .map(|warning| warning["wave"].clone()).collect();
+        assert_eq!(waves, [json!(1), json!(2)], "{out}");
+        assert!(log_of(root).last_by_wave("delivered").is_empty());
     }
 }

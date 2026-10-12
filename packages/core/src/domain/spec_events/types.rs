@@ -633,6 +633,8 @@ pub const TYPES: &[TypeSpec] = &[
             opt("scope", Kind::Text),
             opt("version", Kind::Text),
             opt("attempt", Kind::Int),
+            opt("criterion", Kind::Int),
+            opt("waves", Kind::Ints),
         ],
     ),
     ty(
@@ -691,6 +693,9 @@ pub const TYPES: &[TypeSpec] = &[
             // `depends_on`.
             opt("files", Kind::Objects),
             opt("skill", Kind::Text),
+            // An unresolved external condition or a returned plan that must
+            // be revised. A new task version removes this explicit hold.
+            opt("blocked_by", Kind::Text),
             opt("covers", Kind::Refs),
             opt("must_read", Kind::List),
             // As tarefas de que esta depende, pelo número ou pelo código;
@@ -832,9 +837,10 @@ pub const TYPES: &[TypeSpec] = &[
             // sem mexer em nenhum, e o texto dela diz o que conferiu.
             opt("files", Kind::Texts),
             opt("replan", Kind::Text),
+            opt("blocked_by", Kind::Text),
             // Com a mudança de plano: a decisão do usuário que a mudança
-            // troca. Ausente quando a mudança não troca nenhuma, e a rodada
-            // segue sem perguntar.
+            // troca. Toda mudança de plano espera aceite; omitir este campo
+            // apenas informa que nenhuma decisão específica foi substituída.
             opt("changes_decision", Kind::Text),
             // O código de cada tarefa da onda que o agente não fez. Com a
             // mudança de plano, é obrigatório, vazio quando fez todas; sem

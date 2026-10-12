@@ -968,9 +968,10 @@ pub(super) fn ensure_criteria_proofs(
         })
         .collect();
     let (outcomes, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
-    for (_, code, out) in &outcomes {
+    for (id, code, out) in &outcomes {
         let command = criteria.iter().find(|(_, c, _)| c == code).map(|(_, _, p)| p.as_str()).unwrap_or_default();
-        super::super::validation::record_run(root, spec, "delivery", "criterion-proof", command, out).map_err(RoundRefusal::Refused)?;
+        let own: Vec<_> = waves.iter().copied().filter(|wave| log.criteria_for_waves(&[*wave]).iter().any(|criterion| criterion.id == *id)).collect();
+        super::super::validation::record_criterion(root, spec, *id, &own, command, out).map_err(RoundRefusal::Refused)?;
     }
     let Some(failed) = failed else {
         return Ok(criteria.into_iter().map(|(_, _, proof)| proof).collect());

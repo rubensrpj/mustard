@@ -1,30 +1,34 @@
 # Mustard in this project
 
-Binary searches/calculates; LLM implements.
+Binary searches; LLM implements.
 
 ## Survey
 
-- Open changes with `mustard-rt run open`, record the goal in `context`, suggest `/clear`; the resume line shows the state. Queries open no spec; other branches do not block.
-- Answer in the order of explaining from the response style. Check code/history before removing. Use `mustard-rt run answer --facts '<JSON>'`.
-- Search evidence through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve arguments/scope. `intent`: local question with resource/provider + operation, not the whole goal; or 2–8 `- question` bullets with resource/constraints each. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
-- CLI: `mustard-rt run search --shell-output --intent "<question>" --purpose spec -- rg -n "<pattern>" .`. Bash: `mustard:spec: <question>`, otherwise `locate`. `--raw`: native; `--choose`: optional Jev.
-- Reuse delivered lines/bodies; `Read` with `offset`/`limit` is guarded and crossed without another call/AI. No ranges: `run map summary --file <file>`. Changed source: reread. References do not prove behavior.
+- Open changes with `mustard-rt run open`, record the goal in `context`, suggest `/clear`; the resume line shows the state. Queries open no spec.
+- Answer in the order of explaining from the response style; check code/history before removing. Use `mustard-rt run answer --facts '<JSON>'`.
+- Search through `mcp__mustard__search`: `{request:{tool,input,intent,purpose,choose?}}`; preserve arguments/scope. `intent`: resource + operation/constraints, or 2–8 `- question` bullets. `purpose`: `locate`, `understand`, `spec`, `implement`, `validate`.
+- CLI: `mustard-rt run search --shell-output --intent "<question>" --purpose spec -- rg -n "<pattern>" .`. Bash: `mustard:spec: <question>`. `--choose`: optional Jev.
+- Reuse current excerpts; `Read` with `offset`/`limit` crosses evidence without AI. No range: `run map summary --file <file>`. Reread changed sources; references do not prove behavior.
 - `mustard-rt run knowledge`: investigation.
 
 ## Open spec
 
-- Read/write the spec through `mustard-rt run read`/`run write`; never edit `spec.*` by hand.
+- Spec: `mustard-rt run read`/`run write`; never edit `spec.*`.
 
 - On a closed spec or with the pull request open, `mustard-rt run reopen --reason "<why>"` comes first, before `write request`. PR the server failed: `mustard-rt run reopen --fix --reason "<why>"`.
-- Errors, adjustments and improvements on the same subject join the same spec through `write request`, never pending items. Record and report what is certain; when uncertain, propose and ask once. Another subject uses `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
-- Changes outside the authorization require the user's yes. A correction to Mustard becomes a product adjustment, not just memory.
-- Delegate any investigation that opens many files. Ask every agent for findings in the spec through `mustard-rt run write` and a return in two lines.
+- Same subject: `write request`, not a pending item. Record authorized changes; when uncertain, ask once. Another subject uses `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
+- Unauthorized changes require acceptance; fix Mustard in the product.
+- Delegate any investigation that opens many files; every agent records in the spec through `mustard-rt run write` and returns in two lines.
 
 ## Tracking
 
-- `/mustard-panel`: project/specs/definitions/waves/execution/consumption, no AI; CLI: `run panel`.
-- `/mustard-pages` only on request; local export does not confirm publishing. `run publish --spec <spec>`; `--include-consumption`: permits consumption. `mustard-rt run page`: markdown.
+- `/mustard-panel`: local; CLI: `run panel`.
+- `/mustard-pages` only on request; export is not publishing. `run publish --spec <spec>`; `--include-consumption`: permits consumption. `mustard-rt run page`: markdown.
 
 ## Resuming
 
 `mustard-rt run resume`. Commit/PR omit clients, email and local paths.
+
+## Wave review
+
+Before commit: `mustard-rt run review-wave --wave <n> --spec <spec>`. Check diff/rules/skills/tests. Accept: `<REVIEWED>{"wave":1,"fingerprint":"<receipt>","note":"<conclusion>"}</REVIEWED>`; reject with `REJECTED`. `USAGE` does not approve. Changes invalidate review. Revise blocked tasks before dispatch; replan awaits the user.

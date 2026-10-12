@@ -250,7 +250,12 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
     let tasks: Vec<_> = visible.iter().filter(|event| event.event_type == "task" && event.wave() == Some(wave)).map(|event| display_item(event,&codes)).collect();
     let criterion_ids: BTreeSet<_> = planned.into_iter().flat_map(|event|event.ints("criteria")).filter_map(|id|log.current(id).map(|event|event.id)).collect();
     let criteria: Vec<_> = visible.iter().filter(|event| event.event_type == "criterion" && criterion_ids.contains(&event.id)).map(|event| display_item(event,&codes)).collect();
-    let tests: Vec<_> = visible.iter().filter(|event|event.event_type=="criterion_run" && event.int("criterion").and_then(|id|log.current(id)).is_some_and(|criterion|criterion_ids.contains(&criterion.id)))
+    let tests: Vec<_> = visible.iter().filter(|event| {
+        let legacy = event.event_type == "criterion_run";
+        let native = event.event_type == "stage_run" && event.str_field("stage") == Some("criterion-proof") && event.ints("waves").contains(&wave);
+        (legacy || native) && attempt.is_none_or(|start| event.id > start)
+            && event.int("criterion").and_then(|id| log.current(id)).is_some_and(|criterion| criterion_ids.contains(&criterion.id))
+    })
         .map(|event| {let mut item=display_item(event,&codes);if let Some(code)=event.int("criterion").and_then(|id|codes.get(&id)){item["criterion"]=json!(code);}item}).collect();
     let user_input = planned.and_then(|event| event.int("origin")).and_then(|id| log.get(id)).and_then(|event| event.str_field("text"));
     safe_value(json!({"spec":name,"wave":wave,"plan":planned.map(|event| &event.fields),
@@ -315,7 +320,7 @@ mod tests {
             json!({"v":1,"id":6,"type":"delivered","wave":1,"text":"Volta anterior.","returned":true}),
             json!({"v":1,"id":7,"type":"send","wave":1,"text":input,"role":"wave","replaces":5,"tokens":180_000}),
             json!({"v":1,"id":8,"type":"step","wave":1,"item":4,"text":"Teste mínimo aprovado."}),
-            json!({"v":1,"id":9,"type":"criterion_run","criterion":2,"result":"pass","exit":0,"ms":20}),
+            json!({"v":1,"id":9,"type":"stage_run","phase":"delivery","stage":"criterion-proof","criterion":2,"waves":[1],"command":"pnpm test","result":"pass","exit":0,"ms":20}),
         ];
         let text=rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")+"\n";
         std::fs::write(folder.join("spec.ndjson"),&text).unwrap();

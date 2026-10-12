@@ -106,24 +106,24 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
         (
             "pt-BR",
             [
-                "Erro, ajuste ou melhoria do mesmo assunto entra na mesma spec por `write request`, nunca como pendência.",
-                "Registre e informe o que for certo;",
-                "na dúvida, proponha e pergunte uma vez.",
+                "Mesmo assunto: `write request`, não pendência.",
+                "Registre o autorizado;",
+                "na dúvida, pergunte uma vez.",
                 "Outro assunto:",
                 "",
             ],
-            "- Fora do autorizado, peça o sim do usuário. Correção do Mustard entra no produto, não só na memória.",
+            "- Mudança não autorizada exige aceite; corrija o Mustard no produto.",
         ),
         (
             "en-US",
             [
-                "Errors, adjustments and improvements on the same subject join the same spec through `write request`, never pending items.",
-                "Record and report what is certain;",
-                "when uncertain, propose and ask once.",
+                "Same subject: `write request`, not a pending item.",
+                "Record authorized changes;",
+                "when uncertain, ask once.",
                 "Another subject uses",
                 "",
             ],
-            "- Changes outside the authorization require the user's yes. A correction to Mustard becomes a product adjustment, not just memory.",
+            "- Unauthorized changes require acceptance; fix Mustard in the product.",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -153,7 +153,7 @@ fn an_english_fresh_install_tracks_locally_and_exports_only_when_requested() {
     let (root,home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
     let context = session_start(&root,&home,"startup");
     assert!(context.contains("/mustard-panel") && context.contains("/mustard-pages"), "{context}");
-    assert!(context.contains("local export does not confirm publishing"), "{context}");
+    assert!(context.contains("export is not publishing"), "{context}");
     assert!(!root.join(".claude/mustard/pages/project.html").exists());
     assert!(!root.join(".claude/mustard/pages/spec.html").exists());
     assert!(!root.join(".claude/mustard/publications").exists());

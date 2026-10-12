@@ -298,12 +298,7 @@ fn next_item(spec: &str, phase: &str, log: &SpecLog, lang: Locale) -> Option<Str
             // replanejamento da onda não conta.
             let running = crate::commands::flow::round::waves_in_progress(log);
             let delivered = log.delivered_waves();
-            let planned: BTreeSet<u64> = log
-                .block(BlockQuery::Block(Block::Waves))
-                .into_iter()
-                .filter(|e| e.event_type == "wave")
-                .filter_map(|e| e.wave())
-                .collect();
+            let planned = log.planned_waves();
             let mut pending = planned.iter().copied().filter(|n| !delivered.contains(n));
             running.keys().next().copied().or_else(|| pending.next()).map(wave).or_else(command)
         }
@@ -521,6 +516,23 @@ mod tests {
             .replace("{last}", translate("resume.none", Locale::PtBr))
             .replace("{next}", &translate("resume.wave", Locale::PtBr).replace("{n}", "1"));
         assert_eq!(resume_line("x", &log, Locale::PtBr), line);
+    }
+
+    #[test]
+    fn resuming_skips_an_empty_binary_wave_as_the_round_does() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let seed = |kind: &str, fields: Value| crate::shared::spec_state::seed_event(root, "x", kind, fields);
+        let said = seed("message", json!({"author":"user","text":"Concluir a tarefa."}));
+        let criterion = seed("criterion", json!({"when":"a","then":"b","proof":"cargo test","form":"ubiquitous","origin":said}));
+        for (n, text) in [(9, "Onda esvaziada."), (18, "Onda vigente.")] {
+            seed("wave", json!({"n":n,"author":"binary","text":text,"criteria":[criterion],"done_when":"Concluir a tarefa.","origin":said}));
+        }
+        seed("task", json!({"wave":18,"title":"Tarefa vigente","text":"Concluir a tarefa.","agent":"Concluir a tarefa.","covers":[criterion],"files":[{"path":"src/a.rs"}],"origin":said}));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let expected = translate("resume.wave", Locale::PtBr).replace("{n}", "18");
+        assert_eq!(next_item("x", "running", &log, Locale::PtBr), Some(expected));
     }
 
     /// A retomada da spec fechada devolve a linha inteira do pull request,

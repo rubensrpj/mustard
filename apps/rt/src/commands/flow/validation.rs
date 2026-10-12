@@ -153,7 +153,16 @@ pub(super) fn receipt(root: &Path, spec: &str, key: &str) -> Result<(), Refusal>
 }
 
 pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun) -> Result<(), Refusal> {
-    let mut draft = Map::new();
+    record_run_fields(root, spec, phase, stage, command, out, Map::new())
+}
+
+pub(super) fn record_criterion(root: &Path, spec: &str, criterion: u64, waves: &[u64], command: &str, out: &ProofRun) -> Result<(), Refusal> {
+    let fields = serde_json::Map::from_iter([("criterion".into(), json!(criterion)), ("waves".into(), json!(waves))]);
+    record_run_fields(root, spec, "delivery", "criterion-proof", command, out, fields)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun, mut draft: Map<String, Value>) -> Result<(), Refusal> {
     draft.insert("phase".into(), json!(phase));
     draft.insert("stage".into(), json!(stage));
     draft.insert("command".into(), json!(command));
