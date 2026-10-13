@@ -129,7 +129,10 @@ mod tests {
     #[test]
     fn copy_commands_preserve_conductor_cwd_exit_status_and_worker_identity() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // macOS resolves /var to /private/var when sh starts in the temp tree.
+        // Compare actual cwd paths, rather than two spellings of that tree.
+        let canonical = dir.path().canonicalize().unwrap();
+        let root = canonical.as_path();
         let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
         git(&["init", "-q"]);
         git(&[
