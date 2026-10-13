@@ -104,6 +104,7 @@ impl Project {
             .env("CLAUDE_PROJECT_DIR", &self.root)
             .env("MUSTARD_CLAUDE_BIN", self.home.join("sem-claude"))
             .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("MUSTARD_ACTIVE_SPEC")

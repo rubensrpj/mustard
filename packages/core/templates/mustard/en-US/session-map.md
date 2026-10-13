@@ -19,7 +19,7 @@ Binary searches; LLM implements.
 - On a closed spec or with the pull request open, `mustard-rt run reopen --reason "<why>"` comes first, before `write request`. PR the server failed: `mustard-rt run reopen --fix --reason "<why>"`.
 - Same subject: `write request`, not a pending item. Record authorized changes; when uncertain, ask once. Another subject uses `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
 - Unauthorized changes require acceptance; fix Mustard in the product.
-- Delegate any investigation that opens many files; every agent records in the spec through `mustard-rt run write` and returns in two lines.
+- Delegate only useful bounded investigation; every agent records in the spec through `mustard-rt run write` and returns in two lines.
 
 ## Tracking
 

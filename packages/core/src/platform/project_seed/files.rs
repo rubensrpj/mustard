@@ -1,6 +1,6 @@
 //! The static seeds: Mustard's own texts — the session map under
 //! `.claude/mustard/`
-//! and the two agents under `.claude/agents/mustard/` —,
+//! and the managed agents under `.claude/agents/mustard/` —,
 //! the `.claude/.gitignore` rule list, and the project-root `mustard.json`,
 //! with the migrations that bring an older `inject` list onto the session map.
 
@@ -24,7 +24,7 @@ const SESSION_MAP_DIR: &str = "mustard";
 const AGENTS_DIR: &str = "agents/mustard";
 
 /// Os textos do Mustard no projeto, a partir de `.claude/`, com o corpo no
-/// idioma `text`: o mapa do início da sessão e os dois agentes, nessa ordem.
+/// idioma `text`: o mapa do início da sessão e os agentes gerenciados, nessa ordem.
 ///
 /// Os dois idiomas são molde do produto; o projeto recebe só o do
 /// `language.text`. O caminho não muda com o idioma, então trocar o idioma e
@@ -39,11 +39,12 @@ pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, St
     out
 }
 
-/// Os dois agentes do Mustard como a instalação os escreve, a partir de
+/// Os agentes do Mustard como a instalação os escreve, a partir de
 /// `.claude/`: `(caminho, corpo)`, no idioma `text` e com o `model:` e o
 /// `effort:` de `agents` no cabeçalho.
 fn agent_files(text: Locale, agents: AgentSettings<'_>) -> impl Iterator<Item = (String, String)> + '_ {
     agent_texts(text).into_iter().map(move |(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents)))
+        .chain(std::iter::once((format!("{AGENTS_DIR}/analysis.md"), crate::platform::seeds::analysis_agent_text(text).into())))
 }
 
 /// Regrava, em `.claude/agents/mustard/` do projeto em `root`, o agente cujo
@@ -53,7 +54,7 @@ fn agent_files(text: Locale, agents: AgentSettings<'_>) -> impl Iterator<Item = 
 /// sem isto o texto ficava o da última instalação, por mais que o programa
 /// mudasse.
 ///
-/// Só os dois agentes: nenhum outro arquivo do projeto é tocado, e o projeto
+/// Só os agentes gerenciados: nenhum outro arquivo do projeto é tocado, e o projeto
 /// sem a pasta dos agentes não ganha a pasta. O arquivo igual fica como
 /// está, sem ser regravado; o que falta na pasta é escrito.
 ///
@@ -83,6 +84,7 @@ pub fn refresh_agent_texts(root: &Path) -> Result<Vec<String>> {
 pub fn harness_text_paths() -> Vec<String> {
     let mut out = vec![format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}")];
     out.extend(AGENT_NAMES.iter().map(|name| format!("{AGENTS_DIR}/{name}.md")));
+    out.push(format!("{AGENTS_DIR}/analysis.md"));
     out
 }
 
@@ -818,7 +820,7 @@ mod tests {
         }
         let agents: Vec<String> =
             std_fs::read_dir(claude.join("agents/mustard")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(agents.len(), 2, "{agents:?}");
+        assert_eq!(agents.len(), 3, "{agents:?}");
     }
 
     /// O mapa é declarado no início da sessão, o único evento que entrega

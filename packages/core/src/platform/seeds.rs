@@ -74,6 +74,13 @@ pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 2] {
     [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1])]
 }
 
+pub fn analysis_agent_text(text: Locale) -> &'static str {
+    match text {
+        Locale::PtBr => include_str!("../../templates/agents/pt-BR/analysis.md"),
+        Locale::EnUs => include_str!("../../templates/agents/en-US/analysis.md"),
+    }
+}
+
 /// O texto de um agente com as linhas `model:` e `effort:` do cabeçalho
 /// trocadas pelas de `settings`: o molde traz os padrões, e a instalação
 /// escreve no projeto o que o `mustard.json` declara em `agents`. Só o
@@ -233,8 +240,8 @@ mod tests {
     #[test]
     fn the_session_map_no_longer_delegates_every_code_run() {
         for (text, code_run, investigation) in [
-            (Locale::PtBr, "toda execução de código", "investigação extensa"),
-            (Locale::EnUs, "every code run", "any investigation that opens many files"),
+            (Locale::PtBr, "toda execução de código", "Delegue só se compensar"),
+            (Locale::EnUs, "every code run", "only useful bounded investigation"),
         ] {
             let map = session_map(text);
             assert!(!map.contains(code_run), "the {text} map still hands code execution to an agent: {map}");
@@ -360,8 +367,8 @@ mod tests {
     #[test]
     fn the_session_map_asks_every_agent_to_record_in_the_spec_and_come_back_in_two_lines() {
         for (text, investigation, every_agent, in_the_spec, two_lines) in [
-            (Locale::PtBr, "investigação extensa", "todo agente", "na spec", "duas linhas"),
-            (Locale::EnUs, "any investigation that opens many files", "every agent", "in the spec", "two lines"),
+            (Locale::PtBr, "Delegue só se compensar", "todo agente", "na spec", "duas linhas"),
+            (Locale::EnUs, "only useful bounded investigation", "every agent", "in the spec", "two lines"),
         ] {
             let map = session_map(text);
             let line = map

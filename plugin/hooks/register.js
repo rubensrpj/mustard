@@ -9,6 +9,12 @@ let publishing = false, publicationMessage;
 let settings,settingsRevision=0;
 let runtimeBinary;
 let consumptionMeasuredAt;
+let panelWanted=false;
+const panelEvents=[];
+function panelEvent(kind,surface) {
+  panelEvents.push({kind,at:new Date().toISOString(),...(surface?{surface}: {})});
+  if(panelEvents.length>32)panelEvents.shift();
+}
 let measurementQueue = Promise.resolve();
 const searchPurposes = ['locate','understand','spec','implement','validate'];
 const searchTools = ['rg','grep','git','Grep','Glob','Read','Symbol','Trace','Structure','References'];
@@ -137,6 +143,8 @@ function recordMeasurement($, measurement) {
   return measurementQueue;
 }
 async function openPanel($, name) {
+    panelWanted=true;
+    panelEvent('open-request');
     stopPanel();
     if (name) selected = name;
     try {
@@ -146,12 +154,14 @@ async function openPanel($, name) {
       try { await $.ui.close({id}); } catch { /* A detached/reloaded host may no longer know this pane. Still attempt open. */ }
       await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
       opened = true;
+      panelEvent('open-accepted');
       timer = $.clock.every(2000, () => { void refresh($); });
       await refresh($);
       if(view.tab==='Configurações')await settingsOperation($);
       return {text:t('Abertura do painel solicitada nesta sessão. Se não aparecer, execute /mustard-panel --diagnose.',
         'Panel opening requested in this session. If it does not appear, run /mustard-panel --diagnose.')};
     } catch {
+      panelEvent('open-failed');
       stopPanel();
       return {text:t('O Claude não concluiu a abertura do painel. Execute /mustard-panel --diagnose nesta mesma sessão; confira /plugin e /status. Nenhuma publicação foi feita.',
         'Claude did not complete opening the panel. Run /mustard-panel --diagnose in this session; check /plugin and /status. Nothing was published.')};
@@ -167,6 +177,7 @@ async function panelDiagnostics($) {
       `${t('Plugin carregado','Loaded plugin')}: ${$.plugin.root}`,
       `${t('Interfaces reconhecidas','Recognized interfaces')}: ${interfaces}`,
       `${t('Painel registrado no host','Pane registered in host')}: ${pane?t('sim','yes'):t('não','no')}`,
+      `${t('Eventos recentes do painel','Recent panel events')}: ${panelEvents.slice(-8).map(e=>`${e.kind}${e.surface?':'+e.surface:''} @ ${e.at}`).join('; ') || t('nenhum','none')}`,
       ...(pane?[t(`Host: visível=${pane.isShown}, posicionado=${pane.isPlaced}. Isso não comprova que o Desktop desenhou o painel.`,
         `Host: shown=${pane.isShown}, placed=${pane.isPlaced}. This does not prove Desktop painted the pane.`)]:[]),
       ...(!surfaces?.includes('desktop')?[t('O host não informou uma interface Desktop. Em SSH, confira a sessão, /status e a versão do plugin no Desktop; Remote Control não espelha painéis.',
@@ -313,10 +324,14 @@ export function register(on) {
     return next(e);
   });
   on('ui.close', { id }, async ($, e, next) => {
+    panelEvent('close');
+    if(e.origin?.kind!=='plugin')panelWanted=false;
     stopPanel();
     return next(e);
   });
   on('session.end', async ($, e, next) => {
+    panelWanted=false;
+    panelEvent('session-end');
     resetEvidence();
     stopPanel();
     data = undefined;
@@ -327,8 +342,24 @@ export function register(on) {
     publicationMessage = undefined;
     return next(e);
   });
+  on('session.attach', async ($,e,next)=>{
+    panelEvent('attach');
+    const result=await next(e);
+    if(panelWanted)await openPanel($);
+    return result;
+  });
+  on('session.detach', async ($,e,next)=>{
+    panelEvent('detach');
+    // Suspend polling while detached; retain the user's open request.
+    const surfaces=await $.session.surfaces().catch(()=>undefined);
+    if(!surfaces?.length)stopPanel();
+    return next(e);
+  });
+  on('ui.fault',async ($,e,next)=>{panelEvent('ui-fault',e.surface);return next(e);});
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== id) return next(e);
+    // Record transitions only, not each 2s redraw.
+    if(!panelEvents.some(row=>row.kind==='render' && row.surface===e.surface))panelEvent('render',e.surface);
     const redraw=()=>$.ui.invalidate('ui.render');
     return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
       data,usage,problem,selected,view,publicationMessage,publishing,settings,actions:{

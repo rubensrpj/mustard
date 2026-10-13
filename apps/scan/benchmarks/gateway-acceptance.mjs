@@ -10,7 +10,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const bin = path.join(checkout, 'target/debug');
+const binAt=process.argv.indexOf('--bin');
+const bin=binAt<0?path.join(checkout,'target/debug'):path.resolve(process.argv[binAt+1]);
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mustard-search-acceptance-'));
 const root = path.join(temporary, 'main');
 fs.mkdirSync(root);
@@ -67,6 +68,21 @@ try {
   assert.equal(first.evidence.symbols[0].name, 'persist');
   assert.equal(first.evidence.symbols[0].read.input.offset, 2);
   assert.equal(first.remote_model_calls, 0);
+  const limited=search(['--request',JSON.stringify({schema_version:1,request:{tool:'rg',input:{args:['--sort=path','-m','1','--max-columns=200','-n','--with-filename','quartz','src']},intent:'Find the current snapshot persistence implementation.',purpose:'implement',choose:false}})]);
+  assert.notEqual(limited.task_context?.status,'native-fallback',JSON.stringify(limited.task_context));
+  const limitedNative=run('rg',['--sort=path','-m','1','--max-columns=200','-n','--with-filename','quartz','src']);
+  assert.equal(limited.result.stdout,limitedNative.stdout.toString());
+  assert.equal(limited.exit_code,limitedNative.status);
+  assert.equal(limited.remote_model_calls,0);
+  assert.equal(limited.task_context.source_focus.native_crossing_complete,false,'Output limits cannot establish exhaustive identity');
+  // Intent matches real code, but the original identifier alternatives do
+  // not. Do not replace a negative native result with unrelated neighbours.
+  const absent={schema_version:1,request:{tool:'rg',input:{args:['-n','--with-filename','[Aa]bsentProvider|[Gg]oneProvider','src']},intent:'Find the current snapshot persistence implementation.',purpose:'implement',choose:true}};
+  const negative=search(['--request',JSON.stringify(absent)]);
+  assert.equal(negative.exit_code,1);assert.equal(negative.result.stdout,'');
+  assert.equal(negative.task_context.status,'native-fallback');assert.equal(negative.remote_model_calls,0);
+  const negativeView=run('mustard-rt',['run','search','--root',root,'--request',JSON.stringify(absent),'--shell-output']);
+  assert.equal(negativeView.status,1);assert.equal(negativeView.stdout.length,0);
   const repeat = search(['--', ...argv]);
   assert.equal(repeat.learning.new_facts, 0);
   assert.equal(repeat.learning.reused_facts, 1);

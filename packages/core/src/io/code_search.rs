@@ -116,6 +116,13 @@ pub fn enrich(
         .cloned()
         .unwrap_or_else(|| json!(0));
     if task_requested {
+        // A failed literal search is not evidence that unrelated lexical or
+        // vector neighbours answer it. Preserve the empty native result; the
+        // caller can explicitly refine its pattern or query knowledge.
+        if answer.exit_code == 1 && answer.stdout.is_empty() {
+            answer.report["task_context"]=json!({"status":"native-fallback","reason":"native-no-matches; refine the original pattern or explicitly query knowledge","remote_model_calls":0});
+            return;
+        }
         match task::investigate(root,tree,cwd,request,answer,if request.choose {selector}else{None}) {
             Ok(context)=>{
                 answer.report["remote_model_calls"]=context["remote_model_calls"].clone();

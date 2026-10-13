@@ -14,7 +14,18 @@ pub fn cached(root: &std::path::Path) -> Value {
         .unwrap_or_else(||serde_json::json!({"status":"not-measured","scope":"project-directory"}));
     view["configured"]=serde_json::json!(switches.rtk);
     view["hook_configured"]=serde_json::json!(switches.rtk_hook);
+    view["hook_configured_by_host"]=serde_json::json!({"claude":switches.rtk_hook,"codex":codex_hook_configured(&root)});
     view
+}
+
+pub(crate) fn codex_hook_configured(root:&std::path::Path)->Option<bool> {
+    std::fs::read_to_string(root.join(".codex/hooks.json")).ok().filter(|s|s.len()<=65_536)
+        .and_then(|s|serde_json::from_str::<Value>(&s).ok()).map(|hooks| {
+            hooks["hooks"]["PreToolUse"].as_array().into_iter().flatten().any(|entry| {
+                entry["matcher"].as_str().is_none_or(|m|m=="*") && entry["hooks"].as_array().into_iter().flatten()
+                    .any(|h|h["command"]=="mustard-rt on PreToolUse --host codex")
+            })
+        })
 }
 
 fn cache_path(root:&std::path::Path)->std::path::PathBuf {root.join(".claude/mustard/usage/rtk.json")}
@@ -127,5 +138,15 @@ mod tests {
         let replaced=retain_measurement(retained,first.clone());
         assert_eq!(replaced,first);
         assert!(replaced["refresh_status"].is_null());
+    }
+    #[test]
+    fn codex_hook_configuration_is_distinct_from_claude_activation_and_measured_savings() {
+        let root=tempfile::tempdir().unwrap();
+        assert!(cached(root.path())["hook_configured_by_host"]["codex"].is_null());
+        std::fs::create_dir_all(root.path().join(".codex")).unwrap();
+        std::fs::write(root.path().join(".codex/hooks.json"),json!({"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"command":"mustard-rt on PreToolUse --host codex"}]}]}}).to_string()).unwrap();
+        let view=cached(root.path()); assert_eq!(view["hook_configured_by_host"]["codex"],true);
+        assert_eq!(view["hook_configured_by_host"]["claude"],false,"missing Claude settings mean its hook is absent, not active");
+        assert_eq!(view["status"],"not-measured"); assert!(view["percent"].is_null());
     }
 }

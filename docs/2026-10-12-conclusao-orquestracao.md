@@ -1,6 +1,6 @@
 # Conclusão dos ajustes de orquestração, especialização e diagnóstico
 
-Esta etapa parte da v0.2.15. O código está sendo validado na branch `codex/complete-orchestration`, em uma cópia isolada. Nenhum runtime ou arquivo do backend com ondas em andamento foi substituído.
+Esta é a etapa integrada na **v0.2.16**, PRs #314/#315 e release multiplataforma aprovada. A continuação que fecha falhas encontradas na verificação está em [validação final](2026-10-12-validacao-final.md), com comparação contra a release publicada. O backend e as specs removidos pelo usuário não foram restaurados.
 
 ## Decisão após conferir a documentação oficial
 
@@ -43,7 +43,7 @@ Comparar a mesma tarefa e base em três modos: executor genérico, executor com 
 
 A menor quantidade de texto no contexto do pai é uma medida de contexto, não de economia líquida. Um procedimento que só muda o nome do agente ou exige nova análise toda vez deve ser retirado da seleção paga. Nenhuma comparação desta etapa autoriza promessa de código perfeito ou busca universal.
 
-## Evidências locais desta etapa
+## Evidências históricas da etapa v0.2.16
 
 - Core: 1.217 testes; runtime: 1.879 testes e dois novos testes focados de aprovação Codex/seleção Jev; integração do runtime: 294 testes; Mods: 42 testes. Clippy sem avisos, plugin validado e 22 testes do roteamento da CI. As baterias de CLI, scan e integração do core também passaram na execução anterior; a CI da branch precisa repetir o conjunto nos três sistemas.
 - Oito testes da execução paralela recusaram gravações/cópias por falta de espaço. A repetição sequencial dos 294 testes de integração passou; nenhuma falha de infraestrutura foi contabilizada como sucesso.

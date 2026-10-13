@@ -11,6 +11,19 @@ use std::{
     path::Path,
 };
 
+mod transcripts;
+pub(crate) use transcripts::wave_usage;
+
+/// A CLI call must not inherit another host's most recent session by mtime.
+pub(crate) fn caller_host(root: &Path, session: Option<&str>) -> &'static str {
+    if let Some(session) = session {
+        let codex = root.join(".claude/mustard/host-observations").join(format!("codex-{}.json", digest(session)));
+        let claude = root.join(".claude/mustard/host-observations").join(format!("claude-{}.json", digest(session)));
+        if codex.is_file() && !claude.is_file() { return "codex"; }
+    }
+    if crate::shared::spec_state::is_codex_session(session) { "codex" } else { "claude" }
+}
+
 fn digest(value: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(value.as_bytes());
@@ -31,6 +44,7 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
     if !["claude", "codex"].contains(&host) {
         return;
     }
+    transcripts::observe(root,host,event,input);
     let path = root
         .join(".claude/mustard/host-observations")
         .join(format!("{host}-{}.json", digest(session)));
@@ -66,6 +80,17 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
             .saturating_add(1)
     );
     value["last_event"] = json!(event);
+    if let Some(cwd)=input.cwd.as_deref() {
+        let identity=digest(cwd);
+        if value["working_directory_id"].as_str().is_some_and(|previous|previous!=identity) {
+            value["working_directory_changes"]=json!(value["working_directory_changes"].as_u64().unwrap_or(0).saturating_add(1));
+        }
+        value["working_directory_id"]=json!(identity);
+        value["workspace_id"]=json!(digest(&root.to_string_lossy()));
+    }
+    if (event=="SessionStart" || event=="SessionEnd") && let Some(reason)=input.raw.get("source").or_else(||input.raw.get("reason")).and_then(Value::as_str).filter(|s|token(s)) {
+        value["session_transition"]=json!(reason);
+    }
     if let Some(model) = input
         .raw
         .get("model")
@@ -75,9 +100,7 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
         value["observed_model"] = json!(model);
     }
     if let Some(agent) = input
-        .raw
-        .get("agent_type")
-        .and_then(Value::as_str)
+        .agent_type.as_deref()
         .filter(|s| token(s))
     {
         value["observed_agent_type"] = json!(agent);
@@ -98,8 +121,9 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
     }
     if host == "codex"
         && let Some(path) = input.raw.get("transcript_path").and_then(Value::as_str)
+        && let Some(usage) = codex_usage(Path::new(path))
     {
-        value["usage"] = codex_usage(Path::new(path)).unwrap_or(Value::Null);
+        value["usage"] = usage;
     }
     value["usage_status"] = json!(if value["usage"].is_object() {
         "observed-versioned-rollout"
@@ -202,5 +226,22 @@ mod tests {
         assert_eq!(report["observations"].as_array().unwrap().len(), 2);
         assert!(!report.to_string().contains("private"));
         assert!(report["net_savings"].is_null());
+    }
+    #[test]
+    fn missing_rollouts_preserve_observed_usage_and_workspace_transitions_do_not_store_paths() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let transcript=root.join("rollout.jsonl");
+        std::fs::write(&transcript,json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120}}}}).to_string()).unwrap();
+        let first:HookInput=serde_json::from_value(json!({"session_id":"s","cwd":"/private/first","source":"startup","transcript_path":transcript})).unwrap();
+        observe(root,"codex","SessionStart",&first);
+        let next:HookInput=serde_json::from_value(json!({"session_id":"s","cwd":"/private/second","transcript_path":"/missing/rollout"})).unwrap();
+        observe(root,"codex","PostToolUse",&next);
+        let report=snapshot(root);let observed=&report["observations"][0];
+        assert_eq!(observed["usage"]["total_tokens"],120);
+        assert_eq!(observed["working_directory_changes"],1);
+        assert_eq!(observed["session_transition"],"startup");
+        assert_eq!(caller_host(root,Some("s")),"codex");
+        assert_eq!(caller_host(root,Some("unrelated")),"claude");
+        assert!(!report.to_string().contains("/private/"));
     }
 }

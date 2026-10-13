@@ -1,0 +1,1097 @@
+{
+  "baseline_release": "v0.2.16",
+  "baseline_commit": "716c7287ba3f28f840c6542105701e0dfae77f11",
+  "candidate_branch": "codex/finish-product-gaps",
+  "projects": [
+    {
+      "project": "florestal",
+      "source_commit": "c3ad077256bfee8a586227f8554c3a9c67e4e800",
+      "snapshot_commit": "045a0cdbdfe7c0d578ae8944ab7504c79dabdd77",
+      "files": 1601,
+      "vectors": 32966,
+      "requests_sha256": "f1a62eb8b216de4e79ebabb33e89c193feff158196424254a2cd4ab95030dfed",
+      "baseline_binary_sha256": "099da6324c8da394b4011d421667028b6873f333e6838b2a9f016eadfd1cae8a",
+      "candidate_binary_sha256": "300c3dd9ef0eb3c99b6266d94575d38d71137a93ff40b69ca6ad04d6fd3b8147",
+      "baseline": {
+        "cases": 10,
+        "native_parity": 10,
+        "view_bytes": 36212,
+        "remote_model_calls": 0
+      },
+      "candidate": {
+        "cases": 10,
+        "native_parity": 10,
+        "view_bytes": 64673,
+        "remote_model_calls": 0
+      },
+      "known_targets": {
+        "count": 5,
+        "visible_before": 5,
+        "visible_after": 5,
+        "complete_bodies_before": 5,
+        "complete_bodies_after": 5
+      },
+      "positive_controls": {
+        "requests": 4,
+        "before_bytes": 33772,
+        "after_bytes": 31825,
+        "reduction_percent": 5.765130877650124
+      },
+      "requests": [
+        {
+          "id": "original-download",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 213,
+          "after_bytes": 3265
+        },
+        {
+          "id": "completion-hook",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 70,
+          "after_bytes": 7163
+        },
+        {
+          "id": "optimized-download",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 607,
+          "after_bytes": 6910
+        },
+        {
+          "id": "write-operations",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 503,
+          "after_bytes": 14463
+        },
+        {
+          "id": "read-original",
+          "native_parity": true,
+          "before_status": null,
+          "after_status": null,
+          "before_bytes": 1047,
+          "after_bytes": 1047
+        },
+        {
+          "id": "missing-resource",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "native-fallback",
+          "before_bytes": 0,
+          "after_bytes": 0
+        },
+        {
+          "id": "original-download-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 3649,
+          "after_bytes": 3277
+        },
+        {
+          "id": "completion-hook-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 7904,
+          "after_bytes": 7175
+        },
+        {
+          "id": "optimized-download-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 7323,
+          "after_bytes": 6910
+        },
+        {
+          "id": "write-operations-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 14896,
+          "after_bytes": 14463
+        }
+      ],
+      "request_fixture": {
+        "requests": [
+          {
+            "id": "original-download",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "generateOriginalMenuUrl",
+                    "src/puzzle"
+                  ]
+                },
+                "intent": "Localizar o caminho que entrega o XLSX original do PI e seus consumidores.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "completion-hook",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "onCompleted",
+                    "src/puzzle/pi"
+                  ]
+                },
+                "intent": "Identificar o ponto de término da importação do otimizador onde criar arquivos de download.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "optimized-download",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "downloadOptimized|getOptimizedDownloadUrl",
+                    "src/puzzle/pi"
+                  ]
+                },
+                "intent": "Encontrar endpoint e serviço de download otimizado e comparar a origem com o input original.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "write-operations",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "buildWriteOperations",
+                    "src/puzzle"
+                  ]
+                },
+                "intent": "Entender a gravação do resultado importado e quem a aciona, sem confundir montagem com término da importação.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "read-original",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "Read",
+                "input": {
+                  "file_path": "/tmp/mustard-finish-evaluation/florestal/source/src/puzzle/services/puzzle.service.ts",
+                  "offset": 48,
+                  "limit": 44
+                },
+                "intent": "Conferir como generateOriginalMenuUrl obtém o caminho do arquivo original.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "missing-resource",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "UnknownUnicornIdentifier",
+                    "src"
+                  ]
+                },
+                "intent": "Localizar identificador informado pelo usuário que pode não existir.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "original-download-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "generateOriginalMenuUrl",
+                    "src/puzzle"
+                  ]
+                },
+                "intent": "Localizar o caminho que entrega o XLSX original do PI e seus consumidores.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "completion-hook-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "onCompleted",
+                    "src/puzzle/pi"
+                  ]
+                },
+                "intent": "Identificar o ponto de término da importação do otimizador onde criar arquivos de download.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "optimized-download-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "downloadOptimized|getOptimizedDownloadUrl",
+                    "src/puzzle/pi"
+                  ]
+                },
+                "intent": "Encontrar endpoint e serviço de download otimizado e comparar a origem com o input original.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "write-operations-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "buildWriteOperations",
+                    "src/puzzle"
+                  ]
+                },
+                "intent": "Entender a gravação do resultado importado e quem a aciona, sem confundir montagem com término da importação.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          }
+        ]
+      },
+      "label_fixture": {
+        "checks": [
+          {
+            "id": "original",
+            "name": "generateOriginalMenuUrl",
+            "file": "src/puzzle/services/puzzle.service.ts",
+            "line": 56,
+            "end_line": 61,
+            "sha256": "4a99938a89710070d3a49a71ceb80b5724ba6f765d94f7f5f272a20f8abc6d67"
+          },
+          {
+            "id": "completion",
+            "name": "onCompleted",
+            "file": "src/puzzle/pi/services/pi-webhook.service.ts",
+            "line": 158,
+            "end_line": 180,
+            "sha256": "1d221121c5d4f3461204b9089f1b21d04f6c0c86e1e578db305ce6cc3045fe08"
+          },
+          {
+            "id": "optimized-endpoint",
+            "name": "downloadOptimized",
+            "file": "src/puzzle/pi/controller/pi-plan.controller.ts",
+            "line": 242,
+            "end_line": 247,
+            "sha256": "f614f24806593dabeea9399aa68c6255f872f30fddc9a15e8b97aa1ca139cd30"
+          },
+          {
+            "id": "optimized-service",
+            "name": "getOptimizedDownloadUrl",
+            "file": "src/puzzle/pi/services/plan/plantio-plan-files.service.ts",
+            "line": 63,
+            "end_line": 88,
+            "sha256": "8f15d533badd6eebb46af46de744fd95eae3e7d32578afc0529d346cd332151b"
+          },
+          {
+            "id": "writer",
+            "name": "buildWriteOperations",
+            "file": "src/puzzle/pi/services/plan-write/pi-plan-write.service.ts",
+            "line": 211,
+            "end_line": 264,
+            "sha256": "1665607a4fe86d795106b7b1fc82352f46f753c8cd97a49fb68272c4f553a53e"
+          }
+        ],
+        "limits": "Task-guided known targets. Labels frozen from verified current source and baseline controls; not independent recall."
+      }
+    },
+    {
+      "project": "sialia",
+      "source_commit": "810c7937081d7a3fd2a7db8332ec488dcaeb0635",
+      "snapshot_commit": "43aca0b983e08fc92b0da30c39614fc6681d1d7a",
+      "files": 3392,
+      "vectors": 40261,
+      "requests_sha256": "6ccdb3b9aaa2c6530cc1fd8209f7c77ef7eddcaa6caf9f8567ae6ba2230b90a3",
+      "baseline_binary_sha256": "099da6324c8da394b4011d421667028b6873f333e6838b2a9f016eadfd1cae8a",
+      "candidate_binary_sha256": "300c3dd9ef0eb3c99b6266d94575d38d71137a93ff40b69ca6ad04d6fd3b8147",
+      "baseline": {
+        "cases": 9,
+        "native_parity": 9,
+        "view_bytes": 48004,
+        "remote_model_calls": 0
+      },
+      "candidate": {
+        "cases": 9,
+        "native_parity": 9,
+        "view_bytes": 52137,
+        "remote_model_calls": 0
+      },
+      "known_targets": {
+        "count": 2,
+        "visible_before": 2,
+        "visible_after": 2,
+        "complete_bodies_before": 1,
+        "complete_bodies_after": 1
+      },
+      "positive_controls": {
+        "requests": 3,
+        "before_bytes": 26678,
+        "after_bytes": 25847,
+        "reduction_percent": 3.114926156383537
+      },
+      "requests": [
+        {
+          "id": "provider-contract",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 8407,
+          "after_bytes": 8113
+        },
+        {
+          "id": "webhook-contract",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 308,
+          "after_bytes": 6900
+        },
+        {
+          "id": "payment-ui",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 271,
+          "after_bytes": 10834
+        },
+        {
+          "id": "asaas-evidence",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "native-fallback",
+          "before_bytes": 0,
+          "after_bytes": 0
+        },
+        {
+          "id": "read-payment-page",
+          "native_parity": true,
+          "before_status": null,
+          "after_status": null,
+          "before_bytes": 443,
+          "after_bytes": 443
+        },
+        {
+          "id": "provider-contract-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 8113,
+          "after_bytes": 8113
+        },
+        {
+          "id": "webhook-contract-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 6900,
+          "after_bytes": 6900
+        },
+        {
+          "id": "payment-ui-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 11665,
+          "after_bytes": 10834
+        },
+        {
+          "id": "asaas-evidence-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "native-fallback",
+          "before_bytes": 11897,
+          "after_bytes": 0
+        }
+      ],
+      "request_fixture": {
+        "requests": [
+          {
+            "id": "provider-contract",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "Safe2Pay",
+                    "packages/sialia-core/src/server/backend/api"
+                  ]
+                },
+                "intent": "Identificar contratos atuais Safe2Pay para avaliar o fluxo e limites da evidência disponível.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "webhook-contract",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "safe2pay_webhook|safe2pay.*webhook",
+                    "packages/sialia-core/src/server/backend/api"
+                  ]
+                },
+                "intent": "Encontrar webhook Safe2Pay e os contratos de status, distinguindo cliente gerado de implementação backend.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "payment-ui",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "PaymentMethodList",
+                    "apps/sialia-app"
+                  ]
+                },
+                "intent": "Identificar componentes e padrão de configuração da interface de formas de pagamento.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "asaas-evidence",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "[Aa]saas|[Aa]ssas",
+                    "apps"
+                  ]
+                },
+                "intent": "Verificar evidências atuais de Asaas; ausência textual não comprova inviabilidade.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "read-payment-page",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "Read",
+                "input": {
+                  "file_path": "/tmp/mustard-finish-evaluation/sialia/source/apps/sialia-app/app/(dashboard)/payment-methods/page.tsx",
+                  "offset": 1,
+                  "limit": 30
+                },
+                "intent": "Conferir a entrada da página de formas de pagamento.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "provider-contract-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "Safe2Pay",
+                    "packages/sialia-core/src/server/backend/api"
+                  ]
+                },
+                "intent": "Identificar contratos atuais Safe2Pay para avaliar o fluxo e limites da evidência disponível.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "webhook-contract-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "safe2pay_webhook|safe2pay.*webhook",
+                    "packages/sialia-core/src/server/backend/api"
+                  ]
+                },
+                "intent": "Encontrar webhook Safe2Pay e os contratos de status, distinguindo cliente gerado de implementação backend.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "payment-ui-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "PaymentMethodList",
+                    "apps/sialia-app"
+                  ]
+                },
+                "intent": "Identificar componentes e padrão de configuração da interface de formas de pagamento.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "asaas-evidence-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "[Aa]saas|[Aa]ssas",
+                    "apps"
+                  ]
+                },
+                "intent": "Verificar evidências atuais de Asaas; ausência textual não comprova inviabilidade.",
+                "purpose": "implement",
+                "choose": false
+              }
+            }
+          }
+        ]
+      },
+      "label_fixture": {
+        "checks": [
+          {
+            "id": "payment-page",
+            "name": "PaymentMethodsPage",
+            "file": "apps/sialia-app/app/(dashboard)/payment-methods/page.tsx",
+            "line": 6,
+            "end_line": 8,
+            "sha256": "1b866d87f280a3a1d14ae7a07ece599333151f5ee377ccbe903b40f8402e5229"
+          },
+          {
+            "id": "payment-config",
+            "name": "usePaymentMethodsConfig",
+            "file": "apps/sialia-app/app/(dashboard)/payment-methods/config.tsx",
+            "line": 44,
+            "end_line": 109,
+            "sha256": "60d0f84b1011e4933f2a2547adcf7c53e82ea59576646ef23d38ea7a215031f4"
+          }
+        ],
+        "limits": "Task-guided known targets. Labels frozen from verified current source and baseline controls; not independent recall."
+      }
+    },
+    {
+      "project": "sialia-dotnet",
+      "source_commit": "e5ec38bb4136f37cb39070e3266a40bd62d57504",
+      "snapshot_commit": "bb1722ba712805f7d372aef0901460a93fb74c58",
+      "files": 1615,
+      "vectors": 31070,
+      "requests_sha256": "dd1f72a8f7bd82055cbb6bf0a36e0b4a194985da84af982bd4477a0484504354",
+      "baseline_binary_sha256": "099da6324c8da394b4011d421667028b6873f333e6838b2a9f016eadfd1cae8a",
+      "candidate_binary_sha256": "300c3dd9ef0eb3c99b6266d94575d38d71137a93ff40b69ca6ad04d6fd3b8147",
+      "baseline": {
+        "cases": 6,
+        "native_parity": 6,
+        "view_bytes": 37481,
+        "remote_model_calls": 0
+      },
+      "candidate": {
+        "cases": 6,
+        "native_parity": 6,
+        "view_bytes": 42382,
+        "remote_model_calls": 0
+      },
+      "known_targets": {
+        "count": 3,
+        "visible_before": 3,
+        "visible_after": 3,
+        "complete_bodies_before": 0,
+        "complete_bodies_after": 0
+      },
+      "positive_controls": {
+        "requests": 2,
+        "before_bytes": 21756,
+        "after_bytes": 21191,
+        "reduction_percent": 2.596984739841883
+      },
+      "requests": [
+        {
+          "id": "webhook",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 157,
+          "after_bytes": 11108
+        },
+        {
+          "id": "webhook-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 11673,
+          "after_bytes": 11108
+        },
+        {
+          "id": "signature",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "current-task-evidence",
+          "before_bytes": 149,
+          "after_bytes": 10083
+        },
+        {
+          "id": "signature-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "current-task-evidence",
+          "before_bytes": 10083,
+          "after_bytes": 10083
+        },
+        {
+          "id": "asaas",
+          "native_parity": true,
+          "before_status": "native-fallback",
+          "after_status": "native-fallback",
+          "before_bytes": 0,
+          "after_bytes": 0
+        },
+        {
+          "id": "asaas-control",
+          "native_parity": true,
+          "before_status": "current-task-evidence",
+          "after_status": "native-fallback",
+          "before_bytes": 15419,
+          "after_bytes": 0
+        }
+      ],
+      "request_fixture": {
+        "requests": [
+          {
+            "id": "webhook",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "class Safe2PayWebhookService",
+                    "Application"
+                  ]
+                },
+                "intent": "Localizar processamento do webhook Safe2Pay e suas dependências, sem presumir prontidão do fluxo.",
+                "purpose": "validate",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "webhook-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "class Safe2PayWebhookService",
+                    "Application"
+                  ]
+                },
+                "intent": "Localizar processamento do webhook Safe2Pay e suas dependências, sem presumir prontidão do fluxo.",
+                "purpose": "validate",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "signature",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "class Safe2PaySignatureValidationFilter",
+                    "Backend"
+                  ]
+                },
+                "intent": "Conferir validação da assinatura e ponto de entrada do webhook Safe2Pay.",
+                "purpose": "validate",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "signature-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "class Safe2PaySignatureValidationFilter",
+                    "Backend"
+                  ]
+                },
+                "intent": "Conferir validação da assinatura e ponto de entrada do webhook Safe2Pay.",
+                "purpose": "validate",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "asaas",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "--max-count=60",
+                    "[Aa]saas|[Aa]ssas",
+                    "Application"
+                  ]
+                },
+                "intent": "Localizar implementação Asaas existente, sem concluir inviabilidade por ausência textual.",
+                "purpose": "validate",
+                "choose": false
+              }
+            }
+          },
+          {
+            "id": "asaas-control",
+            "envelope": {
+              "schema_version": 1,
+              "request": {
+                "tool": "rg",
+                "input": {
+                  "args": [
+                    "--sort=path",
+                    "-n",
+                    "--with-filename",
+                    "[Aa]saas|[Aa]ssas",
+                    "Application"
+                  ]
+                },
+                "intent": "Localizar implementação Asaas existente, sem concluir inviabilidade por ausência textual.",
+                "purpose": "validate",
+                "choose": false
+              }
+            }
+          }
+        ]
+      },
+      "label_fixture": {
+        "checks": [
+          {
+            "id": "webhook",
+            "name": "Safe2PayWebhookService",
+            "file": "Application/Modules/v1/PaymentGateway/Providers/Safe2Pay/Services/Safe2PayWebhookService.cs",
+            "line": 19,
+            "end_line": 405,
+            "sha256": "2e93233f6c3c3fc7c24732274ee3f3ec241601e284a6e170981b49ccefa7e533"
+          },
+          {
+            "id": "signature",
+            "name": "Safe2PaySignatureValidationFilter",
+            "file": "Backend/Modules/v1/PaymentGateway/Providers/Safe2Pay/Filters/Safe2PaySignatureValidationFilter.cs",
+            "line": 23,
+            "end_line": 112,
+            "sha256": "72d57c92e299bf2e7d3e171a7a9b9ccf08d2dc5685c599ab9e63e2663573e0dc"
+          },
+          {
+            "id": "webhook-endpoint",
+            "name": "ReceiveWebhookAsync",
+            "file": "Backend/Modules/v1/PaymentGateway/Providers/Safe2Pay/EndPoints/WebhookEndPoints.cs",
+            "line": 38,
+            "end_line": 66,
+            "sha256": "5ed6472b4d6a7c3f2cb53e706a63becc79d0584ed8e9121837adf43637a78fd5"
+          }
+        ],
+        "limits": "Task-guided known targets. Labels frozen from verified current source and baseline controls; not independent recall."
+      }
+    }
+  ],
+  "jev_pilot": {
+    "physical_calls": 2,
+    "input_tokens": 5379,
+    "estimated_cost_micro_usd": 226,
+    "cached_repeat_calls": 0,
+    "native_targets": 3,
+    "choice_targets": 3,
+    "accepted_overrides": 0,
+    "accuracy_gain": 0,
+    "limits": "Task-guided small pilot; abstentions retained native evidence. Not total bill or end-to-end savings."
+  },
+  "limits": [
+    "Known targets from source and baseline controls; not independent recall/precision.",
+    "Release vs mustard-dev profiles; latency numbers are not compared.",
+    "Agent view bytes are not billed tokens or subscription savings.",
+    "No host model, payment API, application tests or external database ran.",
+    "Candidate search measurement precedes final dossier source-catalog compaction and native host context/RTK adapter fixes; search code unchanged afterwards."
+  ],
+  "dossier": [
+    {
+      "project": "florestal",
+      "baseline_bytes": 71098,
+      "candidate_bytes": 53748,
+      "reduction_percent": 24.40293679147093,
+      "auto_bytes": 98188,
+      "remote_model_calls": 0
+    },
+    {
+      "project": "sialia",
+      "baseline_bytes": 5555,
+      "candidate_bytes": 2673,
+      "reduction_percent": 51.881188118811885,
+      "auto_bytes": 95838,
+      "remote_model_calls": 0
+    }
+  ],
+  "delivery_acceptance": {
+    "rust_passed": 4094,
+    "rust_failed": 0,
+    "rust_ignored": 2,
+    "strict_clippy": true,
+    "mods_passed": 43,
+    "ci_routing_passed": 22,
+    "gateway": {
+      "ok": true,
+      "commit": "716c7287ba3f28f840c6542105701e0dfae77f11",
+      "truly_empty_native_install": true,
+      "automatic_native_refresh": true,
+      "repeat_deduplicates_without_rescan": true,
+      "changed_and_new_sources": true,
+      "failed_scan_keeps_native_and_retries_later": true,
+      "raw_stdout_stderr_status_parity": true,
+      "native_fallback_parity": true,
+      "automatic_output_does_not_append_reports": true,
+      "typed_agent_pagination": true,
+      "typed_tools": true,
+      "late_occurrence_source_learned_and_crossed": true,
+      "migrated_index_refreshes_after_empty_native_search": true,
+      "native_search_unavailable_passes_host_tool": true,
+      "task_evidence_visible_to_agent": true,
+      "complementary_new_source_refreshes_natively": true,
+      "named_declaration_without_inference": true,
+      "typed_operation_contract": true,
+      "acknowledged_body_reuse_and_compaction_reset": true,
+      "native_dependency_body": true,
+      "delivery_bytes": {
+        "initial": 1266,
+        "repeated": 457,
+        "initial_transport": 1373,
+        "reduction_percent": 63.90205371248025
+      },
+      "structural_result_recrossed_after_refresh": true,
+      "deferred_candidates_expand_via_binary": true,
+      "real_classic_hook_handoff_and_rewrite": true,
+      "original_read_guard": true,
+      "checkout_isolation": true,
+      "default_http_requests": 0,
+      "local_model_calls": 0,
+      "remote_model_calls": 0,
+      "binaries": [
+        {
+          "name": "mustard",
+          "sha256": "58ad71a4460fd257f5840b307069281bcd1dcc83d4ae0e21cd6c621482f42b95"
+        },
+        {
+          "name": "mustard-rt",
+          "sha256": "45a2ecdb007ed3003b6b0d421ddb7d850a0e60bb701069dada4b87c8252576fa"
+        },
+        {
+          "name": "scan",
+          "sha256": "029e529617df8014af1c663e535d475c11cc8eeb153dd018d60c3ba556d30177"
+        }
+      ]
+    },
+    "local_model": {
+      "ok": true,
+      "default_local_vectors": true,
+      "first_semantic_request_builds_index": true,
+      "unchanged_documents_not_reembedded": true,
+      "raw_native_parity_without_vector_refresh": true,
+      "changed_source_receipts_refreshed": true,
+      "explicit_opt_out": true,
+      "remote_model_calls": 0,
+      "binaries": {
+        "mustard-rt": "45a2ecdb007ed3003b6b0d421ddb7d850a0e60bb701069dada4b87c8252576fa",
+        "scan": "029e529617df8014af1c663e535d475c11cc8eeb153dd018d60c3ba556d30177"
+      }
+    },
+    "context_guard": {
+      "contract_tests_passed": 25,
+      "claude_and_codex": true,
+      "latest_input_not_cumulative": true,
+      "cached_input_not_double_counted": true,
+      "unknown_latest_stays_unknown": true,
+      "confirmed_compaction_resets_bands": true,
+      "parent_context_rejected_for_child": true,
+      "current_task_finishes_before_wrap_up": true,
+      "declared_tests_and_summary_allowed": true,
+      "successful_native_task_receipt_required": true,
+      "real_host_model_turn": false
+    },
+    "rtk_native_install": {
+      "actual_packaged_rtk_version": "0.49.0",
+      "claude_hook_rewrites": true,
+      "codex_canonical_and_exec_command_rewrite": true,
+      "protocol_exit_0_and_3_supported": true,
+      "protocol_exit_2_not_allowed": true,
+      "opt_out_disables_rewrite": true,
+      "fixed_read_only_command_executed": true,
+      "isolated_tracking_db": true,
+      "project_history_visible_in_panel": true,
+      "net_model_savings_not_inferred": true,
+      "paid_model_calls": 0,
+      "unsolicited_publications": 0,
+      "binaries": {
+        "mustard-rt": "aef901aa39f0cd73bb2220630ff21e00d2824f3d4f251d7a985ac1711fc99ea3",
+        "rtk": "a051b22361c7cfa36022bc3f06bb41cdc88e58a07263dc340d8bd3468c41befe"
+      },
+      "permission_request_decision_emitted": false,
+      "real_host_model_turn": false,
+      "limits": "The packaged binary ran in a disposable project. This proves rewrite/filter/history integration, not hook trust in a live host or net model savings. The later diagnostic-only host projection was checked by its targeted tests and CI."
+    }
+  }
+}

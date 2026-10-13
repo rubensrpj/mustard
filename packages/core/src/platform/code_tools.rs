@@ -421,6 +421,12 @@ pub trait ToolRunner {
     fn output(&self, program: &str, args: &[&str], limit: Duration) -> (RunOutcome, String) {
         (self.run_outcome(program, args, limit), String::new())
     }
+    /// Preserve protocol exit codes without treating an arbitrary failed
+    /// process as successful. Missing/terminated processes have no exit code.
+    fn output_with_exit(&self, program: &str, args: &[&str], limit: Duration) -> (RunOutcome, Option<i32>, String) {
+        let (outcome,text)=self.output(program,args,limit);
+        (outcome,(outcome==RunOutcome::Succeeded).then_some(0),text)
+    }
     /// Onde `program` foi parar fora do `PATH`, numa pasta de ferramentas do
     /// usuário — `rustup component add` põe o `rust-analyzer` em
     /// `~/.cargo/bin`, por exemplo. Serve só para o aviso dizer o que fazer.
@@ -925,7 +931,7 @@ impl MachineRunner {
     /// Windows, o `npm.cmd` do `npm`); sem ele, o nome puro, que falha como
     /// antes. O comando que passa de `limit` é morto e a espera acaba na hora.
     /// A saída só é lida quando `capture` pede: sem isso, nada a prende.
-    fn spawn_and_wait(&self, program: &str, args: &[&str], limit: Duration, capture: bool) -> (RunOutcome, String) {
+    fn spawn_and_wait(&self, program: &str, args: &[&str], limit: Duration, capture: bool) -> (RunOutcome, Option<i32>, String) {
         let file = program_file(program, self.windows, &self.path_env).unwrap_or_else(|| PathBuf::from(program));
         let mut command = Command::new(file);
         if let Some(cwd) = &self.cwd { command.current_dir(cwd); }
@@ -937,7 +943,7 @@ impl MachineRunner {
             .stderr(Stdio::null())
             .spawn()
         else {
-            return (RunOutcome::Failed, String::new());
+            return (RunOutcome::Failed, None, String::new());
         };
         // A saída é lida à parte, para o comando que escreve muito não parar
         // no pipe cheio; a leitura acaba quando o comando (e quem ele abriu)
@@ -952,25 +958,25 @@ impl MachineRunner {
             receiver
         });
         let limit_at = Instant::now() + limit;
-        let outcome = loop {
+        let (outcome,exit_code) = loop {
             match child.try_wait() {
-                Ok(Some(status)) if status.success() => break RunOutcome::Succeeded,
-                Ok(Some(_)) => break RunOutcome::Failed,
+                Ok(Some(status)) if status.success() => break (RunOutcome::Succeeded,status.code()),
+                Ok(Some(status)) => break (RunOutcome::Failed,status.code()),
                 Ok(None) if Instant::now() < limit_at => std::thread::sleep(POLL_INTERVAL),
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return (RunOutcome::TimedOut { after: limit }, String::new());
+                    return (RunOutcome::TimedOut { after: limit }, None, String::new());
                 }
                 Err(_) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return (RunOutcome::Failed, String::new());
+                    return (RunOutcome::Failed, None, String::new());
                 }
             }
         };
         let text = output.and_then(|receiver| receiver.recv_timeout(OUTPUT_GRACE).ok()).unwrap_or_default();
-        (outcome, text)
+        (outcome, exit_code, text)
     }
 }
 
@@ -988,6 +994,11 @@ impl ToolRunner for MachineRunner {
     }
 
     fn output(&self, program: &str, args: &[&str], limit: Duration) -> (RunOutcome, String) {
+        let (outcome,_,text)=self.spawn_and_wait(program, args, limit, true);
+        (outcome,text)
+    }
+
+    fn output_with_exit(&self, program: &str, args: &[&str], limit: Duration) -> (RunOutcome, Option<i32>, String) {
         self.spawn_and_wait(program, args, limit, true)
     }
 

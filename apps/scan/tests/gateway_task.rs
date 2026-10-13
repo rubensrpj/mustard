@@ -120,7 +120,7 @@ fn file_discovery_and_globs_scope_before_ranking_and_preserve_the_original_page(
 }
 
 #[test]
-fn read_counts_unknown_scope_options_and_missing_index_keep_the_native_contract() {
+fn read_counts_limits_unknown_scope_options_and_missing_index_keep_the_native_contract() {
     let dir = fixture();
     let root = dir.path();
     let req = Request {
@@ -146,7 +146,8 @@ fn read_counts_unknown_scope_options_and_missing_index_keep_the_native_contract(
         ..request()
     };
     let answer = run(root, &req, None);
-    assert_eq!(answer.report["task_context"]["status"], "native-fallback");
+    assert_eq!(answer.report["task_context"]["status"], "current-task-evidence");
+    assert_eq!(answer.report["task_context"]["source_focus"]["native_crossing_complete"], false);
     let native = std::process::Command::new("rg")
         .args([
             "-n",
@@ -159,6 +160,13 @@ fn read_counts_unknown_scope_options_and_missing_index_keep_the_native_contract(
         .current_dir(root)
         .output()
         .unwrap();
+    assert_eq!(answer.stdout, native.stdout);
+    let req = Request {
+        input: json!({"args":["-n","--with-filename","--max-filesize","10K","entry_sentinel","src/allowed"]}),
+        ..request()
+    };
+    let answer = run(root, &req, None);
+    assert_eq!(answer.report["task_context"]["status"], "native-fallback");
     assert_eq!(answer.stdout, native.stdout);
     let empty = tempfile::tempdir().unwrap();
     std::fs::write(empty.path().join("a.txt"), "needle\n").unwrap();
