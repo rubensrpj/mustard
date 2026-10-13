@@ -79,7 +79,7 @@ instrucoes_manuais() {
 # Sem `--scope`: o `enable` descobre sozinho o escopo em que o plugin foi
 # instalado, e um escopo dito errado ligaria o plugin em outro lugar.
 ligar_o_plugin() {
-  echo "==> Ligando o plugin $PLUGIN…"
+  echo "==> Ligando o plugin ${PLUGIN}…"
   if claude plugin enable "$PLUGIN" >/dev/null 2>&1; then
     echo "    Plugin ligado."
   else
@@ -229,10 +229,10 @@ fi
 # --- instala ou atualiza -----------------------------------------------------
 if claude plugin list 2>/dev/null | grep -q "mustard@"; then
   acao="update"
-  echo "==> Atualizando o plugin $PLUGIN…"
+  echo "==> Atualizando o plugin ${PLUGIN}…"
 else
   acao="install"
-  echo "==> Instalando o plugin $PLUGIN…"
+  echo "==> Instalando o plugin ${PLUGIN}…"
 fi
 
 if claude plugin "$acao" "$PLUGIN"; then

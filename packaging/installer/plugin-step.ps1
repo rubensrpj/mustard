@@ -125,11 +125,16 @@ function Start-BinaryDownload {
     $start.Arguments = '/d /s /c ""' + $boot + '" --version"'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
     try { $proc = [System.Diagnostics.Process]::Start($start) }
     catch {
         Write-Host 'aviso: nao consegui iniciar a descida dos binarios do plugin.'
         return
     }
+    # Drain both pipes concurrently so curl/tar cannot fill one and deadlock.
+    $downloadOut = $proc.StandardOutput.ReadToEndAsync()
+    $downloadErr = $proc.StandardError.ReadToEndAsync()
     if (-not $proc.WaitForExit($limite * 1000)) {
         # A ARVORE, nao so o cmd. O Kill() do .NET Framework nao tem
         # `entireProcessTree` (isso e .NET Core), entao matar o cmd sozinho
@@ -138,12 +143,17 @@ function Start-BinaryDownload {
         # mustard-rt.exe truncado e pior que nenhum.
         try { & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null } catch { }
         try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+        $proc.Dispose()
         Write-Host "aviso: a descida dos binarios passou de $limite s e foi cortada"
         Write-Host '       para nao segurar o instalador - a primeira sessao do'
         Write-Host '       Claude Code tenta de novo.'
         return
     }
-    if ($proc.ExitCode -ne 0) {
+    [Console]::Out.Write($downloadOut.GetAwaiter().GetResult())
+    [Console]::Error.Write($downloadErr.GetAwaiter().GetResult())
+    $downloadExit = $proc.ExitCode
+    $proc.Dispose()
+    if ($downloadExit -ne 0) {
         Write-Host 'aviso: a descida dos binarios nao concluiu - a primeira sessao'
         Write-Host '       do Claude Code tenta de novo.'
     }
