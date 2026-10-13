@@ -4,6 +4,7 @@ close
 config-read
 discard
 doctor
+evidence
 expertise
 grill
 help

@@ -1,0 +1,140 @@
+{
+  "recorded_at": "2026-10-13T14:23:46.264913+00:00",
+  "base_commit": "425463ec3a4d91451ae2ad38c8ae71bbd7a2ec76",
+  "branch": "codex/mods-control-center",
+  "extends": "2026-10-13-mods-validation.json",
+  "local_passed": {
+    "core": 1264,
+    "runtime_unit": 1912,
+    "runtime_integration_linux": 298,
+    "plugin": 56,
+    "failed": 0,
+    "legacy_ignored": 2
+  },
+  "unchanged_packages_verified_earlier_in_this_delivery": {
+    "cli": 69,
+    "scan": 577,
+    "ci_routing": 22
+  },
+  "source_sha256": {
+    "MUSTARD-COMMANDS.md": "90c9d599e5bc3066db2e272374e2551d0e591e4f8814500886b6e8641c289f11",
+    "apps/rt/src/commands/doctor/doctor/specs.rs": "f725e7590472dd914cad002a119079c302381063f5b1e88d77f5f88305f37f56",
+    "apps/rt/src/commands/flow/answer.rs": "71a4e3a7e645e8c665beb2e37c00d49055984d3dc961625fd303f4d91633bc54",
+    "apps/rt/src/commands/flow/cli.rs": "054f1c42734e815b06b1bf16858721e695c6e9e2b10aa0d17bf46292893f8723",
+    "apps/rt/src/commands/flow/evidence.rs": "e4d91c09a2f856aa048fef95ae720abb6d8b98129010361f478aa0c57eb40811",
+    "apps/rt/src/commands/flow/goal.rs": "b752d66a9f51c048dc2fe15fea5b7402c190998840747dd13575e806b4af5c59",
+    "apps/rt/src/commands/flow/grill.rs": "cc0c66b4072d3b28e12fde21f8df0aac3fde0ce87e883faee0400866f137bf1e",
+    "apps/rt/src/commands/flow/mod.rs": "cec41231932a3888fe496fc90effb61c648b585e6083144fae4deba55fa98cd3",
+    "apps/rt/src/commands/flow/resume.rs": "4078750018039287233d73dfb046de1afe6ac1fb21e574458fbe0571a67cca02",
+    "apps/rt/src/commands/flow/round.rs": "ac0455c8492a009155689faf23d8459fee7dc191e358f17b71659f7b66f5d65a",
+    "apps/rt/src/commands/flow/round/answer.rs": "0bc05d2bd7cbe361eda62fc189ffa1278069ea32abb3c5b024444c079a15ef84",
+    "apps/rt/src/commands/flow/round/backlog.rs": "d963979a977a199b4bf66a5dfbaa3f94b7d7c019293697f31f87e6b72847022d",
+    "apps/rt/src/hooks/bash/reading.rs": "5d0f9b26607c0e270147b92af22279a1fe1b318435d7418f8b113c5bb7759d96",
+    "apps/rt/src/hooks/observe/approval_witness.rs": "8bb2579b426954dd0e1d58c264f9f7c3857e87a895c29742aeb6cfb7bf5ed1b6",
+    "apps/rt/src/hooks/session/injectables.rs": "9c3443a6ca135c1e261fc9fa79638ae1d99e24e3a7f57a433686b7eaca03b3e0",
+    "apps/rt/src/hooks/session/session_start_inject.rs": "4b2b27da82f2a49630eab99c03e024c607fe52e7a31a9b5004fe88d141b98484",
+    "apps/rt/src/shared/search_gateway.rs": "2a723618deeb292eb0e3264e54e0e6b0e17200ad0f82ef0cbaed4d8c39be5fc0",
+    "apps/rt/src/shared/tool_observations.rs": "2c3518c3a01c9f804a6af192bd25a73b839b2bfe9070478b436a4a3e53c0c0fc",
+    "apps/rt/tests/search_answer_layers.rs": "beecbaa9081343ae929ee8c7d614c0ce9c79a9c1560c47a56f5bccb6c71049dd",
+    "apps/rt/tests/session_map_arrives.rs": "0898c9cac6a9853eaccc3abb3abddf12f5e2c47ba234b83d7f72634d46b56fc0",
+    "packages/core/src/domain/skill/frontmatter.rs": "e2331a518d2a33c9184ddcf1ca9f8392a08f124610a0fd27708cf3c1ff3fd5c0",
+    "packages/core/src/io/expertise.rs": "17f0ce6eb0d43d13345cfb2e01334bd278ebc36eebf79bd0a84cedc10908912d",
+    "packages/core/src/io/expertise/export.rs": "2fabf56d8027c401638560ce2cb547ca7af83c3336f37b6cfb28cd4aa6bd75f1",
+    "packages/core/src/io/expertise/tests.rs": "c4d422f9130a514af1eb2c3f4c6c929dfc89037ba6c2f737b975706baf8bf1d9",
+    "packages/core/src/io/expertise/workflow.rs": "4c6584593f7af683e4b9ebbe7885e0eb3e3f95fc49f4f852c6c805757327caa0",
+    "packages/core/src/io/wave_prompt.rs": "05e3de8b71743361aae18027cc16414a3f1fa0d7e3229f578718629b0314b77c",
+    "packages/core/templates/mustard/en-US/session-map.md": "c2a229b32e090d39073bf8e3a29cf406ae3ef428c7dd567261f62279fbd0c778",
+    "packages/core/templates/mustard/pt-BR/session-map.md": "4a37cb05207d3bd95d0b7f79118a9d0f878467a1705b578ae06443cc1584959c",
+    "scripts/bench-grill.py": "bd08bdbf3413c2daef3ee35a58a19fd6cb2167289e971f732cd093f154295ca3",
+    "scripts/bench-panel.py": "8c1e1158257a4e4be0368f9e97bdbb2af607fea2607929451da88d5426506371"
+  },
+  "validation": {
+    "core": {
+      "log_sha256": "f783d688dd8c3974fcd310a26b3c880b47d654473d09adc094ef750c0835e612",
+      "scope": "1264 passed: 1226 unit and 38 integration"
+    },
+    "runtime": {
+      "log_sha256": "1d3700cae6cf92f88fb65e515bd1be8080fe0c7846bb0b97ae151a6963c92050",
+      "scope": "1912 unit and 298 integration passed; 2 legacy measurements ignored"
+    },
+    "clippy": {
+      "log_sha256": "9a0cbae7ea677c50a78cd7616a20a5a8f239a40ef31ebab4388561e574de664e",
+      "scope": "workspace, all targets, -D warnings passed"
+    },
+    "plugin": {
+      "log_sha256": "97f2cde9413b0f8cf373cca373034e80cd7ec1b410ddc99a763ceca79ee06a7d",
+      "scope": "56 native plugin tests passed"
+    },
+    "build": {
+      "log_sha256": "9b5cb9ddebdd3d33a3206f69e31bb3f636235150395b776b4c9db4f184192635",
+      "scope": "final runtime release build passed; unchanged CLI/scan release build recorded in initial validation"
+    },
+    "install": {
+      "log_sha256": "ff5810e181226c797942ef2613b0d39f966261750921f430b0eb06e95c575fac",
+      "scope": "fresh install/update, local vectors, RTK, native search, no paid AI or publication passed"
+    }
+  },
+  "binaries": {
+    "baseline_rt": "9d84d01cb75eee3b7f796871ffb5cd328320f511ff826bb26814fd01b141edb9",
+    "candidate_rt": "a44152df246b1db26c3aa5c6589be05888afed552a9e7dbc2d054e295b85d930"
+  },
+  "grill": {
+    "baseline_bytes": 39311,
+    "candidate_bytes": 3892,
+    "reduction_percent": 90.1,
+    "baseline_point_count": 5,
+    "candidate_point_count": 5,
+    "next_point_identical": true,
+    "model_calls": 0,
+    "net_llm_token_savings": "not measured"
+  },
+  "panel_benchmark": "2026-10-13-mods-benchmark.json",
+  "incident_replay": {
+    "isolated": true,
+    "first_dispatch": [
+      3,
+      4
+    ],
+    "retry_dispatch": [
+      3,
+      4
+    ],
+    "new_wave_numbers_on_retry": false,
+    "agents_executed": false,
+    "real_project_dispatched": false,
+    "reports_sha256": [
+      "5d7a9bbde0d41867d9d500a698f1fcc8be9f8f635ad34dfdd9fd2ab867eef366",
+      "726e9a215e44256a7add1b27c98b67f3f3e38c577e482baaaaa0d064ff1d9c07"
+    ]
+  },
+  "owned_asset_cleanup": {
+    "skills_removed": 4,
+    "agents_removed": 4,
+    "bytes_removed": 50605,
+    "common_agents_preserved": 3,
+    "manual_edits_preserved": true,
+    "code_and_spec_items_unchanged": true,
+    "backup_created": true
+  },
+  "skill_creator_validator": {
+    "hosts": [
+      "claude",
+      "codex"
+    ],
+    "skill_bytes": 553,
+    "agent_bytes": {
+      "claude": 871,
+      "codex": 664
+    },
+    "passed": true,
+    "proves": "format and export, not semantic quality"
+  },
+  "session_audit": {
+    "old_full_map_injections": 4,
+    "old_full_map_total_bytes": 11750,
+    "observed_exact_Read_source_crossings": 5
+  },
+  "paid_model_calls_in_validation": 0,
+  "net_llm_token_savings": "not measured; requires equivalent real work",
+  "real_authenticated_desktop_ssh_and_model_sessions": "after release, per user decision"
+}

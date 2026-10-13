@@ -116,5 +116,8 @@
     "cloudflare_remote_upload": "not requested"
   },
   "third_party_code_imported": false,
-  "side_chat_included": false
+  "side_chat_included": false,
+  "implementation_snapshot_commit": "6ae54773895ff0a938763f4f65bbb60ae404c3ba",
+  "extended_by": "2026-10-13-despacho-validation.json",
+  "benchmark_note": "Benchmark refreshed on the final candidate; original test snapshot above remains identified by commit."
 }

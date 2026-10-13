@@ -36,7 +36,7 @@ A entrega da onda mora na spec: o agente a grava com `mustard-rt run write deliv
 | `/mustard:continue` | Retoma a spec pelo `resume` e repassa o próximo passo. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:measure` | Roda o `measure` e repassa a frase do veredito: o gasto do Claude no projeto antes e depois da marca da versão. |
 | `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
-| `/mustard-panel` | Abre projeto, specs, execução, consumo e dados da statusline nos Mods. Eventos atualizam a projeção; consulta a cada 2 s cobre mudanças externas. Sem turno de modelo. |
+| `/mustard-panel` | Abre projeto, specs, execução, consumo e dados da statusline nos Mods. Eventos atualizam a projeção; consulta a cada 10 s cobre mudanças externas. Sem turno de modelo. |
 | `/mustard-pages` | `project` publica a visão geral sem exigir spec aberta; `spec` usa a spec da branch atual; `spec <nome>` escolhe outra; `report <arquivo.md>` publica análise/resumo pronto no mesmo layout. Sem destino configurado, entrega arquivos locais. Não inicia turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto, e diagnostica a instalação. |
 
@@ -46,10 +46,10 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 
 ## O que chega à janela
 
-- **O mapa do início da sessão** (`.claude/mustard/session-map.md`, até 3 kB): o fluxo, quando uma spec abre e onde cada coisa mora. Entra no início da sessão, depois de `/clear` e da compactação.
+- **O mapa do início da sessão** (`.claude/mustard/session-map.md`, até 3 kB): o fluxo, quando uma spec abre e onde cada coisa mora. Entra uma vez por conteúdo na sessão. Após `/clear` e compactação, o guia gerenciado volta em uma versão curta com a retomada; instruções pessoais são preservadas.
 - **A linha de cada mensagem** (até 100 caracteres): o idioma do texto e "texto simples". Depois de uma resposta com erro de escrita, ela leva mais uma frase curta com o erro, como "Na última resposta: frase com 29 palavras.", uma vez só.
 - **O estilo de resposta** do plugin, um por idioma (`mustard:mustard-pt-BR`, `mustard:mustard-en-US`), escolhido pelo instalador na chave `outputStyle` do `.claude/settings.local.json`.
-- **Os dois agentes**, em `.claude/agents/mustard/`, no idioma do texto: `wave` implementa uma onda, e `review` confere a obra integrada no final, um levantamento ou o pull request de um colega. Resumos orientam a investigação; as conclusões são conferidas no código. O modelo e o esforço de cada um vêm de `agents.model` e `agents.effort` do `mustard.json`; sem esses campos, a instalação os grava com `sonnet` e `xhigh`.
+- **Os três agentes**, em `.claude/agents/mustard/`, no idioma do texto: `analysis` enriquece evidências delimitadas, `wave` implementa uma onda, e `review` confere a obra integrada no final, um levantamento ou o pull request de um colega. Resumos orientam a investigação; as conclusões são conferidas no código. O modelo e o esforço de cada um vêm de `agents.model` e `agents.effort` do `mustard.json`; sem esses campos, a instalação os grava com `sonnet` e `xhigh`.
 
 ---
 
@@ -275,3 +275,12 @@ node apps/scan/benchmarks/gateway-session.mjs --dry-run --out target/session-pai
 ```
 
 The paid responsibility pilot requires an explicit `--jev`, a key in `TYPESAFE_API_KEY` or `--config /path/to/local/mustard.json`, and `--out`; optional `--bin` selects the comparison binary directory. Secrets are passed only through the child environment. The whole-task runner requires `--execute --model <full-model-id> --plugin <review-plugin> --out <new-output-folder>` and `ANTHROPIC_API_KEY` because the official bare CLI ignores subscription OAuth. It alternates baseline/Mustard order on two authored tasks, checks external behavior graders, records actual usage/cache categories and estimated cost, and rejects a Mustard session that never used its gateway. Dry-run is free. These samples do not establish general correctness or whole-session savings. Detailed results: [gateway continuation](docs/2026-10-09-gateway-de-busca.md).
+
+
+## Evidências e especializações
+
+`mustard-rt run evidence [--root <projeto>] [--spec <spec>] [--wave <n>]` lista até 32 recibos nativos. Sem onda, lista as observações do condutor, inclusive durante o levantamento. `--point <código-ou-id> --receipt <recibo> --text "<medida, entrada e limites>"` anexa ao ponto, preservando seu código e situação; repetir a mesma associação não grava outra versão. O recibo prova qual resultado a ferramenta devolveu, não a interpretação do modelo. Comentários e relações estáticas continuam candidatos para investigação.
+
+`resume` e `grill` devolvem `goal_approval`: objetivo direto do usuário já é confirmado; sugestão usa a pergunta e opções devolvidas, com cabeçalho `MustardGoal`. O hook grava a confirmação no mesmo clique; retomar não depende da memória da conversa. O `grill` entrega o próximo ponto completo, um índice dos demais e até três referências com coordenadas exatas. Os comandos `expand` recuperam o material completo.
+
+O scan deriva navegação interna com nomes legíveis por área. Essa navegação não cria agentes ou skills genéricos. Apenas procedimentos específicos, com fontes atuais e revisão do fingerprint, são exportados. O export usa `metadata.source`, limita o nome completo a 64 caracteres e reutiliza o protocolo de execução compartilhado. `expertise --sync` retira exports genéricos antigos somente quando os hashes de autoria conferem; edições manuais permanecem. `expertise` lista procedimentos; `expertise --file <arquivo>` detalha a área pertinente, sem despejar o catálogo inteiro.

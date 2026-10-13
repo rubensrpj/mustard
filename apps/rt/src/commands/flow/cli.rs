@@ -17,6 +17,16 @@ use crate::commands::flow;
 /// Os comandos `run` que são do fluxo da spec (`flow/`).
 #[derive(Debug, Subcommand)]
 pub enum FlowCmd {
+    /// List native measurement receipts or attach one to a survey point.
+    #[command(display_order=38)]
+    Evidence {
+        #[arg(long,default_value=".")] root:PathBuf,
+        #[arg(long)] spec:Option<String>,
+        #[arg(long)] wave:Option<u64>,
+        #[arg(long,requires_all=["receipt","text"])] point:Option<String>,
+        #[arg(long,requires="point")] receipt:Option<String>,
+        #[arg(long,requires="point")] text:Option<String>,
+    },
     /// Abre uma spec: a branch `<tipo>/<nome>` e a spec `<nome>`, nascida na
     /// fase de levantamento com a branch e a base dela. O nome vale
     /// exatamente como foi escrito; o que o git recusa (espaço, acento,
@@ -286,6 +296,10 @@ pub enum FlowCmd {
 pub fn dispatch(cmd: FlowCmd) {
     let started = std::time::Instant::now();
     match cmd {
+        FlowCmd::Evidence {root,spec,wave,point,receipt,text}=>{
+            let report=flow::evidence::run(&root,spec.as_deref(),wave,point.as_deref(),receipt.as_deref(),text.as_deref());
+            flow::answer("evidence",&root,spec.as_deref(),started,&report);
+        },
         FlowCmd::Open { kind, name, base, pending, root } => {
             let opts = flow::open::OpenOpts { root, kind, name, base, pending };
             let named = opts.name.clone();

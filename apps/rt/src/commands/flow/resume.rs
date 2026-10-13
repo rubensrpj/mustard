@@ -85,6 +85,7 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
     if let Some(base) = state.base {
         out["base"] = json!(base);
     }
+    out["goal_approval"] = super::goal::status(&log, lang);
     out
 }
 

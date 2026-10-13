@@ -30,11 +30,11 @@ for n in range(25):
  (folder/'spec.ndjson').write_text('\n'.join(json.dumps(row,ensure_ascii=False) for row in rows)+'\n')
  index.append({'v':1,'type':'spec','name':name,'goal':'Implementar o fluxo seguindo as regras do projeto.','phase':'running'})
 (root/'.claude/spec/index.ndjson').write_text('\n'.join(json.dumps(row) for row in index)+'\n')
-env=dict(os.environ,MUSTARD_SPEND_DIR=str(root/'spend'),MUSTARD_DISK_SYNC='off')
+env=dict(os.environ,MUSTARD_SPEND_DIR=str(root/'spend'),MUSTARD_DISK_SYNC='off',MUSTARD_RT_DELEGATED='1')
 def run(binary,args,repeats=9):
  times=[];bodies=[]
  for _ in range(repeats):
-  started=time.perf_counter();p=subprocess.run([str(binary),'run','panel','--root',str(root),'--spec','spec-00',*args],env=env,capture_output=True,check=True)
+  started=time.perf_counter();p=subprocess.run([str(binary),'run','panel','--root',str(root),'--spec','spec-00',*args],cwd=root,env=env,capture_output=True,check=True)
   times.append((time.perf_counter()-started)*1000);bodies.append(p.stdout)
  return {'median_ms':round(statistics.median(times),3),'min_ms':round(min(times),3),'bytes':len(bodies[-1])},json.loads(bodies[-1])
 base,old=run(baseline,[])
@@ -42,7 +42,7 @@ project,new=run(candidate,['--section','project'])
 definitions,defs=run(candidate,['--section','definitions'])
 unchanged,small=run(candidate,['--section','project','--if-revision',new['revision']])
 wave,detail=run(candidate,['--section','waves','--wave','1'])
-old_wave=subprocess.run([str(baseline),'run','panel','--root',str(root),'--spec','spec-00','--wave','1'],env=env,capture_output=True,check=True)
+old_wave=subprocess.run([str(baseline),'run','panel','--root',str(root),'--spec','spec-00','--wave','1'],cwd=root,env=env,capture_output=True,check=True)
 old_wave=json.loads(old_wave.stdout)
 old_spec=next(row for row in old['specs'] if row['name']=='spec-00')
 new_spec=next(row for row in defs['specs'] if row['name']=='spec-00')
@@ -52,7 +52,7 @@ assert small['unchanged'] is True and 'specs' not in small
 receipt={'kind':'step','agent_id':'fixture-agent','turn_id':'fixture-turn','index':0,'model':'fixture','effort':'medium',
          'usage':{'input_tokens':100,'output_tokens':10,'cache_read_input_tokens':200,'cache_creation_input_tokens':0}}
 for _ in range(2):
- p=subprocess.run([str(candidate),'run','usage-record','--root',str(root),'--session','fixture-session'],input=json.dumps(receipt),env=env,text=True,capture_output=True,check=True)
+ p=subprocess.run([str(candidate),'run','usage-record','--root',str(root),'--session','fixture-session'],input=json.dumps(receipt),cwd=root,env=env,text=True,capture_output=True,check=True)
  assert json.loads(p.stdout)['ok'] is True
 _,usage=run(candidate,['--section','usage','--session','fixture-session'],1)
 agent=next(iter(usage['live_usage']['agents'].values()))

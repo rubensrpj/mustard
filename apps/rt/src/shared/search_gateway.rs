@@ -209,58 +209,54 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
     }
 }
 
-/// Rewrite only one unwrapped, literal simple search. Preserve arguments and
-/// cwd exactly; ambiguous shell syntax follows the original permission path.
+/// Rewrite literal file-search segments without moving shell operators.
+/// Stream filters and ambiguous syntax retain the original permission path.
 pub(crate) fn before_bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     if !ctx.config.search_answer() {
         return None;
     }
     let command = input.tool_input.get("command")?.as_str()?;
-    if !literal_shell(command) {
-        return None;
+    let ranges = crate::hooks::bash::lex::command_ranges(command);
+    let compound = ranges.len() > 1;
+    let mut replacement = command.to_string();
+    let mut changed = false;
+    for (at,range) in ranges.iter().enumerate().rev() {
+        if at>0 {
+            let separator=command[ranges[at-1].end..range.start].trim_start();
+            if separator.starts_with('|') && !separator.starts_with("||") {continue;}
+        }
+        let part = &command[range.clone()];
+        let trimmed = part.trim();
+        // Only literal outer commands. Never evaluate substitutions or move
+        // commands across &&, ||, pipes, redirects, loops or shell functions.
+        if !literal_shell(trimmed) { continue; }
+        let segments = crate::hooks::bash::lex::segments(trimmed);
+        let Some(segment) = segments.first().filter(|_| segments.len() == 1) else {continue};
+        if !matches!(segment.program.raw.as_str(), "rg" | "grep" | "git")
+            || !segment.leading.is_empty() || !segment.redirects.is_empty()
+            || !trimmed.strip_prefix(&segment.program.raw).is_some_and(|rest| rest.starts_with(char::is_whitespace))
+            || segment.args.iter().any(|arg| arg.raw == arg.text && arg.raw.contains(['*', '?', '[', '{', '~'])) {
+            continue;
+        }
+        let argv: Vec<_> = std::iter::once(segment.program.text.clone())
+            .chain(segment.args.iter().map(|arg| arg.text.clone())).collect();
+        let Ok(mut request) = Request::native(&argv) else {continue};
+        if mustard_core::io::code_search::arguments(&request).is_err() {continue;}
+        request.describe(input.tool_description().unwrap_or_default());
+        let Ok(envelope) = serde_json::to_string(&Invocation::new(request)) else {continue};
+        // `.` is evaluated when this segment runs, after any preceding cd.
+        // Pipeline consumers receive exactly native bytes, without cards.
+        let cwd = if compound {"."} else {input.cwd.as_deref().unwrap_or(&ctx.project_dir)};
+        let routed = format!("mustard-rt run search --root {} --request {} {}",
+            quote(cwd), quote(&envelope), if compound {"--raw"} else {"--shell-output"});
+        let begin = range.start + part.len() - part.trim_start().len();
+        replacement.replace_range(begin..begin + trimmed.len(), &routed);
+        changed = true;
     }
-    let segments = crate::hooks::bash::lex::segments(command);
-    let segment = segments.first().filter(|_| segments.len() == 1)?;
-    if !matches!(segment.program.raw.as_str(), "rg" | "grep" | "git")
-        || !segment.leading.is_empty()
-        || !segment.redirects.is_empty()
-        || segment.piped
-    {
-        return None;
-    }
-    // The lexer strips wrappers and assignments. Refuse those before using its argv.
-    if !command
-        .trim_start()
-        .strip_prefix(&segment.program.raw)
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return None;
-    }
-    if segment
-        .args
-        .iter()
-        .any(|arg| arg.raw == arg.text && arg.raw.contains(['*', '?', '[', '{', '~']))
-    {
-        return None;
-    }
-    let argv: Vec<_> = std::iter::once(segment.program.text.clone())
-        .chain(segment.args.iter().map(|arg| arg.text.clone()))
-        .collect();
-    let mut request = Request::native(&argv).ok()?;
-    mustard_core::io::code_search::arguments(&request).ok()?;
-    request.describe(input.tool_description().unwrap_or_default());
-    let cwd = input.cwd.as_deref().unwrap_or(&ctx.project_dir);
-    let replacement = format!(
-        "mustard-rt run search --root {} --request {} --shell-output",
-        quote(cwd),
-        quote(&serde_json::to_string(&Invocation::new(request)).ok()?)
-    );
+    if !changed {return None;}
     let mut tool_input = input.tool_input.clone();
     tool_input["command"] = json!(replacement);
-    Some(Verdict::Rewrite {
-        tool_input,
-        note: None,
-    })
+    Some(Verdict::Rewrite {tool_input, note: None})
 }
 
 pub(crate) fn literal_shell(command: &str) -> bool {
@@ -407,6 +403,7 @@ mod tests {
                 panic!("{command}")
             };
             assert_eq!(tool_input["timeout"], 5000);
+            assert!(!tool_input["command"].as_str().unwrap().ends_with(" --raw"),"a quoted regex alternation is not a pipeline");
             let parts = crate::hooks::bash::lex::segments(tool_input["command"].as_str().unwrap());
             let args = &parts[0].args;
             let at = args.iter().position(|arg| arg.text == "--request").unwrap();
@@ -430,11 +427,26 @@ mod tests {
         }
     }
     #[test]
+    fn compound_searches_preserve_conditions_cwd_and_native_pipe_output() {
+        let dir = tempfile::tempdir().unwrap();
+        for command in ["cd src && grep -n save store.ts | head -5", "git status --short; rg -n save src || echo missing"] {
+            let (input, ctx) = call(dir.path(), "Bash", json!({"command":command,"timeout":4000}));
+            let Some(Verdict::Rewrite {tool_input,..}) = before_bash(&input,&ctx) else {panic!("{command}")};
+            let routed = tool_input["command"].as_str().unwrap();
+            assert!(routed.contains("--root '.'"), "{routed}");
+            assert!(routed.contains(" --raw") && !routed.contains("--shell-output"), "{routed}");
+            assert_eq!(tool_input["timeout"],4000);
+            if command.starts_with("cd") {assert!(routed.starts_with("cd src && "));assert!(routed.ends_with(" | head -5"));}
+            else {assert!(routed.starts_with("git status --short; "));assert!(routed.ends_with(" || echo missing"));}
+            let mut again=input.clone();again.tool_input=tool_input;
+            assert!(before_bash(&again,&ctx).is_none(), "no rewrite loop");
+        }
+    }
+
+    #[test]
     fn unknown_shell_effects_keep_the_original_execution_path() {
         let dir = tempfile::tempdir().unwrap();
         for command in [
-            "rg x src | head",
-            "cd src && rg x .",
             "rg x src > result",
             "rg \"$TERM\" src",
             "FOO=x rg x src",

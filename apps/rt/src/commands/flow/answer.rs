@@ -275,7 +275,7 @@ fn recorded(log: &SpecLog, raw: &str) -> Result<u64, Refusal> {
 
 /// Como `raw` aponta um evento: um número ou um código; `None` para outra
 /// coisa.
-fn reference(raw: &str) -> Option<EventRef> {
+pub(super) fn reference(raw: &str) -> Option<EventRef> {
     let raw = raw.trim();
     EventRef::from_value(&raw.parse::<u64>().map_or_else(|_| json!(raw), |id| json!(id)))
 }
@@ -283,7 +283,7 @@ fn reference(raw: &str) -> Option<EventRef> {
 /// O número que `target` aponta no arquivo: o próprio número, quando ele
 /// existe, ou o da versão mais nova do código, como a gravação resolve um
 /// código.
-fn newest(log: &SpecLog, target: &EventRef) -> Option<u64> {
+pub(super) fn newest(log: &SpecLog, target: &EventRef) -> Option<u64> {
     match target {
         EventRef::Id(id) => log.get(*id).map(|event| event.id),
         EventRef::Code(code) => {

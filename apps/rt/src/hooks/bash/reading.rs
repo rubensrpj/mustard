@@ -88,6 +88,15 @@ const GIT_GREP_LONG_VALUE: &[&str] = &["max-depth", "threads", "max-count", "aft
 pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let root = ctx.project_dir_or_cwd(input);
     let lang = ctx.config.language().text_or_default();
+    // An inline interpreter can print a protected file without being one of
+    // the ordinary readers. Never attempt to execute or rewrite its program.
+    if segments.iter().any(|segment|matches!(segment.name(),"python"|"python3"|"node"|"bun"|"perl"|"ruby"|"php")
+        && segment.args.iter().any(|arg|arg.text.contains(CONFIG_FILE)))
+        && std::fs::read_to_string(mustard_core::io::spec_events::spec_root(Path::new(&root)).join(CONFIG_FILE)).is_ok_and(|text|config_key::masked(&text).is_some()) {
+        return Some(Verdict::Deny {reason:format!("{} Use `mustard-rt run config-read`. {}",
+            mustard_core::translate("config_key.shell_unsupported",lang).replace("{file}",CONFIG_FILE),
+            match lang {mustard_core::SupportedLocale::PtBr=>"O script não foi executado, incluindo etapas encadeadas; rode as demais separadamente.",mustard_core::SupportedLocale::EnUs=>"The script and chained steps were not executed; run unrelated steps separately."})});
+    }
     let mut cwd = PathBuf::from(input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(&root));
     // O `grep` que o `xargs` alimenta com a saída do `find` anterior já foi
     // lido junto com ele.
@@ -711,14 +720,14 @@ mod tests {
             Verdict::Allow => {},
             Verdict::Rewrite {tool_input,..} => {
                 let rewritten=tool_input["command"].as_str().unwrap();
-                assert!(rewritten.starts_with("mustard-rt run search "),"{rewritten}");
+                assert!(rewritten.contains("mustard-rt run search "),"{rewritten}");
                 let parsed=segments(rewritten);
-                let args=&parsed[0].args;
+                let args=&parsed.iter().find(|segment|segment.name()=="mustard-rt").unwrap().args;
                 let at=args.iter().position(|arg|arg.text=="--request").unwrap();
                 let request:mustard_core::domain::code_search::Request=mustard_core::domain::code_search::Request::from_json(&args[at+1].text).unwrap();
                 let original=segments(command);
-                assert_eq!(request.tool,original[0].program.text);
-                assert_eq!(request.input["args"],serde_json::json!(original[0].args.iter().map(|arg|&arg.text).collect::<Vec<_>>()));
+                let original=original.iter().find(|segment|segment.program.text==request.tool).unwrap();
+                assert_eq!(request.input["args"],serde_json::json!(original.args.iter().map(|arg|&arg.text).collect::<Vec<_>>()));
                 assert!(!request.choose);
             },
             other=>panic!("Expected authorized native search for {command}, got {other:?}"),
@@ -839,6 +848,16 @@ mod tests {
 
         let (_plain, plain) = fixture::project("{}", true);
         assert_eq!(run(&plain, "cat mustard.json"), Verdict::Allow);
+    }
+
+    #[test]
+    fn inline_scripts_cannot_print_the_protected_configuration() {
+        let (_dir,root)=fixture::project(&format!(r#"{{"jev":{{"key":"{}"}}}}"#,fixture::FAKE_KEY),true);
+        for command in ["python3 -c 'print(open(\"mustard.json\").read())'", "node -e 'console.log(require(\"./mustard.json\"))' && npm test"] {
+            let reason=refused(run(&root,command),command);
+            assert!(reason.contains("config-read") && !reason.contains(fixture::FAKE_KEY));
+            assert!(reason.contains("encadeadas"));
+        }
     }
 
     #[test]

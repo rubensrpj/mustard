@@ -27,9 +27,9 @@ Comparação sintética neste host, com dois binários de release: versão publi
 
 | Consulta | Tempo | Resposta | Diferença em relação à consulta completa anterior |
 | --- | ---: | ---: | --- |
-| Completa na v0.2.18 | 56.258 ms | 94,297 bytes | Base |
-| Projeto no candidato | 11.601 ms | 5,604 bytes | 79.38% menos tempo; 94.06% menos bytes |
-| Fontes inalteradas no candidato | 3.366 ms | 146 bytes | 94.02% menos tempo; 99.85% menos bytes |
+| Completa na v0.2.18 | 35.296 ms | 94,273 bytes | Base |
+| Projeto no candidato | 15.278 ms | 5,604 bytes | 56.71% menos tempo; 94.06% menos bytes |
+| Fontes inalteradas no candidato | 3.561 ms | 146 bytes | 89.91% menos tempo; 99.85% menos bytes |
 
 O intervalo de verificação externa passou de dois para dez segundos: seis disparos por minuto em repouso, contra trinta. Os eventos do trabalho continuam solicitando atualização agrupada após 200 ms. O painel suspende consultas ao fechar ou perder suas interfaces. Recuperação de transcrições fica nas visões de ondas, histórico e detalhes do consumo.
 
@@ -43,7 +43,7 @@ python3 scripts/bench-panel.py --baseline /caminho/v0.2.18/mustard-rt --candidat
 
 ## Validação e limites
 
-Foram aprovados 4.109 testes Rust únicos, 56 testes nativos do plugin e 22 testes de roteamento CI. Duas medições antigas permanecem ignoradas. Os casos alterados de painel/pendências e as 297 verificações de integração foram conferidos novamente sobre a fonte final. Clippy do workspace com todos os targets e warnings como erro, validação do plugin, compilação de release e instalação/atualização em projeto temporário passaram.
+O conjunto local soma 4.120 testes Rust aprovados: 1.264 do núcleo, 69 do CLI, 2.210 do runtime e 577 do scan. Os pacotes alterados, núcleo e runtime, foram executados novamente após as correções do incidente; CLI e scan mantêm a verificação anterior desta entrega. Também passaram 56 testes nativos do plugin e 22 testes de roteamento CI. Duas medições antigas permanecem ignoradas. Clippy do workspace com todos os targets e warnings como erro, validação do plugin, compilação de release e instalação/atualização em projeto temporário passaram. A [validação final](evidence/2026-10-13-despacho-validation.json) complementa o registro inicial.
 
 A instalação temporária executou os binários reais, o modelo vetorial local, RTK, busca tipada/nativa e aprendizado. As configurações do usuário e os projetos removidos pelo usuário permanecem preservados. Os testes usaram IA remota desligada e não publicaram páginas externas.
 
@@ -56,3 +56,7 @@ Prévia de shell é uma análise estática parcial. Ela não avalia expansões, 
 Foram aplicados conceitos, sem instalar ou incorporar código dos projetos: [Savvy Progress](https://github.com/JohnnyVizz/claude-kit/tree/main/plugins/savvy-progress), [Claude Skins](https://github.com/hellosverre/claude-skins), [Blast Radius](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/blast-radius), [Mods Manager](https://github.com/ptpmediabr/mods-manager), [Usage Weather](https://github.com/ptpmediabr/usage-weather) e [Ideas Shelf](https://github.com/ptpmediabr/ideas-shelf).
 
 Os eventos e elementos seguem as [referências oficiais de Mods](https://code.claude.com/docs/en/plugins/mods/reference), a [observação de eventos](https://code.claude.com/docs/en/plugins/mods/events) e a [medição de plugins](https://code.claude.com/docs/en/plugins/measure). O desenho segue as [diretrizes ERP.Brain](https://github.com/atiz/erpbrain/blob/main/design/guidelines/README.md), com destaque amarelo. O chat lateral permanece excluído.
+
+## Correções acrescentadas após o incidente de despacho
+
+A revisão também cobre o envio sem SHA das skills, recuperação de ondas não enviadas, evidências medidas no levantamento, persistência da confirmação do objetivo, buscas encadeadas, guias iniciais repetidos e geração de especializações. A relação completa entre os relatos, as correções e as provas está em [despacho e especializações](2026-10-13-despacho-e-especializacoes.md). Esses ajustes acompanham o painel na mesma entrega.

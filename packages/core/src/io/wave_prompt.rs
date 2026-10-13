@@ -810,6 +810,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
     let mut stale_skills = Vec::new();
+    let mut skill_hashes = BTreeMap::new();
     let mut chosen: Vec<_> = named.iter().map(|name| (name.clone(), read_skill(root, &files, name))).collect();
     for (name, text, file) in scoped_skills(root, &files) {
         if !chosen.iter().any(|(_, source)| source.as_ref().is_some_and(|(_, path)| path == &file)) {
@@ -844,7 +845,11 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         if stale {
             stale_skills.push(name.clone());
         }
-        skills.push(Skill { name: name.clone(), when: when_to_use(text), path: shown(file), stale });
+        let path = shown(file);
+        let mut hash = crate::io::sha256::Sha256::new();
+        hash.update(text.as_bytes());
+        skill_hashes.insert(path.clone(), hash.hex_digest());
+        skills.push(Skill { name: name.clone(), when: when_to_use(text), path, stale });
     }
 
     let material = Material {
@@ -877,7 +882,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         prepared,
     };
     let text = wave_prompt::write(&material, lang);
-    let skills=material.skills.iter().map(|skill|serde_json::json!({"name":skill.name,"path":skill.path,
+    let skills=material.skills.iter().map(|skill|serde_json::json!({"name":skill.name,"path":skill.path,"sha":skill_hashes[&skill.path],
         "stale_at_dispatch":skill.stale,"read_confirmed":null})).collect();
     let lines = wave_prompt::count_lines(&text);
     // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
@@ -1274,6 +1279,12 @@ mod tests {
             let flight=Flight {host:Some(host.into()),..Flight::default()};
             let built=prompts(root,"test",&log,Locale::EnUs,&flight);
             assert_eq!(built.len(),1);
+            assert!(!built[0].skills.is_empty());
+            for skill in &built[0].skills {
+                let bytes = std::fs::read(skill["path"].as_str().unwrap()).unwrap();
+                let mut hash = crate::io::sha256::Sha256::new(); hash.update(&bytes);
+                assert_eq!(skill["sha"], hash.hex_digest());
+            }
             if host=="codex" {assert_eq!(built[0].model,"inherit");assert_eq!(built[0].effort,"inherit");}
             let folder=if host=="codex" {".codex/agents"} else {".claude/agents"};
             assert!(root.join(folder).join(if host=="codex" {"mustard-database.toml"} else {"mustard-database.md"}).is_file());

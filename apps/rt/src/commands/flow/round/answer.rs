@@ -678,7 +678,7 @@ pub(super) fn run_entered_round(
     // passar, ainda com a trava do git presa: o lote recusado deixa a spec
     // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A
     // leitura logo abaixo já vê a fase nova.
-    let entering = phase == "approved" && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
+    let entering = phase == "approved";
     let log = store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
     let codes = log.codes();
 
@@ -707,9 +707,6 @@ pub(super) fn run_entered_round(
         Err(cycle) => {
             drop(held_lock);
             let mut answered = json!({ "spec": spec, "recorded": recorded, "formatted": formatted });
-            if entering {
-                answered["phase"] = json!("running");
-            }
             if let Some(commit) = commit {
                 answered["commit"] = commit;
             }
@@ -969,6 +966,7 @@ pub(super) fn run_entered_round(
     // esperar o veredito, quando a revisão final segue aberta; ou fechar,
     // com tudo entregue e aprovado e o backlog vazio. A revisão do diff da
     // onda antecede o commit; a revisão final permanece no fechamento.
+    if entering {crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);}
     let report_back = super::checks::report_back(root, lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
