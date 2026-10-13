@@ -421,6 +421,10 @@ fn record_assembly(start: &Path, spec: &str, (asked, returned): (usize, usize), 
 /// autor binário; a onda combinada à mão no plano, sem ordem, segue como está
 /// até a rodada despachá-la. É a onda de lote que a rodada desfaz.
 fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
+    let failure=log.visible().into_iter().filter(|e|e.event_type=="call" && e.str_field("command")==Some("round") && e.str_field("result")==Some("refused"))
+        .map(|e|e.id).next_back();
+    let revised=log.visible().into_iter().filter(|e|e.str_field("author")!=Some("binary") && ["task","request","criterion","wave"].contains(&e.event_type.as_str()))
+        .map(|e|e.id).max().unwrap_or(0);
     let sent: BTreeSet<u64> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "send").filter_map(SpecEvent::wave).collect();
     let delivered = log.delivered_waves();
     let formed: BTreeSet<u64> = log
@@ -429,5 +433,8 @@ fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
         .filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary") && !e.ints("order").is_empty())
         .filter_map(SpecEvent::wave)
         .collect();
-    log.planned_waves().into_iter().filter(|n| formed.contains(n) && !sent.contains(n) && !delivered.contains(n)).collect()
+    log.planned_waves().into_iter().filter(|n| {
+        let recoverable=failure.is_some_and(|failed| failed>revised && log.visible().into_iter().any(|e|e.event_type=="wave" && e.wave()==Some(*n) && e.id<failed));
+        formed.contains(n) && !sent.contains(n) && !delivered.contains(n) && !recoverable
+    }).collect()
 }

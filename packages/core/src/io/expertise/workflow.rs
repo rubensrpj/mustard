@@ -115,7 +115,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
         .unwrap_or_default(),
     );
     Selection {
-        preferred_agent: selected.first().map(|p| format!("mustard-{}", p.name)),
+        preferred_agent: selected.iter().find(|p| p.origin == "authored").map(|p| format!("mustard-{}", p.name)),
         profiles: selected.iter().map(|p| p.name.clone()).collect(),
         reason: reason.into(),
         fingerprint,
@@ -163,9 +163,11 @@ pub fn prepare(
         return Err("expertise-unknown-host".into());
     }
     let selection = select(root, files, preferred, source);
+    let authored:BTreeSet<_>=list(root)?.into_iter().filter(|profile|profile.origin=="authored").map(|profile|profile.name).collect();
     let exports = selection
         .profiles
         .iter()
+        .filter(|name| authored.contains(*name))
         .map(|name| export(root, name, host))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(

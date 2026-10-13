@@ -14,6 +14,8 @@ pub mod cli;
 pub mod close;
 pub mod discard;
 pub mod grill;
+pub(crate) mod goal;
+pub(crate) mod evidence;
 pub mod open;
 pub mod plan;
 pub mod reopen;
@@ -35,6 +37,8 @@ use crate::commands::spec_events::conversation::record_output_call;
 pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: Instant, report: &Value) {
     // Host-facing transport keeps every field, without indentation overhead.
     // Measure exactly these bytes rather than a synthetic pretty JSON copy.
+    let projected = (command == "grill").then(|| grill::projection(report));
+    let report = projected.as_ref().unwrap_or(report);
     let output=report.to_string()+"\n";
     let _ = record_output_call(root, command, named, started, report,&output);
     print!("{output}");

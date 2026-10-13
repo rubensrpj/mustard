@@ -257,6 +257,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "condensed": condensed,
         "points": points,
         "reminders": reminders,
+        "goal_approval": super::goal::status(&log, lang),
     });
     // Discovery only: grounded flow evidence does not close survey points,
     // introduce a requirement or substitute the required source read.
@@ -295,6 +296,34 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
     }
     report
+}
+
+/// Transport projection: the next point remains complete. Other points are
+/// an index; source cards and full point records are retrieved on demand.
+pub(crate) fn projection(full: &Value) -> Value {
+    if full["ok"] != true {return full.clone();}
+    let mut out=full.clone();
+    if full["condensed"] != true && let Some(points)=out["points"].as_array_mut() {
+        for point in points {
+            let count=point["facts"].as_array().map_or(0,Vec::len);
+            if let Some(fields)=point.as_object_mut() {
+                fields.retain(|key,_| ["block","gap","from","origin","id","code","status"].contains(&key.as_str()));
+                fields.insert("fact_count".into(),json!(count));
+            }
+        }
+    }
+    if let Some(knowledge)=out.get_mut("knowledge") {
+        let cards=knowledge["cards"].as_array().into_iter().flatten().take(3).map(|card| {
+            let mut card=card.clone();
+            if let Some(fields)=card.as_object_mut() {fields.retain(|key,_| ["id","file","name","symbol","line","end_line","source","signature","source_sha256","basis","confidence"].contains(&key.as_str()));}
+            card
+        }).collect::<Vec<_>>();
+        *knowledge=json!({"cards":cards,"role":"static navigation; confirm behavior in source or measured evidence"});
+    }
+    out["expand"]=json!({"point":"mustard-rt run read item-<item-id>","all_points":"mustard-rt run read agreed",
+        "source":"mustard-rt run knowledge --query <local-question> --purpose spec",
+        "measurements":"mustard-rt run evidence --spec <spec>"});
+    out
 }
 
 /// O motivo da volta ao levantamento: o do último `state` que pôs a spec em
@@ -1335,4 +1364,17 @@ mod tests {
         assert!(events(&main, "x").contains("\"type\":\"point\""), "the points go to the main checkout");
         assert!(!worktree.join(".claude").exists(), "nothing of the Mustard inside the worktree");
     }
+    #[test]
+    fn compact_transport_preserves_next_point_and_exact_source_coordinates() {
+        let full=json!({"ok":true,"points":[{"code":"MSTD-POINT-0001","id":4,"gap":"Reproduce","facts":[{"text":"candidate","source":"src/a.rs:10"}]}],
+            "next":{"id":4,"facts":[{"text":"measured","receipt":"r"}]},"knowledge":{"cards":[{"id":"x","name":"save","source":{"file":"src/a.rs","line":10,"end_line":30},"source_excerpt":{"text":"x".repeat(38000)}}]}});
+        let compact=projection(&full);
+        assert_eq!(compact["next"],full["next"]);
+        assert_eq!(compact["knowledge"]["cards"][0]["source"],full["knowledge"]["cards"][0]["source"]);
+        assert!(compact.to_string().len()*10<full.to_string().len());
+        assert_eq!(compact["points"][0]["fact_count"],1);
+        let mut condensed=full.clone();condensed["condensed"]=json!(true);
+        assert_eq!(projection(&condensed)["points"],full["points"],"presenting all points together keeps their facts");
+    }
+
 }

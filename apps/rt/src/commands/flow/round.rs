@@ -758,4 +758,26 @@ mod tests {
         let gate = crate::manifest_dir::manifest_dir().join("src").join("commands").join("flow").join("round.rs");
         assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
+    #[test]
+    fn two_scoped_skills_are_hashed_and_the_native_send_is_accepted() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        approved(root,"x",&[(1,&["src/a.rs"],&[])]);
+        for name in ["database","validation"] {
+            let folder=root.join(format!(".claude/skills/{name}"));std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("SKILL.md"),format!("---\nname: {name}\ndescription: Check this project area\npaths: [\"src/a.rs\"]\n---\n\nInspect the existing implementation and test its behavior.\n")).unwrap();
+        }
+        let result=round(root,"x",None);
+        assert_eq!(result["ok"],true,"{result}");
+        let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,"x").unwrap()).unwrap().unwrap();
+        let send=log.visible().into_iter().find(|event|event.event_type=="send").unwrap();
+        assert_eq!(send.fields["skills"].as_array().unwrap().len(),2);
+        for skill in send.fields["skills"].as_array().unwrap() {
+            let bytes=std::fs::read(skill["path"].as_str().unwrap()).unwrap();
+            assert_eq!(skill["sha"],mustard_core::io::observations::digest(&bytes));
+        }
+        let again=round(root,"x",None);assert_eq!(again["ok"],true,"{again}");
+        let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,"x").unwrap()).unwrap().unwrap();
+        assert_eq!(log.visible().into_iter().filter(|event|event.event_type=="send").count(),1,"retry does not dispatch twice");
+    }
+
 }

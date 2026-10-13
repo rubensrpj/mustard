@@ -1,8 +1,19 @@
 import searchSchema from './search-schema.js';
 import {completeDelivery} from './delivery-check.js';
 import {renderPanel,initialPanelView} from './panel-view.js';
+import {sections,hostReceipt} from './panel-runtime.js';
+import {shellImpactPane} from './panel-extras.js';
 // Local observation only. Runtime events remain the source of truth; the
 // poller coalesces overlapping reads and never calls a model or search tool.
+async function savePresentation($,value) {
+  try {const session=await $.session.id();await $.store.set('mustard-panel:'+session,{schema_version:1,cwd:await $.session.cwd(),...value});}catch{/* Optional on older hosts. */}
+}
+async function restorePresentation($) {
+  try {const value=await $.store.get('mustard-panel:'+await $.session.id());
+    return value?.schema_version===1 && value.cwd===await $.session.cwd()?value:undefined;
+  }catch{return undefined;}
+}
+
 let timer, eventTimer, busy = false, opened = false, data, problem, selected, usage, revision = 0;
 let view=initialPanelView();
 let publishing = false, publicationMessage;
@@ -10,6 +21,27 @@ let settings,settingsRevision=0;
 let runtimeBinary;
 let consumptionMeasuredAt;
 let panelWanted=false;
+let refreshQueued=false,sourceRevision,queryIdentity;
+let restoredView=false;
+let impact,impactAction,operationBusy=false;
+let shellImpact;
+const impactId='mustard-impact';
+let presentationQueue=Promise.resolve();
+function persist($) {presentationQueue=presentationQueue.catch(()=>{}).then(()=>savePresentation($,{selected,view:{...view},wanted:panelWanted}));return presentationQueue;}
+async function localOperation($,command,request) {
+  const cwd=await $.session.cwd();
+  const result=await $.process.run([await runtime($),'run',command,'--root',cwd,...(request?['--json',JSON.stringify(request)]:[])],{cwd,timeoutMs:10000});
+  const value=JSON.parse(result.stdout);if(result.exitCode!==0 || value.ok!==true)throw new Error(value.reason || 'operation-failed');return value;
+}
+async function diagnostic($,component,operation,reason) {
+  try {const cwd=await $.session.cwd();await $.process.run([await runtime($),'run','panel-diagnostics','--root',cwd,'--record'],
+    {cwd,timeoutMs:3000,stdin:JSON.stringify({component,operation,reason,session:await $.session.id()})});}catch{/* Diagnostics never blocks work. */}
+}
+async function previewImpact($,request,action) {
+  try {impact=await localOperation($,'impact',request);impact.canExecute=typeof action==='function';impactAction=action?{run:action,request}:undefined;}
+  catch {impact={ok:false,reason:'impact-unavailable'};impactAction=undefined;}
+  $.ui.invalidate('ui.render');
+}
 const panelEvents=[];
 function panelEvent(kind,surface) {
   panelEvents.push({kind,at:new Date().toISOString(),...(surface?{surface}: {})});
@@ -96,7 +128,8 @@ async function settingsOperation($,operation='load') {
 const id = 'mustard-panel';
 function t(pt,en) { return data?.project?.language === 'en-US' ? en : pt; }
 async function refresh($) {
-    if (busy || !opened) return;
+    if(!opened)return;
+    if(busy){refreshQueued=true;return;}
     const ticket = revision;
     busy = true;
     try {
@@ -106,44 +139,52 @@ async function refresh($) {
       // Historical transcript recovery can be expensive on a remote host.
       // Opening the project must not wait for it. Live host receipts remain
       // available in every view; recover history while Usage is visible.
-      const measure = view.tab === 'Consumo' && (consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000);
+      const measure = view.tab === 'Consumo' && ['Ondas','Histórico','Detalhes'].includes(view.usageView) && (consumptionMeasuredAt === undefined || Date.now() - consumptionMeasuredAt >= 30000);
+      const section=sections[view.tab] || 'project';
+      const identity=JSON.stringify([section,selected,session,view.tab==='Ondas'?view.selectedWave:null]);
       const result = await $.process.run(
         [await runtime($), 'run', 'panel', '--root', cwd, ...(selected ? ['--spec', selected] : []), ...(session ? ['--session', session] : []),
+          '--section',section,...(sourceRevision && queryIdentity===identity && !measure?['--if-revision',sourceRevision]:[]),
           ...(view.tab==='Ondas' && view.selectedWave!==undefined ? ['--wave',String(view.selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
         { cwd, timeoutMs: measure ? 30000 : 10000 });
       if (result.exitCode !== 0) throw new Error(result.stderr || 'Consulta local falhou');
       const next = JSON.parse(result.stdout);
       if (next.ok !== true || next.schema_version !== 1) throw new Error('Versão do painel incompatível');
       if (!opened || ticket !== revision) return;
-      data = next;
+      if(!next.unchanged)data=next;
+      if(data)data.checked_at=new Date().toISOString();
+      sourceRevision=next.revision;queryIdentity=identity;
       if (measure) consumptionMeasuredAt = Date.now();
       if (!selected || !data.specs.some(s => s.name === selected)) selected = data.selected_spec || data.specs[0]?.name;
-      usage = await $.session.usage();
+      try {usage=await $.session.usage();}catch{/* Keep the last native observation. */}
       problem = undefined;
     } catch (error) {
-      if (opened && ticket === revision) problem = String(error.message || error);
+      if (opened && ticket === revision) {problem=t('Não foi possível atualizar. Tente novamente ou abra Diagnóstico.','Could not update. Retry or open Diagnostics.');
+        void diagnostic($,'panel','refresh','panel-query-failed');}
     } finally {
       busy = false;
       if (opened && ticket === revision) $.ui.invalidate('ui.render');
+      if(opened && (refreshQueued || ticket!==revision)){refreshQueued=false;requestRefresh($);}
     }
 }
 function recordMeasurement($, measurement) {
   // Preserve arrival order. A repeated cumulative reading replaces no spend,
   // and the runtime resolves attribution from the checkout, not the pane tab.
   measurementQueue = measurementQueue.catch(() => {}).then(async () => {
-    if (measurement.cost?.usd == null) return;
     try {
       const cwd = await $.session.cwd();
       const session = await $.session.id();
       const model = await $.session.model();
-      await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
-        {cwd, timeoutMs:5000, stdin:JSON.stringify({cost:measurement.cost,model})});
-    } catch { /* Missing host data stays unknown; never interfere with work. */ }
+      const result=await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
+        {cwd, timeoutMs:5000, stdin:JSON.stringify({...measurement,model:measurement.model || model})});
+      if(result.exitCode!==0 || JSON.parse(result.stdout).ok!==true)throw new Error('usage-record-failed');
+    } catch {void diagnostic($,'usage','record','usage-record-failed');}
   });
   return measurementQueue;
 }
 async function openPanel($, name) {
     panelWanted=true;
+    void persist($);
     panelEvent('open-request');
     stopPanel();
     if (name) selected = name;
@@ -155,8 +196,12 @@ async function openPanel($, name) {
       await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
       opened = true;
       panelEvent('open-accepted');
-      timer = $.clock.every(2000, () => { void refresh($); });
+      timer = $.clock.every(10000, () => { void refresh($); });
       await refresh($);
+      if(!restoredView && data?.preferences?.ok) {
+        restoredView=true;const profile=data.preferences.profiles.find(profile=>profile.id===data.preferences.selected);
+        if(profile && profile.tab!==view.tab){view.tab=profile.tab;revision++;await refresh($);}
+      }
       if(view.tab==='Configurações')await settingsOperation($);
       return {text:t('Abertura do painel solicitada nesta sessão. Se não aparecer, execute /mustard-panel --diagnose.',
         'Panel opening requested in this session. If it does not appear, run /mustard-panel --diagnose.')};
@@ -239,11 +284,15 @@ async function publishPage($,rawArgs) {
 export function register(on) {
   on('session.start', async ($, e, next) => {
     resetEvidence();
+    const saved=await restorePresentation($);
+    if(saved){selected=saved.selected;view={...initialPanelView(),...saved.view};panelWanted=saved.wanted===true;restoredView=true;}
     await $.command.register({ name: 'mustard-panel', description: 'Projeto, specs, execução e consumo local', argumentHint: '[spec] | --diagnose', immediate: true });
     await $.command.register({ name: 'mustard-pages', description: 'Publicar projeto ou spec sob pedido explícito', argumentHint: 'project | spec [nome] | report <arquivo.md>', immediate: true });
     await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
       inputSchema:searchSchema});
-    return next(e);
+    const result=await next(e);
+    if(panelWanted)await openPanel($);
+    return result;
   });
   on('command.run', { command: 'mustard-panel' }, async ($, e) => {
     if (e.args.trim()==='--diagnose') return panelDiagnostics($);
@@ -297,11 +346,29 @@ export function register(on) {
   // native orchestration. Coalesce bursts; retain polling for external edits.
   on('tool.call', async ($, e, next) => {
     const result=await next(e);
+    if(result?.isError || result?.deny)void diagnostic($,'tool',e.tool,result.deny?'tool-denied':'tool-failed');
     requestRefresh($);
     return result;
   });
+  on('tool.call',{tool:'Bash'},async ($,e,next)=>{
+    // Only a display observer. The native command guard and host permission
+    // checks still decide; no new prompt, rewritten command or approval path.
+    let previewed=false;
+    if(/\b(rm|rmdir|Remove-Item|git\s+(?:clean|reset|restore|checkout|push|branch))\b/.test(e.command || '')) {
+      try {
+        const preview=await localOperation($,'impact',{action:'shell',command:e.command});
+        if(preview.relevant || preview.effects?.length){shellImpact=preview;previewed=true;
+          await $.ui.open({id:impactId,title:'Mustard · Impacto',focus:false,closeOnEscape:true,rows:24,columns:90});}
+      }catch{/* Display failures never replace an existing permission decision. */}
+    }
+    try {const result=await next(e);
+      if(previewed){shellImpact.toolState=result.deny?'bloqueada':result.isError?'retornou com erro':'retornou';$.ui.invalidate('ui.render');}
+      return result;
+    }catch(error){if(previewed){shellImpact.toolState='interrompida ou falhou';$.ui.invalidate('ui.render');}throw error;}
+  });
   on('turn.complete', async ($, e, next) => {
     const result=await next(e);
+    if(e.agentId)await recordMeasurement($,hostReceipt(e));
     requestRefresh($);
     return result;
   });
@@ -318,7 +385,7 @@ export function register(on) {
   });
   on('session.measure', async ($, e, next) => {
     usage = e;
-    await recordMeasurement($, e);
+    await recordMeasurement($, hostReceipt(e));
     if (opened) $.ui.invalidate('ui.render');
     requestRefresh($);
     return next(e);
@@ -326,11 +393,13 @@ export function register(on) {
   on('ui.close', { id }, async ($, e, next) => {
     panelEvent('close');
     if(e.origin?.kind!=='plugin')panelWanted=false;
+    void persist($);
     stopPanel();
     return next(e);
   });
   on('session.end', async ($, e, next) => {
     panelWanted=false;
+    void persist($);
     panelEvent('session-end');
     resetEvidence();
     stopPanel();
@@ -340,6 +409,7 @@ export function register(on) {
     settings=undefined;settingsRevision++;
     consumptionMeasuredAt = undefined;
     publicationMessage = undefined;
+    try {await presentationQueue;await $.store.delete('mustard-panel:'+await $.session.id());}catch{/* Old hosts may lack storage. */}
     return next(e);
   });
   on('session.attach', async ($,e,next)=>{
@@ -355,26 +425,40 @@ export function register(on) {
     if(!surfaces?.length)stopPanel();
     return next(e);
   });
-  on('ui.fault',async ($,e,next)=>{panelEvent('ui-fault',e.surface);return next(e);});
+  on('ui.fault',async ($,e,next)=>{panelEvent('ui-fault',e.surface);void diagnostic($,'panel','render','ui-fault');return next(e);});
+  on('agent.spawn',async ($,e,next)=>{
+    const result=await next(e);
+    if(result.agentId && !result.deny)await recordMeasurement($,{kind:'spawn',agent_id:result.agentId,model:result.model,agent_type:e.subagentType});
+    requestRefresh($);return result;
+  });
+  on('turn.step',async function* ($,e,next){
+    const result=yield* next(e);
+    if(result.usage)await recordMeasurement($,hostReceipt(e,result));
+    requestRefresh($);return result;
+  });
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
+    if(e.requestId===impactId)return shellImpactPane(await $.ui.resolve(e),shellImpact,async()=>{shellImpact=undefined;await $.ui.close({id:impactId});});
     if (e.requestId !== id) return next(e);
     // Record transitions only, not each 2s redraw.
     if(!panelEvents.some(row=>row.kind==='render' && row.surface===e.surface))panelEvent('render',e.surface);
     const redraw=()=>$.ui.invalidate('ui.render');
     return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
-      data,usage,problem,selected,view,publicationMessage,publishing,settings,actions:{
+      data,usage,problem,selected,view,publicationMessage,publishing,settings,impact,operationBusy,actions:{
         change:(patch,query=false)=>{
           Object.assign(view,patch);
+          query=query || !!patch.tab;
           if(query)revision++;
+          void persist($);
           redraw();
           if(patch.tab==='Configurações' && !settings?.loaded)void settingsOperation($);
           if(query)void refresh($);
         },
         selectSpec:name=>{
-          selected=name;const tab=view.tab;view={...initialPanelView(),tab};
+          selected=name;const previous=view,tab=view.tab;view={...previous,...initialPanelView(),tab,usageView:previous.usageView,settingsGroup:previous.settingsGroup};
           if(tab==='Ondas'){const waves=data?.specs?.find(spec=>spec.name===name)?.waves || [];
             view.selectedWave=(waves.find(wave=>['running','repair-required','received'].includes(wave.status)) || waves[0])?.wave;}
           revision++;redraw();void refresh($);
+          void persist($);
         },
         refresh:()=>{void refresh($);},
         editSetting:(field,value)=>{
@@ -386,8 +470,46 @@ export function register(on) {
         reloadSettings:()=>{void settingsOperation($);},
         saveSettings:()=>{void settingsOperation($,'save');},
         scanSettings:()=>{void settingsOperation($,'scan');},
-        publish:args=>publishPage($,args),
-        close:async()=>{stopPanel();await $.ui.close({id});},
+        publish:args=>{
+          const scope=args.split(/\s+/)[0];
+          return previewImpact($,{action:'publish',scope,spec:scope==='spec'?selected:undefined,document:scope==='report'?args.slice(7).trim():undefined},()=>publishPage($,args));
+        },
+        preview:request=>previewImpact($,request),
+        cancelImpact:()=>{impact=impactAction=undefined;redraw();},
+        confirmImpact:async()=>{
+          const action=impactAction;if(!action)return;
+          try {const current=await localOperation($,'impact',action.request);
+            if(current.token!==impact.token){impact={...current,canExecute:true,changed:true};redraw();return;}
+            impact=impactAction=undefined;await action.run();
+          }catch{impact={ok:false,reason:'impact-unavailable'};impactAction=undefined;}redraw();
+        },
+        idea:async patch=>{
+          if(operationBusy)return;operationBusy=true;redraw();
+          try {const value=await localOperation($,'ideas',{schema_version:1,revision:data.ideas.revision,...patch});
+            data.ideas=value;view.ideaTitle=view.ideaDetail='';view.selectedIdea=undefined;problem=undefined;}
+          catch(error){problem=t('A ideia não foi salva. Recarregue para conferir alterações concorrentes.','Idea was not saved. Reload to check concurrent edits.');}
+          finally{operationBusy=false;redraw();void refresh($);}
+        },
+        startIdea:async item=>{
+          try {await $.prompt.fill({text:t(`Iniciar o levantamento de uma nova spec para a ideia ${item.id}: ${item.title}\n${item.detail}`,`Start a new spec survey for idea ${item.id}: ${item.title}\n${item.detail}`),mode:'append'});}
+          catch{problem=t('Não foi possível preencher o pedido. Copie a ideia para iniciar o levantamento.','Could not fill the request. Copy the idea to start the survey.');redraw();}
+        },
+        profile:async patch=>{
+          if(operationBusy)return;operationBusy=true;
+          try {const value=await localOperation($,'panel-preferences',{schema_version:1,revision:data.preferences.revision,...patch});
+            data.preferences=value;
+            if(patch.selected){const profile=value.profiles.find(p=>p.id===patch.selected);view.tab=profile.tab;view.waveView=patch.selected==='review'?'Entrega':'Plano';
+              view.profileName=view.profileTabs=view.profileTab=undefined;revision++;void refresh($);}
+            void persist($);
+          }catch{problem=t('O perfil não foi salvo. Recarregue antes de tentar novamente.','Profile was not saved. Reload before retrying.');}
+          finally{operationBusy=false;redraw();}
+        },
+        exportDiagnostics:async()=>{
+          try {const cwd=await $.session.cwd();const result=await $.process.run([await runtime($),'run','panel-diagnostics','--root',cwd,'--export'],{cwd,timeoutMs:10000});
+            const value=JSON.parse(result.stdout);problem=value.ok?t(`Diagnóstico local: ${value.path}`,`Local diagnostic: ${value.path}`):t('Falha ao exportar diagnóstico.','Diagnostic export failed.');}
+          catch{problem=t('Falha ao exportar diagnóstico.','Diagnostic export failed.');}redraw();
+        },
+        close:async()=>{panelWanted=false;await persist($);stopPanel();await $.ui.close({id});},
       }});
   });
 }

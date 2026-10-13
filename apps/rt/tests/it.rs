@@ -19,6 +19,7 @@ mod command_frontmatter;
 mod command_guard;
 mod config_read;
 mod panel_settings;
+mod panel_mods;
 mod development_build_handover;
 mod doctor_follows_config_dir;
 mod doctor_known_events;

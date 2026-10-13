@@ -99,7 +99,10 @@ pub(crate) fn capture(
             })?;
         Some((spec, send.wave()?, log.dispatch_position(send.id)))
     });
-    let (spec, wave, dispatch) = binding?;
+    let (spec, wave, dispatch) = binding.or_else(|| {
+        if input.is_subagent() {return None;}
+        crate::commands::spec_events::conversation::conversation_spec(&root,Some(session)).map(|spec|(spec,0,0))
+    })?;
     let Ok(output) = serde_json::to_vec(response) else {
         return None;
     };

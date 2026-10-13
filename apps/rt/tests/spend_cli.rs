@@ -217,7 +217,7 @@ fn historical_consumption_stays_in_the_panel_without_expanding_the_status_bar() 
 
     let shown = bar(&scene);
     assert!(shown.contains("loja") && shown.contains("Opus 5") && shown.lines().count()==1, "compact current state: {shown:?}");
-    assert!(!shown.contains(panel) && !shown.contains("consumo") && !shown.contains("/mustard-panel"), "history belongs in Mods: {shown:?}");
+    assert!(!shown.contains(panel) && !shown.contains("consumo") && shown.contains("/mustard-panel"), "history belongs in Mods; the compact bar retains panel access: {shown:?}");
     let before=std::fs::read(scene.spend.join("ledger.json")).unwrap();
     let snapshot:Value=serde_json::from_str(&scene.rt(&["run","panel"],"")).unwrap();
     assert_eq!(snapshot["consumption"]["trend"]["change_percent"],-25);

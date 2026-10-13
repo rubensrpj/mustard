@@ -1,6 +1,37 @@
 use super::*;
 use crate::io::fs;
 
+#[test]
+fn old_generic_exports_are_removed_only_when_the_ownership_hash_matches() {
+    let (dir,mut p)=fixture();let root=dir.path();p.origin="native-navigation".into();p.name="area-0123456789abcdef".into();save(root,&p).unwrap();
+    let owned=".claude/skills/mustard-area-0123456789abcdef/SKILL.md";
+    let manual=".claude/agents/mustard-area-0123456789abcdef.md";
+    std::fs::create_dir_all(root.join(owned).parent().unwrap()).unwrap();
+    std::fs::create_dir_all(root.join(manual).parent().unwrap()).unwrap();
+    fs::write_atomic(root.join(owned),b"old generic navigation").unwrap();
+    fs::write_atomic(root.join(manual),b"user edited this file").unwrap();
+    let mut db=project_map::open_existing(&project_map::model_path(root)).unwrap();
+    db.write(|tx| {tx.execute("INSERT INTO expertise_exports(id,payload) VALUES (?1,?2)",params![owned,digest(b"old generic navigation")])?;
+        tx.execute("INSERT INTO expertise_exports(id,payload) VALUES (?1,?2)",params![manual,digest(b"original generated agent")])?;Ok(())}).unwrap();drop(db);
+    let result=sync(root).unwrap();
+    assert!(!root.join(owned).parent().unwrap().exists());
+    assert_eq!(std::fs::read_to_string(root.join(manual)).unwrap(),"user edited this file");
+    assert_eq!(result["withdrawn_exports"]["removed"].as_array().unwrap().len(),1);
+    assert_eq!(result["withdrawn_exports"]["manual_edits_preserved"].as_array().unwrap().len(),1);
+}
+
+#[test]
+fn broad_roles_split_by_real_area_and_use_readable_names() {
+    let paths=(0..60).map(|n|format!("src/{}/service{n}.service.ts",if n<30 {"billing"} else {"inventory"})).collect();
+    let groups=scoped_groups(paths);
+    assert_eq!(groups.len(),2);
+    for paths in groups {
+        let name=scope_name("(root):service",&paths);
+        assert!(name=="area-src-billing-service" || name=="area-src-inventory-service");
+        assert_eq!(paths.len(),30);
+    }
+}
+
 pub(super) fn fixture() -> (tempfile::TempDir, Profile) {
     let dir = tempfile::tempdir().unwrap();
     let text = "fn read() {}\n";
@@ -80,7 +111,9 @@ fn native_sync_learns_roles_reuses_and_updates_without_model_calls() {
     let first = sync(root).unwrap(); assert_eq!(first["native_profiles"], 1); assert_eq!(first["model_calls"], 0);
     assert_eq!(sync(root).unwrap()["changed"], 0);
     let selected = selected(root, &["area1/storage.service.rs".into()]); assert_eq!(selected.len(), 1);
-    assert_eq!(workflow::prepare(root,&["area1/storage.service.rs".into()],"claude",None,"native").unwrap()["exports"].as_array().unwrap().len(),1);
+    let prepared=workflow::prepare(root,&["area1/storage.service.rs".into()],"claude",None,"native").unwrap();
+    assert_eq!(prepared["exports"].as_array().unwrap().len(),0,"navigation is already available in the index; no generic skill pollution");
+    assert!(prepared["selection"]["preferred_agent"].is_null());
     fs::write_atomic(root.join("area0/storage.service.rs"), b"fn changed() {}\n").unwrap();
     assert!(!active(root, &selected[0]));
     // Sync withdraws that stale example and preserves the other current ones.

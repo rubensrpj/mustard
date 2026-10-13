@@ -44,3 +44,34 @@ fn the_search_answer_is_built_in_shared_without_command_and_hook_reaching_each_o
     }
     assert!(reached.is_empty(), "the search answer reaches across the layers: {reached:#?}");
 }
+
+
+#[cfg(unix)]
+#[test]
+fn shell_gateway_preserves_pipe_filters_cwd_conditions_and_exit_codes() {
+    use std::io::Write;
+    use std::process::{Command,Stdio};
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.py"),"def quartz(): return 1\ndef zircon(): return 2\n").unwrap();
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false,"vectors":false}}"#).unwrap();
+    let binary=std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let search_path=format!("{}:{}",binary.parent().unwrap().display(),std::env::var("PATH").unwrap_or_default());
+    for command in ["grep -En 'quartz|zircon' src/a.py | grep return", "cd src && grep quartz a.py | head -n 1", "grep missing src/a.py || grep zircon src/a.py", "false && grep quartz src/a.py", "cat src/a.py | grep quartz"] {
+        let input=serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":root,"session_id":"shell-parity","tool_input":{"command":command}});
+        let mut hook=Command::new(binary).args(["on","PreToolUse"]).current_dir(root).env("CLAUDE_PROJECT_DIR",root)
+            .env("MUSTARD_RT_DELEGATED","1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        hook.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
+        let output=hook.wait_with_output().unwrap();assert!(output.status.success());
+        let value=if output.stdout.is_empty() {serde_json::Value::Null} else {serde_json::from_slice(&output.stdout).unwrap()};
+        assert_ne!(value["hookSpecificOutput"]["permissionDecision"],"deny","{value}");
+        let rewritten=value["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap_or(command).to_owned();
+        if command.starts_with("cat") {assert_eq!(rewritten,command,"a stream filter is not a new file search");}
+        else {assert!(rewritten.contains("mustard-rt run search"),"{rewritten}");}
+        let run=|script:&str|std::process::Command::new("sh").args(["-c",script]).current_dir(root)
+            .env("PATH",&search_path).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
+        let original=run(command);let gateway=run(&rewritten);
+        assert_eq!(gateway.status.code(),original.status.code(),"{rewritten}: {}",String::from_utf8_lossy(&gateway.stderr));
+        assert_eq!(gateway.stdout,original.stdout,"{rewritten}: {}",String::from_utf8_lossy(&gateway.stderr));
+    }
+}
