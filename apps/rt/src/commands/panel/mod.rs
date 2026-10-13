@@ -271,6 +271,8 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
         "skills":sent.and_then(|event|event.fields.get("skills")),
         "executor_requested":sent.and_then(|event|event.str_field("agent")),
         "delivery":received.map(|event|&event.fields),"delivery_integrated":received.is_some_and(|event|visible.iter().any(|current|current.id==event.id)),
+        "observations":crate::shared::tool_observations::list(&root,name,attempt),
+        "report_status":"reported-unverified",
         "steps":steps,"tasks":tasks,"criteria":criteria,"tests":tests}))
 }
 

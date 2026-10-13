@@ -42,6 +42,12 @@ pub enum PanelCmd {
         /// Load the selected wave's plan, exact recorded input and delivery.
         #[arg(long)]
         wave: Option<u64>,
+        /// Read only native tool-result receipts for this wave, in bounded pages.
+        #[arg(long, requires = "wave", conflicts_with = "refresh_consumption")]
+        observations: bool,
+        /// Continue a receipt page using its next_before value.
+        #[arg(long, requires = "observations")]
+        observations_before: Option<String>,
     },
     /// Record a host measurement from standard input, without a model turn.
     #[command(display_order = 29)]
@@ -80,7 +86,23 @@ pub fn dispatch(cmd: PanelCmd) {
                 name.map_or_else(||serde_json::json!({"ok":false,"reason":"no-current-spec","hint":"Use --project para publicar o projeto sem spec aberta."}),|name|super::publication::publish(&root,&name,include_consumption))
             }
         ),
-        PanelCmd::Panel { root, spec, refresh_consumption, session, wave } => {
+        PanelCmd::Panel { root, spec, refresh_consumption, session, wave, observations, observations_before } => {
+            if observations {
+                let name=spec.or_else(||crate::shared::context::checkout::current_spec(&root.to_string_lossy()));
+                let root=mustard_core::io::spec_events::spec_root(&root);
+                println!("{}",name.zip(wave).map_or_else(||serde_json::json!({"ok":false,"reason":"observation-needs-spec-and-wave"}),|(name,wave)| {
+                    let dispatch=mustard_core::io::spec_events::spec_file(&root,&name).ok()
+                        .and_then(|path|mustard_core::io::spec_events::read(&path).ok().flatten())
+                        .and_then(|log|log.last_by_wave("send").get(&wave).map(|id|log.dispatch_position(*id)));
+                    dispatch.map_or_else(||serde_json::json!({"ok":false,"reason":"observation-no-wave-dispatch"}),|dispatch| {
+                        match mustard_core::io::observations::page(&root,&name,dispatch,observations_before.as_deref()) {
+                            Ok(mut page)=>{page["ok"]=serde_json::json!(true);page["spec"]=serde_json::json!(name);page["wave"]=serde_json::json!(wave);page},
+                            Err(reason)=>serde_json::json!({"ok":false,"reason":reason}),
+                        }
+                    })
+                }));
+                return;
+            }
             let refresh=refresh_consumption.then(||{
                 crate::shared::rtk_gain::refresh(&root);
                 let machine=crate::commands::spec::spend::Machine::here();

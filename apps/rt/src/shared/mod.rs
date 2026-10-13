@@ -47,6 +47,8 @@
 //!   from `git.flow`. The crate's ONE parser of a work-branch name, in both the
 //!   current shape and the `{base}_{slug}` shape units in flight still carry.
 
+pub(crate) mod tool_observations;
+
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
 /// conversa; nunca texto do usuário.
 #[cfg(test)]

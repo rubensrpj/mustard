@@ -43,7 +43,13 @@ export function waveText(detail, view, english=false) {
   }
   if (!detail) return english ? 'Select a wave to load its recorded content.' : 'Selecione uma onda para carregar seu conteúdo registrado.';
   if (view==='Pedido') return detail.request ?? (english ? 'No request has been sent to an agent for this wave yet.' : 'Esta onda ainda não tem um pedido enviado ao agente.');
-  if (view==='Entrega') return detail.delivery?.text ?? (english ? 'No return received yet.' : 'Nenhum retorno recebido ainda.');
+  if (view==='Entrega') {
+    if(!detail.delivery)return english?'No return received yet.':'Nenhum retorno recebido ainda.';
+    const observations=detail.delivery.observations || [];
+    const statuses={failed:['Falha da ferramenta','Tool failure'],interrupted:['Interrompido','Interrupted'],returned:['Retorno capturado','Result captured']};
+    return [english?'**Agent report · not independently verified facts**':'**Relato do agente · não comprova os fatos por si só**',detail.delivery.text,
+      ...observations.map(item=>`${item.mode==='current'?(english?'Tool result in this dispatch':'Resultado de ferramenta neste envio'):(english?'Historical observation':'Observação histórica')} · ${item.observed_at}\n${statuses[item.result_status]?.[english?1:0] || ''}\n${item.source || item.tool}\n${item.text}\n${english?'Receipt':'Recibo'}: ${item.receipt}\n${english?'The receipt proves the tool result, not this interpretation.':'O recibo comprova o resultado da ferramenta, não esta interpretação.'}`)].filter(Boolean).join('\n\n');
+  }
   if (view==='Testes') {
     const sections=[];
     if(detail.steps?.length)sections.push(`**${english?'Agent records · not independent execution evidence':'Registros do agente · não comprovam execução independente'}**\n`+

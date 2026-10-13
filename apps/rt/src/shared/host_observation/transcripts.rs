@@ -43,6 +43,18 @@ fn heading(text:&str)->Option<(String,u64)> {
         .or_else(||mustard_core::domain::wave_prompt::wave_of_title(line,Locale::EnUs))
 }
 
+pub(crate) fn tool_binding(root:&Path,host:&str,input:&HookInput)->Option<(String,u64,u64)> {
+    let session=input.session_id.as_deref()?;
+    let agent=input.agent_id.as_deref()?;
+    let record=read(&directory(root).join(format!("{host}-{}-{}.json",digest(session),digest(agent))))?;
+    let spec=record["spec"].as_str()?;
+    let wave=record["wave"].as_u64()?;
+    let dispatch=record["dispatch"].as_u64()?;
+    let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,spec).ok()?).ok()??;
+    let send=log.last_by_wave("send").get(&wave).copied()?;
+    (log.dispatch_position(send)==dispatch).then(||(spec.into(),wave,dispatch))
+}
+
 pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
     if !["SubagentStop","PostToolUse"].contains(&event) {return;}
     let Some(session)=input.session_id.as_deref().filter(|s|!s.is_empty()) else {return;};

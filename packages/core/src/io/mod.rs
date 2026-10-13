@@ -38,3 +38,4 @@ pub mod wave_prompt;
 pub mod transcript;
 pub mod spend;
 pub mod measure;
+pub mod observations;
