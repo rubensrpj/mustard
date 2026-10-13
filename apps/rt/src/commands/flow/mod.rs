@@ -28,13 +28,16 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::commands::spec_events::conversation::record_call;
+use crate::commands::spec_events::conversation::record_output_call;
 
 /// A resposta de um passo do fluxo: grava a chamada na spec, imprime o
 /// relatório e sai com 1 na recusa. `named` é a spec que a chamada nomeou.
 pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: Instant, report: &Value) {
-    let _ = record_call(root, command, named, started, report);
-    println!("{}", serde_json::to_string_pretty(report).unwrap_or_else(|_| "{}".into()));
+    // Host-facing transport keeps every field, without indentation overhead.
+    // Measure exactly these bytes rather than a synthetic pretty JSON copy.
+    let output=report.to_string()+"\n";
+    let _ = record_output_call(root, command, named, started, report,&output);
+    print!("{output}");
     if report.get("ok").and_then(Value::as_bool) != Some(true) {
         std::process::exit(1);
     }

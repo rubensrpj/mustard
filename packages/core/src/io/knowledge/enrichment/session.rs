@@ -113,7 +113,8 @@ pub fn prepare_session(root: &Path, tree: &Path, query: &str, file: Option<&str>
     fs::write_atomic(pending_path,id.as_bytes()).map_err(|e|e.to_string())?;
     Ok(json!({"ok":true,"cached":false,"request_id":id,"session_model_calls":0,"remote_model_calls":0,"local_model_calls":0,
         "evidence_bytes":prepared.sources.iter().map(|e|e.excerpt.len()).sum::<usize>(),
-        "delegation":{"host":host,"requested_model":model,"model_family":if host=="claude" {"haiku"} else {"luna"},
+        "delegation":{"host":host,"preferred_agent":"mustard-analysis","requested_model":model,"model_family":if host=="claude" {"haiku"} else {"luna"},
+            "native_tool":if host=="claude" {"Agent"} else {"spawn_agent"},
             "model_policy":"latest-available-in-family; resolve with current host session capabilities, not a pinned snapshot",
             "effort":"medium","fallback":"use-native-evidence-if-latest-family-or-medium-effort-is-unavailable",
             "execution":"native-subagent-in-current-session","access":"read-only; only supplied excerpts are needed",

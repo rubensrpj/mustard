@@ -19,7 +19,7 @@ Binário busca; LLM implementa.
 - Em spec fechada ou com pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes de `write request`. PR reprovado pelo servidor: `mustard-rt run reopen --fix --reason "<motivo>"`.
 - Mesmo assunto: `write request`, não pendência. Registre o autorizado; na dúvida, pergunte uma vez. Outro assunto: `mustard-rt run pending --add`; se quiser fazer já, sugira outra conversa.
 - Mudança não autorizada exige aceite; corrija o Mustard no produto.
-- Delegue investigação extensa; todo agente grava achados na spec por `mustard-rt run write` e retorna em duas linhas.
+- Delegue só se compensar; todo agente grava achados na spec por `mustard-rt run write` e retorna em duas linhas.
 
 ## Acompanhamento
 

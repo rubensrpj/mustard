@@ -213,6 +213,7 @@ fn shared_install_is_byte_identical_to_today() {
             ".claude/mustard/session-map.md",
             ".claude/agents/mustard/wave.md",
             ".claude/agents/mustard/review.md",
+            ".claude/agents/mustard/analysis.md",
             ".claude/.gitignore",
             "mustard.json",
         ],

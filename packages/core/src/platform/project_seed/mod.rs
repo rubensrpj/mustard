@@ -387,6 +387,7 @@ mod tests {
                 ".claude/mustard/session-map.md",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
+            ".claude/agents/mustard/analysis.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -590,6 +591,7 @@ mod tests {
                 ".claude/mustard/session-map.md",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
+            ".claude/agents/mustard/analysis.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -607,7 +609,7 @@ mod tests {
     /// pela mesma medida do teste do limite.
     #[test]
     fn an_update_removes_the_retired_single_task_wave_agent() {
-        let today = ["review.md", "wave.md"];
+        let today = ["analysis.md", "review.md", "wave.md"];
         let files_in = |dir: &Path| -> Vec<String> {
             let mut names: Vec<String> = std_fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
             names.sort();

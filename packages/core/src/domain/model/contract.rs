@@ -230,8 +230,8 @@ impl HookInput {
     /// The file name of the subagent's own transcript, which the harness keeps
     /// in a `subagents/` folder next to the main one: `agent-<id>.jsonl`, with
     /// the prefix not repeated when the id already carries it. `None` outside
-    /// a subagent. The `transcript_path` of such a hook is always the main
-    /// conversation, never the subagent's.
+    /// a subagent. This is Claude's legacy storage convention, not a Codex
+    /// path contract. Prefer an explicit `agent_transcript_path` from a host.
     #[must_use]
     pub fn subagent_transcript_name(&self) -> Option<String> {
         let id = self.subagent_id()?;

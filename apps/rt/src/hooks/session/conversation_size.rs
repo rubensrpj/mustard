@@ -43,8 +43,10 @@
 //!   O agente de onda nunca recebe o aviso de quem conduz, e quem conduz nunca
 //!   recebe o da onda.
 //!
-//! O tamanho é a soma de `input_tokens`, `cache_read_input_tokens` e
-//! `cache_creation_input_tokens` do último uso gravado na conversa. A de quem
+//! No Claude, o tamanho soma `input_tokens`, `cache_read_input_tokens` e
+//! `cache_creation_input_tokens` do último uso. No Codex, usa somente a
+//! entrada de `last_token_usage`: cache já está incluído, e uso acumulado
+//! não mede contexto. Formato desconhecido permanece sem medida. A de quem
 //! conduz é a de `transcript_path`; a do subagente fica em
 //! `<transcript_path sem .jsonl>/subagents/agent-<id>.jsonl` e, quando quem
 //! conduz limpou a conversa no meio da onda, em pedaços de mesmo nome nas
@@ -142,18 +144,32 @@ impl Check for SizeNotice {
 
 /// O tamanho de uma conversa: a soma de `input_tokens`,
 /// `cache_read_input_tokens` e `cache_creation_input_tokens` do uso `usage`.
-fn context_of(usage: &Value) -> u64 {
-    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
-    field("input_tokens") + field("cache_read_input_tokens") + field("cache_creation_input_tokens")
+fn context_of(usage: &Value) -> Option<u64> {
+    let input=usage.get("input_tokens")?.as_u64()?;
+    let field = |name: &str| usage.get(name).map_or(Some(0),Value::as_u64);
+    input.checked_add(field("cache_read_input_tokens")?)?.checked_add(field("cache_creation_input_tokens")?)
 }
 
 /// O uso gravado numa linha da conversa — em `message.usage`, ou na raiz da
 /// linha quando ela já é o uso —, lida só quando a linha o cita.
 fn usage_of_line(line: &str) -> Option<(Value, Value)> {
-    if !line.contains("\"usage\"") {
+    if !line.contains("\"usage\"") && !line.contains("\"token_count\"") {
         return None;
     }
     let value: Value = serde_json::from_str(line).ok()?;
+    if value["type"]=="event_msg" && value["payload"]["type"]=="token_count" {
+        let last=&value["payload"]["info"]["last_token_usage"];
+        let valid=(|| {
+            let input=last["input_tokens"].as_u64()?;
+            let cached=last["cached_input_tokens"].as_u64()?;
+            let output=last["output_tokens"].as_u64()?;
+            (cached<=input && input.checked_add(output)?==last["total_tokens"].as_u64()?)
+                .then(||serde_json::json!({"input_tokens":input}))
+        })();
+        // Keep an unknown latest sample as unknown; never fall back to an
+        // older, larger context or the cumulative billing counter.
+        return Some((value,valid.unwrap_or(Value::Null)));
+    }
     let usage = value.get("message").and_then(|m| m.get("usage")).or_else(|| value.get("usage"))?.clone();
     Some((value, usage))
 }
@@ -174,7 +190,7 @@ fn last_context(path: &Path) -> Option<u64> {
         // A primeira linha da janela pode vir cortada no meio: não é JSON e
         // cai fora na leitura.
         if let Some(found) = text.lines().rev().find_map(usage_of_line) {
-            return Some(context_of(&found.1));
+            return context_of(&found.1);
         }
         if start == 0 {
             return None;
@@ -213,11 +229,9 @@ fn write_mark(path: &Path, value: u64) {
 }
 
 /// O aviso de limpar ou compactar a quem conduz: a conversa principal em
-/// `input`, sob `root`, passou de um degrau novo de [`CONDUCTOR_STEP`]. O
-/// degrau guardado acompanha a conversa que encolheu (depois de um `/compact`
-/// de verdade): quando o tamanho atual já está abaixo do degrau avisado, a
-/// conta recomeça dali, para o próximo degrau avisar de novo. `None` sem
-/// degrau novo ou sem spec para retomar.
+/// `input`, sob `root`, passou de uma faixa nova de [`CONDUCTOR_STEP`]. A
+/// faixa guardada só reinicia quando o host confirma limpeza/compactação;
+/// uma leitura menor sozinha não apaga o aviso. `None` sem faixa nova ou spec.
 fn conductor_mark(input: &HookInput, root: &Path) -> Option<PathBuf> {
     mark_path(root, input.session_id.as_deref(), "size-step").or_else(|| {
         let transcript = input.transcript_path()?;
@@ -294,7 +308,7 @@ fn reads_delivery(command: &str) -> bool {
 /// ou o dos blocos de texto juntos. `None` quando a linha não é uma mensagem
 /// do usuário.
 fn user_text(line: &Value) -> Option<String> {
-    let message = line.get("message")?;
+    let message = if line["type"]=="response_item" {line.get("payload")?} else {line.get("message")?};
     let role = message.get("role").and_then(Value::as_str).or_else(|| line.get("type").and_then(Value::as_str));
     if role != Some("user") {
         return None;
@@ -315,13 +329,17 @@ fn wave_opened(path: &Path, lang: Locale) -> Option<(String, u64)> {
     use std::io::BufRead;
 
     let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .find_map(|line| user_text(&serde_json::from_str::<Value>(&line).ok()?))
-        .and_then(|first| wave_of_title(heading_of(&first), lang).or_else(|| {
-            mustard_core::domain::wave_prompt::ReadDispatch::of(&first).map(|read| (read.spec, read.wave))
-        }))
+    for line in std::io::BufReader::new(file.take(262_144)).lines().map_while(Result::ok) {
+        let Ok(row)=serde_json::from_str::<Value>(&line) else {continue};
+        let Some(text)=user_text(&row) else {continue};
+        let wave=wave_of_title(heading_of(&text),lang).or_else(|| {
+            mustard_core::domain::wave_prompt::ReadDispatch::of(&text).map(|read|(read.spec,read.wave))
+        });
+        // Codex can precede the delegated user task with environment/rule
+        // messages. Its file identity is checked separately, not by title.
+        if wave.is_some() || row["type"]!="response_item" {return wave;}
+    }
+    None
 }
 
 /// A leitura da conversa do agente, nos pedaços `pieces`, do mais antigo ao
@@ -342,7 +360,7 @@ fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
         let Ok(file) = std::fs::File::open(piece) else { continue };
         for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
             let Some((value, usage)) = usage_of_line(&line) else { continue };
-            let context = context_of(&usage);
+            let Some(context) = context_of(&usage) else {now=None; continue};
             first.get_or_insert(context);
             now = Some(context);
             let message = value.get("message");
@@ -362,15 +380,37 @@ fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
     Some(WaveContext { first: first?, now: now?, summary })
 }
 
-/// O pedaço da conversa do subagente de `input` na sessão atual, no arquivo
-/// que o Claude Code guarda numa pasta `subagents/` ao lado da conversa
-/// principal. `None` fora de um subagente ou sem o caminho da conversa
-/// principal.
+/// Prefere o caminho explícito do host. O Codex só aceita o caminho comum
+/// quando a metadata identifica o filho; nunca adivinha pastas do Claude.
+/// Sem caminho nativo, Claude conserva sua convenção `subagents/`.
 fn agent_transcript(input: &HookInput) -> Option<PathBuf> {
+    let agent=input.subagent_id()?;
+    if let Some(path)=input.raw.get("agent_transcript_path").and_then(Value::as_str).map(str::trim).filter(|p|!p.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
     let transcript = input.transcript_path()?;
+    if input.raw["mustard_host"]=="codex" {
+        // The common path can be the parent's. Accept a native rollout only
+        // when its metadata identifies this exact child; never scan guesses.
+        let mut bytes=Vec::new();
+        std::fs::File::open(transcript).ok()?.take(65_536).read_to_end(&mut bytes).ok()?;
+        let meta=String::from_utf8_lossy(&bytes).lines().find_map(|line| {
+            let row:Value=serde_json::from_str(line).ok()?;
+            (row["type"]=="session_meta").then_some(row)
+        })?;
+        return (meta["payload"]["id"].as_str()==Some(agent) && meta["payload"]["source"]["subagent"].is_object())
+            .then(||PathBuf::from(transcript));
+    }
     let name = input.subagent_transcript_name()?;
     let session_dir = transcript.strip_suffix(".jsonl").unwrap_or(transcript);
     Some(Path::new(session_dir).join("subagents").join(name))
+}
+
+fn agent_parts(input:&HookInput)->Vec<PathBuf> {
+    let Some(path)=agent_transcript(input) else {return Vec::new();};
+    if input.raw["mustard_host"]=="codex" {return vec![path];}
+    let pieces=agent_pieces(&path);
+    if pieces.is_empty() && input.raw.get("agent_transcript_path").is_some() {vec![path]} else {pieces}
 }
 
 /// Os dois arquivos de estado do agente de onda de `input`: o tamanho da
@@ -413,11 +453,12 @@ fn finishes_a_task(input: &HookInput) -> bool {
         .and_then(|json| serde_json::from_str::<Value>(json).ok())
         .and_then(|step| step.get("item")?.as_str().and_then(mustard_id::parse).map(|(kind, _)| Some(kind) == task))
         .unwrap_or(false);
-    let stdout = input.raw.get("tool_response").and_then(|response| response.get("stdout")).and_then(Value::as_str);
-    let refused = stdout
-        .and_then(|stdout| serde_json::from_str::<Value>(stdout).ok())
-        .is_some_and(|report| report.get("ok") == Some(&Value::Bool(false)));
-    names_a_task && !refused
+    let response=&input.raw["tool_response"];
+    if response.get("exit_code").is_some_and(|code|code.as_i64()!=Some(0)) {return false;}
+    let stdout = response.get("stdout").or_else(||response.get("output")).and_then(Value::as_str).or_else(||response.as_str());
+    let accepted = stdout.and_then(|stdout|serde_json::from_str::<Value>(stdout).ok())
+        .is_some_and(|report|report["ok"]==true);
+    names_a_task && accepted
 }
 
 /// A medida do fim de tarefa ao agente de onda: no resultado do passo de
@@ -433,7 +474,7 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
     if !finishes_a_task(input) {
         return None;
     }
-    let context = wave_context(&agent_pieces(&agent_transcript(input)?), lang)?;
+    let context = wave_context(&agent_parts(input), lang)?;
     let counted = context.now.saturating_sub(context.summary);
     let (steps, order) = wave_marks(root, input)?;
     let mut sizes: Vec<u64> = std::fs::read_to_string(&steps)
@@ -542,7 +583,7 @@ fn passes_after_the_order(input: &HookInput, build: Option<&str>) -> bool {
 /// na spec de `root`. A entrega nova muda o nome do trecho, e a resposta
 /// volta a ser `false` sozinha, sem marca a apagar.
 fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
-    let pieces = agent_transcript(input).map(|transcript| agent_pieces(&transcript)).unwrap_or_default();
+    let pieces = agent_parts(input);
     let Some(first) = pieces.first() else { return false };
     let Some((spec, wave)) = wave_opened(first, lang) else { return false };
     let root = store::spec_root(root);
@@ -560,7 +601,7 @@ fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
 /// `None` fora de um agente de onda, sem carimbo na conversa e sem
 /// reprovação gravada para a onda.
 fn left_by_rejection(input: &HookInput, root: &Path, lang: Locale) -> Option<u64> {
-    let pieces = agent_pieces(&agent_transcript(input)?);
+    let pieces = agent_parts(input);
     let first = pieces.first()?;
     let (spec, wave) = wave_opened(first, lang)?;
     let started = first_stamp(first)?;
@@ -608,6 +649,113 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codex_sample(input:u64,cached:u64)->Value {
+        serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{
+            "last_token_usage":{"input_tokens":input,"cached_input_tokens":cached,"output_tokens":100,"total_tokens":input+100},
+            "total_token_usage":{"input_tokens":9_000_000,"cached_input_tokens":8_000_000,"output_tokens":1_000_000,"total_tokens":10_000_000}
+        }}})
+    }
+    fn codex_event(event:&str,call:&HookInput)->Option<Value> {
+        let mut call=call.clone(); call.hook_event_name=Some(event.into());
+        crate::host::codex(event,&call).map(|s|serde_json::from_str(&s).unwrap())
+    }
+    fn native_rollout(path:&Path,agent:&str,rows:&[Value]) {
+        let mut all=vec![serde_json::json!({"type":"session_meta","payload":{"id":agent,"source":{"subagent":{"thread_spawn":{"parent_thread_id":"s1"}}}}}),
+            serde_json::json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"<environment_context>Setup</environment_context>"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":wave_request(Locale::PtBr)}]}})];
+        all.extend_from_slice(rows);
+        let text=all.into_iter().fold(String::new(),|mut text,row| {writeln!(text,"{row}").unwrap(); text});
+        std::fs::write(path,text).unwrap();
+    }
+
+    #[test]
+    fn codex_context_notices_use_last_input_once_and_reset_only_on_confirmed_compaction() {
+        let dir=open_project("x"); let root=dir.path(); let path=root.join("rollout.jsonl");
+        let call=conductor_after_tool(root,&path);
+        let at=|tokens| {
+            std::fs::write(&path,codex_sample(tokens,tokens-1).to_string()).unwrap();
+            codex_event("PostToolUse",&call)
+        };
+        assert!(at(199_999).is_none(),"cumulative 10M and cached input must not trigger a notice");
+        assert!(at(200_000).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("200"));
+        assert!(at(299_999).is_none()); assert!(at(300_000).is_some());
+        assert!(at(70_000).is_none()); assert!(at(200_000).is_none(),"a lower reading is not compaction");
+        let before=codex_event("PreCompact",&call).unwrap();
+        let block=crate::commands::flow::resume::current_block(root,Some("s1")).unwrap();
+        assert!(before["systemMessage"].as_str().unwrap().contains(&block));
+        assert!(before.get("hookSpecificOutput").is_none(),"compact uses documented common output");
+        assert!(at(200_000).is_none(),"pre-compaction is not completed compaction");
+        assert!(codex_event("PostCompact",&call).is_none()); assert!(at(200_000).is_some());
+        assert!(at(200_000).is_none());
+        let mut clear=call.clone(); clear.raw["source"]=serde_json::json!("clear");
+        codex_event("SessionStart",&clear); assert!(at(200_000).is_some());
+    }
+
+    #[test]
+    fn codex_unknown_latest_context_does_not_reuse_an_older_measurement() {
+        let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("rollout.jsonl");
+        let good=codex_sample(250_000,240_000);
+        let mut bad=codex_sample(300_000,300_001);
+        for invalid in [bad.clone(),{
+            bad["payload"]["info"]["last_token_usage"]=Value::Null; bad.clone()
+        }] {
+            std::fs::write(&path,format!("{good}\n{invalid}\n")).unwrap();
+            assert_eq!(last_context(&path),None);
+        }
+        native_rollout(&path,"a1",&[good,bad]);
+        assert!(wave_context(&[path],Locale::PtBr).is_none());
+    }
+
+    #[test]
+    fn codex_wave_finishes_current_task_then_allows_tests_and_summary_but_no_new_work() {
+        let dir=open_project("x"); let root=dir.path();
+        std::fs::write(root.join("mustard.json"),r#"{"buildCommand":"cargo build","testCommand":"cargo test --lib"}"#).unwrap();
+        let path=root.join("native-child.jsonl"); native_rollout(&path,"a1",&[codex_sample(30_000,20_000),codex_sample(160_000,150_000)]);
+        let mut call=agent_after_tool(root); call.raw["agent_transcript_path"]=serde_json::json!(path);
+        assert!(codex_event("PostToolUse",&call).is_none(),"no mid-task interruption");
+        assert!(codex_event("PreToolUse",&call).as_ref().is_none_or(|v|v["hookSpecificOutput"]["permissionDecision"]!="deny"));
+        let done=finishing(call.clone());
+        let notice=codex_event("PostToolUse",&done).unwrap();
+        assert!(notice["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("Grave a entrega"));
+        let mut next=call.clone(); next.tool_name=Some("apply_patch".into());
+        next.tool_input=serde_json::json!({"command":"*** Begin Patch\n*** Add File: another.rs\n+fn another() {}\n*** End Patch"});
+        assert_eq!(codex_event("PreToolUse",&next).unwrap()["hookSpecificOutput"]["permissionDecision"],"deny");
+        next.tool_name=Some("exec_command".into());
+        for command in ["cargo test --lib","cargo build","mustard-rt run write delivered --spec x --json '{}'","mustard-rt run read item-MSTD-TASK-0001 --spec x"] {
+            next.tool_input=serde_json::json!({"cmd":command});
+            let result=codex_event("PreToolUse",&next);
+            assert!(result.as_ref().is_none_or(|v|v["hookSpecificOutput"]["permissionDecision"]!="deny"),"wrap-up allows {command}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn native_agent_context_requires_its_actual_path_or_exact_child_metadata() {
+        let dir=open_project("x"); let root=dir.path(); let path=root.join("parent.jsonl");
+        native_rollout(&path,"parent",&[codex_sample(200_000,100_000)]);
+        let mut call=finishing(agent_after_tool(root)); call.raw["transcript_path"]=serde_json::json!(path);
+        assert!(codex_event("PostToolUse",&call).is_none(),"never attribute the parent's context to the child");
+        native_rollout(&path,"a1",&[codex_sample(200_000,100_000)]);
+        assert!(codex_event("PostToolUse",&call).is_some(),"exact child metadata supports its common native path");
+        let actual=root.join("claude-child-elsewhere.jsonl");
+        std::fs::write(&actual,format!("{}\n{}\n",serde_json::json!({"type":"user","message":{"role":"user","content":wave_request(Locale::PtBr)}}),agent_reply(200_000,None))).unwrap();
+        let mut claude=finishing(agent_after_tool(root)); claude.agent_id=Some("a2".into());
+        claude.raw["agent_transcript_path"]=serde_json::json!(actual);
+        assert!(injected(&claude).is_some(),"Claude's explicit native path also avoids directory guessing");
+    }
+
+    #[test]
+    fn task_end_requires_a_successful_native_receipt() {
+        let dir=tempfile::tempdir().unwrap(); let mut call=finishing(agent_after_tool(dir.path()));
+        assert!(finishes_a_task(&call));
+        for response in [Value::Null,serde_json::json!({"output":"{\"ok\":false}","exit_code":0}),
+            serde_json::json!({"stdout":"{\"ok\":true}","exit_code":1}),serde_json::json!({"stdout":"still running"})] {
+            call.raw["tool_response"]=response; assert!(!finishes_a_task(&call));
+        }
+        for response in [serde_json::json!({"output":"{\"ok\":true}","exit_code":0}),serde_json::json!("{\"ok\":true}")] {
+            call.raw["tool_response"]=response; assert!(finishes_a_task(&call));
+        }
+    }
 
     /// Um projeto instalado, com a spec `spec` aprovada e o checkout parado
     /// na branch dela — o mesmo que a chamada de quem conduz vê.

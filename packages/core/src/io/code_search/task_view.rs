@@ -211,6 +211,12 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         .into_iter()
         .flatten()
     {
+        // A unique direct dependency already includes its call and target
+        // ranges in Native follow-up. Keep other directions/resolutions and
+        // longer paths; those are different evidence, not repeated wording.
+        if edge["via"]=="outgoing" && edge["distance"]==1 && edge["resolution"]=="unique-static-target"
+            && context["chain"]["steps"].as_array().into_iter().flatten().any(|step|
+                step["operation"]=="unique-static-dependency" && step["from"]==edge["from"] && step["to"]==edge["to"]) {continue;}
         let _ = writeln!(
             text,
             "# static relation: {} -> {} ({}, runtime order unknown)",
@@ -333,6 +339,23 @@ fn graph(text:&mut String,context:&Value) {
 #[cfg(test)]
 mod graph_tests {
     use super::*;
+    #[test]
+    fn direct_navigation_deduplicates_only_the_same_unique_dependency() {
+        let mut context=serde_json::json!({"status":"current-task-evidence","written_clues":{"covered_slots":1},"cards":[
+            {"id":"a:1:first","name":"first","source":{"file":"a","line":1,"end_line":2},"initial_source_excerpt":true,"parse_complete":true,"source_excerpt":{"text":"1 | first()\n2 | target()"}}],
+            "chain":{"steps":[{"operation":"unique-static-dependency","from":"a:1:first","to":"b:10:target","call_source":{"line":2},"target_source":{"file":"b","line":10,"end_line":15}}]},
+            "navigation":{"paths":[{"from":"a:1:first","to":"b:10:target","via":"outgoing","distance":1,"resolution":"unique-static-target"}]}});
+        let request=Request {tool:"rg".into(),input:serde_json::json!({"args":["first","."]}),intent:"inspect first".into(),purpose:crate::domain::knowledge::investigation::Purpose::Implement,choose:false};
+        let render=|context:&Value|String::from_utf8(agent(&Answer {report:serde_json::json!({"task_context":context}),stdout:vec![],stderr:vec![],exit_code:0},&request).unwrap().stdout).unwrap();
+        let view=render(&context);
+        assert!(view.contains("first:2 -> target 10-15"));assert!(view.contains("1 | first()"));
+        assert!(!view.contains("# static relation:"));
+        context["navigation"]["paths"][0]["resolution"]=serde_json::json!("ambiguous");
+        assert!(render(&context).contains("# static relation:"));
+        context["navigation"]["paths"][0]["resolution"]=serde_json::json!("unique-static-target");
+        context["navigation"]["paths"][0]["distance"]=serde_json::json!(2);
+        assert!(render(&context).contains("# static relation:"));
+    }
     #[test]
     fn file_coalescing_keeps_source_context_references_and_global_gaps() {
         let context=serde_json::json!({"cards":[{"source":{"file":"a.ext"}},{"source":{"file":"b.ext"}}]});

@@ -104,6 +104,8 @@ pub struct BadSetting {
 /// As ondas que estão fora, como quem monta os pedidos as vê.
 #[derive(Debug, Default)]
 pub struct Flight {
+    /// Actual caller host; a persisted send remains authoritative on replay.
+    pub host: Option<String>,
     pub specializations: BTreeMap<u64, crate::io::expertise::workflow::Selection>,
     /// As ondas em andamento — a rodada conta também as que saem junto nela.
     /// O pedido de cada onda lista as outras, com os arquivos delas.
@@ -818,8 +820,11 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // missing scoped guide and retain the generic executor for live sessions
     // that have not discovered newly exported agent definitions yet.
     if chosen.is_empty() {
+        let host = context.flight.host.as_deref()
+            .or_else(|| log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|send| send.str_field("host")))
+            .filter(|host| ["claude", "codex"].contains(host)).unwrap_or("claude");
         for name in &expertise.profiles {
-            if let Ok(out) = crate::io::expertise::export(root,name,"claude")
+            if let Ok(out) = crate::io::expertise::export(root,name,host)
                 && let Some(path) = out["skill"].as_str()
                 && let Ok(text) = std::fs::read_to_string(root.join(path)) {
                 chosen.push((format!("mustard-{name}"),Some((text,root.join(path)))));
@@ -878,8 +883,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
     // molde com esse nome mora no projeto, e o envio grava só o nome.
     let agent = "wave".to_string();
-    let model = context.base.requested_model().to_string();
-    let effort = context.base.requested_effort().to_string();
+    let model = material.execution.requested_model().to_string();
+    let effort = material.execution.requested_effort().to_string();
     let listed = wave_prompt::listed(&material);
     WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new(), expertise, skills }
 }
@@ -894,7 +899,12 @@ fn execution(context: &Context, wave: u64) -> Execution {
         Some(copy) => Some(copy.clone()),
         None => recorded_copy(log, wave).filter(|_| flight.running.contains(&wave)),
     };
-    Execution { running, copy, ..context.base.clone() }
+    let host=flight.host.as_deref().or_else(||log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id)).and_then(|send|send.str_field("host")));
+    // Codex's native executor inherits its session settings. Claude family
+    // names and effort aliases must not become a requested Codex model.
+    let mut execution=Execution { running, copy, ..context.base.clone() };
+    if host==Some("codex") {execution.model="inherit".into();execution.effort="inherit".into();}
+    execution
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -1244,6 +1254,34 @@ mod tests {
     /// O mapa de teste, gravado pela porta do mapa, como o scan o grava.
     fn write_map(root: &Path, model: &Value) {
         crate::io::project_map::write_text(root, &model.to_string()).unwrap();
+    }
+
+    #[test]
+    fn automatic_profile_export_uses_the_dispatch_host_and_replays_it() {
+        use crate::io::expertise::{self,Profile};
+        use crate::domain::knowledge::Source;
+        for host in ["codex","claude"] {
+            let dir=tempdir().unwrap();let root=dir.path();
+            let text="fn save() {}\n";
+            std::fs::write(root.join("store.rs"),text).unwrap();
+            write_map(root,&json!({"modules":[]}));
+            let mut hash=crate::io::sha256::Sha256::new();hash.update(text.as_bytes());
+            let profile=Profile {name:"database".into(),description:"Use current storage examples for database tasks.".into(),paths:vec!["store.rs".into()],procedure:"Inspect the current transaction boundaries and reuse the existing helpers.".into(),sources:vec![Source {file:"store.rs".into(),line:1,end_line:1,sha256:hash.hex_digest()}],origin:"authored".into(),reviewed:None,rule_context:None};
+            expertise::record(root,&profile).unwrap();
+            expertise::review(root,&profile.name,&expertise::review_fingerprint(root,&profile)).unwrap();
+            let events=[("wave",json!({"n":1,"text":"Persist data","criteria":[],"done_when":"tests pass"})),("task",json!({"wave":1,"text":"Persist the change","files":[{"path":"store.rs"}]})),("send",json!({"wave":1,"host":host}))];
+            let log=log_of(&events);
+            let flight=Flight {host:Some(host.into()),..Flight::default()};
+            let built=prompts(root,"test",&log,Locale::EnUs,&flight);
+            assert_eq!(built.len(),1);
+            if host=="codex" {assert_eq!(built[0].model,"inherit");assert_eq!(built[0].effort,"inherit");}
+            let folder=if host=="codex" {".codex/agents"} else {".claude/agents"};
+            assert!(root.join(folder).join(if host=="codex" {"mustard-database.toml"} else {"mustard-database.md"}).is_file());
+            let other=if host=="codex" {".claude/agents/mustard-database.md"} else {".codex/agents/mustard-database.toml"};
+            assert!(!root.join(other).exists());
+            let replay=prompts(root,"test",&log,Locale::EnUs,&Flight::default());
+            assert_eq!(replay[0].skills,built[0].skills);
+        }
     }
 
     /// O caminho do arquivo da skill como o pedido o escreve: absoluto, no

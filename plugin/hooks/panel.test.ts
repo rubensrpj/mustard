@@ -1,6 +1,26 @@
 import { test, expect, mock } from 'claude-code/testing';
 import {contentPage,waveText} from './panel-content.js';
 
+test('Desktop reattachment recreates only a pane the user requested',async ($,on)=>{
+  mock.clock(on);mock.env(on,{});let opens=0;
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('session.start',($,e)=>({cwd:e.cwd}));on('command.register',()=>({value:null}));
+  on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{}}));
+  on('session.surfaces',()=>({value:['terminal','desktop']}));
+  on('session.attach',()=>({clientId:'desktop-fixture'}));on('session.detach',()=>({clientId:'desktop-fixture'}));
+  on('ui.close',()=>({value:null}));on('ui.open',()=>{opens++;return {value:null};});
+  on('process.run',()=>({value:{exitCode:0,stdout:JSON.stringify({ok:true,schema_version:1,project:{name:'fixture'},specs:[],jev:{}}),stderr:''}}));
+  await $.session.start({cwd:'/fixture',surface:'desktop',isInteractive:true});
+  await $.session.attach({surface:'desktop'});
+  expect(opens).toBe(0);
+  await $.command.run({command:'mustard-panel',args:''});
+  await $.session.detach({surface:'desktop'});
+  await $.session.attach({surface:'desktop'});
+  expect(opens).toBe(2);
+  const reply=await $.command.run({command:'mustard-panel',args:'--diagnose'});
+  expect(reply.text).toContain('attach');expect(reply.text).toContain('open-accepted');
+});
+
 test('a lost pane reference does not prevent a fresh Desktop opening',async ($,on)=>{
   mock.clock(on);mock.env(on,{});let opens=0,closes=0;
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));

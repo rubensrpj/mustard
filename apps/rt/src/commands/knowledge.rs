@@ -72,7 +72,7 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
             let report=evaluation::evaluate(root,&tree,&plan,query,selector)?;
             (report.clone(),report.to_string())
         } else if let Some(path)=modes.topics {
-            let plan=read_manifest(path)?;
+            let plan=if path==Path::new("auto") {mustard_core::io::knowledge::dossier::Plan::from_scan(root).map_err(|e|format!("{e:?}"))?} else {read_manifest(path)?};
             let (report,map)=mustard_core::io::knowledge::dossier::assemble(root,&tree,&plan,query,selector,modes.responsibility).map_err(|e|format!("{e:?}"))?;
             let text=if markdown {mustard_core::io::knowledge::dossier::markdown(&report,&map)}else{report.to_string()};
             (report,text)

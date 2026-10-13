@@ -17,9 +17,6 @@ pub(super) fn read(root: &Path, name: &str) -> Value {
 }
 
 pub(super) fn refresh(start: &Path, selected: Option<&str>, session: Option<&str>, config: Option<&Path>) -> Value {
-    let (Some(session), Some(config)) = (session, config) else {
-        return json!({"ok":false,"reason":"usage-session-unavailable"});
-    };
     let root = mustard_core::io::spec_events::spec_root(start);
     let name = selected
         .map(str::to_string)

@@ -204,7 +204,8 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     };
 
     let running = crate::commands::flow::round::waves_in_progress(&log).into_keys().collect();
-    let built = prompts(&project.root, &spec, &log, lang, &Flight { running, ..Flight::default() });
+    let host=crate::shared::host_observation::caller_host(&project.root,crate::shared::spec_state::session_from_env().as_deref());
+    let built = prompts(&project.root, &spec, &log, lang, &Flight { host:Some(host.into()), running, ..Flight::default() });
     let findings = check(&opts.root, &project.root, &spec, &log, &built);
     // Cada achado vira anotação no arquivo de eventos, aqui, uma vez por
     // plano: a página o mostra de lá, sem olhar o disco nem o git ao ser

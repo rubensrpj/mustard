@@ -227,8 +227,10 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     }
     if(usageView==='RTK')rows.push(section(t('RTK neste projeto','RTK for this project'),[
       text(rtk.configured===false?t('Filtro desligado na configuração.','Filter disabled in configuration.'):
+        rtk.hook_configured_by_host?['Claude','Codex'].map(host=>`${host}: ${rtk.hook_configured_by_host[host.toLowerCase()]===true?t('hook configurado','hook configured'):rtk.hook_configured_by_host[host.toLowerCase()]===false?t('hook ausente','hook absent'):t('não confirmado','unconfirmed')}`).join(' · '):
         rtk.hook_configured===true?t('Hook configurado para comandos compatíveis.','Hook configured for supported commands.'):
           t('Hook não confirmado; confira o diagnóstico da instalação.','Hook not confirmed; check installation diagnostics.')),
+      note(t('Configuração não comprova confiança do host nem execução. Os comandos registrados abaixo mostram o uso observado.','Configuration does not prove host trust or execution. Recorded commands below show observed use.')),
       ...(rtk.status==='measured'?[
         text(`${t('Comandos registrados','Recorded commands')}: ${fmt(rtk.commands)}`),
         ...(rtk.period_start && rtk.period_end?[note(`${t('Período do histórico RTK','RTK history period')}: ${rtk.period_start} → ${rtk.period_end}`)]:[]),

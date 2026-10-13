@@ -52,12 +52,13 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         env["MUSTARD_SPEND_DIR"] = str(root / "spend")
         env["CLAUDE_CONFIG_DIR"] = str(root / "isolated-claude")
         env["MUSTARD_RT_DELEGATED"] = "1"
+        env["RTK_DB_PATH"] = str(root / "isolated-rtk" / "tracking.db")
         env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
-        for name in ("TYPESAFE_API_KEY", "JEV_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR"):
+        for name in ("TYPESAFE_API_KEY", "JEV_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "CODEX_THREAD_ID", "MUSTARD_ACTIVE_SPEC"):
             env.pop(name, None)
 
-        def run(args, child_env=None):
-            result = subprocess.run(args, cwd=root, env=child_env or env, capture_output=True, text=True, timeout=120)
+        def run(args, child_env=None, input_text=None):
+            result = subprocess.run(args, cwd=root, env=child_env or env, input=input_text, capture_output=True, text=True, timeout=120)
             if result.returncode:
                 raise AssertionError(str(args[:3]) + " failed: " + result.stdout[-2000:] + result.stderr[-2000:])
             return result.stdout
@@ -78,6 +79,22 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         rewritten = subprocess.run([binary("rtk"), "hook", "claude"], input=json.dumps(hook), cwd=root, env=env, text=True, capture_output=True, timeout=10)
         assert "rtk git status" in json.loads(rewritten.stdout)["hookSpecificOutput"]["updatedInput"]["command"], "installed RTK hook did not rewrite"
         config = json.loads((root / "mustard.json").read_text())
+        codex_hook = dict(hook, tool_name="exec_command", tool_input={"cmd": "git status --short", "yield_time_ms": 1000})
+        hook_args = [binary("mustard-rt"), "on", "PreToolUse", "--host", "codex"]
+        rewritten = json.loads(run(hook_args, input_text=json.dumps(codex_hook)))["hookSpecificOutput"]["updatedInput"]
+        assert rewritten["cmd"] == "rtk git status --short" and rewritten["yield_time_ms"] == 1000, "Codex RTK rewrite lost the native tool contract"
+        canonical_hook = dict(hook, tool_input={"command": "git status --short"})
+        canonical = json.loads(run(hook_args, input_text=json.dumps(canonical_hook)))["hookSpecificOutput"]["updatedInput"]
+        assert canonical["command"] == "rtk git status --short", "canonical Codex Bash was not rewritten"
+        # Execute only this fixed read-only command in the disposable project;
+        # a rewrite alone is not evidence that the installed filter works.
+        run([binary("rtk"), "git", "status", "--short"])
+        gains = json.loads(run([binary("rtk"), "gain", "--project", "--daily", "--format", "json"]))
+        assert gains["summary"]["total_commands"] >= 1, "RTK did not record its actual execution"
+        config["rtk"] = False
+        (root / "mustard.json").write_text(json.dumps(config))
+        assert run(hook_args, input_text=json.dumps(codex_hook)).strip() == "", "Codex ignored RTK opt-out"
+        config.pop("rtk")
         config.update(version="0.0.0", installationChoice="preserve")
         (root / "mustard.json").write_text(json.dumps(config))
         updated = json.loads(run([binary("mustard-rt"), "run", "upsert"]))
@@ -109,6 +126,9 @@ def smoke(bin_dir, version, bootstrap_archive=None):
         assert report["crossing_status"] == "enriched", "installed gateway did not cross the scan"
         panel = json.loads(run([binary("mustard-rt"), "run", "panel", "--root", str(root)]))
         assert "project" in panel and "specs" in panel, "panel projection is unavailable"
+        measured = json.loads(run([binary("mustard-rt"), "run", "panel", "--root", str(root), "--refresh-consumption"]))["rtk"]
+        assert measured["status"] == "measured" and measured["commands"] >= 1, "installed panel did not expose observed RTK use"
+        assert measured["net_model_savings_percent"] is None, "output compression was presented as total model savings"
         settings = json.loads(run([binary("mustard-rt"), "run", "settings"]))
         assert settings["ok"] and settings["values"]["vectors"] is True
         patch = {"schema_version": 1, "revision": settings["revision"], "changes": {"rtk": False, "agent_effort": "high"}}
