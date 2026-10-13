@@ -2,17 +2,17 @@
 //! remain authoritative; opening a panel creates no page, scan or model turn.
 
 pub mod cli;
+mod consumption;
+mod dashboard;
+mod diagnostics;
+mod impact;
 mod jev_usage;
 mod knowledge_usage;
-mod consumption;
-mod publication;
-mod wave_usage;
-mod settings;
-mod dashboard;
-mod preferences;
-mod impact;
-mod diagnostics;
 mod live_usage;
+mod preferences;
+mod publication;
+mod settings;
+mod wave_usage;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
 
@@ -101,6 +101,9 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
             };
             json!({"wave":wave,"status":status,"commit":commit.and_then(|e|e.str_field("sha")),
             "summary":integrated.and_then(|e|e.str_field("text")),
+            "files_changed":integrated.copied().or(received).and_then(|e|e.fields.get("files")).and_then(Value::as_array).map(Vec::len),
+            "agreed_counts":integrated.copied().or(received).and_then(|e|e.fields.get("agreed")).and_then(Value::as_array).map(|items|json!({
+                "reported_met":items.iter().filter(|item|item["met"]==true).count(),"reported_unmet":items.iter().filter(|item|item["met"]==false).count(),"total":items.len()})),
             "tokens":measured.and_then(|u|u["tokens"].as_u64()).or_else(||sent.and_then(|e|e.int("tokens"))),
             "model":measured.and_then(|u|u["model_used"].as_str()).or_else(||sent.and_then(|e|e.str_field("model_used"))),
             "usage_breakdown":measured.and_then(|u|u.get("usage_breakdown")).or_else(||sent.and_then(|e|e.fields.get("usage_breakdown"))),
@@ -130,13 +133,15 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
         .map(|e| {
             json!({
                 "stage":e.str_field("stage"),"phase":e.str_field("phase"),"result":e.str_field("result"),"ms":e.int("ms"),"at":e.at(),
-                "scope":e.str_field("scope"),"attempt":e.int("attempt"),"version":e.str_field("version")
+                "scope":e.str_field("scope"),"attempt":e.int("attempt"),"version":e.str_field("version"),"wave":e.wave(),"waves":e.ints("waves")
             })
         })
         .collect();
     let publication=visible.iter().rev().find(|e|e.event_type=="publish" && e.str_field("page")==Some("spec")
-        && e.fields.get("ok").and_then(Value::as_bool)==Some(true)).map(|event|json!({
-            "url":event.str_field("url"),"snapshot_id":event.str_field("snapshot_id"),"at":event.at(),"provider":event.str_field("provider")}));
+        && e.fields.get("ok").and_then(Value::as_bool)==Some(true)).map(|event| {
+            json!({
+            "url":event.str_field("url"),"snapshot_id":event.str_field("snapshot_id"),"at":event.at(),"provider":event.str_field("provider")})
+        });
     let c = mustard_core::ProjectConfig::load(root).commands();
     let missing: BTreeSet<&str> = ["buildCommand", "lintCommand", "testCommand"]
         .into_iter()
@@ -160,13 +165,16 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
 
 fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
     let transport=super::spec_events::conversation::recorded_operations(root,name);
-    let calls: Vec<_> = log.visible().into_iter().chain(transport.visible()).filter(|event| event.event_type == "call" && !event.fields.contains_key("request")
+    let calls: Vec<_> = log.visible().into_iter().chain(transport.visible()).filter(|event| {
+            event.event_type == "call" && !event.fields.contains_key("request")
         && event.fields.get("invocation").and_then(Value::as_bool)!=Some(false)
-        && !matches!(event.str_field("command"),Some("wave assembly"|"wave items"))).collect();
+        && !matches!(event.str_field("command"),Some("wave assembly"|"wave items"))
+        }).collect();
     let mut commands = std::collections::BTreeMap::<String, Value>::new();
     let mut totals = json!({"calls":0,"refusals":0,"input_bytes":0,"output_bytes":0,"estimated_input_tokens":0,"estimated_output_tokens":0,"calls_without_payload_measurement":0,
         "search":{"calls":0,"enriched":0,"task_evidence":0,"fallback":0,"ms":0,
-            "decision_coverage":0,"choice_gates":{},"selection_statuses":{},"local_model_calls":0,"remote_model_calls":0,"cache_hits":0,"accepted_choices":0}});
+            "decision_coverage":0,"choice_gates":{},"selection_statuses":{},"local_model_calls":0,"remote_model_calls":0,"cache_hits":0,"accepted_choices":0,
+            "paired_calls":0,"native_bytes":0,"delivered_bytes":0,"reduced_calls":0,"expanded_calls":0}});
     for call in calls {
         let command = commands.entry(call.str_field("command").unwrap_or_default().into())
             .or_insert_with(|| json!({"calls":0,"refusals":0,"reasons":{},"input_bytes":0,"output_bytes":0,"estimated_input_tokens":0,"estimated_output_tokens":0}));
@@ -184,6 +192,17 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
         }
         if call.int("input_bytes").is_none() { totals["calls_without_payload_measurement"] = json!(totals["calls_without_payload_measurement"].as_u64().unwrap_or(0) + 1); }
         if call.str_field("command")==Some("search") {
+            if let Some((native, delivered)) = call.int("search_native_bytes").zip(call.int("search_delivered_bytes")) {
+                for (key, amount) in [
+                    ("paired_calls", 1),
+                    ("native_bytes", native),
+                    ("delivered_bytes", delivered),
+                    ("reduced_calls", u64::from(delivered < native)),
+                    ("expanded_calls", u64::from(delivered > native)),
+                ] {
+                    totals["search"][key] = json!(totals["search"][key].as_u64().unwrap_or(0).saturating_add(amount));
+                }
+            }
             totals["search"]["calls"]=json!(totals["search"]["calls"].as_u64().unwrap_or(0)+1);
             totals["search"]["ms"]=json!(totals["search"]["ms"].as_u64().unwrap_or(0).saturating_add(call.int("ms").unwrap_or(0)));
             for (key,field) in [("enriched","search_enriched"),("task_evidence","search_task_evidence"),("fallback","search_fallback")] {
@@ -210,9 +229,9 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
 fn safe_value(mut value: Value) -> Value {
     match &mut value {
         Value::String(text) => *text = crate::shared::secret::without_secrets(text),
-        Value::Array(values) => { for value in values { *value = safe_value(value.take()); } },
-        Value::Object(values) => { for value in values.values_mut() { *value = safe_value(value.take()); } },
-        _ => {},
+        Value::Array(values) => { for value in values { *value = safe_value(value.take()); } }
+        Value::Object(values) => { for value in values.values_mut() { *value = safe_value(value.take()); } }
+        _ => {}
     }
     value
 }
@@ -220,8 +239,10 @@ fn safe_value(mut value: Value) -> Value {
 fn definitions(log: &SpecLog) -> Value {
     let codes = log.codes();
     let mut groups = std::collections::BTreeMap::<String, Vec<Value>>::new();
-    for event in log.visible().into_iter().filter(|event| matches!(event.event_type.as_str(),
-        "context" | "concern" | "rule" | "decision" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "criterion" | "task" | "work_type") || event.event_type=="point" && event.str_field("status")==Some("open")) {
+    for event in log.visible().into_iter().filter(|event| {
+        matches!(event.event_type.as_str(),
+        "context" | "concern" | "rule" | "decision" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "criterion" | "task" | "work_type") || event.event_type=="point" && event.str_field("status")==Some("open")
+    }) {
         let mut item = display_item(event, &codes);
         if let Some(fields) = item.as_object_mut() { for key in ["v", "at", "author", "search", "keys"] { fields.remove(key); } }
         groups.entry(event.event_type.clone()).or_default().push(safe_value(item));
@@ -236,11 +257,11 @@ fn display_item(event: &mustard_core::domain::spec_events::SpecEvent, codes: &st
         for field in spec.fields {
             if let Some(value)=item.get_mut(field.name) {
                 match field.kind {
-                    Kind::Ref => { if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);} },
+                    Kind::Ref => { if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);} }
                     Kind::Refs => { if let Some(values)=value.as_array_mut() { for value in values {
                         if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);}
-                    } } },
-                    _ => {},
+                    } } }
+                    _ => {}
                 }
             }
         }
@@ -314,7 +335,8 @@ mod tests {
             json!({"v":1,"id":2,"type":"call","command":"search","invocation":true,
                 "search_choice_gate":"eligible","search_selection_status":"jev-choice",
                 "search_local_model_calls":1,"search_remote_model_calls":0,
-                "search_selection_cached":true,"search_accepted_choices":2})];
+                "search_selection_cached":true,"search_accepted_choices":2,"search_native_bytes":100,"search_delivered_bytes":150}),
+        ];
         let log=mustard_core::domain::spec_events::parse_log(&rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"));
         let result=operations(root.path(),"demo",&log);
         assert_eq!(result["search"]["calls"],2);
@@ -324,6 +346,11 @@ mod tests {
         assert_eq!(result["search"]["remote_model_calls"],0);
         assert_eq!(result["search"]["cache_hits"],1);
         assert_eq!(result["search"]["accepted_choices"],2);
+        assert_eq!(result["search"]["paired_calls"], 1, "legacy requests are not assigned a guessed baseline");
+        assert_eq!(result["search"]["expanded_calls"], 1, "growth must remain visible");
+        assert_eq!(result["search"]["reduced_calls"], 0);
+        assert_eq!(result["search"]["native_bytes"], 100);
+        assert_eq!(result["search"]["delivered_bytes"], 150);
     }
 
     #[test]

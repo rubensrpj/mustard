@@ -24,8 +24,8 @@ use std::process::{Command, Output, Stdio};
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
 #[path = "support/mod.rs"]
 mod support;
@@ -226,7 +226,7 @@ fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    let refused = project.answer(&["round", "--spec", SPEC]);
+    let refused = project.answer(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("wave-token-cap"), "{refused}");
@@ -283,7 +283,7 @@ fn request_sent_for_a_new_controller(with_pattern: bool) -> String {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     let log = project.log();
     let sent = log.visible().into_iter().find(|e| e.event_type == "send").expect("the round recorded the send");
     sent.str_field("text").expect("the request text").to_string()

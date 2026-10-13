@@ -77,16 +77,16 @@ impl Check for CommandGuard {
             return Ok(verdict);
         }
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
-            return Ok(super::config_read::rewrite(&cmd, input, ctx).unwrap_or(verdict));
+            return Ok(super::workspace_scope::isolate(input, ctx, super::config_read::rewrite(&cmd, input, ctx).unwrap_or(verdict)));
         }
         let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {
-            return Ok(verdict);
+            return Ok(super::workspace_scope::isolate(input, ctx, verdict));
         }
         if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
-            return Ok(verdict);
+            return Ok(super::workspace_scope::isolate(input, ctx, verdict));
         }
-        Ok(crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow))
+        Ok(super::workspace_scope::isolate(input, ctx, crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow)))
     }
 }
 

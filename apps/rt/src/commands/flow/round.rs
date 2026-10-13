@@ -127,9 +127,13 @@ mod evidence;
 mod scheduling;
 pub(crate) use scheduling::snapshot as scheduling_snapshot;
 mod commit;
+mod commit_title;
 mod unused_evidence;
 pub(crate) use commit::final_unused;
 mod copy_check;
+mod dependencies;
+pub(crate) use dependencies::prepare as prepare_copy_dependencies;
+mod environment;
 mod finish_check;
 mod fixes;
 mod imports_check;
@@ -143,6 +147,7 @@ mod rehearsal;
 mod rejection;
 mod removed_check;
 mod report;
+pub(crate) mod review;
 mod sent_tasks;
 mod size_check;
 mod slots;
@@ -150,8 +155,6 @@ mod stops;
 mod summary_wave;
 mod test_warnings;
 mod usage;
-mod environment;
-pub(crate) mod review;
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
 // e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
@@ -169,7 +172,9 @@ pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 
-use serde_json::Value;
+use crate::shared::spec_state::DiskSpecState;
+use mustard_core::domain::spec_state::SpecState;
+use serde_json::{Value, json};
 
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
@@ -177,8 +182,8 @@ use crate::shared::spec_state::session_from_env;
 pub(crate) use answer::{RoundRefusal, agents_refreshed, read_command, wave_dispatch};
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::Kept;
-pub(crate) use usage::snapshot as usage_snapshot;
-pub(crate) use queue::{backlog_left, open_review, open_sends, send_revision, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{backlog_left, open_review, open_sends, send_revision, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix,
+};
 pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
 #[cfg(test)]
@@ -189,6 +194,7 @@ pub(crate) use slots::{
 };
 #[cfg(test)]
 pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+pub(crate) use usage::snapshot as usage_snapshot;
 // Fora da rodada, só os testes do gancho do despacho leem o processo fechado,
 // e eles rodam só no Linux.
 pub(crate) use finish_check::mark_step_copy;
@@ -207,6 +213,50 @@ pub struct RoundOpts {
     pub spec: Option<String>,
     /// O relatório da rodada anterior, em JSON.
     pub report: Option<String>,
+}
+
+/// Keep dispatches, reviews, warnings and evidence intact. Optional preparation
+/// need not repeat task text, file lists and both hosts' arguments every round.
+pub(crate) fn projection(report: &Value) -> Value {
+    let mut out = report.clone();
+    if let Some(warnings) = out.get_mut("warnings").and_then(Value::as_array_mut) {
+        let changes: Vec<_> = warnings.iter().filter(|warning| warning["reason"] == "wave-size")
+            .map(|warning| json!({"wave":warning["wave"],"summary":warning["hint"]})).collect();
+        warnings.retain(|warning| warning["reason"] != "wave-size");
+        if !changes.is_empty() { out["changes"] = json!(changes); }
+    }
+    if let Some(preparations) = out.get_mut("specialization_preparation").and_then(Value::as_array_mut) {
+        for preparation in preparations {
+            if preparation["required"] == false && preparation["pending_review"].as_array().is_none_or(Vec::is_empty) {
+                let wave = preparation["wave"].clone();
+                let model_calls = preparation["model_calls"].clone();
+                *preparation = json!({"wave":wave,"required":false,"model_calls":model_calls,
+                    "next":"Only if current guidance is insufficient: use run expertise --prepare with the current host, task and files from dispatch.read. Reuse unchanged analyses. Do not launch another CLI/API."});
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    #[test]
+    fn compact_round_keeps_actions_warnings_and_required_preparation() {
+        let full = json!({"ok":true,"dispatch":[{"wave":1,"read":"read request-1","preferred_agent":"mustard-database"}],
+            "warnings":[{"reason":"proof-missing"}],"stopped":[2],"commit":{"sha":"abc"},
+            "specialization_preparation":[{"wave":1,"required":false,"model_calls":1,"pending_review":[],"query":"x".repeat(3000),"files":["src/a.rs"]},
+                {"wave":2,"required":false,"pending_review":["stale"],"query":"inspect changed source"},
+                {"wave":3,"required":true,"pending_review":[],"query":"required analysis"}]});
+        let compact = projection(&full);
+        for field in ["dispatch", "warnings", "stopped", "commit"] {
+            assert_eq!(compact[field], full[field]);
+        }
+        assert_eq!(compact["specialization_preparation"][0]["model_calls"], 1);
+        assert_eq!(compact["specialization_preparation"][1], full["specialization_preparation"][1]);
+        assert_eq!(compact["specialization_preparation"][2], full["specialization_preparation"][2]);
+        assert!(compact.to_string().len() * 3 < full.to_string().len());
+    }
 }
 
 /// O passo que a rodada devolve quando todas as ondas estão entregues e
@@ -233,10 +283,41 @@ pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
 pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match answer::run_round(opts, &project.root, lang, caller) {
+    let name = opts.spec.clone().or_else(|| DiskSpecState::new(&opts.root).active(caller.session));
+    let read_log = || {
+        name.as_deref()
+            .and_then(|name| mustard_core::io::spec_events::spec_file(&project.root, name).ok())
+            .and_then(|path| mustard_core::io::spec_events::read(&path).ok().flatten())
+    };
+    let before = read_log().and_then(|log| log.events.last().map(|event| event.id)).unwrap_or(0);
+    let mut report = match answer::run_round(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
+    };
+    if let Some(log) = read_log() {
+        let records: Vec<_> = log
+            .events
+            .iter()
+            .filter(|event| {
+                event.id > before
+                    && event.event_type == "stage_run"
+                    && matches!(event.str_field("stage"), Some("build" | "criterion-proof" | "criterion-proofs"))
+            })
+            .map(|event| {
+                json!({"stage":event.str_field("stage"),"result":event.str_field("result"),"exit":event.fields.get("exit"),
+                "ms":event.int("ms"),"criterion":event.int("criterion"),"waves":event.ints("waves"),"reused":event.fields.get("reused"),
+                "command":event.str_field("command").map(crate::shared::secret::without_secrets)})
+            })
+            .collect();
+        if !records.is_empty() {
+            let executed = records.iter().filter(|record| record["stage"] == "criterion-proof" && record["reused"] != true).count();
+            let reused = records.iter().filter(|record| record["stage"] == "criterion-proof" && record["reused"] == true).count();
+            report["validation"] = json!({"scope":"this-round","executed_proofs":executed,"reused_proof_receipts":reused,
+                "more_records":records.len().saturating_sub(16),"records":records.into_iter().take(16).collect::<Vec<_>>(),
+                "details":format!("mustard-rt run panel --section usage --spec {}",name.as_deref().unwrap_or_default())});
+        }
     }
+    report
 }
 
 /// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em

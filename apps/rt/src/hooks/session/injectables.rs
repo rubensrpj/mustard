@@ -86,8 +86,8 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool
             remember_notice(root,session_id,"session-map-content",&hash);
             if ignore_markers {
                 blocks.push(match config.language().text_or_default() {
-                    mustard_core::SupportedLocale::PtBr=>"Mustard: `run resume` retoma o estado gravado. Código: `mcp__mustard__search` ou `run search`, preservando argumentos; Read exato é cruzado pelo hook. Spec: `run read`/`run write`. Medidas: `run evidence`; comentários não provam comportamento. Antes de commit: `run review-wave`; USAGE não aprova. Nenhuma publicação automática. Guia completo: `.claude/mustard/session-map.md`.".into(),
-                    mustard_core::SupportedLocale::EnUs=>"Mustard: `run resume` restores recorded state. Code: `mcp__mustard__search` or `run search`, preserving arguments; exact Read is crossed by the hook. Spec: `run read`/`run write`. Measurements: `run evidence`; comments do not prove behavior. Before commit: `run review-wave`; USAGE is not approval. No automatic publication. Full guide: `.claude/mustard/session-map.md`.".into(),
+                    mustard_core::SupportedLocale::PtBr=>"Mustard: `run resume` retoma a spec. Busque código com `mcp__mustard__search` ou `run search`, mantendo os argumentos. O gancho também processa leituras de arquivo. Itens: `run read`/`run write`. Medidas: `run evidence`. Antes do commit, confira o diff com `run review-wave` e registre sua aprovação. `USAGE` só informa que o agente terminou. Publicação somente a pedido. Guia: `.claude/mustard/session-map.md`.".into(),
+                    mustard_core::SupportedLocale::EnUs=>"Mustard: `run resume` restores the spec. Search with `mcp__mustard__search` or `run search`, preserving arguments. The hook also processes file reads. Items: `run read`/`run write`. Measurements: `run evidence`. Before committing, inspect the diff with `run review-wave` and record your approval. `USAGE` only reports that the agent finished. Publish only on request. Guide: `.claude/mustard/session-map.md`.".into(),
                 });
                 delivered.push(marker_name);continue;
             }
@@ -106,7 +106,6 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool
     }
     Some(blocks.join("\n\n"))
 }
-
 
 /// `injected-<basename>` for a declared file path (either separator accepted).
 fn marker_basename(file: &str) -> String {
@@ -146,7 +145,9 @@ pub(super) fn notice_seen(root: &Path, session: Option<&str>, name: &str, finger
 }
 
 pub(super) fn remember_notice(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) {
-    let Some(path) = marker_path(&root.to_string_lossy(), session, &format!("notice-{name}")) else { return };
+    let Some(path) = marker_path(&root.to_string_lossy(), session, &format!("notice-{name}")) else {
+        return;
+    };
     let Some(parent) = path.parent() else { return };
     if fs::create_dir_all(parent).is_ok() {
         let _ = fs::write_atomic(&path, fingerprint.as_bytes());

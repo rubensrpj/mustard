@@ -206,8 +206,11 @@ jobs:
   # ------------------------------------------------ macOS — instalador .pkg ----
   macos-installer:
     needs: version
-    runs-on: macos-latest
-    timeout-minutes: 30
+    # Standard Intel host avoids observed ARM64 pool exhaustion. build-pkg.sh
+    # still compiles and combines both Apple targets into universal binaries.
+    runs-on: macos-15-intel
+    # Intel fallback compiles both targets; retain a bound with cold-build room.
+    timeout-minutes: 45
     # Bake the release version in — `build-pkg.sh` runs `cargo build` and
     # inherits this job-level env.
     env:

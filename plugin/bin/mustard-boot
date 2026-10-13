@@ -133,14 +133,12 @@ if [ "$need_fetch" = "1" ] && [ -n "$VER" ] && [ -n "$os" ]; then
   # hunting a network that was perfectly fine — on the Windows twin, where the
   # download had succeeded and only the extraction had not (field, 2026-08-27).
   #
-  # `--max-time 10` is the ceiling, and the number is not free: the tightest
-  # budget that can still reach this line is 15 seconds (the
-  # `clear|compact|resume|fork` arm of SessionStart), and the unpack plus the
-  # `exec` still have to fit after it. A connection that HANGS rather than
-  # refuses — captive portal, a proxy that swallows the packet — is the case
-  # this covers; it now costs ten seconds and a dormant session instead of a
-  # cancelled hook. Keep this literal and keep it in step with the `.cmd` twin.
-  if ! curl -fsSL --max-time 10 "$url" -o "$tmp/bins.tar.gz"; then
+  # A hook must leave time for extraction inside its 15-second budget.
+  # Installer/manual warm-up has a separate budget: 10 seconds cut off healthy
+  # 100+ MB downloads. Leave 30 seconds of the installer's 120 for extraction.
+  download_timeout=90
+  if [ "${1-}" = "on" ]; then download_timeout=10; fi
+  if ! curl -fsSL --connect-timeout 10 --max-time "$download_timeout" "$url" -o "$tmp/bins.tar.gz"; then
     echo "[mustard-boot] download failed ($url) — mustard hooks stay dormant this session" >&2
   elif ! tar -xzf "$tmp/bins.tar.gz" -C "$DIR"; then
     echo "[mustard-boot] downloaded, but could not unpack into $DIR — mustard hooks stay dormant this session" >&2

@@ -432,9 +432,11 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 
 fn final_validation_receipts(log: &SpecLog) -> Vec<&SpecEvent> {
     let Some(receipt)=log.events.iter().rev().find(|event| event.event_type=="stage_run" && event.str_field("stage")==Some("final-validation")) else {return vec![];};
-    if receipt.str_field("result")!=Some("pass") || log.events.iter().any(|event| event.id>receipt.id
+    if receipt.str_field("result")!=Some("pass") || log.events.iter().any(|event| {
+            event.id>receipt.id
         && event.event_type=="stage_run" && event.str_field("phase")==Some("final")
-        && (event.str_field("scope")==Some("leaf") || (event.str_field("stage")==Some("machine") && event.str_field("result")!=Some("pass")))) {return vec![];}
+        && (event.str_field("scope")==Some("leaf") || (event.str_field("stage")==Some("machine") && event.str_field("result")!=Some("pass")))
+        }) {return vec![];}
     vec![receipt]
 }
 
@@ -491,7 +493,9 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
     agreed.sort_by_key(|e| e.id);
     let changes: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
     let commit = final_review_commit(root, log);
-    let execution = Execution { commit, copy: Some(WaveCopy { path: shown(&final_copy_path(root, spec, log)), reused: None }), ..project_execution(root) };
+    let copy = final_copy_path(root, spec, log);
+    let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
+    let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
     // The consolidated receipt avoids rereading successful test logs. Detailed
     // executions remain available through the event-reading port.
     let validation = final_validation_receipts(log);
@@ -759,10 +763,11 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let tree = execution.copy.as_ref().map_or(root, |copy| Path::new(&copy.path));
     let prepared = prepared::for_tasks(root, tree, &of_type("task"));
     let files = wave_files(log, wave);
-    let stored = context.flight.specializations.get(&wave).cloned().or_else(||
+    let stored = context.flight.specializations.get(&wave).cloned().or_else(|| {
         log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id))
             .and_then(|send|send.fields.get("expertise"))
-            .and_then(|value|serde_json::from_value::<crate::io::expertise::workflow::Selection>(value.clone()).ok()));
+            .and_then(|value|serde_json::from_value::<crate::io::expertise::workflow::Selection>(value.clone()).ok())
+    });
     let expertise = crate::io::expertise::workflow::restore(root,&files,stored.as_ref());
     // Explicit skills and scoped skills of the touched area. The latter
     // must survive native-tool interception and ignored worktree files.
@@ -882,8 +887,10 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         prepared,
     };
     let text = wave_prompt::write(&material, lang);
-    let skills=material.skills.iter().map(|skill|serde_json::json!({"name":skill.name,"path":skill.path,"sha":skill_hashes[&skill.path],
-        "stale_at_dispatch":skill.stale,"read_confirmed":null})).collect();
+    let skills=material.skills.iter().map(|skill| {
+            serde_json::json!({"name":skill.name,"path":skill.path,"sha":skill_hashes[&skill.path],
+        "stale_at_dispatch":skill.stale,"read_confirmed":null})
+        }).collect();
     let lines = wave_prompt::count_lines(&text);
     // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
     // molde com esse nome mora no projeto, e o envio grava só o nome.
@@ -908,6 +915,11 @@ fn execution(context: &Context, wave: u64) -> Execution {
     // Codex's native executor inherits its session settings. Claude family
     // names and effort aliases must not become a requested Codex model.
     let mut execution=Execution { running, copy, ..context.base.clone() };
+    execution.prepared = execution
+        .copy
+        .as_ref()
+        .and_then(|copy| crate::io::workspace::checkout_git_dir(Path::new(&copy.path)))
+        .is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
     if host==Some("codex") {execution.model="inherit".into();execution.effort="inherit".into();}
     execution
 }
@@ -971,12 +983,14 @@ fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)
     let mut found = Vec::new();
     for folder in skill_folders(root, files) {
       for directory in [".claude/skills", ".agents/skills"] {
-        let Ok(entries) = std::fs::read_dir(folder.join(directory)) else { continue };
+        let Ok(entries) = std::fs::read_dir(folder.join(directory)) else { continue;
+            };
         let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path().join("SKILL.md")).collect();
         paths.sort();
         for path in paths {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let Ok(front) = crate::domain::skill::frontmatter::parse(&text) else { continue };
+            let Ok(front) = crate::domain::skill::frontmatter::parse(&text) else { continue;
+                };
             // Managed entries are selected through their current registry,
             // never rediscovered as manual skills after withdrawal.
             if front.source().as_deref() == Some("mustard-expertise") { continue; }
@@ -984,7 +998,8 @@ fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)
             if front.extra.get("disable-model-invocation").and_then(Value::as_str)
                 .is_some_and(|value| ["true", "yes", "on", "1"].iter().any(|truth| value.eq_ignore_ascii_case(truth)))
                 || rules::matches_paths(&text, files) != Some(true) { continue; }
-            let Some(name) = path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) else { continue };
+            let Some(name) = path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) else { continue;
+                };
             let absolute = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
             found.push((name.to_string(), text, absolute));
         }
@@ -1263,8 +1278,8 @@ mod tests {
 
     #[test]
     fn automatic_profile_export_uses_the_dispatch_host_and_replays_it() {
-        use crate::io::expertise::{self,Profile};
         use crate::domain::knowledge::Source;
+        use crate::io::expertise::{self,Profile};
         for host in ["codex","claude"] {
             let dir=tempdir().unwrap();let root=dir.path();
             let text="fn save() {}\n";
@@ -3349,10 +3364,15 @@ mod tests {
         assert!(first.text.contains("fn Alpha() { let value = 1; }"));
         assert!(first.text.contains("fn Beta() { let value = 2; }"));
         let cache = root.join(".claude/mustard/prepared-context");
-        let components = || std::fs::read_dir(&cache).unwrap().map(|entry| {
-            let path = entry.unwrap().path();
-            (path.clone(), std::fs::read(path).unwrap())
-        }).collect::<BTreeMap<_,_>>();
+        let components = || {
+            std::fs::read_dir(&cache)
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (path.clone(), std::fs::read(path).unwrap())
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
         for entry in std::fs::read_dir(&cache).unwrap() {
             let path = entry.unwrap().path();
             let mut stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();

@@ -104,13 +104,11 @@ if "%VER%"=="" goto :noversion
 set "URL=https://github.com/rubensrpj/mustard/releases/download/v%VER%/mustard-bins-%VER%-windows-x64.zip"
 set "ZIP=%TEMP%\mustard-bins-%VER%.zip"
 echo [mustard-boot] fetching plugin binaries v%VER% (first run) 1>&2
-rem `--max-time 10` is the ceiling, and the number is not free: the tightest
-rem budget that can still reach this line is 15 seconds (the
-rem `clear|compact|resume|fork` arm of SessionStart), and the unpack still has to
-rem fit after it. The case it covers is a connection that HANGS rather than
-rem refuses — captive portal, a proxy that swallows the packet. Keep the value
-rem literal and in step with the POSIX twin.
-curl -fsSL --max-time 10 "%URL%" -o "%ZIP%"
+rem Hook budget leaves room for extraction; installer/manual warm-up has
+rem 90 seconds for the archive inside the installer's 120-second ceiling.
+set "DOWNLOAD_TIMEOUT=90"
+if /i "%~1"=="on" set "DOWNLOAD_TIMEOUT=10"
+curl -fsSL --connect-timeout 10 --max-time %DOWNLOAD_TIMEOUT% "%URL%" -o "%ZIP%"
 if errorlevel 1 goto :fetchfail
 tar -xf "%ZIP%" -C "%DEST%"
 if errorlevel 1 goto :extractfail

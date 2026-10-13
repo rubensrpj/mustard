@@ -101,7 +101,8 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Uma rodada de ondas, que é uma chamada só. Sem o relatório, despacha:
+    /// Sem opções de ação, consulta o estado sem alterar a execução.
+    /// Com --dispatch ou --report, executa uma rodada:
     /// escolhe as ondas que podem sair juntas, monta o pedido de cada uma,
     /// grava o envio com o pedido exato e marca a spec como em execução na
     /// primeira rodada. Com a entrega que uma onda gravou na spec, primeiro
@@ -132,6 +133,10 @@ pub enum FlowCmd {
         /// `USAGE` sozinho não aprova; alteração invalida a revisão.
         #[arg(long)]
         report: Option<String>,
+        /// Autoriza avançar a execução e despachar ondas. Sem relatório nem
+        /// esta opção, o comando somente consulta o estado.
+        #[arg(long)]
+        dispatch: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -299,7 +304,7 @@ pub fn dispatch(cmd: FlowCmd) {
         FlowCmd::Evidence {root,spec,wave,point,receipt,text}=>{
             let report=flow::evidence::run(&root,spec.as_deref(),wave,point.as_deref(),receipt.as_deref(),text.as_deref());
             flow::answer("evidence",&root,spec.as_deref(),started,&report);
-        },
+        }
         FlowCmd::Open { kind, name, base, pending, root } => {
             let opts = flow::open::OpenOpts { root, kind, name, base, pending };
             let named = opts.name.clone();
@@ -313,7 +318,17 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::plan::PlanOpts { root, spec };
             flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts));
         }
-        FlowCmd::Round { spec, report, root } => {
+        FlowCmd::Round { spec, report, root, dispatch } => {
+            if !dispatch && report.is_none() {
+                let mut out = flow::resume::resume_at(&flow::resume::ResumeOpts { root, spec });
+                out["mode"] = serde_json::json!("status");
+                out["mutated"] = serde_json::json!(false);
+                println!("{out}");
+                if out["ok"] != true {
+                    std::process::exit(1);
+                }
+                return;
+            }
             let opts = flow::round::RoundOpts { root, spec, report };
             flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
         }

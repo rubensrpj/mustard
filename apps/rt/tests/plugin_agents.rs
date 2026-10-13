@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
 /// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
 /// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
@@ -1076,7 +1076,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
     let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo", "code_files": 1}]});
     mustard_core::io::project_map::write_text(&root, &model.to_string()).unwrap();
 
-    let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
+    let round = rt(&root, &home, &["run", "round", "--dispatch", "--spec", "copia"], None);
     assert_eq!(round["ok"], json!(true), "{round}");
     let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 2, "the two waves, each on its own file, go out together: {round}");
@@ -1126,7 +1126,7 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
         put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
         put("state", json!({"phase": "running", "branch": "feature/titulo"}));
 
-        let round = rt(&root, &home, &["run", "round", "--spec", "titulo"], None);
+        let round = rt(&root, &home, &["run", "round", "--dispatch", "--spec", "titulo"], None);
         assert_eq!(round["ok"], json!(true), "{round}");
         let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{round}");
@@ -1165,7 +1165,7 @@ fn request_says_to_write_the_delivery_through_the_tool() {
         put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
         put("state", json!({"phase": "running", "branch": "feature/gravada"}));
 
-        let round = rt(&root, &home, &["run", "round", "--spec", "gravada"], None);
+        let round = rt(&root, &home, &["run", "round", "--dispatch", "--spec", "gravada"], None);
         assert_eq!(round["ok"], json!(true), "{round}");
         let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{round}");
@@ -1293,7 +1293,7 @@ fn every_flow_command_answers_its_next_step() {
     let file = root.join(".claude/spec/passo/spec.ndjson");
     let running = json!({"phase": "running", "branch": "feature/passo"});
     store::write(&file, "state", running.as_object().cloned().unwrap(), &[]).unwrap();
-    let round = rt(&root, &home, &["run", "round", "--spec", "passo"], None);
+    let round = rt(&root, &home, &["run", "round", "--dispatch", "--spec", "passo"], None);
     assert_eq!(round["command"], json!("mustard-rt run close --spec passo"), "{round}");
     let close = translate("round.close", Locale::PtBr).replace("{command}", "mustard-rt run close --spec passo");
     assert!(round["next"].as_str().is_some_and(|next| next.ends_with(&close)), "{round}");

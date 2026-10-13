@@ -56,7 +56,10 @@ pub fn run(
                     let receipt=mustard_core::io::code_search::delivery::receipt(&token,&output);
                     output.extend_from_slice(receipt.as_bytes());
                 }
-                let _=super::spec_events::conversation::record_output_call(root,"search",None,started,&answer.report,&String::from_utf8_lossy(&output));
+                answer.report["delivery_measurement"] =
+                    json!({"basis":"same-request-stdout-bytes","native_bytes":answer.stdout.len(),"delivered_bytes":output.len()});
+                let _=super::spec_events::conversation::record_output_call(root,"search",None,started,&answer.report,&String::from_utf8_lossy(&output),
+                );
                 let _ = std::io::stdout().write_all(&output);
                 let _ = std::io::stderr().write_all(&answer.stderr);
             } else {

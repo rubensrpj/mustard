@@ -12,6 +12,10 @@
 //! rodado, e se cada nome de teste que o comando cita existe no projeto.
 
 use std::path::Path;
+mod test_command;
+pub(crate) use test_command::canonical as canonical_test_command;
+mod lint_command;
+pub(crate) use lint_command::readonly as readonly_lint_command;
 
 use mustard_core::platform::git;
 
@@ -35,7 +39,9 @@ pub(crate) struct AcResult {
 }
 
 /// Uma prova de critério rodada uma vez, como o fechamento a grava.
+#[derive(Clone)]
 pub(crate) struct ProofRun {
+    pub reused: bool,
     /// `pass` quando a prova passou, `fail` em qualquer outro desfecho.
     pub result: &'static str,
     /// O código de saída; o que não chegou a rodar sai com o código de erro.
@@ -71,7 +77,8 @@ pub(crate) struct ProofRun {
 /// projeto — roda por [`run_command`] ou [`run_server_command`], que não
 /// fazem essas leituras.
 pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
-    graded(runner::run_ac_command(command, None, cwd), Some((command, cwd)))
+    let command = canonical_test_command(command);
+    graded(runner::run_ac_command(&command, None, cwd), Some((&command, cwd)))
 }
 
 /// Roda um comando do fluxo que não é prova de critério — hoje, a
@@ -150,8 +157,19 @@ pub(crate) struct FailedProof {
 pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)]) -> (Vec<(u64, String, ProofRun)>, Option<FailedProof>) {
     let mut runs = Vec::new();
     let mut failed = None;
+    let mut cache = std::collections::BTreeMap::<String, ProofRun>::new();
     for (id, code, proof) in criteria {
-        let out = run_proof(proof, root);
+        let canonical = canonical_test_command(proof);
+        let out = if let Some(previous) = cache.get(&canonical) {
+            let mut reused = previous.clone();
+            reused.reused = true;
+            reused.ms = 0;
+            reused
+        } else {
+            let out = run_proof(&canonical, root);
+            cache.insert(canonical, out.clone());
+            out
+        };
         if failed.is_none()
             && let Some(fault) = out.fault()
         {
@@ -183,6 +201,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         _ => None,
     };
     ProofRun {
+        reused: false,
         result: if green && ran_no_test.is_none() && missing_test.is_none() { "pass" } else { "fail" },
         exit: out.exit.unwrap_or(1),
         ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
@@ -349,6 +368,19 @@ pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn identical_criterion_commands_execute_once_and_keep_each_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = "sh -c 'printf x >> proof-count'".to_string();
+        let criteria = [(1, "first".into(), command.clone()), (2, "second".into(), command.clone()), (3, "third".into(), command)];
+        let (outcomes, failure) = run_criteria_proofs(dir.path(), &criteria);
+        assert!(failure.is_none());
+        assert_eq!(outcomes.len(), 3);
+        assert!(!outcomes[0].2.reused && outcomes[1].2.reused && outcomes[2].2.reused);
+        assert_eq!(outcomes[1].2.ms, 0);
+        assert_eq!(std::fs::read_to_string(dir.path().join("proof-count")).unwrap(), "x");
+    }
 
     /// PT heading "Critérios de Aceitação globais" (suffix word after the
     /// canonical name) must still resolve — `is_heading` matches with a

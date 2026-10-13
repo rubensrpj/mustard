@@ -120,10 +120,12 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
     Ok(Some((title, body)))
 }
 
+pub(super) use super::commit_title::message as commit_message_for;
+
 /// O começo de `text` que cabe em `room` caracteres, cortado numa palavra
 /// inteira quando há palavra para cortar, sem sobra de espaço nem de
 /// pontuação no fim. O texto que já cabe volta como está.
-fn shorten_to(text: &str, room: usize) -> String {
+pub(super) fn shorten_to(text: &str, room: usize) -> String {
     if text.chars().count() <= room {
         return text.to_string();
     }
@@ -311,7 +313,9 @@ pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale,
         .flat_map(|e| {
             e.ints("waves")
                 .into_iter()
-                .map(|w| (w, e.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()))
+                .map(|w| {
+                    (w, e.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect())
+                })
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -736,7 +740,7 @@ fn copy_changed(copy: &Path, subs: &[String]) -> Vec<String> {
         let theirs = changed_paths(&git(&copy.join(sub), &status).unwrap_or_default());
         changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
     }
-    changed
+    changed.into_iter().filter(|file| !file.split('/').any(|part| part == "node_modules")).collect()
 }
 
 /// Depois do commit da rodada, zera a cópia de cada onda de `waves`, as que
@@ -952,12 +956,19 @@ pub(super) fn ensure_criteria_proofs(
     let returning: BTreeSet<u64> = waves.iter().copied().collect();
     let mut waiting = super::agreed::covered_codes(log, &returning);
     waiting.extend(undone.iter().filter_map(|id| log.get(*id)).flat_map(|task| task.ints("covers")).filter_map(|id| codes.get(&id).cloned()));
-    let criteria: Vec<(u64, String, String)> = log
-        .criteria_for_waves(waves)
+    let mut selected = log.criteria_for_waves(waves);
+    for (id, _) in delivered {
+        if let Some(criterion) = log.get(*id).filter(|event| event.event_type == "criterion")
+            && !selected.iter().any(|event| event.id == *id)
+        {
+            selected.push(criterion);
+        }
+    }
+    let criteria: Vec<(u64, String, String)> = selected
         .into_iter()
         .filter_map(|e| {
             let code = codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
-            if waiting.contains(&code) {
+            if waiting.contains(&code) && !delivered.iter().any(|(id, _)| *id == e.id) {
                 return None;
             }
             let proof = match delivered.iter().find(|(id, _)| *id == e.id) {
@@ -970,7 +981,12 @@ pub(super) fn ensure_criteria_proofs(
     let (outcomes, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
     for (id, code, out) in &outcomes {
         let command = criteria.iter().find(|(_, c, _)| c == code).map(|(_, _, p)| p.as_str()).unwrap_or_default();
-        let own: Vec<_> = waves.iter().copied().filter(|wave| log.criteria_for_waves(&[*wave]).iter().any(|criterion| criterion.id == *id)).collect();
+        let mut own: Vec<_> = waves.iter().copied().filter(|wave| log.criteria_for_waves(&[*wave]).iter().any(|criterion| criterion.id == *id)).collect();
+        // A supplied proof can cover a broader criterion than the planned
+        // task list. It was verified against this joined round, not no wave.
+        if own.is_empty() && delivered.iter().any(|(criterion, _)| criterion == id) {
+            own.extend_from_slice(waves);
+        }
         super::super::validation::record_criterion(root, spec, *id, &own, command, out).map_err(RoundRefusal::Refused)?;
     }
     let Some(failed) = failed else {
@@ -1397,6 +1413,37 @@ mod tests {
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX && !title.ends_with(": "), "{title}");
     }
 
+    #[test]
+    fn project_scope_and_sorted_wave_trailer_replace_internal_title_scopes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(3, &["src/a.rs"], &[]), (4, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("src/a.rs"), "fn existing() {}\n").unwrap();
+        git_at(root, &["add", "src/a.rs"]);
+        git_at(root, &["commit", "-q", "-m", "feat(storage): existing convention"]);
+        git_at(root, &["checkout", "-b", "fix/native-title"]);
+        let report = |wave, file: &str, summary: &str| WaveReport {
+            wave,
+            delivered: "done".into(),
+            files: vec![file.into()],
+            commit: Some(summary.into()),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            undone: Vec::new(),
+            taken_elsewhere: false,
+            leftovers: Vec::new(),
+            agreed: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
+        };
+        let waves = [report(4, "src/a.rs", "Reader contract"), report(3, "src/b.rs", "Cell values")];
+        let (title, body) = commit_message_for(root, &waves, Locale::EnUs).unwrap_or_else(|_| panic!("valid summaries")).unwrap();
+        assert_eq!(title, "fix(storage): Cell values; Reader contract");
+        assert!(body.ends_with("Mustard-Waves: 3,4"));
+        assert!(body.contains("Cell values") && body.contains("Reader contract"));
+    }
+
     /// Duas entregas tomadas na mesma rodada, cada uma com o seu arquivo,
     /// viram um commit só, e o título e o registro dele na spec citam as
     /// duas ondas, mesmo com o resumo da primeira grande para o título.
@@ -1417,11 +1464,14 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
 
-        let expected = "feat(ondas-1-2): Cadastro lido só nos itens da tabela de";
+        let expected = "feat: Cadastro lido só nos itens; Aviso da rodada e envio";
         assert_eq!(out["commit"]["title"], json!(expected), "{out}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let commit = log.visible().into_iter().find(|e| e.event_type == "commit").expect("commit");
+        let proofs =
+            log.events.iter().rev().find(|e| e.event_type == "stage_run" && e.str_field("stage") == Some("criterion-proofs")).expect("proof stage");
+        assert_eq!(proofs.str_field("result"), Some("pass"), "fixture executes git --version as its criterion proof");
         assert_eq!(commit.str_field("title"), Some(expected));
         assert_eq!(commit.ints("waves"), vec![1, 2]);
         let shown = Command::new("git").args(["show", "--name-only", "--format=%s", "HEAD"]).current_dir(root).output();
@@ -1465,7 +1515,7 @@ mod tests {
         assert_eq!(returned(root, report)["ok"], json!(true));
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(out["commit"]["title"], json!("feat(onda-1): a soma sai"), "{out}");
+        assert_eq!(out["commit"]["title"], json!("feat: a soma sai"), "{out}");
         let sha = out["commit"]["sha"].as_str().unwrap_or_default().to_string();
         assert_eq!(sha.len(), 40, "{out}");
         let path = store::spec_file(root, "x").unwrap();
@@ -1926,6 +1976,7 @@ mod tests {
 
     fn proof(result: &'static str, output: &str) -> crate::commands::review::qa_run::ProofRun {
         crate::commands::review::qa_run::ProofRun {
+            reused: false,
             result,
             exit: if result == "pass" { 0 } else { 1 },
             ms: 0,

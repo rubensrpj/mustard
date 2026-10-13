@@ -237,7 +237,8 @@ fn session_start_core(
 }
 
 fn notice_fingerprint(probe: &Probe<'_>, name: &str, text: &str) -> Option<String> {
-    if !matches!(name, "pending" | "merged") { return None }
+    if !matches!(name, "pending" | "merged") { return None;
+    }
     let mut hash = mustard_core::io::sha256::Sha256::new();
     hash.update(text.as_bytes());
     if name == "pending" {
@@ -372,6 +373,12 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
     let lang = probe.lang;
     let config = crate::shared::context::config::project_config_cached(probe.root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, probe.root);
+    // Repository-wide housekeeping is unrelated to an active work branch.
+    // It remains available on integration branches and in explicit diagnostics.
+    let branch = mustard_core::platform::git_branches::current_branch(probe.root)?;
+    if !flow.is_declared_base(&branch) {
+        return None;
+    }
     // A branch que o caminho do merge acabou de arrumar já foi dita acima; a
     // cópia dela no servidor, que fica sem `git.deleteRemoteBranch`, não volta
     // aqui como se ninguém tivesse cuidado dela.
@@ -505,7 +512,7 @@ fn stuck_notice(probe: &Probe<'_>) -> Option<String> {
         return None;
     }
     let held = crate::commands::git_settle::git_step_lock_if_free(probe.root)?;
-    crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(probe.root, &held), probe.lang)
+    crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::find_stuck_processes(probe.root, &held), probe.lang)
 }
 
 /// A versão gravada no `mustard.json` não é a que roda. Sem `mustard.json`,
@@ -905,7 +912,10 @@ mod tests {
             };
             let all: Vec<String> = NOTICES.iter().filter_map(|notice| (notice.text)(&probe)).collect();
             assert!(all.iter().any(|text| text.contains("0.0.1-velha")), "{lang:?}: the old version speaks: {all:?}");
-            assert!(all.iter().any(|text| text.contains("uma-entrega-ja-mergeada")), "{lang:?}: {all:?}");
+            assert!(
+                !all.iter().any(|text| text.contains("uma-entrega-ja-mergeada")),
+                "work branches omit integration maintenance: {lang:?}: {all:?}"
+            );
             assert!(all.iter().any(|text| text.contains("mustard-rt run clean")), "{lang:?}: {all:?}");
             assert!(declared.as_ref().unwrap().len() < map.len()/2, "the refreshed guide is compact");
             let gone = all.iter().filter(|text| !context.contains(text.as_str())).count();
@@ -1004,6 +1014,9 @@ mod tests {
             let again = context_of(root, &session_input("s-merged", source), NO_REGISTRY, NO_SCRATCH);
             assert!(!again.contains(&expected), "unchanged branches must not repeat: {again}");
         }
+        git(root, &["checkout", "dev_live"]);
+        let working = context_of(root, &session_input("s-work", "startup"), NO_REGISTRY, NO_SCRATCH);
+        assert!(!working.contains(&expected), "unrelated merged branches do not interrupt work: {working}");
     }
 
     /// O mapa do projeto acompanha o commit atual desde o início da sessão,
@@ -1326,7 +1339,7 @@ mod tests {
             assert!(context.contains("mcp__mustard__search") && context.contains(".claude/mustard/session-map.md"));
             assert!(context.len() <= MAX_BYTES, "{lang:?}: {} bytes", context.len());
             assert!(context.contains(&full), "the compact guide makes room for the full recorded state");
-            assert!(context.contains("mustard-rt run round --spec x"));
+            assert!(context.contains("mustard-rt run round --dispatch --spec x"));
 
         }
     }

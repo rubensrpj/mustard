@@ -299,7 +299,7 @@ fn backlog_always_becomes_the_same_batches() {
     let before = project.log();
     assert!(before.visible().into_iter().all(|e| e.event_type != "wave"), "no hand-made wave before the round");
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     let after = project.log();
     let waves: Vec<_> = after.visible().into_iter().filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary")).collect();
@@ -354,7 +354,7 @@ fn binary_writes_the_wave_event_of_the_batch() {
     let before = project.log();
     assert!(before.visible().into_iter().all(|e| e.event_type != "wave"), "no hand-made wave before the round");
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     let after = project.log();
     let wave = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("the batch wave");
@@ -423,7 +423,7 @@ fn sent_by(project: &Project, waves: &[u64], (pid, started): (u32, u64)) {
 /// saíram; as que saíram ficam em andamento pelo processo do teste
 /// ([`keep_sent`]).
 fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
-    let first = project.run(&["round", "--spec", SPEC]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
     let asked = waves_in(&first, "analysis");
     let out = waves_in(&first, "dispatch");
     keep_sent(project, &out);
@@ -435,6 +435,28 @@ fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
 /// do usuário e as tarefas, na ordem de `files`.
 fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
     marked_backlog_project(files, &[])
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_short_lived_round_uses_its_exact_session_owner_and_the_dispatch_hook_accepts_it() {
+    let (project, _, _, _) = backlog_project(&[&["src/a.rs"]]);
+    let pid = std::process::id();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let started: u64 = stat.rsplit_once(')').unwrap().1.split_whitespace().nth(19).unwrap().parse().unwrap();
+    let mut hash = mustard_core::io::sha256::Sha256::new(); hash.update(SESSION.as_bytes());
+    let folder = project.root.join(".claude/mustard/host-observations"); std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("claude-{}.json", hash.hex_digest())), json!({"host_pid":pid,"host_started":started}).to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run","round","--dispatch","--spec",SPEC]).current_dir(&project.root)
+        .env("MUSTARD_SESSION_ID",SESSION).env("MUSTARD_RT_DELEGATED","1").env("CLAUDE_CONFIG_DIR",&project.home)
+        .env_remove("CODEX_THREAD_ID").env_remove("TYPESAFE_API_KEY").env_remove("MUSTARD_JEV_URL").output().unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], true, "{report}");
+    let log = project.log(); let send = log.last_by_wave("send")[&1];
+    assert_eq!(log.get(send).unwrap().int("claude_pid"), Some(u64::from(pid)));
+    let verdict = dispatch_new_agent(&project);
+    assert_ne!(verdict["hookSpecificOutput"]["permissionDecision"], "deny", "{verdict}");
 }
 
 /// [`backlog_project`] com a marca de prioridade nas tarefas das posições
@@ -771,7 +793,7 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     let jev = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.0);
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &jev);
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(batch_orders(&project), vec![tasks.clone()], "uma onda com as três do mesmo tipo");
     let asked = jev.requests();
@@ -808,7 +830,7 @@ fn every_wave_goes_out_on_the_project_model_and_the_jev_is_not_asked_about_it() 
     config["agents"] = json!({"model": "opus", "light_model": "claude-haiku-5"});
     std::fs::write(&config_path, config.to_string()).expect("config");
 
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(batch_orders(&project), vec![vec![tasks[0]], vec![tasks[1], tasks[2]]], "{out}");
     let log = project.log();
@@ -834,7 +856,7 @@ fn every_wave_goes_out_on_the_project_model_and_the_jev_is_not_asked_about_it() 
 fn without_a_key_the_wave_goes_out_on_the_project_model() {
     let (project, _, _, _) = backlog_project(&[&["a.rs"]]);
 
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     let log = project.log();
     let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
@@ -856,7 +878,7 @@ fn kinds_with_a_file_in_common_never_run_together() {
     let (project, _, _, tasks) = judged_project(&[&["shared.rs"], &["shared.rs"]], &jev);
     let (feature, defect) = (tasks[0].min(tasks[1]), tasks[0].max(tasks[1]));
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(batch_orders(&project), vec![vec![defect]], "só o defeito sai");
     assert_eq!(wave_of(&project, feature), None, "o recurso espera no backlog, sem onda");
@@ -885,7 +907,7 @@ fn a_defect_leaves_before_a_cleanup_even_with_the_lower_number() {
     .expect("config");
     let (cleanup, defect) = (tasks[0].min(tasks[1]), tasks[0].max(tasks[1]));
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(batch_orders(&project), vec![vec![defect]], "o defeito ocupa a única vaga");
     assert_eq!(wave_of(&project, cleanup), None, "a limpeza, de número mais baixo, espera");
@@ -900,7 +922,7 @@ fn a_task_of_an_uncertain_kind_goes_alone() {
     let mut by_number = tasks.clone();
     by_number.sort_unstable();
 
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     let orders = batch_orders(&project);
     assert_eq!(orders.len(), 2, "{orders:?}");
@@ -920,13 +942,13 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
 
     let strict = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.8);
     project.jev = Some(strict.url.clone());
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa que não divide arquivo");
     assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 2, "perfil intrínseco; o bloqueio tem evidência própria");
 
     let loose = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.1);
     project.jev = Some(loose.url.clone());
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(wave_of(&project, held).is_some(), "com o choque de 0,1 a tarefa sai");
 }
 
@@ -937,13 +959,13 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
 fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
     let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &biggest);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[0]], vec![tasks[1]], vec![tasks[2]]], "nível 3: uma por onda");
     assert_eq!(biggest.requests().len(), 3, "um perfil por tarefa, com tipo e tamanho juntos");
 
     let small = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.5);
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &small);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "nota 0,5: 100 mil cabem, 150 mil não");
 }
 
@@ -955,17 +977,17 @@ fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
 fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
     let same: [&[&str]; 3] = [&["a.rs"], &["a.rs"], &["a.rs"]];
     let (project, _, _, tasks) = backlog_project(&same);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![tasks.clone()], "sem chave");
 
     let refusing = FakeJev::start(|_| (401, json!({})));
     let (refused, _, _, tasks) = judged_project(&same, &refusing);
-    refused.run(&["round", "--spec", SPEC]);
+    refused.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&refused), vec![tasks.clone()], "chamada recusada");
 
     let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
     let (judged, _, _, tasks) = judged_project(&same, &biggest);
-    judged.run(&["round", "--spec", SPEC]);
+    judged.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&judged), vec![vec![tasks[0]]], "com o Jev, o nível 3 separa as três");
 }
 
@@ -977,14 +999,14 @@ fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
 fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
     let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
     let (project, _, _, tasks) = backlog_project(&files);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     let by_file = vec![vec![tasks[0], tasks[1]], vec![tasks[2]]];
     assert_eq!(batch_orders(&project), by_file, "sem chave");
     assert!(assembly_calls(&project).is_empty(), "sem chave nada é perguntado");
 
     let refusing = FakeJev::start(|_| (401, json!({})));
     let (refused, _, _, tasks) = judged_project(&files, &refusing);
-    refused.run(&["round", "--spec", SPEC]);
+    refused.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&refused), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "chamada recusada");
     let calls = assembly_calls(&refused);
     assert_eq!(calls.len(), 1, "{calls:?}");
@@ -1017,7 +1039,7 @@ fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev()
     let files: [&[&str]; 3] = [&["a.rs"], &["b.rs"], &["c.rs"]];
     let (project, _, _, tasks) = marked_backlog_project(&files, &[2]);
     one_slot(&project);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[2]]], "sem o Jev, a marcada ocupa a vaga");
 
     let jev = FakeJev::judging(
@@ -1029,7 +1051,7 @@ fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev()
     let (mut judged, _, _, tasks) = marked_backlog_project(&files, &[2]);
     judged.jev = Some(jev.url.clone());
     one_slot(&judged);
-    judged.run(&["round", "--spec", SPEC]);
+    judged.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&judged), vec![vec![tasks[2]]], "com o Jev, a marcada passa à frente dos defeitos");
     assert!(jev.requests().iter().all(|asked| !asked.to_string().contains(PRIORITY)), "o quadro mandado ao Jev não leva a marca: {:?}", jev.requests());
 }
@@ -1087,7 +1109,7 @@ fn a_marked_task_sharing_a_file_with_the_wave_in_progress_waits() {
 fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_one() {
     let files: [&[&str]; 2] = [&["a.rs"], &["a.rs"]];
     let (project, _, _, tasks) = marked_backlog_project(&files, &[1]);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[1], tasks[0]]], "a marcada à frente na mesma onda");
 
     let jev = FakeJev::judging(
@@ -1101,7 +1123,7 @@ fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_o
         project.jev = Some(jev.url.clone());
         (project, crit, said, tasks)
     };
-    judged.run(&["round", "--spec", SPEC]);
+    judged.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&judged), vec![vec![tasks[1]]], "a marcada sai");
     assert_eq!(wave_of(&judged, tasks[0]), None, "o defeito de número menor espera atrás dela");
 }
@@ -1173,7 +1195,7 @@ fn the_jev_judges_the_items_of_the_request_and_the_wave_leaves_in_the_same_round
     project.jev = Some(jev.url.clone());
     let (out_code, in_code) = two_rules(&project, said);
 
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
     assert!(out.get("analysis").is_none(), "{out}");
@@ -1208,7 +1230,7 @@ fn without_a_key_the_wave_leaves_in_the_same_round_with_the_default_items() {
     let (project, _, said, _) = backlog_project(&[&["a.rs"]]);
     let (project_code, other_code) = two_rules(&project, said);
 
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
     assert!(out.get("analysis").is_none(), "{out}");
@@ -1301,7 +1323,7 @@ fn legacy_zero_budget_and_old_spending_do_not_block_wave_planning_or_context() {
             "cost_micro_usd": 10_000_000}),
     );
 
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert!(!jev.all_requests().is_empty(), "the provider receives new decisions");
     assert_eq!(batch_orders(&project), vec![tasks], "planning uses the provider judgement");
@@ -1348,7 +1370,7 @@ fn a_credit_refusal_keeps_round_planning_and_context_native_and_records_the_fail
     let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
     let (project, _, said, tasks) = judged_project(&files, &jev);
     let (project_code, other_code) = two_rules(&project, said);
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(out["ok"], true, "the round continues: {out}");
     assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]]);
     let log = project.log();
@@ -1414,7 +1436,7 @@ fn deliver_in_copy(project: &Project, wave: u64, content: &str) -> PathBuf {
 /// sem ele, com um processo que já terminou. Devolve o projeto e a cópia.
 fn delivered_wave(alive: bool) -> (Project, PathBuf) {
     let (project, _, _, _) = backlog_project(&[&[GREETING]]);
-    let first = project.run(&["round", "--spec", SPEC]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
     sent_by(&project, &[1], if alive { test_process() } else { closed_process::closed_process() });
     let copy = deliver_in_copy(&project, 1, "hello\n");
@@ -1425,7 +1447,7 @@ fn delivered_wave(alive: bool) -> (Project, PathBuf) {
 /// `reason`, como veio.
 fn reject(project: &Project, wave: u64, reason: &str) -> Value {
     let line = format!("<REJECTED>{}</REJECTED>", json!({"wave": wave, "reason": reason}));
-    project.answer(&["round", "--spec", SPEC, "--report", &line])
+    project.answer(&["round", "--dispatch", "--spec", SPEC, "--report", &line])
 }
 
 /// O commit em que o repositório principal está.
@@ -1500,8 +1522,10 @@ fn conductor_transcript(project: &Project) -> PathBuf {
 fn wave_agent(project: &Project, agent: &str, started: &str) {
     let dir = conductor_transcript(project).with_extension("").join("subagents");
     std::fs::create_dir_all(&dir).expect("the agents' folder");
-    let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
-    let opening = format!("{title}\n\nmustard-rt run read request-1 --root {} --spec {SPEC}", project.root.display());
+    let log = project.log();
+    let send = log.get(log.last_by_wave("send")[&1]).unwrap();
+    let started = if started == OLD_AGENT_START { log.get(log.dispatch_position(send.id)).unwrap().at() } else { started };
+    let opening = send.str_field("text").unwrap();
     let line = json!({"type": "user", "timestamp": started, "message": {"role": "user", "content": opening}});
     std::fs::write(dir.join(format!("agent-{agent}.jsonl")), format!("{line}\n")).expect("the agent's conversation");
 }
@@ -1694,7 +1718,7 @@ fn the_round_after_a_rejection_keeps_holding_the_wave_without_the_line() {
     assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
     let before = head(&project);
 
-    let out = project.run(&["round", "--spec", SPEC]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(out.get("commit"), None, "{out}");
     assert_eq!(head(&project), before);
@@ -1716,7 +1740,7 @@ fn the_new_return_of_a_rejected_wave_is_taken_and_committed() {
     deliver_in_copy(&project, 1, fixed);
     let renewed = project.log().unassumed_returns().iter().map(|e| e.id).max().expect("a volta nova");
 
-    let out = project.run(&["round", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
 
     assert!(out.get("commit").is_some(), "{out}");
     assert_eq!(std::fs::read_to_string(project.root.join(GREETING)).expect("o arquivo entrou"), fixed);
@@ -1745,7 +1769,7 @@ fn speak(project: &Project, lang: Locale) {
 #[test]
 fn rejecting_a_wave_without_a_return_is_refused_in_both_languages() {
     let (project, _, _, _) = backlog_project(&[&[GREETING]]);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     let before = recorded(&project);
     for lang in [Locale::PtBr, Locale::EnUs] {
         speak(&project, lang);
@@ -1761,7 +1785,7 @@ fn rejecting_a_wave_without_a_return_is_refused_in_both_languages() {
 #[test]
 fn rejecting_a_committed_wave_is_refused_in_both_languages() {
     let (project, _) = delivered_wave(false);
-    let taken = project.run(&["round", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+    let taken = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
     let sha = taken["commit"]["sha"].as_str().unwrap_or_else(|| panic!("the commit: {taken}")).to_string();
     let before = recorded(&project);
     for lang in [Locale::PtBr, Locale::EnUs] {
@@ -1785,7 +1809,7 @@ fn native_defaults_ignore_legacy_jev_in_search_wave_planning_and_context() {
     std::fs::write(path, config.to_string()).unwrap();
     let out = project.command(&["run", "map", "search", "--query", "texto da saudação"], "");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]]);
     assert!(jev.requests().is_empty(), "native defaults must make no HTTP requests");
     assert!(assembly_calls(&project).is_empty());

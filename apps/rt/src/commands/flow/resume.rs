@@ -22,11 +22,11 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{SpecState, State};
 use mustard_core::domain::survey;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
 use crate::commands::spec_events;
-use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// As opções de `mustard-rt run resume`.
 pub struct ResumeOpts {
@@ -187,9 +187,7 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) 
         .iter()
         .filter_map(|e| {
             let wave = e.wave()?;
-            let asks = e.str_field("replan").is_some_and(|change| {
-                swaps_decision(e) && !change_accepted(log, wave, &replan_code(wave, change))
-            });
+            let asks = e.str_field("replan").is_some_and(|change| swaps_decision(e) && !change_accepted(log, wave, &replan_code(wave, change)));
             Some(if asks {
                 translate("conversation_size.replan", lang).replace("{wave}", &wave.to_string())
             } else {
@@ -356,6 +354,7 @@ pub fn next_command(phase: &str, spec: &str, state: &State) -> Value {
 /// uma opção obrigatória é recusada pelo binário antes de fazer qualquer coisa.
 pub fn step_command(name: &str, spec: &str, state: &State) -> Option<String> {
     match name {
+        "round" => Some(format!("mustard-rt run round --dispatch --spec {spec}")),
         "pr-open" => {
             let base = state.base.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
             let head = state.branch.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
@@ -382,8 +381,8 @@ pub(crate) fn assert_parses(line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::platform::i18n::Locale;
     use crate::commands::spec_events::write::record_open;
+    use mustard_core::platform::i18n::Locale;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -422,7 +421,7 @@ mod tests {
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
         let out = resume(root, "x");
         assert_eq!(out["phase"], json!("approved"), "{out}");
-        assert_eq!(out["command"], json!("mustard-rt run round --spec x"), "{out}");
+        assert_eq!(out["command"], json!("mustard-rt run round --dispatch --spec x"), "{out}");
         resume_line_after_clear();
     }
 

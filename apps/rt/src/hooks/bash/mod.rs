@@ -5,3 +5,4 @@ pub(crate) mod reading;
 mod safety;
 pub(crate) mod waiting;
 mod windows_redirect;
+mod workspace_scope;

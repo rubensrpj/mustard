@@ -171,14 +171,20 @@ function recordMeasurement($, measurement) {
   // Preserve arrival order. A repeated cumulative reading replaces no spend,
   // and the runtime resolves attribution from the checkout, not the pane tab.
   measurementQueue = measurementQueue.catch(() => {}).then(async () => {
+    let failure='usage-record-failed';
     try {
       const cwd = await $.session.cwd();
       const session = await $.session.id();
       const model = await $.session.model();
       const result=await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
         {cwd, timeoutMs:5000, stdin:JSON.stringify({...measurement,model:measurement.model || model})});
-      if(result.exitCode!==0 || JSON.parse(result.stdout).ok!==true)throw new Error('usage-record-failed');
-    } catch {void diagnostic($,'usage','record','usage-record-failed');}
+      const reply=JSON.parse(result.stdout);
+      if(result.exitCode!==0 || reply.ok!==true) {
+        const reason=reply.live?.reason || reply.reason;
+        if(typeof reason==='string' && /^(usage|live-usage)-[a-z-]{1,80}$/.test(reason))failure=reason;
+        throw new Error('usage-record-failed');
+      }
+    } catch {void diagnostic($,'usage','record',failure);}
   });
   return measurementQueue;
 }
@@ -203,8 +209,17 @@ async function openPanel($, name) {
         if(profile && profile.tab!==view.tab){view.tab=profile.tab;revision++;await refresh($);}
       }
       if(view.tab==='Configurações')await settingsOperation($);
-      return {text:t('Abertura do painel solicitada nesta sessão. Se não aparecer, execute /mustard-panel --diagnose.',
-        'Panel opening requested in this session. If it does not appear, run /mustard-panel --diagnose.')};
+      const observed=await Promise.allSettled([$.session.surfaces(),$.ui.panes()]);
+      const surfaces=observed[0].status==='fulfilled'?observed[0].value:[];
+      const registered=observed[1].status==='fulfilled' && observed[1].value?.some(pane=>pane.id===id);
+      const requestIndex=panelEvents.findLastIndex(event=>event.kind==='open-request');
+      const rendered=[...new Set(panelEvents.slice(requestIndex+1).filter(event=>event.kind==='render').map(event=>event.surface).filter(Boolean))];
+      return {text:[
+        registered?t('Painel registrado nesta sessão.','Pane registered in this session.'):t('Abertura solicitada; o host ainda não confirmou o painel.','Opening requested; the host has not confirmed the pane yet.'),
+        `${t('Interfaces conectadas','Connected interfaces')}: ${surfaces?.join(', ') || t('não informadas','not reported')}.`,
+        `${t('Renderização observada','Observed rendering')}: ${rendered.join(', ') || t('aguardando o primeiro desenho','waiting for the first render')}.`,
+        t('Se não aparecer na interface desejada, execute /mustard-panel --diagnose.','If it does not appear in the intended interface, run /mustard-panel --diagnose.'),
+      ].join('\n')};
     } catch {
       panelEvent('open-failed');
       stopPanel();

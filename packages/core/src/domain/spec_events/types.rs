@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use crate::domain::mustard_id;
-use crate::platform::i18n::{translate, Locale};
+use crate::platform::i18n::{Locale, translate};
 
 /// Os blocos da spec. Cada tipo de evento vai sempre para o mesmo bloco; o
 /// painel de medição (`metrics`) é o único montado de tipos de outros blocos,
@@ -447,6 +447,8 @@ pub const TYPES: &[TypeSpec] = &[
             opt("search_enriched", Kind::Bool),
             opt("search_task_evidence", Kind::Bool),
             opt("search_fallback", Kind::Bool),
+            opt("search_native_bytes", Kind::Int),
+            opt("search_delivered_bytes", Kind::Int),
             opt("input_bytes", Kind::Int),
             opt("output_bytes", Kind::Int),
             opt("estimated_input_tokens", Kind::Int),
@@ -634,6 +636,7 @@ pub const TYPES: &[TypeSpec] = &[
             req("exit", Kind::Int),
             req("ms", Kind::Int),
             opt("output", Kind::Text),
+            opt("reused", Kind::Bool),
         ],
     ),
     // Measured leaf stages. An enclosing call's duration is inclusive and
@@ -657,6 +660,7 @@ pub const TYPES: &[TypeSpec] = &[
             opt("attempt", Kind::Int),
             opt("criterion", Kind::Int),
             opt("waves", Kind::Ints),
+            opt("reused", Kind::Bool),
         ],
     ),
     ty(
@@ -1003,8 +1007,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::domain::spec_events::tests::checked;
     use crate::domain::spec_events::Refusal;
+    use crate::domain::spec_events::tests::checked;
 
     #[test]
     fn there_are_thirty_eight_types_each_with_one_block() {

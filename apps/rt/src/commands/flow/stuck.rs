@@ -1,38 +1,21 @@
-//! `stuck` — os processos que um agente deixou presos, sem ninguém mais
-//! olhando para eles: um laço de espera ([`crate::hooks::bash::waiting`],
-//! reaproveitado aqui pelo texto do comando em vez do proposto pelo Bash), um
-//! comando cujo diretório de trabalho é uma cópia de onda já apagada, ou um
-//! comando parado numa vaga sem onda em andamento — a vaga fica no disco de
-//! uma onda para a seguinte, e o que a onda anterior deixou rodando nela não
-//! tem mais dono. Uma leitura só os acha e encerra cada um, chamada no início
-//! da sessão, em cada rodada e no fechamento; a resposta de cada uma diz
-//! quais encerrou.
-//!
-//! A leitura só roda com a trava do passo do git presa: é com ela que a
-//! rodada e o fechamento preparam uma vaga e gravam o envio de quem vai
-//! trabalhar nela. Presa a trava, a vaga que alguém preparou já tem o envio
-//! gravado e conta como vaga com trabalho; sem ela, o git que outra rodada
-//! roda dentro de uma vaga ainda sem envio pareceria um comando esquecido e
-//! seria encerrado no meio da cópia.
-//!
-//! A leitura é a lista de processos do sistema operacional — `/proc`, só no
-//! Linux —, restrita aos do mesmo usuário [`current_uid`]. Num sistema sem
-//! essa lista (`/proc` ausente, ou fora do Linux) a função não acha nada e
-//! não falha: a resposta segue como se não houvesse processo nenhum.
+//! Detect potentially abandoned processes by cwd and waiting-loop pattern.
+//! A cwd is not proof of ownership: the conductor or editor may be inspecting
+//! a free slot. Detection never sends a signal or changes a caller's exit code.
+//! The git lock keeps slot bookkeeping stable during the read-only snapshot.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 #[cfg(target_os = "linux")]
 use crate::commands::maint::scratch_gc::current_uid;
 use crate::hooks::bash::waiting::is_a_waiting_loop;
 
-/// Um processo preso que foi encerrado.
-pub(crate) struct Ended {
+/// Um processo que a heurística identificou como possivelmente abandonado.
+pub(crate) struct Detected {
     pid: u32,
     /// A chave do motivo, em `stuck.reason.*`.
     reason: &'static str,
@@ -48,16 +31,8 @@ pub(crate) struct Snapshot {
     cwd: Option<std::path::PathBuf>,
 }
 
-/// Acha os processos presos do usuário atual e encerra cada um, com o sinal
-/// de término comum (`SIGTERM`). Só toca o que casa uma das razões; todo
-/// outro processo, inclusive este mesmo, fica como está. As cópias das ondas
-/// moram na pasta das cópias do projeto, fora dele
-/// ([`mustard_core::io::wave_prompt::copies_dir`]); ela é lida já resolvida
-/// quando existe, porque a pasta de trabalho que o sistema mostra de cada
-/// processo também vem resolvida. Roda com a trava do passo do git presa
-/// (`_held`, de [`crate::commands::git_settle::git_step_lock`]): nenhuma
-/// rodada está no meio de preparar uma vaga sem o envio gravado.
-pub(crate) fn end_stuck_processes(root: &Path, _held: &LockedFile) -> Vec<Ended> {
+/// List candidates while holding the git-step lock. No process is terminated.
+pub(crate) fn find_stuck_processes(root: &Path, _held: &LockedFile) -> Vec<Detected> {
     let copies = mustard_core::io::wave_prompt::copies_dir(root);
     let copies = std::fs::canonicalize(&copies).unwrap_or(copies);
     let busy = busy_slots(root, &copies);
@@ -68,14 +43,13 @@ pub(crate) fn end_stuck_processes(root: &Path, _held: &LockedFile) -> Vec<Ended>
         .into_iter()
         .filter(|proc| proc.pid != std::process::id())
         .filter_map(|proc| reason_of(&proc, &real_root, &copies, &busy).map(|reason| (proc.pid, reason)))
-        .filter(|(pid, _)| terminate(*pid))
-        .map(|(pid, reason)| Ended { pid, reason })
+        .map(|(pid, reason)| Detected { pid, reason })
         .collect()
 }
 
-/// A linha da resposta, no idioma `lang`, com o que foi encerrado — ou
+/// A linha da resposta, no idioma `lang`, com os candidatos encontrados — ou
 /// `None` sem processo nenhum, para o chamador não acrescentar nada.
-pub(crate) fn report_line(ended: &[Ended], lang: Locale) -> Option<String> {
+pub(crate) fn report_line(ended: &[Detected], lang: Locale) -> Option<String> {
     if ended.is_empty() {
         return None;
     }
@@ -83,7 +57,7 @@ pub(crate) fn report_line(ended: &[Ended], lang: Locale) -> Option<String> {
         .iter()
         .map(|e| format!("{} ({})", e.pid, translate(&format!("stuck.reason.{}", e.reason), lang)))
         .collect();
-    Some(translate("stuck.ended", lang).replace("{list}", &items.join(", ")))
+    Some(translate("stuck.found", lang).replace("{list}", &items.join(", ")))
 }
 
 /// Por que `proc` está preso, ou `None` quando não está: o comando que ele
@@ -133,7 +107,8 @@ fn is_slot_folder(copies: &Path, spec: &str, slot: &str) -> bool {
 /// a revisão final aberta. A spec sem registro no projeto não tem vaga com
 /// trabalho.
 fn busy_slots(root: &Path, copies: &Path) -> BTreeMap<String, BTreeSet<String>> {
-    let Ok(entries) = std::fs::read_dir(copies) else { return BTreeMap::new() };
+    let Ok(entries) = std::fs::read_dir(copies) else { return BTreeMap::new();
+    };
     let name = |copy: &str| Path::new(copy).file_name().map(|name| name.to_string_lossy().into_owned());
     entries
         .flatten()
@@ -162,25 +137,6 @@ fn shell_script(argv: &[String]) -> Option<&str> {
         return argv.get(2).map(String::as_str);
     }
     None
-}
-
-/// Manda o sinal de término comum (`SIGTERM`) a `pid`. Melhor esforço: `true`
-/// só quando o sinal foi entregue, nunca quando o processo já sumiu ou o
-/// sistema não tem o comando `kill`.
-#[cfg(unix)]
-fn terminate(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-#[cfg(not(unix))]
-fn terminate(_pid: u32) -> bool {
-    false
 }
 
 /// Os processos do usuário atual, lidos de `/proc`. `None` de [`current_uid`]
@@ -337,32 +293,27 @@ pub(crate) fn wait_until_spawned(pid: u32, needle: &str) {
 mod tests {
     use super::*;
     use std::process::{Child, Command, Stdio};
-    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     fn spawn(cmd: &mut Command) -> Child {
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("spawn the fixture process")
     }
 
-    /// Espera até 2s o processo sumir; `true` quando ele já não existe.
-    fn gone(child: &mut Child) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        false
+    /// Detection must leave fixture processes alive. Cleanup is test-owned.
+    fn left_alive(child: &mut Child) -> bool {
+        let alive = child.try_wait().ok().flatten().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        alive
     }
 
     /// Os dois casos que ficam presos — o laço de espera com a pasta de
     /// trabalho dentro do projeto e o comando na cópia apagada — são
-    /// encontrados, encerrados e citados na resposta; um `sleep` comum e um
+    /// encontrados e citados na resposta, sem serem encerrados; um `sleep` comum e um
     /// laço de espera com a pasta de trabalho fora do projeto, como o de
     /// outro projeto do mesmo usuário, nunca são tocados.
     #[test]
-    fn the_stuck_processes_are_ended_and_reported() {
+    fn the_stuck_processes_are_detected_and_left_alive() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         crate::commands::flow::round::copies_leave_with_the_test(root);
@@ -398,9 +349,9 @@ mod tests {
         wait_until_spawned(ordinary.id(), "sleep");
 
         let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
-        let ended = end_stuck_processes(root, &held);
-        assert!(gone(&mut looping), "the waiting loop inside the project must be ended");
-        assert!(gone(&mut orphaned), "the command in the deleted copy must be ended");
+        let ended = find_stuck_processes(root, &held);
+        assert!(left_alive(&mut looping), "the waiting loop inside the project must only be reported");
+        assert!(left_alive(&mut orphaned), "the command in the deleted copy must only be reported");
         assert!(
             elsewhere_looping.try_wait().ok().flatten().is_none(),
             "a waiting loop outside the project is left alone"
@@ -425,7 +376,7 @@ mod tests {
     /// O projeto alcançado por um link (a pasta do usuário que é um link, o
     /// temporário do Mac) é o mesmo projeto: o laço de espera que roda dentro
     /// dele aparece com a pasta de trabalho já resolvida pelo sistema, e é
-    /// encerrado do mesmo jeito; o laço de outra pasta continua de fora.
+    /// detectado do mesmo jeito; o laço de outra pasta continua de fora.
     #[test]
     fn a_waiting_loop_in_a_project_reached_through_a_link_is_stuck() {
         let dir = tempdir().expect("tempdir");
@@ -452,8 +403,8 @@ mod tests {
         wait_until_spawned(elsewhere.id(), "mustard-stuck-linked-elsewhere-marker");
 
         let held = crate::commands::git_settle::git_step_lock(&linked).expect("git step lock");
-        let ended = end_stuck_processes(&linked, &held);
-        assert!(gone(&mut inside), "the waiting loop inside the linked project must be ended");
+        let ended = find_stuck_processes(&linked, &held);
+        assert!(left_alive(&mut inside), "the waiting loop inside the linked project must only be reported");
         assert!(elsewhere.try_wait().ok().flatten().is_none(), "a waiting loop outside the project is left alone");
         let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
         assert!(reasons.contains(&(inside.id(), "waiting_loop")), "{reasons:?}");
@@ -465,7 +416,7 @@ mod tests {
 
     /// A cópia da onda mora fora da pasta do projeto, na pasta das cópias
     /// dele. O processo que roda nela depois de ela ser apagada aparece como
-    /// preso, pela cópia apagada, e é encerrado; o laço de espera numa cópia
+    /// preso, pela cópia apagada, e continua vivo; o laço de espera numa cópia
     /// viva dali também, mesmo com a pasta de trabalho fora do projeto. O
     /// processo numa pasta apagada de mesmo nome sob as cópias de outro
     /// projeto fica de fora.
@@ -503,9 +454,9 @@ mod tests {
         std::fs::remove_dir_all(&foreign).expect("remove the other project's copy");
 
         let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
-        let ended = end_stuck_processes(root, &held);
-        assert!(gone(&mut orphaned), "the command in the deleted outside copy must be ended");
-        assert!(gone(&mut looping), "the waiting loop in a live outside copy must be ended");
+        let ended = find_stuck_processes(root, &held);
+        assert!(left_alive(&mut orphaned), "the command in the deleted outside copy must only be reported");
+        assert!(left_alive(&mut looping), "the waiting loop in a live outside copy must only be reported");
         assert!(foreign_orphan.try_wait().ok().flatten().is_none(), "another project's copy is left alone");
         let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
         assert!(reasons.contains(&(orphaned.id(), "deleted_copy")), "{reasons:?}");
@@ -571,7 +522,7 @@ mod tests {
 
     /// A vaga fica no disco de uma onda para a seguinte. O processo parado
     /// numa vaga sem onda em andamento — a da onda já entregue — é
-    /// encerrado, pela vaga sem onda; o da vaga com o pedido aberto de outra
+    /// detectado, pela vaga sem onda; o da vaga com o pedido aberto de outra
     /// onda fica. A cópia no endereço antigo, uma por onda direto na pasta
     /// das cópias, não é vaga e também fica.
     #[test]
@@ -595,8 +546,8 @@ mod tests {
         wait_until_spawned(legacy.id(), "sleep");
 
         let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
-        let ended = end_stuck_processes(root, &held);
-        assert!(gone(&mut idle), "the command left in the slot with no wave running must be ended");
+        let ended = find_stuck_processes(root, &held);
+        assert!(left_alive(&mut idle), "the command left in the slot with no wave running must only be reported");
         assert!(working.try_wait().ok().flatten().is_none(), "the slot of the running wave is left alone");
         assert!(legacy.try_wait().ok().flatten().is_none(), "a copy at the old address is not a slot");
         let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
@@ -613,7 +564,7 @@ mod tests {
 
     /// A vaga da revisão final aberta tem trabalho, como a de uma onda em
     /// andamento: o processo do revisor, parado na vaga da última onda, fica;
-    /// o da vaga sem onda nem revisão é encerrado.
+    /// o da vaga sem onda nem revisão é detectado.
     #[test]
     fn a_process_in_the_slot_of_the_open_final_review_is_left_alone() {
         use mustard_core::io::wave_prompt::slot_path;
@@ -635,8 +586,8 @@ mod tests {
         wait_until_spawned(idle.id(), "sleep");
 
         let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
-        let ended = end_stuck_processes(root, &held);
-        assert!(gone(&mut idle), "the command left in the slot with no work must be ended");
+        let ended = find_stuck_processes(root, &held);
+        assert!(left_alive(&mut idle), "the command left in the slot with no work must only be reported");
         assert!(reviewing.try_wait().ok().flatten().is_none(), "the slot of the open final review is left alone");
         let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
         assert!(reasons.contains(&(idle.id(), "idle_copy")), "{reasons:?}");
@@ -676,7 +627,7 @@ mod tests {
         assert_eq!(reason_of(&listed[0], root, &copies, &BTreeMap::new()), Some("deleted_copy"));
     }
 
-    /// Sem processo nenhum encerrado, a linha da resposta não existe: o
+    /// Sem candidato encontrado, a linha da resposta não existe: o
     /// chamador não acrescenta nada.
     #[test]
     fn no_ended_process_means_no_report_line() {
@@ -696,7 +647,7 @@ mod tests {
         let mut child = spawn(&mut Command::new("true"));
         let pid = child.id();
         let (_, child_started) = stat_of(pid).expect("read the child's stat before it exits");
-        assert!(gone(&mut child), "the fixture child must exit");
+        child.wait().expect("the fixture child must exit");
         let _ = child.wait();
         assert!(!process_alive(pid, child_started), "an exited process is never alive again");
     }

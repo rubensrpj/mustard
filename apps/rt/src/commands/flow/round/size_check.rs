@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 use super::commit::{check_commit_text, git, repo_of};
 use crate::commands::git_settle::submodules_of;
@@ -62,7 +62,12 @@ pub(super) fn lines(sizes: &[Size], lang: Locale) -> Vec<(u64, String)> {
 pub(super) fn in_body(message: Option<(String, String)>, sizes: &[(u64, String)]) -> Option<(String, String)> {
     let (title, body) = message?;
     let listed: Vec<String> = sizes.iter().map(|(_, line)| format!("- {line}")).collect();
-    let longer = format!("{body}\n\n{}", listed.join("\n"));
+    let (text, trailer) = body.rsplit_once("\n\nMustard-Waves: ").map_or((body.as_str(), None), |(text, ids)| (text, Some(ids)));
+    let mut longer = format!("{text}\n\n{}", listed.join("\n"));
+    if let Some(ids) = trailer {
+        longer.push_str("\n\nMustard-Waves: ");
+        longer.push_str(ids);
+    }
     if listed.is_empty() || check_commit_text(&title, &longer).is_err() {
         return Some((title, body));
     }
@@ -106,7 +111,7 @@ fn text_lines(path: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::super::imports_check::tests::mine_giving;
@@ -184,7 +189,7 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         let (_, body) = last_commit(root);
         assert!(body.contains("- onda 1: a onda 1 saiu"), "{body}");
-        assert!(body.ends_with("\n\n- onda 1: +4 -0, 3 arquivos"), "{body}");
+        assert!(body.ends_with("\n\n- onda 1: +4 -0, 3 arquivos\n\nMustard-Waves: 1"), "{body}");
     }
 
     #[test]

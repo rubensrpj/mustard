@@ -103,18 +103,40 @@ export function diagnosticsPanel(data,view,actions,h) {
   const components=[...new Set(events.map(event=>event.component))];
   const filter=(view.diagnosticQuery || '').toLocaleLowerCase();
   const shown=events.filter(event=>(!view.diagnosticComponent || event.component===view.diagnosticComponent) && (!filter || JSON.stringify(event).toLocaleLowerCase().includes(filter)));
-  const rows=[note(t('Configuração válida não comprova uso. Eventos indicam o que foi observado.','Valid configuration does not prove usage. Events show what was observed.'))];
+  const hosts=health?.hosts?.observations || [];
+  const unknown=hosts.reduce((sum,host)=>sum+(host.unexplained_tool_failures ?? Math.max(0,(host.tool_failures || 0)-(host.classified_tool_failures || 0))),0);
+  const rows=[note(t('Falha de ferramenta, bloqueio de proteção e erro do Mustard são coisas diferentes.','Tool failures, protection blocks and Mustard errors are different events.'))];
   if(health)rows.push(text(`Mustard ${health.running_version || data.project.version} · ${t('projeto','project')} ${health.project_version || '—'}`),
     ...((health.issues || []).map(issue=>note(issue))),
     text(`RTK: ${health.rtk?.enabled?t('habilitado','enabled'):t('desligado','off')} · ${health.rtk?.executable_available?t('executável disponível','executable available'):t('executável não confirmado','executable unconfirmed')}`),
     text(`Jev: ${health.jev?.credential_available?t('credencial disponível','credential available'):t('credencial indisponível','credential unavailable')}`),
-    text(`${t('Vetores indexados','Indexed vectors')}: ${health.vectors?.indexed_chunks ?? t('não medido','not measured')}`),
-    ...((health.hosts?.observations || []).map(host=>note(`${host.host} · ${host.last_event} · ${date(host.at)} · ${host.tool_failures || 0} ${t('falhas','failures')}`))));
+    text(`${t('Vetores indexados','Indexed vectors')}: ${health.vectors?.indexed_chunks ?? t('não medido','not measured')}`));
+  if(hosts.length)rows.push(section(t('Ferramentas · últimas sessões observadas','Tools · latest observed sessions'),[
+    text(`${hosts.reduce((sum,host)=>sum+(host.tool_failures || 0),0)} ${t('ocorrências acumuladas nestas sessões','accumulated occurrences in these sessions')}`),
+    ...(unknown?[note(`${unknown} ${t('registros antigos têm somente contagem, sem causa. Não é possível atribuí-los a um defeito do Mustard.','older records contain only a count, without a cause. They cannot be attributed to a Mustard defect.')}`)]:[]),
+    ...hosts.filter(host=>host.tool_failures>0).map(host=>section(`${host.host} · ${t('sessão observada até','session observed until')} ${date(host.at)}`,[
+      text(`${host.tool_failures} ${t('ocorrências na sessão','session occurrences')}`),
+      note(`${t('Último evento recebido','Latest received event')}: ${host.last_event}. ${t('Este evento não é a causa da contagem.','This event is not the cause of the count.')}`),
+      ...((host.recent_tool_failures || []).slice(-5).reverse().map(failure=>text(`${failure.tool} · ${date(failure.at)} · ${({
+        'search-redirect':t('Redirecionamento para a busca do Mustard','Redirect to Mustard search'),
+        'protected-configuration':t('Proteção da chave na configuração','Configuration credential protection'),
+        'command-exit-nonzero':t('Comando terminou com erro','Command exited with an error'),
+        'tool-interrupted':t('Execução interrompida','Execution interrupted'),
+        'tool-error-cause-unknown':t('Ferramenta falhou; causa não identificada','Tool failed; cause not identified'),
+      })[failure.reason] || failure.reason}${failure.exit_code!=null?' · '+t('saída','exit')+' '+failure.exit_code:''}`))),
+    ])),
+  ]));
   if(Input)rows.push(Input({key:'diagnostic-search',label:t('Filtrar por spec, onda, sessão ou motivo','Filter by spec, wave, session or reason'),value:view.diagnosticQuery || '',onInput:value=>actions.change({diagnosticQuery:value}),onSubmit:value=>actions.change({diagnosticQuery:value})}));
   rows.push(picker('diagnostic-component',t('Componente','Component'),[{value:'',label:t('Todos','All')},...components.map(value=>({value,label:value}))],view.diagnosticComponent || '',value=>actions.change({diagnosticComponent:value})),
-    ...shown.slice(-40).reverse().map(event=>section(`${event.component} · ${event.operation || ''}`,[text(event.reason),note(`${date(event.at)}${event.count?' · '+event.count+'×':''}`),
+    ...shown.slice(-40).reverse().map(event=>section(`${event.component} · ${event.operation || ''}`,[text(({
+      'tool-failed':t('Ferramenta retornou erro; a causa não foi registrada.','Tool returned an error; cause was not recorded.'),
+      'tool-denied':t('Ferramenta bloqueada por permissão ou proteção.','Tool blocked by a permission or protection.'),
+      'usage-record-failed':t('Mustard não conseguiu gravar uma medição de consumo.','Mustard could not record a usage measurement.'),
+      'live-usage-busy':t('Arquivo de consumo ocupado durante a gravação.','Usage file busy during recording.'),
+      'usage-out-of-order-or-reset':t('Medição fora de ordem ou contador reiniciado; valor recusado para evitar contagem incorreta.','Out-of-order measurement or reset counter; value rejected to avoid incorrect counting.'),
+    })[event.reason] || event.reason),note(`${date(event.at)}${event.count?' · '+event.count+'×':''}`),
       ...(event.spec?[note(`${event.spec}${event.wave?' · '+event.wave:''}`)]:[])])),
-    ...(!shown.length?[note(t('Nenhum erro registrado nesta seleção. Isso não comprova cobertura de todos os componentes.','No recorded error in this selection. This does not prove coverage of all components.'))]:[]),
+    ...(!shown.length?[note(t('Nenhum evento detalhado neste filtro. Contadores de sessões e cobertura podem estar incompletos.','No detailed event matches this filter. Session counters and coverage may be incomplete.'))]:[]),
     row([button('diagnostic-export',t('Exportar diagnóstico local','Export local diagnostic'),actions.exportDiagnostics),
       button('impact-branches',t('Conferir branches mescladas','Inspect merged branches'),()=>actions.preview({action:'branches'}))]));
   return section(t('Diagnóstico','Diagnostics'),rows);

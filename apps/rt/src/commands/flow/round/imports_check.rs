@@ -57,12 +57,9 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, log: &SpecLog, lang: Local
                     text
                 };
                 let free = released.iter().any(|(pair, own)| own.contains(file.as_str()) && *pair == BTreeSet::from([from, to]));
-                if let Some(rule) = base.strong_against(from, to) {
-                    if !free {
+                if let Some(rule) = base.strong_against(from, to)
+                    && !free {
                         out.push(Finding { wave: *wave, refuses: true, text: at("round.after_wave.import", Some(rule)) });
-                    }
-                } else if let Some(rule) = base.info_against(from, to) {
-                    out.push(Finding { wave: *wave, refuses: false, text: at("round.after_wave.weak", Some(rule)) });
                 }
                 let declared = maps.after.module(file).is_some_and(|m| is_declared_child(file, target, &m.language));
                 if !declared
@@ -459,7 +456,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_import_against_a_weak_rule_only_warns() {
+    fn a_weak_import_convention_stays_in_the_map_without_round_noise() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         project(root, SERVICE, None, &two_roles(17, 3, &[]));
@@ -467,9 +464,7 @@ pub(super) mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         let warned = out["warnings"].as_array().cloned().unwrap_or_default();
         let hint = warned.iter().find(|w| w["reason"] == json!("round-after-wave-warnings")).map(|w| w["hint"].to_string());
-        let hint = hint.unwrap_or_else(|| panic!("the warning: {out}"));
-        assert!(hint.contains("costume controller importa service, seguido em 17 de 20 importações"), "{hint}");
-        assert!(hint.contains("só um aviso"), "{hint}");
+        assert!(hint.is_none(), "a statistical convention is not a project obligation: {out}");
     }
 
     #[test]

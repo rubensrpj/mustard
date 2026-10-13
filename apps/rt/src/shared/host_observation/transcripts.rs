@@ -56,7 +56,7 @@ pub(crate) fn tool_binding(root:&Path,host:&str,input:&HookInput)->Option<(Strin
 }
 
 pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
-    if !["SubagentStop","PostToolUse"].contains(&event) {return;}
+    if !["SubagentStart", "SubagentStop", "PreToolUse","PostToolUse"].contains(&event) {return;}
     let Some(session)=input.session_id.as_deref().filter(|s|!s.is_empty()) else {return;};
     let agent=input.agent_id.as_deref().or_else(||input.raw.pointer("/tool_response/agent_id").or_else(||input.raw.pointer("/tool_response/agentId")).and_then(Value::as_str)).filter(|s|token(s));
     let Some(agent)=agent else {return;};
@@ -68,10 +68,27 @@ pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
     // Native tool completion provides exact request -> agent identity. The stop
     // event supplies its real file even when the host stores it elsewhere.
     let prompt=input.tool_input.get("prompt").or_else(||input.tool_input.get("message")).and_then(Value::as_str);
-    let transcript=input.raw.get("agent_transcript_path").and_then(Value::as_str).filter(|s|s.len()<=4096);
-    let initial=transcript.and_then(|p|opening(Path::new(p)));
+    let explicit =input.raw.get("agent_transcript_path").and_then(Value::as_str).filter(|s|s.len()<=4096).map(PathBuf::from);
+    // Claude's versioned local transcript layout supplies the dispatch before
+    // the first write, rather than waiting until SubagentStop. Unknown hosts
+    // keep their explicit adapter; no directory-wide transcript scan is done.
+    let transcript = explicit.or_else(|| {
+        (host == "claude" && input.agent_id.is_some())
+            .then(|| {
+                let parent = Path::new(input.transcript_path()?);
+                Some(parent.with_extension("").join("subagents").join(format!("agent-{}.jsonl", agent.strip_prefix("agent-").unwrap_or(agent))))
+            })
+            .flatten()
+    });
+    let initial = if event != "SubagentStop" && prompt.is_none() && record["dispatch"].as_u64().is_some() {
+        None
+    } else {
+        transcript.as_deref().and_then(opening)
+    };
     let text=prompt.or_else(||initial.as_ref().map(|p|p.0.as_str()));
-    if let Some(identity)=text.and_then(|text|ReadDispatch::of(text).or_else(||heading(text).map(|(spec,wave)|ReadDispatch {spec,wave,root:mustard_core::io::wave_prompt::shown(root)}))) {
+    if let Some(identity)=text.and_then(|text| {
+        ReadDispatch::of(text).or_else(||heading(text).map(|(spec,wave)|ReadDispatch {spec,wave,root:mustard_core::io::wave_prompt::shown(root)}))
+    }) {
         if identity.root!=mustard_core::io::wave_prompt::shown(root) {return;}
         let Some(log)=mustard_core::io::spec_events::spec_file(root,&identity.spec).ok().and_then(|p|mustard_core::io::spec_events::read(&p).ok().flatten()) else {return;};
         let Some(send)=log.last_by_wave("send").get(&identity.wave).and_then(|id|log.get(*id)) else {return;};
@@ -84,13 +101,14 @@ pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
         if send.str_field("host").is_some_and(|h|h!=host) {return;}
         if let Some((_,stamp))=&initial {
             let time=chrono::DateTime::parse_from_rfc3339(stamp).ok();
-            let sent=chrono::DateTime::parse_from_rfc3339(send.at()).ok();
+            let origin = log.get(log.dispatch_position(send.id)).unwrap_or(send);
+            let sent=chrono::DateTime::parse_from_rfc3339(origin.at()).ok();
             if time.zip(sent).is_none_or(|(at,since)|at<since) {return;}
         }
         record["spec"]=json!(identity.spec); record["wave"]=json!(identity.wave);
         record["dispatch"]=json!(log.dispatch_position(send.id));
     }
-    if let Some(transcript)=transcript {record["path"]=json!(transcript);}
+    if let Some(transcript)=transcript.filter(|path| path.is_file()) {record["path"]=json!(transcript);}
     if let Some(model)=input.raw.get("model").and_then(Value::as_str).filter(|s|token(s)) {record["model"]=json!(model);}
     record["at"]=json!(chrono::Utc::now().to_rfc3339());
     let _=lock.replace(record.to_string().as_bytes());
@@ -117,11 +135,13 @@ pub(crate) fn wave_usage(root:&Path,spec:&str,log:&SpecLog,wave:u64)->Option<Mea
     let mut codex_files=std::collections::BTreeSet::new();
     for records in found.values() {for record in records {
         let path=PathBuf::from(record["path"].as_str()?);
-        if all_records.iter().any(|other|other["path"]==record["path"] && (other["spec"]!=spec || other["wave"]!=wave || other["dispatch"]!=record["dispatch"])) {return None;}
+        if all_records.iter().any(|other| {
+                other["path"]==record["path"] && (other["spec"]!=spec || other["wave"]!=wave || other["dispatch"]!=record["dispatch"])
+            }) {return None;}
         match record["host"].as_str()? {
-            "claude"=> {claude_files.insert(path);},
-            "codex"=> {codex_files.insert(path); if let Some(model)=record["model"].as_str() {total.model=Some(model.into());}},
-            _=>return None,
+            "claude"=> {claude_files.insert(path);}
+                "codex"=> {codex_files.insert(path); if let Some(model)=record["model"].as_str() {total.model=Some(model.into());}}
+                _=>return None,
         }
     }}
     // Sharing a rollout across waves is not independently attributable.
@@ -153,6 +173,32 @@ pub(crate) fn wave_usage(root:&Path,spec:&str,log:&SpecLog,wave:u64)->Option<Mea
 mod tests {
     use super::*;
     #[test]
+    fn first_tool_binds_the_native_request_from_the_agents_local_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let path = mustard_core::io::spec_events::spec_file(root, "work").unwrap();
+        let text = format!("mustard-rt run read request-1 --root {} --spec work", mustard_core::io::wave_prompt::shown(root));
+        mustard_core::io::spec_events::write(
+            &path,
+            "send",
+            json!({"wave":1,"role":"wave","lines":1,"chars":text.len(),"mustard":"test","host":"claude","text":text}).as_object().unwrap().clone(),
+            &[],
+        )
+        .unwrap();
+        let parent = root.join("session.jsonl");
+        let transcript = root.join("session/subagents/agent-worker.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(
+            &transcript,
+            json!({"type":"user","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"role":"user","content":text}}).to_string(),
+        )
+        .unwrap();
+        let input = serde_json::from_value(json!({"session_id":"session","agent_id":"worker","transcript_path":parent,"tool_name":"Write"})).unwrap();
+        observe(root, "claude", "PreToolUse", &input);
+        assert!(tool_binding(root, "claude", &input).is_some());
+    }
+    #[test]
     fn full_rewritten_claude_prompts_require_canonical_content_not_a_matching_title() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
         std::fs::write(root.join("mustard.json"),"{}").unwrap();
@@ -161,8 +207,11 @@ mod tests {
         mustard_core::io::spec_events::write(&path,"send",json!({"wave":1,"role":"wave","lines":3,"chars":text.len(),"mustard":"test","host":"claude","text":text}).as_object().unwrap().clone(),&[]).unwrap();
         let log=mustard_core::io::spec_events::read(&path).unwrap().unwrap();
         let rollout=root.join("nonstandard-agent.jsonl");
-        let save=|prompt:&str|std::fs::write(&rollout,format!("{}\n{}\n",json!({"type":"user","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"role":"user","content":prompt}}),json!({"type":"assistant","message":{"id":"a1","model":"claude-sonnet-test","usage":{"input_tokens":10,"cache_read_input_tokens":20,"output_tokens":5}}}))).unwrap();
-        let input=serde_json::from_value(json!({"cwd":root,"hook_event_name":"SubagentStop","session_id":"s","agent_id":"a","agent_transcript_path":rollout})).unwrap();
+        let save=|prompt:&str| {
+            std::fs::write(&rollout,format!("{}\n{}\n",json!({"type":"user","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"role":"user","content":prompt}}),json!({"type":"assistant","message":{"id":"a1","model":"claude-sonnet-test","usage":{"input_tokens":10,"cache_read_input_tokens":20,"output_tokens":5}}}))).unwrap();
+        };
+        let input=serde_json::from_value(json!({"cwd":root,"hook_event_name":"SubagentStop","session_id":"s","agent_id":"a","agent_transcript_path":rollout}),
+        ).unwrap();
         save(&text.replace("Canonical bounded task.","A different task."));
         let _=crate::dispatch::run_event(Some(mustard_core::domain::model::contract::Trigger::SubagentStop),&input);
         assert!(wave_usage(root,"work",&log,1).is_none());
