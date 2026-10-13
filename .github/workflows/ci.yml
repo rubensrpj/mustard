@@ -59,7 +59,7 @@ jobs:
     name: Cache (${{ matrix.os }})
     needs: route
     if: needs.route.outputs.warm_cache == 'true'
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner || matrix.os }}
     timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: 0
@@ -67,6 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # ARM64 hosted capacity failed to acquire both macOS jobs on
+        # 2026-10-13. Keep check names stable; use the standard Intel pool.
+        include:
+          - os: macos-latest
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -90,12 +95,15 @@ jobs:
     needs: route
     if: needs.route.outputs.validate == 'true'
     name: Mods (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner || matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -114,12 +122,11 @@ jobs:
     needs: route
     if: needs.route.outputs.validate == 'true'
     name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Without a cap a hung step holds the runner for GitHub's six-hour default,
-    # and a macOS test once did exactly that. The slowest job measured, the
-    # Windows tests, took 16 minutes: half an hour stops a hang without cutting
-    # a slow but healthy run.
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner || matrix.os }}
+    # Keep a bounded job. On the Intel macOS fallback, run 38457019967 took
+    # 7m38s to compile cold and was still progressing through scan tests at
+    # 30m. Allow that measured workload to finish, without lifting other caps.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}
     env:
       # A runner is discarded after every job, so incremental state is WRITTEN
       # and never read back — pure cost here. Declared rather than inherited,
@@ -135,6 +142,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
@@ -179,6 +189,9 @@ jobs:
           python-version: '3.12'
       - name: Fetch verified search dependency
         run: python packaging/fetch-ripgrep.py --dest target/debug
+
+      - name: Test plugin bootstrap and installer state
+        run: python packaging/test-plugin-bootstrap.py
 
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #

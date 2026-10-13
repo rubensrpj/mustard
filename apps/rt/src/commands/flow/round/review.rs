@@ -2,8 +2,8 @@
 //! A native view receipt and the conductor's approval bind the delivery,
 //! base contents, file modes and changed contents. Neither USAGE nor a build
 //! is a review. An independent wave can still proceed while one waits.
-use std::path::{Component, Path};
 use std::fmt::Write as _;
+use std::path::{Component, Path};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
@@ -11,10 +11,10 @@ use mustard_core::io::{sha256::Sha256, spec_events as store};
 use mustard_core::platform::i18n::Locale;
 use serde_json::{Value, json};
 
+use super::RoundRefusal;
 use super::commit::{copy_of, format_round_files, git, real_changed_files, repo_of};
 use super::report::{WaveReport, returned_waves};
 use super::stops::{HeldReturn, hold_refused};
-use super::RoundRefusal;
 use crate::commands::git_settle::submodules_of;
 use crate::commands::spec_events::write::record;
 use crate::shared::spec_state::DiskSpecState;
@@ -44,8 +44,12 @@ pub(crate) fn view_at(start: &Path, named: Option<&str>, wave: u64) -> Value {
         let (fingerprint, diff) = snapshot(&project.root, &log, returned)?;
         receipt(start, &spec, returned, "view", &fingerprint, None).map_err(|e| e.message(project.lang))?;
         let hint = match project.lang {
-            Locale::PtBr => "Leia o diff, confira regras/skills e testes. Para aceitar, use REVIEWED com wave, fingerprint e note na rodada. Para recusar, use REJECTED com o motivo. Não peça aprovação ao usuário para uma revisão técnica já autorizada.",
-            Locale::EnUs => "Read the diff, check project rules/skills and tests. Accept with REVIEWED (wave, fingerprint, note) in the round report, or reject with REJECTED and a reason. Technical review does not require another user approval.",
+            Locale::PtBr => {
+                "Leia o diff, confira regras/skills e testes. Para aceitar, use REVIEWED com wave, fingerprint e note na rodada. Para recusar, use REJECTED com o motivo. Não peça aprovação ao usuário para uma revisão técnica já autorizada."
+            }
+            Locale::EnUs => {
+                "Read the diff, check project rules/skills and tests. Accept with REVIEWED (wave, fingerprint, note) in the round report, or reject with REJECTED and a reason. Technical review does not require another user approval."
+            }
         };
         let planned = mustard_core::domain::wave_prompt::wave_files(&log, wave);
         let outside: Vec<_> = returned.files.iter().filter(|file| !planned.iter().any(|scope| crate::shared::dag::files_cross(scope, file))).collect();
@@ -151,6 +155,9 @@ fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, St
 
 pub(super) fn validate_paths(waves: &[WaveReport]) -> Result<(), RoundRefusal> {
     for file in waves.iter().flat_map(|wave| &wave.files) {
+        if file.split('/').any(|part| part == "node_modules") {
+            return Err(RoundRefusal::Git { detail: "Dependency directories and node_modules symlinks cannot be wave deliverables".into() });
+        }
         if Path::new(file).components().any(|part| !matches!(part, Component::Normal(_))) {
             return Err(RoundRefusal::Git { detail:format!("Invalid wave path: {file}") });
         }
@@ -171,17 +178,21 @@ fn receipt(start: &Path, spec: &str, wave: &WaveReport, step: &str, hash: &str, 
 
 fn has_receipt(log: &SpecLog, wave: &WaveReport, step: &str, hash: &str) -> bool {
     let stage = format!("wave-review-{step}:{}", wave.wave);
-    log.events.iter().any(|e| e.event_type == "stage_run" && e.str_field("author") == Some("binary")
+    log.events.iter().any(|e| {
+        e.event_type == "stage_run" && e.str_field("author") == Some("binary")
         && e.str_field("stage") == Some(stage.as_str()) && e.str_field("fingerprint") == Some(hash)
-        && e.int("attempt") == wave.returns.last().copied())
+        && e.int("attempt") == wave.returns.last().copied()
+    })
 }
 
 pub(super) fn hold_unreviewed(root: &Path, spec: &str, log: &SpecLog, waves: &mut Vec<WaveReport>, approvals: &[Approval], lang: Locale) -> Vec<HeldReturn> {
     hold_refused(waves, |wave| {
-        if wave.files.is_empty() { return Ok(()) }
+        if wave.files.is_empty() { return Ok(());
+        }
         let snapshot = snapshot(root, log, wave);
         if let Ok((hash, _)) = &snapshot {
-            if has_receipt(log, wave, "accepted", hash) { return Ok(()) }
+            if has_receipt(log, wave, "accepted", hash) { return Ok(());
+            }
             if let Some(approval) = approvals.iter().find(|a| a.wave == wave.wave && a.fingerprint == *hash)
                 .filter(|_| has_receipt(log, wave, "view", hash)) {
                 return receipt(root, spec, wave, "accepted", hash, Some(&approval.note)).map_err(RoundRefusal::Refused);
@@ -216,9 +227,9 @@ pub(crate) fn test_conductor_review(root: &Path, spec: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::{RoundOpts, round_for};
     use super::super::tests::{approved, returned, round};
+    use super::super::{RoundOpts, round_for};
+    use super::*;
     use tempfile::tempdir;
 
     fn bare_round(root: &Path, report: Option<String>) -> Value {
@@ -243,7 +254,9 @@ mod tests {
         let view = view_at(root, Some("x"), 1);
         assert_eq!(view["ok"], true, "{view}");
         assert!(view["diff"].as_str().unwrap().contains("fn changed()"));
-        let approve = |view: &Value| format!("<REVIEWED>{}</REVIEWED>", json!({"wave":1,"fingerprint":view["fingerprint"],"note":"Li o diff e conferi regras e testes"}));
+        let approve = |view: &Value| {
+            format!("<REVIEWED>{}</REVIEWED>", json!({"wave":1,"fingerprint":view["fingerprint"],"note":"Li o diff e conferi regras e testes"}))
+        };
         std::fs::write(copy.join("src/a.rs"), "fn changed_again() {}\n").unwrap();
         let stale = bare_round(root, Some(approve(&view)));
         assert!(stale["warnings"].as_array().unwrap().iter().any(|w| w["reason"] == "wave-review-required"), "{stale}");

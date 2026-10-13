@@ -55,13 +55,16 @@ function Enable-Plugin {
     if ($LASTEXITCODE -eq 0) {
         Write-Host '    Plugin ligado.'
     } else {
-        # Já ligado também responde erro, e nesse caso não há nada a fazer.
-        # Como os dois casos são indistinguíveis daqui, o aviso diz os dois —
-        # calar seria pior: um plugin que ficou desligado é justamente o defeito
-        # que este passo existe para acabar.
-        Write-Host "aviso: claude plugin enable $Plugin respondeu erro - ou ja"
-        Write-Host '       estava ligado, ou nao ligou. Se os comandos /mustard:*'
-        Write-Host '       nao aparecerem, confira com claude plugin list.'
+        try {
+            $entries = (& claude plugin list --json 2>$null | Out-String) | ConvertFrom-Json
+            $enabled = @($entries) | Where-Object { $_.id -eq $Plugin -and $_.enabled -eq $true }
+            if ($enabled) {
+                Write-Host '    Plugin ja estava ligado.'
+                return
+            }
+        } catch { }
+        Write-Host "aviso: nao confirmei o plugin ligado apos claude plugin enable $Plugin."
+        Write-Host '       Confira o estado com claude plugin list.'
     }
 }
 
@@ -100,8 +103,8 @@ function Start-BinaryDownload {
 
     Write-Host '==> Baixando os binarios do plugin...'
 
-    # COM PRAZO, gêmeo do irmão POSIX: o `curl` do mustard-boot não tem
-    # tempo-limite próprio e agora roda no caminho crítico do instalador, onde
+    # O bootstrap limita o download manual a 90s; o teto de 120s abaixo cobre
+    # tambem a extracao e verificacao no caminho critico do instalador, onde
     # o NSIS espera com `nsExec::ExecToLog` e a janela fica parada. Uma conexão
     # que trava congelaria a instalação para sempre.
     # TryParse, e nao um cast: um valor nao-numerico num cast `[int]` levanta
@@ -113,18 +116,25 @@ function Start-BinaryDownload {
         $limite = $lido
     }
 
-    # O caminho vai com as ASPAS DENTRO do elemento, e isto NAO e preciosismo.
-    # No Windows PowerShell 5.1 o `-ArgumentList` do Start-Process nao cita
-    # elemento nenhum: ele JUNTA a lista com espacos numa string so
-    # (`ProcessStartInfo.Arguments`), e a lista com escape por elemento
-    # (`ArgumentList`) so existe no .NET Core. Sem estas aspas, um perfil como
-    # `C:\Users\Ana Paula\` faz o cmd tentar rodar `C:\Users\Ana` — o
-    # download nunca acontece e a maquina termina com o plugin ligado e VAZIO,
-    # que e exatamente a metade dormente da armadilha que esta unidade fecha.
-    # O `cmd` continua no meio porque o mustard-boot e um `.cmd`, e o
-    # CreateProcess que o -NoNewWindow usa nao sabe abrir um por conta propria.
-    $proc = Start-Process -FilePath $env:ComSpec `
-        -ArgumentList '/c', "`"$boot`"", '--version' -NoNewWindow -PassThru
+    # Arguments is a native cmd command line on both .NET Framework and Core;
+    # keep its outer quotes and the script's own quotes for paths with spaces.
+    # Process.Start retains the native handle and exit code. Start-Process
+    # with -NoNewWindow can report null after a successful WaitForExit.
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $env:ComSpec
+    $start.Arguments = '/d /s /c ""' + $boot + '" --version"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    try { $proc = [System.Diagnostics.Process]::Start($start) }
+    catch {
+        Write-Host 'aviso: nao consegui iniciar a descida dos binarios do plugin.'
+        return
+    }
+    # Drain both pipes concurrently so curl/tar cannot fill one and deadlock.
+    $downloadOut = $proc.StandardOutput.ReadToEndAsync()
+    $downloadErr = $proc.StandardError.ReadToEndAsync()
     if (-not $proc.WaitForExit($limite * 1000)) {
         # A ARVORE, nao so o cmd. O Kill() do .NET Framework nao tem
         # `entireProcessTree` (isso e .NET Core), entao matar o cmd sozinho
@@ -133,12 +143,17 @@ function Start-BinaryDownload {
         # mustard-rt.exe truncado e pior que nenhum.
         try { & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null } catch { }
         try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+        $proc.Dispose()
         Write-Host "aviso: a descida dos binarios passou de $limite s e foi cortada"
         Write-Host '       para nao segurar o instalador - a primeira sessao do'
         Write-Host '       Claude Code tenta de novo.'
         return
     }
-    if ($proc.ExitCode -ne 0) {
+    [Console]::Out.Write($downloadOut.GetAwaiter().GetResult())
+    [Console]::Error.Write($downloadErr.GetAwaiter().GetResult())
+    $downloadExit = $proc.ExitCode
+    $proc.Dispose()
+    if ($downloadExit -ne 0) {
         Write-Host 'aviso: a descida dos binarios nao concluiu - a primeira sessao'
         Write-Host '       do Claude Code tenta de novo.'
     }

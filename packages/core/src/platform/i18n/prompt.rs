@@ -469,6 +469,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `git checkout -- <file>`, unless the task declares it."
         }
         // A cópia nova da onda não tem preparo nenhum.
+        ("prompt.execution.prepared_native", Locale::PtBr) => {
+            "O binário preparou as dependências desta cópia antes do despacho. Não repita o preparo sem mudança nos insumos. Não crie atalho para node_modules de outra cópia."
+        }
+        ("prompt.execution.prepared_native", Locale::EnUs) => {
+            "The binary prepared this copy's dependencies before dispatch. Do not repeat preparation unless its inputs changed. Do not symlink another checkout's node_modules."
+        }
+        ("prompt.execution.prepared_changed", Locale::PtBr) => "Arquivos alterados desde o último uso da cópia: {files}.",
+        ("prompt.execution.prepared_changed", Locale::EnUs) => "Files changed since the previous use of this copy: {files}.",
         ("prompt.execution.prepare_new", Locale::PtBr) => {
             "Esta cópia é nova: antes de compilar, rode `{command}` dentro dela, que é o preparo que o \
              projeto declara. O arquivo versionado que ele mudar, como o lockfile, volta ao commit com \
@@ -613,7 +621,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 102, 0x470f_ab72_d3f9_ca5e);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 104, 0x40c2_95da_5b84_22b0);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

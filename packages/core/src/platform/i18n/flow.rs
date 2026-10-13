@@ -355,7 +355,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // nenhum critério cita na prova dele — o fechamento avisa, com o
         // nome do teste e o arquivo, em vez de deixar o teste sem dono.
         ("close.unowned_test", Locale::PtBr) => "O teste {name}, em {file}, não tem critério que o cite na verificação dele: fica sem cobertura.",
-        ("close.unowned_test", Locale::EnUs) => "The test {name}, in {file}, has no criterion citing it in its verification: it stays without coverage.",
+        ("close.unowned_test", Locale::EnUs) => {
+            "The test {name}, in {file}, has no criterion citing it in its verification: it stays without coverage."
+        }
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => "O relatório da rodada não se entende: {detail}. Nada foi gravado.",
@@ -470,8 +472,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // O que um agente deixou preso, encerrado no início da sessão, em
         // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
-        ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
-        ("stuck.ended", Locale::EnUs) => "Stuck process(es) ended: {list}.",
+        ("stuck.found", Locale::PtBr) => "Processos possivelmente abandonados: {list}. Nenhum foi encerrado automaticamente.",
+        ("stuck.found", Locale::EnUs) => "Possibly abandoned processes: {list}. None were terminated automatically.",
         ("stuck.reason.waiting_loop", Locale::PtBr) => "laço de espera",
         ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
         ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
@@ -561,14 +563,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A recusa ao agente de onda depois da ordem de entregar.
         ("conversation_size.wave_locked", Locale::PtBr) => {
             "[Mustard] A ordem de entregar já saiu. Só passam ler e gravar na spec (`mustard-rt run \
-             read` e `run write`){build}, cada um sozinho na linha, sem `&&`, `;`, `|` nem `$(…)`. \
+             read` e `run write`){build}, inclusive encadeados quando cada parte for permitida. Substituições e comandos alheios continuam bloqueados. \
              A devolução do relatório a quem conduz também passa. Grave a entrega, com as tarefas \
              não começadas em `undone`, e pare."
         }
         ("conversation_size.wave_locked", Locale::EnUs) => {
             "[Mustard] The order to deliver is out. Only reading and writing the spec (`mustard-rt \
-             run read` and `run write`){build} pass, each alone on its line, with no `&&`, `;`, `|` \
-             or `$(…)`. Handing the report back to whoever leads passes too. Record the delivery, \
+             run read` and `run write`){build} pass, including composed commands when every part is allowed. Nested substitutions and unrelated commands remain blocked. Handing the report back to whoever leads passes too. Record the delivery, \
              with the tasks not started in `undone`, and stop."
         }
         // O que a recusa acrescenta quando o projeto declara o comando de
@@ -806,7 +807,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {files} arquivos",
         ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {files} files",
         ("round.not_approved", Locale::PtBr) => "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário.",
-        ("round.not_approved", Locale::EnUs) => "The spec is in the {phase} phase and is not approved yet: no wave goes out before the user says yes.",
+        ("round.not_approved", Locale::EnUs) => {
+            "The spec is in the {phase} phase and is not approved yet: no wave goes out before the user says yes."
+        }
         ("round.closed", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela já fechou, e a rodada não despacha onda nova \
              numa spec fechada. Para um pedido novo nela, rode `mustard-rt run reopen --spec {spec} \
@@ -834,7 +837,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.commit_too_long", Locale::PtBr) => "O {part} da mensagem do commit tem {chars} caracteres e o teto é {max}.",
         ("round.commit_too_long", Locale::EnUs) => "The commit message {part} has {chars} characters and the cap is {max}.",
         ("round.commit_forbidden", Locale::PtBr) => "A mensagem do commit traz {found}, que ela nunca leva. Tire e peça a rodada de novo.",
-        ("round.commit_forbidden", Locale::EnUs) => "The commit message carries {found}, which it never carries. Take it out and run the round again.",
+        ("round.commit_forbidden", Locale::EnUs) => {
+            "The commit message carries {found}, which it never carries. Take it out and run the round again."
+        }
         ("round.commit_looks_like_sha", Locale::PtBr) => {
             "O campo `commit` chegou como {found}, com cara de código de commit. Ali vai o título da \
              mensagem, em palavras e curto: o agente não comita, quem comita é a rodada."
@@ -976,8 +981,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} was not resent: the previous send's copy is also another wave's, and no copy \
              is free. Run the round again when a wave finishes."
         }
-        ("round.resend_gone", Locale::PtBr) => "A onda {wave} recomeça numa cópia nova: a do envio anterior, {copy}, não é mais uma cópia do projeto.",
-        ("round.resend_gone", Locale::EnUs) => "Wave {wave} starts again in a new copy: the previous send's copy, {copy}, is no longer a copy of the project.",
+        ("round.resend_gone", Locale::PtBr) => {
+            "A onda {wave} recomeça numa cópia nova: a do envio anterior, {copy}, não é mais uma cópia do projeto."
+        }
+        ("round.resend_gone", Locale::EnUs) => {
+            "Wave {wave} starts again in a new copy: the previous send's copy, {copy}, is no longer a copy of the project."
+        }
         ("round.resend_gone_no_copy", Locale::PtBr) => {
             "A onda {wave} não foi reenviada: a cópia do envio anterior, {copy}, não é mais uma cópia do projeto e outra \
              não pôde ser preparada. Corrija o que o aviso da cópia diz e rode a rodada de novo."
@@ -1027,12 +1036,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.next", Locale::PtBr) => {
             "Despache os pedidos desta rodada: cada onda ao agente `mustard-wave` e cada revisão ao \
              agente `mustard-review`. O pedido da onda não vem nesta resposta. Mande ao agente o \
-             comando de `read`, e ele lê o próprio pedido."
+             comando de `read`, e ele lê o próprio pedido. Use só o título e esse comando no prompt. \
+             As regras já estão no pedido. Acrescente apenas uma orientação nova, se houver."
         }
         ("round.next", Locale::EnUs) => {
             "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
              to the `mustard-review` agent. The wave's request is not in this answer. Send the agent \
-             the `read` command, and it reads its own request."
+             the `read` command, and it reads its own request. Use only the title and that command in \
+             the prompt. Rules are already in the request. Add only new task instructions."
         }
         // O pedido de publicar e copiar a página fica por extenso só no
         // arquivo, e a resposta leva a linha curta.
@@ -1164,7 +1175,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.fix_limit.question", Locale::PtBr) => {
             "A onda {wave} foi reprovada de novo depois de {max} rodadas de conserto. Revisar o plano dela ou tirá-la do plano?"
         }
-        ("round.fix_limit.question", Locale::EnUs) => "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?",
+        ("round.fix_limit.question", Locale::EnUs) => {
+            "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?"
+        }
         // A retomada: a onda pausada ou órfã sai de novo com o pedido
         // anterior, mais os passos gravados e o aviso de ver o que mudou na
         // cópia; e a onda viva sem sinal por 40 minutos vira aviso.
@@ -1344,7 +1357,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("open.pending_project.one", Locale::PtBr) => "1 pendência do projeto esperando. {list} Quer resolver alguma nesta obra?",
         ("open.pending_project.one", Locale::EnUs) => "1 project pending item waiting. {list} Do you want to work on any of them in this unit?",
         ("open.pending_project.many", Locale::PtBr) => "{count} pendências do projeto esperando. {list} Quer resolver alguma nesta obra?",
-        ("open.pending_project.many", Locale::EnUs) => "{count} project pending items waiting. {list} Do you want to work on any of them in this unit?",
+        ("open.pending_project.many", Locale::EnUs) => {
+            "{count} project pending items waiting. {list} Do you want to work on any of them in this unit?"
+        }
         // O trecho de onde a lista inteira está: com o endereço da página do
         // projeto, quando ele já foi gravado, ou o comando que a mostra,
         // senão. `{url}` vem de quem chama.
@@ -1401,7 +1416,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("pr.merge_reopened", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela foi reaberta e ainda não fechou de novo. O \
              pull request #{pr} leva a versão sem o ajuste. Nada foi juntado, e o provedor nem foi \
-             perguntado. Termine o ajuste e feche a spec pela rodada (`mustard-rt run round --spec \
+             perguntado. Termine o ajuste e feche a spec pela rodada (`mustard-rt run round --dispatch --spec \
              {spec}`). Depois do fechamento, o `pr-open` que ele aponta atualiza o mesmo pull \
              request, e o merge segue."
         }
@@ -1409,7 +1424,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec {spec} is in the {phase} phase: it was reopened and has not closed again. \
              Pull request #{pr} carries the version without the change. Nothing was merged, and \
              the provider was not even asked. Finish the change and close the spec through the \
-             round (`mustard-rt run round --spec {spec}`). After the close, the `pr-open` it points \
+             round (`mustard-rt run round --dispatch --spec {spec}`). After the close, the `pr-open` it points \
              to updates the same pull request, and the merge goes on."
         }
         // A recusa do merge de uma spec que ainda não fechou e nunca voltou do
@@ -1659,24 +1674,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("reopen.fix_opened", Locale::PtBr) => {
             "O servidor reprovou os testes do pull request {pr}, e a onda de conserto {wave} está \
-             aberta na spec {spec}, que continua fechada. Rode `mustard-rt run round --spec \
+             aberta na spec {spec}, que continua fechada. Rode `mustard-rt run round --dispatch --spec \
              {spec}`: a onda de conserto sai, e o conserto é comitado na mesma branch. Depois \
              rode este mesmo passo de novo para empurrar."
         }
         ("reopen.fix_opened", Locale::EnUs) => {
             "The server failed the tests of pull request {pr}, and the fix wave {wave} is open in \
-             the spec {spec}, which stays closed. Run `mustard-rt run round --spec {spec}`: the \
+             the spec {spec}, which stays closed. Run `mustard-rt run round --dispatch --spec {spec}`: the \
              fix wave goes out, and the repair is committed on the same branch. Then run this \
              very step again to push it."
         }
         ("reopen.fix_waiting", Locale::PtBr) => {
             "A onda de conserto {wave} da spec {spec} já está aberta e ainda não entregou, e nada \
-             foi gravado. Rode `mustard-rt run round --spec {spec}` para levá-la até o commit; \
+             foi gravado. Rode `mustard-rt run round --dispatch --spec {spec}` para levá-la até o commit; \
              depois rode este mesmo passo de novo para empurrar."
         }
         ("reopen.fix_waiting", Locale::EnUs) => {
             "The fix wave {wave} of the spec {spec} is already open and has not delivered yet, and \
-             nothing was written. Run `mustard-rt run round --spec {spec}` to take it to the \
+             nothing was written. Run `mustard-rt run round --dispatch --spec {spec}` to take it to the \
              commit; then run this very step again to push it."
         }
         ("reopen.fix_pushed", Locale::PtBr) => {
@@ -1770,7 +1785,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 235, 0xadc7_a463_e0c8_332d);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 235, 0xbbaf_e9f4_20a6_bbe7);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -1916,7 +1931,7 @@ mod tests {
             ("pr.promotion_merged", &["{head}"][..]),
             ("reopen.same_pr", &[][..]),
             ("reopen.pr_closed", &["{pr}"][..]),
-            ("stuck.ended", &["{list}"][..]),
+            ("stuck.found", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
             ("stuck.reason.idle_copy", &[][..]),

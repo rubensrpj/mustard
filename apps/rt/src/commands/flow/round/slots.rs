@@ -15,10 +15,10 @@ use mustard_core::io::wave_prompt::{
     copies_dir, final_copy_path, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
 };
 use mustard_core::platform::git;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
-use super::keep::{Kept, Keeping};
+use super::keep::{Keeping, Kept};
 use super::queue::{max_parallel, open_review, orphaned_waves, unanswered_sends};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
@@ -173,7 +173,8 @@ pub(super) fn open_copies(
         if delivered.get(wave).is_some_and(|id| id > sent) {
             continue;
         }
-        let Some(copy) = recorded_copy(log, *wave).map(|copy| copy.path) else { continue };
+        let Some(copy) = recorded_copy(log, *wave).map(|copy| copy.path) else { continue;
+        };
         if let Some(at) = free.iter().position(|slot| same_place(&shown(slot), &copy)) {
             chosen.insert(*wave, (free.remove(at), true));
         }
@@ -209,7 +210,9 @@ pub(super) fn open_copies(
                 reset_slot(root, &path, head, &slot_owner(spec, log, &path))
             }
             .and_then(|prepared| {
-                    touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit)).map(|()| prepared)
+                    touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit))?;
+                super::dependencies::prepare(root, &path)?;
+                Ok(prepared)
                 }),
         };
         match made {
@@ -287,7 +290,8 @@ pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) 
         before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
         super::keep::reset_with_submodules(root, path, head, owner)
     })?;
-    let Some(zeroed) = zeroed else { return new_copy(root, path, head, owner) };
+    let Some(zeroed) = zeroed else { return new_copy(root, path, head, owner);
+    };
     Ok(Prepared { missing: zeroed.missing, reused: changed_since(root, &before, head), kept: zeroed.value })
 }
 
@@ -556,7 +560,9 @@ pub(crate) fn remove_spec_copies(root: &Path, spec: &str, log: Option<&SpecLog>)
     }
     let _held = match crate::commands::git_settle::git_step_lock(root) {
         Ok(held) => held,
-        Err(detail) => return Removal { left: vec![(shown(&dir), detail)], ..Removal::default() },
+        Err(detail) => {
+            return Removal { left: vec![(shown(&dir), detail)], ..Removal::default() };
+        }
     };
     let mut slots: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect())

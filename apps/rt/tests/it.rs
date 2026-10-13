@@ -46,6 +46,7 @@ mod private_scan;
 mod private_surface;
 mod project_page_install;
 mod round_dispatch;
+mod round_status;
 mod round_report_usage_documented;
 mod run_command_surface;
 mod search_answer_layers;

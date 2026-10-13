@@ -42,15 +42,16 @@ use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::project_map as map_store;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
+
+#[path = "support/executable.rs"]
+mod executable;
 
 #[path = "support/mod.rs"]
 mod support;
 #[path = "support/review.rs"]
 mod wave_review;
-#[path = "support/executable.rs"]
-mod executable;
 
 const SPEC: &str = "ponta";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -629,7 +630,7 @@ fn plan_files(project: &Project, files: &[&str]) {
 /// chamada, sem pedir escolha a quem conduz nem agente nenhum. Devolve a
 /// resposta da rodada.
 fn first_round(project: &Project) -> Value {
-    let sent = project.run(&["round", "--spec", SPEC]);
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(sent["dispatch"][0]["wave"], json!(1), "{sent}");
     assert!(sent.get("analysis").is_none(), "{sent}");
     sent
@@ -702,7 +703,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     project.read_request(1);
     project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("reviews").is_none(), "{second}");
     assert!(copy.join(".git").is_file(), "the copy stays for the next wave once the round takes the change back: {second}");
     assert_eq!(std::fs::read_to_string(project.root.join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"olá\");\n}\n");
@@ -798,7 +799,7 @@ fn closed_with_one_wave(project: &Project) -> Vec<String> {
     project.read_request(1);
     project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    project.run(&["round", "--spec", SPEC]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
     project.run(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(project)});
@@ -992,7 +993,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     project.read_request(1);
     project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(
         copy.join(".git").is_file() && copy.join(SUB).join(".git").is_file(),
         "the copy and the submodule copy inside it stay for the next wave: {second}"
@@ -1004,7 +1005,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     assert_eq!(git_out(&sub, &["rev-parse", "--abbrev-ref", "HEAD"]), BRANCH, "{second}");
     assert_eq!(git_out(&project.root, &["rev-parse", "--abbrev-ref", "HEAD"]), BRANCH);
     assert_eq!(std::fs::read_to_string(sub.join("lib.txt")).unwrap(), "a biblioteca nova\n");
-    assert_eq!(git_out(&sub, &["show", "-s", "--format=%s", "HEAD"]), "feat(onda-1): a saudação e a biblioteca mudam");
+    assert_eq!(git_out(&sub, &["show", "-s", "--format=%s", "HEAD"]), "feat: a saudação e a biblioteca mudam");
     assert_eq!(git_out(&sub, &["show", "--name-only", "--format=", "HEAD"]), "lib.txt");
     assert_eq!(
         git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]),
@@ -1392,7 +1393,7 @@ fn a_round_that_commits_the_return_starts_the_reading_of_the_history_of_the_proj
     deliver_the_first_wave(&project);
     let before = (project.scan_passes().len(), project.settled_history_reads().len());
 
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
 
     let (passes, reads) = since(&project, &before);
@@ -1444,7 +1445,7 @@ fn a_round_that_committed_the_program_builds_the_development_version_once_in_the
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
     assert!(project.cargo_calls().is_empty(), "nada compila antes da rodada: {:?}", project.cargo_calls());
 
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
     assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
     let reasons: Vec<&str> = second["warnings"].as_array().into_iter().flatten().filter_map(|w| w["reason"].as_str()).collect();
@@ -1458,7 +1459,7 @@ fn a_round_whose_commit_left_the_program_alone_does_not_build() {
     let project = Project::as_mustard_source();
     deliver_the_first_wave_changing(&project, "src/main.rs");
 
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
     assert!(project.cargo_calls().is_empty(), "o commit não tocou o programa: {:?}", project.cargo_calls());
 }
@@ -1472,7 +1473,7 @@ fn a_round_outside_the_mustard_repository_never_builds() {
     git(&project.root, &["commit", "-q", "-a", "-m", "o projeto deixa de ser o Mustard"]);
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
 
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
     assert!(project.cargo_calls().is_empty(), "outro projeto: {:?}", project.cargo_calls());
 }
@@ -1485,7 +1486,7 @@ fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
     std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
 
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed anyway: {second}");
     assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
     let warning = second["warnings"]
@@ -1649,7 +1650,7 @@ fn building_the_development_version_installs_nothing_and_leaves_the_plugin_folde
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
     session_notices(&project);
     wait_for_the_background_build(&project);
-    let second = project.run(&["round", "--spec", SPEC]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
 
     let calls = project.cargo_calls();

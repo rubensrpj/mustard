@@ -347,8 +347,7 @@ pub(crate) fn pack_by_local_evidence<N: Ord + Clone>(
 ) -> Vec<Batch<N>> {
     let mut batches = pack_batches(tasks, order, waiting, busy);
     let sizes: BTreeMap<_, _> = tasks.iter().map(|task| {
-        let level = match task.files.len() { 1 => 0.0, 2..=3 => 1.0, 4..=6 => 2.0, _ => 3.0 };
-        (task.id.clone(), task_size::growth_tokens(level))
+        (task.id.clone(), task_size::native_growth(task.files.len()))
     }).collect();
     let weight = |batch: &Batch<N>| batch.tasks.iter().map(|id| sizes[id]).fold(0u64, u64::saturating_add);
     let mut at = 0;

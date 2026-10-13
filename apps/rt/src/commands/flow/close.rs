@@ -182,7 +182,9 @@ impl CloseRefusal {
     }
 
     fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, String)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
+        let fill = |key: &str, slots: &[(&str, String)]| {
+            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
+        };
         match self {
             Self::Refused(refusal) => refusal.message(lang),
             Self::NewUnused { text } => text.clone(),
@@ -297,7 +299,7 @@ fn run_close(
     // preparou antes. Sem a trava, a busca não roda.
     let stuck_hint = crate::commands::git_settle::git_step_lock(root)
         .ok()
-        .and_then(|held| crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root, &held), lang));
+        .and_then(|held| crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::find_stuck_processes(root, &held), lang));
 
     // O que voltou da última rodada entra antes das conferências, pela mesma
     // porta da rodada, com o commit: a volta que a última onda gravou na spec
@@ -409,7 +411,7 @@ fn run_close(
             "next": next,
         });
         if let Some(hint) = &stuck_hint {
-            spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
+            spec_events::pages::push_warning(&mut out, "stuck-found", hint);
         }
         for hint in &undeclared {
             spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
@@ -478,7 +480,7 @@ fn run_close(
         "validation": {"status":"pass","reused":reused},
     });
     if let Some(hint) = &stuck_hint {
-        spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
+        spec_events::pages::push_warning(&mut out, "stuck-found", hint);
     }
     if let Some((reason, hint)) = &agents_hint {
         spec_events::pages::push_warning(&mut out, reason, hint);
@@ -604,6 +606,9 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 /// projeto que quer o fechamento igual ao servidor declara ali, ao pé da
 /// letra, o que o servidor roda — no próprio Mustard, as linhas `Test` e
 /// `Clippy` de `.github/workflows/ci.yml`.
+/// Invocações simples de ESLint com correção automática recebem `--no-fix`:
+/// a validação mantém os erros e não reescreve os fontes. O recibo registra
+/// o comando executado; scripts opacos não são reinterpretados.
 ///
 /// **O projeto que não declara.** Fora do próprio Mustard, um projeto pode
 /// não ter servidor nenhum, ou não ter dito ao Mustard o que ele roda: o
@@ -622,6 +627,7 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
             undeclared.push(translate("close.server_command_not_declared", lang).replace("{key}", key));
             continue;
         };
+        let command = if key == "lintCommand" { crate::commands::review::qa_run::readonly_lint_command(root, &command) } else { command };
         // Nenhum dos dois é prova de critério: eles não prometem rodar um
         // teste pelo nome, e a leitura de quantos testes a saída diz fica
         // fora do caminho deles. O teto também é o deles, de uma hora, e não
@@ -652,12 +658,13 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
         draft.insert("result".into(), json!(out.result));
         draft.insert("exit".into(), json!(out.exit));
         draft.insert("ms".into(), json!(out.ms));
+        draft.insert("reused".into(), json!(out.reused));
         draft.insert("author".into(), json!("binary"));
         if !out.output.trim().is_empty() {
             draft.insert("output".into(), json!(out.output));
         }
         record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
-        runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
+        runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms,"reused":out.reused }));
     }
     match failed {
         Some(failed) => Err(match failed.fault {
@@ -701,9 +708,7 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: &Clos
     }
     let fingerprint = super::validation::fingerprint(root, log).unwrap_or_else(|| "unknown".into());
     let criterion = match failure {
-        CloseRefusal::CriterionFailed { code, .. } | CloseRefusal::CriterionRanNoTest { code, .. } | CloseRefusal::CriterionMissingTest { code, .. } => {
-            log.codes().into_iter().find(|(_, c)| c == code).map(|(id, _)| id)
-        }
+        CloseRefusal::CriterionFailed { code, .. } | CloseRefusal::CriterionRanNoTest { code, .. } | CloseRefusal::CriterionMissingTest { code, .. } => log.codes().into_iter().find(|(_, c)| c == code).map(|(id, _)| id),
         _ => None,
     };
     let planned = log.planned_waves();
@@ -814,7 +819,9 @@ fn prepare_review_copy(root: &Path, spec: &str, path: &Path, log: &SpecLog) -> R
     } else {
         crate::commands::flow::round::reset_slot(root, path, &commit, &owner)
     };
-    prepared.map(|prepared| (prepared.missing, prepared.kept)).map_err(failed)
+    let prepared = prepared.map_err(&failed)?;
+    crate::commands::flow::round::prepare_copy_dependencies(root, path).map_err(failed)?;
+    Ok((prepared.missing, prepared.kept))
 }
 
 /// Um revisor já recebeu pedido depois do último envio de onda: o envio de
@@ -990,7 +997,9 @@ fn resolves_inside(root: &Path, path: &Path) -> bool {
         return false;
     };
     path.strip_prefix(&root)
-        .is_ok_and(|rel| rel.components().next().is_some() && rel.components().all(|part| !part.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git")))
+        .is_ok_and(|rel| {
+        rel.components().next().is_some() && rel.components().all(|part| !part.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
+    })
 }
 
 /// O git da raiz `root` ignora a pasta `rel` e não guarda nenhum arquivo
@@ -1517,7 +1526,9 @@ mod tests {
         let count = |log: &SpecLog| {
             log.events
                 .iter()
-                .filter(|event| event.event_type == "stage_run" && event.str_field("scope") == Some("leaf") && event.str_field("phase") == Some("final"))
+                .filter(|event| {
+                    event.event_type == "stage_run" && event.str_field("scope") == Some("leaf") && event.str_field("phase") == Some("final")
+                })
                 .count()
         };
         let before = count(&read());
@@ -2539,7 +2550,7 @@ mod tests {
         let _ = preparing.wait();
         assert!(alive, "the other round's git in its slot must stay alive: {out}");
         let warned = out["warnings"].as_array().cloned().unwrap_or_default();
-        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-ended")), "{out}");
+        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-found")), "{out}");
     }
 
     /// A cópia do revisor final recebe os arquivos da lista de arquivos
@@ -2603,6 +2614,24 @@ mod tests {
 } > "$out"
 exit "${2:-0}"
 "#;
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_disables_recognized_eslint_fixes_and_keeps_lint_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let eslint = root.join("eslint");
+        std::fs::write(&eslint, "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = --no-fix ]; then echo 'lint error'; exit 1; fi; done\nprintf changed > source.txt\n").unwrap();
+        std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(root.join("source.txt"), "original").unwrap();
+        std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./eslint . --fix", "testCommand":"git --version"}).to_string()).unwrap();
+        let out = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(out["reason"], json!("lint-failed"), "{out}");
+        assert!(out["hint"].as_str().unwrap_or_default().contains("--no-fix"), "{out}");
+        assert_eq!(std::fs::read_to_string(root.join("source.txt")).unwrap(), "original");
+    }
 
     /// O que o roteiro gravou para o papel `role`, uma chave por linha.
     fn probed(root: &Path, role: &str) -> std::collections::BTreeMap<String, String> {

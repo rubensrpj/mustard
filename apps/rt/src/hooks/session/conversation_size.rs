@@ -68,10 +68,10 @@ use mustard_core::io::spec_events as store;
 use mustard_core::io::transcript::{agent_pieces, first_stamp, heading_of};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{translate, ClaudePaths};
+use mustard_core::{ClaudePaths, translate};
 use serde_json::Value;
 
-use crate::hooks::bash::lex::{segments, Segment};
+use crate::hooks::bash::lex::{Segment, segments};
 
 /// O degrau de tamanho da conversa de quem conduz, em tokens: a cada degrau
 /// novo, um aviso.
@@ -134,9 +134,7 @@ impl Check for SizeNotice {
                 };
                 Ok(context.map_or(Verdict::Allow, |context| Verdict::Inject { context }))
             }
-            Some(Trigger::PreToolUse) => {
-                Ok(wave_lock_reason(input, &root, ctx).map_or(Verdict::Allow, |reason| Verdict::Deny { reason }))
-            }
+            Some(Trigger::PreToolUse) => Ok(wave_lock_reason(input, &root, ctx).map_or(Verdict::Allow, |reason| Verdict::Deny { reason })),
             _ => Ok(Verdict::Allow),
         }
     }
@@ -315,9 +313,7 @@ fn user_text(line: &Value) -> Option<String> {
     }
     match message.get("content")? {
         Value::String(text) => Some(text.clone()),
-        Value::Array(blocks) => {
-            Some(blocks.iter().filter_map(|block| block.get("text")).filter_map(Value::as_str).collect())
-        }
+        Value::Array(blocks) => Some(blocks.iter().filter_map(|block| block.get("text")).filter_map(Value::as_str).collect()),
         _ => None,
     }
 }
@@ -330,11 +326,10 @@ fn wave_opened(path: &Path, lang: Locale) -> Option<(String, u64)> {
 
     let file = std::fs::File::open(path).ok()?;
     for line in std::io::BufReader::new(file.take(262_144)).lines().map_while(Result::ok) {
-        let Ok(row)=serde_json::from_str::<Value>(&line) else {continue};
-        let Some(text)=user_text(&row) else {continue};
-        let wave=wave_of_title(heading_of(&text),lang).or_else(|| {
-            mustard_core::domain::wave_prompt::ReadDispatch::of(&text).map(|read|(read.spec,read.wave))
-        });
+        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
+        let Some(text) = user_text(&row) else { continue };
+        let wave = wave_of_title(heading_of(&text), lang)
+            .or_else(|| mustard_core::domain::wave_prompt::ReadDispatch::of(&text).map(|read| (read.spec, read.wave)));
         // Codex can precede the delegated user task with environment/rule
         // messages. Its file identity is checked separately, not by title.
         if wave.is_some() || row["type"]!="response_item" {return wave;}
@@ -360,7 +355,10 @@ fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
         let Ok(file) = std::fs::File::open(piece) else { continue };
         for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
             let Some((value, usage)) = usage_of_line(&line) else { continue };
-            let Some(context) = context_of(&usage) else {now=None; continue};
+            let Some(context) = context_of(&usage) else {
+                now = None;
+                continue;
+            };
             first.get_or_insert(context);
             now = Some(context);
             let message = value.get("message");
@@ -437,7 +435,9 @@ fn finishes_a_task(input: &HookInput) -> bool {
     if input.tool_name.as_deref() != Some("Bash") {
         return false;
     }
-    let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else { return false };
+    let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else {
+        return false;
+    };
     let mut run = segments(command).into_iter().filter(|segment| program_name(segment) != "cd");
     let Some(main) = run.next() else { return false };
     let args: Vec<&str> = main.args.iter().map(|word| word.text.as_str()).collect();
@@ -556,24 +556,36 @@ fn hands_back_the_report(input: &HookInput) -> bool {
     input.tool_name.as_deref() == Some(REPORT_BACK_TOOL)
 }
 
-/// Se o agente de onda ainda pode fazer a chamada `input` depois da ordem de
-/// entregar: só o terminal, com um comando só além dos `cd` — ler ou gravar
-/// na spec, ou compilar com `build`, cuja saída pode ir a um `tail` ou
-/// `head`. O comando é lido como o shell o lê: outro comando na mesma linha,
-/// encadeado (`&&`, `;`, `|`, nova linha) ou escondido numa palavra (`$(…)`,
-/// crase), recusa.
-fn passes_after_the_order(input: &HookInput, build: Option<&str>) -> bool {
-    if input.tool_name.as_deref() != Some("Bash") {
-        return false;
-    }
-    let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else { return false };
-    let mut run = segments(command).into_iter().filter(|segment| program_name(segment) != "cd");
-    let Some(main) = run.next() else { return false };
-    if uses_the_spec(&main) {
-        return run.next().is_none();
-    }
-    let build = build.and_then(|build| segments(build).into_iter().next());
-    build.is_some_and(|build| runs_build(&main, &build)) && run.all(|segment| trims_the_output(&segment))
+/// Finish-only commands may be composed; every executable is checked.
+/// Nested substitutions, unrelated commands and file redirections stay denied.
+fn passes_after_the_order(input: &HookInput, commands: &[Option<&str>]) -> bool {
+    if input.tool_name.as_deref() != Some("Bash") { return false; }
+    let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else { return false; };
+    let parts = segments(command);
+    if parts.iter().all(|part| program_name(part) == "cd") || parts.len() > crate::hooks::bash::lex::command_ranges(command).len() { return false; }
+    let checks: Vec<_> = commands.iter().flatten().flat_map(|command| segments(command)).collect();
+    parts.iter().all(|part| {
+        if part.redirects.iter().any(|redirect| redirect.op.trim_start_matches(|ch: char| ch.is_ascii_digit()) != ">&" || !["1","2"].contains(&redirect.target.text.as_str())) { return false; }
+        program_name(part) == "cd" || uses_the_spec(part)
+            || checks.iter().any(|check| runs_build(part, check))
+            || trims_the_output(part) && parts.iter().any(|other| other.piped)
+            || removes_dependency_link(input, part)
+    })
+}
+
+/// Legacy links can be unlinked after finishing; never remove a directory or
+/// the main checkout's dependencies. New copies use local installations.
+fn removes_dependency_link(input: &HookInput, part: &Segment) -> bool {
+    if program_name(part) != "unlink" { return false; }
+    let paths: Vec<_> = part.args.iter().filter(|arg| arg.text != "--").collect();
+    let [path] = paths.as_slice() else { return false; };
+    let Some(cwd) = input.cwd.as_deref().map(Path::new) else { return false; };
+    if mustard_core::io::workspace::linked_worktree_main(cwd).is_none() { return false; }
+    let file = Path::new(&path.text);
+    let file = if file.is_absolute() { file.to_path_buf() } else { cwd.join(file) };
+    file.file_name().is_some_and(|name| name == "node_modules")
+        && file.parent().and_then(|parent| parent.canonicalize().ok()) == cwd.canonicalize().ok()
+        && file.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_symlink())
 }
 
 /// Se a rodada recusou a volta da onda do agente de `input` e espera o
@@ -634,10 +646,13 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
         return None;
     }
     let commands = ctx.config.commands();
-    if [commands.build.as_deref(), commands.test.as_deref(), commands.lint.as_deref()]
-        .into_iter().any(|command| passes_after_the_order(input, command)) {
-        return None;
+    let mut finish_checks: Vec<String> = [commands.build.clone(), commands.test.clone(), commands.lint.clone()].into_iter().flatten().collect();
+    if let Some((spec, wave)) = agent_parts(input).first().and_then(|path| wave_opened(path, lang))
+        && let Some(log) = store::spec_file(&store::spec_root(root), &spec).ok().and_then(|path| store::read(&path).ok().flatten()) {
+        finish_checks.extend(log.criteria_for_waves(&[wave]).into_iter().filter_map(|criterion| criterion.str_field("proof").map(str::to_string)));
     }
+    let allowed: Vec<_> = finish_checks.iter().map(|command| Some(command.as_str())).collect();
+    if passes_after_the_order(input, &allowed) { return None; }
     if awaits_its_fix(input, root, lang) {
         return None;
     }
@@ -1328,12 +1343,9 @@ mod tests {
         assert_eq!(refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()})), None);
     }
 
-    /// Depois da ordem de entregar, o comando que passa sozinho é recusado
-    /// quando outro vem na mesma linha: encadeado depois dele (`&&`, `||`,
-    /// `;`, nova linha), recebendo a saída dele por `|` (fora o `tail` ou
-    /// `head` sem arquivo depois de compilar) ou escondido numa palavra
-    /// (`$(…)`, crase), inclusive na pasta de um `cd`. O mesmo texto dentro de
-    /// aspas simples, como no `--json` de uma gravação, é só texto.
+    /// Depois da ordem de entregar, cada comando composto precisa continuar
+    /// restrito ao encerramento. Substituições, comandos alheios e pipelines
+    /// que executam trabalho novo são recusados. JSON entre aspas é só texto.
     #[test]
     fn after_the_order_to_deliver_another_command_on_the_same_line_is_refused() {
         use serde_json::json;
@@ -1346,19 +1358,10 @@ mod tests {
         let bash = |command: &str| refused(root, "Bash", json!({"command": command}));
         assert_eq!(bash("mustard-rt run write step --json '{\"text\":\"a && b; c | d $(e) `f`\"}'"), None);
         for command in [
-            "mustard-rt run write step --json {} && cargo test --workspace",
-            "mustard-rt run write step --json {} || cargo test",
-            "mustard-rt run write step --json {}; cargo test",
-            "mustard-rt run write step --json {}\ncargo test",
             "mustard-rt run write step --json {} | sh",
             "mustard-rt run write step --json \"$(cargo test)\"",
             "mustard-rt run write step --json `cargo test`",
-            "/x/mustard-rt run read request-1 --root /r --spec x && cargo test",
-            "mustard-rt run read request-1 | head -5",
             "cd $(cargo test) && mustard-rt run write step --json {}",
-            "cargo build && cargo test",
-            "cargo build; cargo test",
-            "$HOME/.cargo/bin/cargo build && cargo test",
             "PATH=/p cargo build $(cargo test)",
             "cargo build | xargs cargo test",
             "cargo build 2>&1 | tail -20 src/a.rs",
@@ -1379,11 +1382,28 @@ mod tests {
         assert_eq!(injected(&agent_after_tool(root)),None,"no stop order in the middle of a task");
         assert_eq!(refused(root,"Edit",json!({"file_path":root.join("a.rs"),"old_string":"a","new_string":"b"})),None);
         assert!(agent_finishes(root,&mut replies,180_000,Locale::PtBr).is_some());
-        for command in ["cargo test --locked -p app specific_test","rtk cargo test --locked -p app specific_test","cargo clippy -p app"] {
+        for command in ["cargo test --locked -p app specific_test","rtk cargo test --locked -p app specific_test","cargo clippy -p app", "cargo build && cargo test --locked -p app specific_test && cargo clippy -p app", "mustard-rt run read request-1 && cargo test --locked -p app"] {
             assert_eq!(refused(root,"Bash",json!({"command":command})),None,"{command}");
         }
         assert!(refused(root,"Agent",json!({"description":"next task","prompt":"start next task"})).is_some());
         assert_eq!(refused(root,REPORT_BACK_TOOL,json!({"summary":"finished"})),None);
+    }
+
+    #[test]
+    fn a_wave_can_run_its_own_criterion_proof_after_the_capacity_horizon() {
+        let dir = open_project("x"); let root = dir.path();
+        let criterion = seed_running_wave(root, "x");
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let mut fields = log.get(criterion).unwrap().fields.clone();
+        fields.remove("code"); fields.remove("search");
+        fields.insert("replaces".into(), serde_json::json!(criterion));
+        fields.insert("proof".into(), serde_json::json!("./node_modules/.bin/jest --roots=src src/example.spec.ts"));
+        store::write(&path, "criterion", fields, &[]).unwrap();
+        let mut replies = vec![agent_reply(30_000, Some("read"))];
+        assert!(agent_finishes(root, &mut replies, 180_000, Locale::PtBr).is_some());
+        assert_eq!(refused(root, "Bash", serde_json::json!({"command":"./node_modules/.bin/jest --roots=src src/example.spec.ts"})), None);
+        assert!(refused(root, "Edit", serde_json::json!({"file_path":root.join("another-task.rs")})).is_some());
     }
 
     /// Depois da ordem de entregar, a devolução do relatório a quem conduz
@@ -1700,7 +1720,7 @@ mod tests {
                 assert_eq!(slot_value(context, lang, "{stuck}"), "4", "{lang:?} {moment}: the wave at the fix limit");
                 assert_eq!(slot_value(context, lang, "{recorded}"), after[0], "{lang:?} {moment}: after the round");
                 assert!(!context.contains(&before), "{lang:?} {moment}: the decision before the round: {context}");
-                assert!(context.contains("mustard-rt run round --spec x"), "{lang:?} {moment}: {context}");
+                assert!(context.contains("mustard-rt run round --dispatch --spec x"), "{lang:?} {moment}: {context}");
             }
             let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
             assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
@@ -1807,7 +1827,7 @@ mod tests {
                 .replace("{wave}", "1")
                 .replace("{copy}", &copy_of(root, 1));
             assert_eq!(slot_value(&block, lang, "{running}"), running, "{lang:?}: the wave in flight stays whole");
-            assert!(block.contains("mustard-rt run round --spec x"), "{lang:?}: the next command: {block}");
+            assert!(block.contains("mustard-rt run round --dispatch --spec x"), "{lang:?}: the next command: {block}");
         }
     }
 }

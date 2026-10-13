@@ -534,9 +534,7 @@ pub(super) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
 pub(super) fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
     let raw = match EventRef::from_value(value)? {
         EventRef::Id(id) => id,
-        EventRef::Code(code) => {
-            log.visible().into_iter().filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code)).map(|event| event.id).next_back()?
-        }
+        EventRef::Code(code) => log.visible().into_iter().filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code)).map(|event| event.id).next_back()?,
     };
     log.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
 }
@@ -1188,13 +1186,13 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
         std::fs::write(root.join(".git").join("info").join("exclude"), "target/\n").unwrap();
-        std::fs::write(root.join("mustard.json"), br#"{"prepareCommand":"true"}"#).unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"prepareCommand":"git --version"}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
         let slot = slot_path(root, "x", 0);
         assert_eq!(sent_copy(root, 1), shown(&slot), "{first}");
-        let fresh = translate("prompt.execution.prepare_new", Locale::PtBr).replace("{command}", "true");
-        assert!(request_at(&first, 0).contains(&fresh), "a vaga nova pede o preparo");
+        let fresh = translate("prompt.execution.prepared_native", Locale::PtBr);
+        assert!(request_at(&first, 0).contains(fresh), "native preparation is already complete");
         let untouched = age(&slot.join("src/b.rs"));
         age(&slot.join("src/a.rs"));
         let build = slot.join("target").join("compilado.o");
@@ -1210,9 +1208,7 @@ mod tests {
         assert_eq!(modified(&slot.join("src/b.rs")), untouched, "o arquivo que não mudou guarda a data");
         assert_eq!(std::fs::read_to_string(&build).unwrap(), "compilado", "a compilação ignorada fica na vaga");
         let prompt = &request_at(&second, 0);
-        let reused = translate("prompt.execution.prepare_reused", Locale::PtBr);
-        let opening = reused.split("{files}").next().unwrap_or_default();
-        assert!(prompt.contains(opening) && prompt.contains("`src/a.rs`"), "{prompt}");
+        assert!(prompt.contains(fresh) && prompt.contains("`src/a.rs`"), "{prompt}");
         assert!(!prompt.contains("`src/b.rs`."), "só o que mudou entra na lista: {prompt}");
     }
 
@@ -2837,6 +2833,17 @@ mod tests {
     /// a rodada não forma onda; a que assume a entrega da 1 não solta nada e
     /// manda rodar de novo; a seguinte solta a limpeza sozinha na onda 2, e
     /// entregue a 2 a rodada manda fechar.
+    #[test]
+    fn related_ready_cleanup_joins_the_last_small_batch_without_an_extra_wave() {
+        let dir = tempdir().unwrap(); let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let tidy = cleanup_task(root, said, crit, "Acertar o comentário de um.", "src/a.rs");
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(wave_order(root, 1), vec![normal, tidy], "{out}");
+    }
+
     #[test]
     fn once_the_normal_task_is_delivered_the_cleanup_goes_out_in_the_next_round() {
         let dir = tempdir().unwrap();

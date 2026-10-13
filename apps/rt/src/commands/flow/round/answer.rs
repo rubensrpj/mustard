@@ -203,7 +203,9 @@ impl RoundRefusal {
     }
 
     pub(crate) fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, String)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
+        let fill = |key: &str, slots: &[(&str, String)]| {
+            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
+        };
         match self {
             Self::Refused(refusal) => refusal.message(lang),
             // A mesma chave da recusa que já trava a aprovação do plano
@@ -241,12 +243,18 @@ impl RoundRefusal {
                     ("{tasks}", task_list(tasks, lang)),
                 ],
             ),
-            Self::ReplanNeedsUndone { wave, tasks } => fill("round.replan_needs_undone", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))]),
+            Self::ReplanNeedsUndone { wave, tasks } => {
+                fill("round.replan_needs_undone", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))])
+            }
             Self::UndoneNotInWave { wave, code, tasks } => {
                 fill("round.undone_not_in_wave", &[("{wave}", wave.to_string()), ("{code}", code.clone()), ("{tasks}", task_list(tasks, lang))])
             }
-            Self::StartedWorkUndone { wave, tasks } => fill("round.started_work_undone", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))]),
-            Self::DoneWithoutStep { wave, tasks } => fill("round.done_without_step", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))]),
+            Self::StartedWorkUndone { wave, tasks } => {
+                fill("round.started_work_undone", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))])
+            }
+            Self::DoneWithoutStep { wave, tasks } => {
+                fill("round.done_without_step", &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))])
+            }
             Self::Rejected { wave, reason, title } => rejected_message(*wave, reason, title.as_deref(), lang),
             Self::RejectedWithoutReturn { wave } => fill("round.rejected_without_return", &[("{wave}", wave.to_string())]),
             Self::RejectedCommitted { wave, sha } => fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())]),
@@ -620,14 +628,14 @@ pub(super) fn run_entered_round(
     // spec depois dos envios desta, e nunca solta a mesma onda de novo.
     let held_lock = git_lock(root)?;
 
-    // Nada fica preso: todo processo que um agente deixou rodando — um laço
+    // A observação lista processos possivelmente abandonados — um laço
     // de espera, ou um comando na cópia de uma onda que o commit anterior já
-    // apagou — é encerrado a cada rodada, e a resposta diz qual. A busca vem
+    // apagou — sem encerrar nada. A busca vem
     // depois da trava: a rodada que chegou antes já gravou o envio da vaga
     // que preparou, e o git dela, lá dentro, nunca é tomado por esquecido.
-    let stuck_ended = crate::commands::flow::stuck::end_stuck_processes(root, &held_lock);
+    let stuck_ended = crate::commands::flow::stuck::find_stuck_processes(root, &held_lock);
     if let Some(hint) = crate::commands::flow::stuck::report_line(&stuck_ended, lang) {
-        warnings.push(json!({ "reason": "stuck-ended", "hint": hint }));
+        warnings.push(json!({ "reason": "stuck-found", "hint": hint }));
     }
 
     // O mapa volta ao commit atual antes de montar os pedidos: um commit à
@@ -778,7 +786,8 @@ pub(super) fn run_entered_round(
     // O processo por trás desta rodada — o Claude Code que a chamou ou, sem
     // um por cima, ela mesma: gravado em todo envio, novo ou reenviado, para
     // a rodada seguinte saber se aquele ainda está aberto.
-    let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+    let (claude_pid, claude_started) = crate::shared::host_observation::caller_process(root, caller.session)
+        .unwrap_or_else(crate::commands::flow::stuck::sender_process);
     for wave in &next {
         let Some(prompt) = built.iter().find(|p| p.wave == *wave) else {
             continue;
@@ -2596,7 +2605,7 @@ mod tests {
     /// cópia de onda já foi apagada é achado e citado nos avisos.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_round_ends_a_stuck_process_and_reports_it_in_warnings() {
+    fn a_round_only_reports_a_stuck_process_and_preserves_its_execution() {
         use std::process::{Command, Stdio};
 
         let dir = tempdir().unwrap();
@@ -2618,7 +2627,9 @@ mod tests {
         let out = round(root, "x", None);
         let warned = out["warnings"].as_array().cloned().unwrap_or_default();
         let pid = orphaned.id().to_string();
-        assert!(warned.iter().any(|w| w["reason"] == json!("stuck-ended") && w["hint"].as_str().unwrap_or_default().contains(&pid)), "{out}");
+        assert!(warned.iter().any(|w| w["reason"] == json!("stuck-found") && w["hint"].as_str().unwrap_or_default().contains(&pid)), "{out}");
+        assert!(orphaned.try_wait().unwrap().is_none(), "a diagnostic must not terminate any process");
+        let _ = orphaned.kill();
         let _ = orphaned.wait();
     }
 
@@ -2688,7 +2699,7 @@ mod tests {
         assert!(alive, "the other round's git in its slot must stay alive: {out}");
         assert_eq!(out["ok"], json!(true), "{out}");
         let warned = out["warnings"].as_array().cloned().unwrap_or_default();
-        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-ended")), "{out}");
+        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-found")), "{out}");
     }
 
     /// A hora de agora deslocada em `hours` horas: no formato da hora dos

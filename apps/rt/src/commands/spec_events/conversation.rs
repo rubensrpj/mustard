@@ -170,7 +170,15 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
     if command=="search" {
         measured.insert("search_enriched".into(),json!(report["crossing_status"]=="enriched"));
         measured.insert("search_task_evidence".into(),json!(report["task_context"]["cards"].as_array().is_some_and(|cards|!cards.is_empty())));
-        measured.insert("search_fallback".into(),json!(report["task_context"]["status"]=="native-fallback" || report["crossing_status"]!="enriched"));
+        measured.insert("search_fallback".into(),json!(report["task_context"]["status"]=="native-fallback" || report["crossing_status"]!="enriched"),
+        );
+        if report["delivery_measurement"]["basis"] == "same-request-stdout-bytes" {
+            for field in ["native_bytes", "delivered_bytes"] {
+                if let Some(value) = report["delivery_measurement"][field].as_u64() {
+                    measured.insert(format!("search_{field}"), json!(value));
+                }
+            }
+        }
         // Safe decision metadata only: never persist intent, code, candidates or keys.
         for (field,value) in search_decisions(report) {measured.insert(field,value);}
     }
@@ -322,6 +330,18 @@ mod tests {
         assert_eq!(measure["estimated_output_tokens"],output.chars().count().div_ceil(4));
         assert!(!json!(measure).to_string().contains("secret-value"));
         assert!(transport_metrics(&[],output).is_empty(),"library calls have unknown CLI payloads");
+    }
+
+    #[test]
+    fn same_query_volume_is_recorded_without_copying_search_results() {
+        let dir = project_on("medicao");
+        let report = json!({"ok":true,"private_result":"private-code",
+            "delivery_measurement":{"basis":"same-request-stdout-bytes","native_bytes":100,"delivered_bytes":150}});
+        assert!(record_output_call(dir.path(), "search", Some("medicao"), Instant::now(), &report, "private-code").is_some());
+        let log = recorded_operations(dir.path(), "medicao");
+        assert_eq!(log.events.last().unwrap().int("search_native_bytes"), Some(100));
+        assert_eq!(log.events.last().unwrap().int("search_delivered_bytes"), Some(150));
+        assert!(!format!("{:?}", log.events).contains("private-code"));
     }
 
     #[test]

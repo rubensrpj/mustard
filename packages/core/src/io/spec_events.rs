@@ -517,7 +517,7 @@ fn io_refusal(error: Error) -> Refusal {
 
 /// Agora, na hora local com o fuso: `2026-09-11T21:03:12-03:00`.
 pub(crate) fn now() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
 }
 
 #[cfg(test)]

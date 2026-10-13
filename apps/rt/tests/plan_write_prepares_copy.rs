@@ -11,8 +11,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
 const SPEC: &str = "plano";
 const SESSION: &str = "s-plano";
@@ -221,7 +221,7 @@ fn approval_round_and_request_do_not_export_without_an_explicit_publication() {
     let (_, _, planned) = plan(&project);
     no_automatic_publication(&project, &planned);
     approve(&project);
-    let round = project.run(&["round", "--spec", SPEC]);
+    let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
     no_automatic_publication(&project, &round);
     assert!(!project.root.join(".claude/mustard/publications").exists());
 

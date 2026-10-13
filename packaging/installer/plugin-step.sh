@@ -79,17 +79,21 @@ instrucoes_manuais() {
 # Sem `--scope`: o `enable` descobre sozinho o escopo em que o plugin foi
 # instalado, e um escopo dito errado ligaria o plugin em outro lugar.
 ligar_o_plugin() {
-  echo "==> Ligando o plugin $PLUGIN…"
+  echo "==> Ligando o plugin ${PLUGIN}…"
   if claude plugin enable "$PLUGIN" >/dev/null 2>&1; then
     echo "    Plugin ligado."
   else
-    # Já ligado também responde erro, e nesse caso não há nada a fazer. Como os
-    # dois casos são indistinguíveis daqui, o aviso diz os dois — calar seria
-    # pior: um plugin que ficou desligado é justamente o defeito que este passo
-    # existe para acabar.
-    echo "aviso: 'claude plugin enable $PLUGIN' respondeu erro — ou já estava" >&2
-    echo "       ligado, ou não ligou. Se os comandos /mustard:* não" >&2
-    echo "       aparecerem, confira com 'claude plugin list'." >&2
+    # enable returns failure for an already enabled plugin. Confirm the actual
+    # public state before showing an error; other enabled plugins do not count.
+    if claude plugin list --json 2>/dev/null | awk -v wanted="$PLUGIN" '
+      /"id"[[:space:]]*:/ { mine = index($0, "\"" wanted "\"") > 0 }
+      mine && /"enabled"[[:space:]]*:[[:space:]]*true/ { found=1; exit }
+      END { exit !found }'; then
+      echo "    Plugin já estava ligado."
+    else
+      echo "aviso: não confirmei o plugin ligado após 'claude plugin enable $PLUGIN'." >&2
+      echo "       Confira o estado com 'claude plugin list'." >&2
+    fi
   fi
 }
 
@@ -125,14 +129,13 @@ baixar_os_binarios() {
 
   echo "==> Baixando os binários do plugin…"
 
-  # COM PRAZO, e o prazo é a metade importante desta função. O `curl` do
-  # `mustard-boot` não tem tempo-limite próprio. Até esta unidade isso não
-  # pesava: ele só rodava dentro de um hook, onde o Claude Code corta em 120s.
+  # O bootstrap dá 90s ao download manual e 10s ao hook; este prazo de 120s
+  # cobre o passo inteiro, incluindo a extração e a verificação.
   # Agora ele roda no caminho crítico do INSTALADOR — o `.deb` segura o cadeado
   # do apt enquanto espera, o `.pkg` segura o Installer.app, o `.exe` segura a
   # janela do NSIS. Uma conexão que TRAVA em vez de recusar (portal cativo,
-  # proxy que engole o pacote) congelaria a instalação para sempre. O teto é o
-  # mesmo que o hook já dava; a variável existe para o teste poder encurtá-lo.
+  # proxy que engole o pacote) congelaria a instalação para sempre.
+  # A variável existe para o teste poder encurtar o prazo.
   # `timeout` é do coreutils: onde não houver, seguimos sem prazo, que é
   # exatamente o que havia antes desta linha.
   limite="${MUSTARD_PLUGIN_STEP_TIMEOUT:-120}"
@@ -226,10 +229,10 @@ fi
 # --- instala ou atualiza -----------------------------------------------------
 if claude plugin list 2>/dev/null | grep -q "mustard@"; then
   acao="update"
-  echo "==> Atualizando o plugin $PLUGIN…"
+  echo "==> Atualizando o plugin ${PLUGIN}…"
 else
   acao="install"
-  echo "==> Instalando o plugin $PLUGIN…"
+  echo "==> Instalando o plugin ${PLUGIN}…"
 fi
 
 if claude plugin "$acao" "$PLUGIN"; then

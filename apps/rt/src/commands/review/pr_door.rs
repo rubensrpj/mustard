@@ -106,14 +106,14 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::commands::agent::render::skills::build_skills_list;
-use crate::commands::event::pending::{carried_by, close_pending, open_pending_born_in, OpenPending};
+use crate::commands::event::pending::{OpenPending, carried_by, close_pending, open_pending_born_in};
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
-use crate::commands::review::pr_publish::{spec_pr, submodules_landed, SpecPr, SubmodulePrs};
+use crate::commands::review::pr_publish::{SpecPr, SubmodulePrs, spec_pr, submodules_landed};
 use crate::shared::branch_state::PrStatus;
-use crate::shared::pr_provider::{provider_for, provider_in, PrChecks, PrProvider};
+use crate::shared::pr_provider::{PrChecks, PrProvider, provider_for, provider_in};
 use crate::shared::work_kind::BaseFlow;
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::i18n::{Locale, translate};
 
 /// O subprojeto que um conjunto de arquivos aponta, ou nada quando eles se
 /// espalham por mais de um.
@@ -778,7 +778,7 @@ const CHECKS_NOT_ASKED: &str = "not-asked";
 /// [`last_reopening`]: mustard_core::domain::spec_state::last_reopening
 /// [`next_command`]: crate::commands::flow::resume::next_command
 fn not_closed(root: &Path, facts: &PrFacts, slug: &str) -> Option<PrMergeReport> {
-    use mustard_core::domain::spec_state::{last_reopening, SpecState as _, State};
+    use mustard_core::domain::spec_state::{SpecState as _, State, last_reopening};
     let log = crate::shared::spec_state::DiskSpecState::new(root).log(slug)?;
     let state = State::from_log(&log);
     let phase = state.phase?;
@@ -864,9 +864,7 @@ fn merge_or_ask(
             warning: Some(match reason {
                 "provider-checks-running" => said("pr.confirm_running", lang, &[("{unit}", unit)]),
                 "provider-checks-failed" => said("pr.confirm_failed", lang, &[("{unit}", unit)]),
-                "provider-checks-unreadable" => {
-                    said("pr.confirm_unreadable", lang, &[("{unit}", unit), ("{checks}", &checks_word)])
-                }
+                "provider-checks-unreadable" => said("pr.confirm_unreadable", lang, &[("{unit}", unit), ("{checks}", &checks_word)]),
                 _ => match verdict.as_deref() {
                     None => said("pr.confirm_no_verdict", lang, &[("{unit}", unit)]),
                     Some(v) => said("pr.confirm_verdict", lang, &[("{unit}", unit), ("{verdict}", v)]),
@@ -1324,8 +1322,8 @@ pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
     use serde_json::json;
+    use std::cell::Cell;
     use tempfile::tempdir;
 
     fn git(dir: &Path, args: &[&str]) {
@@ -1874,7 +1872,7 @@ mod tests {
                     let hint = refused_merge(root, "reaberta", confirmed, &at);
                     assert!(hint.contains(says), "{at}: {hint}");
                     assert!(hint.contains("running") && hint.contains("#57"), "{at}: {hint}");
-                    assert!(hint.contains("mustard-rt run round --spec reaberta"), "{at}: {hint}");
+                    assert!(hint.contains("mustard-rt run round --dispatch --spec reaberta"), "{at}: {hint}");
                 }
             }
         }
@@ -1912,7 +1910,7 @@ mod tests {
     #[test]
     fn the_final_approval_of_the_work_pays_off_an_older_wave_rejection() {
         use crate::shared::spec_state::{seed_event, seed_runs, seed_verdict};
-        use mustard_core::domain::spec_state::{final_approval, SpecState as _};
+        use mustard_core::domain::spec_state::{SpecState as _, final_approval};
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         assert_eq!(recorded_verdict(root, "unit-a"), None, "nothing recorded yet");
@@ -2015,10 +2013,10 @@ mod tests {
             ("en-US", "reopen", "the {phase} phase", "The step missing", "already left the flow"),
         ];
         let flows: [(&[&str], Option<&str>); 6] = [
-            (&["survey", "plan", "approved"], Some("mustard-rt run round --spec obra")),
+            (&["survey", "plan", "approved"], Some("mustard-rt run round --dispatch --spec obra")),
             (&["survey"], Some("mustard-rt run grill --spec obra")),
             (&["survey", "plan"], Some("mustard-rt run plan --spec obra")),
-            (&["survey", "plan", "approved", "running"], Some("mustard-rt run round --spec obra")),
+            (&["survey", "plan", "approved", "running"], Some("mustard-rt run round --dispatch --spec obra")),
             (&["survey", "plan", "approved", "running", "closed", "pr_open", "delivered"], None),
             (&["survey", "discarded"], None),
         ];
@@ -2070,7 +2068,7 @@ mod tests {
     /// A `dev`/`main` flow project with the open pending items `titles`,
     /// numbered in order.
     fn project_with_items(titles: &[&str]) -> tempfile::TempDir {
-        use crate::commands::event::pending::{pending_at, PendingOpts};
+        use crate::commands::event::pending::{PendingOpts, pending_at};
         let dir = tempdir().expect("tempdir");
         std::fs::write(dir.path().join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
             .expect("cfg");
@@ -2203,7 +2201,7 @@ mod tests {
     /// spec's note stays.
     #[test]
     fn a_merge_closes_the_item_that_became_its_spec() {
-        use crate::commands::event::pending::{mark_became, pending_at, PendingOpts};
+        use crate::commands::event::pending::{PendingOpts, mark_became, pending_at};
         let dir = project_with_items(&["Humanize", "Painel"]);
         let root = dir.path();
         assert!(mark_became(root, "P-1", "trava"), "the note is recorded");
@@ -2233,7 +2231,7 @@ mod tests {
     /// liga à obra, ou que só se parece com um número citado, segue aberta.
     #[test]
     fn a_merge_closes_every_item_the_work_carried() {
-        use crate::commands::event::pending::{mark_became, pending_at, PendingOpts};
+        use crate::commands::event::pending::{PendingOpts, mark_became, pending_at};
         use crate::hooks::task::pending_gate::seed_spec;
         let dir = project_with_items(&["Humanize", "Painel", "Adiada", "Alheia", "Quase"]);
         let root = dir.path();
@@ -2265,9 +2263,9 @@ mod tests {
     /// with an open "humanize" is refused, pointing at the existing one.
     #[test]
     fn twelve_open_items_follow_the_four_brakes() {
-        use crate::commands::event::pending::{pending_at, PendingOpts};
+        use crate::commands::event::pending::{PendingOpts, pending_at};
         use crate::hooks::task::end_of_turn_check::run_rules;
-        use crate::hooks::task::pending_gate::{seed_spec, PendingRule};
+        use crate::hooks::task::pending_gate::{PendingRule, seed_spec};
         use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
 
         let dir = project_with_items(&[]);

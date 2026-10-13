@@ -3,6 +3,7 @@ import {definitionNames,definitionText,waveText,contentPage} from './panel-conte
 import {settingsPanel} from './panel-settings.js';
 import {profileControls,ideasPanel,liveAgents,sessionFigures,diagnosticsPanel,impactPanel} from './panel-extras.js';
 import {sections} from './panel-runtime.js';
+import {economyOverview} from './panel-economy.js';
 
 export const initialPanelView = () => ({tab:'Projeto',definitionGroup:'context',definitionQuery:'',definitionPage:0,
   selectedDefinition:undefined,selectedWave:undefined,waveView:'Plano',contentOffset:0,technicalOffset:0,
@@ -27,7 +28,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
   const fmt=value=>value==null?t('Não medido','Not measured'):Number(value).toLocaleString(english?'en-US':'pt-BR');
   const short=value=>value==null?t('Não medido','Not measured'):new Intl.NumberFormat(english?'en-US':'pt-BR',
     {notation:'compact',maximumFractionDigits:1}).format(value);
-  const money=value=>value==null?t('Não medido','Not measured'):'$'+(value/1000000).toFixed(4);
+  const money=value=>value==null?t('Não medido','Not measured'):'$'+(value/1000000).toFixed(value>0 && value<1000?6:4);
   const date=value=>{
     const parsed=value ? new Date(value) : undefined;
     return !parsed || Number.isNaN(parsed.valueOf())?t('Sem medição','No measurement'):parsed.toLocaleString(english?'en-US':'pt-BR',{dateStyle:'short',timeStyle:'short'});
@@ -226,15 +227,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ['Resumo','Resumo','Overview'],['Sessão','Sessão','Session'],['Ondas','Ondas','Waves'],
       ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Busca','Busca','Search'],['Análises','Análises','Analyses'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
     ].map(([value,pt,en])=>({value,label:t(pt,en)})),usageView,value=>actions.change({usageView:value})));
-    if(usageView==='Resumo')rows.push(section(t('O Mustard está economizando?','Is Mustard saving tokens?'),[
-      text(t('Economia total do modelo: ainda não comprovada.','Total model savings: not proven yet.'),{bold:true}),
-      note(t('Falta uma comparação de trabalho equivalente com e sem Mustard.','A comparison of equivalent work with and without Mustard is missing.')),
-      text(rtk.status==='measured'?`RTK: ${fmt(rtk.percent)}% ${t('de redução estimada na saída deste projeto','estimated reduction in this project’s output')}`:
-        t('RTK: medição deste projeto indisponível.','RTK: project measurement unavailable.')),
-      text(`Jev: ${fmt(jev.physical_requests)} ${t('chamadas no projeto','project requests')}${jev.cost_micro_usd!=null?' · '+money(jev.cost_micro_usd)+' '+t('estimados','estimated'):''}`),
-      ...(spec?.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Claude nesta spec · equivalente API','Claude for this spec · API equivalent')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
-      note(t('RTK mede compressão de saída. Custos e totais de tokens não provam economia.','RTK measures output compression. Costs and token totals do not prove savings.')),
-    ]));
+    if(usageView==='Resumo')rows.push(economyOverview(data,spec,actions,{...helpers,card,money}));
     if(usageView==='Análises') {
       const analysis=data.knowledge?.analysis || {},catalog=data.knowledge?.catalog || {};
       rows.push(section(t('Análises reutilizáveis','Reusable analyses'),[
@@ -260,6 +253,11 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
         text(`${t('Cruzadas com o índice','Crossed with the index')}: ${fmt(search.enriched)} · ${t('respostas nativas preservadas','native responses preserved')}: ${fmt(search.fallback)}`),
         text(`${t('Cache de seleção reutilizado','Selection cache reused')}: ${fmt(search.cache_hits)} · ${t('escolhas aceitas','accepted choices')}: ${fmt(search.accepted_choices)}`),
         text(`${t('Chamadas ao modelo local','Local model calls')}: ${fmt(search.local_model_calls)} · ${t('chamadas remotas','remote calls')}: ${fmt(search.remote_model_calls)}`),
+        ...(search.paired_calls>0?[
+          text(`${t('Mesma consulta · saída nativa → entregue','Same query · native → delivered output')}: ${fmt(search.native_bytes)} → ${fmt(search.delivered_bytes)} bytes`),
+          text(`${t('Respostas menores / maiores','Smaller / larger responses')}: ${fmt(search.reduced_calls)} / ${fmt(search.expanded_calls)}`),
+          note(`${fmt(search.paired_calls)}/${fmt(search.calls)} ${t('consultas com as duas medidas; o histórico anterior permanece sem comparação.','queries with both measurements; earlier history remains unpaired.')}`),
+        ]:[]),
         ...(transport?[text(`${t('Entrada / saída do transporte','Transport input / output')}: ${fmt(transport.input_bytes)} / ${fmt(transport.output_bytes)} bytes`),
           note(`${t('Tokens estimados de saída','Estimated output tokens')}: ${fmt(transport.estimated_output_tokens)}`)]:[]),
         note(t('São medições de uso e volume. Acerto e economia líquida exigem comparação com uma tarefa equivalente e conferência das fontes.','These measure usage and volume. Accuracy and net savings require equivalent-task comparison and source verification.')),
@@ -302,8 +300,17 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ...(spec.usage?.measured_at?[note(`${t('Medição das ondas','Wave measurement')}: ${date(spec.usage.measured_at)}`)]:[]),
       ...(spec.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Custo equivalente de API observado','Observed API-equivalent cost')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
     ]));
-    if(usageView==='Ondas' && spec?.waves?.length)rows.push(section(t('Medição por onda','Usage per wave'),spec.waves.map(wave=>text(
-      `${t('Onda','Wave')} ${wave.wave} · ${state(wave.status)} · ${fmt(wave.tokens)}${wave.tokens!=null?' tokens':''}`))));
+    if(usageView==='Ondas' && spec?.waves?.length)rows.push(section(t('Medição por onda','Usage per wave'),[
+      note(t('Consumo e entrega lado a lado. Uma onda com arquivos alterados ainda depende de revisão e testes; o total de tokens sozinho não classifica eficiência.','Usage beside delivery. Changed files still require review and tests; token totals alone do not classify efficiency.')),
+      ...spec.waves.map(wave=>section(`${t('Onda','Wave')} ${wave.wave} · ${state(wave.status)}`,[
+        text(wave.tokens!=null?`${fmt(wave.tokens)} tokens`:t('Consumo não medido','Usage not measured')),
+        text(wave.files_changed!=null?`${fmt(wave.files_changed)} ${t('arquivos na entrega','files in delivery')}`:t('Entrega ainda sem registro','No delivery recorded yet')),
+        text(`${t('Recibos de provas de critérios','Criterion proof receipts')}: ${(spec.stages || []).filter(stage=>stage.stage==='criterion-proof' && stage.waves?.includes(wave.wave)).length}`),
+        ...(wave.agreed_counts?[text(`${t('Combinados relatados · atendidos / pendentes','Reported obligations · met / pending')}: ${fmt(wave.agreed_counts.reported_met)} / ${fmt(wave.agreed_counts.reported_unmet)}`),
+          note(t('Commitar uma entrega parcial não aprova toda a spec. O relato do agente continua sujeito à conferência.','Committing a partial delivery does not approve the whole spec. Agent claims still require verification.'))]:[]),
+        ...(wave.summary?[text(wave.summary)]:[]),
+      ])),
+    ]));
     const history=data.consumption;
     if(usageView==='Histórico')rows.push(section(t('Histórico observado','Observed history'),[
       note(t('Acumulado do histórico disponível; inclui hoje parcialmente.','Accumulated available history; includes partial data for today.')),
@@ -359,7 +366,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
           'rtk-incomplete':t('RTK incompleto','RTK incomplete'),
           'jev-credential-unavailable':t('chave Jev indisponível','Jev key unavailable'),
         })[issue] || issue).join(' · ')}`)]:[]),
-        ...((health.hosts?.observations || []).map(host=>text(`${host.host}: ${t('último evento','last event')} ${host.last_event} · ${date(host.at)} · ${fmt(host.tool_failures)} ${t('falhas observadas','observed failures')}`))),
+        ...((health.hosts?.observations || []).map(host=>text(`${host.host} · ${date(host.at)} · ${fmt(host.tool_failures)} ${t('ocorrências de ferramenta acumuladas na sessão; veja Diagnóstico','accumulated session tool occurrences; see Diagnostics')}`))),
         note(t('Configuração não comprova execução. Eventos confirmam hooks observados; ausência de medição permanece desconhecida. Este diagnóstico não chama IA.','Configuration does not prove execution. Events confirm observed hooks; missing measurements remain unknown. This diagnostic does not call AI.')),
       ]));
       rows.push(section(t('Origem e cobertura','Sources and coverage'),[

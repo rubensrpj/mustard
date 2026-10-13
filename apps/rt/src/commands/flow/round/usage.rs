@@ -167,11 +167,11 @@ pub(super) mod tests {
     /// O modelo que a plataforma grava nas respostas de um agente.
     pub(crate) const MODEL: &str = "claude-opus-5-5";
 
-    /// O instante `at` da spec deslocado de `millis`, como a plataforma grava
-    /// o carimbo: em UTC, com os milésimos.
+    /// O instante `at` da spec deslocado de `millis`, em UTC, preservando a
+    /// precisão original: deslocamento zero precisa continuar na fronteira.
     pub(crate) fn instant(at: &str, millis: i64) -> String {
         let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc);
-        (at + chrono::Duration::milliseconds(millis)).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+        (at + chrono::Duration::milliseconds(millis)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
     }
 
     /// Um arquivo de conversa em `<config>/projects/<project>/<relative>`, no

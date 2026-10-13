@@ -110,6 +110,34 @@ test('cache ratios use observed input categories and unknown reset dates remain 
   expect(usageFigures({input_tokens:20,cache_read_input_tokens:60,cache_creation_input_tokens:20}).cachePercent).toBe(60);
   expect(countdown(undefined)).toBe('');expect(usageFigures(null)).toBe(null);
 });
+
+test('economy overview exposes scope and incomplete waves without claiming net savings',async ($,on)=>{
+  const f=await fixture($,on);
+  f.snapshot.rtk={status:'measured',percent:40,saved_tokens:400,input_tokens:1000,output_tokens:600,commands:10,period_start:'2026-10-01',period_end:'2026-10-13'};
+  f.snapshot.jev={physical_requests:17,cost_micro_usd:1428,by_purpose:{'wave-planning':11,context:6}};
+  f.snapshot.specs[0].waves=[{wave:1,tokens:1200,status:'committed',files_changed:1},{wave:2,tokens:null,status:'running'}];
+  f.snapshot.specs[0].usage={known_wave_tokens:1200,waves_with_unknown_usage:1,conductor_tokens:2500};
+  f.snapshot.specs[0].operations={calls:20,refusals:4,search:{calls:1,enriched:1,fallback:0,local_model_calls:1,remote_model_calls:0,
+    paired_calls:1,native_bytes:100,delivered_bytes:150,reduced_calls:0,expanded_calls:1}};
+  await f.pane.press({key:'tab-Consumo'});
+  for(const text of ['Economia total: não medida','1. Redução de saída · projeto','2. Jev · gasto adicional no projeto','3. Ondas · spec selecionada','4. Scan e atrito · spec selecionada'])
+    expect(await f.pane.find({type:'Text',text})).toBeDefined();
+  expect(await f.pane.find({type:'Text',text:'Saída nativa → entregue nas buscas medidas: 100 → 150 bytes'})).toBeDefined();
+  await f.pane.press({key:'economy-waves'});
+  expect(await f.pane.find({type:'Text',text:'1 arquivos na entrega'})).toBeDefined();
+  expect(await f.pane.find({type:'Text',text:'Consumo não medido'})).toBeDefined();
+  expect(f.turns).toBe(0);expect(f.publications).toBe(0);await f.pane.press({key:'close'});
+});
+
+test('diagnostics separates historical counts from explained tool outcomes',async ($,on)=>{
+  const f=await fixture($,on);
+  f.snapshot.integration_health={hosts:{observations:[{host:'claude',last_event:'PreToolUse',at:'2026-10-13T12:00:00Z',tool_failures:6,unexplained_tool_failures:5,
+    recent_tool_failures:[{tool:'Read',reason:'search-redirect',category:'blocked',at:'2026-10-13T12:00:00Z'}]}]}};
+  await f.pane.press({key:'tab-Diagnóstico'});
+  expect(await f.pane.find({type:'Text',text:'6 ocorrências na sessão'})).toBeDefined();
+  expect(await f.pane.find({type:'Text',text:'Último evento recebido: PreToolUse. Este evento não é a causa da contagem.'})).toBeDefined();
+  expect(f.turns).toBe(0);expect(f.publications).toBe(0);await f.pane.press({key:'close'});
+});
 test('a slow section or spec transition shows loading rather than a false empty plan',()=>{
   const element=type=>props=>({type,props});
   const elements=Object.fromEntries(['Box','Text','Button','Select'].map(type=>[type,element(type)]));

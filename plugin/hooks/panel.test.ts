@@ -25,7 +25,9 @@ test('Desktop reattachment recreates only a pane the user requested',async ($,on
   await $.session.start({cwd:'/fixture',surface:'desktop',isInteractive:true});
   await $.session.attach({surface:'desktop'});
   expect(opens).toBe(0);
-  await $.command.run({command:'mustard-panel',args:''});
+  const opening=await $.command.run({command:'mustard-panel',args:''});
+  expect(opening.text).toContain('Interfaces conectadas');
+  expect(opening.text).toContain('Renderização observada');
   await $.session.detach({surface:'desktop'});
   await $.session.attach({surface:'desktop'});
   expect(opens).toBe(2);
@@ -192,9 +194,9 @@ test('usage separates measured RTK output and Jev cost from unproven total savin
   snapshot.specs[0].operations={search:{calls:33,decision_coverage:2,choice_gates:{eligible:1,'exact-read':1},
     local_model_calls:1,cache_hits:1,accepted_choices:1}};
   await clock.advance(10000);await pane.select({key:'panel-section',value:'Consumo'});
-  expect(await pane.find({type:'Text',text:'Economia total do modelo: ainda não comprovada.'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'RTK: 38,6% de redução estimada na saída deste projeto'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'Jev: 1 chamadas no projeto · $0.0010 estimados'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Economia total: não medida'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'38,6%'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'$0.0010'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeUndefined();
   await pane.select({key:'usage-section',value:'RTK'});
   expect(await pane.find({type:'Text',text:'Comandos registrados: 8.635'})).toBeDefined();
@@ -218,8 +220,8 @@ test('project scope, unknown measurements and explicit publication remain clear'
   expect(await pane.find({type:'Text',text:/RTK|desconhecido|T23:04|https:\/\/example/})).toBeUndefined();
   expect(await pane.find({key:'publish'})).toBeUndefined();
   await pane.press({key:'tab-Consumo'});
-  expect(await pane.find({type:'Text',text:'Economia total do modelo: ainda não comprovada.'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'RTK: medição deste projeto indisponível.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Economia total: não medida'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'RTK ainda sem medição deste projeto.'})).toBeDefined();
   await pane.select({key:'usage-section',value:'Histórico'});
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Acumulado do histórico disponível; inclui hoje parcialmente.'})).toBeDefined();

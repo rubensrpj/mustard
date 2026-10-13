@@ -13,9 +13,9 @@ pub mod answer;
 pub mod cli;
 pub mod close;
 pub mod discard;
-pub mod grill;
-pub(crate) mod goal;
 pub(crate) mod evidence;
+pub(crate) mod goal;
+pub mod grill;
 pub mod open;
 pub mod plan;
 pub mod reopen;
@@ -35,9 +35,13 @@ use crate::commands::spec_events::conversation::record_output_call;
 /// A resposta de um passo do fluxo: grava a chamada na spec, imprime o
 /// relatório e sai com 1 na recusa. `named` é a spec que a chamada nomeou.
 pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: Instant, report: &Value) {
-    // Host-facing transport keeps every field, without indentation overhead.
+    // Host-facing transport keeps action/evidence fields, without indentation overhead.
     // Measure exactly these bytes rather than a synthetic pretty JSON copy.
-    let projected = (command == "grill").then(|| grill::projection(report));
+    let projected = match command {
+        "grill" => Some(grill::projection(report)),
+        "round" => Some(round::projection(report)),
+        _ => None,
+    };
     let report = projected.as_ref().unwrap_or(report);
     let output=report.to_string()+"\n";
     let _ = record_output_call(root, command, named, started, report,&output);

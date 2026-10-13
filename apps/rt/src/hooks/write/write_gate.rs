@@ -212,7 +212,9 @@ fn whole_read_of(root: &str, input: &HookInput, target: &WriteTarget) -> Option<
         return None;
     }
     let file = match target.class {
-        PathClass::Production => ProjectPath { tree: Path::new(root).to_path_buf(), rel: target.path.clone(), abs: Path::new(root).join(&target.path) },
+        PathClass::Production => {
+            ProjectPath { tree: Path::new(root).to_path_buf(), rel: target.path.clone(), abs: Path::new(root).join(&target.path) }
+        }
         PathClass::OutsideRepo => {
             let file = code_route::project_path(root, root, &input.file_path()?)?;
             let inner = WriteTarget::classify(&file.tree.to_string_lossy(), input)?;
@@ -280,6 +282,11 @@ fn file_verdict_with(rules:&[&dyn WriteRule],root:&str,input:&HookInput,ctx:&Ctx
     let Some(target) = WriteTarget::classify(root, input) else {
         return Verdict::Allow;
     };
+    if target.access == Access::Write
+        && let Some(verdict) = super::wave_copy::check(Path::new(root), input, ctx)
+    {
+        return verdict;
+    }
     let at = WriteContext::read(root, input, ctx, &target);
     judge(rules, &target, &at)
 }

@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[path = "support/mod.rs"]
 mod support;
@@ -292,7 +292,7 @@ fn approve(project: &Project) {
 /// não pede escolha de ninguém. Devolve a resposta que traz a onda no
 /// despacho.
 fn dispatch_wave(project: &Project, wave: u64) -> Value {
-    let dispatched = project.run(&["round", "--spec", SPEC]);
+    let dispatched = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(
         dispatched["dispatch"].as_array().is_some_and(|d| d.iter().any(|entry| entry["wave"] == json!(wave))),
         "a rodada não despachou a onda {wave}: {dispatched}"
@@ -327,7 +327,7 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
     project.read_request(wave);
     project.finish_tasks(wave);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    project.run(&["round", "--spec", SPEC])
+    project.run(&["round", "--dispatch", "--spec", SPEC])
 }
 
 /// A spec pronta para a revisão final: aberta, levantada, planejada,
