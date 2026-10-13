@@ -165,11 +165,12 @@ pub(super) fn record_criterion(root: &Path, spec: &str, criterion: u64, waves: &
 fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun, mut draft: Map<String, Value>) -> Result<(), Refusal> {
     draft.insert("phase".into(), json!(phase));
     draft.insert("stage".into(), json!(stage));
-    draft.insert("command".into(), json!(command));
+    draft.insert("command".into(), json!(crate::commands::review::qa_run::canonical_test_command(command)));
     draft.insert("result".into(), json!(out.result));
     draft.insert("exit".into(), json!(out.exit));
     draft.insert("ms".into(), json!(out.ms));
-    draft.insert("scope".into(), json!("leaf"));
+    draft.insert("scope".into(), json!(if out.reused { "receipt" } else { "leaf" }));
+    draft.insert("reused".into(), json!(out.reused));
     draft.insert("version".into(), json!(mustard_core::harness_version()));
     draft.insert("attempt".into(), json!(std::process::id()));
     draft.insert("author".into(), Value::String("binary".into()));

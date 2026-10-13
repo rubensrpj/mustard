@@ -180,6 +180,9 @@ jobs:
       - name: Fetch verified search dependency
         run: python packaging/fetch-ripgrep.py --dest target/debug
 
+      - name: Test plugin bootstrap and installer state
+        run: python packaging/test-plugin-bootstrap.py
+
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #
       # `-p scan` is here because mustard-rt's map tests run the scan compiled

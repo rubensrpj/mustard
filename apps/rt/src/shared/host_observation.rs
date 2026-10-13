@@ -11,9 +11,10 @@ use std::{
     path::Path,
 };
 
+mod failures;
 mod transcripts;
-pub(crate) use transcripts::wave_usage;
 pub(crate) use transcripts::tool_binding;
+pub(crate) use transcripts::wave_usage;
 
 /// A CLI call must not inherit another host's most recent session by mtime.
 pub(crate) fn caller_host(root: &Path, session: Option<&str>) -> &'static str {
@@ -29,6 +30,19 @@ fn digest(value: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(value.as_bytes());
     hash.hex_digest()
+}
+
+/// Use the exact session, even after a background command is reparented.
+pub(crate) fn caller_process(root: &Path, session: Option<&str>) -> Option<(u32, u64)> {
+    let session = session?;
+    let host = caller_host(root, Some(session));
+    let path = root.join(".claude/mustard/host-observations").join(format!("{host}-{}.json", digest(session)));
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > 65_536 { return None; }
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let pid = u32::try_from(value["host_pid"].as_u64()?).ok()?;
+    let started = value["host_started"].as_u64()?;
+    crate::commands::flow::stuck::process_alive(pid, started).then_some((pid, started))
 }
 fn token(value: &str) -> bool {
     !value.is_empty()
@@ -75,6 +89,11 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| json!({"host":host,"events":{},"tool_failures":0}));
     value["at"] = json!(chrono::Utc::now().to_rfc3339());
+    let (pid, started) = crate::commands::flow::stuck::sender_process();
+    if pid != std::process::id() {
+        value["host_pid"] = json!(pid);
+        value["host_started"] = json!(started);
+    }
     value["events"][event] = json!(
         value["events"][event]
             .as_u64()
@@ -112,20 +131,7 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
     {
         value["observed_agent_type"] = json!(agent);
     }
-    if event=="PostToolUseFailure" || event == "PostToolUse"
-        && input
-            .raw
-            .pointer("/tool_response/isError")
-            .or_else(|| input.raw.pointer("/tool_response/is_error"))
-            == Some(&json!(true))
-    {
-        value["tool_failures"] = json!(
-            value["tool_failures"]
-                .as_u64()
-                .unwrap_or(0)
-                .saturating_add(1)
-        );
-    }
+    failures::record(&mut value, event, input);
     if host == "codex"
         && let Some(path) = input.raw.get("transcript_path").and_then(Value::as_str)
         && let Some(usage) = codex_usage(Path::new(path))
@@ -192,8 +198,11 @@ pub(crate) fn snapshot(root: &Path) -> Value {
         for (_, path) in latest {
             if let Ok(text) = mustard_core::io::fs::lock::read_shared(&path)
                 && text.len() <= 65_536
-                && let Ok(value) = serde_json::from_str::<Value>(&text)
+                && let Ok(mut value) = serde_json::from_str::<Value>(&text)
             {
+                value.as_object_mut().map(|fields| fields.remove("failure_calls"));
+                value["unexplained_tool_failures"] =
+                    json!(value["tool_failures"].as_u64().unwrap_or(0).saturating_sub(value["classified_tool_failures"].as_u64().unwrap_or(0)));
                 observations.push(value);
             }
         }

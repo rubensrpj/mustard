@@ -15,8 +15,8 @@ use std::process::{Command, Stdio};
 
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Value, json};
 
 const SPEC: &str = "conferir";
 const SESSION: &str = "s-conferir";
@@ -224,7 +224,7 @@ fn a_task_whose_file_changed_after_its_text_leaves_in_the_first_round_without_a_
         git(&project.root, &["commit", "-q", "-m", "a soma muda"], Some(&date));
         let hash = git(&project.root, &["rev-parse", "--short", "HEAD"], None);
 
-        let out = project.run(&["round", "--spec", SPEC]);
+        let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
 
         assert_eq!(out["dispatch"][0]["wave"], json!(1), "{language}: {out}");
         assert!(out.get("analysis").is_none(), "{language}: {out}");

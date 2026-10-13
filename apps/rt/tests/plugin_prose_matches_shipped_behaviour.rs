@@ -283,8 +283,6 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
     );
 }
 
-
-
 // ---------------------------------------------------------------------------
 // The two bootstrap twins under `plugin/bin/`.
 //
@@ -979,58 +977,6 @@ fn both_boot_twins_name_the_missing_binary_the_same_way() {
         });
         assert!(!blocks, "{file} must never block a hook");
     }
-}
-
-/// Both twins cap the download at the SAME number of seconds.
-///
-/// The ceiling is not a free parameter: the tightest hook budget that can still
-/// reach the fetch is 15 s (`plugin/hooks/hooks.json`, the
-/// `clear|compact|resume|fork` arm of `SessionStart`), and unpacking plus the
-/// hand-off still has to fit under it. Both files say in prose "keep this in
-/// step with the twin", and prose is not a lock: a bump applied to one body only
-/// is invisible, and shows up as `Hook cancelled` on exactly one operating
-/// system. Another test asserts each twin has SOME deadline; this asserts they are the
-/// same one, and that it fits.
-#[test]
-fn both_boot_twins_carry_the_same_download_deadline() {
-    fn max_time(body: &str, file: &str) -> u32 {
-        // Read the deadline off the COMMAND, never off the prose that explains
-        // it. Both twins name `--max-time 10` in a comment several lines ABOVE
-        // the `curl` that carries it, so splitting the whole body on the first
-        // occurrence reads the comment — and a divergence introduced in the
-        // command alone stays invisible. Found in review, 2026-08-29: with the
-        // POSIX `curl` bumped to 90 and its comment left at 10, this test was
-        // still green. A test that locks the prose is the exact failure its own
-        // doc comment above warns about.
-        let after = body
-            .lines()
-            .filter(|line| line.contains("curl "))
-            .find_map(|line| line.split("--max-time ").nth(1))
-            .unwrap_or_else(|| panic!("{file} has no `--max-time` on its curl"));
-        after
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .parse()
-            .unwrap_or_else(|e| panic!("{file}'s `--max-time` is not a number: {e}"))
-    }
-
-    let posix = max_time(&read("plugin/bin/mustard-boot"), "plugin/bin/mustard-boot");
-    let windows = max_time(
-        &read("plugin/bin/mustard-boot.cmd"),
-        "plugin/bin/mustard-boot.cmd",
-    );
-    assert_eq!(
-        posix, windows,
-        "the two mustard-boot twins cap the download at different deadlines — \
-         one operating system gets `Hook cancelled` and the other does not",
-    );
-    assert!(
-        posix < 15,
-        "a {posix}s download ceiling does not fit the 15s budget of the \
-         tightest hook that can reach it (hooks.json, SessionStart on \
-         clear|compact|resume|fork) — the unpack and the hand-off come after it",
-    );
 }
 
 /// **A porta faz o que o nome dela diz, e para ali.**

@@ -55,13 +55,16 @@ function Enable-Plugin {
     if ($LASTEXITCODE -eq 0) {
         Write-Host '    Plugin ligado.'
     } else {
-        # Já ligado também responde erro, e nesse caso não há nada a fazer.
-        # Como os dois casos são indistinguíveis daqui, o aviso diz os dois —
-        # calar seria pior: um plugin que ficou desligado é justamente o defeito
-        # que este passo existe para acabar.
-        Write-Host "aviso: claude plugin enable $Plugin respondeu erro - ou ja"
-        Write-Host '       estava ligado, ou nao ligou. Se os comandos /mustard:*'
-        Write-Host '       nao aparecerem, confira com claude plugin list.'
+        try {
+            $entries = (& claude plugin list --json 2>$null | Out-String) | ConvertFrom-Json
+            $enabled = @($entries) | Where-Object { $_.id -eq $Plugin -and $_.enabled -eq $true }
+            if ($enabled) {
+                Write-Host '    Plugin ja estava ligado.'
+                return
+            }
+        } catch { }
+        Write-Host "aviso: nao confirmei o plugin ligado apos claude plugin enable $Plugin."
+        Write-Host '       Confira o estado com claude plugin list.'
     }
 }
 
@@ -100,8 +103,8 @@ function Start-BinaryDownload {
 
     Write-Host '==> Baixando os binarios do plugin...'
 
-    # COM PRAZO, gêmeo do irmão POSIX: o `curl` do mustard-boot não tem
-    # tempo-limite próprio e agora roda no caminho crítico do instalador, onde
+    # O bootstrap limita o download manual a 90s; o teto de 120s abaixo cobre
+    # tambem a extracao e verificacao no caminho critico do instalador, onde
     # o NSIS espera com `nsExec::ExecToLog` e a janela fica parada. Uma conexão
     # que trava congelaria a instalação para sempre.
     # TryParse, e nao um cast: um valor nao-numerico num cast `[int]` levanta

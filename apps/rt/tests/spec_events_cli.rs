@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[path = "support/mod.rs"]
 mod support;
@@ -301,7 +301,7 @@ fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publi
     git(&["config", "user.name", "t"]);
     git(&["config", "commit.gpgsign", "false"]);
     for round in 0..rounds {
-        let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+        let dispatch = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("dispatch");
         assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
         let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
         for (text, w) in texts.iter().zip(0u64..) {
@@ -313,7 +313,7 @@ fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publi
             write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")}));
         }
         let writers: Vec<_> = (0..2)
-            .map(|_| rt(root, &["round", "--spec", "teste"]).stdout(Stdio::piped()).spawn().expect("spawn round"))
+            .map(|_| rt(root, &["round", "--dispatch", "--spec", "teste"]).stdout(Stdio::piped()).spawn().expect("spawn round"))
             .collect();
         for writer in writers {
             let out = writer.wait_with_output().expect("wait write");
@@ -367,7 +367,7 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
             std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("seed file");
             git(&["add", "-A"]);
             git(&["commit", "-q", "-m", "semente"]);
-            let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+            let dispatch = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("dispatch");
             assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
             let copy = mustard_core::io::wave_prompt::slot_path(root, "teste", 0);
             assert!(copy.join("a1.rs").is_file(), "the round made the copy: {}", String::from_utf8_lossy(&dispatch.stdout));
@@ -673,7 +673,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     git(&["commit", "-q", "-m", "semente"]);
 
     // Despacha as duas ondas: cria a cópia separada de cada uma.
-    let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+    let dispatch = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("dispatch");
     assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
 
     let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "teste", usize::try_from(wave).expect("a wave number fits") - 1);
@@ -685,7 +685,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     read_request(root, 1);
     finish_tasks(root, 1);
     write(root, "delivered", &json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"}));
-    let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 1");
+    let out = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("round 1");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let body = stdout_json(&out);
     assert_eq!(body["ok"], json!(true), "{body}");
@@ -719,7 +719,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     read_request(root, 2);
     finish_tasks(root, 2);
     write(root, "delivered", &json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"}));
-    let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 2");
+    let out = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("round 2");
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
     let body = stdout_json(&out);
     assert_eq!(body["reason"], json!("round-build-failed"), "{body}");
@@ -800,7 +800,7 @@ fn write_out(root: &Path, event_type: &str, fields: &Value) -> (Option<i32>, Val
 /// passa.
 #[test]
 fn writing_a_wave_by_hand_is_refused_and_says_to_write_only_the_task() {
-    use mustard_core::platform::i18n::{translate, Locale};
+    use mustard_core::platform::i18n::{Locale, translate};
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
@@ -876,7 +876,7 @@ fn writing_a_wave_by_hand_is_refused_and_says_to_write_only_the_task() {
 /// nova que o modelo grava sem título também é recusada.
 #[test]
 fn task_without_a_title_is_refused_and_with_a_title_is_written() {
-    use mustard_core::platform::i18n::{translate, Locale};
+    use mustard_core::platform::i18n::{Locale, translate};
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
@@ -958,7 +958,7 @@ fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them() {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "semente"]);
 
-    let out = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+    let out = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("dispatch");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let body = stdout_json(&out);
     assert!(body.get("analysis").is_none(), "o item com dono não pede a análise: {body}");

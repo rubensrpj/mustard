@@ -29,6 +29,11 @@ use crate::shared::context::session::spec_for_session;
 /// único lugar que as lê.
 const SESSION_VARS: &[&str] = &["MUSTARD_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"];
 
+/// Give a native command the exact session supplied by its host hook.
+pub(crate) fn shell_export(session: &str) -> String {
+    format!("export {}='{}'\n", SESSION_VARS[0], session.replace('\'', "'\\''"))
+}
+
 /// The session id the `run` face was handed through the environment, by the
 /// order of [`SESSION_VARS`]. Never a guess from the newest session folder,
 /// which could name another session's spec. Só as entradas `run` perguntam

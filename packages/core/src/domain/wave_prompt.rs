@@ -152,6 +152,8 @@ pub struct Execution {
     /// `npm ci`: os dois pedidos mandam rodá-lo dentro da cópia antes de
     /// compilar. Sem ele, nenhum dos dois fala de preparo.
     pub prepare: Option<String>,
+    /// The native dispatcher prepared dependencies before this wave.
+    pub prepared: bool,
     /// Os arquivos locais que o git ignora e a cópia precisa (`localFiles`),
     /// relativos à raiz e já sem o caminho que sairia do projeto: o pedido
     /// do revisor os lista, a copiar pelo conteúdo. Vazia, ele não fala deles.
@@ -1020,7 +1022,9 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
         titles.extend(item_title(task));
     }
     let criteria: Vec<u64> = criteria.into_iter().collect();
-    let proof = criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
+    let mut seen = BTreeSet::new();
+    let proof = criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof"))
+        .filter(|proof| seen.insert(proof.trim())).collect::<Vec<_>>().join(" && ");
     let text = titles.join("; ");
     let done_when = if proof.is_empty() { text.clone() } else { proof };
     BacklogFields { criteria, text, done_when }
@@ -1322,6 +1326,14 @@ impl Writer<'_> {
         let Some(command) = &self.material.execution.prepare else {
             return;
         };
+        if self.material.execution.prepared {
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.prepared_native"));
+            if let Some(reuse) = copy.and_then(|copy| copy.reused.as_ref()).filter(|reuse| !reuse.changed.is_empty()) {
+                let files = reuse.changed.iter().take(6).map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+                let _ = writeln!(out, "- {}", self.t("prompt.execution.prepared_changed").replace("{files}", &files));
+            }
+            return;
+        }
         let Some(copy) = copy else {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.prepare").replace("{command}", command));
             return;
@@ -1694,6 +1706,20 @@ mod tests {
     /// o pedido da onda — são os títulos, os mesmos do texto do lote; a
     /// tarefa gravada antes do título entra pela primeira frase. Com prova, o
     /// pronto-quando é a prova, e o texto continua sendo os títulos.
+    #[test]
+    fn one_shared_proof_is_printed_once_without_losing_criterion_coverage() {
+        let log = log(&[
+            ("criterion", json!({"proof":"cargo test --locked"})),
+            ("criterion", json!({"proof":"cargo test --locked"})),
+            ("criterion", json!({"proof":"cargo test --locked"})),
+            ("criterion", json!({"proof":"cargo test --doc"})),
+            ("task", json!({"title":"Complete reader", "covers":[1,2,3,4]})),
+        ]);
+        let fields = backlog_fields(&log, &[log.get(5).unwrap()]);
+        assert_eq!(fields.criteria, [1,2,3,4]);
+        assert_eq!(fields.done_when, "cargo test --locked && cargo test --doc");
+    }
+
     #[test]
     fn a_backlog_lot_takes_the_task_titles_never_their_whole_text() {
         let log = log(&[

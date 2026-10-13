@@ -20,20 +20,27 @@ fn build_segments(data: &Value) -> Vec<Segment> {
         .or_else(|| data.get("cwd"))
         .and_then(Value::as_str)
         .map_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), PathBuf::from);
-    let lang = mustard_core::ProjectConfig::load(&cwd).language().text_or_default();
+    let root = mustard_core::io::spec_events::spec_root(&cwd);
+    let lang = mustard_core::ProjectConfig::load(&root).language().text_or_default();
     // Naming the spec directly avoids duplicating it inside a long branch.
-    let mut segments = if let Some(unit) = unit_segment(&cwd, None) {
-        vec![module_segment(&cwd),unit]
+    let mut segments = if let Some(unit) = unit_segment(&root, None) {
+        vec![module_segment(&root),unit]
     } else {
-        let branch = mustard_core::current_branch(&cwd);
-        let mut place = vec![module_segment(&cwd)];
-        place.extend(git_segment(&cwd, branch.as_deref()));
+        let branch = mustard_core::current_branch(&root);
+        let mut place = vec![module_segment(&root)];
+        place.extend(git_segment(&root, branch.as_deref()));
         place
     };
+    if let Ok(relative) = cwd.strip_prefix(mustard_core::io::wave_prompt::copies_dir(&root))
+        && let Some(slot) = relative.components().nth(1)
+    {
+        let label = if lang == mustard_core::SupportedLocale::EnUs { "copy" } else { "cópia" };
+        segments.push(Segment::new(segment::SegmentKind::Unit, format!("{label} {}", slot.as_os_str().to_string_lossy())));
+    }
     segments.push(model_segment(data));
     segments.extend(context_segment(data, lang));
-    segments.extend(inert_segment(&cwd));
-    if mustard_core::ProjectConfig::exists(&cwd) {
+    segments.extend(inert_segment(&root));
+    if mustard_core::ProjectConfig::exists(&root) {
         segments.push(Segment::new(segment::SegmentKind::Module,"/mustard-panel"));
     }
     segments
@@ -154,5 +161,18 @@ mod tests {
     #[test]
     fn an_empty_segment_list_creates_no_blank_row() {
         assert!(rows(ThemeId::Mustard.theme(), Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn linked_wave_copy_names_owning_project_and_labels_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        project(&root, "pt-BR");
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let copy = mustard_core::io::wave_prompt::slot_path(&root, "checkout", 0);
+        assert!(mustard_core::platform::git::run(&root, &["worktree", "add", "--detach", copy.to_str().unwrap(), "HEAD"]).ok);
+        let line = rows(ThemeId::Mustard.theme(), build_segments(&payload(&copy))).join("");
+        assert!(line.contains("project") && line.contains("cópia a") && line.contains("/mustard-panel"), "{line}");
+        assert!(mustard_core::platform::git::run(&root, &["worktree", "remove", "--force", copy.to_str().unwrap()]).ok);
     }
 }

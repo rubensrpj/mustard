@@ -96,17 +96,17 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
-use mustard_core::domain::spec_state::{reopenable, returns_to_running, PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, reopenable, returns_to_running};
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Map, Value};
+use mustard_core::platform::i18n::{Locale, translate};
+use serde_json::{Map, Value, json};
 
 use crate::commands::git_settle::settle_unit_at;
-use crate::commands::review::pr_door::{merged_elsewhere_with, project_root, provider_checks, red_reported, MergedElsewhere};
-use crate::commands::review::pr_publish::{spec_pr, SpecPr};
+use crate::commands::review::pr_door::{MergedElsewhere, merged_elsewhere_with, project_root, provider_checks, red_reported};
+use crate::commands::review::pr_publish::{SpecPr, spec_pr};
 use crate::commands::spec_events::{self, write::record};
-use crate::shared::pr_provider::{provider_for, PrChecks, PrProvider, PrRef};
-use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
+use crate::shared::pr_provider::{PrChecks, PrProvider, PrRef, provider_for};
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Como a porta pergunta ao provedor as verificações de um pull request.
 /// Injetada para o teste exercitar o vermelho e o verde sem provedor, sem
@@ -174,16 +174,12 @@ impl ReopenRefusal {
 
     /// A mensagem exata, no idioma pedido.
     fn message(&self, lang: Locale) -> String {
-        let fill = |key: &str, slots: &[(&str, &str)]| {
-            slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
-        };
+        let fill = |key: &str, slots: &[(&str, &str)]| slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
         match self {
             Self::ReasonMissing => fill("reopen.reason_missing", &[]),
             Self::Settled { spec, phase } => fill("reopen.settled", &[("{spec}", spec), ("{phase}", phase)]),
             Self::FixNotRed { spec, phase } => fill("reopen.fix_not_red", &[("{spec}", spec), ("{phase}", phase)]),
-            Self::PushFailed { branch, error } => {
-                fill("reopen.fix_push_failed", &[("{branch}", branch), ("{error}", error)])
-            }
+            Self::PushFailed { branch, error } => fill("reopen.fix_push_failed", &[("{branch}", branch), ("{error}", error)]),
             Self::Spec(refusal) => refusal.message(lang),
         }
     }
@@ -568,7 +564,7 @@ fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lan
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{seed_at, WriteOpts};
+    use crate::commands::spec_events::write::{WriteOpts, seed_at};
     use crate::shared::branch_state::PrStatus;
     use crate::shared::pr_provider::{PrOpened, PrToOpen, PrView};
     use std::cell::RefCell;
@@ -1028,24 +1024,20 @@ mod tests {
     #[test]
     fn a_red_pull_request_opens_the_fix_wave_only_with_fix() {
         let red: Checks = &|_, _| Ok(PrChecks::Failed);
-        let waves = |root: &Path| {
-            DiskSpecState::new(root)
+        let waves = |root: &Path| DiskSpecState::new(root)
                 .log("epico")
                 .expect("the event file")
                 .events
                 .iter()
                 .filter(|e| e.event_type == "wave")
-                .count()
-        };
+                .count();
 
         // Sem `--fix`: a reabertura, e o provedor nem é perguntado.
         let dir = tempdir().unwrap();
         let root = dir.path();
         spec_in(root, "epico", "pr_open");
         criterion_of_the_work(root, "epico");
-        let out = reopen_checked(root, "epico", "Ajuste novo no pedido.", false, &|_, _| {
-            panic!("the reopen without --fix never asks the provider")
-        });
+        let out = reopen_checked(root, "epico", "Ajuste novo no pedido.", false, &|_, _| panic!("the reopen without --fix never asks the provider"));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("running"), "{out}");
         assert!(out["action"].is_null(), "{out}");
@@ -1183,22 +1175,18 @@ mod tests {
         let criterion = criterion_of_the_work(root, "epico");
         let spec_file = store::spec_file(root, "epico").expect("spec file");
         let folder = spec_file.parent().and_then(Path::parent).expect("the specs folder").to_path_buf();
-        let specs = || {
-            std::fs::read_dir(&folder)
+        let specs = || std::fs::read_dir(&folder)
                 .expect("the specs folder")
                 .flatten()
                 .filter(|entry| entry.path().join("spec.ndjson").is_file())
-                .count()
-        };
-        let states = |root: &Path| {
-            DiskSpecState::new(root)
+                .count();
+        let states = |root: &Path| DiskSpecState::new(root)
                 .log("epico")
                 .expect("the event file")
                 .events
                 .iter()
                 .filter(|e| e.event_type == "state")
-                .count()
-        };
+                .count();
         let before_states = states(root);
 
         // Sem vermelho não há porta: o verde do servidor deixa a spec fechada
@@ -1220,7 +1208,7 @@ mod tests {
         assert_eq!(opened["checks"], json!("failed"), "{opened}");
         assert_eq!(opened["recorded"], json!(true), "{opened}");
         let wave = opened["wave"].as_u64().unwrap_or_else(|| panic!("{opened}"));
-        assert!(opened["next"].as_str().unwrap().contains("round --spec epico"), "{opened}");
+        assert!(opened["next"].as_str().unwrap().contains("round --dispatch --spec epico"), "{opened}");
         assert_eq!(phase_of(root, "epico"), Some("pr_open"), "the phase never moved");
         assert_eq!(states(root), before_states, "no state event: the work was not reopened");
         assert_eq!(specs(), 1, "no new spec was born");

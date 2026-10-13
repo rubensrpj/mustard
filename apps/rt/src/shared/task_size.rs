@@ -34,6 +34,11 @@ const LEVELS: [&str; 4] =
 /// tokens, do menor para o maior nível. A nota entre dois níveis interpola.
 pub(crate) const GROWTH_TOKENS: [u64; 4] = [35_000, 65_000, 95_000, 125_000];
 
+/// Use the same conservative local estimate in packing and final cleanups.
+pub(crate) fn native_growth(files: usize) -> u64 {
+    growth_tokens(match files { 1 => 0.0, 2..=3 => 1.0, 4..=6 => 2.0, _ => 3.0 })
+}
+
 /// Quanto a conversa do agente já pesa ao começar, antes da primeira tarefa:
 /// o pedido, as regras do projeto e o que ele lê para se situar.
 pub(crate) const AGENT_START_TOKENS: u64 = 40_000;

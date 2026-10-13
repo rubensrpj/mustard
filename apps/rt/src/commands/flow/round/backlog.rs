@@ -201,7 +201,9 @@ pub(crate) fn dispatch_backlog(
     let by_summary = summary_waves(log, &order, &population);
     let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
     let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
-    let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).copied().collect();
+    let tidy: Vec<_> = crate::shared::dag::ready_tasks(&population).into_iter()
+        .filter(|id| left_on_entry.contains(id) && cleanup(id) && !bare(id)).collect();
+    let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).chain(&tidy).copied().collect();
     let mut affinity_board = board_of(log, &by_id, &population, &candidates, &open_waves);
     affinity_board.with_expertise(start);
     if free > 0 && (!order.is_empty() || !claimed.is_empty()) {super::evidence::augment(start, &mut affinity_board);}
@@ -298,6 +300,29 @@ pub(crate) fn dispatch_backlog(
     if let Some((asked, called, answer)) = &judging {
         let returned = chosen.iter().filter(|(_, summary)| summary.is_none()).map(|(batch, _)| batch.tasks.len()).sum();
         record_assembly(start, spec, (*asked, returned), *called, answer);
+    }
+
+    // Attach a ready, small cleanup to the last functional batch when local
+    // source evidence links it. Never add unrelated work or reopen active waves.
+    let complete = open_waves.is_empty() && left_on_entry.iter().filter(|id| !cleanup(id))
+        .all(|id| chosen.iter().any(|(batch, _)| batch.tasks.contains(id)));
+    if complete {
+        let links = super::evidence::links(&affinity_board);
+        let weight = |id: &u64| {
+            let native = crate::shared::task_size::native_growth(population.iter().find(|task| task.id == *id).map_or(0, |task| task.files.len()));
+            match &judging { Some((_, _, Ok(judged))) => judged.tasks.get(id).map_or(native, |size| native.max(size.growth_tokens())), _ => native }
+        };
+        for id in tidy {
+            let Some(task) = population.iter().find(|task| task.id == id && task.files.len() == 1) else { continue; };
+            if chosen.iter().any(|(batch, _)| batch.tasks.contains(&id)) || sets_cross(&task.files, &busy) { continue; }
+            let target = chosen.iter().position(|(batch, _)| !touches_whole_tree(&batch.files)
+                && (sets_cross(&task.files, &batch.files) || batch.tasks.iter().any(|other| links.contains(&(id,*other)) || links.contains(&(*other,id))))
+                && batch.tasks.iter().map(&weight).sum::<u64>().saturating_add(weight(&id)) <= wave_budget(WAVE_LIMIT));
+            let Some(at) = target else { continue; };
+            if chosen.iter().enumerate().any(|(other,(batch,_))| other != at && sets_cross(&task.files, &batch.files)) { continue; }
+            chosen[at].0.tasks.push(id);
+            chosen[at].0.files.extend(task.files.iter().cloned());
+        }
     }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();

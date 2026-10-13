@@ -11,7 +11,7 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::platform::i18n::Locale;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::answer::RoundRefusal;
 use super::commit::{commit_draft, commit_message, git, needs_commit};
@@ -93,20 +93,29 @@ pub(super) fn record_lost_commits(
     let Some(since) = orphans.values().map(|(_, sent)| *sent).min() else {
         return Ok(Vec::new());
     };
-    let listed = git(root, &["log", &format!("--max-age={since}"), "--reverse", "--format=%H%x09%ct%x09%s"])
+    let listed = git(root, &["log", &format!("--max-age={since}"), "--reverse", "--format=%H%x09%ct%x09%s%x09%b%x00"])
         .unwrap_or_default();
     let mut recorded = Vec::new();
-    for line in listed.lines() {
-        let mut parts = line.splitn(3, '\t');
-        let (Some(sha), Some(at), Some(title)) = (parts.next(), parts.next(), parts.next()) else { continue };
+    for entry in listed.split('\0') {
+        let mut parts = entry.trim_start_matches('\n').splitn(4, '\t');
+        let (Some(sha), Some(at), Some(title), Some(body)) = (parts.next(), parts.next(), parts.next(), parts.next()) else { continue;
+        };
         let at: i64 = at.parse().unwrap_or_default();
-        let Some(waves) = scope_waves(title) else { continue };
+        let tagged = body
+            .lines()
+            .find_map(|line| line.strip_prefix("Mustard-Waves: "))
+            .and_then(|value| value.trim().split(',').map(|part| part.parse::<u64>().ok()).collect::<Option<Vec<_>>>());
+        let Some(waves) = tagged.or_else(|| scope_waves(title)).filter(|waves| !waves.is_empty()) else { continue;
+        };
+        if waves.iter().copied().collect::<BTreeSet<_>>().len() != waves.len() {
+            continue;
+        }
         if !waves.iter().all(|wave| orphans.get(wave).is_some_and(|(_, sent)| *sent <= at)) {
             continue;
         }
         let (reports, sent): (Vec<WaveReport>, Vec<i64>) =
             waves.iter().filter_map(|wave| orphans.remove(wave)).unzip();
-        let Some(files) = carried(root, sha, title, &reports, lang) else {
+        let Some(files) = carried(root, sha, title, body, &reports, lang) else {
             orphans.extend(reports.into_iter().zip(sent).map(|(report, sent)| (report.wave, (report, sent))));
             continue;
         };
@@ -127,9 +136,13 @@ pub(super) fn record_lost_commits(
 /// é o que a rodada fez para elas: o título remontado ([`commit_message`]) é
 /// igual a `title` e o commit traz cada arquivo — o de um submódulo, pelo
 /// ponteiro dele. `None` quando não casa.
-fn carried(root: &Path, sha: &str, title: &str, reports: &[WaveReport], lang: Locale) -> Option<Vec<String>> {
-    let rebuilt = commit_message(reports, lang).ok().flatten()?.0;
-    if rebuilt != title {
+fn carried(root: &Path, sha: &str, title: &str, body: &str, reports: &[WaveReport], lang: Locale) -> Option<Vec<String>> {
+    let rebuilt = commit_message(reports, lang).ok().flatten()?;
+    let current = super::commit::commit_message_for(root, reports, lang).ok().flatten()?;
+    let (expected, footer) = current.1.rsplit_once("\n\nMustard-Waves: ")?;
+    let current_body =
+        body.trim().strip_prefix(expected).is_some_and(|rest| rest.starts_with('\n')) && body.trim().ends_with(&format!("Mustard-Waves: {footer}"));
+    if rebuilt.0 != title && !current_body {
         return None;
     }
     let changed = git(root, &["diff-tree", "--no-commit-id", "--name-only", "-r", sha]).ok()?;
@@ -182,6 +195,31 @@ mod tests {
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), sha, "no new commit in git");
         round(root, "x", None);
         assert_eq!(log().events.iter().filter(|e| e.event_type == "commit").count(), 1);
+    }
+
+    #[test]
+    fn conventional_commit_with_native_trailer_is_recovered_without_recommitting() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        delivered(root, 1, "feito", &["src/a.rs"]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let back = log.events.iter().rev().find(|e| e.event_type == "delivered").unwrap().id;
+        seed_event(root, "x", "delivered", json!({"wave":1,"text":"feito","files":["src/a.rs"],"replaces":[back],"author":"binary"}));
+        let log = store::read(&path).unwrap().unwrap();
+        let reports = super::orphans(&log).into_values().map(|(report, _)| report).collect::<Vec<_>>();
+        let (title, body) = super::super::commit::commit_message_for(root, &reports, mustard_core::SupportedLocale::PtBr)
+            .unwrap_or_else(|_| panic!("valid summary"))
+            .unwrap();
+        let body = body.replace("\n\nMustard-Waves:", "\n\n- validation metadata\n\nMustard-Waves:");
+        git_at(root, &["commit", "-q", "-m", &title, "-m", &body, "--", "src/a.rs"]);
+        let sha = git_text(root, &["rev-parse", "HEAD"]);
+        assert_eq!(round(root, "x", None)["ok"], true);
+        let log = store::read(&path).unwrap().unwrap();
+        assert!(log.events.iter().any(|e| e.event_type == "commit" && e.str_field("sha") == Some(sha.as_str())));
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), sha);
     }
 
     /// Sem commit no git que case com a rodada que caiu — outro resumo com o
