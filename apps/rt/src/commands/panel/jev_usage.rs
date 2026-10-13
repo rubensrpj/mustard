@@ -29,6 +29,7 @@ fn rows(path: std::path::PathBuf) -> Vec<Value> {
         .map(|line| serde_json::from_str(line).unwrap_or_else(|_| json!({"result":"unreadable"})))
         .collect()
 }
+#[derive(Default)]
 pub(super) struct Ledger {
     logical: Vec<Value>,
     attempts: Vec<Value>,

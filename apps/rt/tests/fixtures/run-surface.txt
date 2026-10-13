@@ -7,6 +7,8 @@ doctor
 expertise
 grill
 help
+ideas
+impact
 index
 knowledge
 map
@@ -14,6 +16,8 @@ measure
 open
 page
 panel
+panel-diagnostics
+panel-preferences
 pending
 plan
 pr-merge

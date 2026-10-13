@@ -220,7 +220,7 @@ fn a_session_without_project_page_tracks_locally_and_preserves_a_legacy_link() {
     assert!(recorded.status.success(), "{}", String::from_utf8_lossy(&recorded.stdout));
     rt_ok(&root, &home, &["run", "index"], "");
     let bar = rt_ok(&root, &home, &["run", "statusline"], &json!({"workspace":{"current_dir":root}}).to_string());
-    assert!(bar.contains(url) && bar.lines().count()==1 && !bar.contains("/mustard-panel"), "compact bar preserves the legacy project link: {bar}");
+    assert!(bar.contains(url) && bar.lines().count()==1 && bar.contains("/mustard-panel"), "compact bar preserves the legacy project link and local panel access: {bar}");
     let panel:Value=serde_json::from_str(&rt_ok(&root,&home,&["run","panel"],"")).unwrap();
     assert_eq!(panel["project"]["publication_url"],url,"the local panel retains the recorded external page");
     assert!(!session_start(&root,&home,"startup").contains(template));

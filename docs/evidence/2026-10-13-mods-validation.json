@@ -1,0 +1,120 @@
+{
+  "recorded_at": "2026-10-13T11:28:03.589144+00:00",
+  "base_commit": "425463ec3a4d91451ae2ad38c8ae71bbd7a2ec76",
+  "branch": "codex/mods-control-center",
+  "rust_unique": {
+    "passed": 4109,
+    "failed": 0,
+    "ignored_legacy_measurements": 2,
+    "core": 1262,
+    "cli": 69,
+    "runtime": 2201,
+    "scan": 577
+  },
+  "plugin": {
+    "passed": 56,
+    "failed": 0,
+    "native_host": "2.1.296"
+  },
+  "ci_routing_passed": 22,
+  "sources_sha256": {
+    "apps/rt/src/commands/event/pending/ideas.rs": "8f5143473e26c7eee5cfaa2a981cf16876a628c4d9d7d24b2d10ef132df26a2e",
+    "apps/rt/src/commands/event/pending.rs": "c078b712015ed306ab5d4b34af39d10fd70c99acb8ff2a6920fed1bc5ab10767",
+    "apps/rt/src/commands/panel/cli.rs": "6d0459fbfbdf2592d760a208e065bcb665f9a2ac30812f1d7a7e74a1d4591b00",
+    "apps/rt/src/commands/panel/consumption.rs": "f8cbe69551dfd88f90a5d3f77964b9b85897d039e66606931f9adbea5bb655f5",
+    "apps/rt/src/commands/panel/dashboard.rs": "dd2c13f8c7b22c8bf3198ccf977136179f52c39937dbaa61e739c5c505b8712e",
+    "apps/rt/src/commands/panel/diagnostics.rs": "e465ea02cfe2dcc55627cc3db5bd93797d1a1cd076dd96d392fe29639a5cd270",
+    "apps/rt/src/commands/panel/impact.rs": "3d2f8f3d1344399f7bebfd06424da1932b36b347c9189ada2271b5b67a5ec4de",
+    "apps/rt/src/commands/panel/jev_usage.rs": "f27a322d8675fe40b6a54bccbe8f7eca055bc8804963804af57796b4be03404e",
+    "apps/rt/src/commands/panel/knowledge_usage.rs": "1d5691ca535f35658767ea1a94d8213c6d1c33c7be047573013264f0b5461870",
+    "apps/rt/src/commands/panel/live_usage.rs": "a89462888fcccc6a999cb25413db7f4728154e49fe37d37ee17a1ebb570a9493",
+    "apps/rt/src/commands/panel/mod.rs": "b8116bb200aab8302ca258e27119e86643731b4bafb528c0c74428a0379a92dd",
+    "apps/rt/src/commands/panel/preferences.rs": "6c42cd720cb9ef9239ee883292af335896a48c2f4f62e09979660322f2ded9e7",
+    "apps/rt/src/commands/panel/publication.rs": "4719c4626d6d5ba8e3934c427f4ff6c3a07dfd0c71f2085efa873dded1f74764",
+    "apps/rt/src/commands/panel/settings.rs": "c4dca9c15f46a2ec7923438930156f79a63c98a4bce3afcfac743526b3004fef",
+    "apps/rt/src/commands/panel/wave_usage.rs": "71f0e286e46dca1e822fa9ede6dbdada01a9f029e4a7df8ea0b4f90e7526dc4c",
+    "apps/rt/src/commands/statusline/mod.rs": "7bbe60395dbaef30dbc63cb4bea97c4f331c2fd6a4111f7dc9c7f5cd41c3e82a",
+    "plugin/hooks/panel-content.js": "758cbab5582246d2af410d03ead3605f97691850e8f1c3f1b48e7c285c4f6de5",
+    "plugin/hooks/panel-extras.js": "350a2fcec9326eed51ef0f04df69cd4b4b4e66cc6e0292e8cafeac1f2d789d41",
+    "plugin/hooks/panel-runtime.js": "ecbba0b794237ce72b78dbe590ec7978ce24340886d1e037c63392cb270d95a4",
+    "plugin/hooks/panel-settings.js": "65d11b4a2af45d79ec087230964e2f8240ffb933a6c72352849214a191de329b",
+    "plugin/hooks/panel-view.js": "2bce02376700596db84a288f63a4f5a2fb7209bc09b46c1dc6e9453e33ac4b6a",
+    "plugin/hooks/register.js": "48692787a0c29869b15504817cc3e443cf2e8d75a385783ba33c2b86f4a508bc",
+    "plugin/ui/theme.js": "ec3ac17ce466ba72e7b1dae0f51a8adf66383f037720dd2bc22b3edf750abf3e",
+    "scripts/bench-panel.py": "162f4015b4d03f52033a6741813e3139cbf837566d29f38d1d9c895f930e6901"
+  },
+  "validation": {
+    "core_cli": {
+      "path": "/tmp/mustard-mods-workspace.log",
+      "sha256": "7b2aa083f1be094a79dcb1540b13e95bf03c1b463709924b88769f6342de4226",
+      "scope": "core 1262 + CLI 69; runtime results in this earlier log are superseded"
+    },
+    "runtime": {
+      "path": "/tmp/mustard-mods-runtime-final.log",
+      "sha256": "e14524038296536cb14af336d2ac13c4feae478378797a57fed02d400d776540",
+      "scope": "runtime library 1904 passed; affected panel/pending cases and integration refreshed below"
+    },
+    "panel_final": {
+      "path": "/tmp/mustard-mods-panel-final.log",
+      "sha256": "f95a9f3932bd96b1905a28ce6d6d05d43df5d560fbce472dd8b26d8813e30bcb",
+      "scope": "31 panel tests passed on final native source"
+    },
+    "pending_final": {
+      "path": "/tmp/mustard-mods-pending-final.log",
+      "sha256": "917c00805683b246cbca122cec62d0de56ad955526b2d7d22d06d26fa6a6a7a3",
+      "scope": "19 pending/ideas tests passed on final native source"
+    },
+    "integration_final": {
+      "path": "/tmp/mustard-mods-integration-final.log",
+      "sha256": "021e08c25ba53a6084f700655e202e2a3e875ce3740d4955f135ce30119479a5",
+      "scope": "297 integration tests passed on final native source"
+    },
+    "scan": {
+      "path": "/tmp/mustard-mods-scan.log",
+      "sha256": "e10b83e1df1953c0999958013a5164c5b0a62b7aae8c77c8fe46061fbaa21187",
+      "scope": "97 unit + 480 integration tests passed"
+    },
+    "plugin": {
+      "path": "/tmp/mustard-mods-plugin-final.log",
+      "sha256": "1c1fc43eee46d2c7b4f3afbff71bda5722df4504d83e53c290fd7be52a4430fe",
+      "scope": "56 native host plugin tests passed"
+    },
+    "plugin_validate": {
+      "path": "/tmp/mustard-mods-plugin-validate.log",
+      "sha256": "37c3e123d230a9acbb258aa1f79282546b1081433c7a7c3ead893f863f7dd558",
+      "scope": "native plugin validation passed"
+    },
+    "clippy": {
+      "path": "/tmp/mustard-mods-clippy-final.log",
+      "sha256": "a73f8e04de2d7d555ec178f1aa83014fbb7b43da56a408796b3da7179f8f56b1",
+      "scope": "workspace/all targets/-D warnings passed"
+    },
+    "install": {
+      "path": "/tmp/mustard-mods-install-smoke.log",
+      "sha256": "ff5810e181226c797942ef2613b0d39f966261750921f430b0eb06e95c575fac",
+      "scope": "actual release binaries fresh install/update passed in a disposable project"
+    },
+    "build": {
+      "path": "/tmp/mustard-mods-release-build.log",
+      "sha256": "c2125492299f1de3ef64d535b889b46af0dabefd4d1ff88e47f678d876433ad2",
+      "scope": "release workspace build passed"
+    },
+    "ci_routing": {
+      "path": "/tmp/mustard-mods-ci-routing.log",
+      "sha256": "9dd2cc64c9d77bf2ae3c0d88608cc67ac5cc2fa49c8eb2093ce4ec2d8282d09f",
+      "scope": "22 CI routing tests passed"
+    }
+  },
+  "benchmark": "2026-10-13-mods-benchmark.json",
+  "benchmark_profiles": {
+    "baseline": "published release v0.2.18",
+    "candidate": "cargo build --release --workspace"
+  },
+  "real_host_acceptance": {
+    "desktop_ssh_paint": "after release, per user decision",
+    "net_llm_savings": "requires equivalent real work",
+    "cloudflare_remote_upload": "not requested"
+  },
+  "third_party_code_imported": false,
+  "side_chat_included": false
+}

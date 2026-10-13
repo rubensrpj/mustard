@@ -9,6 +9,11 @@ export function settingsPanel(state,actions,{t,text,note,row,section,button,pick
     'settings-busy':['Outra gravação está em andamento. Tente salvar novamente.','Another write is in progress. Try saving again.'],
   };
   const result=[note(t('Configurações deste projeto · alterações somente ao salvar.','Project settings · changes apply only when saved.'))];
+  const health=state?.availability;
+  if(health && group==='Geral')result.push(note(t(`Versão em execução: ${health.running_version} · configuração: ${health.project_version || 'não informada'}`,`Running version: ${health.running_version} · configured: ${health.project_version || 'not provided'}`)),
+    note(health.installation_receipt_current?t('Instalação conferida para esta versão.','Installation verified for this version.'):
+      t('A instalação precisa ser conferida. Consulte Diagnóstico antes de atualizar uma execução ativa.','Installation needs verification. Check Diagnostics before updating an active run.')));
+  if(health && group==='Busca')result.push(note(t(`Vetores indexados: ${health.vectors?.indexed_chunks ?? 'não medido'}. Habilitar o modelo não comprova que ele foi utilizado.`,`Indexed vectors: ${health.vectors?.indexed_chunks ?? 'not measured'}. Enabling the model does not prove usage.`)));
   if(state?.message)result.push(text(t(...state.message)));
   if(state?.error)result.push(text(t(...(errors[state.error] || ['Não foi possível concluir a operação. Suas edições foram preservadas.','The operation could not complete. Your edits were preserved.']))));
   if(!state?.loaded) {

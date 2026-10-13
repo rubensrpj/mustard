@@ -1,0 +1,53 @@
+{
+  "fixture": {
+    "specs": 25,
+    "rules_per_spec": 80,
+    "repeats": 9,
+    "root": "/tmp/mustard-mods-benchmark-gklzkpcj",
+    "synthetic": true
+  },
+  "baseline_v0_2_18_full": {
+    "median_ms": 56.258,
+    "min_ms": 55.396,
+    "bytes": 94297
+  },
+  "candidate_project": {
+    "median_ms": 11.601,
+    "min_ms": 11.275,
+    "bytes": 5604
+  },
+  "candidate_definitions": {
+    "median_ms": 12.403,
+    "min_ms": 12.271,
+    "bytes": 50947
+  },
+  "candidate_unchanged": {
+    "median_ms": 3.366,
+    "min_ms": 3.244,
+    "bytes": 146
+  },
+  "candidate_wave": {
+    "median_ms": 13.153,
+    "min_ms": 12.585,
+    "bytes": 14258
+  },
+  "gains": {
+    "project_latency_percent": 79.38,
+    "project_output_bytes_percent": 94.06,
+    "unchanged_latency_percent": 94.02,
+    "unchanged_output_bytes_percent": 99.85,
+    "idle_poll_schedule_percent": 80
+  },
+  "verified": {
+    "selected_definitions_identical": true,
+    "wave_input_identical": true,
+    "replayed_request_counted_once": true,
+    "costless_usage_recorded": true,
+    "remote_ai_enabled_in_fixture": false,
+    "net_llm_token_savings_measured": false
+  },
+  "binaries": {
+    "baseline": "9d84d01cb75eee3b7f796871ffb5cd328320f511ff826bb26814fd01b141edb9",
+    "candidate": "9cc23c1bba5208776f6ff24e6b67959cd8b9c6d3942aa7020de05e8af5f630b2"
+  }
+}

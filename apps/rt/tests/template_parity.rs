@@ -326,7 +326,14 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
     let mut host_sources=Vec::new();
     walk_files(&root.join("plugin/hooks"),&mut host_sources);
     native || host_sources.iter().filter(|path|has_extension(path,&["js"]))
-        .any(|path|read_lossy(path).split_whitespace().collect::<String>().contains(&format!("'run','{name}'")))
+        .any(|path|{
+            let source=read_lossy(path).split_whitespace().collect::<String>();
+            source.contains(&format!("'run','{name}'")) ||
+                // The Mods helper always forwards this literal as the native
+                // command in its argv array. UI tests also execute these paths.
+                source.contains("asyncfunctionlocalOperation($,command,request)") && source.contains("'run',command")
+                    && source.contains(&format!("localOperation($,'{name}'"))
+        })
 }
 
 #[test]

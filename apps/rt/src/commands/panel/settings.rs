@@ -37,7 +37,8 @@ fn read(root:&Path)->Value {
     json!({"ok":true,"schema_version":1,"revision":revision(root,&text),"values":values,
         "jev":super::jev_usage::configuration(root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok()),
         "rtk":{"hook_configured":switches.rtk_hook},
-        "index_present":mustard_core::io::project_map::model_path(root).is_file()})
+        "index_present":mustard_core::io::project_map::model_path(root).is_file(),
+        "availability":crate::shared::integration_health::snapshot(root)})
 }
 
 fn valid(field:&str,value:&Value)->bool {
