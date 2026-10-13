@@ -10,7 +10,8 @@
 //! - only those push runs save the compiled build; pull requests, manual runs
 //!   and the release (`release.yml`) restore it and save nothing, and every
 //!   Rust cache step names the same shared key;
-//! - no job of any workflow runs past half an hour;
+//! - jobs retain a half-hour cap, with the measured Intel macOS test/release
+//!   workload allowed 45 minutes;
 //! - the verification's `cargo test` runs every test file even when one fails
 //!   (`--no-fail-fast`), so one run lists every failure of every system;
 //! - the release builds neither the dashboard nor the memory server;
@@ -49,6 +50,8 @@ const SAVING_BRANCHES: [&str; 2] = ["dev", "main"];
 /// The longest a job may run. Without a cap a hung step holds the runner for
 /// GitHub's six-hour default; the slowest job measured took 16 minutes.
 const LONGEST_JOB_MINUTES: i64 = 30;
+const MACOS_INTEL_JOB_MINUTES: i64 = 45;
+const MACOS_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'macos-latest' && 45 || 30 }}";
 
 /// The Rust cache action, compared without case: the two files spell its
 /// owner differently.
@@ -321,8 +324,8 @@ fn cache_problems(ci: &Workflow, release: &Workflow) -> Vec<String> {
     problems
 }
 
-/// Every job of `workflow` without a numeric `timeout-minutes` of at most
-/// [`LONGEST_JOB_MINUTES`].
+/// Require bounded jobs. Only the measured Intel macOS workload can exceed
+/// the general cap; arbitrary expressions and larger caps remain refused.
 fn timeout_problems(workflow: &Workflow) -> Vec<String> {
     let rel = &workflow.rel;
     let mut problems = Vec::new();
@@ -331,10 +334,19 @@ fn timeout_problems(workflow: &Workflow) -> Vec<String> {
         problems.push(format!("{rel}: no jobs found"));
     }
     for (id, job) in jobs {
+        let intel_release = rel == RELEASE && id == "macos-installer" && job["runs-on"].as_str() == Some("macos-15-intel");
+        let intel_matrix = rel == VERIFICATION && id == "test"
+            && job["runs-on"].as_str() == Some("${{ matrix.runner || matrix.os }}")
+            && job["strategy"]["matrix"]["include"].as_vec().is_some_and(|entries| entries.iter().any(|entry|
+                entry["os"].as_str() == Some("macos-latest") && entry["runner"].as_str() == Some("macos-15-intel")));
+        if intel_matrix && job["timeout-minutes"].as_str() == Some(MACOS_MATRIX_TIMEOUT) {
+            continue;
+        }
+        let cap = if intel_release { MACOS_INTEL_JOB_MINUTES } else { LONGEST_JOB_MINUTES };
         match job["timeout-minutes"].as_i64() {
-            Some(minutes) if (1..=LONGEST_JOB_MINUTES).contains(&minutes) => {}
+            Some(minutes) if (1..=cap).contains(&minutes) => {}
             Some(minutes) => problems.push(format!(
-                "{rel}: job `{id}` may run {minutes} minutes; the cap is {LONGEST_JOB_MINUTES}"
+                "{rel}: job `{id}` may run {minutes} minutes; the cap is {cap}"
             )),
             None => problems.push(format!(
                 "{rel}: job `{id}` has no numeric `timeout-minutes`, so a hung step holds the runner for hours"
@@ -514,8 +526,8 @@ fn installer_problems(set: &Installers) -> Vec<String> {
 
 /// The verification runs on every pull request and on pushes to `dev` and
 /// `main`; only the push runs save the compiled build; its test step runs
-/// every file even when one fails; no job of any workflow runs past half an
-/// hour; and the release builds neither the dashboard nor the memory server.
+/// every file even when one fails; every job retains its declared bounded
+/// workload; and the release builds neither the dashboard nor the memory server.
 #[test]
 fn the_verification_runs_on_pull_requests_and_on_pushes_to_dev_and_main() {
     let ci = Workflow::read(VERIFICATION);
@@ -621,6 +633,20 @@ fn the_checks_accept_the_good_shape_and_read_it_as_written() {
     assert_eq!(ci.steps().len(), 4, "the line inside `run` became a step");
     let push = ci.get("on").map(|on| list(&on["push"]["branches"]));
     assert_eq!(push, Some(vec!["dev".to_string(), "main".to_string()]));
+}
+
+#[test]
+fn extended_timeout_is_restricted_to_the_measured_intel_macos_jobs() {
+    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.runner || matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n        include:\n          - os: macos-latest\n            runner: macos-15-intel\n";
+    assert!(timeout_problems(&Workflow::parse(VERIFICATION, ci)).is_empty());
+    for broken in [ci.replace("45", "60"), ci.replace("  test:", "  other:"), ci.replace("runner: macos-15-intel", "runner: ubuntu-latest")] {
+        assert!(!timeout_problems(&Workflow::parse(VERIFICATION, &broken)).is_empty());
+    }
+    let release = "jobs:\n  macos-installer:\n    runs-on: macos-15-intel\n    timeout-minutes: 45\n";
+    assert!(timeout_problems(&Workflow::parse(RELEASE, release)).is_empty());
+    for broken in [release.replace("45", "60"), release.replace("macos-installer", "other"), release.replace("macos-15-intel", "ubuntu-latest")] {
+        assert!(!timeout_problems(&Workflow::parse(RELEASE, &broken)).is_empty());
+    }
 }
 
 #[test]
