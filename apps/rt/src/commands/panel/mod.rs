@@ -8,6 +8,11 @@ mod consumption;
 mod publication;
 mod wave_usage;
 mod settings;
+mod dashboard;
+mod preferences;
+mod impact;
+mod diagnostics;
+mod live_usage;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
 
@@ -59,8 +64,12 @@ pub(crate) fn observe_statusline(data:&Value) {
 }
 
 fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger) -> Value {
+    spec_view_mode(root,name,log,selected,jev,"all")
+}
+
+fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger, section:&str) -> Value {
     let visible = log.visible();
-    let live = wave_usage::read(root,name);
+    let live = if matches!(section,"all"|"usage") {wave_usage::read(root,name)}else{Value::Null};
     let hidden = log.hidden();
     let planned=log.planned_waves();
     let dispatches=log.last_dispatch_by_wave();
@@ -144,8 +153,8 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},
         "stages":stages,"final_validation_valid":if selected {Some(super::flow::validation::reusable(root,log))} else {None},
         "counted_waves":wave_counts(log),
-        "publication":publication,"jev":jev.spec(name),"operations":operations(root,name,log),
-        "definitions":if selected {definitions(log)} else {Value::Null},
+        "publication":publication,"jev":jev.spec(name),"operations":if matches!(section,"all"|"usage") {operations(root,name,log)}else{Value::Null},
+        "definitions":if selected && matches!(section,"all"|"definitions") {definitions(log)} else {Value::Null},
         "review_approved":final_approval(log).is_some(),"undeclared_commands":missing})
 }
 
@@ -160,7 +169,7 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
             "decision_coverage":0,"choice_gates":{},"selection_statuses":{},"local_model_calls":0,"remote_model_calls":0,"cache_hits":0,"accepted_choices":0}});
     for call in calls {
         let command = commands.entry(call.str_field("command").unwrap_or_default().into())
-            .or_insert_with(|| json!({"calls":0,"refusals":0,"reasons":{}}));
+            .or_insert_with(|| json!({"calls":0,"refusals":0,"reasons":{},"input_bytes":0,"output_bytes":0,"estimated_input_tokens":0,"estimated_output_tokens":0}));
         command["calls"] = json!(command["calls"].as_u64().unwrap_or(0) + 1);
         totals["calls"] = json!(totals["calls"].as_u64().unwrap_or(0) + 1);
         if call.str_field("result") == Some("refused") {
@@ -170,7 +179,8 @@ fn operations(root:&Path,name:&str,log: &SpecLog) -> Value {
             command["reasons"][reason] = json!(command["reasons"][reason].as_u64().unwrap_or(0) + 1);
         }
         for field in ["input_bytes", "output_bytes", "estimated_input_tokens", "estimated_output_tokens"] {
-            if let Some(value) = call.int(field) { totals[field] = json!(totals[field].as_u64().unwrap_or(0).saturating_add(value)); }
+            if let Some(value) = call.int(field) { totals[field] = json!(totals[field].as_u64().unwrap_or(0).saturating_add(value));
+                command[field]=json!(command[field].as_u64().unwrap_or(0).saturating_add(value)); }
         }
         if call.int("input_bytes").is_none() { totals["calls_without_payload_measurement"] = json!(totals["calls_without_payload_measurement"].as_u64().unwrap_or(0) + 1); }
         if call.str_field("command")==Some("search") {
@@ -242,7 +252,7 @@ fn display_item(event: &mustard_core::domain::spec_events::SpecEvent, codes: &st
 /// included in every background project summary.
 pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
     let root = mustard_core::io::spec_events::spec_root(start);
-    let Some(log) = spec_index::read_specs(&root).into_iter().find_map(|(spec, log)| (spec == name).then_some(log)) else { return Value::Null };
+    let Some(log) = dashboard::spec_log(&root,name) else {return Value::Null;};
     let visible = log.visible();
     let planned = visible.iter().rev().find(|event| event.event_type == "wave" && event.wave() == Some(wave));
     let sent = visible.iter().rev().find(|event| event.event_type == "send" && event.wave() == Some(wave));

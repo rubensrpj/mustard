@@ -116,12 +116,13 @@ pub(super) fn record(start: &Path, session: &str, measurement: &Value) -> Value 
     if session.is_empty() || session.len() > 200 {
         return json!({"ok":false,"reason":"usage-invalid-session"});
     }
-    if measurement["cost"]["usd"].as_f64().is_none() {
-        return json!({"ok":true,"recorded":false,"reason":"usage-cost-unknown"});
-    }
     let root = mustard_core::io::spec_events::spec_root(start);
     if !mustard_core::ProjectConfig::exists(&root) {
         return json!({"ok":true,"recorded":false,"reason":"project-not-initialized"});
+    }
+    let live=super::live_usage::record(start,session,measurement);
+    if measurement["cost"]["usd"].as_f64().is_none() {
+        return json!({"ok":live["ok"],"recorded":live["recorded"],"cost_recorded":false,"reason":"usage-cost-unknown","live":live});
     }
     let spec = crate::shared::context::checkout::spec_of_checkout_branch(&start.to_string_lossy());
     let mut hash = Sha256::new();
@@ -142,7 +143,7 @@ pub(super) fn record(start: &Path, session: &str, measurement: &Value) -> Value 
     })();
     result.map_or_else(
         |reason| json!({"ok":false,"reason":reason}),
-        |()| json!({"ok":true,"recorded":true}),
+        |()| json!({"ok":true,"recorded":true,"live":live}),
     )
 }
 

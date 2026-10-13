@@ -1,6 +1,8 @@
 import design from '../ui/theme.js';
 import {definitionNames,definitionText,waveText,contentPage} from './panel-content.js';
 import {settingsPanel} from './panel-settings.js';
+import {profileControls,ideasPanel,liveAgents,sessionFigures,diagnosticsPanel,impactPanel} from './panel-extras.js';
+import {sections} from './panel-runtime.js';
 
 export const initialPanelView = () => ({tab:'Projeto',definitionGroup:'context',definitionQuery:'',definitionPage:0,
   selectedDefinition:undefined,selectedWave:undefined,waveView:'Plano',contentOffset:0,technicalOffset:0,
@@ -14,8 +16,8 @@ export function panelPalette(surface) {
     ink:'whiteBright',muted:'white',line:'gray',accentText:'yellow',accentSoft:'black'} : design.dark;
 }
 
-export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,settings,actions}) {
-  const {Box,Text,Button,Select,Input,Link}=elements;
+export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,settings,impact,operationBusy,actions}) {
+  const {Box,Text,Button,Select,Input,Link,Markdown,Code,Svg}=elements;
   const theme=panelPalette(surface), english=data?.project?.language==='en-US';
   const compact=bodyRows>0 && bodyRows<24;
   const t=(pt,en)=>english?en:pt;
@@ -41,11 +43,11 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     borderColor:active?theme.accentText:theme.line,paddingX:1,children:[disabled?note(label):Button({key,
       label:clean(active?`${label} ✓`:label),plain:true,onPress,...(hotkey?{hotkey}:{}),hover:{color:theme.accentText,bold:true}})]});
   const row=children=>Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children});
-  const section=(title,children)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1}),
+  const section=(title,children)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1,backgroundColor:theme.surface}),
     children:[Box({marginBottom:compact?0:1,children:[text(title,{bold:true,color:theme.accentText})]}),...children]});
-  const card=(label,value)=>Box({flexDirection:'column',borderStyle:'round',borderColor:theme.line,paddingX:1,flexGrow:1,
+  const card=(label,value)=>Box({flexDirection:'column',borderStyle:'round',borderColor:theme.line,paddingX:1,flexGrow:1,backgroundColor:theme.surface,
     children:[note(label),text(value,{bold:true})]});
-  const content=(value,raw=false)=>raw ? text(value) : Box({flexDirection:'column',rowGap:1,children:clean(value).split('\n\n').map(paragraph=>{
+  const content=(value,raw=false)=>raw && Code ? Code({source:clean(value),language:'markdown',wrap:'wrap'}) : !raw && Markdown ? Markdown({text:clean(value)}) : raw ? text(value) : Box({flexDirection:'column',rowGap:1,children:clean(value).split('\n\n').map(paragraph=>{
     const label=paragraph.match(/^\*\*([^\n]+)\*\*\n([\s\S]*)$/);
     return label?Box({flexDirection:'column',children:[text(label[1],{bold:true,color:theme.accentText}),text(label[2])]}):text(paragraph);
   })});
@@ -55,27 +57,42 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     button(`${prefix}-next`,t('Próxima','Next'),()=>actions.change(patch(page.page+1)),{disabled:page.page+1>=page.pages}),
   ])]:[];
   const picker=(key,label,options,value,onSelect)=>surface!=='mobile' && Select
-    ? Box({...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1}),children:[Select({key,label,options,value,onSelect})]})
+    ? Box({...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1,backgroundColor:theme.surface}),children:[Select({key,label,options,value,onSelect})]})
     : row(options.map(option=>button(`${key}-${option.value}`,option.label,()=>onSelect(option.value),{active:option.value===value})));
   const specs=data?.specs || [], spec=specs.find(item=>item.name===selected);
-  const counts=item=>item?.counted_waves || [item?.waves?.filter(w=>['integrated','committed'].includes(w.status)).length || 0,item?.waves?.length || 0];
-  const progress=item=>{const [done,total]=counts(item);return total?`${done}/${total} ${t('ondas concluídas','waves completed')}`:t('Sem ondas planejadas','No planned waves');};
+  const counts=item=>item?.counted_waves || (item?.summary_only?[null,null]:[item?.waves?.filter(w=>['integrated','committed'].includes(w.status)).length || 0,item?.waves?.length || 0]);
+  const progress=item=>{if(item?.summary_only)return t('Carregando detalhes da spec…','Loading spec details…');
+    const [done,total]=counts(item);return total?`${done}/${total} ${t('ondas concluídas','waves completed')}`:t('Sem ondas planejadas','No planned waves');};
   const go=(tab)=> {
     const wave=tab==='Ondas' && view.selectedWave===undefined
       ? (spec?.waves?.find(w=>['running','repair-required','received'].includes(w.status)) || spec?.waves?.[0])?.wave : view.selectedWave;
-    actions.change({tab,contentOffset:0,...(tab==='Ondas'?{selectedWave:wave}:{})},tab==='Ondas' && wave!==undefined);
+    actions.change({tab,contentOffset:0,showTechnical:false,...(tab==='Ondas'?{selectedWave:wave}:{})},true);
   };
-  const tabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage'],['Configurações','Configurações','Settings']];
+  const allTabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage'],['Ideias','Ideias','Ideas'],['Diagnóstico','Diagnóstico','Diagnostics'],['Configurações','Configurações','Settings']];
+  const profile=data?.preferences?.profiles?.find(item=>item.id===data.preferences.selected);
+  const tabs=allTabs.filter(([key])=>!profile || profile.tabs.includes(key) || key===view.tab || key==='Configurações');
+  const helpers={t,text,note,row,section,button,picker,Input,fmt,date,content,tabs:Object.fromEntries(allTabs.map(([key,pt,en])=>[key,t(pt,en)]))};
   const rows=[row([text('MUSTARD',{bold:true,color:theme.accentText}),...(data?[text(data.project.name || 'Mustard',{bold:true})]:[])])];
   if(data && !compact)rows.push(note(data.project.branch || t('Sem branch','No branch')));
+  if(data && !compact)rows.push(...profileControls(data,view,actions,helpers));
   if(surface!=='mobile' && (compact || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
     tabs.map(([value,pt,en])=>({value,label:t(pt,en)})),view.tab,go));
   else rows.push(row(tabs.map(([key,pt,en],index)=>button(`tab-${key}`,t(pt,en),()=>go(key),{active:view.tab===key,hotkey:String(index+1)}))));
   if(problem)rows.push(section(t('Atualização indisponível','Update unavailable'),[text(problem),note(`${t('Último estado','Last state')}: ${date(data?.at)}`)]));
   if(!data)return Box({flexDirection:'column',padding:1,backgroundColor:theme.paper,children:[...rows,text(t('Carregando projeto…','Loading project…'))]});
-  if(specs.length && view.tab!=='Configurações')rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
-  if(!['Projeto','Configurações'].includes(view.tab) && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
-  if(view.tab==='Configurações')rows.push(settingsPanel(settings,actions,{t,text,note,row,section,button,picker},view.settingsGroup));
+  if(specs.length && !['Configurações','Ideias','Diagnóstico'].includes(view.tab))rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
+  if(!['Projeto','Configurações','Ideias','Diagnóstico'].includes(view.tab) && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
+  if(data.section && data.section!==sections[view.tab] || spec?.summary_only && ['Definições','Ondas','Execução'].includes(view.tab)) {
+    rows.push(note(t('Carregando esta seção…','Loading this section…')),row([
+      button('refresh',t('Tentar atualizar','Retry update'),actions.refresh),button('close',t('Fechar','Close'),actions.close)]));
+    return Box({flexDirection:'column',rowGap:1,padding:1,backgroundColor:theme.paper,children:rows});
+  }
+  if(view.tab==='Configurações') {
+    if(compact)rows.push(...profileControls(data,view,actions,helpers));
+    rows.push(settingsPanel(settings,actions,{t,text,note,row,section,button,picker},view.settingsGroup));
+  }
+  if(view.tab==='Ideias')rows.push(ideasPanel(data,view,actions,helpers,operationBusy));
+  if(view.tab==='Diagnóstico')rows.push(diagnosticsPanel(data,view,actions,helpers));
 
   if(view.tab==='Projeto') {
     if(spec)rows.push(section(t('Trabalho atual','Current work'),[
@@ -84,9 +101,13 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
         button('open-current-waves',t('Acompanhar ondas','Follow waves'),()=>go('Ondas'))]),
     ]));
     else rows.push(note(t('Selecione uma spec para consultar definições e ondas.','Select a spec to read definitions and waves.')));
-    const total=specs.reduce((sum,item)=>{const [done,count]=counts(item);return [sum[0]+done,sum[1]+count];},[0,0]);
+    const total=specs.reduce((sum,item)=>{const [done,count]=counts(item);return count==null?[sum[0],sum[1],sum[2]+1]:[sum[0]+done,sum[1]+count,sum[2]];},[0,0,0]);
     rows.push(row([card(t('Specs no projeto','Project specs'),fmt(specs.length)),
-      card(t('Ondas de todas as specs','Waves across all specs'),`${total[0]}/${total[1]} ${t('concluídas','completed')}`)]));
+      card(t('Ondas carregadas','Loaded waves'),`${total[0]}/${total[1]} ${t('concluídas','completed')}`)]));
+    if(total[2])rows.push(note(t('O total completo de cada spec é carregado ao selecioná-la.','Each spec’s complete total loads when selected.')));
+    if(spec?.scheduling?.tasks?.some(item=>item.reason==='task-blocked'))rows.push(section(t('Precisa de atenção','Needs attention'),
+      spec.scheduling.tasks.filter(item=>item.reason==='task-blocked').map(item=>text(`${item.title || item.task}: ${item.blocked_by || t('condição pendente','pending condition')}`))));
+    rows.push(...liveAgents(data,spec,helpers));
     if(specs.some(item=>item!==spec))rows.push(section(t('Outras especificações','Other specifications'),specs.filter(item=>item!==spec).map(item=>
       row([text(`${item.name} · ${state(item.phase)}`),button(`project-${item.name}`,t('Abrir','Open'),()=>actions.selectSpec(item.name))]))
       .concat(specs.length===1?[note(t('Nenhuma outra spec registrada.','No other recorded specs.'))]:[])));
@@ -159,14 +180,21 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
           if(view.waveView==='Pedido')children.push(note(t('Cópia integral do pedido enviado ao agente. Nenhum conteúdo foi resumido.','Complete copy of the request sent to the agent. No content has been summarized.')));
           if(view.waveView==='Entrega' && detail.delivery && !detail.delivery_integrated)children.push(text(
             t('Retorno recebido · aguardando validação do orquestrador','Return received · awaiting orchestrator validation'),{color:theme.accentText}));
-          children.push(content(body.text,view.waveView!=='Plano'),...pagination('content',body,value=>({contentOffset:value})));
+          children.push(content(body.text,view.showTechnical),...pagination('content',body,value=>({contentOffset:value})),
+            button('wave-source',t(view.showTechnical?'Texto formatado':'Ver texto original',view.showTechnical?'Formatted text':'Read original text'),()=>actions.change({showTechnical:!view.showTechnical})));
           rows.push(section(`${t('Onda','Wave')} ${view.selectedWave} · ${t(...names[view.waveView])}`,children));
+          rows.push(button('preview-wave-discard',t('Conferir impacto de descartar esta tentativa','Inspect impact of discarding this attempt'),
+            ()=>actions.preview({action:'discard-wave',spec:selected,wave:view.selectedWave})));
         }
       }
     }
   }
 
   if(view.tab==='Execução' && spec) {
+    const [done,total]=counts(spec);
+    if(surface==='desktop' && Svg && total>0)rows.push(Svg({alt:`${done}/${total} ${t('ondas concluídas','waves completed')}`,width:560,height:16,
+      source:`<svg xmlns="http://www.w3.org/2000/svg" width="560" height="16" viewBox="0 0 560 16"><rect width="560" height="16" rx="8" fill="${theme.inset}"/><rect width="${Math.round(560*Math.min(1,done/total))}" height="16" rx="8" fill="${theme.accent}"/></svg>`}));
+    rows.push(...liveAgents(data,spec,helpers));
     rows.push(section(t('Andamento desta spec','This spec progress'),[
       text(progress(spec),{bold:true}),
       text(`${t('Validação final','Final validation')}: ${spec.final_validation_valid==null?t('Não verificada','Not checked'):spec.final_validation_valid?t('Válida','Valid'):t('Pendente','Pending')}`),
@@ -196,7 +224,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     const usageView=view.usageView || 'Resumo', rtk=data.rtk || {}, jev=data.jev || {};
     rows.push(picker('usage-section',t('Medição','Measurement'),[
       ['Resumo','Resumo','Overview'],['Sessão','Sessão','Session'],['Ondas','Ondas','Waves'],
-      ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Análises','Análises','Analyses'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
+      ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Busca','Busca','Search'],['Análises','Análises','Analyses'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
     ].map(([value,pt,en])=>({value,label:t(pt,en)})),usageView,value=>actions.change({usageView:value})));
     if(usageView==='Resumo')rows.push(section(t('O Mustard está economizando?','Is Mustard saving tokens?'),[
       text(t('Economia total do modelo: ainda não comprovada.','Total model savings: not proven yet.'),{bold:true}),
@@ -225,6 +253,18 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
         note(t('Procedimentos específicos exigem revisão; referências mudadas retiram o perfil da seleção.','Specific procedures require review; changed references withdraw the profile from selection.')),
       ]:[note(t('Catálogo indisponível; atualize o scan.','Catalog unavailable; refresh the scan.'))]));
     }
+    if(usageView==='Busca') {
+      const search=spec?.operations?.search,transport=spec?.operations?.by_command?.search;
+      rows.push(section(t('Busca e scan nesta spec','Search and scan for this spec'),search?[
+        text(`${t('Consultas registradas','Recorded queries')}: ${fmt(search.calls)} · ${t('tempo acumulado','accumulated time')}: ${fmt(search.ms)} ms`),
+        text(`${t('Cruzadas com o índice','Crossed with the index')}: ${fmt(search.enriched)} · ${t('respostas nativas preservadas','native responses preserved')}: ${fmt(search.fallback)}`),
+        text(`${t('Cache de seleção reutilizado','Selection cache reused')}: ${fmt(search.cache_hits)} · ${t('escolhas aceitas','accepted choices')}: ${fmt(search.accepted_choices)}`),
+        text(`${t('Chamadas ao modelo local','Local model calls')}: ${fmt(search.local_model_calls)} · ${t('chamadas remotas','remote calls')}: ${fmt(search.remote_model_calls)}`),
+        ...(transport?[text(`${t('Entrada / saída do transporte','Transport input / output')}: ${fmt(transport.input_bytes)} / ${fmt(transport.output_bytes)} bytes`),
+          note(`${t('Tokens estimados de saída','Estimated output tokens')}: ${fmt(transport.estimated_output_tokens)}`)]:[]),
+        note(t('São medições de uso e volume. Acerto e economia líquida exigem comparação com uma tarefa equivalente e conferência das fontes.','These measure usage and volume. Accuracy and net savings require equivalent-task comparison and source verification.')),
+      ]:[note(t('Esta spec ainda não possui medições de busca.','This spec has no search measurements yet.'))]));
+    }
     if(usageView==='RTK')rows.push(section(t('RTK neste projeto','RTK for this project'),[
       text(rtk.configured===false?t('Filtro desligado na configuração.','Filter disabled in configuration.'):
         rtk.hook_configured_by_host?['Claude','Codex'].map(host=>`${host}: ${rtk.hook_configured_by_host[host.toLowerCase()]===true?t('hook configurado','hook configured'):rtk.hook_configured_by_host[host.toLowerCase()]===false?t('hook ausente','hook absent'):t('não confirmado','unconfirmed')}`).join(' · '):
@@ -250,7 +290,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     if(observed?.model)session.push(text(`${t('Modelo','Model')}: ${observed.model}`));
     if(observed?.duration_ms!=null)session.push(note(`${t('Duração','Duration')}: ${Math.round(observed.duration_ms/60000)} min`));
     if(usage?.cost?.usd!=null)session.push(text(`${t('Custo equivalente de API nesta sessão','API-equivalent cost this session')}: $${usage.cost.usd}`));
-    if(usageView==='Sessão' && session.length)rows.push(section(t('Sessão atual','Current session'),session));
+    if(usageView==='Sessão')rows.push(section(t('Sessão atual','Current session'),session),sessionFigures(data,usage,helpers));
     if(usageView==='Ondas' && spec)rows.push(section(t('Spec selecionada','Selected spec'),[
       text(spec.name,{bold:true}),
       ...(spec.usage?.wave_tokens!=null?[text(`${t('Ondas','Waves')}: ${fmt(spec.usage.wave_tokens)} tokens`)]:[note(t(spec.usage?.known_wave_tokens>0?'Total das ondas ainda incompleto.':'Consumo das ondas ainda não medido.',spec.usage?.known_wave_tokens>0?'Wave total is still incomplete.':'Wave usage has not been measured yet.'))]),
@@ -262,7 +302,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ...(spec.usage?.measured_at?[note(`${t('Medição das ondas','Wave measurement')}: ${date(spec.usage.measured_at)}`)]:[]),
       ...(spec.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Custo equivalente de API observado','Observed API-equivalent cost')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
     ]));
-    if(usageView==='Ondas' && spec?.waves.length)rows.push(section(t('Medição por onda','Usage per wave'),spec.waves.map(wave=>text(
+    if(usageView==='Ondas' && spec?.waves?.length)rows.push(section(t('Medição por onda','Usage per wave'),spec.waves.map(wave=>text(
       `${t('Onda','Wave')} ${wave.wave} · ${state(wave.status)} · ${fmt(wave.tokens)}${wave.tokens!=null?' tokens':''}`))));
     const history=data.consumption;
     if(usageView==='Histórico')rows.push(section(t('Histórico observado','Observed history'),[
@@ -356,7 +396,8 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
       ]));
     }
   }
-  if(!spec && !['Projeto','Consumo','Configurações'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
+  if(!spec && !['Projeto','Consumo','Configurações','Ideias','Diagnóstico'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
+  const impactView=impactPanel(impact,actions,helpers);if(impactView)rows.push(impactView);
   if(publicationMessage && (publicationMessage.name===selected || ['project','report'].includes(publicationMessage.name)))rows.push(text(publicationMessage.text));
   rows.push(row([button('refresh',t('Atualizar','Refresh'),actions.refresh,{hotkey:'r'}),
     button('publications',t('Publicação externa','External publication'),()=>actions.change({showPublications:!view.showPublications}),{active:view.showPublications}),
@@ -365,10 +406,13 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     const children=[note(t('Publica um retrato do estado atual somente ao acionar um dos botões abaixo.','Publishes a snapshot of the current state only when you activate a button below.')),
       row([button('publish',t('Publicar esta spec','Publish this spec'),()=>actions.publish('spec '+selected),{disabled:publishing || !selected}),
         button('publish-project',t('Publicar projeto','Publish project'),()=>actions.publish('project'),{disabled:publishing})])];
+    if(Input)children.push(Input({key:'publication-document',label:t('Relatório Markdown · caminho do arquivo','Markdown report · file path'),value:view.publicationDocument || '',
+      onInput:value=>actions.change({publicationDocument:value}),onSubmit:value=>actions.change({publicationDocument:value})}),
+      button('publish-report',t('Conferir publicação do relatório','Preview report publication'),()=>actions.publish('report '+view.publicationDocument.trim()),{disabled:publishing || !view.publicationDocument?.trim()}));
     for(const [label,url] of [[t('Última página do projeto','Latest project page'),data.project.publication_url],[t('Última página desta spec','Latest page for this spec'),spec?.publication?.url]])
       if(url)children.push(Link?Link({href:url,label}):note(`${label}: ${url}`));
     rows.push(section(t('Publicação sob pedido','Publication on request'),children));
   }
-  rows.push(note(`${t('Ao vivo','Live')} · ${date(data.at)}`));
+  rows.push(note(`${t('Ao vivo · última consulta','Live · last checked')} ${date(data.checked_at || data.at)} · Mustard ${data.project.version || '—'}`));
   return Box({flexDirection:'column',rowGap:compact?0:1,padding:compact?0:1,backgroundColor:theme.paper,children:rows});
 }

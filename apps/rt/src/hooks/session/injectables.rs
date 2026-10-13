@@ -78,6 +78,20 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool
             );
             continue;
         }
+        let owned_map=entry.file==".claude/mustard/session-map.md" && [mustard_core::SupportedLocale::PtBr,mustard_core::SupportedLocale::EnUs]
+            .into_iter().any(|lang|mustard_core::platform::seeds::session_map(lang).trim()==trimmed);
+        if owned_map {
+            let hash=mustard_core::io::observations::digest(trimmed.as_bytes());
+            if !ignore_markers && notice_seen(root,session_id,"session-map-content",&hash) {continue;}
+            remember_notice(root,session_id,"session-map-content",&hash);
+            if ignore_markers {
+                blocks.push(match config.language().text_or_default() {
+                    mustard_core::SupportedLocale::PtBr=>"Mustard: `run resume` retoma o estado gravado. Código: `mcp__mustard__search` ou `run search`, preservando argumentos; Read exato é cruzado pelo hook. Spec: `run read`/`run write`. Medidas: `run evidence`; comentários não provam comportamento. Antes de commit: `run review-wave`; USAGE não aprova. Nenhuma publicação automática. Guia completo: `.claude/mustard/session-map.md`.".into(),
+                    mustard_core::SupportedLocale::EnUs=>"Mustard: `run resume` restores recorded state. Code: `mcp__mustard__search` or `run search`, preserving arguments; exact Read is crossed by the hook. Spec: `run read`/`run write`. Measurements: `run evidence`; comments do not prove behavior. Before commit: `run review-wave`; USAGE is not approval. No automatic publication. Full guide: `.claude/mustard/session-map.md`.".into(),
+                });
+                delivered.push(marker_name);continue;
+            }
+        }
         blocks.push(trimmed.to_string());
         delivered.push(marker_name);
     }
@@ -248,4 +262,21 @@ mod tests {
         );
         assert!(!dir.path().join(".claude/.session/s1/injected-gone.md").exists());
     }
+    #[test]
+    fn the_managed_map_is_deduplicated_and_refreshes_with_a_short_guide() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
+        std::fs::write(root.join("mustard.json"),r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/session-map.md","once":false}]}"#).unwrap();
+        let map=mustard_core::session_map(mustard_core::SupportedLocale::PtBr);
+        std::fs::write(root.join(".claude/mustard/session-map.md"),map).unwrap();
+        let project=root.to_string_lossy();
+        assert_eq!(collect(&project,Some("dedup"),false).unwrap(),map.trim());
+        assert!(collect(&project,Some("dedup"),false).is_none());
+        let refreshed=collect(&project,Some("dedup"),true).unwrap();
+        assert!(refreshed.len()<map.len()/3);
+        assert!(refreshed.contains("mcp__mustard__search") && refreshed.contains("review-wave"));
+        std::fs::write(root.join(".claude/mustard/session-map.md"),"My explicit project rule").unwrap();
+        assert_eq!(collect(&project,Some("dedup"),true).unwrap(),"My explicit project rule");
+    }
+
 }

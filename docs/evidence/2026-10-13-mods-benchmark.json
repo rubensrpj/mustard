@@ -1,0 +1,52 @@
+{
+  "fixture": {
+    "specs": 25,
+    "rules_per_spec": 80,
+    "repeats": 9,
+    "synthetic": true
+  },
+  "baseline_v0_2_18_full": {
+    "median_ms": 35.296,
+    "min_ms": 32.181,
+    "bytes": 94273
+  },
+  "candidate_project": {
+    "median_ms": 15.278,
+    "min_ms": 11.277,
+    "bytes": 5604
+  },
+  "candidate_definitions": {
+    "median_ms": 19.372,
+    "min_ms": 19.268,
+    "bytes": 50948
+  },
+  "candidate_unchanged": {
+    "median_ms": 3.561,
+    "min_ms": 3.262,
+    "bytes": 146
+  },
+  "candidate_wave": {
+    "median_ms": 13.152,
+    "min_ms": 12.922,
+    "bytes": 14258
+  },
+  "gains": {
+    "project_latency_percent": 56.71,
+    "project_output_bytes_percent": 94.06,
+    "unchanged_latency_percent": 89.91,
+    "unchanged_output_bytes_percent": 99.85,
+    "idle_poll_schedule_percent": 80
+  },
+  "verified": {
+    "selected_definitions_identical": true,
+    "wave_input_identical": true,
+    "replayed_request_counted_once": true,
+    "costless_usage_recorded": true,
+    "remote_ai_enabled_in_fixture": false,
+    "net_llm_token_savings_measured": false
+  },
+  "binaries": {
+    "baseline": "9d84d01cb75eee3b7f796871ffb5cd328320f511ff826bb26814fd01b141edb9",
+    "candidate": "a44152df246b1db26c3aa5c6589be05888afed552a9e7dbc2d054e295b85d930"
+  }
+}

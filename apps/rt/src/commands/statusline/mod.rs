@@ -23,7 +23,7 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     let lang = mustard_core::ProjectConfig::load(&cwd).language().text_or_default();
     // Naming the spec directly avoids duplicating it inside a long branch.
     let mut segments = if let Some(unit) = unit_segment(&cwd, None) {
-        vec![unit]
+        vec![module_segment(&cwd),unit]
     } else {
         let branch = mustard_core::current_branch(&cwd);
         let mut place = vec![module_segment(&cwd)];
@@ -33,6 +33,9 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     segments.push(model_segment(data));
     segments.extend(context_segment(data, lang));
     segments.extend(inert_segment(&cwd));
+    if mustard_core::ProjectConfig::exists(&cwd) {
+        segments.push(Segment::new(segment::SegmentKind::Module,"/mustard-panel"));
+    }
     segments
 }
 
@@ -112,15 +115,15 @@ mod tests {
         let output = rows(ThemeId::Mustard.theme(), segments.clone());
         assert_eq!(output.len(), 1);
         let shown = &output[0];
-        for value in ["checkout", "em execução", "Sonnet 5.5", "contexto 7%"] {
+        for value in ["project","checkout", "em execução", "Sonnet 5.5", "contexto 7%","/mustard-panel"] {
             assert!(shown.contains(value), "{shown}");
         }
-        for absent in ["feature/checkout", "/mustard-panel", "Mustard 0.", "rtk poupou", "vs média", "191000", "$12.5"] {
+        for absent in ["feature/checkout", "Mustard 0.", "rtk poupou", "vs média", "191000", "$12.5"] {
             assert!(!shown.contains(absent), "{shown}");
         }
         assert!(segments.iter().all(|segment| matches!(
             segment.kind,
-            segment::SegmentKind::Unit | segment::SegmentKind::Model | segment::SegmentKind::Context | segment::SegmentKind::Inert
+            segment::SegmentKind::Module | segment::SegmentKind::Unit | segment::SegmentKind::Model | segment::SegmentKind::Context | segment::SegmentKind::Inert
         )));
     }
 

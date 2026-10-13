@@ -50,7 +50,14 @@ pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {
             Ok(Some(log)) if log.events.is_empty() => {
                 warnings.push(format!("'{spec}' has an empty event file"));
             }
-            Ok(_) => {}
+            Ok(Some(log)) => {
+                let last=log.visible().into_iter().rfind(|event|event.event_type=="call" && event.str_field("command")==Some("round"));
+                if let Some(failed)=last.filter(|event|event.str_field("result")==Some("refused")) {
+                    let reason=failed.str_field("refusal").unwrap_or("unknown");
+                    warnings.push(format!("'{spec}': last round failed ({reason}); installation health does not prove dispatch health. Inspect `mustard-rt run read conversation --spec {spec}` before retrying. Prepared waves may remain unsent."));
+                }
+            }
+            Ok(None) => {}
             Err(refusal) => {
                 warnings.push(format!("'{spec}' has an unreadable event file: {}", refusal.reason()));
             }
@@ -346,5 +353,19 @@ mod tests {
         assert_eq!(missing.status, Status::Warn);
         assert!(missing.details[0].contains("does not exist"), "{:?}", missing.details);
         assert!(missing.details[0].contains("mustard-rt run index"), "{:?}", missing.details);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    #[test]
+    fn installation_health_exposes_a_recorded_dispatch_failure() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        crate::shared::spec_state::seed_event(root,"x","call",serde_json::json!({"author":"binary","command":"round","ms":1,"result":"refused","refusal":"missing-field"}));
+        let result=check_state_health(&root.join(".claude"));
+        assert!(result.details.iter().any(|detail|detail.contains("last round failed (missing-field)")));
+        crate::shared::spec_state::seed_event(root,"x","call",serde_json::json!({"author":"binary","command":"round","ms":1,"result":"ok"}));
+        assert!(!check_state_health(&root.join(".claude")).details.iter().any(|detail|detail.contains("last round failed")));
     }
 }

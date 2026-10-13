@@ -69,6 +69,7 @@ use crate::commands::git_settle::main_checkout_root;
 use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 mod carried;
+pub(crate) mod ideas;
 pub(crate) use carried::carried_by;
 
 /// Options for `mustard-rt run pending`.
@@ -168,6 +169,9 @@ struct PendingItem {
     title: String,
     detail: String,
     status: Status,
+    /// An unapproved project suggestion; excluded from obligation gates.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    idea: bool,
     /// A unidade em que a pendência nasceu, quando havia uma aberta na hora
     /// da gravação. Nunca muda: é história, não dono.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,6 +336,7 @@ fn day_number(day: &str) -> Option<i64> {
 fn is_stale(item: &PendingItem, today: Option<i64>) -> bool {
     let entered = item.created.as_deref().and_then(day_number);
     item.status == Status::Open
+        && !item.idea
         && item.swept.is_none()
         && matches!((today, entered), (Some(today), Some(entered)) if today - entered >= STALE_DAYS)
 }
@@ -658,6 +663,7 @@ fn push_open(ledger: &mut Ledger, title: String, detail: String, born: Option<St
         title,
         detail,
         status: Status::Open,
+        idea: false,
         born,
         owner: Owner::Born,
         later: None,
@@ -926,7 +932,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
 /// há 30 dias ou mais que a faxina ainda não mostrou; `None` quando nada está
 /// aberto.
 fn count_line_of(ledger: &Ledger, today: &str, lang: Locale) -> Option<String> {
-    let mut line = match ledger.items.iter().filter(|i| i.status == Status::Open).count() {
+    let mut line = match ledger.items.iter().filter(|i| i.status == Status::Open && !i.idea).count() {
         0 => return None,
         1 => mustard_core::translate("pending.count.one", lang).to_string(),
         count => mustard_core::translate("pending.count.many", lang).replace("{count}", &count.to_string()),
@@ -979,7 +985,7 @@ fn open_items_of(root: &Path) -> Vec<PendingItem> {
     mustard_core::ClaudePaths::for_project(&project)
         .ok()
         .and_then(|paths| load(&paths.pending_ledger_path()).ok())
-        .map(|ledger| ledger.items.into_iter().filter(|i| i.status == Status::Open).collect())
+        .map(|ledger| ledger.items.into_iter().filter(|i| i.status == Status::Open && !i.idea).collect())
         .unwrap_or_default()
 }
 

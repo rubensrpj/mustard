@@ -71,11 +71,11 @@ test('reopening recreates the host pane and history recovery waits for Usage',as
   expect(measured).toEqual([false]);
   await $.command.run({command:'mustard-panel',args:''});
   expect(lifecycle).toEqual(['close','open','close','open']);
-  await clock.advance(2000);expect(measured).toEqual([false,false,false]);
+  await clock.advance(10000);expect(measured).toEqual([false,false,false]);
   const pane=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
-  await pane.press({key:'tab-Consumo'});await clock.advance(2000);
-  expect(measured).toEqual([false,false,false,true]);
-  await clock.advance(2000);expect(measured.at(-1)).toBe(false);
+  await pane.press({key:'tab-Consumo'});await pane.select({key:'usage-section',value:'Histórico'});await clock.advance(10000);
+  expect(measured).toEqual([false,false,false,false,true]);
+  await clock.advance(10000);expect(measured.at(-1)).toBe(false);
   await pane.press({key:'close'});
   const count=measured.length;await clock.advance(10000);expect(measured.length).toBe(count);
 });
@@ -155,7 +155,7 @@ async function clarityFixture($,on,surface:'terminal'|'desktop'|'mobile'='termin
 test('analysis receipts and profile reuse stay separate from net savings and Jev billing',async ($,on)=>{
   const {pane,clock,counts,snapshot}=await clarityFixture($,on);
   snapshot.knowledge={analysis:{completed_analyses:2,reused_operations:5,failures:1,reported_input_tokens:9000,reported_output_tokens:300,analyses_with_unknown_input:1,over_target:0},catalog:{available:true,active:3,inactive:1,native_navigation:2}};
-  await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await clock.advance(10000);await pane.press({key:'tab-Consumo'});
   await pane.select({key:'usage-section',value:'Análises'});
   expect(await pane.find({type:'Text',text:'Consultas que reutilizaram análise válida: 5'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Perfis válidos: 3 · inativos ou aguardando revisão: 1'})).toBeDefined();
@@ -167,7 +167,7 @@ test('usage shows incomplete wave subtotals and explains disabled Jev without ma
   const {pane,clock,counts,snapshot}=await clarityFixture($,on);
   snapshot.specs[0].usage={known_wave_tokens:1234,waves_with_unknown_usage:3,measured_at:'2026-10-10T23:04:12Z'};
   snapshot.jev.configuration={purposes:{search:{reason:'ai-fallback-disabled'},'wave-planning':{reason:'purpose-not-configured'}}};
-  await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await clock.advance(10000);await pane.press({key:'tab-Consumo'});
   await pane.select({key:'usage-section',value:'Ondas'});
   expect(await pane.find({type:'Text',text:'Subtotal das ondas medidas: 1.234 tokens'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'3 ondas ainda sem medição; subtotal incompleto.'})).toBeDefined();
@@ -176,7 +176,7 @@ test('usage shows incomplete wave subtotals and explains disabled Jev without ma
   await pane.select({key:'usage-section',value:'Jev'});
   expect(await pane.find({type:'Text',text:'Busca: Desligado: ai.fallback não está habilitado.'})).toBeDefined();
   snapshot.jev.configuration.purposes.search={reason:'configured',enabled:true};
-  await clock.advance(2000);
+  await clock.advance(10000);
   expect(await pane.find({type:'Text',text:'Busca: Habilitado sob critério; não é acionado em toda busca.'})).toBeDefined();
   expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);await pane.press({key:'close'});
 });
@@ -191,7 +191,7 @@ test('usage separates measured RTK output and Jev cost from unproven total savin
     last_attempt:{purpose:'search',status:200,at:'2026-10-11T00:01:06Z'}};
   snapshot.specs[0].operations={search:{calls:33,decision_coverage:2,choice_gates:{eligible:1,'exact-read':1},
     local_model_calls:1,cache_hits:1,accepted_choices:1}};
-  await clock.advance(2000);await pane.select({key:'panel-section',value:'Consumo'});
+  await clock.advance(10000);await pane.select({key:'panel-section',value:'Consumo'});
   expect(await pane.find({type:'Text',text:'Economia total do modelo: ainda não comprovada.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'RTK: 38,6% de redução estimada na saída deste projeto'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Jev: 1 chamadas no projeto · $0.0010 estimados'})).toBeDefined();
@@ -212,7 +212,7 @@ test('usage separates measured RTK output and Jev cost from unproven total savin
 test('project scope, unknown measurements and explicit publication remain clear',async ($,on)=>{
   const {pane,counts}=await clarityFixture($,on);
   expect(await pane.find({type:'Text',text:'0/1 ondas concluídas'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'Ondas de todas as specs'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Ondas carregadas'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'40/41 concluídas'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'outra-spec · PR aberto'})).toBeDefined();
   expect(await pane.find({type:'Text',text:/RTK|desconhecido|T23:04|https:\/\/example/})).toBeUndefined();
@@ -235,24 +235,24 @@ test('native category picker and search filter definitions and reset on spec cha
   await pane.press({key:'tab-Definições'});
   await pane.select({key:'definition-group',value:'rule'});
   await pane.input({key:'definition-search',text:'MSTD-RULE-0002',kind:'change'});
-  expect(await pane.find({type:'Text',text:'Usar os dados atuais do banco.'})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:'Usar os dados atuais do banco.'})).toBeDefined();
   expect(await pane.find({key:'item-MSTD-RULE-0001'})).toBeUndefined();
   await pane.input({key:'definition-search',text:'inexistente',kind:'change'});
   expect(await pane.find({type:'Text',text:'Nenhum item corresponde à busca.'})).toBeDefined();
-  await pane.select({key:'select-spec',value:'outra-spec'});await clock.advance(2000);
-  expect(await pane.find({type:'Text',text:'Definição da outra spec.'})).toBeDefined();
+  await pane.select({key:'select-spec',value:'outra-spec'});await clock.advance(10000);
+  expect(await pane.find({type:'Markdown',text:'Definição da outra spec.'})).toBeDefined();
   expect((await pane.find({key:'definition-search'})).props.value).toBe('');
   expect(counts.publications).toBe(0);expect(counts.turns).toBe(0);await pane.press({key:'close'});
 });
 
 test('wave plan stays readable and the exact input is a separate explicit view',async ($,on)=>{
   const {pane,clock,counts}=await clarityFixture($,on);
-  await pane.press({key:'tab-Ondas'});await pane.press({key:'wave-1'});await clock.advance(2000);
-  expect(await pane.find({type:'Text',text:'Criar os caminhos dos arquivos.'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:/Gerar caminhos/})).toBeDefined();
+  await pane.press({key:'tab-Ondas'});await pane.press({key:'wave-1'});await clock.advance(10000);
+  expect(await pane.find({type:'Markdown',text:'Criar os caminhos dos arquivos.'})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:/Gerar caminhos/})).toBeDefined();
   expect(await pane.find({type:'Text',text:/Pedido técnico exato/})).toBeUndefined();
   await pane.press({key:'wave-view-Pedido'});
-  expect(await pane.find({type:'Text',text:'# Input integral\n\nPedido técnico exato.'})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:'# Input integral\n\nPedido técnico exato.'})).toBeDefined();
   expect(counts.turns).toBe(0);await pane.press({key:'close'});
 });
 
@@ -271,7 +271,7 @@ test('mobile retains spec and category navigation without unsupported inputs',as
   await pane.press({key:'tab-Definições'});
   expect(await pane.find({type:'Input'})).toBeUndefined();expect(await pane.find({type:'Select'})).toBeUndefined();
   await pane.press({key:'definition-group-rule'});
-  expect(await pane.find({type:'Text',text:'Preservar a ordem das colunas.'})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:'Preservar a ordem das colunas.'})).toBeDefined();
   await pane.press({key:'close'});
 });
 
@@ -280,7 +280,7 @@ test('short inline panes compact controls instead of filling the window with the
   expect((await pane.drawn()).props.rowGap).toBe(0);
   expect((await pane.find({key:'panel-section'})).props.value).toBe('Projeto');
   await pane.select({key:'panel-section',value:'Ondas'});
-  expect(await pane.find({type:'Text',text:'Criar os caminhos dos arquivos.'})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:'Criar os caminhos dos arquivos.'})).toBeDefined();
   expect((await pane.findAll({type:'Box'})).some(box=>box.props.borderStyle==='round' && box.props.key==='control-wave-view-Plano')).toBe(false);
   await pane.press({key:'close'});
 });
@@ -317,28 +317,28 @@ test('dark panel preserves definitions and exact wave inputs even with a light h
   const pane=await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
   expect((await pane.drawn()).props.backgroundColor).toBe('black');
   await pane.press({key:'tab-Definições'});
-  expect((await pane.find({type:'Text',text:/O arquivo mantém o formato original/})).props.color).toBe('whiteBright');
+  expect(await pane.find({type:'Markdown',text:/O arquivo mantém o formato original/})).toBeDefined();
   await pane.press({key:'technical-MSTD-RULE-0001'});
   await pane.press({key:'definition-technical-next'});
   await pane.press({key:'definition-technical-next'});
-  expect(await pane.find({type:'Text',text:/Fim técnico/})).toBeDefined();
+  expect(await pane.find({type:'Code',text:/Fim técnico/})).toBeDefined();
   await pane.press({key:'tab-Ondas'});
   expect(details).toBe(1);
-  await pane.press({key:'wave-1'});await clock.advance(2000);
-  expect(await pane.find({type:'Text',text:/Onda para gerar o arquivo/})).toBeDefined();
+  await pane.press({key:'wave-1'});await clock.advance(10000);
+  expect(await pane.find({type:'Markdown',text:/Onda para gerar o arquivo/})).toBeDefined();
   await pane.press({key:'wave-view-Pedido'});
   const parts=[];
-  parts.push((await pane.find({type:'Text',text:contentPage(input,0).text})).text);
-  await pane.press({key:'content-next'});parts.push((await pane.find({type:'Text',text:contentPage(input,1).text})).text);
-  await pane.press({key:'content-next'});parts.push((await pane.find({type:'Text',text:contentPage(input,2).text})).text);
+  parts.push((await pane.find({type:'Markdown',text:contentPage(input,0).text})).text);
+  await pane.press({key:'content-next'});parts.push((await pane.find({type:'Markdown',text:contentPage(input,1).text})).text);
+  await pane.press({key:'content-next'});parts.push((await pane.find({type:'Markdown',text:contentPage(input,2).text})).text);
   expect(parts.join('')).toBe(input);
   await pane.press({key:'wave-view-Entrega'});
-  expect(await pane.find({type:'Text',text:'Retorno real registrado.'})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:/Retorno real registrado/})).toBeDefined();
   expect(await pane.find({type:'Text',text:/aguardando validação/})).toBeDefined();
   await pane.press({key:'wave-view-Testes'});
-  expect(await pane.find({type:'Text',text:/Teste mínimo aprovado/})).toBeDefined();
-  expect(await pane.find({type:'Text',text:/não comprovam execução independente/})).toBeDefined();
-  expect(await pane.find({type:'Text',text:/Nenhuma prova de critério executada pelo Mustard/})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:/Teste mínimo aprovado/})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:/não comprovam execução independente/})).toBeDefined();
+  expect(await pane.find({type:'Markdown',text:/Nenhuma prova de critério executada pelo Mustard/})).toBeDefined();
   expect(turns).toBe(0);await pane.press({key:'close'});
 });
 
@@ -395,12 +395,12 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   await pane.select({key:'usage-section',value:'Ondas'});
   expect(await pane.find({type:'Text',text:'Consumo das ondas ainda não medido.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:/desconhecido%/})).toBeUndefined();
-  await clock.advance(2000);
-  expect(reads).toBe(2);
+  await clock.advance(10000);
+  expect(reads).toBe(4);
   expect(measurements).toBe(1);
   await pane.press({key:'close'});
   await clock.advance(10000);
-  expect(reads).toBe(2);
+  expect(reads).toBe(4);
   expect(turns).toBe(0);
   expect(tools).toBe(0);
 });
@@ -430,7 +430,7 @@ test('host measurements persist natively and official context percent renders wi
   });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   await $.session.measure({context:{percent:12,tokens:24000,window:200000},cost:{usd:0.5},rateLimits:[],changed:['cost']});
-  expect(recorded).toEqual([{cost:{usd:0.5},model:'test-model'}]);
+  expect(recorded).toEqual([{kind:'measure',cost:{usd:0.5},model:'test-model',aborted:false,context:{percent:12,tokens:24000,window:200000},rateLimits:[]}]);
   await $.command.run({command:'mustard-panel',args:''});
   const pane=await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
   await pane.press({key:'tab-Consumo'});
@@ -493,12 +493,12 @@ test('a Windows query failure retains the dated state and the English panel', as
     props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
   await pane.press({key:'tab-Execução'});
   expect(await pane.find({type:'Text',text:'Final validation: Not checked'})).toBeDefined();
-  await clock.advance(2000);
+  await clock.advance(10000);
   expect(await pane.find({type:'Text',text:/Last state:/})).toBeDefined();
   expect(await pane.find({type:'Text',text:/T12:00:00Z/})).toBeUndefined();
   await pane.press({key:'close'});
   await clock.advance(10000);
-  expect(reads).toBe(2);
+  expect(reads).toBe(3);
 });
 
 test('advertised publication tools do not delegate an unverified upload to a model', async ($, on) => {
@@ -565,6 +565,7 @@ test('project publication needs no selected spec and shows its result in the pan
   on('session.cwd',()=>({value:'/fixture'}));on('session.usage',()=>({value:{rateLimits:[]}}));
   on('ui.open',()=>({value:null}));on('ui.close',()=>({value:null}));
   on('process.run',($,e)=> {
+    if(e.argv[2]==='impact')return {value:{exitCode:0,stderr:'',stdout:JSON.stringify({ok:true,action:'publish',effects:[],active_waves:[],working_changes:[],unknown:[]})}};
     if(e.argv[2]==='panel') return {value:{exitCode:0,stderr:'',stdout:JSON.stringify({ok:true,schema_version:1,
       project:{name:'fixture',version:'0.2.7'},specs:[],jev:{},at:'2026-10-08T12:00:00Z'})}};
     publications++;expect(e.argv.slice(1)).toEqual(['run','publish','--root','/fixture','--project']);
@@ -579,6 +580,7 @@ test('project publication needs no selected spec and shows its result in the pan
   expect(await pane.find({key:'publish-project'})).toBeUndefined();
   await pane.press({key:'publications'});
   await pane.press({key:'publish-project'});
+  expect(publications).toBe(0);await pane.press({key:'impact-confirm'});
   expect(await pane.find({type:'Text',text:'Snapshot project-version publicado: https://abc.example.pages.dev'})).toBeDefined();
   expect(publications).toBe(1);expect(turns).toBe(0);
 });
@@ -616,12 +618,12 @@ test('report publication preserves the requested document path without calling t
 test('installation details do not present an old receipt as verification of this version',async ($,on)=>{
   const {pane,clock,snapshot,counts}=await clarityFixture($,on);
   (snapshot as any).installation={version:'0.0.0',complete:true,checks:[{component:'scan',ready:false,remedy:'run mustard-rt run scan'}]};
-  await clock.advance(2000);await pane.press({key:'tab-Consumo'});
+  await clock.advance(10000);await pane.press({key:'tab-Consumo'});
   await pane.select({key:'usage-section',value:'Detalhes'});
   expect(await pane.find({type:'Text',text:'Instalação incompleta: execute /mustard:upsert e confira as pendências.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'scan: run mustard-rt run scan'})).toBeDefined();
   (snapshot as any).installation={version:snapshot.project.version,complete:true,checks:[]};
-  await clock.advance(2000);
+  await clock.advance(10000);
   expect(await pane.find({type:'Text',text:'Instalação conferida para esta versão.'})).toBeDefined();
   expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);
   await pane.press({key:'close'});

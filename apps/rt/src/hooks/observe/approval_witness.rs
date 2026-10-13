@@ -104,6 +104,7 @@ const SLOT: &str = "{code}";
 
 /// Como a pergunta de um gesto é reconhecida.
 enum Keyed {
+    Goal,
     /// Pela frase do catálogo, que pode ter a vaga [`SLOT`]: o que a vaga
     /// traz é o que o gesto decide.
     Phrase(&'static str),
@@ -129,6 +130,7 @@ const GESTURES: &[Gesture] = &[
     Gesture { keyed: Keyed::Phrase("approval.question"), yes: "approval.option", decide: decide_approval },
     // "Aceitar/Recusar": a mudança que parte de um agente.
     Gesture { keyed: Keyed::Options("change.decline"), yes: "change.accept", decide: decide_change },
+    Gesture {keyed:Keyed::Goal,yes:"goal.confirm",decide:decide_goal},
 ];
 
 /// O que o usuário fez na pergunta de um gesto.
@@ -187,6 +189,10 @@ fn slot_of(template: &str, question: &str) -> Option<String> {
 /// ao assistente o que fazer.
 fn gesture_of(question: &str, offered: &[String], header: &str) -> Option<(&'static Gesture, String)> {
     GESTURES.iter().find_map(|gesture| match gesture.keyed {
+        Keyed::Goal => (header == "MustardGoal" && [Locale::PtBr,Locale::EnUs].into_iter().any(|lang| {
+            let (yes,no)=crate::commands::flow::goal::labels(lang);
+            offered.iter().any(|label|label==yes) && offered.iter().any(|label|label==no)
+        })).then(||(gesture,String::new())),
         Keyed::Phrase(key) => [Locale::PtBr, Locale::EnUs]
             .into_iter()
             .find_map(|lang| slot_of(translate(key, lang), question))
@@ -209,7 +215,17 @@ fn offers_both(offered: &[String], yes: &'static str, no: &'static str) -> bool 
 /// A opção é a do "sim" do gesto: o rótulo do catálogo, por inteiro, num dos
 /// idiomas.
 fn is_yes(gesture: &Gesture, label: &str) -> bool {
+    if matches!(gesture.keyed,Keyed::Goal) {return [Locale::PtBr,Locale::EnUs].into_iter().any(|lang|crate::commands::flow::goal::labels(lang).0==label.trim());}
     [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| translate(gesture.yes, lang).trim() == label.trim())
+}
+
+fn decide_goal(answer:&Answered<'_>)->Option<String> {
+    if !matches!(answer.choice,Choice::Yes(_)) || !answer.recorded {return None;}
+    let root=Path::new(answer.root);
+    let disk=crate::shared::spec_state::DiskSpecState::new(root);
+    let log=disk.log(&disk.active(answer.session)?)?;
+    if ![Locale::PtBr,Locale::EnUs].into_iter().any(|lang|crate::commands::flow::goal::question(&log,lang).as_deref()==Some(answer.question)) {return None;}
+    Some(match answer.lang {Locale::PtBr=>"Objetivo confirmado e gravado na spec. A retomada preserva esta escolha após /clear.".into(),Locale::EnUs=>"Goal confirmed and recorded in the spec. Resume preserves this choice after /clear.".into()})
 }
 
 /// Os rótulos que a pergunta `question` ofereceu, lidos do `tool_input`, que
@@ -517,6 +533,24 @@ mod tests {
     const SESSION: &str = "s-witness";
     const QUESTION: &str = "Aprovar esta spec?";
 
+    #[test]
+    fn a_goal_click_survives_a_new_session_without_approving_the_spec() {
+        let dir=tempdir().unwrap();let root=dir.path();
+        crate::commands::spec_events::write::record_open(root,"x","fix/x","dev").unwrap();
+        bind_session_spec(&root.to_string_lossy(),SESSION,"x");
+        let said=crate::shared::spec_state::seed_event(root,"x","message",json!({"author":"user","text":"sim"}));
+        crate::shared::spec_state::seed_event(root,"x","context",json!({"text":"Reduzir o custo da leitura.","title":"Leitura","agent":"Conferir a leitura.","origin":said}));
+        let disk=crate::shared::spec_state::DiskSpecState::new(root);
+        let log=disk.log("x").unwrap();
+        let question=crate::commands::flow::goal::question(&log,Locale::PtBr).unwrap();
+        let input=ask_with(&question,"MustardGoal",&["Confirmar objetivo","Ajustar objetivo"],json!("Confirmar objetivo"));
+        assert!(matches!(witness(root,&input),Verdict::Inject{..}));
+        bind_session_spec(&root.to_string_lossy(),"after-clear","x");
+        let log=disk.log("x").unwrap();
+        assert_eq!(crate::commands::flow::goal::status(&log,Locale::PtBr)["confirmed"],true);
+        assert_ne!(State::from_log(&log).phase,Some("approved"));
+    }
+
     /// Uma variável `MUSTARD_ACTIVE_SPEC` herdada responde antes da sessão.
     fn ambient_override() -> bool {
         std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some()
@@ -640,7 +674,7 @@ mod tests {
     #[test]
     fn the_gestures_are_a_list_with_the_spec_approval_and_the_agent_change() {
         let yeses: Vec<&str> = GESTURES.iter().map(|g| g.yes).collect();
-        assert_eq!(yeses, ["approval.option", "change.accept"]);
+        assert_eq!(yeses, ["approval.option", "change.accept", "goal.confirm"]);
 
         let (approval, slot) = gesture_of("Approve this spec?", &[], "").expect("the approval, in English");
         assert!(matches!(approval.keyed, Keyed::Phrase("approval.question")));

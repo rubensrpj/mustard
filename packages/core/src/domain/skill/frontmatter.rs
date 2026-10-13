@@ -38,6 +38,11 @@ impl SkillFrontmatter {
             .get("source")
             .and_then(|v| v.as_str())
             .map(str::to_string)
+            .or_else(|| {
+                let metadata=self.extra.get("metadata")?;
+                let parsed=if let Some(text)=metadata.as_str() {serde_json::from_str::<serde_json::Value>(text).ok()?} else {metadata.clone()};
+                parsed.get("source")?.as_str().map(str::to_string)
+            })
     }
 }
 

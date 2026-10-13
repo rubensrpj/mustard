@@ -10,13 +10,14 @@ use rusqlite::OptionalExtension;
 
 fn assets(root: &Path, profile: &Profile, host: &str) -> Result<Vec<(String, String)>, String> {
     let name = format!("mustard-{}", profile.name);
-    let paths = serde_json::to_string(&profile.paths).map_err(|e| e.to_string())?;
     let description = serde_json::to_string(&profile.description).map_err(|e| e.to_string())?;
     let mut references = String::new();
     for source in &profile.sources {
         let _ = writeln!(references,"- `{}` lines {}–{}; SHA-256 `{}`.",source.file,source.line,source.end_line,source.sha256);
     }
-    let skill = format!("---\nname: {name}\ndescription: {description}\nsource: mustard-expertise\npaths: {paths}\n---\n\n{}\n\nReferences are navigation evidence, not project rules. Recheck current source before using a conclusion.\n\n{references}", profile.procedure);
+    // Scope belongs to the native registry. Repeating hundreds of paths in
+    // frontmatter wastes context and does not improve host skill routing.
+    let skill = format!("---\nname: {name}\ndescription: {description}\nmetadata: {{\"source\":\"mustard-expertise\"}}\n---\n\n{}\n\nReferences are navigation evidence, not project rules. Recheck current source before using a conclusion.\n\n{references}", profile.procedure);
     let config = crate::domain::config::ProjectConfig::load(root);
     let body = crate::platform::seeds::agent_texts(config.language().text_or_default())[0].1;
     match host {
@@ -31,13 +32,22 @@ fn assets(root: &Path, profile: &Profile, host: &str) -> Result<Vec<(String, Str
                 else if line.starts_with("description:") { format!("description: {description}") }
                 else {line.to_owned()}
             }).collect::<Vec<_>>().join("\n");
-            let agent = format!("---\n{header}\n---{text}");
+            let common = root.join(".claude/agents/mustard/wave.md").to_string_lossy().replace('\\', "/");
+            let agent = if root.join(".claude/agents/mustard/wave.md").is_file() {
+                format!("---\n{header}\nskills: [{name}]\n---\n\nFollow the wave execution protocol in `{common}` before working. The dispatch provides the task, mandatory project rules and exact evidence. Use Mustard for source search. Work in the assigned copy, preserve the approved scope, record pertinent tests and return `blocked_by`/`undone` when access or decisions are missing. Do not commit or change the plan. At 150,000 tokens finish the current task, minimal tests and summary; start no new task.")
+            } else {
+                format!("---\n{header}\nskills: [{name}]\n---{text}")
+            };
             Ok(vec![(format!(".claude/skills/{name}/SKILL.md"), skill),
                 (format!(".claude/agents/{name}.md"), format!("{agent}\n\nSpecialization: follow `{}` for the requested area; mandatory rules and wave scope take precedence.\n", format_args!(".claude/skills/{name}/SKILL.md")))])
         }
         "codex" => {
             let common = body.strip_prefix("---\n").and_then(|body| body.split_once("\n---")).map(|(_, body)| body.trim()).ok_or("expertise-executor-template-invalid")?;
-            let instructions = format!("{}\n\nUse .agents/skills/{name}/SKILL.md for the requested area. Its paths are navigation scope, not edit authorization.", common.replace("Claude Code", "Codex"));
+            let protocol = root.join(".claude/agents/mustard/wave.md");
+            let common = if protocol.is_file() {
+                format!("Read the shared wave protocol at {} before working. Follow the dispatched task and mandatory project rules. Use Mustard for source search. Do not commit or change the plan. Record pertinent tests and return blocked_by/undone for missing access or decisions. At 150,000 tokens finish the task, minimal tests and summary; start no new task.", protocol.to_string_lossy())
+            } else {common.replace("Claude Code", "Codex")};
+            let instructions = format!("{common}\n\nUse .agents/skills/{name}/SKILL.md for the requested area. Its scope is navigation evidence, not edit authorization.");
             let agent = toml::to_string(&json!({"name":name,"description":profile.description,"developer_instructions":instructions})).map_err(|e| e.to_string())?;
             Ok(vec![(format!(".agents/skills/{name}/SKILL.md"), skill), (format!(".codex/agents/{name}.toml"), agent)])
         }
@@ -55,6 +65,7 @@ fn inside(root: &Path, relative: &str) -> Result<(), String> {
 
 pub fn export(root: &Path, name: &str, host: &str) -> Result<Value, String> {
     let profile = list(root)?.into_iter().find(|p| p.name == name).ok_or("expertise-not-found")?;
+    if profile.origin != "authored" { return Err("expertise-procedure-review-required; native navigation stays in the index".into()); }
     if !active(root, &profile) { return Err("expertise-review-or-current-sources-required".into()); }
     let assets = assets(root, &profile, host)?;
     inside(root, ".claude/.cache/expertise-export.lock")?;
@@ -95,7 +106,7 @@ pub fn export(root: &Path, name: &str, host: &str) -> Result<Value, String> {
 /// Remove only obsolete exports whose bytes still match our ownership ledger.
 /// A user edit is preserved and reported; registry selection still rejects it.
 pub(super) fn withdraw_stale(root: &Path) -> Result<Value, String> {
-    let live: BTreeSet<String> = list(root)?.into_iter().filter(|p| active(root,p)).flat_map(|p|
+    let live: BTreeSet<String> = list(root)?.into_iter().filter(|p| p.origin == "authored" && active(root,p)).flat_map(|p|
         ["claude","codex"].into_iter().filter_map(move |host|assets(root,&p,host).ok()).flatten().map(|(path,_)|path)).collect();
     let directory = root.join(".claude/.cache");
     fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
@@ -109,7 +120,11 @@ pub(super) fn withdraw_stale(root: &Path) -> Result<Value, String> {
     for (path, expected) in rows.into_iter().filter(|(path,_)| !live.contains(path)) {
         inside(root,&path)?;
         match std::fs::read(root.join(&path)) {
-            Ok(bytes) if digest(&bytes) == expected => { std::fs::remove_file(root.join(&path)).map_err(|e|e.to_string())?; removed.push(path); }
+            Ok(bytes) if digest(&bytes) == expected => {
+                std::fs::remove_file(root.join(&path)).map_err(|e|e.to_string())?;
+                if path.ends_with("/SKILL.md") && let Some(parent)=root.join(&path).parent() {let _=std::fs::remove_dir(parent);}
+                removed.push(path);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => removed.push(path),
             _ => preserved.push(path),
         }

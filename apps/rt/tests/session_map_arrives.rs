@@ -79,17 +79,20 @@ fn session_start(root: &Path, home: &Path, source: &str) -> String {
 /// idioma do projeto, em toda janela nova — a abertura, depois de `/clear`,
 /// da compactação e da retomada.
 #[test]
-fn a_fresh_install_delivers_the_whole_map_at_every_session_start() {
+fn a_fresh_install_delivers_the_map_once_and_short_guidance_after_context_reset() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
         let map = mustard_core::session_map(text).trim();
-        for source in ["startup", "clear", "compact", "resume", "startup"] {
+        for (n,source) in ["startup", "clear", "compact", "resume", "startup"].into_iter().enumerate() {
             let context = session_start(&root, &home, source);
-            assert!(
-                context.contains(map),
-                "the {lang} map did not reach the session on `{source}`: {context}",
-            );
+            if n==0 {assert!(context.contains(map),"the first start loads the full guide: {context}");}
+            else if matches!(source,"clear"|"compact") {
+                assert!(context.contains("mcp__mustard__search") && context.contains(".claude/mustard/session-map.md"));
+                assert!(!context.contains(map),"context resets use the short guide: {context}");
+                assert!(context.len()<map.len());
+            } else {assert!(!context.contains(map),"duplicate callbacks do not repeat instructions");}
+
         }
     }
 }
