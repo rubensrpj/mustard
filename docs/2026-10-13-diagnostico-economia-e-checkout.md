@@ -95,7 +95,9 @@ O workaround de preenchimento no ZIP exige evidência independente com o arquivo
 - `cargo test --workspace --no-fail-fast -- --test-threads=8`: 4.139 aprovados, zero falhas, dois testes antigos ignorados; inclui 1.929 testes do runtime, 299 integrações e as suítes do scan.
 - `cargo clippy --workspace --all-targets -- -D warnings`: aprovado sem avisos.
 - `claude plugin validate ./plugin` e `claude plugin test ./plugin`: contrato válido e 58 testes aprovados.
-- `python3 packaging/test-plugin-bootstrap.py`: sete testes comportamentais aprovados, incluindo download simulado de 11 segundos e distinção entre plugin já habilitado e falha real de habilitação.
+- `python3 packaging/test-plugin-bootstrap.py`: oito testes comportamentais aprovados, incluindo download simulado de 11 segundos, distinção entre plugin já habilitado e falha real de habilitação e aviso de falha real no download.
 - ESLint real contra fonte temporário: erro corrigível mantido, saída 1 e bytes do fonte preservados.
 
 São verificações locais em Linux. A validação de CI nos três sistemas e a publicação da nova versão têm resultado próprio; os testes autenticados Desktop/SSH permanecem para depois da release, por decisão do usuário. Nenhum destes números comprova economia líquida de tokens de uma spec real.
+
+A primeira CI expôs aspas incorretas no chamador de teste do `cmd`, diagnóstico com bytes fora de UTF-8 no macOS e um aviso falso do instalador Windows após download bem-sucedido. O teste passa a preservar a linha nativa do `cmd` e representar bytes inválidos sem perder as verificações de saída/status. O instalador usa `Process.Start` com prazo e código de saída, evitando o `ExitCode` nulo observado com `Start-Process -NoNewWindow`. O novo teste mantém a cobrança de aviso quando o download realmente falha. Referência: [problema registrado no PowerShell](https://github.com/PowerShell/PowerShell/issues/20400).

@@ -89,12 +89,14 @@ class Bootstrap(unittest.TestCase):
 
     def boot(self, *args):
         if WINDOWS:
-            command = [os.environ.get("ComSpec", "cmd.exe"), "/d", "/s", "/c",
-                       '""' + str(self.bin / "mustard-boot.cmd") + '" ' + " ".join(args) + '"']
+            # Pass cmd its native command line unchanged. list2cmdline would
+            # escape these nested quotes for a C argv parser, not cmd /s /c.
+            command = ('"' + os.environ.get("ComSpec", "cmd.exe") + '" /d /s /c ""'
+                       + str(self.bin / "mustard-boot.cmd") + '" ' + " ".join(args) + '"')
         else:
             command = ["sh", str(self.bin / "mustard-boot"), *args]
         return subprocess.run(command, cwd=self.root, env=self.env, capture_output=True,
-                              text=True, timeout=30)
+                              text=True, encoding="utf-8", errors="backslashreplace", timeout=30)
 
     def test_installer_download_can_exceed_ten_seconds(self):
         self.env["TEST_DOWNLOAD_SECONDS"] = "11"
@@ -143,7 +145,7 @@ class Bootstrap(unittest.TestCase):
         else:
             command = ["sh", str(ROOT / "packaging/installer/plugin-step.sh")]
         return subprocess.run(command, cwd=self.root, env=self.env, capture_output=True,
-                              text=True, timeout=30)
+                              text=True, encoding="utf-8", errors="backslashreplace", timeout=30)
 
     def test_already_enabled_is_confirmed_without_warning(self):
         result = self.plugin_step(True)
@@ -155,6 +157,14 @@ class Bootstrap(unittest.TestCase):
         result = self.plugin_step(False)
         self.assertEqual(result.returncode, 0)
         self.assertIn("aviso:", result.stdout + result.stderr)
+
+    def test_installer_reports_a_real_download_failure(self):
+        self.archive.write_bytes(b"not an archive")
+        result = self.plugin_step(True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("aviso:", result.stdout + result.stderr)
+        self.assertIn("primeira sess", result.stdout + result.stderr)
+        self.assertFalse((self.bin / ".version").exists())
 
 
 if __name__ == "__main__":

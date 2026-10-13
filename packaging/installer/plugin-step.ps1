@@ -116,18 +116,20 @@ function Start-BinaryDownload {
         $limite = $lido
     }
 
-    # O caminho vai com as ASPAS DENTRO do elemento, e isto NAO e preciosismo.
-    # No Windows PowerShell 5.1 o `-ArgumentList` do Start-Process nao cita
-    # elemento nenhum: ele JUNTA a lista com espacos numa string so
-    # (`ProcessStartInfo.Arguments`), e a lista com escape por elemento
-    # (`ArgumentList`) so existe no .NET Core. Sem estas aspas, um perfil como
-    # `C:\Users\Ana Paula\` faz o cmd tentar rodar `C:\Users\Ana` — o
-    # download nunca acontece e a maquina termina com o plugin ligado e VAZIO,
-    # que e exatamente a metade dormente da armadilha que esta unidade fecha.
-    # O `cmd` continua no meio porque o mustard-boot e um `.cmd`, e o
-    # CreateProcess que o -NoNewWindow usa nao sabe abrir um por conta propria.
-    $proc = Start-Process -FilePath $env:ComSpec `
-        -ArgumentList '/c', "`"$boot`"", '--version' -NoNewWindow -PassThru
+    # Arguments is a native cmd command line on both .NET Framework and Core;
+    # keep its outer quotes and the script's own quotes for paths with spaces.
+    # Process.Start retains the native handle and exit code. Start-Process
+    # with -NoNewWindow can report null after a successful WaitForExit.
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $env:ComSpec
+    $start.Arguments = '/d /s /c ""' + $boot + '" --version"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    try { $proc = [System.Diagnostics.Process]::Start($start) }
+    catch {
+        Write-Host 'aviso: nao consegui iniciar a descida dos binarios do plugin.'
+        return
+    }
     if (-not $proc.WaitForExit($limite * 1000)) {
         # A ARVORE, nao so o cmd. O Kill() do .NET Framework nao tem
         # `entireProcessTree` (isso e .NET Core), entao matar o cmd sozinho
