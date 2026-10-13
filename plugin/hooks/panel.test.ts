@@ -1,6 +1,18 @@
 import { test, expect, mock } from 'claude-code/testing';
 import {contentPage,waveText} from './panel-content.js';
 
+test('delivery keeps native observations distinct from historical claims and agent interpretation',()=>{
+  const detail={delivery:{text:'O acesso atual não foi conferido.',observations:[
+    {receipt:'native-current',mode:'current',observed_at:'2026-10-12T12:00:00Z',source:'git --version',text:'Ferramenta executada.'},
+    {receipt:'native-old',mode:'historical',result_status:'failed',observed_at:'2026-10-11T12:00:00Z',source:'gcloud storage ls',text:'Relato de acesso anterior.'}]}};
+  const portuguese=waveText(detail,'Entrega',false),english=waveText(detail,'Entrega',true);
+  expect(portuguese).toContain('Relato do agente');expect(portuguese).toContain('Observação histórica');
+  expect(portuguese).toContain('2026-10-11T12:00:00Z');expect(portuguese).toContain('não esta interpretação');
+  expect(portuguese).toContain('Falha da ferramenta');expect(english).toContain('Tool failure');
+  expect(english).toContain('Historical observation');expect(english).toContain('not independently verified');
+  expect(waveText({delivery:{text:'Relato antigo sem recibos.'}},'Entrega')).toContain('não comprova os fatos');
+});
+
 test('Desktop reattachment recreates only a pane the user requested',async ($,on)=>{
   mock.clock(on);mock.env(on,{});let opens=0;
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));

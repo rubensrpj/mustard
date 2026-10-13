@@ -654,6 +654,7 @@ pub(crate) fn check_return(start: &Path, spec: &str, event_type: &str, draft: &m
     let Some(sent) = open_sends(&log).get(&wave).copied() else {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
     };
+    observations::check(&project.root,spec,&log,sent,wave,draft)?;
     if let Some(knowledge) = draft.get("knowledge") {
         let copy = wave_prompt::recorded_copy(&log, wave);
         let tree = copy
@@ -834,6 +835,7 @@ fn match_usage(log: &SpecLog, report: &mut Report, held: &[HeldReturn]) -> Resul
 /// Os trechos entre `<tag>` e `</tag>` de `raw`, na ordem.
 mod input;
 mod knowledge;
+mod observations;
 pub(crate) use input::parse_report;
 pub(super) use input::{line_object, tagged};
 
@@ -1038,6 +1040,7 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
             let mut draft = Map::new();
             draft.insert("wave".into(), json!(wave));
             draft.insert("text".into(), json!(report.delivered));
+            observations::carry(check.log(),report,wave,&mut draft);
             if let Some(blocked) = report.returns.last().and_then(|id| check.log().get(*id)).and_then(|e| e.str_field("blocked_by")) {
                 draft.insert("blocked_by".into(), json!(blocked));
             }
@@ -1278,6 +1281,108 @@ mod tests {
     /// As entradas de entrega que a resposta da rodada traz em `recorded`.
     fn delivered_entries(out: &Value) -> Vec<Value> {
         out["recorded"].as_array().into_iter().flatten().filter(|r| r["type"] == json!("delivered")).cloned().collect()
+    }
+
+    #[test]
+    fn current_tool_receipts_survive_delivery_and_old_reports_never_become_current_facts() {
+        use mustard_core::domain::model::contract::HookInput;
+        use mustard_core::io::observations;
+        let dir=tempdir().unwrap(); let root=dir.path();
+        approved(root,"x",&[(1,&["src/a.rs"],&[])]);
+        round(root,"x",None);
+        let path=store::spec_file(root,"x").unwrap();
+        let log=store::read(&path).unwrap().unwrap();
+        let send=*open_sends(&log).get(&1).unwrap();
+        let copy=slot_of(root,1);
+        // The observation comes from an actual read-only command, followed
+        // by the same native hook payload the host emits.
+        let result=Command::new("git").arg("--version").current_dir(&copy).output().unwrap();
+        let input:HookInput=serde_json::from_value(json!({"hook_event_name":"PostToolUse","cwd":copy,
+            "session_id":"receipt-session","agent_id":"receipt-agent","tool_name":"Bash","tool_use_id":"receipt-call",
+            "tool_input":{"command":"git --version"},"tool_response":{"exit_code":result.status.code(),"stdout":String::from_utf8_lossy(&result.stdout)}})).unwrap();
+        assert!(crate::shared::tool_observations::capture(root,"claude","PostToolUse",&input).unwrap().is_ok());
+        let receipts=crate::shared::tool_observations::list(root,"x",Some(log.dispatch_position(send)));
+        assert_eq!(receipts.len(),1);
+        let id=receipts[0]["receipt"].as_str().unwrap();
+        let mut old=observations::read(root,id).unwrap(); old.dispatch=1; old.call="older-call".into(); old.observed_at="2026-01-01T00:00:00Z".into();
+        let (old_id,_)=observations::record(root,&old).unwrap();
+        let claim=|mode|json!({"wave":1,"text":"Consulta concluída.","files":[],"observations":[{"receipt":old_id,"mode":mode,"text":"A fonte estava indisponível."}]});
+        let refused=returned(root,claim("current"));
+        assert_eq!(refused["ok"],false,"{refused}");
+        assert!(refused.to_string().contains("historical-source-cannot-be-current"),"{refused}");
+        let delivered=json!({"wave":1,"text":"Consulta concluída.","files":[],"observations":[
+            {"receipt":id,"mode":"current","text":"A ferramenta devolveu a versão."},
+            {"receipt":old_id,"mode":"historical","text":"O acesso antigo não foi conferido agora."}]});
+        let written=returned(root,delivered);
+        assert_eq!(written["ok"],true,"{written}");
+        let out=round(root,"x",None);
+        assert_eq!(out["ok"],true,"{out}");
+        let detail=crate::commands::panel::wave_detail(root,"x",1);
+        assert_eq!(detail["delivery"]["report_status"],"reported-unverified");
+        assert_eq!(detail["delivery"]["observations"][0]["exit_code"],0);
+        assert_eq!(detail["delivery"]["observations"][1]["observed_at"],"2026-01-01T00:00:00Z");
+        assert_eq!(detail["delivery"]["observations"][0]["claim_verified"],false);
+        assert_eq!(observations::read(root,id).unwrap().source,"git --version");
+    }
+
+    #[test]
+    fn codex_tool_receipts_bind_the_copy_without_guessing_success_or_storing_result_bodies() {
+        use mustard_core::domain::model::contract::HookInput;
+        let dir=tempdir().unwrap(); let root=dir.path();
+        approved(root,"x",&[(1,&["src/a.rs"],&[])]);
+        let start:HookInput=serde_json::from_value(json!({"cwd":root,"hook_event_name":"SessionStart","session_id":"native-codex-session"})).unwrap();
+        crate::host::codex("SessionStart",&start);
+        super::super::round_in(&super::super::RoundOpts{root:root.into(),spec:Some("x".into()),report:None},Caller{session:Some("native-codex-session"),config_dir:None});
+        let log=store::read(&store::spec_file(root,"x").unwrap()).unwrap().unwrap();
+        let send=*open_sends(&log).get(&1).unwrap();let copy=slot_of(root,1);
+        let result=Command::new("git").arg("--version").current_dir(&copy).output().unwrap();
+        let input:HookInput=serde_json::from_value(json!({"hook_event_name":"PostToolUse","cwd":root,
+            "session_id":"native-codex-session","call_id":"native-codex-call","tool_name":"exec_command",
+            "tool_input":{"cmd":format!("cd '{}' && DB_PASSWORD=abc12345verysecret git --version",copy.display())},
+            "tool_response":{"output":String::from_utf8_lossy(&result.stdout),"private_fixture":"not-for-the-receipt-body"}})).unwrap();
+        crate::host::codex("PostToolUse",&input);
+        let rows=crate::shared::tool_observations::list(root,"x",Some(log.dispatch_position(send)));
+        assert_eq!(rows.len(),1,"{rows:?}");
+        assert!(rows[0]["exit_code"].is_null(),"Text alone cannot prove success");
+        assert!(!rows[0]["source"].as_str().unwrap().contains("abc12345verysecret"));
+        let database=std::fs::read(root.join(".claude/mustard/observations.db")).unwrap();
+        let bytes=String::from_utf8_lossy(&database);
+        assert!(!bytes.contains("not-for-the-receipt-body"));
+        assert!(!bytes.contains("abc12345verysecret"));
+        let mut unidentified=input;unidentified.raw.as_object_mut().unwrap().remove("call_id");
+        crate::host::codex("PostToolUse",&unidentified);
+        assert_eq!(crate::shared::tool_observations::list(root,"x",Some(log.dispatch_position(send))).len(),1);
+        unidentified.raw["call_id"]=json!("native-codex-failed");
+        unidentified.raw["tool_response"]["isError"]=json!(true);
+        crate::host::codex("PostToolUse",&unidentified);
+        let failures=crate::shared::tool_observations::list(root,"x",Some(log.dispatch_position(send)));
+        assert!(failures.iter().any(|row|row["result_status"]=="failed" && row["exit_code"].is_null()));
+        unidentified.raw["call_id"]=json!("ambiguous-copy-call");
+        unidentified.tool_input["cmd"]=json!(format!("diff '{}/a' '{}/other/slot/b'",copy.display(),mustard_core::io::wave_prompt::copies_dir(root).display()));
+        crate::host::codex("PostToolUse",&unidentified);
+        assert_eq!(crate::shared::tool_observations::list(root,"x",Some(log.dispatch_position(send))).len(),failures.len(),"Ambiguous copy references cannot claim a current dispatch");
+    }
+
+    #[test]
+    fn a_failed_claude_tool_records_fresh_failure_without_claiming_an_exit_code_or_blocking_the_host() {
+        use mustard_core::domain::model::contract::{HookInput,Trigger};
+        let dir=tempdir().unwrap();let root=dir.path();
+        approved(root,"x",&[(1,&["src/a.rs"],&[])]);round(root,"x",None);
+        let log=store::read(&store::spec_file(root,"x").unwrap()).unwrap().unwrap();
+        let send=*open_sends(&log).get(&1).unwrap();let copy=slot_of(root,1);
+        let result=Command::new("git").args(["-C","no-such-directory","status"]).current_dir(&copy).output().unwrap();
+        assert!(!result.status.success());
+        let input:HookInput=serde_json::from_value(json!({"hook_event_name":"PostToolUseFailure","cwd":copy,
+            "session_id":"failed-tool-session","agent_id":"wave-agent","tool_name":"Bash","tool_use_id":"failed-tool-call",
+            "tool_input":{"command":"git -C no-such-directory status"},"error":String::from_utf8_lossy(&result.stderr),"is_interrupt":false})).unwrap();
+        let outcome=crate::dispatch::run_event(Trigger::from_event_name("PostToolUseFailure"),&input);
+        assert!(!outcome.is_blocking());
+        let rows=crate::shared::tool_observations::list(root,"x",Some(log.dispatch_position(send)));
+        assert_eq!(rows.len(),1);assert_eq!(rows[0]["result_status"],"failed");
+        assert!(rows[0]["exit_code"].is_null());
+        let hosts=crate::shared::host_observation::snapshot(root);
+        assert_eq!(hosts["observations"][0]["tool_failures"],1);
+        assert_eq!(hosts["observations"][0]["tool_receipt_events"],1);
     }
 
     /// A resposta da rodada mostra o que cada onda que voltou entregou: o

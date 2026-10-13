@@ -879,6 +879,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("proofs", Kind::Objects),
             // Optional reusable conclusions with exact current source receipts.
             opt("knowledge", Kind::Objects),
+            // Native tool receipts; free prose remains an agent report.
+            opt("observations", Kind::Objects),
+            opt("report_status", Kind::OneOf(&["reported-unverified"])),
             // As ondas que um conserto fecha.
             opt("fixes", Kind::Ints),
             // O que o agente achou fora da tarefa e não é dele consertar, cada

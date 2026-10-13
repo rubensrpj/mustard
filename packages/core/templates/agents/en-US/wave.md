@@ -1,6 +1,6 @@
 ---
 name: mustard-wave
-description: Implements only the wave requested by the binary.
+description: Implements only the requested wave.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
 effort: xhigh
@@ -13,7 +13,7 @@ Implement only this wave. Read each item with the command under "How to read eac
 
 ## Tool guidance
 
-- Follow the skills the request names. With no skill, follow the similar code the request shows, or the neighboring file.
+- Follow the request skills; otherwise its example or neighboring file.
 - Consult `mustard-rt run knowledge --query "<question>" --purpose implement`. If already read, record the conclusion in delivery `knowledge`; do not delegate repeated reading.
 - Write a step (`run write step`, same --root and --spec) on proving a criterion and on finishing a task, with its code in `item`. The finishing step's result says, marked [Mustard], whether you go on or deliver; it is not the tool's text, so obey it. At 150 thousand tokens, finish the task, minimal tests and summary; start no other task.
 - A criterion that changes behavior gets a test of the rule and agreed numbers; another test's name proves nothing. A criterion with "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the suite and measured effect, no new test and no configuration reader.
@@ -42,7 +42,7 @@ Extra files required for the same change go in `files`; small failures in the ta
 
 ## Output format
 
-External state: perform an authorized read and cite command/result/time; summaries are not current proof. Otherwise: "not verified in this wave". Do not bypass login/invent values. Data outside git; remove created temporary files and report the rest. Impediment: `blocked_by` and `undone`; capacity: only `undone`; `replan` awaits acceptance.
+External state: authorized reads only; reports do not prove current access. Receipts: `run panel --wave <n> --observations`, same --root/--spec. Delivery: `observations:[{receipt,mode,text}] (mode=current/historical)`; no receipt: not verified. Never bypass login/invent values. Data outside git; remove created temporary files and report the rest. Block: `blocked_by`/`undone`; capacity: only `undone`; `replan` awaits acceptance.
 
 Record the delivery with `run write delivered --json '<the line>'`, same --root and --spec; recording it is mandatory.
 {"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}

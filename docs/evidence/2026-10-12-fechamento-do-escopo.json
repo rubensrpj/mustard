@@ -1,0 +1,132 @@
+{
+  "recorded_at": "2026-10-13T02:20:11.955882+00:00",
+  "baseline_release": "v0.2.17",
+  "baseline_commit": "5ec5688894767e2637c4d97ca95d161015011d09",
+  "candidate_branch": "codex/close-today-scope",
+  "rust": {
+    "passed": 4101,
+    "failed": 0,
+    "ignored": 2,
+    "by_component": {
+      "core": 1262,
+      "runtime": 2193,
+      "cli": 69,
+      "scan": 577
+    }
+  },
+  "plugin": {
+    "passed": 44,
+    "failed": 0,
+    "native_host_version": "2.1.296"
+  },
+  "ci_routing": {
+    "passed": 22,
+    "failed": 0
+  },
+  "source_sha256": {
+    "MUSTARD-COMMANDS.md": "7588848dda92b01bacc6d0ddedc4b6bcbe6db1f4dbd5d72bd931207198a81d01",
+    "apps/rt/src/commands/flow/round/report.rs": "5d3b7ba322890a2a633eda76aa3f7bcd2b234371e9450cb2914e8936e8fa5cc5",
+    "apps/rt/src/commands/flow/round/report/observations.rs": "0c55e2f9bbadfdb238892fa87d7865751ba31d60e2e745cfc02e40a15a422960",
+    "apps/rt/src/commands/panel/cli.rs": "0b9202284b8f63ff736aa80dde7845f921d6ed3bd26650411fbebdafba1f64c6",
+    "apps/rt/src/commands/panel/mod.rs": "5194c46b6beb18ba2c273fb696b48972a9ee591a32cd5bc32fa2025235f5c8d8",
+    "apps/rt/src/shared/host_observation.rs": "ec1d088a2a66bc66495342e8de15d99caf508ed43dcb293cb4550d3fe9b3b32c",
+    "apps/rt/src/shared/host_observation/transcripts.rs": "98b6367a0af313afc0d0b76f25e18d5d9583f3440cdfcc31819ae8a69e820773",
+    "apps/rt/src/shared/mod.rs": "0c1474bf0f5850cebe99ea111480d6cf33c27f10dddca1e2b0c78b353c8ebfa3",
+    "apps/rt/src/shared/tool_observations.rs": "8a292b0615f560e8e943bc0c5fcd127b94ce936163ae3e42873062e21fe825c2",
+    "apps/rt/tests/hooks_never_break_the_session.rs": "b41e1bb047510b545bd70fb23c74822e0982f0420087e69ec8bb2d8dbc669660",
+    "apps/rt/tests/panel_settings.rs": "eeee5f57e1f1fb932a82ebc6ea1fa295b99ee85bcc5cd9d6cb9b16f74a150cca",
+    "apps/rt/tests/plugin_agents.rs": "d3f47c2bd836c9e6c6d2eff43f227b550d2d4f30342995d98726077352d3e001",
+    "apps/rt/tests/template_parity.rs": "aec63a6da4421a93eb8748f27fc2350d80c39e30410e90d1abef94d328a6195f",
+    "packages/core/src/domain/model/contract.rs": "842f07d26cf06990c334e3db72a3e203825b7ec205058b421d128ecd211194f2",
+    "packages/core/src/domain/spec_events/types.rs": "298bd1fcbda0058ad6d41e7959c9a4c177b6886f8a22aadc89d225d0387f01b3",
+    "packages/core/src/io/mod.rs": "ed0657017a65fa05337cd2f8e9d51e7d8e381751a956ba201ad8f72a07460b4e",
+    "packages/core/src/io/observations.rs": "8e259d9e9194287d1416b2b91433c320fae52c90fd2862cf62a1565c38197f58",
+    "packages/core/templates/agents/en-US/wave.md": "fe0c8a23d923bd7456163bca195d5cd496e22014ae3eebca8d6121a6d387049c",
+    "packages/core/templates/agents/pt-BR/wave.md": "e783bf4770ec60c885056db479cd5a6c2a63ccc4d90394af8f8eeba6138d7706",
+    "plugin/hooks/hooks.json": "f5b69b58e4122811cf3859ee78fd0620800c2af81d793ca13bc1ac2e9e1d51eb",
+    "plugin/hooks/panel-content.js": "758cbab5582246d2af410d03ead3605f97691850e8f1c3f1b48e7c285c4f6de5",
+    "plugin/hooks/panel.test.ts": "efa776073758b7d61cfc49c92819366b149c2af774bbadd4e42d9cd62d54e3dc"
+  },
+  "candidate_binaries": {
+    "mustard": "9571fd56bff955d6766dd19a643d952c6c1581dcf99a593f7485cb7e30389271",
+    "mustard-rt": "f2b763d84dc896fb5045b46ec5e474ea1548c43516654ab21722871b4fa2c6ce",
+    "scan": "6bb818ee663428eab051fc13a9789f7f99b20584b2edb5f8c2eb9dfdf9ad9a9b",
+    "rtk": "a051b22361c7cfa36022bc3f06bb41cdc88e58a07263dc340d8bd3468c41befe",
+    "rg": "e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849"
+  },
+  "logs": {
+    "core_rt_final": {
+      "path": "/tmp/mustard-close-core-rt-final.log",
+      "sha256": "c2563b19c05fc3aff8421fd1bc09a4f103751386306f0f9784a3910d05d12200",
+      "scope": "core/runtime final: 3454 passing, 2 legacy measurements ignored"
+    },
+    "cli_scan": {
+      "path": "/tmp/mustard-close-full-tests.log",
+      "sha256": "9596a69132b1bb47183b69b0dd605bf31a9f63d5996e139b73072872ab6249ff",
+      "scope": "CLI/scan only: 646 passing; two later-corrected template failures in runtime integration are superseded by core_rt_final"
+    },
+    "report_final": {
+      "path": "/tmp/mustard-close-report-final.log",
+      "sha256": "874c87c4e28a3c62cbe0075b6ffe9510d4484b588e81afe7263427b0b5ab755f",
+      "scope": "101 report regressions passed after rejecting ambiguous copy provenance"
+    },
+    "plugin": {
+      "path": "/tmp/mustard-close-plugin.log",
+      "sha256": "22bdd03646c7f55673d18b073f9f8e3c2f8b32f2614ab9d0ebfe9f1108203b90",
+      "scope": "44 plugin tests passed"
+    },
+    "plugin_validation": {
+      "path": "/tmp/mustard-close-plugin-validate.log",
+      "sha256": "6bf5f91b7002bdcfa415782947f2873663b6aff8365cb0610fe88196ad948bd8",
+      "scope": "native plugin manifest validation passed"
+    },
+    "ci_routing": {
+      "path": "/tmp/mustard-close-ci-routing.log",
+      "sha256": "60f4e26edb74895cacb404be316f733a3b780161e72086eef9cb051dc10edcb0",
+      "scope": "22 CI routing tests passed"
+    },
+    "clippy": {
+      "path": "/tmp/mustard-close-clippy.log",
+      "sha256": "50b39a3d2aa0e369b47d20ae30e444819fb0ad52f0c88a32b81743c025f066e0",
+      "scope": "workspace/all targets/-D warnings passed"
+    },
+    "build": {
+      "path": "/tmp/mustard-close-build.log",
+      "sha256": "a1dcc731ea58ce7f5ce0d7aa7488e40f774839671e753202b00cd96245c8a887",
+      "scope": "workspace mustard-dev profile build passed"
+    },
+    "installation": {
+      "path": "/tmp/mustard-close-smoke-install.log",
+      "sha256": "ff5810e181226c797942ef2613b0d39f966261750921f430b0eb06e95c575fac",
+      "scope": "candidate executables, real packaged RTK/rg, disposable install/update smoke passed"
+    },
+    "receipt_cli": {
+      "path": "/tmp/mustard-close-receipts-cli.log",
+      "sha256": "ae431701615e9805e224654deeaf8d8d2114138917fb8601834bc5001f1484c9",
+      "scope": "actual native panel CLI: 33 receipts in two pages without a project-wide snapshot"
+    }
+  },
+  "native_receipts_regressions": [
+    "replayed-call-preserves-time",
+    "conflicting-payload-rejected",
+    "old-dispatch-cannot-be-current",
+    "caller-cannot-set-observed-time",
+    "scope-bound-keyset-pagination",
+    "claude-failed-tool-is-nonblocking",
+    "codex-exit-unknown-remains-unknown",
+    "command-secrets-redacted-and-output-body-not-persisted",
+    "ambiguous-copy-dispatch-is-not-guessed",
+    "observations-carried-into-integrated-delivery"
+  ],
+  "post_release_acceptances_confirmed_by_user": [
+    "Windows Desktop through SSH",
+    "actual native Haiku/Luna discovery/version/medium/total input telemetry"
+  ],
+  "not_proven": [
+    "net end-to-end token savings",
+    "equivalent generic/skills/specialized implementation comparison",
+    "authenticated external bucket access or publication"
+  ],
+  "user_projects_reinstalled": false,
+  "new_model_cli_or_generation_api_started": false
+}
