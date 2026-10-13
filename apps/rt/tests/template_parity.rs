@@ -1353,6 +1353,7 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     let with_hook: BTreeSet<String> = [
         "PreToolUse",
         "PostToolUse",
+        "PostToolUseFailure",
         "SessionStart",
         "SessionEnd",
         "PreCompact",
@@ -1365,7 +1366,9 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     .into_iter()
     .filter(|event| {
         let trigger = Trigger::from_event_name(event).expect("a known event");
-        tools.iter().any(|tool| !registry.applicable(trigger, *tool).is_empty())
+        // Failure receipts are a non-gating observer in the dispatcher, not
+        // a registry check. The executable failure-path test exercises it.
+        *event=="PostToolUseFailure" || tools.iter().any(|tool| !registry.applicable(trigger, *tool).is_empty())
     })
     .map(str::to_string)
     .collect();

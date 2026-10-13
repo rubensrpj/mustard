@@ -31,6 +31,8 @@ pub enum Trigger {
     PreToolUse,
     /// After a tool runs — observe results, cannot deny the call.
     PostToolUse,
+    /// Claude reports a failed/interrupted tool separately from success.
+    PostToolUseFailure,
     /// A new Claude Code session started.
     SessionStart,
     /// A Claude Code session ended.
@@ -59,6 +61,7 @@ impl Trigger {
         match name {
             "PreToolUse" => Some(Self::PreToolUse),
             "PostToolUse" => Some(Self::PostToolUse),
+            "PostToolUseFailure" => Some(Self::PostToolUseFailure),
             "SessionStart" => Some(Self::SessionStart),
             "SessionEnd" => Some(Self::SessionEnd),
             "PreCompact" => Some(Self::PreCompact),
@@ -78,6 +81,7 @@ impl Trigger {
         match self {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
+            Self::PostToolUseFailure => "PostToolUseFailure",
             Self::SessionStart => "SessionStart",
             Self::SessionEnd => "SessionEnd",
             Self::PreCompact => "PreCompact",

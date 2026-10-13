@@ -1,5 +1,7 @@
 # Validação final das correções e das lacunas de produto
 
+Continuação após a v0.2.17: [conferência do escopo de 12/10 e recibos de observação externa](2026-10-12-fechamento-do-escopo.md), na branch local `codex/close-today-scope`, ainda sem PR. Os números abaixo pertencem à etapa anterior; não devem ser apresentados como medições novas desta continuação.
+
 Base de comparação: **v0.2.16 publicada**, commit `716c7287ba3f28f840c6542105701e0dfae77f11`. Continuação na branch `codex/finish-product-gaps`, em worktree isolada. A [lista de 86 pedidos](2026-10-12-pedidos-e-entregas.md) discrimina implementação, evidência e aceites externos. Os relatórios anteriores são históricos, não o estado de uma instalação atual.
 
 ## Correções concluídas no código

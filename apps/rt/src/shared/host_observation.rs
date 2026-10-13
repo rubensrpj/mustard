@@ -13,6 +13,7 @@ use std::{
 
 mod transcripts;
 pub(crate) use transcripts::wave_usage;
+pub(crate) use transcripts::tool_binding;
 
 /// A CLI call must not inherit another host's most recent session by mtime.
 pub(crate) fn caller_host(root: &Path, session: Option<&str>) -> &'static str {
@@ -45,6 +46,7 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
         return;
     }
     transcripts::observe(root,host,event,input);
+    let receipt=super::tool_observations::capture(root,host,event,input);
     let path = root
         .join(".claude/mustard/host-observations")
         .join(format!("{host}-{}.json", digest(session)));
@@ -80,6 +82,11 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
             .saturating_add(1)
     );
     value["last_event"] = json!(event);
+    if let Some(receipt)=receipt {
+        let field=if receipt.is_ok() {"tool_receipt_events"} else {"tool_receipt_failures"};
+        value[field]=json!(value[field].as_u64().unwrap_or(0).saturating_add(1));
+        if let Err(reason)=receipt {value["last_tool_receipt_error"]=json!(reason);}
+    }
     if let Some(cwd)=input.cwd.as_deref() {
         let identity=digest(cwd);
         if value["working_directory_id"].as_str().is_some_and(|previous|previous!=identity) {
@@ -105,7 +112,7 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
     {
         value["observed_agent_type"] = json!(agent);
     }
-    if event == "PostToolUse"
+    if event=="PostToolUseFailure" || event == "PostToolUse"
         && input
             .raw
             .pointer("/tool_response/isError")

@@ -569,12 +569,12 @@ fn wave_template_does_not_say_to_redo_what_the_request_already_carries() {
     for (lang, said, repeated) in [
         (
             "pt-BR",
-            "siga o código parecido que o pedido mostra, ou o arquivo vizinho",
+            "Sem skill, siga o exemplo indicado ou o arquivo vizinho",
             ["map examples", "map importers", "idiomas do cabeçalho"],
         ),
         (
             "en-US",
-            "follow the similar code the request shows, or the neighboring file",
+            "otherwise its example or neighboring file",
             ["map examples", "map importers", "languages in the request's header"],
         ),
     ] {
