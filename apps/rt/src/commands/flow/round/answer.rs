@@ -1052,6 +1052,13 @@ pub(super) fn run_entered_round(
     // substituído deixou na vaga.
     let current = in_flight.values().any(|(_, sent)| log.get(*sent).is_none()).then(|| store::read(&path).ok().flatten()).flatten();
     let now = current.as_ref().unwrap_or(&log);
+    // A tarefa pronta que ficou na fila sai com o motivo, lido da spec de
+    // depois dos envios desta rodada, e o próximo passo o diz numa linha.
+    let queued = super::scheduling::held(root, now, lang);
+    let then = match &queued {
+        Some(queued) => [then, queued.line.clone()].into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" "),
+        None => then,
+    };
     let running: Vec<Value> = in_flight.iter().map(|(wave, (send, sent))| running_state(root, &spec, now, &codes, *wave, send, *sent)).collect();
     let mut out = json!({
         "ok": true,
@@ -1071,6 +1078,9 @@ pub(super) fn run_entered_round(
     }
     if !stopped.is_empty() {
         out["stopped"] = json!(stopped);
+    }
+    if let Some(queued) = queued {
+        out["held"] = json!(queued.tasks);
     }
     if let Some(commit) = commit {
         out["commit"] = commit;

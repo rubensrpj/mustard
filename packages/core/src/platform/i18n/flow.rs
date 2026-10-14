@@ -1135,6 +1135,42 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Nothing new to dispatch or review: waves {waves} are in flight, and their requests \
              already went out."
         }
+        // O que segura a tarefa pronta que a rodada deixou na fila: o detalhe
+        // de cada motivo, no `held` da resposta, e as frases do próximo passo.
+        ("round.queued.capacity", Locale::PtBr) => {
+            "o limite é de {limit} ondas compilando ao mesmo tempo ({origin}), e as {occupied} vagas estão com as ondas {waves}"
+        }
+        ("round.queued.capacity", Locale::EnUs) => {
+            "the limit is {limit} waves compiling at once ({origin}), and the {occupied} slots are held by waves {waves}"
+        }
+        ("round.queued.no_slots", Locale::PtBr) => {
+            "o limite é de {limit} ondas compilando ao mesmo tempo ({origin}), e com esse número nenhuma onda sai"
+        }
+        ("round.queued.no_slots", Locale::EnUs) => {
+            "the limit is {limit} waves compiling at once ({origin}), and with that number no wave goes out"
+        }
+        ("round.queued.origin_config", Locale::PtBr) => "`maxCompilingWaves` do `mustard.json`",
+        ("round.queued.origin_config", Locale::EnUs) => "`maxCompilingWaves` in `mustard.json`",
+        ("round.queued.origin_default", Locale::PtBr) => "padrão do Mustard, sem `maxCompilingWaves` no `mustard.json`",
+        ("round.queued.origin_default", Locale::EnUs) => "Mustard default, with no `maxCompilingWaves` in `mustard.json`",
+        ("round.queued.file", Locale::PtBr) => "arquivo {files}, reservado pela onda {wave}",
+        ("round.queued.file", Locale::EnUs) => "file {files}, held by wave {wave}",
+        ("round.queued.cleanup", Locale::PtBr) => "limpeza: sai depois das outras tarefas do backlog",
+        ("round.queued.cleanup", Locale::EnUs) => "cleanup: goes out after the other backlog tasks",
+        ("round.queued.assembly", Locale::PtBr) => {
+            "pronta e com vaga, mas fora desta montagem. Ela voltou ao backlog nesta rodada, ou divide código com \
+             uma onda aberta ou com outra tarefa que espera. A próxima rodada confere de novo"
+        }
+        ("round.queued.assembly", Locale::EnUs) => {
+            "ready with a free slot, but left out of this assembly. It returned to the backlog this round, or shares \
+             code with an open wave or another waiting task. The next round checks again"
+        }
+        ("round.queued.line_capacity", Locale::PtBr) => "Sem vaga para {tasks}: {detail}. A fila anda quando uma onda voltar.",
+        ("round.queued.line_capacity", Locale::EnUs) => "No slot for {tasks}: {detail}. The queue moves when a wave returns.",
+        ("round.queued.line_file", Locale::PtBr) => "{task} espera o {detail}.",
+        ("round.queued.line_file", Locale::EnUs) => "{task} waits for the {detail}.",
+        ("round.queued.line_other", Locale::PtBr) => "Também ficaram na fila: {tasks}; o motivo de cada uma está em `held`.",
+        ("round.queued.line_other", Locale::EnUs) => "Also left in the queue: {tasks}; each one's reason is in `held`.",
         ("round.close", Locale::PtBr) => "Todas as ondas estão entregues e aprovadas: feche a spec com `{command}`.",
         ("round.close", Locale::EnUs) => "Every wave is delivered and approved: close the spec with `{command}`.",
         ("round.review_open", Locale::PtBr) => {
@@ -1839,7 +1875,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 243, 0x5820_66cf_e1a1_acba);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 253, 0x805a_cf0f_7cec_b38b);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
