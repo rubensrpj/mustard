@@ -185,3 +185,47 @@ fn rtk_readers_of_the_config_are_refused() {
         assert!(!result.to_string().contains(SECRET), "{original}: {result}");
     }
 }
+
+fn git(root: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+        .args(args).current_dir(root).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// The read refused in the main checkout of a TypeScript project hands back a
+/// command that, run inside the wave's separate copy — where the session moves
+/// every command of a wave agent and where the configuration, kept out of git,
+/// does not exist —, still shows the main checkout's file with the key
+/// masked. With the file missing in both places, the answer names both.
+#[test]
+fn a_masked_read_inside_a_wave_copy_reads_the_main_checkout_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("shop");
+    std::fs::create_dir_all(main.join("src")).unwrap();
+    std::fs::write(main.join("src/app.ts"), "export const answer = 42;\n").unwrap();
+    git(&main, &["init", "-q"]);
+    git(&main, &["add", "-A"]);
+    git(&main, &["commit", "-q", "-m", "seed"]);
+    std::fs::write(main.join("mustard.json"), CONFIG).unwrap();
+    let copy = dir.path().join("copies").join("d");
+    git(&main, &["worktree", "add", "-q", "--detach", copy.to_str().unwrap()]);
+    assert!(!copy.join("mustard.json").exists(), "the wave copy carries no configuration");
+
+    let command = masked_command(&main, "grep -n -E 'flow|key' mustard.json");
+    let out = shell(&copy, &command);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(text, "2:  \"git\": {\"flow\": {\"*\": \"develop\"}},\n5:  \"jev\": {\"key\": \"***\"}\n");
+    // The folder and the file name, as each system writes them: the full path
+    // may come back resolved, through a link or with a long-path prefix.
+    let named = |text: &str, folder: &str| text.contains(&Path::new(folder).join("mustard.json").display().to_string());
+    let note = String::from_utf8_lossy(&out.stderr);
+    assert!(named(&note, "shop"), "the answer says which file it read: {note}");
+
+    std::fs::remove_file(main.join("mustard.json")).unwrap();
+    let missing = shell(&copy, &command);
+    let reason = String::from_utf8_lossy(&missing.stderr);
+    assert!(!missing.status.success() && missing.stdout.is_empty(), "{reason}");
+    assert!(named(&reason, "d") && named(&reason, "shop"), "both places are named: {reason}");
+}

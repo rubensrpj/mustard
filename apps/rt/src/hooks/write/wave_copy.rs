@@ -91,18 +91,30 @@ fn bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         if let Some(arg) = segment.args.iter().find(|arg| !arg.text.starts_with('-')) {
             let given = Path::new(&arg.text);
             let path = if given.is_absolute() { given.to_path_buf() } else { cwd.join(given) };
-            if (path.starts_with(&copies) || path.starts_with(root)) && path.canonicalize().is_ok_and(|path| !path.starts_with(&real)) {
-                // A pasta de cópias pode morar dentro do projeto: ela decide primeiro.
+            let Some(entered) = path.canonicalize().ok().filter(|entered| !entered.starts_with(&real)) else { continue };
+            if path.starts_with(&copies) || path.starts_with(root) {
+                // A pasta de cópias pode morar dentro do projeto: ela decide
+                // primeiro. A pasta dela acima da cópia desta onda só guarda
+                // cópias: não é a cópia de onda nenhuma.
                 let another_copy = path.starts_with(&copies);
+                let base = (another_copy && real.starts_with(&entered)).then(|| wave_prompt::shown(&path));
                 let shown = wave_prompt::shown(expected);
                 let reason = match ctx.config.language().text_or_default() {
                     mustard_core::SupportedLocale::PtBr => format!(
                         "Mustard: a onda {wave} usa somente {shown}. O comando tenta entrar {}; rode-o de dentro da cópia, sem `cd` para fora dela.",
-                        if another_copy { "na cópia de outra onda" } else { "no checkout principal" }
+                        match &base {
+                            Some(base) => format!("em {base}, a pasta-base das cópias, que não é a cópia de nenhuma onda"),
+                            None if another_copy => "na cópia de outra onda".into(),
+                            None => "no checkout principal".into(),
+                        }
                     ),
                     mustard_core::SupportedLocale::EnUs => format!(
                         "Mustard: wave {wave} uses only {shown}. The command tries to enter {}; run it inside the copy, without a `cd` out of it.",
-                        if another_copy { "another wave's copy" } else { "the main checkout" }
+                        match &base {
+                            Some(base) => format!("{base}, the base folder of the copies, which is no wave's copy"),
+                            None if another_copy => "another wave's copy".into(),
+                            None => "the main checkout".into(),
+                        }
                     ),
                 };
                 return Some(Verdict::Deny { reason });
@@ -196,6 +208,25 @@ mod tests {
         assert!(main.contains("no checkout principal") && !main.contains("outra onda"), "{main}");
         let other = refusal(format!("cd '{}' && pwd", b.display()));
         assert!(other.contains("na cópia de outra onda"), "{other}");
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// O `cd` para a pasta-base das cópias, que a sessão do agente recebe
+    /// como pasta de trabalho, e para a pasta das cópias da spec é recusado
+    /// nomeando a pasta-base, e não como a cópia de outra onda.
+    #[test]
+    fn a_wave_agent_entering_the_copies_base_is_told_it_is_the_copies_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (a, _, ctx, mut input) = dispatched_worker(root);
+        input.cwd = Some(a.to_string_lossy().into_owned());
+        input.tool_name = Some("Bash".into());
+        for base in [wave_prompt::copies_dir(root), wave_prompt::spec_copies_dir(root, "work")] {
+            input.tool_input = json!({ "command": format!("cd '{}' && mustard-rt run read request-1", base.display()) });
+            let Verdict::Deny { reason } = guard_bash(&input, &ctx, Verdict::Allow) else { panic!("{}: not refused", base.display()) };
+            assert!(reason.contains(&format!("em {}, a pasta-base das cópias", wave_prompt::shown(&base))), "{reason}");
+            assert!(!reason.contains("outra onda") && !reason.contains("checkout principal"), "{reason}");
+        }
         std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
 }

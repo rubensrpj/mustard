@@ -2,8 +2,10 @@
 //! The caller's shell owns sequencing, pipes, redirects and permissions.
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 
 use crate::shared::config_key;
 
@@ -64,23 +66,55 @@ pub fn run(file: &Path, reader: &str, args_json: &str) {
     std::process::exit(code);
 }
 
-fn execute(file: &Path, reader: &str, args_json: &str) -> Result<i32, &'static str> {
+/// Where `file` is looked for, in order: the path as given and, when it sits
+/// in a linked git worktree such as a wave's separate copy, the same place in
+/// the main checkout. The configuration stays out of git, so a copy has none
+/// of its own, and the one the session follows is the main checkout's.
+fn lookup_places(file: &Path) -> Vec<PathBuf> {
+    let given = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
+    let main = given.parent().and_then(|folder| folder.canonicalize().ok()).and_then(|folder| {
+        let top = folder.ancestors().find(|above| is_git_repo_root(above))?;
+        let main = linked_worktree_main(top)?;
+        Some(main.join(folder.strip_prefix(top).ok()?).join(given.file_name()?))
+    });
+    std::iter::once(given).chain(main).collect()
+}
+
+/// The first of `places` that exists, opened. A file there that cannot be
+/// opened stops the search; when none exists, the answer names every place.
+fn open(places: &[PathBuf]) -> Result<(std::fs::File, &Path), String> {
+    for place in places {
+        match std::fs::File::open(place) {
+            Ok(handle) => return Ok((handle, place)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(format!("configuration could not be opened: {}", place.display())),
+        }
+    }
+    let looked: Vec<String> = places.iter().map(|place| place.display().to_string()).collect();
+    Err(format!("configuration not found; looked in {}", looked.join(", ")))
+}
+
+fn execute(file: &Path, reader: &str, args_json: &str) -> Result<i32, String> {
     let args: Vec<String> = serde_json::from_str(args_json).map_err(|_| "invalid reader arguments")?;
     if !config_key::is_config_file(&file.to_string_lossy()) || !supported(reader, &args) {
-        return Err("unsupported configuration reader; no command executed");
+        return Err("unsupported configuration reader; no command executed".into());
     }
     // Read again at execution time, never a cached copy or a secret-bearing
     // temporary file. Preserve original formatting and line numbers.
     const LIMIT: u64 = 1_048_576;
+    let places = lookup_places(file);
+    let (handle, place) = open(&places)?;
+    if place != places[0].as_path() {
+        eprintln!("[Mustard] config-read: {} is missing in this copy; read {}, the main checkout's", file.display(), place.display());
+    }
     let mut text = String::new();
-    std::fs::File::open(file).map_err(|_| "configuration could not be opened")?
-        .take(LIMIT + 1).read_to_string(&mut text).map_err(|_| "configuration could not be read")?;
-    if text.len() as u64 > LIMIT { return Err("configuration exceeds safe read size"); }
+    handle.take(LIMIT + 1).read_to_string(&mut text).map_err(|_| "configuration could not be read")?;
+    if text.len() as u64 > LIMIT { return Err("configuration exceeds safe read size".into()); }
     let text = config_key::masked(&text).unwrap_or(text);
     if reader == "cat" && args.is_empty() {
         if let Err(error) = std::io::stdout().write_all(text.as_bytes()) {
             if error.kind() == std::io::ErrorKind::BrokenPipe { return Ok(141); }
-            return Err("output could not be written");
+            return Err("output could not be written".into());
         }
         return Ok(0);
     }
@@ -94,7 +128,7 @@ fn execute(file: &Path, reader: &str, args_json: &str) -> Result<i32, &'static s
     let status = child.wait().map_err(|_| "configuration reader did not return")?;
     // grep -q / head may finish without consuming all input.
     if written.is_err_and(|error| error.kind() != std::io::ErrorKind::BrokenPipe) {
-        return Err("reader input could not be written");
+        return Err("reader input could not be written".into());
     }
     #[cfg(unix)]
     { use std::os::unix::process::ExitStatusExt; Ok(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(1))) }
