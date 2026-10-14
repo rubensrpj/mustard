@@ -1,10 +1,12 @@
 //! Execution measurements use the spec's existing event log. Presentation
 //! reads these records; it never reruns validation to obtain a duration.
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::Refusal;
-use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::domain::spec_events::{Refusal, SpecLog};
+use mustard_core::domain::spec_state::{PhaseWriter, State};
+use mustard_core::platform::git;
 use serde_json::{Map, Value, json};
 
 use crate::commands::review::qa_run::ProofRun;
@@ -48,12 +50,9 @@ impl Drop for Stage<'_> {
 
 /// Content and execution inputs, rather than just HEAD. Failure to read any
 /// input disables reuse; it never turns an incomplete digest into a receipt.
-pub(super) fn fingerprint(root: &Path, log: &mustard_core::domain::spec_events::SpecLog) -> Option<String> {
+pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
     use mustard_core::io::sha256::Sha256;
-    use mustard_core::platform::git;
-    let files = git::run(root, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
-    let files = files.out()?;
-    let mut names: Vec<String> = files.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect();
+    let mut names = listed_files(root)?;
     // Confirmed local inputs are often ignored by Git, including .env files.
     // Their contents enter only the digest, never the event or diagnostic.
     let config_inputs = mustard_core::ProjectConfig::load(root);
@@ -132,6 +131,165 @@ pub(super) fn fingerprint(root: &Path, log: &mustard_core::domain::spec_events::
     Some(digest.hex_digest())
 }
 
+/// Os arquivos que o git lista no projeto: os rastreados e os novos que ele
+/// não ignora. Sem git que responda, nenhuma lista.
+fn listed_files(root: &Path) -> Option<Vec<String>> {
+    let files = git::run(root, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).out()?;
+    Some(files.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
+}
+
+/// A obra contra a qual se lê a saída de um comando que caiu: os arquivos que
+/// ela mudou e, de cada onda, os que a onda declarou ou entregou. Um arquivo é
+/// da obra quando o git diz que a branch o mudou, e não porque uma onda o
+/// listou: a lista da onda pode vir incompleta.
+#[derive(Debug)]
+pub(super) struct Work {
+    /// Os arquivos que a obra mudou.
+    changed: BTreeSet<String>,
+    /// Cada onda, na ordem pedida, com os arquivos que declarou ou entregou.
+    waves: Vec<(u64, Vec<String>)>,
+}
+
+impl Work {
+    /// A obra como o git e a spec a contam: os arquivos que a branch mudou
+    /// desde a base gravada no `state` da spec (`git diff --name-only
+    /// <base>...HEAD`, com a base local e, sem ela, a do `origin`) e, de cada
+    /// onda de `waves`, os que as tarefas dela declaram mais os que as
+    /// entregas dela listam. Sem base, ou sem git que responda, nenhum arquivo
+    /// conta como mudado pela obra.
+    pub(super) fn of(root: &Path, log: &SpecLog, waves: &[u64]) -> Self {
+        let waves = waves
+            .iter()
+            .map(|wave| {
+                let delivered = log
+                    .events
+                    .iter()
+                    .filter(|e| e.event_type == "delivered" && e.wave() == Some(*wave))
+                    .flat_map(|e| e.fields.get("files").and_then(Value::as_array).into_iter().flatten())
+                    .filter_map(Value::as_str)
+                    .map(str::to_string);
+                let mut files: Vec<String> = Vec::new();
+                for file in mustard_core::domain::wave_prompt::wave_files(log, *wave).into_iter().chain(delivered) {
+                    push_path(&mut files, &file);
+                }
+                (*wave, files)
+            })
+            .collect();
+        Self { changed: branch_files(root, log), waves }
+    }
+
+    /// Junta o que a onda `wave` mudou e a branch ainda não leva — a volta que
+    /// a rodada juntou no disco, antes do commit —: os arquivos `files` contam
+    /// como mudados pela obra e como da onda.
+    pub(super) fn pending(&mut self, wave: u64, files: &[String]) {
+        let at = match self.waves.iter().position(|(n, _)| *n == wave) {
+            Some(at) => at,
+            None => {
+                self.waves.push((wave, Vec::new()));
+                self.waves.len() - 1
+            }
+        };
+        for file in files {
+            push_path(&mut self.waves[at].1, file);
+            if let Some(path) = project_path(file) {
+                self.changed.insert(path);
+            }
+        }
+    }
+}
+
+/// O caminho `file` relativo à raiz, com `/`, sem `./` na frente nem bordas
+/// em branco; o vazio não é caminho.
+fn project_path(file: &str) -> Option<String> {
+    let path = file.trim().replace('\\', "/");
+    let path = path.trim_start_matches("./");
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// Põe o caminho de `file` em `files`, sem repetir.
+fn push_path(files: &mut Vec<String>, file: &str) {
+    if let Some(path) = project_path(file).filter(|path| !files.contains(path)) {
+        files.push(path);
+    }
+}
+
+/// Os arquivos que a branch do checkout em `root` mudou desde a base gravada
+/// no `state` da spec: o que [`Work::of`] conta como obra.
+fn branch_files(root: &Path, log: &SpecLog) -> BTreeSet<String> {
+    let Some(base) = State::from_log(log).base else {
+        return BTreeSet::new();
+    };
+    let resolves = git::run(root, &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")]).ok;
+    let base = if resolves { base } else { format!("origin/{base}") };
+    let range = format!("{base}...HEAD");
+    let listed = git::run(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", &range]).out().unwrap_or_default();
+    listed.split('\0').filter_map(project_path).collect()
+}
+
+/// O que a saída de um comando que caiu cita, lida contra a obra.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Cited {
+    /// As ondas que declararam ou entregaram um arquivo que a obra mudou e que
+    /// a saída cita, na ordem da obra.
+    pub waves: Vec<u64>,
+    /// Os arquivos do projeto que a saída cita e que a obra não mudou, na
+    /// ordem em que aparecem na saída.
+    pub outside: Vec<String>,
+    /// A saída não cita arquivo nenhum do projeto, nem da obra nem de fora.
+    pub none: bool,
+}
+
+/// A leitura única da saída `output` de um comando que caiu, para a rodada e
+/// para o fechamento: as ondas da obra `work` cujo arquivo mudado a saída
+/// cita, os arquivos que o git lista no projeto e que a saída cita sem a obra
+/// os ter mudado, e se ela não cita arquivo nenhum.
+pub(super) fn cited(root: &Path, output: &str, work: &Work) -> Cited {
+    cited_among(output, work, &listed_files(root).unwrap_or_default())
+}
+
+/// [`cited`] com a lista de arquivos do projeto já lida em `listed`.
+fn cited_among(output: &str, work: &Work, listed: &[String]) -> Cited {
+    let changed: HashSet<&str> = work.changed.iter().map(String::as_str).collect();
+    let known: HashSet<&str> = changed.iter().copied().chain(listed.iter().map(String::as_str)).collect();
+    let found = paths_in(output, &known);
+    let waves = work
+        .waves
+        .iter()
+        .filter(|(_, files)| files.iter().any(|file| changed.contains(file.as_str()) && found.contains(&file.as_str())))
+        .map(|(wave, _)| *wave)
+        .collect();
+    let outside = found.iter().filter(|file| !changed.contains(*file)).map(|file| (*file).to_string()).collect();
+    Cited { waves, outside, none: found.is_empty() }
+}
+
+/// Os arquivos de `known` que a saída `output` cita pelo caminho, na ordem em
+/// que aparecem, sem repetir. Cada trecho da saída feito de caracteres de
+/// caminho (letras, números e `_-./\@+~`) cita o arquivo mais longo de
+/// `known` que é o trecho inteiro ou o fim dele depois de uma `/`: o caminho
+/// absoluto, o `./` na frente e o caminho dentro da cópia de uma onda citam o
+/// arquivo relativo à raiz, e `lib/src/b.rs` não cita `src/b.rs`. O ponto
+/// colado ao fim do caminho, o da frase, fica de fora.
+fn paths_in<'a>(output: &str, known: &HashSet<&'a str>) -> Vec<&'a str> {
+    let mut found: Vec<&'a str> = Vec::new();
+    for word in output.split(|c: char| !(c.is_alphanumeric() || "_-./\\@+~".contains(c))) {
+        let word = word.replace('\\', "/");
+        let mut rest = word.trim_end_matches('.');
+        while !rest.is_empty() {
+            if let Some(file) = known.get(rest) {
+                if !found.contains(file) {
+                    found.push(*file);
+                }
+                break;
+            }
+            let Some((_, tail)) = rest.split_once('/') else {
+                break;
+            };
+            rest = tail;
+        }
+    }
+    found
+}
+
 pub(crate) fn reusable(root: &Path, log: &mustard_core::domain::spec_events::SpecLog) -> bool {
     let Some(key) = fingerprint(root, log) else {
         return false;
@@ -204,4 +362,22 @@ pub(super) fn review_elapsed(root: &Path, spec: &str, log: &mustard_core::domain
     let draft = json!({"phase":"final","stage":"independent-review-elapsed","result":if verdict.str_field("result")==Some("approved"){"pass"}else{"fail"},
         "ms":ms,"scope":"inclusive","attempt":sent.id,"version":mustard_core::harness_version(),"fingerprint":key,"author":"binary"});
     record(root, spec, "stage_run", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::paths_in;
+
+    /// Cada caminho da saída cita o arquivo do projeto que ele nomeia também
+    /// com `./` na frente, com a `\` do Windows, com a posição entre
+    /// parênteses ou com o ponto da frase colado ao fim, e o arquivo citado
+    /// duas vezes entra uma vez só.
+    #[test]
+    fn a_failure_output_cites_a_project_file_in_every_spelling_of_its_path() {
+        let known: HashSet<&str> = ["src/b.rs", "web/x.ts"].into_iter().collect();
+        let output = "./src/b.rs(2,1): erro\nem C:\\repo\\web\\x.ts.\nde novo src/b.rs:2";
+        assert_eq!(paths_in(output, &known), vec!["src/b.rs", "web/x.ts"]);
+    }
 }

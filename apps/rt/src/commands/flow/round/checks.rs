@@ -3,11 +3,13 @@
 
 use std::path::Path;
 
+use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::platform::i18n::{Locale, translate};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
 use super::stops::{fix_limit_refusal, split_at_fix_limit};
+use crate::commands::flow::validation::{Work, cited};
 use crate::commands::review::qa_run::run_build_command;
 
 /// Qual dos comandos que o projeto declara caiu antes do commit.
@@ -42,8 +44,8 @@ pub(crate) struct CheckFailure {
     /// O fim da saída do comando.
     pub output: String,
     /// As ondas da rodada a quem o conserto volta, na ordem do relatório: as
-    /// que mudaram um arquivo que a saída cita, ou, quando ela não cita
-    /// nenhum, todas as que mudaram arquivo.
+    /// que declararam ou mudaram um arquivo da obra que a saída cita, ou,
+    /// quando ela não cita nenhum, todas as que mudaram arquivo.
     pub waves: Vec<u64>,
     /// A saída cita arquivo de alguma onda: `waves` são só essas.
     pub cited: bool,
@@ -86,7 +88,7 @@ impl CheckFailure {
 
 /// Run the declared build once over the integrated delivery, preserving
 /// attribution and the existing repair limit on failure.
-pub(super) fn ensure_checks_pass(root: &Path, spec: &str, waves: &[WaveReport], lang: Locale) -> Result<(), RoundRefusal> {
+pub(super) fn ensure_checks_pass(root: &Path, spec: &str, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Result<(), RoundRefusal> {
     let Some(command) = mustard_core::ProjectConfig::load(root).commands().build else {
         return Ok(());
     };
@@ -94,7 +96,7 @@ pub(super) fn ensure_checks_pass(root: &Path, spec: &str, waves: &[WaveReport], 
     let out = run_build_command(&command, root);
     super::super::validation::record_run(root, spec, "delivery", "build", &command, &out).map_err(RoundRefusal::Refused)?;
     if out.result != "pass" {
-        let (culprit_waves, cited) = culprits(&out.output, waves);
+        let (culprit_waves, cited) = culprits(root, log, &out.output, waves);
         let failure = CheckFailure { check: Check::Build, command, output: out.output, waves: culprit_waves, cited, new_agents: Vec::new() };
         return Err(capped(failure, waves, lang));
     }
@@ -119,15 +121,23 @@ fn capped(failure: CheckFailure, reports: &[WaveReport], lang: Locale) -> RoundR
 }
 
 /// As ondas de `waves` a quem volta o conserto do comando que caiu com a
-/// saída `output`: as que mudaram um arquivo que a saída cita pelo caminho,
-/// como o compilador e o executor de testes citam o arquivo da falha, e
-/// `true`. Sem nenhuma citada, todas as que mudaram arquivo, e `false`: a
-/// rodada juntou as ondas antes de rodar, e não sabe dizer qual causou.
-fn culprits(output: &str, waves: &[WaveReport]) -> (Vec<u64>, bool) {
+/// saída `output`, pela mesma leitura que o fechamento faz ([`cited`]): as
+/// que mudaram arquivo nesta volta e declararam ou entregaram um arquivo da
+/// obra que a saída cita pelo caminho, como o compilador e o executor de
+/// testes citam o arquivo da falha, e `true`. A obra é a branch da spec mais
+/// o que as voltas desta rodada juntaram no disco, ainda sem commit. Sem
+/// nenhuma citada, todas as que mudaram arquivo, e `false`: a rodada juntou
+/// as ondas antes de rodar, e não sabe dizer qual causou.
+fn culprits(root: &Path, log: &SpecLog, output: &str, waves: &[WaveReport]) -> (Vec<u64>, bool) {
     let changed: Vec<&WaveReport> = waves.iter().filter(|wave| !wave.files.is_empty()).collect();
-    let cited: Vec<u64> = changed.iter().filter(|wave| wave.files.iter().any(|file| output.contains(file.as_str()))).map(|wave| wave.wave).collect();
+    let numbers: Vec<u64> = changed.iter().map(|wave| wave.wave).collect();
+    let mut work = Work::of(root, log, &numbers);
+    for wave in &changed {
+        work.pending(wave.wave, &wave.files);
+    }
+    let cited = cited(root, output, &work).waves;
     if cited.is_empty() {
-        return (changed.iter().map(|wave| wave.wave).collect(), false);
+        return (numbers, false);
     }
     (cited, true)
 }
@@ -154,8 +164,11 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
+    use super::culprits;
     use crate::commands::flow::round::fix_file;
+    use crate::commands::flow::round::report::returned_waves;
     use crate::commands::flow::round::tests::*;
+    use crate::commands::flow::validation::{Cited, Work, cited};
 
     /// O trecho de conserto gravado para a volta pendente da onda `wave`, ou
     /// nada quando a rodada não gravou nenhum para ela.
@@ -255,6 +268,63 @@ mod tests {
         assert_eq!(fix_kept(root, 1), None, "the wave past its fix rounds goes to the user: {asked}");
         assert!(fix_kept(root, 2).is_some_and(|fix| fix.ends_with("o teste soma caiu")), "{asked}");
         assert_eq!(delivered_count(root), 0, "nothing was taken: {asked}");
+    }
+
+    /// A mesma saída vermelha, lida pela rodada antes do commit e pelo
+    /// fechamento depois dele, aponta as mesmas ondas. A onda 1 declarou
+    /// `src/shared.rs`, que a obra já tinha mudado num commit anterior, e não o
+    /// mexe nesta volta; a onda 2 mexe em `src/b.rs`, e `lib/src/b.rs` é do
+    /// projeto, mas a obra não o mudou. A saída que cita `src/shared.rs` dentro
+    /// da cópia da onda 1 aponta a onda 1; a que cita `src/b.rs` aponta a onda
+    /// 2; a que cita `lib/src/b.rs` não aponta onda nenhuma e o dá como de fora
+    /// da obra; a que não cita arquivo nenhum diz isso. Sem onda citada, a
+    /// rodada ainda devolve o conserto às duas.
+    #[test]
+    fn the_round_and_the_close_cite_the_same_waves() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/shared.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), json!({"maxCompilingWaves": 2}).to_string()).unwrap();
+        std::fs::create_dir_all(root.join("lib/src")).unwrap();
+        std::fs::write(root.join("lib/src/b.rs"), "fn other() {}\n").unwrap();
+        git_at(root, &["add", "mustard.json", "lib/src/b.rs"]);
+        git_at(root, &["commit", "-q", "-m", "fora da obra"]);
+        git_at(root, &["branch", "dev"]);
+        std::fs::write(root.join("src/shared.rs"), "fn shared() {}\n").unwrap();
+        git_at(root, &["commit", "-q", "-am", "um commit anterior da obra"]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        back_with(root, 1, "src/a.rs");
+        back_with(root, 2, "src/b.rs");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let (reports, _) = returned_waves(&log);
+        let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
+        let outputs = [
+            (format!("error[E0308]: mismatched types\n --> {}/src/shared.rs:3:5", copy.display()), vec![1], vec![], false),
+            ("thread 'soma' panicked at src/b.rs:2:5:".to_string(), vec![2], vec![], false),
+            ("warning: unused variable\n --> lib/src/b.rs:1:4".to_string(), vec![], vec!["lib/src/b.rs".to_string()], false),
+            ("o teste soma caiu".to_string(), vec![], vec![], true),
+        ];
+
+        let round_cited: Vec<Vec<u64>> = outputs
+            .iter()
+            .map(|(output, ..)| match culprits(root, &log, output, &reports) {
+                (waves, true) => waves,
+                (waves, false) => {
+                    assert_eq!(waves, vec![1, 2], "without a cited wave the fix goes to every wave: {output}");
+                    Vec::new()
+                }
+            })
+            .collect();
+        for file in ["src/a.rs", "src/b.rs"] {
+            std::fs::write(root.join(file), format!("fn one() {{}}\n// {file}\n")).unwrap();
+        }
+        git_at(root, &["commit", "-q", "-am", "a rodada comita as duas ondas"]);
+        let planned: Vec<u64> = log.planned_waves().into_iter().collect();
+        for ((output, waves, outside, none), round_waves) in outputs.iter().zip(round_cited) {
+            let close = cited(root, output, &Work::of(root, &log, &planned));
+            assert_eq!(close, Cited { waves: waves.clone(), outside: outside.clone(), none: *none }, "{output}");
+            assert_eq!(round_waves, close.waves, "the round and the close cite the same waves: {output}");
+        }
     }
 
     /// Com o Claude Code que mandou a onda aberto, a suíte vermelha manda o

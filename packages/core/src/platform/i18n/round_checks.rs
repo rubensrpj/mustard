@@ -34,8 +34,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // Uma linha por onda a quem o conserto volta: a que a saída cita, ou,
         // sem nenhuma citada, cada uma que entrou na rodada.
-        ("round_checks.cited", Locale::PtBr) => "Onda {wave}: a saída cita arquivo que ela mudou.",
-        ("round_checks.cited", Locale::EnUs) => "Wave {wave}: the output cites a file it changed.",
+        ("round_checks.cited", Locale::PtBr) => "Onda {wave}: a saída cita arquivo da obra que ela declarou ou mudou.",
+        ("round_checks.cited", Locale::EnUs) => "Wave {wave}: the output cites a work file it declared or changed.",
         ("round_checks.joined", Locale::PtBr) => {
             "Onda {wave}: a saída não cita arquivo de onda nenhuma, e ela entrou na rodada."
         }
@@ -140,7 +140,7 @@ mod tests {
             include_str!("round_checks.rs"),
             super::PREFIXES,
             9,
-            0x0fb1_c884_4b4d_e828,
+            0xe0bf_512d_fed6_7f5a,
         );
     }
 

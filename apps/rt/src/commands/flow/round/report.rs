@@ -345,7 +345,7 @@ fn take_returns(
     // avisos.
     let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "validation-and-gates", true);
     let after = message.is_some().then(|| {
-        ensure_checks_pass(root, spec, &report.waves, lang)?;
+        ensure_checks_pass(root, spec, log, &report.waves, lang)?;
         let mut gates = super::super::validation::Stage::new(root, spec, "delivery", "structural-gates", false);
         let result = ensure_after_wave(root, spec, log, &report.waves, mine, lang);
         if result.is_ok() {
