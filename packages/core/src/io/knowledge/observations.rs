@@ -30,10 +30,7 @@ fn tree_key(tree: &Path) -> String {
 
 pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Result<Value, String> {
     if hits.is_empty() {
-        let needs_scan=if store::model_path(root).is_file() {
-            let db=MapDb::open(&store::model_path(root),root,&store::DB_BLOCKS).map_err(|e|e.to_string())?;
-            !structure_ready(&db)?
-        }else{false};
+        let needs_scan=if store::model_path(root).is_file() {!structure_ready(&open(root)?)?}else{false};
         return Ok(json!({"status":"no-source-facts","new_facts":0,"needs_scan":needs_scan,"source_hashes":{}}));
     }
     let registry = Registry::load()?;
@@ -68,10 +65,9 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
     // 50 ms timeout dropped discoveries while a normal scan/writer committed.
     // Use the database's bounded writer wait (5 s); persistent contention is
     // still reported by the caller, which preserves the native search result.
-    let mut db = MapDb::open(&store::model_path(root), root, &store::DB_BLOCKS)
-        .map_err(|e| e.to_string())?;
-    // A schema upgrade rebuilds derived blocks empty. A source hash learned
-    // under the old schema cannot acknowledge that missing structural index.
+    let mut db = open(root)?;
+    // A block written by another program version is rebuilt by the next scan.
+    // A source hash learned under the old schema cannot acknowledge it.
     let structure_ready=structure_ready(&db)?;
     let key = tree_key(tree);
     let mut added = 0;
@@ -85,11 +81,13 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             // A scanned document or a code file with zero declarations is
             // still a current snapshot. Requiring a symbol causes a complete
             // scan on the first hit in every such file, despite identical bytes.
+            // An outdated map may lack these tables; the scan answers first.
+            if !structure_ready {pending.push(file.clone());continue;}
             let indexed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM knowledge_symbols WHERE path=?1 AND sha256=?2)
                 OR EXISTS(SELECT 1 FROM resource_index_files WHERE path=?1 AND sha256=?2)
                 OR EXISTS(SELECT 1 FROM texts WHERE path=?1 AND CASE WHEN json_valid(analysis) THEN json_extract(analysis,'$.content_sha256') END=?2)",params![file,digest],|row|row.get(0))?;
             let learned:bool=tx.query_row("SELECT indexed=sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0))?;
-            if !structure_ready || !indexed && !learned {pending.push(file.clone());}
+            if !indexed && !learned {pending.push(file.clone());}
         }
         for (file,line,text) in &witnesses {
             let Some((digest,source))=sources.get(file) else {continue};
@@ -108,7 +106,19 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
     )
 }
 
+/// The map with only this module's block brought up to date. A map inherited
+/// from another program version may need other blocks rebuilt (the knowledge
+/// index rereads every analysed text, tens of seconds on a large project);
+/// that belongs to the scan, in its own process, so the search reaches the
+/// refresh instead of doing the rebuild before it.
+fn open(root:&Path)->Result<MapDb,String> {
+    MapDb::open(&store::model_path(root),root,std::slice::from_ref(&BLOCK)).map_err(|e|e.to_string())
+}
+
 fn structure_ready(db:&MapDb)->Result<bool,String> {
+    for block in &store::DB_BLOCKS {
+        if db.version(block.name).map_err(|e|e.to_string())? != Some(block.version) {return Ok(false);}
+    }
     for block in [&store::CENSUS,&store::FILES,&store::DECLS,&store::GRAPH,&store::RESOURCES] {
         if db.mark(block.name()).map_err(|e|e.to_string())?.is_none_or(|mark|mark.is_empty()) {return Ok(false);}
     }

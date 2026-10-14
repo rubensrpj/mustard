@@ -216,6 +216,28 @@ fn migrated_structural_index_requires_refresh_even_for_previously_learned_source
     }
 }
 
+/// Um mapa herdado de outra versão do programa, com o índice de conhecimento
+/// velho, não é refeito pela busca: ela grava a fonte e pede a passada, e é a
+/// passada do scan que refaz o bloco.
+#[test]
+fn an_inherited_map_with_an_outdated_block_is_left_for_the_scan_to_rebuild() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("entry.ts"),"export function entry(): number { return 1; }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let record=|| mustard_core::io::knowledge::observations::record(root,root,&[("entry.ts".into(),1,"export function entry(): number { return 1; }".into())]).unwrap();
+    let map=|| rusqlite::Connection::open(root.join(".claude/grain.db")).unwrap();
+    let version=|| map().query_row("SELECT version FROM blocks WHERE name='knowledge_index'",[],|row|row.get::<_,u32>(0)).unwrap();
+    assert_eq!(record()["needs_scan"],false);
+    let current=version();
+    map().execute("UPDATE blocks SET version=?1 WHERE name='knowledge_index'",[current-1]).unwrap();
+    let inherited=record();
+    assert_eq!((inherited["needs_scan"].clone(),inherited["pending_paths"].clone(),version()),(json!(true),json!(["entry.ts"]),current-1),"{inherited}");
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let after=record();
+    assert_eq!((after["needs_scan"].clone(),version()),(json!(false),current),"{after}");
+}
+
 #[test]
 fn exact_entry_follows_current_dependency_with_no_query_word_and_preserves_native_result() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();
