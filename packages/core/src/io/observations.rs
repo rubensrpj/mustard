@@ -31,6 +31,13 @@ pub fn digest(bytes: &[u8]) -> String {
     hash.hex_digest()
 }
 
+/// Quanto a gravação ou a leitura de um recibo espera a vez de outra conexão
+/// antes de desistir. Várias ondas gravam no mesmo banco ao mesmo tempo, e o
+/// disco ocupado pelas compilações delas segura uma gravação por bem mais que
+/// alguns milissegundos; desistir cedo perde o recibo, que o gancho não grava
+/// de novo. Sem disputa, a gravação leva milissegundos e não espera nada.
+const WAIT: Duration = Duration::from_secs(5);
+
 fn open(root: &Path, write: bool) -> Result<Connection, String> {
     let path = root.join(".claude/mustard/observations.db");
     let mut ancestor = path.clone();
@@ -61,10 +68,18 @@ fn open(root: &Path, write: bool) -> Result<Connection, String> {
     };
     let connection =
         Connection::open_with_flags(path, flags).map_err(|_| "observation-store-unavailable")?;
+    // A espera vem antes de tudo: até trocar o diário pede a trava.
     connection
-        .busy_timeout(Duration::from_millis(15))
+        .busy_timeout(WAIT)
         .map_err(|e| e.to_string())?;
     if write {
+        // No `WAL`, quem lê não espera quem grava, e cada gravação confirma o
+        // disco uma vez só. O modo fica gravado no arquivo, e o banco de antes
+        // passa a ele na primeira gravação; o disco que não guarda o `WAL`
+        // deixa o banco no diário que já tinha, que também vale.
+        connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, spec TEXT NOT NULL, dispatch INTEGER NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS receipts_scope ON receipts(spec,dispatch,observed_at);").map_err(|e|e.to_string())?;
     }
     Ok(connection)
@@ -320,6 +335,67 @@ mod tests {
         let forged =
             json!([{"receipt":id,"mode":"current","text":"Accessible","observed_at":"2026-01-03"}]);
         assert!(resolve(dir.path(), "demo", 10, "2026-01-01T00:00:00Z", &forged).is_err());
+    }
+    /// O caminho do banco, para outra conexão abri-lo como outra onda o abre.
+    fn store(root: &Path) -> std::path::PathBuf {
+        root.join(".claude/mustard/observations.db")
+    }
+    #[test]
+    fn a_receipt_waits_for_another_write_instead_of_being_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        record(&root, &receipt()).unwrap();
+        let (held, wait_for_hold) = std::sync::mpsc::channel();
+        let path = store(&root);
+        let holder = std::thread::spawn(move || {
+            let other = Connection::open(path).unwrap();
+            other.execute_batch("BEGIN EXCLUSIVE").unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            other.execute_batch("COMMIT").unwrap();
+        });
+        wait_for_hold.recv().unwrap();
+        let mut during = receipt();
+        during.call = "call-during-another-write".into();
+        let written = record(&root, &during);
+        holder.join().unwrap();
+        let (id, _) = written.unwrap();
+        assert_eq!(read(&root, &id).unwrap().call, "call-during-another-write");
+    }
+    #[test]
+    fn a_receipt_reads_while_another_write_holds_a_store_from_the_rollback_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let (id, _) = record(&root, &receipt()).unwrap();
+        // Um banco gravado antes fica no diário de desfazer até a próxima gravação.
+        let old = Connection::open(store(&root)).unwrap();
+        let mode: String = old
+            .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        drop(old);
+        let mut next = receipt();
+        next.call = "call-after-the-old-journal".into();
+        record(&root, &next).unwrap();
+        let (held, wait_for_hold) = std::sync::mpsc::channel();
+        let (finished, wait_for_reader) = std::sync::mpsc::channel::<()>();
+        let path = store(&root);
+        let holder = std::thread::spawn(move || {
+            let other = Connection::open(path).unwrap();
+            other
+                .execute_batch("BEGIN EXCLUSIVE; INSERT INTO receipts VALUES('uncommitted','demo',10,'2026-01-01T02:00:00Z','{}')")
+                .unwrap();
+            held.send(()).unwrap();
+            wait_for_reader.recv().unwrap();
+            other.execute_batch("ROLLBACK").unwrap();
+        });
+        wait_for_hold.recv().unwrap();
+        let seen = read(&root, &id);
+        let listed = list(&root, "demo", 10);
+        finished.send(()).unwrap();
+        holder.join().unwrap();
+        assert_eq!(seen.unwrap().exit_code, Some(1));
+        assert_eq!(listed.unwrap().len(), 2, "the write still open is not seen");
     }
     #[test]
     fn every_receipt_remains_accessible_without_loading_the_whole_history() {

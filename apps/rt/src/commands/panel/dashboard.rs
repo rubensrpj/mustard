@@ -34,6 +34,7 @@ pub(super) fn revision(start:&Path,root:&Path,section:&str,spec:Option<&str>,ses
     stamp(&git.join("HEAD"),&mut hash,0);
     if section=="usage" || section=="diagnostics" {
         for (path,depth) in [(root.join(".claude/judgements"),1),(root.join(".claude/mustard/observations.db"),0),
+            (root.join(".claude/mustard/observations.db-wal"),0),
             (root.join(".claude/mustard/host-observations"),1),(root.join(".claude/mustard/installation.json"),0),
             (root.join(".claude/mustard/operations"),1),(root.join(".claude/mustard/usage"),3),
             (root.join(".claude/mustard/panel/diagnostics.json"),0),
@@ -135,6 +136,21 @@ mod tests {
         assert_eq!(unchanged["unchanged"],true);assert!(unchanged.get("specs").is_none());
         std::fs::write(root.join("mustard.json"),"{\"rtk\":false}\n").unwrap();
         assert!(query(root,Some("current"),None,None,"definitions",view["revision"].as_str())["unchanged"].is_null());
+    }
+    #[test]
+    fn a_receipt_still_in_the_write_ahead_log_changes_the_usage_section() {
+        use mustard_core::io::observations::{self,Receipt};
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        observations::record(root,&Receipt{version:1,spec:"demo".into(),dispatch:7,wave:2,host:"claude".into(),
+            actor:"fixture".into(),call:"call".into(),tool:"Bash".into(),source:"git --version".into(),
+            input_sha256:observations::digest(b"command"),output_sha256:observations::digest(b"output"),
+            exit_code:Some(0),result_status:"returned".into(),observed_at:"2026-01-02T00:00:00Z".into()}).unwrap();
+        let view=query(root,None,None,None,"usage",None);
+        assert_eq!(view["ok"],true,"{view}");
+        // Enquanto outra conexão segura o banco aberto, a gravação nova fica só
+        // no log ao lado dele, e o arquivo principal não muda.
+        std::fs::write(root.join(".claude/mustard/observations.db-wal"),b"frames of a new receipt").unwrap();
+        assert!(query(root,None,None,None,"usage",view["revision"].as_str())["unchanged"].is_null());
     }
     #[test]
     fn selected_archived_spec_remains_readable_without_loading_other_histories() {
