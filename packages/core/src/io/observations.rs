@@ -120,13 +120,20 @@ pub fn read(root: &Path, id: &str) -> Result<Receipt, String> {
         return Err("observation-invalid-receipt-id".into());
     }
     let connection = open(root, false)?;
+    // Só a falta da linha diz que o recibo não existe. O banco preso por outra
+    // conexão além da espera, ou que não se deixa ler, diz que o banco está
+    // indisponível: quem cita o recibo grava de novo, em vez de achar que ele
+    // sumiu.
     let payload: String = connection
         .query_row(
             "SELECT payload FROM receipts WHERE id=?1 AND length(payload)<=8192",
             [id],
             |row| row.get(0),
         )
-        .map_err(|_| "observation-receipt-not-found")?;
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => "observation-receipt-not-found",
+            _ => "observation-store-unavailable",
+        })?;
     serde_json::from_str(&payload).map_err(|_| "observation-corrupt-receipt".into())
 }
 
@@ -467,6 +474,43 @@ mod tests {
         holder.join().unwrap();
         assert_eq!(seen.unwrap().exit_code, Some(1));
         assert_eq!(listed.unwrap().len(), 2, "the write still open is not seen");
+    }
+    #[test]
+    fn a_store_held_past_the_wait_is_unavailable_and_only_a_missing_row_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let (id, _) = record(&root, &receipt()).unwrap();
+        // No diário de desfazer, quem grava com trava exclusiva barra também
+        // quem lê, e a leitura espera a vez até desistir.
+        let old = Connection::open(store(&root)).unwrap();
+        let mode: String = old
+            .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        drop(old);
+        let (held, wait_for_hold) = std::sync::mpsc::channel();
+        let (finished, wait_for_reader) = std::sync::mpsc::channel::<()>();
+        let path = store(&root);
+        let holder = std::thread::spawn(move || {
+            let other = Connection::open(path).unwrap();
+            other.execute_batch("BEGIN EXCLUSIVE").unwrap();
+            held.send(()).unwrap();
+            wait_for_reader.recv().unwrap();
+            other.execute_batch("ROLLBACK").unwrap();
+        });
+        wait_for_hold.recv().unwrap();
+        let started = std::time::Instant::now();
+        let busy = read(&root, &id);
+        let waited = started.elapsed();
+        finished.send(()).unwrap();
+        holder.join().unwrap();
+        assert_eq!(busy.unwrap_err(), "observation-store-unavailable");
+        assert!(waited >= WAIT, "the read gave up after {waited:?}, before the wait");
+        assert_eq!(
+            read(&root, &digest(b"a call never recorded")).unwrap_err(),
+            "observation-receipt-not-found"
+        );
+        assert_eq!(read(&root, &id).unwrap().exit_code, Some(1));
     }
     #[test]
     fn every_receipt_remains_accessible_without_loading_the_whole_history() {
