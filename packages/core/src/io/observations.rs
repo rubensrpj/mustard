@@ -151,14 +151,14 @@ fn scoped(root: &Path, spec: &str, dispatch: u64, id: &str) -> Result<Receipt, S
 const COMMAND_LINE_CHARS: usize = 80;
 
 /// The first line of the recorded command, cut to [`COMMAND_LINE_CHARS`]. A
-/// leading change of directory, and the group a hook opens after it, are left
-/// out: they repeat on every call of a wave and would fill the line. A cut, a
-/// dropped line or a dropped prefix ends in `…`; the whole command is in the
-/// receipt.
+/// leading change of directory, the group a hook opens after it and the
+/// identity a hook puts ahead of a native command are left out: they repeat on
+/// every call of a wave and would fill the line. A cut, a dropped line or a
+/// dropped prefix ends in `…`; the whole command is in the receipt.
 fn command_line(source: &str) -> String {
     let whole = source.trim();
     let mut rest = whole;
-    while let Some(next) = after_leading_cd(rest).or_else(|| opened_group(rest)) {
+    while let Some(next) = after_leading_cd(rest).or_else(|| opened_group(rest)).or_else(|| after_identity(rest)) {
         rest = next;
     }
     let mut lines = rest.lines().map(str::trim).filter(|line| !line.is_empty());
@@ -203,6 +203,17 @@ fn after_leading_cd(text: &str) -> Option<&str> {
 fn opened_group(text: &str) -> Option<&str> {
     let (line, rest) = text.split_once('\n')?;
     (line.trim() == "(").then(|| rest.trim_start()).filter(|rest| !rest.is_empty())
+}
+
+/// What follows a first line `export MUSTARD_<NAME>=<value>`, the session or
+/// the agent a hook hands to a native command. An `export` of any other
+/// variable is part of the agent's command and stays.
+fn after_identity(text: &str) -> Option<&str> {
+    let (line, rest) = text.split_once('\n')?;
+    let (name, _) = line.strip_prefix("export MUSTARD_")?.split_once('=')?;
+    (!name.is_empty() && name.bytes().all(|byte| byte.is_ascii_uppercase() || byte == b'_'))
+        .then(|| rest.trim_start())
+        .filter(|rest| !rest.is_empty())
 }
 
 /// One page of the dispatch's receipts, newest first: the receipt, its time,

@@ -119,3 +119,37 @@ fn the_receipt_page_shows_one_short_command_line_and_the_receipt_returns_the_who
     assert_eq!(refused["ok"],false,"{refused}");
     assert_eq!(refused["reason"],"observation-belongs-to-another-dispatch");
 }
+
+/// A hook puts the session and the agent ahead of a native command, and
+/// another wraps it in the wave's directory. The page skips both and shows the
+/// start of what the agent ran; an `export` the agent wrote itself stays.
+#[test]
+fn the_receipt_page_skips_the_identity_a_hook_puts_ahead_of_the_command() {
+    use mustard_core::io::{observations::{self,Receipt},spec_events};
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false}}"#).unwrap();
+    let path=spec_events::spec_file(root,"demo").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path,json!({"id":7,"type":"send","at":"2026-01-01T00:00:00Z","wave":2,"text":"Dispatch"}).to_string()+"\n").unwrap();
+    let copy="/home/dev/.cache/mustard/copias/shop-1a2b3c4d/invoice-fix/c";
+    let search=r#"mustard-rt run search --shell-output --intent "where installments are split" --purpose implement -- rg -n "splitInstallments" web/src"#;
+    // As the host records it: up to 300 characters of the command the hooks
+    // rewrote, so the prefix leaves only the start of the agent's command.
+    let prefixed=format!("cd -- '{copy}' && (\nexport MUSTARD_SESSION_ID='08940799-3a4d-4a42-8fa3-4359f788e06b'\nexport MUSTARD_AGENT_ID='ac769b59cbc71ccc5'\ncd {copy} && {search}\n)")
+        .chars().take(300).collect::<String>();
+    let own="export NODE_ENV=test\nnpx vitest run web/src/installments.test.ts";
+    let record=|call:&str,source:&str| observations::record(root,&Receipt{version:1,spec:"demo".into(),dispatch:7,wave:2,
+        host:"claude".into(),actor:"fixture".into(),call:call.into(),tool:"Bash".into(),source:source.into(),
+        input_sha256:observations::digest(source.as_bytes()),output_sha256:observations::digest(b"output"),
+        exit_code:Some(0),result_status:"returned".into(),observed_at:"2026-01-02T00:00:00Z".into()}).unwrap().0;
+    let (agent,written)=(record("prefixed",&prefixed),record("own-export",own));
+    let output=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
+        .args(["--spec","demo","--wave","2","--observations"]).current_dir(root).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
+    let page:Value=serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(page["ok"],true,"{page}");
+    let shown=|id:&str| page["receipts"].as_array().unwrap().iter().find(|row|row["receipt"]==json!(id)).unwrap()["source"].as_str().unwrap().to_string();
+    let line=shown(&agent);
+    assert!(line.starts_with("mustard-rt run search --shell-output ") && line.ends_with('…'),"{line}");
+    assert!(search.starts_with(line.trim_end_matches('…')),"{line}");
+    assert_eq!(shown(&written),"export NODE_ENV=test…");
+}
