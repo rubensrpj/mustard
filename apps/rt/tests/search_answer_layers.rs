@@ -13,6 +13,8 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/mod.rs"]
+mod support;
 
 /// As linhas de código de `source`, sem os comentários, que trazem `path`.
 fn reaching<'s>(source: &'s str, path: &str) -> Vec<&'s str> {
@@ -74,4 +76,110 @@ fn shell_gateway_preserves_pipe_filters_cwd_conditions_and_exit_codes() {
         assert_eq!(gateway.status.code(),original.status.code(),"{rewritten}: {}",String::from_utf8_lossy(&gateway.stderr));
         assert_eq!(gateway.stdout,original.stdout,"{rewritten}: {}",String::from_utf8_lossy(&gateway.stderr));
     }
+}
+
+/// Um projeto com duas cópias de onda: a `own`, que o envio da onda 1 deu ao
+/// agente `wave-agent` da sessão `wave-session`, e a `other`, de outra vaga.
+#[cfg(unix)]
+struct WaveCopies {
+    _dir: tempfile::TempDir,
+    root: std::path::PathBuf,
+    own: std::path::PathBuf,
+    other: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+fn wave_copies() -> WaveCopies {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&root).output().unwrap().status.success(), "git {args:?}");
+    git(&["init", "-q"]);
+    git(&["-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]);
+    std::fs::write(root.join("mustard.json"), r#"{"ai":{"fallback":false,"vectors":false}}"#).unwrap();
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    support::copies_leave_with_the_test(&root);
+    let [own, other] = [0, 1].map(|slot| mustard_core::io::wave_prompt::slot_path(&root, "search-scope", slot));
+    for copy in [&own, &other] {
+        git(&["worktree", "add", "--detach", copy.to_str().unwrap(), "HEAD"]);
+        std::fs::create_dir(copy.join("src")).unwrap();
+        std::fs::write(copy.join("src/a.py"), "def quartz(): return 1\n").unwrap();
+    }
+    let log = mustard_core::io::spec_events::spec_file(&root, "search-scope").unwrap();
+    let send = serde_json::json!({"wave":1,"role":"wave","lines":1,"chars":1,"mustard":"test","copy":own,"host":"claude","text":"task"});
+    let sent = mustard_core::io::spec_events::write(&log, "send", send.as_object().unwrap().clone(), &[]).unwrap();
+    let dispatch = mustard_core::io::spec_events::read(&log).unwrap().unwrap().dispatch_position(sent.id);
+    let digest = |text: &str| {
+        let mut hash = mustard_core::io::sha256::Sha256::new();
+        hash.update(text.as_bytes());
+        hash.hex_digest()
+    };
+    let bindings = root.join(".claude/mustard/host-transcripts");
+    std::fs::create_dir_all(&bindings).unwrap();
+    std::fs::write(
+        bindings.join(format!("claude-{}-{}.json", digest("wave-session"), digest("wave-agent"))),
+        serde_json::json!({"host":"claude","spec":"search-scope","wave":1,"dispatch":dispatch}).to_string(),
+    )
+    .unwrap();
+    WaveCopies { _dir: dir, root, own, other }
+}
+
+/// O que a chamada do Bash do agente roda, de dentro da cópia dele, depois do
+/// gancho: o código de saída, a saída e, para as mensagens, o comando que
+/// rodou com tudo o que ele escreveu.
+#[cfg(unix)]
+fn as_wave_agent(copies: &WaveCopies, command: &str) -> (Option<i32>, String, String) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":copies.own,
+        "session_id":"wave-session","agent_id":"wave-agent","tool_input":{"command":command}});
+    let mut hook = Command::new(binary).args(["on", "PreToolUse"]).current_dir(&copies.own).env("CLAUDE_PROJECT_DIR", &copies.root)
+        .env("MUSTARD_RT_DELEGATED", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    hook.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
+    let output = hook.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value = if output.stdout.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&output.stdout).unwrap() };
+    assert_ne!(value["hookSpecificOutput"]["permissionDecision"], "deny", "{value}");
+    let rewritten = value["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap_or(command).to_owned();
+    assert!(rewritten.contains("mustard-rt run search"), "{rewritten}");
+    // Só o comando que o gancho devolveu diz quem busca: nada vem do
+    // ambiente de quem roda o teste.
+    let path = format!("{}:{}", binary.parent().unwrap().display(), std::env::var("PATH").unwrap_or_default());
+    let out = Command::new("sh").args(["-c", &rewritten]).current_dir(&copies.own).env("PATH", path)
+        .env("MUSTARD_RT_DELEGATED", "1").env_remove("MUSTARD_SESSION_ID").env_remove("MUSTARD_AGENT_ID").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let detail = format!("{rewritten}\n{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    (out.status.code(), stdout, detail)
+}
+
+/// O agente de onda busca dentro da própria cópia, pelo gancho ou pelo comando
+/// de busca, e recebe a resposta da busca nativa, sem ser recusado como se
+/// fosse o condutor preso na cópia.
+#[cfg(unix)]
+#[test]
+fn a_wave_agent_search_inside_its_copy_runs() {
+    let copies = wave_copies();
+    for command in [
+        "grep -n quartz src/a.py",
+        "mustard-rt run search --shell-output --intent 'Find quartz' --purpose implement -- grep -n quartz src/a.py",
+    ] {
+        let (code, stdout, detail) = as_wave_agent(&copies, command);
+        assert_eq!(code, Some(0), "{detail}");
+        assert!(stdout.contains("def quartz"), "{detail}");
+    }
+}
+
+/// A busca do mesmo agente apontada para a cópia de outra onda segue recusada.
+#[cfg(unix)]
+#[test]
+fn a_wave_agent_search_in_another_waves_copy_is_refused() {
+    let copies = wave_copies();
+    let command = format!(
+        "mustard-rt run search --root '{}' --shell-output --intent 'Find quartz' --purpose implement -- grep -n quartz src/a.py",
+        copies.other.display()
+    );
+    let (code, stdout, detail) = as_wave_agent(&copies, &command);
+    assert_eq!(code, Some(2), "{detail}");
+    assert!(!stdout.contains("def quartz"), "{detail}");
 }

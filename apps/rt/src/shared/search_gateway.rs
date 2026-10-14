@@ -4,8 +4,23 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use serde_json::json;
 use std::path::Path;
 
+/// A variável em que o gancho do Bash entrega ao comando nativo a identidade
+/// do agente que o pediu; a sessão segue nas variáveis da sessão
+/// ([`super::spec_state::shell_export`]).
+const AGENT_VAR: &str = "MUSTARD_AGENT_ID";
+
 pub(crate) fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// Entrega ao comando nativo a identidade do subagente cujo gancho o liberou.
+pub(crate) fn agent_export(agent: &str) -> String {
+    format!("export {AGENT_VAR}={}\n", quote(agent))
+}
+
+/// O subagente que o gancho nomeou para este processo, por [`agent_export`].
+fn agent_from_env() -> Option<String> {
+    std::env::var(AGENT_VAR).ok().map(|id| id.trim().to_string()).filter(|id| !id.is_empty())
 }
 
 pub(crate) fn answer(
@@ -151,6 +166,11 @@ fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> 
 }
 
 fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
+    // A conferência vale para quem pediu a busca: o agente de onda que busca
+    // na própria cópia não é o condutor preso nela, e a cópia de outra onda
+    // continua barrada para ele.
+    let session_id = super::spec_state::session_from_env();
+    let agent_id = agent_from_env();
     let ctx = Ctx {
         project_dir: root.to_string_lossy().into_owned(),
         trigger: Some(Trigger::PreToolUse),
@@ -173,6 +193,8 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
                 value
             },
             cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id,
+            agent_id,
             ..HookInput::default()
         }
     } else {
@@ -186,6 +208,8 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
             tool_name: Some("Bash".into()),
             tool_input: json!({"command":command}),
             cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id,
+            agent_id,
             ..HookInput::default()
         }
     };

@@ -9,7 +9,7 @@ use std::path::Path;
 
 pub(super) fn isolate(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verdict {
     let verdict = normalize_test(input, ctx, verdict);
-    let verdict = bind_session(input, verdict);
+    let verdict = bind_identity(input, verdict);
     let verdict = crate::hooks::write::wave_copy::guard_bash(input, ctx, verdict);
     if input.is_subagent() {
         return verdict;
@@ -61,10 +61,16 @@ pub(super) fn isolate(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verdict
     Verdict::Rewrite { tool_input, note: Some(previous_note.map_or_else(|| note.to_string(), |previous| format!("{previous}\n{note}"))) }
 }
 
-fn bind_session(input: &HookInput, verdict: Verdict) -> Verdict {
-    let Some(session) = input.session_id.as_deref().filter(|id| !id.is_empty() && id.len() <= 160) else {
+/// O comando nativo do Mustard fica sabendo quem o pediu: a sessão do host e,
+/// dentro de um subagente, o agente. A busca confere o comando como esse agente.
+fn bind_identity(input: &HookInput, verdict: Verdict) -> Verdict {
+    let named = |id: &&str| !id.is_empty() && id.len() <= 160;
+    let session = input.session_id.as_deref().filter(named).map(crate::shared::spec_state::shell_export);
+    let agent = input.agent_id.as_deref().filter(named).map(crate::shared::search_gateway::agent_export);
+    let prefix = session.unwrap_or_default() + &agent.unwrap_or_default();
+    if prefix.is_empty() {
         return verdict;
-    };
+    }
     let mut tool_input = match &verdict {
         Verdict::Allow => input.tool_input.clone(),
         Verdict::Rewrite { tool_input, .. } => tool_input.clone(),
@@ -76,7 +82,6 @@ fn bind_session(input: &HookInput, verdict: Verdict) -> Verdict {
     if !lex::segments(command).iter().any(|part| matches!(part.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")) {
         return verdict;
     }
-    let prefix = crate::shared::spec_state::shell_export(session);
     if command.starts_with(&prefix) {
         return verdict;
     }
@@ -118,13 +123,13 @@ mod tests {
     #[test]
     fn native_cli_receives_the_exact_host_session_even_in_background() {
         let input: HookInput = serde_json::from_value(json!({"session_id":"current-session","tool_name":"Bash","tool_input":{"command":"mustard-rt run round --dispatch","run_in_background":true,"timeout":600_000}})).unwrap();
-        let Verdict::Rewrite { tool_input, .. } = bind_session(&input, Verdict::Allow) else {
+        let Verdict::Rewrite { tool_input, .. } = bind_identity(&input, Verdict::Allow) else {
             panic!("session propagation");
         };
         assert_eq!(tool_input["command"], "export MUSTARD_SESSION_ID='current-session'\nmustard-rt run round --dispatch");
         assert_eq!(tool_input["timeout"], 600_000);
         assert_eq!(tool_input["run_in_background"], true);
-        assert!(matches!(bind_session(&input, Verdict::Deny { reason: "protected".into() }), Verdict::Deny { .. }));
+        assert!(matches!(bind_identity(&input, Verdict::Deny { reason: "protected".into() }), Verdict::Deny { .. }));
     }
     #[test]
     fn copy_commands_preserve_conductor_cwd_exit_status_and_worker_identity() {
