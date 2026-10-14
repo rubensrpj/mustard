@@ -2291,6 +2291,33 @@ mod tests {
         assert!((0..=1).contains(&older), "o sinal de uma onda anterior não conta: {older}");
     }
 
+    /// O agente do envio da onda 1 deu o último sinal de vida há 6 minutos, e
+    /// a rodada reenvia a onda agora (a onda pausada sai de novo). A resposta
+    /// mostra a onda em andamento pelo envio novo, calada há 0 minuto: o
+    /// silêncio conta do reenvio, não do sinal que o envio substituído deixou
+    /// na vaga.
+    #[test]
+    fn silence_counts_from_the_replacing_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let slot = Path::new(&sent_copy(root, 1)).file_name().unwrap().to_string_lossy().into_owned();
+        let alive = crate::hooks::observe::wave_alive_observer::alive_path(root, "x", &slot);
+        std::fs::create_dir_all(alive.parent().unwrap()).unwrap();
+        std::fs::write(&alive, (chrono::Local::now() - chrono::Duration::minutes(6)).to_rfc3339()).unwrap();
+
+        let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(waves_in(&resent, "dispatch"), vec![1], "a onda pausada sai de novo: {resent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let replacing = log.codes().get(&log.last_by_wave("send")[&1]).cloned().unwrap();
+        let running = resent["running"].as_array().cloned().unwrap_or_default();
+        assert_eq!(running.len(), 1, "{resent}");
+        assert_eq!(running[0]["send"], json!(replacing), "a onda anda pelo envio novo: {resent}");
+        assert_eq!(running[0]["silent_minutes"], json!(0), "{resent}");
+    }
+
     /// Um arquivo já rastreado, mudado sem estar preparado, sai do `git
     /// status` com o código de estado começando em espaço (`" M arquivo"`);
     /// a saída inteira é trimada antes de virar linhas, o que apaga esse

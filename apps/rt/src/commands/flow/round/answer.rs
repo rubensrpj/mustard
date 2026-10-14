@@ -1043,7 +1043,13 @@ pub(super) fn run_entered_round(
         .collect::<Vec<_>>()
         .join(" ");
 
-    let running: Vec<Value> = in_flight.iter().map(|(wave, (send, sent))| running_state(root, &spec, &log, &codes, *wave, send, *sent)).collect();
+    // O envio que esta rodada gravou — a onda que saiu ou voltou a sair — não
+    // está na leitura de entrada: o andamento lê a spec de agora, e o
+    // silêncio conta desse envio, não do sinal de vida que o agente do envio
+    // substituído deixou na vaga.
+    let current = in_flight.values().any(|(_, sent)| log.get(*sent).is_none()).then(|| store::read(&path).ok().flatten()).flatten();
+    let now = current.as_ref().unwrap_or(&log);
+    let running: Vec<Value> = in_flight.iter().map(|(wave, (send, sent))| running_state(root, &spec, now, &codes, *wave, send, *sent)).collect();
     let mut out = json!({
         "ok": true,
         "spec": spec,

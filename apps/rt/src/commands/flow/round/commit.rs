@@ -276,8 +276,9 @@ pub(super) fn head(root: &Path) -> String {
 /// próprio — o disco dela já bate com esse HEAD, então a comparação sairia
 /// sempre igual, e o arquivo comitado dentro da cópia nunca chegaria ao
 /// repositório principal. A cópia é um checkout ligado (`git worktree`) do
-/// mesmo repositório, então o antepassado comum sempre existe.
-fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
+/// mesmo repositório, então o antepassado comum sempre existe. A revisão da
+/// onda tira o diff dela contra este mesmo commit.
+pub(super) fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
     let root_head = git(root_repo, &["rev-parse", "HEAD"])?;
     let base = git(copy_repo, &["merge-base", "HEAD", root_head.trim()])?;
     Ok(base.trim().to_string())

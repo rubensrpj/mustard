@@ -1,18 +1,20 @@
-//! Review the actual worktree, rather than accepting the agent's account.
-//! A native view receipt and the conductor's approval bind the delivery,
-//! base contents, file modes and changed contents. Neither USAGE nor a build
-//! is a review. An independent wave can still proceed while one waits.
+//! A revisão olha a cópia de verdade, e não o relato do agente. O recibo
+//! nativo da leitura e o aceite do condutor se prendem à impressão digital
+//! do diff da onda contra a base dela: os arquivos mudados e o conteúdo. Nem
+//! `USAGE` nem a compilação são revisão. Uma onda independente segue
+//! enquanto outra espera.
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
+use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::io::{sha256::Sha256, spec_events as store};
 use mustard_core::platform::i18n::Locale;
 use serde_json::{Value, json};
 
 use super::RoundRefusal;
-use super::commit::{copy_of, format_round_files, git, real_changed_files, repo_of};
+use super::commit::{copy_of, fork_point, format_round_files, git, real_changed_files, repo_of};
 use super::report::{WaveReport, returned_waves};
 use super::stops::{HeldReturn, hold_refused};
 use crate::commands::git_settle::submodules_of;
@@ -78,23 +80,20 @@ fn review_rules(root: &Path, copy: &Path, files: &[String]) -> Vec<Value> {
     rules
 }
 
+/// A impressão digital da revisão da onda `wave` e o diff que o condutor lê.
+/// A impressão é o SHA-256 só do diff da cópia contra a base da onda — o
+/// commit em que a cópia nasceu ([`fork_point`]) —: o caminho de cada arquivo
+/// mudado e o diff dele contra essa base; no arquivo que o git não acompanha,
+/// o tipo, o modo e o conteúdo dele na cópia. O HEAD do repositório
+/// principal, a spec, as regras e a volta da onda ficam de fora: o commit de
+/// outra onda, um item gravado na spec ou outra volta com o mesmo código não
+/// mudam a impressão, e o aceite já dado continua valendo. Uma linha a mais
+/// no diff muda.
 fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, String), String> {
     let dir = review_dir(root, log, wave.wave);
     let subs = submodules_of(root);
+    let mut bases: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut hash = Sha256::new();
-    hash.update(&wave.wave.to_le_bytes());
-    hash.update(&wave.returns.last().copied().unwrap_or_default().to_le_bytes());
-    // Rules, the exact request and current agreed items are part of what
-    // the conductor approves, so changing them invalidates the receipt too.
-    hash.update(serde_json::to_string(&review_rules(root, &dir, &wave.files)).map_err(|e| e.to_string())?.as_bytes());
-    for block in [Block::Agreed, Block::Specification, Block::Criteria] {
-        for item in log.block(BlockQuery::Block(block)) {
-            hash.update(&item.id.to_le_bytes());
-        }
-    }
-    if let Some(sent) = log.last_by_wave("send").get(&wave.wave).and_then(|id| log.get(*id)) {
-        hash.update(sent.str_field("text").unwrap_or_default().as_bytes());
-    }
     let mut diff = String::new();
     let mut files = wave.files.clone();
     files.sort();
@@ -103,40 +102,31 @@ fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, St
         if Path::new(&file).components().any(|part| !matches!(part, Component::Normal(_))) {
             return Err(format!("Invalid review path: {file}"));
         }
-        hash.update(file.as_bytes());
-        hash.update(&[0]);
-        // Include both sides of the eventual merge, file modes and symlinks.
+        // A junção grava no principal o que lê da cópia: o caminho que sai de
+        // um dos dois por uma pasta ligada é recusado antes.
         for base in [root, dir.as_path()] {
-            let path = base.join(&file);
-            if let Some(parent) = path.parent().and_then(|parent| std::fs::canonicalize(parent).ok()) {
+            if let Some(parent) = base.join(&file).parent().and_then(|parent| std::fs::canonicalize(parent).ok()) {
                 let inside = std::fs::canonicalize(base).map_err(|e| e.to_string())?;
                 if !parent.starts_with(inside) { return Err(format!("Review path leaves the repository: {file}")); }
             }
-            match std::fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    hash.update(b"symlink");
-                    hash.update(std::fs::read_link(&path).map_err(|e| e.to_string())?.to_string_lossy().as_bytes());
-                }
-                Ok(meta) => {
-                    hash.update(b"file");
-                    hash.update(&[u8::from(meta.permissions().readonly())]);
-                    #[cfg(unix)] {
-                        use std::os::unix::fs::PermissionsExt;
-                        hash.update(&meta.permissions().mode().to_le_bytes());
-                    }
-                    hash.update(&std::fs::read(&path).map_err(|e| e.to_string())?);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => hash.update(b"absent"),
-                Err(e) => return Err(e.to_string()),
-            }
-            hash.update(&[0]);
         }
         let (repo, inner) = repo_of(&dir, &subs, &file);
-        let tracked = git(&repo, &["--literal-pathspecs", "diff", "--no-ext-diff", "--binary", "HEAD", "--", &inner])?;
-        hash.update(tracked.as_bytes());
+        let base = match bases.get(&repo) {
+            Some(base) => base.clone(),
+            None => {
+                let base = fork_point(&repo, &repo_of(root, &subs, &file).0)?;
+                bases.insert(repo.clone(), base.clone());
+                base
+            }
+        };
+        let tracked = git(&repo, &["--literal-pathspecs", "diff", "--no-ext-diff", "--binary", &base, "--", &inner])?;
+        let path = dir.join(&file);
+        hash.update(file.as_bytes());
+        hash.update(&[0]);
+        if tracked.is_empty() { untracked_state(&mut hash, &path)?; } else { hash.update(tracked.as_bytes()); }
+        hash.update(&[0]);
         let _ = write!(diff, "\n--- {file} ---\n");
         let shown = if tracked.is_empty() {
-            let path = dir.join(&file);
             if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
                 format!("[Symlink → {}]", std::fs::read_link(&path).map_err(|e| e.to_string())?.display())
             } else {
@@ -151,6 +141,30 @@ fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, St
         diff.push('\n');
     }
     Ok((hash.hex_digest(), diff))
+}
+
+/// O que o diff do git não mostra do arquivo `path` da cópia, para a
+/// impressão: o arquivo novo fora do git entra pelo tipo, pelo modo e pelo
+/// conteúdo; o link, pelo destino; o que não existe, como ausente.
+fn untracked_state(hash: &mut Sha256, path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            hash.update(b"symlink");
+            hash.update(std::fs::read_link(path).map_err(|e| e.to_string())?.to_string_lossy().as_bytes());
+        }
+        Ok(meta) => {
+            hash.update(b"file");
+            hash.update(&[u8::from(meta.permissions().readonly())]);
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                hash.update(&meta.permissions().mode().to_le_bytes());
+            }
+            hash.update(&std::fs::read(path).map_err(|e| e.to_string())?);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => hash.update(b"absent"),
+        Err(e) => return Err(e.to_string()),
+    }
+    Ok(())
 }
 
 pub(super) fn validate_paths(waves: &[WaveReport]) -> Result<(), RoundRefusal> {
@@ -176,12 +190,14 @@ fn receipt(start: &Path, spec: &str, wave: &WaveReport, step: &str, hash: &str, 
     record(start, spec, "stage_run", fields, PhaseWriter::Binary).map(|_| ())
 }
 
+/// O recibo do passo `step` da revisão da onda `wave` com a impressão `hash`,
+/// de qualquer volta dela: a impressão é só o diff, e outra volta com o mesmo
+/// código não pede outra leitura dele.
 fn has_receipt(log: &SpecLog, wave: &WaveReport, step: &str, hash: &str) -> bool {
     let stage = format!("wave-review-{step}:{}", wave.wave);
     log.events.iter().any(|e| {
         e.event_type == "stage_run" && e.str_field("author") == Some("binary")
         && e.str_field("stage") == Some(stage.as_str()) && e.str_field("fingerprint") == Some(hash)
-        && e.int("attempt") == wave.returns.last().copied()
     })
 }
 
@@ -227,7 +243,7 @@ pub(crate) fn test_conductor_review(root: &Path, spec: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{approved, returned, round};
+    use super::super::tests::{approved, git_at, returned, round, write};
     use super::super::{RoundOpts, round_for};
     use super::*;
     use tempfile::tempdir;
@@ -263,8 +279,6 @@ mod tests {
         let fresh = view_at(root, Some("x"), 1);
         assert_ne!(view["fingerprint"], fresh["fingerprint"]);
         std::fs::write(root.join("CLAUDE.md"), "Use shared schemas; never duplicate types.\n").unwrap();
-        let changed_rule = bare_round(root, Some(approve(&fresh)));
-        assert!(changed_rule["warnings"].as_array().unwrap().iter().any(|w| w["reason"] == "wave-review-required"), "{changed_rule}");
         std::fs::write(copy.join("src/extra.rs"), "fn extra() {}\n").unwrap();
         let fresh = view_at(root, Some("x"), 1);
         assert_eq!(fresh["planned_files"], json!(["src/a.rs"]));
@@ -302,4 +316,77 @@ mod tests {
         assert!(!std::fs::read_to_string(root.join("src/a.rs")).unwrap().contains("implemented"));
     }
 
+    /// O condutor lê as duas ondas e dá os dois aceites. O commit da onda 1,
+    /// que também grava a prova nova do critério dela, não invalida o aceite
+    /// da onda 2: a rodada seguinte, com os mesmos aceites, comita a onda 2
+    /// sem pedir outra leitura do mesmo diff.
+    #[test]
+    fn an_accepted_review_survives_the_commit_of_another_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        round(root, "x", None);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        for (wave, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
+            std::fs::write(copy_of(&log, wave).unwrap().join(file), "fn implemented() {}\n").unwrap();
+            let mut body = json!({"wave":wave,"text":"Concluída.","files":[file],"commit":"Altera comportamento"});
+            if wave == 1 {
+                body["proofs"] = json!([{"criterion":"MSTD-CRIT-0001","proof":"git --help"}]);
+            }
+            let out = returned(root, body);
+            assert_eq!(out["ok"], true, "{out}");
+        }
+        let accepted: Vec<String> = [1, 2]
+            .into_iter()
+            .map(|wave| {
+                let view = view_at(root, Some("x"), wave);
+                assert_eq!(view["ok"], true, "{view}");
+                format!("<REVIEWED>{}</REVIEWED>", json!({"wave":wave,"fingerprint":view["fingerprint"],"note":"Li o diff, as regras e os testes"}))
+            })
+            .collect();
+        let first = bare_round(root, Some(accepted[0].clone()));
+        assert!(first["commit"].is_object(), "{first}");
+        assert!(store::read(&path).unwrap().unwrap().last_by_wave("delivered").contains_key(&1));
+        let both = bare_round(root, Some(accepted.concat()));
+        assert!(both["commit"].is_object(), "{both}");
+        let held = both["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == "wave-review-required");
+        assert!(!held, "{both}");
+        assert!(store::read(&path).unwrap().unwrap().last_by_wave("delivered").contains_key(&2));
+        assert!(std::fs::read_to_string(root.join("src/b.rs")).unwrap().contains("implemented"));
+    }
+
+    /// A impressão é só o diff da cópia contra a base da onda: um commit
+    /// vazio na base, um item novo na spec, uma regra nova do projeto e outra
+    /// volta com o mesmo código não a mudam; uma linha a mais no diff muda.
+    #[test]
+    fn the_fingerprint_depends_only_on_the_diff() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let path = store::spec_file(root, "x").unwrap();
+        let copy = copy_of(&store::read(&path).unwrap().unwrap(), 1).unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn implemented() {}\n").unwrap();
+        let deliver = || {
+            let out = returned(root, json!({"wave":1,"text":"Concluída.","files":["src/a.rs"],"commit":"Altera comportamento"}));
+            assert_eq!(out["ok"], true, "{out}");
+        };
+        let fingerprint = || {
+            let view = view_at(root, Some("x"), 1);
+            view["fingerprint"].as_str().map(str::to_owned).unwrap_or_else(|| panic!("{view}"))
+        };
+        deliver();
+        let reviewed = fingerprint();
+        git_at(root, &["commit", "-q", "--allow-empty", "-m", "vazio"]);
+        let said = write(root, "x", "message", json!({"author":"user","text":"uma regra a mais"}));
+        let rule = json!({"title":"Nome curto","text":"O nome da função é curto.","example":"e","keys":["k"],
+            "applies_to":{"files":["**"]},"origin":said["id"]});
+        assert_eq!(write(root, "x", "rule", rule)["ok"], true);
+        std::fs::write(root.join("CLAUDE.md"), "Use shared schemas; never duplicate types.\n").unwrap();
+        deliver();
+        assert_eq!(fingerprint(), reviewed);
+        std::fs::write(copy.join("src/a.rs"), "fn implemented() {}\nfn one_more() {}\n").unwrap();
+        assert_ne!(fingerprint(), reviewed);
+    }
 }
