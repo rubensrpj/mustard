@@ -52,7 +52,7 @@ pub(crate) fn capture(
         .get("command")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if command.contains("mustard-rt") || command.len() > 65_536 {
+    if command.len() > 65_536 || runs_a_flow_step(command) {
         return None;
     }
     let root = spec_events::spec_root(root);
@@ -169,6 +169,17 @@ pub(crate) fn capture(
     )
 }
 
+/// `true` when one of the commands of the line is the runtime calling a flow
+/// step (`mustard-rt run …`), which records its own call. A command that only
+/// names the program — a package test, a hook probe through `mustard-rt on …`
+/// — is not such a call and keeps its receipt.
+fn runs_a_flow_step(command: &str) -> bool {
+    crate::hooks::bash::lex::segments(command).iter().any(|segment| {
+        matches!(segment.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")
+            && segment.args.first().is_some_and(|arg| arg.text == "run")
+    })
+}
+
 fn skill_read(root:&Path,host:&str,input:&HookInput)->Option<Result<(),&'static str>> {
     let (spec,wave,dispatch)=super::host_observation::tool_binding(root,host,input)?;
     let call=input.raw.get("tool_use_id").or_else(||input.raw.get("call_id"))?.as_str()?;
@@ -206,5 +217,57 @@ pub(crate) fn list(root: &Path, spec: &str, dispatch: Option<u64>) -> Vec<Value>
         assert!(observed_skill(send,path,text).is_some());
         assert!(observed_skill(send,path,"Reuse the existing").is_none());
         assert!(observed_skill(send,"/other/SKILL.md",text).is_none());
+    }
+
+    /// A fresh project whose main conversation is bound to spec `x`, before
+    /// any wave runs.
+    fn bound_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        crate::commands::spec_events::write::record_open(dir.path(), "x", "fix/x", "dev").unwrap();
+        crate::shared::context::session::bind_session_spec(&dir.path().to_string_lossy(), "survey", "x");
+        dir
+    }
+
+    /// The payload the host sends after `command` returned in `cwd`.
+    fn ran(command: &str, call: &str, cwd: &Path) -> HookInput {
+        HookInput {
+            session_id: Some("survey".into()),
+            tool_name: Some("Bash".into()),
+            tool_input: json!({"command": command}),
+            cwd: Some(cwd.to_string_lossy().into()),
+            raw: json!({"tool_use_id": call, "tool_response": {"stdout": "ok", "exit_code": 0}}),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_cargo_proof_naming_the_runtime_package_gets_a_receipt() {
+        let dir = bound_project();
+        let root = dir.path();
+        let copy = mustard_core::io::wave_prompt::copies_dir(root).join("x").join("c");
+        let commands = ["rtk cargo test -p mustard-rt --lib x", "target/debug/mustard-rt on PreToolUse"];
+        for (place, cwd) in [("project", root), ("copy", copy.as_path())] {
+            for (n, command) in commands.iter().enumerate() {
+                let input = ran(command, &format!("{place}-{n}"), cwd);
+                assert_eq!(capture(root, "claude", "PostToolUse", &input), Some(Ok(())), "{command} in the {place}");
+            }
+        }
+        assert_eq!(list(root, "x", Some(0)).len(), 4);
+    }
+
+    #[test]
+    fn a_runtime_flow_call_gets_no_receipt() {
+        let dir = bound_project();
+        let root = dir.path();
+        for (n, command) in [
+            "mustard-rt run round --dispatch",
+            "cd /p && MUSTARD_RT_DELEGATED=1 ~/.local/bin/mustard-boot run read request-1 | head",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(capture(root, "claude", "PostToolUse", &ran(command, &format!("flow-{n}"), root)), None, "{command}");
+        }
+        assert!(list(root, "x", Some(0)).is_empty());
     }
 }
