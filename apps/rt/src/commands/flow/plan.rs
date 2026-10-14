@@ -5,11 +5,10 @@
 //! as ondas e as tarefas estão gravadas, este comando monta o pedido de cada
 //! onda a partir dos eventos — com as lições e as skills —, confere o plano
 //! contra o código real, refaz o índice, grava a fase `plan` pela mesma porta
-//! de gravação de fase das outras, prepara a cópia da spec para o banco de
-//! dados da página e responde o próximo passo: publique a página que ainda
-//! não foi publicada, copie os lotes para o banco e faça a pergunta de
-//! aprovação. O item que ainda guarda um trecho com cara de segredo sai dito,
-//! para ser expurgado; ele fica fora da cópia.
+//! de gravação de fase das outras e responde o próximo passo: conferir o
+//! plano e fazer a pergunta de aprovação. Publicar a página é só a pedido do
+//! usuário, e este passo não publica nem copia nada. O item que ainda guarda
+//! um trecho com cara de segredo sai dito, para ser expurgado.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; skill que a conferência recusa; arquivo citado que
@@ -253,13 +252,10 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
         }
     };
 
-    // O passo termina preparando a cópia para o banco da página, que é por
-    // onde a spec é aprovada. A cópia acontece só nos marcos, e a aprovação é
-    // um deles: a resposta manda publicar a página que ainda não tem endereço
-    // e copiar os lotes, e nenhum endereço vai para a resposta ao usuário — o
-    // link mora na barra de status. O item que ainda guarda um trecho com
-    // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
-    // pergunta.
+    // O passo termina na pergunta de aprovação, sem publicar nem copiar nada:
+    // publicar a página é só a pedido do usuário, e o acompanhamento mora no
+    // painel. O item que ainda guarda um trecho com cara de segredo sai dito,
+    // para ser expurgado, sem segurar a pergunta.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
@@ -565,12 +561,11 @@ mod tests {
         report[field].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f["reason"].as_str().map(str::to_string)).collect()
     }
 
-    /// Um plano são é conferido numa chamada: a spec passa para o plano, a
-    /// cópia para o banco da página sai preparada, sem página nem `.md`
-    /// escritos, e a resposta manda publicar as duas páginas, copiar os lotes
-    /// e fazer a pergunta.
+    /// Um plano são é conferido numa chamada: a spec passa para o plano, sem
+    /// página, `.md` nem cópia escritos, e a resposta manda fazer a pergunta
+    /// de aprovação, sem ordem de publicar ou de copiar.
     #[test]
-    fn a_sound_plan_is_checked_in_one_call_and_asks_for_the_page_and_the_question() {
+    fn a_sound_plan_is_checked_in_one_call_and_asks_the_question() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -610,6 +605,47 @@ mod tests {
         assert!(again.get("publish").is_none() && again.get("copy").is_none(), "{again}");
         let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert_eq!(rebuilt, index, "o índice volta igual");
+    }
+
+    /// Com a spec no plano, o próximo passo manda conferir o plano e fazer a
+    /// pergunta de aprovação, e nunca publicar a página: publicação é só a
+    /// pedido do usuário. Vale nos dois idiomas, na resposta do plano, na
+    /// retomada, no bloco do começo da sessão e na rodada pedida antes do sim.
+    #[test]
+    fn the_plan_next_step_does_not_ask_to_publish() {
+        use crate::commands::flow::resume::{ResumeOpts, resume_block, resume_for};
+        use crate::commands::flow::round::{RoundOpts, round_for};
+        use crate::hooks::session::session_start_inject::MAX_BYTES;
+
+        let cases = [
+            ("pt-BR", Locale::PtBr, "confira o plano", "Aprovar esta spec?"),
+            ("en-US", Locale::EnUs, "check the plan", "Approve this spec?"),
+        ];
+        for (language, lang, check, question) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            sound_plan(root, "x", said);
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#)).unwrap();
+
+            let planned = plan(root, "x");
+            assert_eq!(planned["phase"], json!("plan"), "{language}: {planned}");
+            let resumed = resume_for(&ResumeOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
+            let next = resumed["next"].as_str().unwrap_or_default();
+            assert!(next.contains(check) && next.contains(&format!("\"{question}\"")), "{language}: {next}");
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let block = resume_block("x", &log, lang, MAX_BYTES);
+            let round = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+            assert_eq!(round["reason"], json!("round-not-approved"), "{language}: {round}");
+
+            let said = [planned["next"].to_string(), next.to_string(), block, round.to_string()];
+            for text in said {
+                let lower = text.to_lowercase();
+                for word in ["publique", "publicar", "publish"] {
+                    assert!(!lower.contains(word), "{language}: `{word}` in {text}");
+                }
+            }
+        }
     }
 
     /// Cada linha de cada pedido aparece na página da spec que o comando de
@@ -1310,13 +1346,11 @@ mod tests {
         assert!(!next.contains("ponto"), "nenhum texto impresso cita a nota do Scrum: {next}");
     }
 
-    /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
-    /// template: a ordem manda publicar o template, sem falar de página
-    /// antiga, e o próprio orquestrador copiar a spec inteira, antes da
-    /// pergunta, sem agente. Uma spec que uma versão antiga publicou inteira,
-    /// ainda no plano, ganha o template num link novo na aprovação.
+    /// Antes da aprovação, o plano não copia a spec nem publica página: a
+    /// resposta traz só a pergunta. Uma spec que uma versão antiga publicou
+    /// ainda no plano recebe a mesma resposta.
     #[test]
-    fn approving_a_new_spec_tells_the_orchestrator_to_copy_the_whole_spec() {
+    fn approving_a_spec_neither_copies_nor_publishes_it() {
         for legacy in [false, true] {
             let dir = tempdir().unwrap();
             let root = dir.path();

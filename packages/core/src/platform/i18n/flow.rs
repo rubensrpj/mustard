@@ -160,16 +160,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.survey", Locale::PtBr) => "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto.",
         ("resume.next.survey", Locale::EnUs) => "The spec is in the survey: run the survey and record the answer to each point.",
         ("resume.next.plan", Locale::PtBr) => {
-            "O plano está gravado: confira o plano e publique a página da spec. Depois, faça a \
-             pergunta de aprovação na ordem de explicar do estilo de resposta, com o texto exato \
-             \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto a aprovação \
-             não vale."
+            "O plano está gravado: confira o plano. Depois, faça a pergunta de aprovação na ordem \
+             de explicar do estilo de resposta, com o texto exato \"{question}\". As opções são \
+             \"{option}\" e \"Ajustar\", e com outro texto a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
-            "The plan is recorded: check the plan and publish the spec page. Then ask the approval \
-             question in the order of explaining from the response style, with the exact text \
-             \"{question}\". The options are \"{option}\" and \"Adjust\", and with another text the \
-             approval does not count."
+            "The plan is recorded: check the plan. Then ask the approval question in the order of \
+             explaining from the response style, with the exact text \"{question}\". The options \
+             are \"{option}\" and \"Adjust\", and with another text the approval does not count."
         }
         ("resume.next.running", Locale::PtBr) => "A spec está aprovada: rode a próxima rodada de ondas.",
         ("resume.next.running", Locale::EnUs) => "The spec is approved: run the next round of waves.",
@@ -1783,7 +1781,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 236, 0x592b_7dd0_64d3_1aea);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 236, 0x1863_c791_cd1c_0247);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
