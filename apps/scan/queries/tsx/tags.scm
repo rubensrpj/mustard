@@ -13,3 +13,20 @@
 ; da tela é o que se mostra, e não entra.
 (jsx_attribute (jsx_expression (identifier) @call.value))
 (jsx_attribute (jsx_expression (member_expression property: (property_identifier) @call.value)))
+
+; A declaração exportada, visível fora do arquivo: a que o `export` escreve
+; (`export function`, `export class`, `export const`, `export default`) e o
+; membro de uma classe exportada, que é público quando não diz o contrário.
+; O membro `private` ou `protected` fica dentro dela, ainda que a classe saia.
+(export_statement) @visible
+(export_statement declaration: (_) @visible)
+(export_statement
+  declaration: (class_declaration
+    body: (class_body [(method_definition) (public_field_definition)] @visible)))
+(export_statement
+  declaration: (abstract_class_declaration
+    body: (class_body [(method_definition) (public_field_definition) (abstract_method_signature)] @visible)))
+((method_definition (accessibility_modifier) @_access) @hidden
+  (#not-eq? @_access "public"))
+((public_field_definition (accessibility_modifier) @_access) @hidden
+  (#not-eq? @_access "public"))

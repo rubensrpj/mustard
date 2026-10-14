@@ -121,3 +121,9 @@
 (verbatim_string_literal) @text
 (raw_string_literal) @text
 (interpolated_string_expression) @text
+
+; A declaração `public`, visível fora do assembly: quem está fora do projeto
+; pode usá-la. O `internal`, o `private` e a declaração sem modificador ficam
+; dentro dele.
+((_ (modifier) @_visibility) @visible
+  (#eq? @_visibility "public"))

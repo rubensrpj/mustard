@@ -67,9 +67,15 @@
 //!   método de rota, o método que cumpre um contrato (a implementação de um
 //!   traço, ainda que o traço seja de fora do projeto) e o campo que o texto
 //!   ainda lê. A declaração já sem uso na base, que continua no mesmo
-//!   arquivo, fica de fora: não foi a onda que a pôs. O achado recusa quando
-//!   o nome não está escrito noutro lugar fora de teste e só avisa quando
-//!   está, pela mesma busca do órfão. O teste, de arquivo de teste ou do
+//!   arquivo, fica de fora: não foi a onda que a pôs. Só a análise final, no
+//!   fechamento, procura o posto sem uso, e a prova é do mapa, em qualquer
+//!   linguagem: o achado recusa quando a declaração não é exportada (o scan
+//!   marca a que a linguagem deixa ver fora do arquivo: `pub`, `export`,
+//!   `public`) e o nome não está escrito noutro lugar fora de teste, pela
+//!   mesma busca do órfão. A exportada, que alguém de fora do projeto pode
+//!   usar, só avisa, e a de nome escrito noutro lugar também, a não ser que a
+//!   saída do compilador aponte a mesma declaração como sem uso: o aviso dele
+//!   só acrescenta, e nunca é condição ([`super::unused_evidence`]). O teste, de arquivo de teste ou do
 //!   trecho de teste de um arquivo do programa, cujo texto não cita nenhuma
 //!   outra declaração chamável do programa sai na mesma mensagem como teste
 //!   sem uso, quando o achado dela recusa: o teste só existe por ela. A
@@ -221,8 +227,8 @@ fn never_used(
         return Vec::new();
     }
     let cites = cited(root, &decl.name, created);
-    let exported = decl.signature.contains("pub ") || decl.signature.contains("export ") || decl.signature.contains("public ");
-    let refuses = super::unused_evidence::proves(root, module, decl, outputs) && !exported && !cited_outside_tests(maps, module, decl, &cites);
+    let unlinked_text = cited_outside_tests(maps, module, decl, &cites);
+    let refuses = !exported(decl) && (!unlinked_text || super::unused_evidence::proves(root, module, decl, outputs));
     let says = |key: &str, file: &str, line: u64| Finding {
         wave: *wave,
         refuses,
@@ -232,6 +238,13 @@ fn never_used(
     let mut out = vec![says(if refuses { "round.after_wave.unused" } else { "round.after_wave.unused_candidate" }, &module.path, decl.line)];
     out.extend(tests.iter().map(|(file, line)| says("round.after_wave.unused_test", file, *line)));
     out
+}
+
+/// A linguagem deixa `decl` visível fora do arquivo ou do pacote, pela marca
+/// que o scan grava na sintaxe da declaração: quem está fora do projeto pode
+/// usá-la, e a falta de uso dentro dele não prova que ela sobra.
+fn exported(decl: &MapDecl) -> bool {
+    decl.syntax.get("exported").and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
 /// Os tipos de declaração que um teste chama pelo nome: o que o mapa liga
@@ -657,16 +670,18 @@ mod tests {
         round_with_mine(root, "x", Some(&report), &mine_giving(after))
     }
 
-    /// Exercise delivery before the final candidate analysis. Syntax-only
-    /// findings cannot reject code or condemn tests in any language.
-    fn final_after_delivery(root: &Path, changed: &str, after: Value) -> String {
+    /// A entrega da onda 1, que muda `changed`, com o mapa de depois `after`,
+    /// e a análise final do código novo sem uso, sem saída de compilador: o
+    /// texto dos achados que recusam e o dos que só avisam. A entrega da onda
+    /// não recusa pelo código novo; só a análise final o procura.
+    fn final_after_delivery(root: &Path, changed: &str, after: Value) -> (String, String) {
         let base = mustard_core::io::project_map::read(root).unwrap();
         let mapped = serde_json::from_value(after.clone()).unwrap();
         let delivery = back_at(root, changed, after);
         assert_eq!(delivery["ok"], true, "{delivery}");
         let findings = final_findings(root, &AfterWave { base, after: mapped, changed: vec![(1, vec![changed.into()])] }, Locale::PtBr, &[]);
-        assert!(findings.iter().all(|finding| !finding.refuses), "syntax cannot prove runtime absence");
-        findings.into_iter().map(|finding| finding.text).collect::<Vec<_>>().join("\n")
+        let said = |refuses: bool| findings.iter().filter(|f| f.refuses == refuses).map(|f| f.text.as_str()).collect::<Vec<_>>().join("\n");
+        (said(true), said(false))
     }
     fn orphan_hint(out: &Value) -> String {
         assert_eq!(out["ok"], true, "loss of the last syntax relation only warns: {out}");
@@ -1130,9 +1145,11 @@ mod tests {
                 ("LeftTask", "files", 15, &[]),
             ],
         )]});
-        let hint = final_after_delivery(root, "src/a.rs", after);
-        assert!(hint.contains("`wave`") && hint.contains("`copy`") && hint.contains("`files`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, _) = final_after_delivery(root, "src/a.rs", after);
+        for line in ["`wave` em `src/a.rs` linha 3", "`copy` em `src/a.rs` linha 4", "`files` em `src/a.rs` linha 15"] {
+            assert!(refused.contains(&format!("{line} é código novo sem uso fora de teste")), "{line}: {refused}");
+        }
+        assert!(!refused.contains("linha 5 ") && !refused.contains("linha 12 "), "the fields that kept their readers stay out: {refused}");
     }
 
     #[test]
@@ -1440,9 +1457,9 @@ mod tests {
         let root = dir.path();
         let text = new_total_text();
         project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
-        let hint = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
-        assert!(hint.contains("`compute_total`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, _) = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
+        assert!(refused.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{refused}");
+        assert!(!refused.contains("`run_sum` em"), "the function that was already there stays out: {refused}");
     }
 
     #[test]
@@ -1451,9 +1468,9 @@ mod tests {
         let root = dir.path();
         let text = new_total_text();
         project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
-        let hint = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
-        assert!(hint.contains("`compute_total`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, _) = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
+        assert!(refused.contains("`src/a.rs` linha 15 é um teste que só chama `compute_total`"), "{refused}");
+        assert!(!refused.contains("linha 19"), "the test that also calls `run_sum` is not only for it: {refused}");
     }
 
     #[test]
@@ -1464,9 +1481,9 @@ mod tests {
         let tested = module("tests/total_test.rs", &[("checks", 1, &[])]);
         let after = |used: &[&str]| json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("compute_total", 5, used)]), tested]});
         project(root, &files, &base_with_run_sum_only());
-        let hint = final_after_delivery(root, "src/a.rs", after(&["tests/total_test.rs:1:checks"]));
-        assert!(hint.contains("`compute_total`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, _) = final_after_delivery(root, "src/a.rs", after(&["tests/total_test.rs:1:checks"]));
+        assert!(refused.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{refused}");
+        assert!(refused.contains("`tests/total_test.rs` linha 1 é um teste que só chama `compute_total`"), "{refused}");
     }
 
     #[test]
@@ -1489,9 +1506,8 @@ mod tests {
             module("src/a.rs", &[("run_sum", 1, &[])]),
             module("src/lib_sum.rs", &[("compute_total", 5, &["tests/lib_sum_test.rs:3:checks"])]),
         ]});
-        let hint = final_after_delivery(root, "src/lib_sum.rs", after);
-        assert!(hint.contains("`compute_total`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, _) = final_after_delivery(root, "src/lib_sum.rs", after);
+        assert!(refused.contains("`compute_total` em `src/lib_sum.rs` linha 5 é código novo sem uso fora de teste"), "{refused}");
     }
 
     #[test]
@@ -1503,9 +1519,10 @@ mod tests {
         let go = "use crate::a as calc;\n\nfn go() -> Vec<u32> {\n    [1, 2].into_iter().map(calc::compute_total).collect()\n}\n";
         let text = new_total_text();
         project(root, &[("src/a.rs", text.as_str()), ("src/b.rs", go)], &base_with_run_sum_only());
-        let hint = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
-        assert!(hint.contains("`compute_total`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, warned) = final_after_delivery(root, "src/a.rs", with_new_total(&[]));
+        assert!(refused.is_empty(), "the name may be a use: {refused}");
+        assert!(warned.contains("`compute_total` em `src/a.rs` linha 5"), "{warned}");
+        assert!(!warned.contains("é um teste que só chama"), "the name may be a use, so no test is called useless: {warned}");
     }
 
     /// O arquivo de `src/a.rs` com a função de apoio solta marcada com
@@ -1546,9 +1563,8 @@ mod tests {
         // novo sem uso, e o texto do arquivo não a livra.
         let after = json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 3, &[])])]});
         project(root, &[("src/a.rs", LOOSE_TEST_ITEMS)], &base_with_run_sum_only());
-        let hint = final_after_delivery(root, "src/a.rs", after);
-        assert!(hint.contains("`seed_value`"), "{hint}");
-        assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+        let (refused, _) = final_after_delivery(root, "src/a.rs", after);
+        assert!(refused.contains("`seed_value` em `src/a.rs` linha 3 é código novo sem uso fora de teste"), "{refused}");
     }
 
     #[test]
@@ -1603,9 +1619,74 @@ mod tests {
             project_at(root, file, &[(file, text.as_str())], &before);
             let member = json!({"kind": kind, "name": name, "line": 2, "end_line": 2, "owner": ["Walked"]});
             let after = json!({"modules": [{"path": file, "language": language, "declarations": [walked, member]}]});
-            let hint = final_after_delivery(root, file, after);
-            assert!(hint.contains(&format!("`{name}`")), "{language}: {hint}");
-            assert!(!hint.contains("é um teste que só chama"), "uncertainty cannot condemn a test: {hint}");
+            let (refused, _) = final_after_delivery(root, file, after);
+            assert!(refused.contains(&format!("`{name}` em `{file}` linha 2 é código novo sem uso fora de teste")), "{language}: {refused}");
+        }
+    }
+
+    /// Cada linguagem, com o arquivo, o texto da base e a declaração nova sem
+    /// uso, escrita privada e exportada: a privada fica dentro do arquivo, e
+    /// a exportada alguém de fora do projeto pode usar.
+    const NEW_CODE: [(&str, &str, &str, &str, &str); 3] = [
+        ("src/math.rs", "pub fn run_sum() -> u32 {\n    1\n}\n", "fn lonely_total() -> u32 {\n    2\n}\n", "pub fn lonely_total() -> u32 {\n    2\n}\n", "lonely_total"),
+        (
+            "web/math.ts",
+            "export function runSum(): number {\n  return 1;\n}\n",
+            "function lonelyTotal(): number {\n  return 2;\n}\n",
+            "export function lonelyTotal(): number {\n  return 2;\n}\n",
+            "lonelyTotal",
+        ),
+        (
+            "App/Calc.cs",
+            "namespace App {\n  public class Calc {\n    public int RunSum() { return 1; }\n",
+            "    private int LonelyTotal() { return 2; }\n",
+            "    public int LonelyTotal() { return 2; }\n",
+            "LonelyTotal",
+        ),
+    ];
+
+    /// A análise final do código que a onda 1 pôs em `file`: o texto `base`
+    /// comitado, `added` escrito depois dele, e os dois mapas do scan de
+    /// verdade, o da base e o de depois, sem saída de compilador nenhuma.
+    fn final_by_the_real_scan(file: &str, base: &str, added: &str) -> Vec<Finding> {
+        let scan = mustard_core::Scan::locate();
+        assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
+        let dir = tempdir().unwrap();
+        let maps = tempdir().unwrap();
+        let root = dir.path();
+        let closing = if file.ends_with(".cs") { "  }\n}\n" } else { "" };
+        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+        std::fs::write(root.join(file), format!("{base}{closing}")).unwrap();
+        git_at(root, &["init", "-q"]);
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "base"]);
+        let mapped = |name: &str| {
+            let out = maps.path().join(name);
+            scan.scan(root, &out).expect("the scan writes the map");
+            mustard_core::io::project_map::read_at(&out).expect("the map reads back")
+        };
+        let before = mapped("base.db");
+        std::fs::write(root.join(file), format!("{base}{added}{closing}")).unwrap();
+        let after = mapped("after.db");
+        final_findings(root, &AfterWave { base: before, after, changed: vec![(1, vec![file.into()])] }, Locale::PtBr, &[])
+    }
+
+    #[test]
+    fn a_new_private_declaration_without_use_refuses_the_close_by_the_map() {
+        for (file, base, private, _, name) in NEW_CODE {
+            let findings = final_by_the_real_scan(file, base, private);
+            let refused: Vec<&str> = findings.iter().filter(|f| f.refuses).map(|f| f.text.as_str()).collect();
+            assert_eq!(refused.len(), 1, "{file}: {refused:?}");
+            assert!(refused[0].contains(&format!("`{name}` em `{file}`")) && refused[0].contains("é código novo sem uso fora de teste"), "{file}: {refused:?}");
+        }
+    }
+
+    #[test]
+    fn an_exported_declaration_without_use_only_warns() {
+        for (file, base, _, exported, name) in NEW_CODE {
+            let findings = final_by_the_real_scan(file, base, exported);
+            assert!(findings.iter().all(|f| !f.refuses), "{file}: {:?}", findings.iter().map(|f| &f.text).collect::<Vec<_>>());
+            assert!(findings.iter().any(|f| f.text.contains(&format!("`{name}` em `{file}`"))), "{file}: the warning stays");
         }
     }
 }

@@ -36,6 +36,9 @@ pub(crate) struct AcResult {
     /// e não veredito: quem julga esse número é a prova de um critério, em
     /// [`run_proof`], e nunca o lint nem outro comando do fluxo.
     tests_run: Option<u64>,
+    /// A saída inteira de um verde, até um teto alto; vazia em todo outro
+    /// desfecho, que leva o trecho de [`AcResult::stderr_excerpt`].
+    evidence: String,
 }
 
 /// Uma prova de critério rodada uma vez, como o fechamento a grava.
@@ -63,6 +66,10 @@ pub(crate) struct ProofRun {
     /// prova passou, quando ela falhou por outro motivo, e em todo comando
     /// que não é prova de critério.
     pub missing_test: Option<String>,
+    /// A saída inteira do verde, até um teto alto, que não é gravada na spec:
+    /// o fechamento a entrega à análise final de código sem uso, onde o aviso
+    /// de código morto do compilador só acrescenta. Vazia quando não passou.
+    pub evidence: String,
 }
 
 /// Roda a prova de um critério uma vez, pelo mesmo executor do QA: o mesmo
@@ -208,6 +215,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         ran_no_test,
         missing_test,
         output: out.stderr_excerpt,
+        evidence: out.evidence,
     }
 }
 

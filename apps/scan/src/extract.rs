@@ -462,6 +462,15 @@ enum CapKind {
     Contract,
     /// An attribute or decorator adorning a declaration: never code of it.
     Decoration,
+    /// A declaration node that the language makes visible outside its file
+    /// or package (`pub`, `export`, `public`): someone outside the project
+    /// may use it. The declaration whose node this is carries
+    /// `syntax.exported`.
+    Visible,
+    /// A declaration node that the language keeps hidden even where a
+    /// [`CapKind::Visible`] pattern took it (the `private` member of an
+    /// exported class): hidden wins.
+    Hidden,
     /// The body of a declaration that the grammar keeps beside it rather than
     /// inside it: the declaration ends where its body ends.
     Body,
@@ -535,6 +544,8 @@ fn classify(cap: &str) -> CapKind {
         "owner" => CapKind::Owner,
         "owner.contract" => CapKind::Contract,
         "decoration" => CapKind::Decoration,
+        "visible" => CapKind::Visible,
+        "hidden" => CapKind::Hidden,
         "body" => CapKind::Body,
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
@@ -665,6 +676,10 @@ impl Analyzer {
         // after the declaration it adorns.
         let mut decls: BTreeMap<(usize, usize, String), Header> = BTreeMap::new();
         let mut decorations: Spans = BTreeSet::new();
+        // The declaration nodes the language makes visible outside the file,
+        // minus the ones it keeps hidden.
+        let mut visible: Spans = BTreeSet::new();
+        let mut hidden: Spans = BTreeSet::new();
         // What an import or a namespace capture covers: the names written
         // there are the path of the import, not a use of what they name.
         let mut import_spans: Spans = BTreeSet::new();
@@ -841,6 +856,12 @@ impl Analyzer {
                     }
                     CapKind::Decoration => {
                         decorations.insert((node.start_byte(), node.end_byte()));
+                    }
+                    CapKind::Visible => {
+                        visible.insert((node.start_byte(), node.end_byte()));
+                    }
+                    CapKind::Hidden => {
+                        hidden.insert((node.start_byte(), node.end_byte()));
                     }
                     CapKind::Body => {
                         body_end = Some(node.end_position().row + 1);
@@ -1020,7 +1041,7 @@ impl Analyzer {
                     body_comment: String::new(),
                     body_names: String::new(),
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
-                    syntax: header_fields(h.node,bytes),
+                    syntax: header_fields(h.node, bytes, exported(h.node, &visible, &hidden)),
                     calls: Vec::new(),
                     used_by: Vec::new(),
                     common_calls: 0,
@@ -1656,9 +1677,14 @@ fn quoted_value(text: &str) -> Option<String> {
     Some(body[..end].to_string())
 }
 
-/// Declared parameter/type fields with source coordinates; absent fields stay unknown.
-fn header_fields(node: Node, bytes: &[u8]) -> serde_json::Value {
+/// Declared parameter/type fields with source coordinates, and `exported`
+/// when the language makes the declaration visible outside its file
+/// ([`exported`]); absent fields stay unknown.
+fn header_fields(node: Node, bytes: &[u8], exported: bool) -> serde_json::Value {
     let mut fields=serde_json::Map::new();
+    if exported {
+        fields.insert("exported".into(), serde_json::Value::Bool(true));
+    }
     fields.insert("source_chunks".into(),chunks::of(node));
     let body_start=node.child_by_field_name("body").map_or(node.end_byte(),|body|body.start_byte());
     for (field,role) in [("parameters","parameters"),("return_type","return_type"),("type","declared_type")] {
@@ -1670,6 +1696,14 @@ fn header_fields(node: Node, bytes: &[u8]) -> serde_json::Value {
         }
     }
     if fields.is_empty(){serde_json::Value::Null}else{serde_json::Value::Object(fields)}
+}
+
+/// The declaration whose node is `node` is visible outside its file or
+/// package: a `@visible` pattern of the language took the node and no
+/// `@hidden` one did.
+fn exported(node: Node, visible: &Spans, hidden: &Spans) -> bool {
+    let span = (node.start_byte(), node.end_byte());
+    visible.contains(&span) && !hidden.contains(&span)
 }
 
 /// The declaration's own header: its text up to where the body opens — the

@@ -1989,6 +1989,7 @@ mod tests {
             output: output.to_string(),
             ran_no_test: None,
             missing_test: None,
+            evidence: String::new(),
         }
     }
 

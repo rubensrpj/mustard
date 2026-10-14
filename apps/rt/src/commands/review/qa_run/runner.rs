@@ -299,6 +299,25 @@ fn excerpt(s: &str) -> String {
     s.chars().take(100).collect()
 }
 
+/// Quantos bytes da saída de um verde a evidência guarda: o bastante para a
+/// saída inteira do lint ou da suíte de um projeto, sem deixar uma saída sem
+/// fim tomar a memória.
+const GREEN_EVIDENCE_BYTES: usize = 1024 * 1024;
+
+/// A saída de um verde, inteira até [`GREEN_EVIDENCE_BYTES`], cortada no
+/// último fim de linha que cabe: a linha cortada ao meio não se lê.
+fn green_evidence(s: &str) -> String {
+    if s.len() <= GREEN_EVIDENCE_BYTES {
+        return s.to_string();
+    }
+    let mut end = GREEN_EVIDENCE_BYTES;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let kept = &s[..end];
+    kept.rfind('\n').map_or(kept, |at| &kept[..at]).to_string()
+}
+
 /// Quantas linhas do fim da saída uma falha guarda.
 const FAILURE_TAIL_LINES: usize = 40;
 
@@ -444,6 +463,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("timeout after {}ms", after.as_millis()),
                 tests_run: None,
+                evidence: String::new(),
             };
         }
         // Never ran ⇒ the criterion could not be attempted at all ⇒ `skip`.
@@ -458,6 +478,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("could not run the command: {error}"),
                 tests_run: None,
+                evidence: String::new(),
             };
         }
     };
@@ -493,6 +514,10 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                     _ => String::new(),
                 },
                 tests_run: counted,
+                // O verde guarda a saída inteira, até o teto: o aviso de
+                // código morto que o compilador escreveu nela é evidência a
+                // mais da análise final, e nunca condição.
+                evidence: green_evidence(&combined_full),
             },
             ExpectVerdict::Missed => AcResult {
                 status: "fail".to_string(),
@@ -500,6 +525,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms,
                 stderr_excerpt: format!("Expect `{pattern}` not found in command output: {}", tail_excerpt(&combined_full)),
                 tests_run: counted,
+                evidence: String::new(),
             },
             ExpectVerdict::InvalidPattern => AcResult {
                 status: "skip".to_string(),
@@ -507,6 +533,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms,
                 stderr_excerpt: format!("Expect `{pattern}` is not a valid regex; skipped (fail-open)"),
                 tests_run: counted,
+                evidence: String::new(),
             },
         };
     }
@@ -544,6 +571,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
             duration_ms,
             stderr_excerpt: format!("the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}", tail_excerpt(&combined_full)),
             tests_run: counted,
+            evidence: String::new(),
         };
     }
     AcResult {
@@ -552,6 +580,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
         duration_ms,
         stderr_excerpt: tail_excerpt(&combined_full),
         tests_run: counted,
+        evidence: String::new(),
     }
 }
 
@@ -851,6 +880,27 @@ mod tests {
     /// Um comando que escreve 200 linhas numeradas, `linha 1` a `linha 200`, e
     /// sai com o código 3: a falha aparece na última.
     const PRINTS_LINES_THEN_FAILS: &str = "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
+
+    /// O verde guarda a saída inteira, do começo ao fim, como evidência, e
+    /// segue sem trecho; a falha não guarda evidência, só o fim da saída. A
+    /// saída maior que o teto fica nele, cortada no último fim de linha.
+    #[test]
+    fn a_green_run_keeps_its_whole_output_as_evidence() {
+        let dir = tempdir().unwrap();
+        let green = run_ac_command("i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done", None, dir.path());
+        assert_eq!(green.status, "pass", "{}", green.stderr_excerpt);
+        assert!(green.stderr_excerpt.is_empty(), "{}", green.stderr_excerpt);
+        assert_eq!(green.evidence.lines().count(), 200, "{}", green.evidence);
+        assert!(green.evidence.starts_with("linha 1\n") && green.evidence.ends_with("linha 200"), "{}", green.evidence);
+        let red = run_ac_command(PRINTS_LINES_THEN_FAILS, None, dir.path());
+        assert!(red.evidence.is_empty(), "{}", red.evidence);
+
+        let line = "x".repeat(99);
+        let huge = format!("{line}\n").repeat(GREEN_EVIDENCE_BYTES / 100 + 10);
+        let kept = green_evidence(&huge);
+        assert!(kept.len() <= GREEN_EVIDENCE_BYTES && kept.len() > GREEN_EVIDENCE_BYTES - 100, "{}", kept.len());
+        assert!(kept.ends_with(&line), "cut at the end of a line");
+    }
 
     /// A falha mostra o FIM da saída, onde o motivo aparece: numa saída de 200
     /// linhas que falha na última, o trecho tem a última linha, guarda só as

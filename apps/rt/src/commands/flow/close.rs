@@ -664,7 +664,7 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
                 CloseRefusal::SuiteFailed { command, output: out.output, no_wave: None }
             });
         }
-        native_outputs.push(out.output);
+        native_outputs.push(out.evidence);
     }
 
     // Cada critério roda uma vez, e cada execução é gravada.
@@ -672,7 +672,7 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
     let (outcomes, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
     let mut runs: Vec<Value> = Vec::new();
     for (id, code, out) in &outcomes {
-        native_outputs.push(out.output.clone());
+        native_outputs.push(out.evidence.clone());
         if let Some((_, _, command)) = criteria.iter().find(|(criterion, _, _)| criterion == id) {
             super::validation::record_run(root, spec, "final", &format!("criterion:{code}"), command, out).map_err(CloseRefusal::Refused)?;
         }
@@ -3139,7 +3139,7 @@ exit "${2:-0}"
     }
 
     /// O fechamento com um `mustard.json` que declara o lint.
-    fn close_with_lint(root: &Path, lint: &str, report: Option<String>) -> Value {
+    pub(super) fn close_with_lint(root: &Path, lint: &str, report: Option<String>) -> Value {
         std::fs::write(root.join(".gitignore"), "lint-rodou/\n").unwrap();
         std::fs::write(root.join("mustard.json"), json!({ "lintCommand": lint }).to_string()).unwrap();
         close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)

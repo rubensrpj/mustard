@@ -1,6 +1,9 @@
-//! A syntactic graph cannot prove absence of runtime use. Only a native
-//! compiler diagnostic from the current final checks can strengthen a
-//! candidate into a refusal. Unknown formats remain warnings.
+//! A evidência a mais da análise final de código sem uso: o aviso de código
+//! morto que o compilador escreveu na saída dos comandos do fechamento. A
+//! prova da análise é do mapa, em qualquer linguagem; este aviso só
+//! acrescenta, quando existe: ele confirma, para a declaração cujo nome ainda
+//! aparece noutro lugar, que o texto não é um uso. Hoje se reconhece o
+//! diagnóstico em JSON do rustc e do cargo; outro formato não acrescenta nada.
 
 use std::path::Path;
 
@@ -66,7 +69,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_current_compiler_diagnostic_is_required_not_a_complete_syntax_parse() {
+    fn a_compiler_diagnostic_counts_only_for_the_current_source_of_the_declaration() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("math.rs"), "fn unused_sum() {}\n").unwrap();
         let module: MapModule = serde_json::from_value(json!({"path":"math.rs","language":"rust",
@@ -86,25 +89,39 @@ mod tests {
     fn actual_compiler_evidence_distinguishes_private_dead_code_from_a_public_contract() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("math.rs"), "fn unused_sum() {}\npub fn public_contract() {}\n").unwrap();
+        // `noted_sum` tem o nome escrito noutro arquivo, o que o mapa não liga
+        // e pode ser um uso; `unused_sum` não aparece em lugar nenhum.
+        std::fs::write(root.join("math.rs"), "fn unused_sum() {}\nfn noted_sum() {}\npub fn public_contract() {}\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "noted_sum fica para a próxima versão\n").unwrap();
+        for args in [&["init", "-q"][..], &["add", "-A"]] {
+            assert!(std::process::Command::new("git").args(args).current_dir(root).status().unwrap().success());
+        }
         let ran = std::process::Command::new("rustc").args(["--crate-type", "lib", "--error-format=json", "math.rs"]).current_dir(root).output().unwrap();
         assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
         let output = String::from_utf8_lossy(&ran.stderr).into_owned();
         let module: MapModule = serde_json::from_value(json!({"path":"math.rs","language":"rust"})).unwrap();
         let private: MapDecl = serde_json::from_value(json!({"name":"unused_sum","kind":"function","line":1,"end_line":1})).unwrap();
-        let public: MapDecl = serde_json::from_value(json!({"name":"public_contract","kind":"function","line":2,"end_line":2})).unwrap();
+        let public: MapDecl = serde_json::from_value(json!({"name":"public_contract","kind":"function","line":3,"end_line":3})).unwrap();
         assert!(proves(root, &module, &private, std::slice::from_ref(&output)));
         assert!(!proves(root, &module, &public, std::slice::from_ref(&output)));
-        let after = serde_json::from_value(
-            json!({"modules":[{"path":"math.rs","language":"rust","declarations":[{"name":"unused_sum","kind":"function","line":1,"end_line":1}]}]}),
-        )
+        let after = serde_json::from_value(json!({"modules":[{"path":"math.rs","language":"rust","declarations":[
+            {"name":"unused_sum","kind":"function","line":1,"end_line":1},
+            {"name":"noted_sum","kind":"function","line":2,"end_line":2},
+            {"name":"public_contract","kind":"function","line":3,"end_line":3,"syntax":{"exported":true}},
+        ]}]}))
         .unwrap();
-        let findings = super::super::removed_check::final_findings(
-            root,
-            &super::super::commit::AfterWave { base: Default::default(), after, changed: vec![(1, vec!["math.rs".into()])] },
-            mustard_core::platform::i18n::Locale::PtBr,
-            &[output],
-        );
-        assert!(findings.iter().any(|finding| finding.refuses && finding.text.contains("unused_sum")), "compiler proof must refuse in the final phase");
+        let maps = super::super::commit::AfterWave { base: Default::default(), after, changed: vec![(1, vec!["math.rs".into()])] };
+        let refused = |outputs: &[String]| -> Vec<String> {
+            let findings = super::super::removed_check::final_findings(root, &maps, mustard_core::platform::i18n::Locale::PtBr, outputs);
+            ["unused_sum", "noted_sum", "public_contract"]
+                .into_iter()
+                .filter(|name| findings.iter().any(|finding| finding.refuses && finding.text.contains(&format!("`{name}`"))))
+                .map(str::to_string)
+                .collect()
+        };
+        // Sem o compilador, o mapa já recusa a privada sem uso; com ele, a de
+        // nome escrito noutro lugar também recusa. A exportada só avisa.
+        assert_eq!(refused(&[]), ["unused_sum"]);
+        assert_eq!(refused(&[output]), ["unused_sum", "noted_sum"]);
     }
 }

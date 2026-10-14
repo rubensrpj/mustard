@@ -13,9 +13,9 @@ use mustard_core::platform::i18n::Locale;
 use super::CloseRefusal;
 
 /// A recusa da análise final de declarações sem uso da spec `spec`, com o
-/// texto de cada achado que recusa; `None` sem achado que recuse. `outputs`
-/// são as saídas dos comandos da máquina, onde o compilador aponta a
-/// declaração sem uso.
+/// texto de cada achado que recusa; `None` sem achado que recuse. A prova é
+/// do mapa; `outputs` são as saídas inteiras dos comandos verdes da máquina,
+/// onde o aviso de código morto do compilador, quando existe, só acrescenta.
 pub(super) fn refusal(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Option<CloseRefusal> {
     let failures: Vec<String> = crate::commands::flow::round::final_unused(root, spec, log, lang, outputs)
         .into_iter()
@@ -32,15 +32,15 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::super::tests::{branched_from_dev, git_at, ready_with_waves, round_for, wave_file};
+    use super::super::tests::{branched_from_dev, close_with_lint, git_at, ready_with_waves, round_for, wave_file};
     use super::super::{CloseRefusal, authorize_final_repair};
-    use super::refusal;
     use crate::commands::flow::round::RoundOpts;
 
     /// Duas ondas entregues no mesmo commit, e a onda 2 deixa no arquivo dela
-    /// uma função que nada usa, que o compilador aponta: a análise recusa, só
-    /// a onda 2 reabre, com o achado no trecho de conserto, e a rodada
-    /// seguinte despacha só ela.
+    /// uma função privada que nada usa. O fechamento roda com o lint verde,
+    /// que não escreve aviso de compilador nenhum: a análise final recusa
+    /// pelo mapa, só a onda 2 reabre, com o achado no trecho de conserto, e a
+    /// rodada seguinte despacha só ela.
     #[test]
     fn the_unused_analysis_reopens_only_the_wave_whose_file_it_cites() {
         let dir = tempdir().unwrap();
@@ -57,16 +57,11 @@ mod tests {
         let spec_dir = store::spec_file(root, "x").unwrap().parent().unwrap().to_path_buf();
         std::fs::write(spec_dir.join("validation-base-map.json"), base.to_string()).unwrap();
         mustard_core::io::project_map::write_text(root, &after.to_string()).unwrap();
-        let diagnostic = json!({"$message_type": "diagnostic", "level": "warning", "code": {"code": "dead_code"},
-            "message": "function `lonely_total` is never used",
-            "spans": [{"file_name": &file, "line_start": 3, "is_primary": true, "text": [{"text": unused}]}]});
 
+        let refused = close_with_lint(root, "git --version", None);
+        assert_eq!(refused["reason"], json!("final-new-unused"), "{refused}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let failure = refusal(root, "x", &log, Locale::PtBr, &[diagnostic.to_string()]).expect("the analysis refuses");
-        let refused = authorize_final_repair(root, "x", &log, failure, Locale::PtBr);
-        assert_eq!(refused.reason(), "final-new-unused");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![2], "{}", refused.message(Locale::PtBr));
+        assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![2], "{refused}");
         let fix = mustard_core::domain::wave_prompt::fix_lines(&log, 2);
         assert!(fix.first().and_then(|e| e.str_field("text")).is_some_and(|text| text.contains("`lonely_total`")), "{fix:?}");
         assert!(mustard_core::domain::wave_prompt::fix_lines(&log, 1).is_empty());
