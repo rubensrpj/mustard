@@ -72,8 +72,13 @@ pub(super) fn measure_usage<'u>(root: &Path, log: &SpecLog, caller: Caller<'_>, 
             .and_then(|text|mustard_core::domain::wave_prompt::ReadDispatch::of(text).map(|r|r.spec)
                 .or_else(||text.lines().next().and_then(|heading|mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::PtBr).or_else(||mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::EnUs))).map(|r|r.0)));
         let native=spec.as_deref().and_then(|spec|crate::shared::host_observation::wave_usage(root,spec,log,wave));
-        let own = native.as_ref().map(|measured|measured.usage.clone())
-            .or_else(||session.as_deref().and_then(|session|wave_usage(root, log, session, wave)));
+        // Os registros do gancho tomam o despacho anterior sem registro por
+        // não recebido. A pasta da sessão, quando se lê, vê também o agente
+        // que nasceu sem deixar registro, e a medição dela vale mais.
+        let scanned=native.as_ref().is_none_or(|measured|measured.skipped)
+            .then(||session.as_deref().and_then(|session|wave_usage(root, log, session, wave))).flatten();
+        let native=native.filter(|_|scanned.is_none());
+        let own = native.as_ref().map(|measured|measured.usage.clone()).or(scanned);
         *usage = Usage {
             model_used: own.as_ref().and_then(|own| own.model.clone()),
             steps: native.as_ref().map_or_else(||own.as_ref().map(|own|own.steps),|measured|measured.steps),
@@ -408,5 +413,29 @@ pub(super) mod tests {
         let (out, revised) = measured_return(root, config, "desktop");
         assert!(usage_missing(&out), "sem o agente que entregou, a medição fica de fora: {out}");
         assert_eq!((revised.int("tokens"), revised.int("steps")), (None, None), "{revised:?}");
+    }
+
+    /// O agente do primeiro envio nasceu e sumiu sem deixar registro no
+    /// gancho; o do reenvio deixou o dele. A pasta da sessão mostra os dois,
+    /// e a rodada grava o consumo dos dois, não só o do agente com registro.
+    #[test]
+    fn the_session_folder_counts_an_earlier_agent_the_hook_never_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (first, resent, dispatch) = resent_wave(root);
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        session(config, "-tmp-obra", "desktop", &instant(&first, -60_000));
+        agent(config, "-tmp-obra", "desktop/subagents/agent-antes.jsonl", &instant(&first, 0), &dispatch, "a1", [9_000, 0, 0, 0]);
+        agent(config, "-tmp-obra", "desktop/subagents/agent-x.jsonl", &instant(&resent, 200), &dispatch, "r1", [2, 100, 1_000, 40]);
+        let transcript = config.join("projects/-tmp-obra/desktop/subagents/agent-x.jsonl");
+        let stop = serde_json::from_value(json!({"cwd": root, "hook_event_name": "SubagentStop", "session_id": "desktop", "agent_id": "x", "agent_transcript_path": transcript})).unwrap();
+        let _ = crate::dispatch::run_event(Some(mustard_core::domain::model::contract::Trigger::SubagentStop), &stop);
+
+        let (out, revised) = measured_return(root, config, "desktop");
+        assert!(!usage_missing(&out), "{out}");
+        // 9.000 do agente sem registro mais 2 + 100 + 1.000 + 40 do reenvio.
+        assert_eq!(revised.int("tokens"), Some(10_142), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(2), "{revised:?}");
     }
 }
