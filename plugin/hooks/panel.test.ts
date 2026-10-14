@@ -1,5 +1,19 @@
 import { test, expect, mock } from 'claude-code/testing';
 import {contentPage,waveText,definitionText} from './panel-content.js';
+import {analysisSpawn,analysisTool,fullAnalysisInput} from './analysis-policy.js';
+
+test('analysis stays in an isolated Haiku session and counts cache in its input budget',()=>{
+  expect(analysisSpawn({subagentType:'mustard-analysis',fork:true,prompt:'bounded'}).deny).toContain('isolated');
+  expect(analysisSpawn({subagentType:'mustard:mustard-analysis',fork:false,prompt:'bounded',model:'opus'}).model).toBe('haiku');
+  expect(analysisSpawn({subagentType:'mustard-wave',fork:false,prompt:'task',model:'sonnet'}).model).toBe('sonnet');
+  expect(fullAnalysisInput({input_tokens:1000,cache_read_input_tokens:87000,cache_creation_input_tokens:2000})).toBe(90000);
+  expect(fullAnalysisInput({input_tokens:1000})).toBeNull();
+  expect(analysisTool({tool:'Edit',input:{}},{input:1000}).decision).toBe('deny');
+  expect(analysisTool({tool:'Read',input:{}},{input:90000}).decision).toBe('deny');
+  expect(analysisTool({tool:'Read',input:{}},{input:1000})).toBeNull();
+  expect(analysisTool({tool:'Bash',input:{command:'touch changed'}},null)).toBeNull();
+  expect(analysisTool({tool:'mcp__mustard__search',input:{request:{tool:'Bash',input:{command:'touch changed'}}}},{input:1}).decision).toBe('deny');
+});
 
 test('delivery keeps native observations distinct from historical claims and agent interpretation',()=>{
   const detail={delivery:{text:'O acesso atual não foi conferido.',observations:[
@@ -194,7 +208,7 @@ test('usage separates measured RTK output and Jev cost from unproven total savin
   snapshot.specs[0].operations={search:{calls:33,decision_coverage:2,choice_gates:{eligible:1,'exact-read':1},
     local_model_calls:1,cache_hits:1,accepted_choices:1}};
   await clock.advance(10000);await pane.select({key:'panel-section',value:'Consumo'});
-  expect(await pane.find({type:'Text',text:'Economia total: não medida'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Economia líquida: ainda não comprovada'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'38,6%'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'$0.0010'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeUndefined();
@@ -220,7 +234,7 @@ test('project scope, unknown measurements and explicit publication remain clear'
   expect(await pane.find({type:'Text',text:/RTK|desconhecido|T23:04|https:\/\/example/})).toBeUndefined();
   expect(await pane.find({key:'publish'})).toBeUndefined();
   await pane.press({key:'tab-Consumo'});
-  expect(await pane.find({type:'Text',text:'Economia total: não medida'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Economia líquida: ainda não comprovada'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'RTK · redução estimada de saída'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Não medido'})).toBeDefined();
   await pane.select({key:'usage-section',value:'Histórico'});

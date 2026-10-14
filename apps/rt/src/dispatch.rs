@@ -59,6 +59,12 @@ fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Out
         crate::shared::host_observation::observe(&root,if codex {"codex"} else {"claude"},event,input);
     }
     let mut outcome = Outcome::allow();
+    let analysis=crate::hooks::session::analysis_guard::check(&root,input,trigger);
+    if !matches!(analysis,Verdict::Allow) {
+        record_action("analysis_guard",&analysis,input,&ctx,&root);
+        outcome.fold(analysis);
+        if outcome.is_blocking() {return outcome;}
+    }
     if codex && trigger == Trigger::SessionStart {
         if !input.is_subagent() && input.raw.get("source").and_then(serde_json::Value::as_str)
             .is_some_and(|source| ["clear", "compact"].contains(&source)) {

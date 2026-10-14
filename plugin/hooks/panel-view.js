@@ -41,7 +41,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     discarded:['Descartada','Discarded'],discarded_auto:['Descartada','Discarded']};
   const state=value=>states[value]?t(...states[value]):clean(value || t('Não informado','Not provided'));
   const button=(key,label,onPress,{active=false,disabled=false,hotkey}={})=>Box({key:`control-${key}`,...(compact?{}:{borderStyle:'round'}),
-    borderColor:active?theme.accentText:theme.line,paddingX:1,children:[disabled?note(label):Button({key,
+    borderColor:active?theme.accentText:theme.line,...(active?{backgroundColor:theme.accentSoft}:{}),paddingX:1,children:[disabled?note(label):Button({key,
       label:clean(active?`${label} ✓`:label),plain:true,onPress,...(hotkey?{hotkey}:{}),hover:{color:theme.accentText,bold:true}})]});
   const row=children=>Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children});
   const section=(title,children)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1,backgroundColor:theme.surface}),
@@ -109,6 +109,16 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     if(spec?.scheduling?.tasks?.some(item=>item.reason==='task-blocked'))rows.push(section(t('Precisa de atenção','Needs attention'),
       spec.scheduling.tasks.filter(item=>item.reason==='task-blocked').map(item=>text(`${item.title || item.task}: ${item.blocked_by || t('condição pendente','pending condition')}`))));
     rows.push(...liveAgents(data,spec,helpers));
+    if(data.project_profile?.available) {
+      const native=data.project_profile.data;
+      rows.push(section(t('Projeto reconhecido pelo scan','Project identified by scan'),[
+        text(`${fmt(native.size?.code_files)} ${t('arquivos','files')} · ${fmt(native.size?.lines)} ${t('linhas','lines')} · ${fmt(native.size?.declarations)} ${t('declarações','declarations')}`),
+        note(t('Convenções observadas, com fontes. Elas não substituem as regras do projeto.','Source-backed observed conventions. They do not replace project rules.')),
+        button('project-profile',view.showProfile?t('Recolher convenções','Collapse conventions'):t('Ver convenções observadas','Read observed conventions'),()=>actions.change({showProfile:!view.showProfile})),
+        ...(view.showProfile?(native.naming_conventions || []).map(area=>text(`${area.area}: ${(area.styles || []).map(style=>`${style.style} ${style.count}/${style.of}`).join(' · ')}`)):[]),
+        ...(view.showProfile?[note(t('Mais detalhes por arquivo: mustard-rt run knowledge --profile --file <arquivo>','More details per file: mustard-rt run knowledge --profile --file <file>'))]:[]),
+      ]));
+    }
     if(specs.some(item=>item!==spec))rows.push(section(t('Outras especificações','Other specifications'),specs.filter(item=>item!==spec).map(item=>
       row([text(`${item.name} · ${state(item.phase)}`),button(`project-${item.name}`,t('Abrir','Open'),()=>actions.selectSpec(item.name))]))
       .concat(specs.length===1?[note(t('Nenhuma outra spec registrada.','No other recorded specs.'))]:[])));

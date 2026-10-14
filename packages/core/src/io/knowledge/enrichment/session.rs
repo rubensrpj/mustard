@@ -45,6 +45,14 @@ fn token(value: &str) -> bool {
     !value.is_empty() && value.len() <= 120 && value.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:/".contains(c))
 }
 
+fn family_matches(host:&str,model:&str)->bool {
+    match host {
+        "claude"=>model=="haiku" || model.starts_with("claude-") && model.split('-').any(|part|part=="haiku"),
+        "codex"=>model=="luna" || model.starts_with("gpt-") && model.split('-').any(|part|part=="luna"),
+        _=>false,
+    }
+}
+
 fn identity(prepared: &Prepared) -> Result<String, String> {
     let mut hash = Sha256::new();
     hash.update(&serde_json::to_vec(prepared).map_err(|e| e.to_string())?);
@@ -81,7 +89,9 @@ pub fn prepare_session(root: &Path, tree: &Path, query: &str, file: Option<&str>
     if query.trim().is_empty() || query.len() > 2000 { return Err("knowledge-enrichment-needs-short-query".into()); }
     let query=query.split_whitespace().collect::<Vec<_>>().join(" ");
     let model = model.unwrap_or(if host == "claude" { "haiku" } else { "gpt-6-luna" });
-    if !token(model) { return Err("knowledge-session-invalid-model".into()); }
+    if !token(model) || !family_matches(host,model) { return Err("knowledge-session-model-family-mismatch".into()); }
+    let resolution=crate::platform::session_models::resolve(host,Some(model));
+    let model=resolution["model"].as_str().unwrap_or(model);
     let sources = evidence(root, tree, &query, file, limit)?;
     let rule_context = crate::io::knowledge::RuleContext::of(tree, &sources.iter().map(|s| s.source.file.clone()).collect::<Vec<_>>());
     let prepared = Prepared { version: 2, host: host.into(), requested_model: model.into(), request: request(&query, &sources)?, sources, rule_context };
@@ -121,12 +131,12 @@ pub fn prepare_session(root: &Path, tree: &Path, query: &str, file: Option<&str>
             "max_input_tokens":context::TARGET,
             "context_policy":"Use an isolated task context; pass no parent transcript. The fixed input budget is 100000 total tokens, including instructions, tools and cache, for Haiku and Luna. Use native evidence if the host cannot isolate the task. Excerpt bytes alone do not verify total usage.",
             "request":prepared.request},
-        "context_target_tokens":context::TARGET,
+        "context_target_tokens":context::TARGET,"model_resolution":resolution,
         "model_override":"--session-model selects a host preference; always resolve the latest available version of the selected family with medium effort.",
         "completion":{"request_id":id,"model":"inherit","effort":null,"result":{"title":"...","text":"... [s0]","source_ids":["s0"]},
             "input_tokens":null,"output_tokens":null},
         "usage_instruction":"Resolve the latest available Haiku/Luna in the current host and request medium effort. Report actual model, effort and full input only if exposed; otherwise keep inherit/null and do not claim compliance. Never infer usage from excerpt length.",
-        "next":"Delegate only if interpretation is needed. Submit the result with mustard-rt run knowledge --complete-session <receipt.json>. Never launch claude/codex or a generation API."}))
+        "next":"Delegate only if interpretation is needed and model_resolution.ready is true. If native capabilities are unknown, use supplied/native evidence, cancel the pending preparation and do not substitute a family. Submit a source-bound result with knowledge --complete-session. Never launch another CLI/API."}))
 }
 
 /// Release only an unfinished preparation. Cancellation does not remove a
@@ -168,6 +178,14 @@ pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> R
     if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 100_000 { return Err("knowledge-session-request-too-large".into()); }
     let prepared: Prepared = serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     if prepared.version != 2 || identity(&prepared)? != receipt.request_id { return Err("knowledge-session-request-changed".into()); }
+    // `inherit` means unobserved telemetry, never evidence of family compliance.
+    // Known incompatibility must be rejected before storing even a cache retry.
+    if receipt.model!="inherit" && !family_matches(&prepared.host,&receipt.model) {
+        return Err("knowledge-session-model-family-mismatch".into());
+    }
+    if prepared.host=="codex" && receipt.model!="inherit" && receipt.model!=prepared.requested_model {
+        return Err("knowledge-session-model-does-not-match-native-resolution".into());
+    }
     let mut hashes = Default::default();
     if prepared.sources.iter().any(|e| !current(tree, &e.source, &mut hashes)) { return Err("knowledge-source-changed-during-generation".into()); }
     // Validate even a duplicate reply; cache reuse must not conceal malformed citations.
@@ -182,6 +200,7 @@ pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> R
         "remote_model_calls":0,"local_model_calls":0,"host":prepared.host,"model":receipt.model,
         "effort":receipt.effort,"effort_target":"medium","effort_observed":receipt.effort.as_deref().map(|e|e=="medium"),
         "model_policy":"latest-available-in-family; actual selection requires host verification",
+        "model_family_observed":if receipt.model=="inherit" {Value::Null}else{json!(true)},
         "input_tokens":receipt.input_tokens,"output_tokens":receipt.output_tokens,
         "context":context::report(&prepared.host,&receipt.model,receipt.input_tokens),
         "billing":"current host session; no separate generation API call; subscription cost unknown"}))
@@ -191,6 +210,21 @@ pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> R
 mod tests {
     use super::*;
     use super::super::tests::{fixture, index};
+
+    #[test]
+    fn wrong_family_receipts_and_preferences_are_rejected_before_persistence() {
+        for (host,wrong,valid) in [("claude","claude-opus-5-5","claude-haiku-5-5"),("codex","gpt-6-sol","gpt-6-luna")] {
+            let dir=fixture();let root=dir.path();index(root);
+            assert_eq!(prepare_session(root,root,"backup",None,8,host,Some(wrong)).unwrap_err(),"knowledge-session-model-family-mismatch");
+            let prepared=prepare_session(root,root,"backup",None,8,host,None).unwrap();
+            let mut reply=receipt(&prepared["request_id"]);reply.model=wrong.into();
+            assert_eq!(complete_session(root,root,&reply).unwrap_err(),"knowledge-session-model-family-mismatch");
+            assert!(interpretations(root).unwrap().is_empty());
+            reply.model=if host=="codex" {prepared["delegation"]["requested_model"].as_str().unwrap().into()}else{valid.into()};
+            complete_session(root,root,&reply).unwrap();
+            reply.model=wrong.into();assert!(complete_session(root,root,&reply).is_err(),"cached completion must still check actual family");
+        }
+    }
 
     #[test]
     fn pending_analysis_is_shared_across_hosts_and_can_be_explicitly_released() {
@@ -270,7 +304,7 @@ mod tests {
         let prepared=prepare_session(dir.path(),dir.path(),"backup",None,8,"claude",None).unwrap();
         assert_eq!(prepared["delegation"]["max_input_tokens"],100_000);
         complete_session(dir.path(),dir.path(),&receipt(&prepared["request_id"])).unwrap();
-        for (host,model) in [("codex","gpt-6-luna"),("claude","claude-haiku-5-5"),("codex","inherit")] {
+        for (host,model) in [("codex","gpt-6-luna"),("claude","claude-haiku-5-5"),("codex","gpt-7-luna")] {
             let reused=prepare_session(dir.path(),dir.path(),"  backup \n",None,8,host,Some(model)).unwrap();
             assert_eq!(reused["cached"],true,"{reused}");
             assert_eq!(reused["session_model_calls"],0);

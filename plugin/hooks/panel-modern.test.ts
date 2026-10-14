@@ -140,7 +140,7 @@ test('economy overview exposes scope and incomplete waves without claiming net s
   f.snapshot.specs[0].operations={calls:20,refusals:4,search:{calls:1,enriched:1,fallback:0,local_model_calls:1,remote_model_calls:0,
     paired_calls:1,native_bytes:100,delivered_bytes:150,reduced_calls:0,expanded_calls:1}};
   await f.pane.press({key:'tab-Consumo'});
-  for(const text of ['Economia total: não medida','Spec selecionada · consumo e atrito','Scan · buscas desta spec','Projeto · histórico separado da spec'])
+  for(const text of ['Economia líquida: ainda não comprovada','Spec selecionada · consumo e atrito','Scan · buscas desta spec','Projeto · histórico separado da spec'])
     expect(await f.pane.find({type:'Text',text})).toBeDefined();
   expect(await f.pane.find({type:'Text',text:'Saída nativa → entregue nas buscas medidas: 100 → 150 bytes'})).toBeDefined();
   expect(await f.pane.find({type:'Text',text:'50% mais texto; verificar se o contexto adicional ajudou.'})).toBeDefined();

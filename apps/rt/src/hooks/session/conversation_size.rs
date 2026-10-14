@@ -421,6 +421,11 @@ fn agent_parts(input:&HookInput)->Vec<PathBuf> {
     if pieces.is_empty() && input.raw.get("agent_transcript_path").is_some() {vec![path]} else {pieces}
 }
 
+/// Use this exact child's latest native context, never the parent's total.
+pub(crate) fn analysis_context(input:&HookInput)->Option<u64> {
+    last_context(agent_parts(input).last()?)
+}
+
 /// Os dois arquivos de estado do agente de onda de `input`: o tamanho da
 /// conversa, sem o resumo lido, em cada passo de término, um por linha, e a
 /// ordem de entregar, que só existe depois dela. Ficam pelo nome do agente,

@@ -5,6 +5,7 @@ pub mod cli;
 mod consumption;
 mod dashboard;
 mod diagnostics;
+mod delivery_metrics;
 mod impact;
 mod jev_usage;
 mod knowledge_usage;
@@ -52,6 +53,7 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
         "jev":jev_view,"rtk":crate::shared::rtk_gain::cached(&root),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
         "retrieval":{"vectors_enabled":config.ai_vectors_enabled(),"index_present":mustard_core::io::project_map::model_path(&root).is_file()},
         "knowledge":knowledge_usage::snapshot(&root),
+        "project_profile":mustard_core::io::project_profile::summary(&root,&[]),
         "hosts":integration_health["hosts"],
         "integration_health":integration_health,
         "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
@@ -152,6 +154,7 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
         })
         .collect();
     json!({"name":name,"goal":mustard_core::domain::spec_index::goal_of(log),"phase":State::from_log(log).phase,
+        "delivery_metrics":if matches!(section,"all"|"usage") {delivery_metrics::summary(log,&waves)}else{Value::Null},
         "waves":waves,"scheduling":if selected {super::flow::round::scheduling_snapshot(root,log)} else {Value::Null},"usage":{"wave_tokens":tokens,
             "known_wave_tokens":waves.iter().filter_map(|wave|wave["tokens"].as_u64()).sum::<u64>(),"measured_at":live["measured_at"],
             "conductor_tokens":caller,"waves_with_unknown_usage":unknown,
@@ -295,11 +298,17 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
     })
         .map(|event| {let mut item=display_item(event,&codes);if let Some(code)=event.int("criterion").and_then(|id|codes.get(&id)){item["criterion"]=json!(code);}item}).collect();
     let user_input = planned.and_then(|event| event.int("origin")).and_then(|id| log.get(id)).and_then(|event| event.str_field("text"));
+    let mut skills=sent.and_then(|event|event.fields.get("skills")).cloned().unwrap_or(Value::Null);
+    for skill in skills.as_array_mut().into_iter().flatten() {
+        let read=attempt.zip(skill["path"].as_str()).zip(skill["sha"].as_str()).and_then(|((dispatch,path),sha)|
+            mustard_core::io::observations::read_receipt(&root,name,dispatch,path,sha));
+        if let Some(receipt)=read {skill["read_confirmed"]=json!(true);skill["reading_receipt"]=receipt;}
+    }
     safe_value(json!({"spec":name,"wave":wave,"plan":planned.map(|event| &event.fields),
         "user_input":user_input,"request":sent.and_then(|event|event.str_field("text")),
         "request_recorded":sent.is_some(),"sent_at":sent.map(|event|event.at()),
         "expertise":sent.and_then(|event|event.fields.get("expertise")),
-        "skills":sent.and_then(|event|event.fields.get("skills")),
+        "skills":skills,
         "executor_requested":sent.and_then(|event|event.str_field("agent")),
         "delivery":received.map(|event|&event.fields),"delivery_integrated":received.is_some_and(|event|visible.iter().any(|current|current.id==event.id)),
         "observations":crate::shared::tool_observations::list(&root,name,attempt),

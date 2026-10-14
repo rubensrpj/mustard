@@ -768,7 +768,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             .and_then(|send|send.fields.get("expertise"))
             .and_then(|value|serde_json::from_value::<crate::io::expertise::workflow::Selection>(value.clone()).ok())
     });
-    let expertise = crate::io::expertise::workflow::restore(root,&files,stored.as_ref());
+    let expertise = crate::io::expertise::workflow::restore_for_task(root,&files,&crate::io::expertise::workflow::wave_task(log,wave),stored.as_ref());
     // Explicit skills and scoped skills of the touched area. The latter
     // must survive native-tool interception and ignored worktree files.
     let mut named = skills_named(log, wave);
@@ -887,7 +887,17 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         project_rules: project_rules(root, &wave_prompt::wave_files(log, wave)),
         prepared,
     };
-    let text = wave_prompt::write(&material, lang);
+    let mut text = wave_prompt::write(&material, lang);
+    let observed=crate::io::project_profile::summary(root,&wave_prompt::wave_files(log,wave));
+    if observed["available"]==true && observed["data"]["size"]["code_files"].as_u64().is_some_and(|n|n>0) {
+        // The complete profile stays in SQLite. Waves pull the scoped details
+        // only when needed, rather than repeating every observed convention.
+        text.push_str(if lang==Locale::PtBr {"\nPerfil observado do projeto (não é regra obrigatória): "} else {"\nObserved project profile (not a mandatory rule): "});
+        text.push_str(&serde_json::json!({"size":observed["data"]["size"],"languages":observed["data"]["languages"]}).to_string());
+        text.push_str("\n`mustard-rt run knowledge --profile --file <task-file> --root ");
+        text.push('\'');text.push_str(&root.to_string_lossy().replace('\'',"'\\''"));text.push('\'');
+        text.push_str("`\n");
+    }
     let skills=material.skills.iter().map(|skill| {
             serde_json::json!({"name":skill.name,"path":skill.path,"sha":skill_hashes[&skill.path],
         "stale_at_dispatch":skill.stale,"read_confirmed":null})
@@ -1287,10 +1297,10 @@ mod tests {
             std::fs::write(root.join("store.rs"),text).unwrap();
             write_map(root,&json!({"modules":[]}));
             let mut hash=crate::io::sha256::Sha256::new();hash.update(text.as_bytes());
-            let profile=Profile {name:"database".into(),description:"Use current storage examples for database tasks.".into(),paths:vec!["store.rs".into()],procedure:"Inspect the current transaction boundaries and reuse the existing helpers.".into(),sources:vec![Source {file:"store.rs".into(),line:1,end_line:1,sha256:hash.hex_digest()}],origin:"authored".into(),reviewed:None,rule_context:None};
+            let profile=Profile {name:"database".into(),description:"Persist data with current storage examples for database tasks.".into(),paths:vec!["store.rs".into()],procedure:"Inspect the current transaction boundaries and reuse the existing helpers.".into(),sources:vec![Source {file:"store.rs".into(),line:1,end_line:1,sha256:hash.hex_digest()}],origin:"authored".into(),reviewed:None,rule_context:None};
             expertise::record(root,&profile).unwrap();
             expertise::review(root,&profile.name,&expertise::review_fingerprint(root,&profile)).unwrap();
-            let events=[("wave",json!({"n":1,"text":"Persist data","criteria":[],"done_when":"tests pass"})),("task",json!({"wave":1,"text":"Persist the change","files":[{"path":"store.rs"}]})),("send",json!({"wave":1,"host":host}))];
+            let events=[("wave",json!({"n":1,"text":"Persist data","criteria":[],"done_when":"tests pass"})),("task",json!({"wave":1,"title":"Persist data","agent":"Persist the change","files":[{"path":"store.rs"}]})),("send",json!({"wave":1,"host":host}))];
             let log=log_of(&events);
             let flight=Flight {host:Some(host.into()),..Flight::default()};
             let built=prompts(root,"test",&log,Locale::EnUs,&flight);

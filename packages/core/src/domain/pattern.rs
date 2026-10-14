@@ -31,8 +31,8 @@
 //! de framework, de língua ou de estilo: o papel sai de como os nomes se
 //! repetem.
 //!
-//! Função pura, sobre o mapa lido na hora: cada atualização do mapa já a
-//! refaz, e nada fica guardado à parte.
+//! Função pura, sobre o mapa lido na hora. A porta `io::project_profile`
+//! persiste a projeção e suas evidências na mesma transação do scan.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -73,7 +73,7 @@ const CONCENTRATION_PERCENT: usize = 75;
 
 /// O padrão aprendido do mapa: o papel de cada arquivo que conta, os
 /// arquivos que viraram papel próprio, as regras fortes e as informações.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pattern {
     /// O papel de cada arquivo fora de teste, pelo caminho. O arquivo que
     /// virou papel próprio tem o próprio caminho como papel.
@@ -92,7 +92,7 @@ pub struct Pattern {
 /// Um arquivo que virou papel próprio e o motivo: das `of` importações do
 /// papel `from` para o papel `to`, que iam contra a maioria do par ou
 /// ficavam num par sem direção, `received` chegavam a ele.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OwnRole {
     pub path: String,
     pub from: String,
@@ -103,7 +103,7 @@ pub struct OwnRole {
 
 /// A direção de um par de papéis: o papel `from` importa o papel `to` em
 /// `along` importações, e `to` importa `from` em `against`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Direction {
     pub from: String,
     pub to: String,

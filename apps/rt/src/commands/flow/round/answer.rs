@@ -710,7 +710,7 @@ pub(super) fn run_entered_round(
     // já ter sido juntado, comitado e gravado: a recusa sai com o que a
     // rodada fez até agora, e a página, que o relatório mudou, é copiada do
     // mesmo jeito que numa rodada que despacha.
-    let ready = match next_waves(&log, max_parallel(root), &occupied, &stuck) {
+    let mut ready = match next_waves(&log, max_parallel(root), &occupied, &stuck) {
         Ok(ready) => ready,
         Err(cycle) => {
             drop(held_lock);
@@ -731,11 +731,15 @@ pub(super) fn run_entered_round(
     let mut specialization_preparation=Vec::new();
     for wave in &ready {
         let files=wave_files(&log,*wave);
-        let query=mustard_core::domain::wave_prompt::tasks_text(&log,*wave);
+        let query=mustard_core::io::expertise::workflow::wave_task(&log,*wave);
         if let Some(mut preparation)=mustard_core::io::expertise::workflow::dispatch_preparation(root,&files,&query) {
             preparation["wave"]=json!(wave);specialization_preparation.push(preparation);
         }
     }
+    // Held preparations consume no copy, send or paid context selection.
+    let preparation_held:BTreeSet<_>=specialization_preparation.iter().filter(|p|p["required"]==true)
+        .filter_map(|p|p["wave"].as_u64()).collect();
+    ready.retain(|wave|!preparation_held.contains(wave));
     // A escolha dos itens do pedido, antes da cópia: o Jev julga, uma chamada
     // por onda, o item do projeto todo, o dos arquivos dela e o sem ligação
     // com ela, e a onda sai nesta mesma rodada, sem esperar quem conduz. Sem
@@ -1049,6 +1053,10 @@ pub(super) fn run_entered_round(
         "running": running,
     });
     if !specialization_preparation.is_empty() {out["specialization_preparation"]=json!(specialization_preparation);}
+    if !preparation_held.is_empty() {
+        out["preparation_held"]=json!(preparation_held);
+        out["preparation_next"]=json!("Inspect/update/review the pending procedure, or explicitly choose current native guidance using expertise --native with the supplied query/files. Independent waves may continue.");
+    }
     if entering {
         out["phase"] = json!("running");
     }
@@ -1062,6 +1070,10 @@ pub(super) fn run_entered_round(
         out["warnings"] = json!(warnings);
     }
     end_answer(root, &spec, &mut out, &then, lang);
+    if !preparation_held.is_empty() {
+        out["next"]=out["preparation_next"].clone();
+        command=None;
+    }
     if let Some(command) = command {
         out["command"] = json!(command);
     }

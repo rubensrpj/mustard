@@ -27,6 +27,7 @@ pub(super) fn revision(start:&Path,root:&Path,section:&str,spec:Option<&str>,ses
         (root.join(".claude/settings.local.json"),0)] {stamp(&path,&mut hash,depth);}
     if let Some(spec)=spec && let Some(path)=spec_path(root,spec) {stamp(&path,&mut hash,0);}
     if section=="ideas" {stamp(&root.join(".claude/pending/ledger.json"),&mut hash,0);}
+    if section=="project" {stamp(&mustard_core::io::project_map::model_path(root),&mut hash,0);stamp(&mustard_core::io::project_map::model_path(root).with_extension("db-wal"),&mut hash,0);}
     if matches!(section,"project"|"waves"|"execution") && let Some(session)=session {stamp(&super::live_usage::file(root,session),&mut hash,0);}
     let git=mustard_core::platform::git::run(start,&["rev-parse","--git-dir"]).out();
     let git=PathBuf::from(git.unwrap_or_default().trim());let git=if git.is_absolute(){git}else{start.join(git)};
@@ -109,6 +110,7 @@ pub(super) fn query(start:&Path,selected:Option<&str>,session:Option<&str>,wave:
         data["installation"]=std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
     }
     if section=="ideas" {data["ideas"]=crate::commands::event::pending::ideas::run(&root,None);}
+    if matches!(section,"project"|"diagnostics") {data["project_profile"]=mustard_core::io::project_profile::summary(&root,&[]);}
     if matches!(section,"waves"|"execution"|"project") {data["live_usage"]=super::live_usage::snapshot(&root,session);}
     if section=="diagnostics" {data["diagnostics"]=super::diagnostics::snapshot(&root);data["integration_health"]=crate::shared::integration_health::snapshot(&root);}
     data["preferences"]=super::preferences::run(&root,None);

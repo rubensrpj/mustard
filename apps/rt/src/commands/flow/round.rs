@@ -861,4 +861,22 @@ mod tests {
         assert_eq!(log.visible().into_iter().filter(|event|event.event_type=="send").count(),1,"retry does not dispatch twice");
     }
 
+    #[test]
+    fn a_matching_unreviewed_procedure_holds_dispatch_until_native_guidance_is_chosen() {
+        use mustard_core::io::expertise::{self,Profile,workflow};
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();approved(root,"x",&[(1,&["src/a.rs"],&[])]);
+        mustard_core::io::project_map::write_text(root,"{\"modules\":[]}").unwrap();
+        let path=mustard_core::io::spec_events::spec_file(root,"x").unwrap();
+        let log=mustard_core::io::spec_events::read(&path).unwrap().unwrap();let query=workflow::wave_task(&log,1);
+        let source=mustard_core::domain::knowledge::Source {file:"src/a.rs".into(),line:1,end_line:1,
+            sha256:mustard_core::io::observations::digest(&std::fs::read(root.join("src/a.rs")).unwrap())};
+        expertise::record(root,&Profile {name:"task-procedure".into(),description:query.chars().take(300).collect(),
+            paths:vec!["src/a.rs".into()],procedure:query.clone(),sources:vec![source],origin:"authored".into(),reviewed:None,rule_context:None}).unwrap();
+        let held=round(root,"x",None);assert_eq!(held["ok"],true,"{held}");assert_eq!(held["preparation_held"],json!([1]));
+        assert!(held["dispatch"].as_array().unwrap().is_empty());
+        assert!(!mustard_core::io::spec_events::read(&path).unwrap().unwrap().events.iter().any(|e|e.event_type=="send"));
+        workflow::acknowledge_native(root,&["src/a.rs".into()],&query).unwrap();
+        let ready=round(root,"x",None);assert_eq!(ready["dispatch"][0]["wave"],1,"{ready}");
+    }
+
 }

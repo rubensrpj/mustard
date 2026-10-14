@@ -337,7 +337,7 @@ fn map_dump_brings_one_entry_per_table() {
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
             "graph", "fan_in", "history_base", "history_paths", "commits", "resource_files", "lineage_files", "lineage_commits",
             "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "expertise", "expertise_exports", "blocks"
+            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "expertise", "expertise_exports", "project_profile", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );
@@ -662,10 +662,11 @@ fn knowledge_session_protocol_supports_both_hosts_and_checks_current_sources() {
         };
         let args=["--query","backup","--prepare-session",host];
         let (ok,prepared)=run(&args);assert!(ok,"{prepared}");
-        assert_eq!(prepared["delegation"]["requested_model"],model,"preference comes from mustard.json");
+        assert_eq!(prepared["model_resolution"]["preference"],model,"preference comes from mustard.json");
+        assert_eq!(prepared["delegation"]["requested_model"],prepared["model_resolution"]["model"].as_str().unwrap_or(model),"native latest-family resolution takes precedence over a pinned preference");
         assert_eq!(prepared["session_model_calls"],0);
         assert_eq!(prepared["context_target_tokens"],100_000);
-        let mut receipt=serde_json::json!({"request_id":prepared["request_id"],"model":model,"input_tokens":300_000,
+        let mut receipt=serde_json::json!({"request_id":prepared["request_id"],"model":if host=="claude" {serde_json::json!(model)}else{prepared["delegation"]["requested_model"].clone()},"input_tokens":300_000,
             "result":{"title":"Restore","text":"Restores a backup [s0].","source_ids":["s0"]}});
         let path=root.join("receipt.json");fs::write(&path,receipt.to_string()).unwrap();
         let complete=["--complete-session",path.to_str().unwrap()];

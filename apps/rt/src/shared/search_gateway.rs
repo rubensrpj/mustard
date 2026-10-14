@@ -55,7 +55,8 @@ pub(crate) fn answer(
         answer.report["choice_gate"]=json!("native-operation");
         return Ok(answer);
     }
-    let selector = if request.choose && !request.intent.trim().is_empty() {
+    let selector = if request.choose && !request.intent.trim().is_empty()
+        && request.tool!="Read" && request.purpose!=mustard_core::domain::knowledge::investigation::Purpose::Locate {
         super::knowledge_selection::KnowledgeSelector::configured(&root)
     } else {
         None
