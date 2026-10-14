@@ -31,6 +31,7 @@ use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::io::project_map::{self as store, Listing};
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -199,6 +200,25 @@ fn main() -> Result<()> {
             println!("{}", report);
         }
         Command::Scan { path, out, all, native, json } => {
+            // Uma passada nativa por mapa: a busca que a pede pode não esperar
+            // por ela, e a busca seguinte, com a primeira ainda lendo, não
+            // começa outra leitura do projeto inteiro.
+            let _alone = if native {
+                let lock = mustard_core::io::fs::lock::LockedFile::exclusive_if_free(
+                    &mustard_core::domain::scan::native_pass_lock_path(&out),
+                )?;
+                if lock.is_none() {
+                    if json {
+                        println!("{}", serde_json::json!({"ok": true, "busy": true, "read": [], "remote_model_calls": 0}));
+                    } else {
+                        println!("Another native pass of {} is running", out.display());
+                    }
+                    return Ok(());
+                }
+                lock
+            } else {
+                None
+            };
             // O `mustard.json` da pasta lida: as línguas da busca e o teto do
             // nome comum da ligação. O valor inválido já vale o padrão aqui;
             // quem avisa é quem chama o scan.
@@ -238,7 +258,9 @@ fn main() -> Result<()> {
                     "vectors_enabled": config.ai_vectors_enabled(),
                     "remote_model_calls": 0,
                 });
-                println!("{report}");
+                // Quem pediu a passada pode ter parado de esperar por ela: o
+                // mapa já está gravado, e o relato que ninguém lê se perde.
+                let _ = writeln!(std::io::stdout(), "{report}");
             } else {
                 // O modelo da passada que só refez o censo não traz os
                 // arquivos inteiros: o resumo lê o mapa que ela gravou.

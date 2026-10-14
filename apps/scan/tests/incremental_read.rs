@@ -334,6 +334,35 @@ fn a_call_through_a_library_path_links_the_same_when_only_another_file_changed()
 
 /// Um projeto git com o mapa fora dele, como a instalação o deixa, e um
 /// commit com `files`.
+/// A passada nativa de um mapa que outra passada nativa segura sai sem ler
+/// nada e diz que está ocupada; solta a trava, a seguinte lê o projeto.
+#[test]
+fn a_native_pass_of_a_map_another_native_pass_holds_reads_nothing_and_says_busy() {
+    let temp = project("scan-native-busy-", &[("src/a.rs", "pub fn alpha() -> u32 {\n    1\n}\n")]);
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    let pass = || {
+        let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+            .args(["scan", dir.to_str().unwrap(), "--out", out.to_str().unwrap(), "--json", "--native"])
+            .output()
+            .expect("run scan");
+        assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+        let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+        serde_json::from_str::<Value>(stdout.lines().last().unwrap_or("{}")).expect("the report is one JSON line")
+    };
+    let running = mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&mustard_core::domain::scan::native_pass_lock_path(&out))
+        .unwrap()
+        .expect("no other pass holds this map");
+    let busy = pass();
+    assert_eq!((busy["busy"].clone(), busy["read"].clone()), (json!(true), json!([])), "{busy}");
+    assert!(!out.exists(), "the busy pass wrote no map");
+    drop(running);
+    let read = pass();
+    assert_eq!(read["busy"], Value::Null, "{read}");
+    assert!(read["read"].as_array().is_some_and(|files| files.contains(&json!("src/a.rs"))), "{read}");
+    assert!(out.exists(), "the free pass wrote the map");
+}
+
 fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
     let temp = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
     let dir = temp.path();

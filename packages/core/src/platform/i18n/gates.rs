@@ -31,6 +31,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
         ("search.gateway.route", Locale::PtBr) => "[Mustard] Busque por `mcp__mustard__search` com {request:{tool,input,intent,purpose,choose?}}. Use os mesmos argumentos. Diga em intent o que quer saber. Em purpose, use understand, spec, implement ou validate. Para só achar texto, use locate. Outra opção: {command}. Se a opção faltar, use a busca de antes.",
         ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with {request:{tool,input,intent,purpose,choose?}}, preserving original arguments. For investigation, state the specific question in intent and set purpose (understand/spec/implement/validate); locate keeps literal lookup. Alternative: {command}. If the new search lacks an option, use the original tool.",
+        ("search.gateway.scan_running", Locale::PtBr) => "[Mustard] O mapa do código desta pasta segue em atualização, em segundo plano. Esta resposta veio do mapa de antes; repita a busca depois para ver o mapa novo.\n",
+        ("search.gateway.scan_running", Locale::EnUs) => "[Mustard] The code map of this folder is still being refreshed in the background. This answer came from the previous map; repeat the search later to see the new one.\n",
         // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
         // written to telemetry), so they are ENGLISH regardless of the user's
@@ -564,8 +566,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            73,
-            0x8a68_47a5_4763_e8c0,
+            74,
+            0xf473_197a_53ee_7e93,
         );
     }
 

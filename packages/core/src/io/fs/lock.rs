@@ -12,10 +12,22 @@
 //! existe num arquivo real, e não há dublê de teste para ela.
 
 use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::platform::error::{Error, Result};
+
+/// O arquivo de trava do trabalho `kind` sobre `target`: na pasta temporária,
+/// com o nome tirado do caminho inteiro de `target`, para não deixar arquivo
+/// no projeto. O mesmo trabalho sobre o mesmo alvo dá sempre o mesmo arquivo.
+#[must_use]
+pub fn temp_lock_path(kind: &str, target: &Path) -> PathBuf {
+    let whole = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    whole.hash(&mut hasher);
+    std::env::temp_dir().join(format!("mustard-{kind}-{:016x}.lock", hasher.finish()))
+}
 
 /// Um arquivo aberto com a trava exclusiva. A trava solta quando o valor sai
 /// de cena.
