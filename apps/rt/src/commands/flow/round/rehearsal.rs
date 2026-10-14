@@ -1,10 +1,11 @@
 //! O ensaio das gravações da rodada e a gravação de verdade depois do commit.
 //! O ensaio dá um número a cada evento, e um evento da mesma rodada pode
-//! apontar outro por ele em `replaces`: a sobra que entra numa tarefa que
-//! nasceu ou voltou ao backlog nesta mesma rodada. Entre o ensaio e a
-//! gravação roda o commit, e outra gravação pode entrar na spec nesse meio;
-//! então a gravação de verdade aponta o número que cada evento recebeu dela,
-//! e não o do ensaio.
+//! apontar outro por ele: em `replaces`, a sobra que entra numa tarefa que
+//! nasceu ou voltou ao backlog nesta mesma rodada; em `covers`, a tarefa que
+//! cobre o pedido que a sobra virou; em `origin`, esse pedido, que nasce da
+//! entrega da onda. Entre o ensaio e a gravação roda o commit, e outra
+//! gravação pode entrar na spec nesse meio; então a gravação de verdade
+//! aponta o número que cada evento recebeu dela, e não o do ensaio.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -48,10 +49,10 @@ impl<'a> Recording<'a> {
     }
 
     /// Grava `rehearsed` como evento `event_type`, com cada número do
-    /// `replaces` (um só ou a lista) que aponta um evento do ensaio já
-    /// gravado trocado pelo número que a gravação deu a ele; o que aponta um
-    /// evento de antes da rodada fica como veio. Devolve o número gravado e o
-    /// `replaces` como foi gravado.
+    /// `replaces`, do `covers` e do `origin` (um só ou a lista) que aponta um
+    /// evento do ensaio já gravado trocado pelo número que a gravação deu a
+    /// ele; o que aponta um evento de antes da rodada fica como veio. Devolve
+    /// o número gravado e o `replaces` como foi gravado.
     ///
     /// # Errors
     ///
@@ -64,10 +65,12 @@ impl<'a> Recording<'a> {
                 *value = json!(id);
             }
         };
-        match draft.get_mut("replaces") {
-            Some(Value::Array(items)) => items.iter_mut().for_each(point),
-            Some(one) => point(one),
-            None => {}
+        for field in ["replaces", "covers", "origin"] {
+            match draft.get_mut(field) {
+                Some(Value::Array(items)) => items.iter_mut().for_each(point),
+                Some(one) => point(one),
+                None => {}
+            }
         }
         let replaces = draft.get("replaces").cloned();
         let id = record(self.start, self.spec, event_type, draft, PhaseWriter::Binary)?.written.id;
@@ -89,7 +92,9 @@ mod tests {
     /// depois do commit, faz o número de cada evento andar. A volta que deixa
     /// a tarefa por fazer e acha uma sobra no mesmo arquivo dela é assumida
     /// mesmo assim: a versão da tarefa com a sobra aponta a versão que a
-    /// devolveu ao backlog, e não a resposta que tomou o número do ensaio.
+    /// devolveu ao backlog e cobre o pedido da sobra, e o pedido aponta a
+    /// entrega, pelos números gravados, e não a resposta que tomou o número
+    /// do ensaio.
     #[test]
     fn a_write_between_the_rehearsal_and_the_recording_keeps_the_leftover_on_the_returned_task() {
         let dir = tempdir().unwrap();
@@ -127,5 +132,8 @@ mod tests {
         let version = log.get(joined["id"].as_u64().unwrap()).unwrap();
         assert_eq!(version.fields.get("replaces"), Some(&back["id"]), "{out}");
         assert!(version.str_field("agent").is_some_and(|agent| agent.contains("A soma perde o sinal")), "{out}");
+        let id_of = |kind: &str| out["recorded"].as_array().unwrap().iter().find(|r| r["type"] == json!(kind)).map(|r| r["id"].clone()).unwrap();
+        assert!(version.ints("covers").contains(&id_of("request").as_u64().unwrap()), "a tarefa cobre o pedido gravado: {out}");
+        assert_eq!(log.get(id_of("request").as_u64().unwrap()).unwrap().fields.get("origin"), Some(&id_of("delivered")), "{out}");
     }
 }

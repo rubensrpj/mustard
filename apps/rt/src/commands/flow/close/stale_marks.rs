@@ -101,9 +101,12 @@ mod tests {
         record(root, "x", "validation_failure", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
     }
 
+    /// Uma onda solta: o número, o motivo, a impressão e o autor da soltura.
+    type Release<'a> = (u64, Option<&'a str>, Option<&'a str>, Option<&'a str>);
+
     /// As ondas soltas, cada uma com o motivo, a impressão e o autor da
     /// soltura.
-    fn released(log: &SpecLog) -> Vec<(u64, Option<&str>, Option<&str>, Option<&str>)> {
+    fn released(log: &SpecLog) -> Vec<Release<'_>> {
         log.events
             .iter()
             .filter(|e| e.event_type == "validation_failure" && e.str_field("result") == Some("released"))

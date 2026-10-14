@@ -37,7 +37,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use crate::domain::config::Language;
+use crate::domain::config::{Commands, Language};
 use crate::domain::lessons::{Scope, applies_to, text_only};
 use crate::domain::pattern::{Direction, Pattern};
 use crate::domain::project_map::{QUALITY_TOP_PERCENT, Recipe, RecipeOf};
@@ -996,15 +996,19 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
 }
 
 /// Os campos que o registro de um lote deriva das tarefas que o compõem
-/// agora: os critérios que elas cobrem (`covers`, sem repetir), os títulos
+/// agora: os itens que elas cobrem (`covers`, sem repetir), os títulos
 /// delas juntados por ponto e vírgula e o pronto-quando — a prova de cada
-/// critério coberto, ligada por " && ", ou, sem prova nenhuma (o caso do
-/// item combinado sem dono, que não tem prova), os mesmos títulos. O texto
-/// inteiro das tarefas não entra: o pronto-quando abre o pedido da onda, e as
-/// tarefas já saem nele com o título e a parte do agente. A formação do lote
-/// e a atualização dele depois de uma tarefa sair pelo backlog usam esta
-/// mesma conta, sobre as tarefas que a leitura de agora mostra, para as duas
-/// nunca discordarem.
+/// item coberto, ligada por " && ", sem repetir. O critério dá a prova dele;
+/// o pedido sem prova dá a que o relato dele nomeia ([`named_proofs`]) ou,
+/// sem nenhuma nomeada, o comando que compila o projeto: a onda de conserto
+/// de uma sobra fica pronta pela prova dela, nunca pela de um critério
+/// alheio. Sem prova nenhuma (o caso do item combinado sem dono, que não tem
+/// prova, ou do projeto que não declara compilação), os mesmos títulos. O
+/// texto inteiro das tarefas não entra: o pronto-quando abre o pedido da
+/// onda, e as tarefas já saem nele com o título e a parte do agente. A
+/// formação do lote e a atualização dele depois de uma tarefa sair pelo
+/// backlog usam esta mesma conta, sobre as tarefas que a leitura de agora
+/// mostra, para as duas nunca discordarem.
 pub struct BacklogFields {
     pub criteria: Vec<u64>,
     pub text: String,
@@ -1012,9 +1016,11 @@ pub struct BacklogFields {
 }
 
 /// Calcula [`BacklogFields`] a partir das tarefas `tasks` de um lote, lendo em
-/// `log` a prova de cada critério que elas cobrem.
+/// `log` a prova de cada item que elas cobrem, com os comandos que o projeto
+/// declara em `commands`: o de teste reconhece a prova citada no relato de
+/// um pedido, e o de compilação é a prova do pedido que não nomeia nenhuma.
 #[must_use]
-pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
+pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands) -> BacklogFields {
     let mut criteria: BTreeSet<u64> = BTreeSet::new();
     let mut titles: Vec<String> = Vec::new();
     for task in tasks {
@@ -1022,12 +1028,61 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
         titles.extend(item_title(task));
     }
     let criteria: Vec<u64> = criteria.into_iter().collect();
-    let mut seen = BTreeSet::new();
-    let proof = criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof"))
-        .filter(|proof| seen.insert(proof.trim())).collect::<Vec<_>>().join(" && ");
+    let mut proofs: Vec<String> = Vec::new();
+    for item in criteria.iter().filter_map(|id| log.get(*id)) {
+        let own: Vec<String> = match item.str_field("proof") {
+            Some(proof) => vec![proof.trim().to_string()],
+            None if item.event_type == "request" => {
+                let named = named_proofs(item, commands.test.as_deref());
+                if named.is_empty() { commands.build.iter().cloned().collect() } else { named }
+            }
+            None => Vec::new(),
+        };
+        for proof in own {
+            if !proof.is_empty() && !proofs.contains(&proof) {
+                proofs.push(proof);
+            }
+        }
+    }
     let text = titles.join("; ");
-    let done_when = if proof.is_empty() { text.clone() } else { proof };
+    let done_when = if proofs.is_empty() { text.clone() } else { proofs.join(" && ") };
     BacklogFields { criteria, text, done_when }
+}
+
+/// As marcas com que um relato nomeia a prova dele, nos dois idiomas do
+/// produto: os comandos entre crases que vêm depois dela, na mesma linha.
+const PROOF_MARKERS: &[&str] = &["Prova:", "Proof:"];
+
+/// As provas que o relato do item `item` (o texto e a parte do agente)
+/// nomeia, sem repetir: os comandos entre crases depois de uma marca de
+/// prova ([`PROOF_MARKERS`]), até o fim da linha; sem marca, os comandos
+/// entre crases que começam pelo comando de teste que o projeto declara
+/// (`test`), lido até a primeira opção e no máximo pelas duas primeiras
+/// palavras — vale para qualquer ferramenta, e nenhuma é conhecida aqui.
+fn named_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
+    let lines: Vec<&str> = ["text", "agent"].iter().filter_map(|field| item.str_field(field)).flat_map(str::lines).collect();
+    let quoted = |line: &str| -> Vec<String> {
+        line.split('`').skip(1).step_by(2).map(str::trim).filter(|command| !command.is_empty()).map(str::to_string).collect()
+    };
+    let mut named: Vec<String> = lines
+        .iter()
+        .filter_map(|line| PROOF_MARKERS.iter().filter_map(|marker| line.find(marker).map(|at| at + marker.len())).min().map(|at| &line[at..]))
+        .flat_map(quoted)
+        .collect();
+    if named.is_empty() {
+        let head: Vec<&str> =
+            test.map(|test| test.split_whitespace().take_while(|word| !word.starts_with('-')).take(2).collect()).unwrap_or_default();
+        if !head.is_empty() {
+            named = lines
+                .iter()
+                .flat_map(|line| quoted(line))
+                .filter(|command| command.split_whitespace().take(head.len()).eq(head.iter().copied()))
+                .collect();
+        }
+    }
+    let mut seen = BTreeSet::new();
+    named.retain(|command| seen.insert(command.clone()));
+    named
 }
 
 /// Os executores que o binário reconhece abrindo a prova de um critério,
@@ -1715,9 +1770,32 @@ mod tests {
             ("criterion", json!({"proof":"cargo test --doc"})),
             ("task", json!({"title":"Complete reader", "covers":[1,2,3,4]})),
         ]);
-        let fields = backlog_fields(&log, &[log.get(5).unwrap()]);
+        let fields = backlog_fields(&log, &[log.get(5).unwrap()], &Commands::default());
         assert_eq!(fields.criteria, [1,2,3,4]);
         assert_eq!(fields.done_when, "cargo test --locked && cargo test --doc");
+    }
+
+    /// O pedido sem prova fica pronto pela prova que o relato dele nomeia
+    /// depois da marca, ou, sem marca, pelo comando entre crases que começa
+    /// pelo comando de teste do projeto; sem nenhuma nomeada, pela
+    /// compilação do projeto; e, sem compilação declarada, pelos títulos.
+    /// Vale para qualquer ferramenta: aqui, a de um projeto TypeScript.
+    #[test]
+    fn a_request_without_proof_is_done_when_its_named_proof_or_the_build_passes() {
+        let log = log(&[
+            ("request", json!({"title": "Sinal", "text": "A soma perde o sinal.", "agent": "Prova: `npm test -- soma` e `npm run lint`.", "effect": "new_waves"})),
+            ("request", json!({"title": "Total", "text": "Rode `npm test -- total` depois de mexer em `src/total.ts`.", "effect": "new_waves"})),
+            ("request", json!({"title": "Nome", "text": "O nome confunde em `src/nome.ts`.", "effect": "new_waves"})),
+            ("task", json!({"title": "Sinal", "covers": [1]})),
+            ("task", json!({"title": "Total", "covers": [2]})),
+            ("task", json!({"title": "Nome", "covers": [3]})),
+        ]);
+        let declared = Commands { build: Some("npx tsc --noEmit".into()), test: Some("npm test --silent".into()), ..Commands::default() };
+        let done = |task: u64, commands: &Commands| backlog_fields(&log, &[log.get(task).unwrap()], commands).done_when;
+        assert_eq!(done(4, &declared), "npm test -- soma && npm run lint");
+        assert_eq!(done(5, &declared), "npm test -- total");
+        assert_eq!(done(6, &declared), "npx tsc --noEmit");
+        assert_eq!(done(6, &Commands::default()), "Nome", "sem compilação declarada, os títulos");
     }
 
     #[test]
@@ -1739,12 +1817,12 @@ mod tests {
         let visible = log.visible();
         let (titled, old, covering) = (visible[1], visible[2], visible[3]);
 
-        let unproven = backlog_fields(&log, &[titled, old]);
+        let unproven = backlog_fields(&log, &[titled, old], &Commands::default());
         assert!(unproven.criteria.is_empty());
         assert_eq!(unproven.text, "Somar o total; Mostrar o total na página.");
         assert_eq!(unproven.done_when, unproven.text, "sem prova, o pronto-quando são os títulos");
 
-        let proven = backlog_fields(&log, &[covering]);
+        let proven = backlog_fields(&log, &[covering], &Commands::default());
         assert_eq!(proven.criteria, [1]);
         assert_eq!(proven.text, "Conferir a soma");
         assert_eq!(proven.done_when, "cargo test -p soma");

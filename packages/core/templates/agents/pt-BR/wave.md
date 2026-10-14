@@ -38,7 +38,7 @@ Só implemente a onda. Leia inteiro cada item pelo comando de "Como ler cada ite
 
 ## Fronteira da tarefa
 
-Arquivo extra necessário à mesma mudança entra em `files`; falha pequena da tarefa/vizinhos se corrige com teste que caia sem a correção. Decisão do usuário ou outra área vira sobra. Critério a mudar ou spec omissa: pare antes de explorar e devolva `replan`. Tarefa não feita vai em `undone`, nunca só no texto/`leftovers`, com `met:false`. Código novo tem uso fora de teste; um teste por comportamento, sem repetir outro; nada de código só de medição. Remova na mesma onda código e testes tornados inúteis. Não edite arquivo de onda em andamento: grave `"leftovers":[{"title":"…","detail":"…"}]`, com arquivo entre crases. Sobra só de comentário/documentação/ajuda, sem mudar comportamento nem expectativa de teste, leva `"cleanup":true`. Sobras vão ao backlog.
+Arquivo extra necessário à mesma mudança entra em `files`; falha pequena da tarefa/vizinhos se corrige com teste que caia sem a correção. Decisão do usuário ou outra área vira sobra. Critério a mudar ou spec omissa: pare antes de explorar e devolva `replan`. Tarefa não feita vai em `undone`, nunca só no texto/`leftovers`, com `met:false`. Código novo tem uso fora de teste; um teste por comportamento, sem repetir outro; nada de código só de medição. Remova na mesma onda código e testes tornados inúteis. Não edite arquivo de onda em andamento: grave `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`: `files` são os arquivos a mudar, nunca os exemplos do texto, e o detalhe nomeia a prova em `Prova:` seguida do comando entre crases. Sobra só de comentário/documentação/ajuda, sem mudar comportamento nem expectativa de teste, leva `"cleanup":true`. Sobras vão ao backlog.
 
 ## Formato de saída
 

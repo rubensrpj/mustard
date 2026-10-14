@@ -7,7 +7,7 @@
 //! volta, com o motivo. O consumo de cada onda e o do orquestrador a rodada
 //! mede nos arquivos de conversa que a plataforma grava.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use mustard_core::domain::scan::ScanReport;
@@ -28,7 +28,7 @@ use super::commit::{
 };
 use super::copy_check::check_against_copies;
 use super::finish_check::unfinished_work;
-use super::leftovers::{Leftover, leftover_events, leftovers_of};
+use super::leftovers::{Leftover, LeftoverEvent, leftover_events, leftovers_of};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
@@ -1017,6 +1017,9 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // dela desde o envio que a despachou: nenhuma volta velha fica esperando
     // outra rodada. A cópia na onda que o conserto fecha não substitui nada.
     let mut deliveries = Vec::new();
+    // A entrega oficial de cada onda que voltou, pelo número do ensaio: é a
+    // origem do pedido de cada sobra dela.
+    let mut reported: BTreeMap<u64, u64> = BTreeMap::new();
     let mut wave_tasks = Vec::new();
     // Os itens que uma tarefa nascida nesta mesma rodada já cobre: a volta
     // seguinte não cria outra para eles.
@@ -1068,19 +1071,39 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
                 wave_tasks.extend(tasks.into_iter().map(|task| (wave, "task", task)));
             }
             draft.insert("author".into(), json!("wave"));
-            deliveries.push((wave, rehearse(&mut check, "delivered", draft)?));
+            let delivered = rehearse(&mut check, "delivered", draft)?;
+            if wave == report.wave {
+                reported.insert(wave, delivered.id);
+            }
+            deliveries.push((wave, delivered));
         }
     }
     let found: Vec<(u64, &Leftover)> = report.waves.iter().flat_map(|wave| wave.leftovers.iter().map(move |leftover| (wave.wave, leftover))).collect();
     // A sobra que entra numa tarefa que voltou ao backlog nesta rodada aponta
-    // o número que o ensaio deu à volta: a gravação de verdade o troca pelo
-    // dela.
+    // o número que o ensaio deu à volta, e o pedido da sobra aponta o da
+    // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
+    // verdade troca cada um pelo dela.
     let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
-    wave_tasks.extend(leftover_events(root, check.log(), &found, &returning, lang));
-    let wave_tasks = wave_tasks
+    let leftovers = leftover_events(root, check.log(), &found, &returning, &reported, lang);
+    let mut wave_tasks = wave_tasks
         .into_iter()
         .map(|(wave, kind, draft)| Ok((wave, kind, rehearse(&mut check, kind, draft)?)))
         .collect::<Result<Vec<_>, Refusal>>()?;
+    let mut rehearsed: Vec<u64> = Vec::new();
+    for LeftoverEvent { wave, kind, mut draft, asks } in leftovers {
+        if !asks.is_empty() {
+            let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
+            for id in asks.iter().filter_map(|at| rehearsed.get(*at).copied()) {
+                if !covers.contains(&id) {
+                    covers.push(id);
+                }
+            }
+            draft.insert("covers".into(), json!(covers));
+        }
+        let event = rehearse(&mut check, kind, draft)?;
+        rehearsed.push(event.id);
+        wave_tasks.push((wave, kind, event));
+    }
     // O consumo, que só se sabe na volta: quando a rodada mede algum dos
     // cinco campos, o envio da onda ganha uma versão nova com eles, sem
     // remontar o resto do que foi enviado — também na onda que uma rodada
@@ -1235,7 +1258,6 @@ mod tests {
 
     use crate::commands::event::pending::{PendingOpts, pending_at};
     use crate::commands::flow::round::backlog::dispatch_backlog;
-    use crate::commands::flow::round::leftovers::leftover_task;
     use crate::commands::flow::round::queue::{UndoneReturn, return_with_an_undone_task, task_now};
     use crate::commands::flow::round::queue::{max_parallel, waves_to_redo};
     use crate::commands::flow::round::usage::tests::{MODEL, answer_line, instant, platform_file, request_line};
@@ -4800,10 +4822,11 @@ fn main() { sum_by_the_new_name(); }
         assert!(!tasks[1].fields.contains_key("cleanup"), "{:?}", tasks[1].fields);
     }
 
-    /// A marca de limpeza que não é sim nem não recusa a volta na gravação,
-    /// citando a sobra pelo número dela na lista, e nada é gravado.
+    /// A marca de limpeza que não é sim nem não, e a lista de arquivos que
+    /// não é uma lista de caminhos, recusam a volta na gravação, citando a
+    /// sobra pelo número dela na lista, e nada é gravado.
     #[test]
-    fn cleanup_mark_that_is_neither_yes_nor_no_is_refused_on_write() {
+    fn a_leftover_field_of_the_wrong_type_is_refused_on_write() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -4812,105 +4835,17 @@ fn main() { sum_by_the_new_name(); }
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         let before = spec_lines(root);
 
-        let refused = returned(
-            root,
-            json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a soma sai", "leftovers": [
-                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": "sim"},
-            ]}),
-        );
-        assert_eq!(refused["reason"], json!("invalid-value"), "{refused}");
-        assert!(refused["hint"].as_str().unwrap_or_default().contains("leftovers[1].cleanup"), "{refused}");
-        assert_eq!(spec_lines(root), before, "nada foi gravado: {refused}");
-    }
-
-    /// A sobra apontada por uma onda com critério vira tarefa que cobre os
-    /// critérios dessa onda; na rodada seguinte, a onda do
-    /// conserto nasce do backlog com esses critérios e com a prova deles no
-    /// pronta-quando, e sai no despacho sem recusa.
-    #[test]
-    fn the_fix_task_of_a_leftover_covers_the_criteria_of_the_wave_that_found_it() {
-        // A onda do conserto nasce do mapa que o scan grava: com o scan de
-        // outra versão, o do `PATH`, ela não se forma. A falha diz o conserto.
-        assert!(
-            mustard_core::Scan::locate().is_compiled_alongside(),
-            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
-        );
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("src/c.rs"),
-            "fn main() {}
-",
-        )
-        .unwrap();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
-        round(root, "x", None);
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
-
-        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let wrote = returned(
-            root,
-            json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a soma sai", "leftovers": [
-                {"title": "A leitura para sem o índice", "detail": "Sem o índice, `src/c.rs` para."},
-            ]}),
-        );
-        assert_eq!(wrote["ok"], json!(true), "{wrote}");
-        let out = round(root, "x", None);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let task_id = out["recorded"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|r| r["type"] == json!("task"))
-            .and_then(|r| r["id"].as_u64())
-            .unwrap_or_else(|| panic!("a sobra não virou tarefa: {out}"));
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let task = log.get(task_id).unwrap();
-        assert_eq!(task.fields["covers"], json!([crit]), "a tarefa cobre os critérios da onda 1: {:?}", task.fields);
-
-        let next = round(root, "x", None);
-        assert_eq!(next["ok"], json!(true), "a onda do conserto se forma sem recusa: {next}");
-        assert_eq!(waves_in(&next, "dispatch"), vec![2], "a onda do conserto é despachada: {next}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let fix = log
-            .visible()
-            .into_iter()
-            .find(|e| e.event_type == "wave" && e.wave() == Some(2))
-            .unwrap_or_else(|| panic!("a onda do conserto não foi formada: {next}"));
-        assert_eq!(fix.fields["criteria"], json!([crit]), "{:?}", fix.fields);
-        assert_eq!(fix.fields["done_when"], json!("git --version"), "{:?}", fix.fields);
-        assert_eq!(fix.fields["order"], json!([task_id]), "{:?}", fix.fields);
-    }
-
-    /// A sobra apontada por uma onda sem critério vira tarefa sem `covers`;
-    /// a de uma onda com critério leva os da versão atual da onda, não os da
-    /// versão que ela substituiu.
-    #[test]
-    fn the_fix_task_follows_the_current_criteria_of_the_wave_and_goes_without_covers_when_it_has_none() {
-        let dir = tempdir().unwrap();
-        let log = mustard_core::domain::spec_events::parse_log(
-            &[
-                json!({"v":1,"id":1,"type":"criterion","when":"a","then":"b","proof":"git --version","form":"ubiquitous"}),
-                json!({"v":1,"id":2,"type":"criterion","when":"c","then":"d","proof":"git --help","form":"ubiquitous"}),
-                json!({"v":1,"id":3,"type":"wave","n":1,"text":"t","criteria":[1],"done_when":"d"}),
-                json!({"v":1,"id":4,"type":"wave","n":1,"text":"t","criteria":[1, 2],"done_when":"d","replaces":3}),
-                json!({"v":1,"id":5,"type":"wave","n":2,"text":"t","criteria":[],"done_when":"d"}),
-            ]
-            .iter()
-            .map(Value::to_string)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        );
-        let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into(), cleanup: false };
-        let task = leftover_task(dir.path(), &log, 1, &leftover, Locale::PtBr);
-        assert_eq!(task.get("covers"), Some(&json!([1, 2])), "{task:?}");
-        let task = leftover_task(dir.path(), &log, 2, &leftover, Locale::PtBr);
-        assert!(!task.contains_key("covers"), "onda sem critério, tarefa sem `covers`: {task:?}");
+        for (field, wrong) in [("cleanup", json!("sim")), ("files", json!("src/a.rs")), ("files", json!([1]))] {
+            let mut leftover = json!({"title": "O comentário da soma diz dois", "detail": "A soma é de três."});
+            leftover[field] = wrong;
+            let refused = returned(
+                root,
+                json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai", "leftovers": [leftover]}),
+            );
+            assert_eq!(refused["reason"], json!("invalid-value"), "{refused}");
+            assert!(refused["hint"].as_str().unwrap_or_default().contains(&format!("leftovers[1].{field}")), "{refused}");
+            assert_eq!(spec_lines(root), before, "nada foi gravado: {refused}");
+        }
     }
 
     /// A leitura da spec `x`.

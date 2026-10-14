@@ -686,7 +686,7 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 /// mesma onda o que a própria mudança deixou sem uso, com o teste que só
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
-/// grava, só com o título e o detalhe: toda sobra vai ao backlog, e o
+/// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
 /// sobra que só de comentário/documentação/ajuda leva a marca
 /// de limpeza, que a rodada segura para o fim da obra.
@@ -721,7 +721,7 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
         let name = "wave";
         let body = template(lang, name);
         let boundary = section(&body, wave_headers(lang).0);
-        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\"}]`";
+        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\",\"files\":[\"…\"]}]`";
         for phrase in said.iter().chain(std::iter::once(&field)) {
             assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }

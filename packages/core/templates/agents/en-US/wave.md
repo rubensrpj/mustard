@@ -38,7 +38,7 @@ Implement only this wave. Read each item with the command under "How to read eac
 
 ## Task boundary
 
-Extra files required for the same change go in `files`; small failures in the task/neighbors get a fix and a test that fails without it. User decisions or another area become leftovers. Changed criterion or missing spec: stop before exploring and return `replan`. Undone tasks go in `undone`, never only prose/`leftovers`, with `met:false`. New code has a use outside tests; one test per behavior, never repeating another; no measurement-only code. Remove in the same wave code and tests made unused. Do not edit a running wave's files: record `"leftovers":[{"title":"…","detail":"…"}]`, with the file in backticks. Comment/documentation/help-only leftovers with no behavior or test expectation changes carry `"cleanup":true`. Leftovers go to the backlog.
+Extra files required for the same change go in `files`; small failures in the task/neighbors get a fix and a test that fails without it. User decisions or another area become leftovers. Changed criterion or missing spec: stop before exploring and return `replan`. Undone tasks go in `undone`, never only prose/`leftovers`, with `met:false`. New code has a use outside tests; one test per behavior, never repeating another; no measurement-only code. Remove in the same wave code and tests made unused. Do not edit a running wave's files: record `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`: `files` lists the files to change, never the text's examples, and the detail names the proof as `Proof:` followed by the command in backticks. Comment/documentation/help-only leftovers with no behavior or test expectation changes carry `"cleanup":true`. Leftovers go to the backlog.
 
 ## Output format
 

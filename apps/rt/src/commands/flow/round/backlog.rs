@@ -95,7 +95,8 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 ///
 /// Cada onda grava o evento de onda, com autor binário: os critérios são a
 /// união do que as tarefas dela cobrem (`covers`), o pronta-quando é a prova
-/// desses critérios, ligadas por " && " quando são mais de uma, e a ordem de
+/// desses itens ([`backlog_fields`](mustard_core::domain::wave_prompt::backlog_fields)),
+/// ligadas por " && " quando são mais de uma, e a ordem de
 /// despacho fica no campo que a onda já reservava para isso (`order`). Cada
 /// tarefa da onda ganha, na mesma passada, uma versão nova com o número dela —
 /// o número velho, de spec antiga, é ignorado — e é isso que liga a onda ao
@@ -326,6 +327,10 @@ pub(crate) fn dispatch_backlog(
     }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();
+    // Os comandos que o projeto declara: o de teste reconhece a prova que o
+    // relato de um pedido cita, e o de compilação prova o que não cita
+    // nenhuma.
+    let commands = mustard_core::ProjectConfig::load(&crate::commands::spec_events::project(start).root).commands();
     // O número segue o maior já gravado, com a onda que ficou vazia e a
     // removida incluídas: saíram do plano, mas o número delas não volta.
     let mut next_n = log.last_wave_number();
@@ -334,11 +339,13 @@ pub(crate) fn dispatch_backlog(
     for (batch, summary) in &chosen {
         next_n += 1;
         let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
-        // A tarefa nascida de uma onda cobre critério, com prova para juntar
-        // aqui; a que nasce do item combinado sem onda dona (o backlog da
-        // revisão final) cobre o item, que não tem prova — o texto de quem
-        // marcou o item sem atender é o que diz quando a onda entrega.
-        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks);
+        // A tarefa do plano cobre critério, com prova para juntar aqui; a
+        // que nasce de uma sobra cobre o pedido dela, pronto pela prova que
+        // ela nomeia ou pela compilação; a que nasce do item combinado sem
+        // onda dona (o backlog da revisão final) cobre o item, que não tem
+        // prova — o texto de quem marcou o item sem atender é o que diz
+        // quando a onda entrega.
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks, &commands);
         let draft = json!({
             "n": next_n,
             "text": fields.text,
@@ -462,4 +469,61 @@ fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
         let recoverable=failure.is_some_and(|failed| failed>revised && log.visible().into_iter().any(|e|e.event_type=="wave" && e.wave()==Some(*n) && e.id<failed));
         formed.contains(n) && !sent.contains(n) && !delivered.contains(n) && !recoverable
     }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use mustard_core::domain::spec_events::SpecLog;
+    use mustard_core::io::spec_events as store;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::super::tests::{approved, git_at, returned, round, waves_in};
+
+    /// A spec `x` como está gravada agora.
+    fn spec_x(root: &std::path::Path) -> SpecLog {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+    }
+
+    /// Num projeto TypeScript, a onda 1, com critério de prova própria, volta
+    /// com uma sobra que nomeia a prova dela. A onda de conserto que a rodada
+    /// seguinte monta do backlog leva como critério só o pedido da sobra, e
+    /// fica pronta quando passa a prova que a sobra nomeia, não a do
+    /// critério da onda 1.
+    #[test]
+    fn a_wave_from_a_leftover_task_is_done_when_its_own_proof_passes() {
+        // A onda de conserto nasce do mapa que o scan grava: sem o scan
+        // compilado junto, ela não se forma, e o teste passaria à toa.
+        assert!(
+            mustard_core::Scan::locate().is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.ts"], &[])]);
+        std::fs::write(root.join("mustard.json"), json!({"buildCommand": "echo build", "testCommand": "npm test"}).to_string()).unwrap();
+        std::fs::write(root.join("src/soma.ts"), "export function soma(a: number, b: number): number { return a + b; }\n").unwrap();
+        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
+        round(root, "x", None);
+
+        std::fs::write(root.join("src/a.ts"), "export const one = 1;\n").unwrap();
+        let wrote = returned(
+            root,
+            json!({"wave": 1, "text": "Saiu.", "files": ["src/a.ts"], "commit": "sai",
+                "leftovers": [{"title": "A soma perde o sinal", "files": ["src/soma.ts"],
+                    "detail": "Com número negativo, a soma perde o sinal. Prova: `npm test -- soma`."}]}),
+        );
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let request = out["recorded"].as_array().unwrap().iter().find(|r| r["type"] == json!("request")).and_then(|r| r["id"].as_u64());
+        let request = request.unwrap_or_else(|| panic!("a sobra não virou pedido: {out}"));
+
+        let next = round(root, "x", None);
+        assert_eq!(waves_in(&next, "dispatch"), vec![2], "a onda do conserto sai: {next}");
+        let log = spec_x(root);
+        let fix = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(2)).unwrap();
+        assert_eq!(fix.fields["criteria"], json!([request]), "nenhum critério alheio: {:?}", fix.fields);
+        assert_eq!(fix.fields["done_when"], json!("npm test -- soma"), "{:?}", fix.fields);
+    }
 }
