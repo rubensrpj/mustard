@@ -657,6 +657,15 @@ pub(super) fn run_entered_round(
     // trava já tem onda na leitura de agora, e não sai de novo; o número da
     // onda nova também sai dela.
     let locked = store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    // A reprovação que o fechamento gravou sem citar arquivo da onda sai antes
+    // de a rodada escolher quem volta ao conserto, pela mesma soltura do
+    // fechamento: a onda solta não é despachada de novo por uma marca sem
+    // prova.
+    let locked = if crate::commands::flow::close::stale_marks::release(root, &spec, &locked, lang).map_err(RoundRefusal::Refused)?.is_empty() {
+        locked
+    } else {
+        store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
+    };
     // Com a trava presa e a spec relida, sai da pasta de despacho o trecho de
     // conserto da onda que a rodada comitou ou que voltou de novo.
     sweep_fixes(root, &spec, Some(&locked));

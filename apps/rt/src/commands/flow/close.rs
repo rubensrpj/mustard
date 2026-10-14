@@ -74,7 +74,7 @@ use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
-mod stale_marks;
+pub(crate) mod stale_marks;
 mod unused;
 
 /// As opções de `mustard-rt run close`.
@@ -340,9 +340,10 @@ fn run_close(
 
     let log = read(&path)?;
     super::validation::review_elapsed(root, &spec, &log).map_err(CloseRefusal::Refused)?;
-    // A reprovação que o lint ou a suíte gravaram sem citar arquivo da onda
-    // sai antes de a obra ser conferida: a onda solta não trava mais o
-    // fechamento, que segue para a máquina sem pedir conserto.
+    // A reprovação que o lint, a suíte ou a análise de declarações sem uso
+    // gravaram sem citar arquivo da onda sai antes de a obra ser conferida: a
+    // onda solta não trava mais o fechamento, que segue para a máquina sem
+    // pedir conserto.
     let log = if stale_marks::release(root, &spec, &log, lang).map_err(CloseRefusal::Refused)?.is_empty() { log } else { read(&path)? };
     finished(&log)?;
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a

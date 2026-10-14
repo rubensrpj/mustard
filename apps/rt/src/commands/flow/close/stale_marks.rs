@@ -1,11 +1,12 @@
 //! As marcas de conserto que o fechamento gravou sem prova.
 //!
-//! Antes do conserto só com prova, o lint ou a suíte do fechamento que caía
-//! reprovava toda onda do plano, citasse a saída arquivo dela ou não. Essas
-//! marcas seguravam a obra: o fechamento recusava a onda reprovada, e só uma
-//! entrega vazia de cada uma a soltava. No começo do fechamento, a marca do
-//! lint ou da suíte cuja saída gravada não cita arquivo da onda sai sozinha,
-//! pela mesma leitura que decide quem reabre
+//! Antes do conserto só com prova, o lint, a suíte ou a análise de
+//! declarações sem uso do fechamento que caía reprovava toda onda do plano,
+//! citasse a saída arquivo dela ou não. Essas marcas seguravam a obra: o
+//! fechamento recusava a onda reprovada, a rodada a despachava para o
+//! conserto, e só uma entrega vazia de cada uma a soltava. No começo do
+//! fechamento e da rodada, a marca cuja saída gravada não cita arquivo da
+//! onda sai sozinha, pela mesma leitura que decide quem reabre
 //! ([`crate::commands::flow::validation::cited`]).
 
 use std::path::Path;
@@ -18,20 +19,22 @@ use serde_json::json;
 use crate::commands::flow::validation::{Work, cited};
 use crate::commands::spec_events::write::record;
 
-/// Os motivos das marcas que reabriam toda onda do plano sem prova: o lint e
-/// a suíte do fechamento. A marca do critério que falhou aponta as ondas que
-/// o cobrem, e a da análise de declarações sem uso não lê arquivo citado:
-/// nenhuma das duas sai daqui.
-const UNPROVEN_REASONS: [&str; 2] = ["lint-failed", "suite-failed"];
+/// Os motivos das marcas que reabriam toda onda do plano sem prova: o lint, a
+/// suíte e a análise de declarações sem uso do fechamento, que hoje só
+/// reabrem a onda cujo arquivo a saída cita. A marca do critério que falhou
+/// aponta as ondas que o cobrem, e não sai daqui.
+const UNPROVEN_REASONS: [&str; 3] = ["lint-failed", "suite-failed", "final-new-unused"];
 
 /// Solta cada onda com o conserto pendente cuja reprovação é uma marca do
-/// lint ou da suíte do fechamento e cuja saída gravada não cita arquivo que a
-/// obra mudou e que a onda declarou ou entregou. A soltura é uma marca nova,
-/// do binário, com o resultado `released`, a mesma impressão e o mesmo motivo
-/// da reprovação e o texto que diz por que saiu: a mais nova da onda, ela a
-/// tira da leitura das ondas reprovadas sem apagar nada. Devolve as ondas
-/// soltas, na ordem do plano.
-pub(super) fn release(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Vec<u64>, Refusal> {
+/// lint, da suíte ou da análise de declarações sem uso do fechamento e cuja
+/// saída gravada não cita arquivo que a obra mudou e que a onda declarou ou
+/// entregou. A soltura é uma marca nova, do binário, com o resultado
+/// `released`, a mesma impressão e o mesmo motivo da reprovação e o texto que
+/// diz por que saiu: a mais nova da onda, ela a tira da leitura das ondas
+/// reprovadas sem apagar nada. O fechamento a chama antes de conferir a obra,
+/// e a rodada antes de escolher as ondas que voltam ao conserto: as duas leem
+/// a mesma soltura. Devolve as ondas soltas, na ordem do plano.
+pub(crate) fn release(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Vec<u64>, Refusal> {
     let marks: Vec<(u64, &SpecEvent)> = crate::commands::flow::round::waves_pending_fix(log)
         .into_iter()
         .filter_map(|(wave, id)| log.get(id).map(|mark| (wave, mark)))
@@ -70,7 +73,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::super::CloseRefusal;
-    use super::super::tests::{branched_from_dev, close_for, ready_with_waves, round_for, wave_file};
+    use super::super::tests::{branched_from_dev, close_for, git_at, ready_with_waves, round_for, wave_file};
     use crate::commands::flow::close::CloseOpts;
     use crate::commands::flow::round::RoundOpts;
     use crate::commands::spec_events::write::record;
@@ -89,12 +92,23 @@ mod tests {
         let failure = match reason {
             "suite-failed" => CloseRefusal::SuiteFailed { command, output, no_wave: None },
             "lint-failed" => CloseRefusal::LintFailed { command, output, no_wave: None },
+            "final-new-unused" => CloseRefusal::NewUnused { text: output, no_wave: None },
             _ => CloseRefusal::CriterionFailed { code: "MSTD-CRIT-0001".into(), output },
         };
         let text = format!("{}\n{}", failure.message(Locale::PtBr), translate("close.repair_next", Locale::PtBr));
         let draft = json!({"wave": wave, "final": true, "result": "rejected", "text": text, "reason": reason,
             "fingerprint": BEFORE, "files": [wave_file(wave)], "author": "binary"});
         record(root, "x", "validation_failure", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+    }
+
+    /// As ondas soltas, cada uma com o motivo, a impressão e o autor da
+    /// soltura.
+    fn released(log: &SpecLog) -> Vec<(u64, Option<&str>, Option<&str>, Option<&str>)> {
+        log.events
+            .iter()
+            .filter(|e| e.event_type == "validation_failure" && e.str_field("result") == Some("released"))
+            .map(|e| (e.wave().unwrap_or_default(), e.str_field("reason"), e.str_field("fingerprint"), e.str_field("author")))
+            .collect()
     }
 
     fn close_with(root: &Path, config: &Value) -> Value {
@@ -123,14 +137,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("rodou")).unwrap_or_default(), "lint\nsuite\n", "{refused}");
 
         let log = log_of(root);
-        let released: Vec<(u64, Option<&str>, Option<&str>, Option<&str>)> = log
-            .events
-            .iter()
-            .filter(|e| e.event_type == "validation_failure" && e.str_field("result") == Some("released"))
-            .map(|e| (e.wave().unwrap_or_default(), e.str_field("reason"), e.str_field("fingerprint"), e.str_field("author")))
-            .collect();
         assert_eq!(
-            released,
+            released(&log),
             vec![(1, Some("lint-failed"), Some(BEFORE), Some("binary")), (2, Some("suite-failed"), Some(BEFORE), Some("binary"))],
             "{refused}"
         );
@@ -160,7 +168,58 @@ mod tests {
         assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
         assert!(!root.join("rodou").exists(), "{refused}");
         let log = log_of(root);
-        assert!(!log.events.iter().any(|e| e.str_field("result") == Some("released")), "{refused}");
+        assert!(released(&log).is_empty(), "{refused}");
         assert_eq!(log.last_rejected().into_keys().collect::<Vec<_>>(), vec![1, 2], "{refused}");
+    }
+
+    /// A análise de declarações sem uso gravava o mesmo achado em toda onda
+    /// do plano. Com o achado só no arquivo da onda 2, o fechamento solta a
+    /// onda 1, com a mesma impressão e o mesmo motivo, e mantém a 2, que
+    /// recusa o fechamento antes de rodar comando nenhum.
+    #[test]
+    fn a_stale_unused_mark_stays_only_on_the_wave_whose_file_it_cites() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+        branched_from_dev(root);
+        let finding = translate("round.after_wave.unused", Locale::PtBr)
+            .replace("{name}", "lonely_total")
+            .replace("{file}", &wave_file(2))
+            .replace("{line}", "3");
+        old_mark(root, 1, "final-new-unused", &finding);
+        old_mark(root, 2, "final-new-unused", &finding);
+
+        let refused = close_with(root, &json!({"lintCommand": "echo lint >> rodou"}));
+        assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
+        assert!(!root.join("rodou").exists(), "{refused}");
+        let log = log_of(root);
+        assert_eq!(released(&log), vec![(1, Some("final-new-unused"), Some(BEFORE), Some("binary"))], "{refused}");
+        assert_eq!(log.last_rejected().into_keys().collect::<Vec<_>>(), vec![2], "{refused}");
+    }
+
+    /// A rodada que vem antes de qualquer fechamento lê as mesmas marcas: a
+    /// do lint que cita só um arquivo TypeScript que a branch mudou, mas que
+    /// nenhuma onda declarou nem entregou, sai solta, e a onda 1 não volta ao
+    /// conserto. A da suíte que cita o arquivo da onda 2 fica, e só a onda 2
+    /// sai para o conserto.
+    #[test]
+    fn a_round_before_the_close_sends_no_repair_for_a_stale_mark() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+        branched_from_dev(root);
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::write(root.join("web/extra.ts"), "export function lonelyTotal(): number {\n  return 0;\n}\n").unwrap();
+        git_at(root, &["add", "web/extra.ts"]);
+        git_at(root, &["commit", "-q", "-m", "fora das ondas"]);
+        old_mark(root, 1, "lint-failed", "web/extra.ts(1,17): error TS6133: 'lonelyTotal' is declared but its value is never read.");
+        old_mark(root, 2, "suite-failed", &format!("error: {}:2:5", wave_file(2)));
+
+        let next = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let sent: Vec<u64> = next["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
+        assert_eq!(sent, vec![2], "{next}");
+        let log = log_of(root);
+        assert_eq!(released(&log), vec![(1, Some("lint-failed"), Some(BEFORE), Some("binary"))], "{next}");
+        assert_eq!(log.last_rejected().into_keys().collect::<Vec<_>>(), vec![2], "{next}");
     }
 }

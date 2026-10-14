@@ -219,15 +219,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The output cites a file the branch changed, but no wave declared or delivered it. No wave reopened. \
              Show the output to the user and ask what to do; once that is settled, close again."
         }
-        // A marca de conserto que o lint ou a suíte do fechamento gravaram
-        // sem citar arquivo da onda, solta no começo do fechamento.
+        // A marca de conserto que o lint, a suíte ou a análise de declarações
+        // sem uso do fechamento gravaram sem citar arquivo da onda, solta no
+        // começo do fechamento ou da rodada.
         ("close.stale_mark_released", Locale::PtBr) => {
-            "A reprovação da onda {wave} pelo lint ou pela suíte do fechamento saiu. A saída gravada nela não cita arquivo \
-             que a branch mudou e que a onda declarou ou entregou. Sem essa prova, a onda não volta ao conserto."
+            "A reprovação da onda {wave} pelo lint, pela suíte ou pela análise de código sem uso do fechamento saiu. A saída \
+             gravada nela não cita arquivo que a branch mudou e que a onda declarou ou entregou. Sem essa prova, a onda não \
+             volta ao conserto."
         }
         ("close.stale_mark_released", Locale::EnUs) => {
-            "The rejection of wave {wave} by the closing lint or suite was released. Its recorded output cites no file the \
-             branch changed and the wave declared or delivered. Without that proof, the wave does not return to repair."
+            "The rejection of wave {wave} by the closing lint, suite or unused-code analysis was released. Its recorded output \
+             cites no file the branch changed and the wave declared or delivered. Without that proof, the wave does not return \
+             to repair."
         }
         ("close.not_running", Locale::PtBr) => "A spec está na fase {phase} e não está em execução: só fecha o que estava correndo.",
         ("close.not_running", Locale::EnUs) => "The spec is in the {phase} phase and is not running: only work in flight closes.",
@@ -1885,7 +1888,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 254, 0xefe2_d30e_d410_d7a0);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 254, 0x61ea_7a5c_03e3_be6f);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
