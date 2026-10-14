@@ -341,15 +341,7 @@ fn a_native_pass_of_a_map_another_native_pass_holds_reads_nothing_and_says_busy(
     let temp = project("scan-native-busy-", &[("src/a.rs", "pub fn alpha() -> u32 {\n    1\n}\n")]);
     let dir = temp.path();
     let out = model::path_in(&map_folder(dir));
-    let pass = || {
-        let run = Command::new(env!("CARGO_BIN_EXE_scan"))
-            .args(["scan", dir.to_str().unwrap(), "--out", out.to_str().unwrap(), "--json", "--native"])
-            .output()
-            .expect("run scan");
-        assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
-        let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
-        serde_json::from_str::<Value>(stdout.lines().last().unwrap_or("{}")).expect("the report is one JSON line")
-    };
+    let pass = || native_pass(dir, &out);
     let running = mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&mustard_core::domain::scan::native_pass_lock_path(&out))
         .unwrap()
         .expect("no other pass holds this map");
@@ -361,6 +353,108 @@ fn a_native_pass_of_a_map_another_native_pass_holds_reads_nothing_and_says_busy(
     assert_eq!(read["busy"], Value::Null, "{read}");
     assert!(read["read"].as_array().is_some_and(|files| files.contains(&json!("src/a.rs"))), "{read}");
     assert!(out.exists(), "the free pass wrote the map");
+}
+
+/// Roda a passada nativa do scan sobre `dir`, gravando o mapa em `out`, e
+/// devolve o relato dela.
+fn native_pass(dir: &Path, out: &Path) -> Value {
+    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["scan", dir.to_str().unwrap(), "--out", out.to_str().unwrap(), "--json", "--native"])
+        .output()
+        .expect("run scan");
+    assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    serde_json::from_str::<Value>(stdout.lines().last().unwrap_or("{}")).expect("the report is one JSON line")
+}
+
+/// A passada nativa grava, depois do mapa, os vetores de código do que mudou:
+/// a busca que vem depois dela não tem vetor a calcular. Num projeto em
+/// TypeScript, na primeira passada e na que relê um arquivo.
+#[test]
+fn a_native_pass_leaves_no_code_vector_for_the_next_search_to_compute() {
+    let temp = project("scan-native-vectors-", &[("src/alpha.ts", "export function alphaStart(): number {\n  return 1;\n}\n")]);
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    let first = native_pass(dir, &out);
+    assert!(first["vectors"].as_u64().is_some_and(|count| count > 0), "{first}");
+    assert_eq!(mustard_core::io::code_vectors::fill_at(&out, dir).unwrap(), Some(0), "nothing left for the search");
+
+    write(dir, "src/alpha.ts", "export function alphaStart(): number {\n  return 2;\n}\n");
+    let second = native_pass(dir, &out);
+    assert_eq!(second["read"], json!(["src/alpha.ts"]), "{second}");
+    assert!(second["vectors"].as_u64().is_some_and(|count| count > 0), "{second}");
+    assert_eq!(mustard_core::io::code_vectors::fill_at(&out, dir).unwrap(), Some(0), "nothing left for the search");
+}
+
+/// O índice de busca do mapa em `out`, tabela por tabela, como o banco o
+/// guarda: cada forma de cada campo de cada documento, o tamanho dos campos,
+/// os números de cada nível, os nomes da tabela trigram, as declarações com o
+/// número de cada uma e o catálogo dos símbolos.
+fn search_index(out: &Path) -> Vec<Vec<String>> {
+    let conn = rusqlite::Connection::open(out).unwrap();
+    [
+        "SELECT term, doc, col, offset FROM decl_vocab ORDER BY 1, 2, 3, 4",
+        "SELECT term, doc, col, offset FROM file_vocab ORDER BY 1, 2, 3, 4",
+        "SELECT * FROM decl_lengths ORDER BY id",
+        "SELECT * FROM file_lengths ORDER BY id",
+        "SELECT key, value FROM search_meta ORDER BY key",
+        "SELECT rowid, name, folded, file FROM decl_trigram ORDER BY rowid",
+        "SELECT rowid, file, name FROM decls ORDER BY rowid",
+        "SELECT rowid, path FROM files ORDER BY rowid",
+        "SELECT id, path, name, line, end_line, sha256, position FROM knowledge_symbols ORDER BY id",
+    ]
+    .iter()
+    .map(|query| {
+        let mut stmt = conn.prepare(query).unwrap();
+        let width = stmt.column_count();
+        stmt.query_map([], |row| Ok((0..width).map(|at| format!("{:?}", row.get_ref(at).unwrap())).collect::<Vec<_>>().join("|")))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    })
+    .collect()
+}
+
+/// A passada que relê um arquivo troca só a parte dele no índice de busca,
+/// sem refazer o índice inteiro, e o índice fica o mesmo da passada que lê
+/// tudo num mapa novo, também depois de o arquivo ganhar uma declaração. Num
+/// projeto em TypeScript.
+#[test]
+fn a_pass_that_rereads_one_file_rewrites_only_its_part_of_the_search_index() {
+    let temp = project(
+        "scan-index-in-place-",
+        &[
+            ("src/alpha.ts", "export function alphaStart(): number {\n  return 1;\n}\n"),
+            ("src/beta.ts", "export const betaLabel = 'beta';\n"),
+            ("src/delta.ts", "export class DeltaBox {\n  size = 3;\n}\n"),
+            ("src/epsilon.ts", "export interface EpsilonShape {\n  side: number;\n}\n"),
+            ("src/gamma.ts", "import { alphaStart } from './alpha';\nexport function gammaFifth(): number {\n  return alphaStart() + 5;\n}\n"),
+            ("src/zeta.ts", "export function zetaLast(text: string): string {\n  return text.toUpperCase();\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    // Uma marca no índice que só a montagem inteira dele apaga.
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    conn.execute("INSERT INTO search_meta(key, value) VALUES ('kept-by-the-pass', 1)", []).unwrap();
+    drop(conn);
+
+    let gamma = "import { alphaStart } from './alpha';\nexport function gammaFifth(): number {\n  return alphaStart() + 50;\n}\n";
+    write(dir, "src/gamma.ts", gamma);
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/gamma.ts"]), "{second}");
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    let kept: i64 = conn.query_row("SELECT count(*) FROM search_meta WHERE key = 'kept-by-the-pass'", [], |row| row.get(0)).unwrap();
+    assert_eq!(kept, 1, "the pass did not rebuild the whole index");
+    conn.execute("DELETE FROM search_meta WHERE key = 'kept-by-the-pass'", []).unwrap();
+    drop(conn);
+
+    write(dir, "src/gamma.ts", &format!("{gamma}export function gammaAdded(): void {{}}\n"));
+    assert_eq!(scan(dir, &[])["read"], json!(["src/gamma.ts"]));
+    let whole = tempfile::tempdir().unwrap();
+    model::scan(dir, whole.path(), &[]);
+    assert_eq!(search_index(&out), search_index(&model::path_in(whole.path())), "the index after one file is the index of a full pass");
 }
 
 fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {

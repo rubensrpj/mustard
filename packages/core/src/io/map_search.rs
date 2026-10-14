@@ -101,7 +101,7 @@ use crate::platform::error::Result;
 
 mod refresh;
 
-pub(crate) use refresh::refresh_files;
+pub(crate) use refresh::{documents_of, refresh_files, replace_files};
 
 
 /// Um texto fixo como o scan o grava, na tabela dos textos de cada arquivo.

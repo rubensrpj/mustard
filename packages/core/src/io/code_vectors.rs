@@ -47,9 +47,18 @@ fn cosine(a:&[u8],b:&[u8])->f64 {
 }
 
 /// Changed files only; hashes bind vectors to scanned bytes and metadata.
-/// `--native` never calls this. Disabled configuration returns before opening DB.
-pub fn fill_at(path:&Path,root:&Path)->Result<usize> {
-    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled(){return Ok(0);}
+/// Disabled configuration returns before opening DB. Um cálculo por mapa: com
+/// outro em andamento no mapa em `path` — o da passada do scan que segue
+/// sozinha depois de gravar o mapa, por exemplo —, este sai na hora com
+/// `None`, sem calcular nada, e quem pediu ordena com os vetores que já
+/// valem.
+pub fn fill_at(path:&Path,root:&Path)->Result<Option<usize>> {
+    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled(){return Ok(Some(0));}
+    let Some(_alone)=crate::io::fs::lock::LockedFile::exclusive_if_free(&crate::io::fs::lock::temp_lock_path("code-vectors",path))? else {return Ok(None)};
+    fill(path,root).map(Some)
+}
+
+fn fill(path:&Path,root:&Path)->Result<usize> {
     let mut db=MapDb::open(path,root,&[BLOCK])?;
     if !table_exists(db.conn(),"texts")? {return Ok(0);}
     let known:BTreeMap<String,String>={let mut q=db.conn().prepare("SELECT path,fingerprint FROM code_vector_files WHERE model=?1")?;
@@ -156,7 +165,7 @@ mod tests {
     fn optional_cache_refreshes_changed_bytes_removes_deleted_files_and_rejects_old_receipts() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();let path=root.join("grain.db");
         std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":false}}"#).unwrap();
-        assert_eq!(fill_at(&path,root).unwrap(),0);assert!(!path.exists());
+        assert_eq!(fill_at(&path,root).unwrap(),Some(0));assert!(!path.exists());
         std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":true}}"#).unwrap();
         let db=MapDb::open(&path,root,&[]).unwrap();
         db.conn().execute_batch("CREATE TABLE texts(path TEXT PRIMARY KEY,analysis TEXT); CREATE TABLE knowledge_symbols(id TEXT PRIMARY KEY,sha256 TEXT);").unwrap();
@@ -169,14 +178,29 @@ mod tests {
             db.conn().execute("INSERT OR REPLACE INTO knowledge_symbols VALUES('main.rs:1:read_json',?1)",[sha]).unwrap();
         };
         write("fn read_json() { parse_json(read_file()); }");
-        assert_eq!(fill_at(&path,root).unwrap(),1);assert_eq!(fill_at(&path,root).unwrap(),0);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));assert_eq!(fill_at(&path,root).unwrap(),Some(0));
         let files=BTreeSet::from(["main.rs".to_string()]);
         assert_eq!(ranked(db.conn(),"read JSON from a file",&files,10).unwrap().ids,["main.rs:1:read_json"]);
         assert_eq!(ranked(db.conn(),"read JSON from a file",&BTreeSet::new(),10).unwrap().calls,0);
         write("fn read_json() { parse_json(read_other_file()); }");
         assert!(ranked(db.conn(),"read JSON from a file",&files,10).unwrap().ids.is_empty());
-        assert_eq!(fill_at(&path,root).unwrap(),1);assert_eq!(fill_at(&path,root).unwrap(),0);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));assert_eq!(fill_at(&path,root).unwrap(),Some(0));
         db.conn().execute("DELETE FROM texts",[]).unwrap();fill_at(&path,root).unwrap();
         assert_eq!(db.conn().query_row("SELECT count(*) FROM code_vectors",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    #[test]
+    fn a_fill_while_another_fills_the_same_map_computes_nothing_and_says_so() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();let path=root.join("grain.db");
+        let db=MapDb::open(&path,root,&[]).unwrap();
+        db.conn().execute_batch("CREATE TABLE texts(path TEXT PRIMARY KEY,analysis TEXT); CREATE TABLE knowledge_symbols(id TEXT PRIMARY KEY,sha256 TEXT);").unwrap();
+        let text="fn read_json() { parse_json(read_file()); }";
+        std::fs::write(root.join("main.rs"),text).unwrap();
+        let card=serde_json::json!({"id":"main.rs:1:read_json","name":"read_json","kind":"function","source":{"file":"main.rs","line":1,"end_line":1,"sha256":hash(text.as_bytes())}});
+        db.conn().execute("INSERT INTO texts VALUES('main.rs',?1)",[serde_json::json!({"knowledge":{"cards":[card]}}).to_string()]).unwrap();
+        let other=crate::io::fs::lock::LockedFile::exclusive_if_free(&crate::io::fs::lock::temp_lock_path("code-vectors",&path)).unwrap().expect("no fill of this map runs");
+        assert_eq!(fill_at(&path,root).unwrap(),None);
+        assert_eq!(db.conn().query_row("SELECT count(*) FROM code_vectors",[],|r|r.get::<_,i64>(0)).unwrap_or(0),0);
+        drop(other);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));
     }
 }

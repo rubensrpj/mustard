@@ -28,7 +28,10 @@ fn agent_from_env() -> Option<String> {
 /// Quanto a busca espera a atualização do mapa antes de responder com o mapa
 /// de antes. Medido neste repositório (874 arquivos), com o programa da
 /// compilação de desenvolvimento: a passada que lê tudo levou 67 s, e a que
-/// relê um arquivo, de 41 a 47 s; com o da versão instalada, 31 s. A primeira
+/// relê um arquivo, de 41 a 47 s; com o da versão instalada, 31 s. Depois que
+/// a gravação passou a trocar só as linhas e os documentos do índice dos
+/// arquivos que mudaram, a que relê um arquivo levou 18 s contra 50 s da que
+/// lê tudo, já com os vetores de código, na de desenvolvimento. A primeira
 /// busca numa cópia sem mapa passava de 110 s e o Bash a cortava aos 120 s.
 /// Projeto pequeno atualiza dentro do prazo; passado ele, a passada segue
 /// sozinha e a busca diz isso.
@@ -185,6 +188,10 @@ fn choice_gate(root:&Path,request:&Request,provider:bool)->&'static str {
     "provider-unavailable"
 }
 
+/// Os vetores de código do que mudou no mapa de `root`, calculados antes da
+/// busca que os usa. A passada do scan que segue sozinha os calcula depois de
+/// gravar o mapa: com ela calculando, a busca não espera nem calcula de novo,
+/// e ordena com os vetores que já valem.
 fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> {
     use mustard_core::domain::knowledge::investigation::Purpose;
     if request.purpose==Purpose::Locate || request.tool=="Read" || request.intent.trim().is_empty()
@@ -192,7 +199,8 @@ fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> 
     let path=mustard_core::io::project_map::model_path(root);
     if !path.is_file() {return None;}
     Some(match mustard_core::io::code_vectors::fill_at(&path,root) {
-        Ok(count)=>json!({"status":"current-local-code-index","computed_vectors":count,"remote_model_calls":0}),
+        Ok(Some(count))=>json!({"status":"current-local-code-index","computed_vectors":count,"remote_model_calls":0}),
+        Ok(None)=>json!({"status":"computed-by-running-scan","computed_vectors":0,"remote_model_calls":0}),
         Err(reason)=>json!({"status":"unavailable; lexical fallback preserved","reason":reason.to_string(),"remote_model_calls":0}),
     })
 }

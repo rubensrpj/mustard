@@ -56,7 +56,7 @@ pub(crate) fn rebuild(conn: &Connection) -> Result<()> {
 
 fn resolve(conn: &Connection, document: &str, text: &str) -> Result<Vec<(String, String)>> {
     if let Some((relative, line)) = references::address(document, text) {
-        let mut select = conn.prepare(
+        let mut select = conn.prepare_cached(
             "SELECT id,sha256,(end_line-line) FROM knowledge_symbols WHERE path=?1 AND (?2 IS NULL OR (line<=?2 AND end_line>=?2)) ORDER BY (end_line-line),line,id",
         )?;
         let line = line.map(super::catalog::integer).transpose()?;
@@ -81,7 +81,8 @@ fn resolve(conn: &Connection, document: &str, text: &str) -> Result<Vec<(String,
     if text.contains(['/', '#', ':', '\\']) || text.chars().any(|c| !c.is_alphanumeric() && c != '_') {
         return Ok(vec![]);
     }
-    let mut select = conn.prepare("SELECT id,sha256 FROM knowledge_symbols WHERE name=?1 ORDER BY path,line")?;
+    // A comparação sem caixa vai pelo índice dos nomes; a com caixa decide.
+    let mut select = conn.prepare_cached("SELECT id,sha256 FROM knowledge_symbols WHERE name=?1 COLLATE NOCASE AND name=?1 ORDER BY path,line")?;
     Ok(select.query_map([text], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

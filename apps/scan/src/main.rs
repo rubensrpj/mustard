@@ -58,7 +58,9 @@ enum Command {
         /// Read every file, ignoring the previous model.
         #[arg(long)]
         all: bool,
-        /// Refresh source structure without loading a configured meaning model.
+        /// Refresh source structure without loading a configured meaning model:
+        /// after the map, only the code vectors of what changed, by the
+        /// embedded model.
         #[arg(long)]
         native: bool,
         /// Print one JSON line (what was read) instead of the text summary.
@@ -161,14 +163,26 @@ fn lower_priority() {}
 /// história faz depois de gravar a dela. O mapa vale sem os vetores, então a
 /// falha só avisa. Devolve quantos vetores de declaração foram calculados.
 fn fill_meaning(out: &Path, root: &Path) -> usize {
-    let code = match mustard_core::io::code_vectors::fill_at(out, root) {
-        Ok(count) => count,
-        Err(err) => {eprintln!("The code vectors were not written: {err}");0}
-    };
-    code + match mustard_core::io::map_meaning::fill_at(out, root) {
+    fill_code_vectors(out, root) + match mustard_core::io::map_meaning::fill_at(out, root) {
         Ok(report) => report.computed,
         Err(err) => {
             eprintln!("The meaning vectors were not written: {err}");
+            0
+        }
+    }
+}
+
+/// Os vetores de código das declarações do mapa em `out` que mudaram, do
+/// projeto em `root`, pelo modelo embutido: o que a passada nativa ainda faz
+/// depois de gravar o mapa. Quem pede a passada e para de esperar por ela não
+/// os calcula na busca seguinte: a passada segue sozinha e os grava. Com
+/// outro cálculo do mesmo mapa em andamento, este não calcula nada. Devolve
+/// quantos foram calculados; a falha só avisa, porque o mapa vale sem eles.
+fn fill_code_vectors(out: &Path, root: &Path) -> usize {
+    match mustard_core::io::code_vectors::fill_at(out, root) {
+        Ok(count) => count.unwrap_or(0),
+        Err(err) => {
+            eprintln!("The code vectors were not written: {err}");
             0
         }
     }
@@ -240,8 +254,10 @@ fn main() -> Result<()> {
                 analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
             };
             drop_legacy_map(&out)?;
-            // O sentido de cada declaração e de cada palavra do mapa recém-gravado.
-            let vectors = if native {0}else{fill_meaning(&out, &path)};
+            // O sentido de cada declaração e de cada palavra do mapa
+            // recém-gravado; a passada nativa calcula só os vetores de código,
+            // pelo modelo embutido.
+            let vectors = if native { fill_code_vectors(&out, &path) } else { fill_meaning(&out, &path) };
             if json {
                 let report = serde_json::json!({
                     "ok": true,

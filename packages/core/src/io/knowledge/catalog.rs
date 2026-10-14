@@ -37,7 +37,7 @@ pub(crate) const BLOCK: Block = Block {
 };
 
 fn initialize(conn: &Connection, root: &Path) -> Result<()> {
-    sync(conn, &Languages::of_project(root))?;
+    sync(conn, &Languages::of_project(root), None)?;
     super::references::rebuild(conn)
 }
 
@@ -46,20 +46,37 @@ fn words(normalizer: &mut Normalizer, text: &str) -> String {
 }
 
 /// Runs in the source transaction. Unchanged files retain their index rows.
-pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
+/// Com `scope`, os únicos arquivos cujas linhas mudaram nesta gravação, só
+/// eles se conferem: o arquivo de fora dele tem o mesmo texto da gravação em
+/// que se catalogou. Catálogo feito em outras línguas ou noutra versão se
+/// refaz inteiro, com ou sem `scope`.
+pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTreeSet<String>>) -> Result<()> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS knowledge_texts_path ON texts(path);")?;
     let codes = languages.codes().join(",");
     let stored: Option<String> = conn.query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional()?;
     let version: Option<String> = conn.query_row("SELECT value FROM knowledge_meta WHERE key='evidence_version'", [], |r| r.get(0)).optional()?;
+    let mut scope = scope;
     if stored.as_deref() != Some(&codes) || version.as_deref() != Some(&knowledge::VERSION.to_string()) {
         conn.execute_batch("DELETE FROM knowledge_fts; DELETE FROM knowledge_links; DELETE FROM knowledge_symbols; DELETE FROM knowledge_files;")?;
+        scope = None;
     }
     let mut normalizer = Normalizer::new(languages);
-    let mut select = conn.prepare("SELECT path,analysis FROM texts ORDER BY path")?;
-    let rows = select.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+    let rows: Vec<(String, Option<String>)> = match scope {
+        None => {
+            let mut select = conn.prepare("SELECT path,analysis FROM texts ORDER BY path")?;
+            select.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        }
+        Some(paths) => {
+            let mut select = conn.prepare("SELECT path,analysis FROM texts WHERE path=?1")?;
+            let mut found = Vec::new();
+            for path in paths {
+                found.extend(select.query_row([path], |r| Ok((r.get(0)?, r.get(1)?))).optional()?);
+            }
+            found
+        }
+    };
     let mut present = BTreeSet::new();
-    for row in rows {
-        let (path, analysis) = row?;
+    for (path, analysis) in rows {
         present.insert(path.clone());
         let text = analysis.unwrap_or_default();
         let mut digest = Sha256::new();
@@ -113,8 +130,13 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
             params![path, fingerprint, integer(analysis["knowledge"]["version"].as_u64().unwrap_or(0))?],
         )?;
     }
-    let mut select = conn.prepare("SELECT path FROM knowledge_files")?;
-    let old = select.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let old: Vec<String> = match scope {
+        None => {
+            let mut select = conn.prepare("SELECT path FROM knowledge_files")?;
+            select.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        }
+        Some(paths) => paths.iter().cloned().collect(),
+    };
     for path in old {
         if !present.contains(&path) {
             remove(conn, &path)?;
@@ -299,7 +321,7 @@ pub(super) fn ensure_languages(root:&Path)->std::result::Result<(),MapRefusal> {
         db.conn().query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional().map_err(|e| unreadable(e.into()))?;
     if stored.as_deref() != Some(&codes) {
         db.write(|tx| {
-            sync(tx, &languages)?;
+            sync(tx, &languages, None)?;
             super::references::rebuild(tx)?;
             crate::io::map_revision::bump(tx)
         })

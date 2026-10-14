@@ -1579,11 +1579,17 @@ type Row = Vec<Sql>;
 type Replacement<'a> = (&'a str, &'a str, Sql, Vec<Row>);
 
 fn rows_in(conn: &Connection, table: &Table) -> Result<Vec<Row>> {
+    Ok(numbered_rows_in(conn, table)?.into_iter().map(|(_, row)| row).collect())
+}
+
+/// As linhas da tabela, na ordem delas, cada uma com o número dela no banco.
+fn numbered_rows_in(conn: &Connection, table: &Table) -> Result<Vec<(i64, Row)>> {
     let columns: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
-    let mut stmt = conn.prepare(&format!("SELECT {} FROM {} ORDER BY rowid", columns.join(", "), quoted(table.name)))?;
+    let mut stmt = conn.prepare(&format!("SELECT rowid, {} FROM {} ORDER BY rowid", columns.join(", "), quoted(table.name)))?;
     let width = table.columns.len();
-    let rows =
-        stmt.query_map([], |row| (0..width).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Row>>())?.collect::<rusqlite::Result<Vec<Row>>>()?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, (1..=width).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Row>>()?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -2000,28 +2006,39 @@ fn lineage_changes(lineage: &FileLineage) -> Result<Vec<Replacement<'static>>> {
 type BlockRows = Vec<Vec<Row>>;
 
 /// Grava as linhas `fresh` de cada bloco que elas trazem, com a marca
-/// `mark`; o bloco que ficou igual, com a mesma marca, não se regrava.
+/// `mark`; o bloco que ficou igual, com a mesma marca, não se regrava. No
+/// bloco que já tem a marca, só a tabela que mudou se grava, e a tabela de
+/// linhas por arquivo troca só as linhas que mudaram ([`row_changes`]).
 /// Regravado um bloco de que o índice de busca lê — os arquivos, as
-/// declarações ou as ligações, onde moram as chamadas —, ele se refaz nas
-/// línguas `languages`; sem elas, fica sem línguas, e a primeira busca o
-/// refaz nas dela.
+/// declarações ou as ligações, onde moram as chamadas —, o índice se acerta
+/// nas línguas `languages`: só nos documentos dos arquivos cujas linhas
+/// mudaram, quando só elas mudaram e o índice foi feito nessas línguas; senão
+/// ele se refaz inteiro. Sem as línguas, fica sem línguas, e a primeira busca
+/// o refaz nas dela. O catálogo dos símbolos segue a mesma conta.
 fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'b BlockRows)>, mark: &str, languages: Option<&Languages>) -> Result<bool> {
     let head = head_of(model);
     if !head.is_empty() && head != SQLITE_HEADER {
         remove(model)?;
     }
     let mut db = open(model)?;
-    let mut changed: Vec<(&MapBlock, &BlockRows)> = Vec::new();
+    let mut changed: Vec<BlockWrite<'_>> = Vec::new();
     for (block, tables) in fresh {
-        let mut same = db.mark(block.name())?.as_deref() == Some(mark);
+        let marked = db.mark(block.name())?.as_deref() == Some(mark);
+        let mut writes = Vec::new();
         for (table, rows) in block.tables.iter().zip(tables) {
-            if !same {
-                break;
+            if !marked {
+                writes.push((table, TableWrite::Whole(rows.as_slice())));
+                continue;
             }
-            same = rows_in(db.conn(), table)? == *rows;
+            let stored = numbered_rows_in(db.conn(), table)?;
+            let write = match table.place {
+                Place::Files | Place::Decls => row_changes(&stored, rows),
+                Place::One | Place::List { .. } => stored.iter().map(|(_, row)| row).ne(rows.iter()).then_some(TableWrite::Whole(rows.as_slice())),
+            };
+            writes.extend(write.map(|write| (table, write)));
         }
-        if !same {
-            changed.push((block, tables));
+        if !marked || !writes.is_empty() {
+            changed.push((block, writes));
         }
     }
     if changed.is_empty() {
@@ -2033,46 +2050,149 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
         if stale { db.write(|conn| sync_project_profile(conn))?; }
         return Ok(false);
     }
+    let touched = |names: &[&str]| changed.iter().any(|(block, _)| names.contains(&block.name()));
+    let indexed = touched(&INDEXED_FROM.map(MapBlock::name));
+    // A história da base muda os títulos dos commits de cada documento: o
+    // índice se refaz inteiro.
+    let searched = if touched(&[HISTORY.name()]) { None } else { changed_paths(&changed, &SEARCHED) };
+    let searched: Option<Vec<&str>> = searched.as_ref().map(|paths| paths.iter().map(String::as_str).collect());
+    let catalogued = changed_paths(&changed, &[&DECLS]);
     db.write(|tx| {
-        for (block, tables) in &changed {
-            for (table, rows) in block.tables.iter().zip(tables.iter()) {
-                tx.execute(&format!("DELETE FROM {}", quoted(table.name)), [])?;
-                let names: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
-                let slots = vec!["?"; names.len()].join(", ");
-                let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(table.name), names.join(", ")))?;
-                for row in rows {
-                    insert.execute(params_from_iter(row))?;
-                }
+        // Os documentos que os arquivos mudados tinham, lidos antes de as
+        // linhas deles mudarem de número.
+        let stale = match (&searched, languages) {
+            (Some(paths), Some(_)) if indexed => Some(map_search::documents_of(tx, paths)?),
+            _ => None,
+        };
+        for (block, writes) in &changed {
+            for (table, write) in writes {
+                write_table(tx, table, write)?;
             }
             map_db::set_mark(tx, block.name(), mark)?;
         }
-        if changed.iter().any(|(block, _)| INDEXED_FROM.iter().any(|indexed| indexed.name() == block.name())) {
-            match languages {
-                Some(languages) => map_search::rebuild(tx, languages)?,
-                None => map_search::forget(tx)?,
+        if indexed {
+            match (languages, &searched, &stale) {
+                (Some(languages), Some(paths), Some(stale)) => {
+                    if !map_search::replace_files(tx, languages, paths, stale)? {
+                        map_search::rebuild(tx, languages)?;
+                    }
+                }
+                (Some(languages), _, _) => map_search::rebuild(tx, languages)?,
+                (None, _, _) => map_search::forget(tx)?,
             }
         }
-        if changed.iter().any(|(block, _)| block.name() == RESOURCES.name()) {
+        if touched(&[RESOURCES.name()]) {
             crate::io::knowledge::resources::rebuild(tx, languages.unwrap_or(&Languages::new([])))?;
         }
-        if changed.iter().any(|(block,_)| block.name() == DECLS.name()) {
-            crate::io::knowledge::catalog::sync(tx,languages.unwrap_or(&Languages::new([])))?;
+        if touched(&[DECLS.name()]) {
+            crate::io::knowledge::catalog::sync(tx, languages.unwrap_or(&Languages::new([])), catalogued.as_ref())?;
         }
-        if changed.iter().any(|(block,_)| [DECLS.name(),RESOURCES.name()].contains(&block.name())) {
+        if touched(&[DECLS.name(), RESOURCES.name()]) {
             crate::io::knowledge::references::rebuild(tx)?;
         }
         // Refeitas as declarações, a marca do glossário cuja declaração mudou
         // de nome ou sumiu sai junto.
-        if changed.iter().any(|(block, _)| block.name() == DECLS.name()) {
+        if touched(&[DECLS.name()]) {
             map_glossary::drop_stale(tx)?;
         }
-        if changed.iter().any(|(block, _)| [CENSUS.name(),FILES.name(),DECLS.name(),GRAPH.name(),ROUTES.name()].contains(&block.name())) {
+        if touched(&[CENSUS.name(), FILES.name(), DECLS.name(), GRAPH.name(), ROUTES.name()]) {
             sync_project_profile(tx)?;
         }
         map_revision::bump(tx)?;
         Ok(())
     })?;
     Ok(true)
+}
+
+/// Um bloco que a gravação muda, com o que muda em cada tabela dele.
+type BlockWrite<'r> = (&'r MapBlock, Vec<(&'r Table, TableWrite<'r>)>);
+
+/// Como uma tabela muda numa gravação.
+enum TableWrite<'r> {
+    /// Todas as linhas saem e estas entram: a marca do bloco mudou, ou a
+    /// tabela não é de linhas por arquivo.
+    Whole(&'r [Row]),
+    /// Só as linhas que mudaram: cada uma de `updates` troca de conteúdo no
+    /// lugar, pelo número dela; da linha de número `from` em diante saem
+    /// todas, e `tail` entra no lugar delas. `paths` são os arquivos dessas
+    /// linhas.
+    Rows { updates: Vec<(i64, &'r Row)>, from: Option<i64>, tail: &'r [Row], paths: BTreeSet<String> },
+}
+
+/// O que muda numa tabela de linhas por arquivo, das linhas gravadas
+/// `stored`, cada uma com o número dela, para `fresh`: a linha do mesmo
+/// arquivo na mesma posição troca no lugar; da primeira posição em que o
+/// arquivo deixa de bater — uma declaração a mais ou a menos, um arquivo que
+/// entrou ou saiu — em diante, a tabela se regrava. As linhas ficam na mesma
+/// ordem e com os mesmos números que a gravação inteira daria, e quem lê o
+/// mapa não vê diferença. `None` quando nada mudou.
+fn row_changes<'r>(stored: &[(i64, Row)], fresh: &'r [Row]) -> Option<TableWrite<'r>> {
+    let owner = |row: &Row| match row.first() {
+        Some(Sql::Text(path)) => path.clone(),
+        _ => String::new(),
+    };
+    let common = stored.len().min(fresh.len());
+    let split = (0..common).find(|&at| stored[at].1.first() != fresh[at].first()).unwrap_or(common);
+    let mut paths = BTreeSet::new();
+    let mut updates = Vec::new();
+    for (old, new) in stored[..split].iter().zip(&fresh[..split]) {
+        if old.1 != *new {
+            updates.push((old.0, new));
+            paths.insert(owner(new));
+        }
+    }
+    let tail = &fresh[split..];
+    paths.extend(stored[split..].iter().map(|(_, row)| owner(row)));
+    paths.extend(tail.iter().map(owner));
+    let from = stored.get(split).map(|(id, _)| *id);
+    (!updates.is_empty() || from.is_some() || !tail.is_empty()).then_some(TableWrite::Rows { updates, from, tail, paths })
+}
+
+/// Os arquivos cujas linhas por arquivo dos blocos `from` a gravação muda;
+/// `None` quando alguma dessas tabelas se regrava inteira, e aí o que se lê
+/// delas se refaz inteiro.
+fn changed_paths(changed: &[BlockWrite<'_>], from: &[&MapBlock]) -> Option<BTreeSet<String>> {
+    let mut out = BTreeSet::new();
+    for (_, writes) in changed.iter().filter(|(block, _)| from.iter().any(|wanted| wanted.name() == block.name())) {
+        for (table, write) in writes {
+            match (table.place, write) {
+                (Place::Files | Place::Decls, TableWrite::Whole(_)) => return None,
+                (Place::Files | Place::Decls, TableWrite::Rows { paths, .. }) => out.extend(paths.iter().cloned()),
+                _ => {}
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Grava na tabela o que muda nela, dentro da transação `tx`.
+fn write_table(tx: &Connection, table: &Table, write: &TableWrite<'_>) -> Result<()> {
+    let name = quoted(table.name);
+    let names: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
+    let rows = match write {
+        TableWrite::Whole(rows) => {
+            tx.execute(&format!("DELETE FROM {name}"), [])?;
+            *rows
+        }
+        TableWrite::Rows { updates, from, tail, .. } => {
+            let sets: Vec<String> = names.iter().map(|column| format!("{column} = ?")).collect();
+            let mut update = tx.prepare(&format!("UPDATE {name} SET {} WHERE rowid = ?", sets.join(", ")))?;
+            for (id, row) in updates {
+                let id = Sql::Integer(*id);
+                update.execute(params_from_iter(row.iter().chain(std::iter::once(&id))))?;
+            }
+            if let Some(from) = from {
+                tx.execute(&format!("DELETE FROM {name} WHERE rowid >= ?1"), [from])?;
+            }
+            *tail
+        }
+    };
+    let slots = vec!["?"; names.len()].join(", ");
+    let mut insert = tx.prepare(&format!("INSERT INTO {name}({}) VALUES ({slots})", names.join(", ")))?;
+    for row in rows {
+        insert.execute(params_from_iter(row))?;
+    }
+    Ok(())
 }
 
 fn sync_project_profile(conn: &Connection) -> Result<()> {
@@ -2469,6 +2589,75 @@ mod tests {
         assert_eq!(back["modules"][1]["loc"], json!(21));
         assert!(save_at(&model, &changed, "scan 2", &languages()).unwrap(), "a new mark is written");
         assert!(read_stored_at(&model).unwrap().marks.values().all(|mark| mark == "scan 2"));
+    }
+
+    /// O índice de busca do mapa em `model`, tabela por tabela: cada forma de
+    /// cada campo de cada documento, o tamanho dos campos, os números de cada
+    /// nível, os nomes da tabela trigram e as declarações com o número de cada
+    /// uma.
+    fn search_index(model: &Path) -> Vec<Vec<String>> {
+        let db = open(model).unwrap();
+        [
+            "SELECT term, doc, col, offset FROM decl_vocab ORDER BY 1, 2, 3, 4",
+            "SELECT term, doc, col, offset FROM file_vocab ORDER BY 1, 2, 3, 4",
+            "SELECT * FROM decl_lengths ORDER BY id",
+            "SELECT * FROM file_lengths ORDER BY id",
+            "SELECT key, value FROM search_meta ORDER BY key",
+            "SELECT rowid, name, folded, file FROM decl_trigram ORDER BY rowid",
+            "SELECT rowid, file, name FROM decls ORDER BY rowid",
+        ]
+        .iter()
+        .map(|query| {
+            let mut stmt = db.conn().prepare(query).unwrap();
+            let width = stmt.column_count();
+            stmt.query_map([], |row| Ok((0..width).map(|at| format!("{:?}", row.get_ref(at).unwrap())).collect::<Vec<_>>().join("|")))
+                .unwrap()
+                .map(std::result::Result::unwrap)
+                .collect()
+        })
+        .collect()
+    }
+
+    /// O mapa em que um arquivo do meio ganha uma declaração regrava só as
+    /// linhas dele e as que vêm depois, e o índice de busca troca só os
+    /// documentos desses arquivos, sem se refazer inteiro: o índice e o mapa
+    /// ficam iguais aos do mesmo mapa gravado de uma vez num banco novo.
+    #[test]
+    fn a_map_with_one_file_changed_rewrites_only_its_rows_and_search_documents() {
+        let map = |added: bool| {
+            let modules: Vec<Value> = (0..10)
+                .map(|at| {
+                    let mut names = vec![format!("unit{at}Alpha"), format!("unit{at}Beta")];
+                    if added && at == 7 {
+                        names.insert(1, "unit7Added".to_string());
+                    }
+                    let declarations: Vec<Value> = names
+                        .iter()
+                        .enumerate()
+                        .map(|(line, name)| json!({"kind": "function", "name": name, "line": line + 1, "end_line": line + 1, "signature": format!("function {name}()")}))
+                        .collect();
+                    json!({"path": format!("src/m{at:02}.ts"), "language": "typescript", "loc": 3, "declarations": declarations})
+                })
+                .collect();
+            json!({"root": "/proj", "modules": modules})
+        };
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &map(false), "scan 1", &languages()).unwrap());
+        // Uma marca no índice que só a montagem inteira dele apaga.
+        open(&model).unwrap().conn().execute("INSERT INTO search_meta(key, value) VALUES ('kept', 1)", []).unwrap();
+        assert!(save_at(&model, &map(true), "scan 1", &languages()).unwrap());
+        let db = open(&model).unwrap();
+        let kept: i64 = db.conn().query_row("SELECT count(*) FROM search_meta WHERE key = 'kept'", [], |row| row.get(0)).unwrap();
+        assert_eq!(kept, 1, "the index was not rebuilt whole");
+        db.conn().execute("DELETE FROM search_meta WHERE key = 'kept'", []).unwrap();
+        drop(db);
+
+        let fresh = tempdir().unwrap();
+        let whole = model_path(fresh.path());
+        assert!(save_at(&whole, &map(true), "scan 1", &languages()).unwrap());
+        assert_eq!(search_index(&model), search_index(&whole));
+        assert_eq!(read_stored_at(&model).unwrap().json, read_stored_at(&whole).unwrap().json);
     }
 
     /// O estado da leitura traz o censo inteiro e, de cada arquivo, só o
