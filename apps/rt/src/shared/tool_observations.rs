@@ -172,12 +172,25 @@ pub(crate) fn capture(
 /// `true` when one of the commands of the line is the runtime calling a flow
 /// step (`mustard-rt run …`), which records its own call. A command that only
 /// names the program — a package test, a hook probe through `mustard-rt on …`
-/// — is not such a call and keeps its receipt.
+/// — is not such a call and keeps its receipt. Neither is the native search
+/// the hook routed through the search gateway (`run search --request …`): the
+/// agent wrote a `grep` or `rg`, and the rewrite must not cost its receipt.
 fn runs_a_flow_step(command: &str) -> bool {
     crate::hooks::bash::lex::segments(command).iter().any(|segment| {
         matches!(segment.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")
             && segment.args.first().is_some_and(|arg| arg.text == "run")
+            && !routed_native_search(&segment.args)
     })
+}
+
+/// `true` for the arguments `run search … --request <envelope>`, the form in
+/// which the hook hands a native search to the gateway.
+fn routed_native_search(args: &[crate::hooks::bash::lex::Word]) -> bool {
+    args.get(1).is_some_and(|arg| arg.text == "search")
+        && args.windows(2).any(|pair| {
+            pair[0].text == "--request"
+                && mustard_core::domain::code_search::Request::from_json(&pair[1].text).is_ok()
+        })
 }
 
 fn skill_read(root:&Path,host:&str,input:&HookInput)->Option<Result<(),&'static str>> {
@@ -256,12 +269,47 @@ pub(crate) fn list(root: &Path, spec: &str, dispatch: Option<u64>) -> Vec<Value>
     }
 
     #[test]
+    fn every_native_command_in_the_copy_gets_a_receipt_even_when_the_hook_routes_it_to_the_search() {
+        let dir = bound_project();
+        let root = dir.path();
+        let copy = mustard_core::io::wave_prompt::copies_dir(root).join("x").join("c");
+        let shown = copy.display();
+        let written = [
+            format!("cd {shown} && grep -n \"export function quote\" web/src/quote.ts"),
+            format!("cd {shown} && cargo test -p mustard-rt --bin mustard-rt -- host_observation 2>&1 | grep -E \"FAILED|test result\""),
+            format!("cd {shown} && cp src/a.rs /tmp/a.rs.bak && sed -i 's/old/new/' src/a.rs"),
+        ];
+        let ctx = mustard_core::domain::model::contract::Ctx {
+            project_dir: root.to_string_lossy().into(),
+            ..Default::default()
+        };
+        let mut routed = 0;
+        for (n, command) in written.iter().enumerate() {
+            // The command the host runs, and reports afterwards, is the one the
+            // hook rewrote before the call.
+            let before = HookInput { tool_input: json!({"command": command, "description": "find capture"}), ..ran(command, "", root) };
+            let ran_command = match crate::shared::search_gateway::before_bash(&before, &ctx) {
+                Some(mustard_core::domain::model::contract::Verdict::Rewrite { tool_input, .. }) => {
+                    routed += 1;
+                    tool_input["command"].as_str().unwrap().to_string()
+                }
+                _ => command.clone(),
+            };
+            let input = ran(&ran_command, &format!("agent-{n}"), root);
+            assert_eq!(capture(root, "claude", "PostToolUse", &input), Some(Ok(())), "{ran_command}");
+        }
+        assert_eq!(routed, 1, "the plain grep goes through the search");
+        assert_eq!(list(root, "x", Some(0)).len(), written.len());
+    }
+
+    #[test]
     fn a_runtime_flow_call_gets_no_receipt() {
         let dir = bound_project();
         let root = dir.path();
         for (n, command) in [
             "mustard-rt run round --dispatch",
             "cd /p && MUSTARD_RT_DELEGATED=1 ~/.local/bin/mustard-boot run read request-1 | head",
+            "mustard-rt run search --shell-output --intent \"where\" --purpose implement -- rg -n capture apps",
         ]
         .iter()
         .enumerate()
