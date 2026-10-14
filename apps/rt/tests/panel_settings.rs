@@ -59,3 +59,63 @@ fn observation_cli_pages_only_the_requested_dispatch_without_loading_a_project_p
     let last=run(first["next_before"].as_str());assert_eq!(last["receipts"].as_array().unwrap().len(),1);
     assert!(last["next_before"].is_null());assert_eq!(last["wave"],2);
 }
+
+/// A page of receipts carries, for each one, only what lets the reader pick
+/// it: the receipt, its time, its result and one short line of the command.
+/// The whole recorded command comes from the receipt, and only for a receipt
+/// of the wave asked for.
+#[test]
+fn the_receipt_page_shows_one_short_command_line_and_the_receipt_returns_the_whole_command() {
+    use mustard_core::io::{observations::{self,Receipt},spec_events};
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false}}"#).unwrap();
+    let path=spec_events::spec_file(root,"demo").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path,[json!({"id":7,"type":"send","at":"2026-01-01T00:00:00Z","wave":2,"text":"Old dispatch"}),
+        json!({"id":9,"type":"send","at":"2026-01-03T00:00:00Z","wave":3,"text":"Other dispatch"})]
+        .map(|event|event.to_string()+"\n").concat()).unwrap();
+    // The host keeps up to 300 characters of the command: here a C# test run
+    // with a long first line, then a TypeScript check on the second line,
+    // grouped by the hook inside the wave's directory.
+    let long=format!("cd -- '/work/billing app' && (\ndotnet test tests/Billing.Tests/Billing.Tests.csproj --filter \"FullyQualifiedName~Invoice\" {}\nnpx tsc --noEmit -p web/tsconfig.json",
+        "--logger trx ".repeat(20)).chars().take(300).collect::<String>();
+    let short="npx tsc --noEmit -p web/tsconfig.json";
+    let record=|call:&str,dispatch:u64,source:&str,status:&str,code:i64| observations::record(root,&Receipt{version:1,spec:"demo".into(),dispatch,wave:2,
+        host:"claude".into(),actor:"fixture".into(),call:call.into(),tool:"Bash".into(),source:source.into(),
+        input_sha256:observations::digest(source.as_bytes()),output_sha256:observations::digest(b"output"),
+        exit_code:Some(code),result_status:status.into(),observed_at:"2026-01-02T00:00:00Z".into()}).unwrap().0;
+    let mut ids=Vec::new();
+    for n in 0..31 {ids.push(record(&format!("call-{n}"),7,&long,"failed",1));}
+    let whole=record("short-call",7,short,"returned",0);
+    let foreign=record("other-wave",9,&long,"returned",0);
+    let run=|extra:&[&str]| {
+        let output=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
+            .args(["--spec","demo","--wave","2","--observations"]).args(extra)
+            .current_dir(root).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        (output.stdout.len(),serde_json::from_slice::<Value>(&output.stdout).unwrap())
+    };
+    let (bytes,page)=run(&[]);
+    assert_eq!(page["ok"],true,"{page}");
+    let rows=page["receipts"].as_array().unwrap();assert_eq!(rows.len(),32);
+    // 32 receipts of 300-character commands used to take about 22 thousand
+    // bytes; one short line each keeps the whole page under 9 thousand.
+    assert!(bytes<9_000,"page of {bytes} bytes");
+    for row in rows {
+        let mut keys:Vec<_>=row.as_object().unwrap().keys().map(String::as_str).collect();keys.sort_unstable();
+        assert_eq!(keys,["exit_code","observed_at","receipt","result_status","source","tool"],"{row}");
+    }
+    let cut=rows.iter().find(|row|row["receipt"]!=json!(whole)).unwrap()["source"].as_str().unwrap();
+    assert!(!cut.contains('\n') && cut.ends_with('…') && cut.chars().count()==81,"{cut}");
+    assert!(cut.starts_with("dotnet test ") && long.contains(cut.trim_end_matches('…')),"{cut}");
+    let shown=rows.iter().find(|row|row["receipt"]==json!(whole)).unwrap();
+    assert_eq!(shown["source"],short);assert_eq!(shown["result_status"],"returned");assert_eq!(shown["exit_code"],0);
+    let (_,detail)=run(&["--receipt",&ids[0]]);
+    assert_eq!(detail["ok"],true,"{detail}");
+    assert_eq!(detail["source"],json!(long));assert_eq!(detail["receipt"],json!(ids[0]));
+    assert_eq!(detail["result_status"],"failed");assert_eq!(detail["exit_code"],1);
+    assert_eq!(detail["input_sha256"],json!(observations::digest(long.as_bytes())));
+    let (_,refused)=run(&["--receipt",&foreign]);
+    assert_eq!(refused["ok"],false,"{refused}");
+    assert_eq!(refused["reason"],"observation-belongs-to-another-dispatch");
+}

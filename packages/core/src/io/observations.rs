@@ -130,18 +130,81 @@ pub fn read(root: &Path, id: &str) -> Result<Receipt, String> {
     serde_json::from_str(&payload).map_err(|_| "observation-corrupt-receipt".into())
 }
 
+/// The receipt `id` of this spec and dispatch. A receipt of another wave or
+/// attempt is refused, so a page and its detail never mix dispatches.
+fn scoped(root: &Path, spec: &str, dispatch: u64, id: &str) -> Result<Receipt, String> {
+    let receipt = read(root, id)?;
+    if receipt.spec != spec || receipt.dispatch != dispatch {
+        return Err("observation-belongs-to-another-dispatch".into());
+    }
+    Ok(receipt)
+}
+
+/// How many characters of the command a page shows for each receipt.
+const COMMAND_LINE_CHARS: usize = 80;
+
+/// The first line of the recorded command, cut to [`COMMAND_LINE_CHARS`]. A
+/// leading change of directory, and the group a hook opens after it, are left
+/// out: they repeat on every call of a wave and would fill the line. A cut, a
+/// dropped line or a dropped prefix ends in `…`; the whole command is in the
+/// receipt.
+fn command_line(source: &str) -> String {
+    let whole = source.trim();
+    let mut rest = whole;
+    while let Some(next) = after_leading_cd(rest).or_else(|| opened_group(rest)) {
+        rest = next;
+    }
+    let mut lines = rest.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
+    let mut chars = first.chars();
+    let mut shown: String = chars.by_ref().take(COMMAND_LINE_CHARS).collect();
+    if chars.next().is_some() || lines.next().is_some() || rest.len() < whole.len() {
+        shown.push('…');
+    }
+    shown
+}
+
+/// What follows a leading `cd <dir>` ended by `&&`, `;` or a line break, with
+/// quotes respected. `None` when no other command follows it.
+fn after_leading_cd(text: &str) -> Option<&str> {
+    if !text.strip_prefix("cd")?.starts_with([' ', '\t']) {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut quote = None;
+    for (at, byte) in bytes.iter().enumerate() {
+        let end = match (quote, byte) {
+            (None, b'\'' | b'"') => {
+                quote = Some(*byte);
+                continue;
+            }
+            (Some(open), _) if open == *byte => {
+                quote = None;
+                continue;
+            }
+            (None, b';' | b'\n') => at + 1,
+            (None, b'&') if bytes.get(at + 1) == Some(&b'&') => at + 2,
+            _ => continue,
+        };
+        return Some(text[end..].trim_start()).filter(|rest| !rest.is_empty());
+    }
+    None
+}
+
+/// What follows a `(` alone on the first line, the group a hook wraps the
+/// original command in.
+fn opened_group(text: &str) -> Option<&str> {
+    let (line, rest) = text.split_once('\n')?;
+    (line.trim() == "(").then(|| rest.trim_start()).filter(|rest| !rest.is_empty())
+}
+
+/// One page of the dispatch's receipts, newest first: the receipt, its time,
+/// its result and one short line of the command. [`detail`] gives the rest.
 pub fn page(root: &Path, spec: &str, dispatch: u64, before: Option<&str>) -> Result<Value, String> {
-    let dispatch = i64::try_from(dispatch).map_err(|_| "observation-invalid-dispatch")?;
     let cursor = before
-        .map(|id| {
-            read(root, id).and_then(|receipt| {
-                if receipt.spec != spec || receipt.dispatch != dispatch as u64 {
-                    return Err("observation-cursor-belongs-to-another-dispatch".into());
-                }
-                Ok((receipt.observed_at, id))
-            })
-        })
+        .map(|id| scoped(root, spec, dispatch, id).map(|receipt| (receipt.observed_at, id)))
         .transpose()?;
+    let dispatch = i64::try_from(dispatch).map_err(|_| "observation-invalid-dispatch")?;
     let connection = open(root, false)?;
     let mut statement=connection.prepare("SELECT id,payload FROM receipts WHERE spec=?1 AND dispatch=?2 AND (?3 IS NULL OR observed_at<?3 OR (observed_at=?3 AND id<?4)) ORDER BY observed_at DESC,id DESC LIMIT 33").map_err(|e|e.to_string())?;
     let rows = statement
@@ -160,13 +223,21 @@ pub fn page(root: &Path, spec: &str, dispatch: u64, before: Option<&str>) -> Res
         let (id, payload) = row.map_err(|e| e.to_string())?;
         let receipt: Receipt =
             serde_json::from_str(&payload).map_err(|_| "observation-corrupt-receipt")?;
-        output.push(json!({"receipt":id,"observed_at":receipt.observed_at,"dispatch":receipt.dispatch,
-            "tool":receipt.tool,"source":receipt.source,"input_sha256":receipt.input_sha256,"output_sha256":receipt.output_sha256,
-            "exit_code":receipt.exit_code,"result_status":receipt.result_status,"claim_verified":false}));
+        output.push(json!({"receipt":id,"observed_at":receipt.observed_at,"tool":receipt.tool,
+            "source":command_line(&receipt.source),"exit_code":receipt.exit_code,"result_status":receipt.result_status}));
     }
     let next_before = (output.len() > 32).then(|| output[31]["receipt"].clone());
     output.truncate(32);
     Ok(json!({"receipts":output,"next_before":next_before}))
+}
+
+/// One receipt of the dispatch, whole: the command as recorded and the
+/// digests of its input and output.
+pub fn detail(root: &Path, spec: &str, dispatch: u64, id: &str) -> Result<Value, String> {
+    let receipt = scoped(root, spec, dispatch, id)?;
+    Ok(json!({"receipt":id,"observed_at":receipt.observed_at,"host":receipt.host,"tool":receipt.tool,
+        "source":receipt.source,"exit_code":receipt.exit_code,"result_status":receipt.result_status,
+        "input_sha256":receipt.input_sha256,"output_sha256":receipt.output_sha256}))
 }
 
 pub fn list(root: &Path, spec: &str, dispatch: u64) -> Result<Vec<Value>, String> {

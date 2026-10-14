@@ -47,7 +47,11 @@
 //!   compartilhada quando ela passa do teto;
 //! - `--path <dir>`: apaga UMA pasta, sem o filtro de idade (o revisor apaga a
 //!   própria pasta recém-criada ao terminar), mas só depois de conferir os
-//!   filtros 1 e 2. Fora do diretório temporário — o repositório, a home — é
+//!   filtros 1 e 2. A pasta dentro do `scratchpad/` de uma sessão dispensa o
+//!   filtro 2: é a pasta de trabalho da sessão, e o agente cria ali o que a
+//!   prova pede (um repositório git, um projeto de outra linguagem); a lista e
+//!   o `--apply` continuam exigindo o filtro 2 nela. Fora do diretório
+//!   temporário — o repositório, a home — é
 //!   recusado com erro (exit 1) e nada é tocado; um `mustard-removal-*` também
 //!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
 //!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
@@ -677,17 +681,26 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
 /// idade. Devolve o caminho apagado, ou o motivo da recusa — e recusa não toca
 /// em nada.
 ///
+/// O filtro 2 não vale para a pasta dentro do `scratchpad/` de uma sessão
+/// ([`in_session_scratchpad`]): é a pasta de trabalho que o Claude Code dá à
+/// sessão, e o agente cria ali o que quiser — um repositório de prova, um
+/// projeto em outra linguagem —, sem cópia deste projeto nem `target/`. Fora
+/// do `scratchpad/`, o filtro 2 continua valendo.
+///
 /// O caminho é resolvido (`canonicalize`) ANTES de qualquer conferência: um
 /// link no temp apontando para o repositório vira o repositório, e é recusado
-/// como tal. O próprio temp também é conferido ([`checked_temp_root`]): com
-/// `TMPDIR=$HOME`, "dentro do temp" deixaria de proteger alguma coisa.
+/// como tal; um link no `scratchpad/` apontando para outra pasta do temp vira
+/// essa pasta, e o filtro 2 vale para ela. O próprio temp também é conferido
+/// ([`checked_temp_root`]): com `TMPDIR=$HOME`, "dentro do temp" deixaria de
+/// proteger alguma coisa.
 pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf, String> {
     let temp = checked_temp_root(roots)?;
     let dir = confine(target, &temp, roots.owner_uid)?;
     if !dir.is_dir() {
         return Err(format!("refused: {} is not a directory", dir.display()));
     }
-    if !holds_scratch_build(&dir) {
+    let scratchpad = parts_below(&dir, &temp).is_some_and(|parts| in_session_scratchpad(&parts));
+    if !scratchpad && !holds_scratch_build(&dir) {
         return Err(format!(
             "refused: {} holds neither a copy of this project nor a build target/",
             dir.display()
@@ -715,20 +728,13 @@ pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf
 fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf, String> {
     let dir = std::fs::canonicalize(target)
         .map_err(|e| format!("refused: cannot resolve {}: {e}", target.display()))?;
-    let Ok(rel) = dir.strip_prefix(temp) else {
+    let Some(parts) = parts_below(&dir, temp) else {
         return Err(format!(
             "refused: {} is outside the temp directory {}",
             dir.display(),
             temp.display()
         ));
     };
-    let parts: Vec<&OsStr> = rel
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s),
-            _ => None,
-        })
-        .collect();
     if parts.is_empty() {
         return Err(format!("refused: {} is the temp directory itself", dir.display()));
     }
@@ -744,7 +750,7 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
     // Dentro de `claude-<uid>/` só vale o que está abaixo de um `scratchpad/`:
     // os níveis de cima são a estrutura da sessão, não uma cópia.
     let in_session_tree = parts[0].to_str().is_some_and(|n| n.starts_with(SESSION_ROOT_PREFIX));
-    if in_session_tree && !(parts.len() >= 5 && parts[3] == SCRATCHPAD_DIR) {
+    if in_session_tree && !in_session_scratchpad(&parts) {
         return Err(format!(
             "refused: {} is part of a Claude Code session layout, not a folder inside its scratchpad/",
             dir.display()
@@ -762,6 +768,31 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
         ));
     }
     Ok(dir)
+}
+
+/// Os nomes do caminho resolvido `dir` abaixo do temp resolvido `temp`, do
+/// topo para baixo; `None` quando `dir` fica fora do temp.
+fn parts_below<'a>(dir: &'a Path, temp: &Path) -> Option<Vec<&'a OsStr>> {
+    let rel = dir.strip_prefix(temp).ok()?;
+    Some(
+        rel.components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Os nomes abaixo do temp descrevem uma pasta DENTRO do `scratchpad/` de uma
+/// sessão — `claude-<uid>/<projeto>/<sessao>/scratchpad/<pasta>`, em qualquer
+/// profundidade abaixo dele —, nunca o próprio `scratchpad/` nem os níveis de
+/// cima. O temp é o do sistema ou o do `TMPDIR`, que é onde o Claude Code
+/// monta essa árvore.
+fn in_session_scratchpad(parts: &[&OsStr]) -> bool {
+    parts.len() >= 5
+        && parts[0].to_str().is_some_and(|n| n.starts_with(SESSION_ROOT_PREFIX))
+        && parts[3] == SCRATCHPAD_DIR
 }
 
 /// O relatório do modo `--path`, e se a pasta foi recusada.
@@ -1099,6 +1130,54 @@ mod tests {
         let err = remove_path(&removal, &roots).unwrap_err();
         assert!(err.contains("registered removal worktree"), "{err}");
         assert!(removal.join("Cargo.toml").exists(), "a registered worktree is never removed here");
+    }
+
+    /// Uma pasta de prova no `scratchpad/` de uma sessão — um projeto em
+    /// TypeScript com repositório git, sem cópia deste projeto nem `target/` —
+    /// sai pelo `--path`. A mesma pasta no topo do temp segue recusada pelo
+    /// filtro 2, com a mesma mensagem; fora do temp, também; o próprio
+    /// `scratchpad/` fica; e um link no `scratchpad/` para outra pasta do temp
+    /// é julgado pelo destino.
+    #[test]
+    fn path_removes_any_folder_inside_a_session_scratchpad() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let typescript_repo = |dir: &Path| {
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::create_dir_all(dir.join(".git")).unwrap();
+            fs::write(dir.join("package.json"), "{\"name\":\"prova\"}\n").unwrap();
+            fs::write(dir.join("src").join("index.ts"), "export const answer: number = 42;\n").unwrap();
+            fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        };
+        let pad = roots.temp_root.join("claude-1000").join("-home-x-proj").join("sess-x").join(SCRATCHPAD_DIR);
+        let proof = pad.join("prova");
+        typescript_repo(&proof);
+        let top = roots.temp_root.join("tmp.prova");
+        typescript_repo(&top);
+        let outside = base.path().join("prova");
+        typescript_repo(&outside);
+
+        let removed = remove_path(&proof, &roots).unwrap();
+        assert_eq!(removed, fs::canonicalize(&pad).unwrap().join("prova"));
+        assert!(!proof.exists(), "the folder made in the scratchpad goes");
+        assert!(pad.is_dir(), "the scratchpad itself stays");
+
+        let err = remove_path(&top, &roots).unwrap_err();
+        assert!(err.contains("holds neither a copy of this project nor a build target/"), "{err}");
+        let err = remove_path(&outside, &roots).unwrap_err();
+        assert!(err.contains("outside the temp directory"), "{err}");
+        let err = remove_path(&pad, &roots).unwrap_err();
+        assert!(err.contains("not a folder inside its scratchpad/"), "{err}");
+        #[cfg(unix)]
+        {
+            let link = pad.join("atalho");
+            std::os::unix::fs::symlink(&top, &link).unwrap();
+            let err = remove_path(&link, &roots).unwrap_err();
+            assert!(err.contains("holds neither a copy of this project nor a build target/"), "{err}");
+        }
+        for dir in [&top, &outside] {
+            assert!(dir.join("src").join("index.ts").is_file(), "{} is untouched", dir.display());
+        }
     }
 
     /// `--path` apaga a pasta recém-criada do revisor: sem filtro de idade.
