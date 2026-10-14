@@ -161,6 +161,14 @@ pub fn list(root: &Path, spec: &str, dispatch: u64) -> Result<Vec<Value>, String
         .unwrap_or_default())
 }
 
+/// A native read must have delivered the exact version sent to this attempt.
+/// Existence, selection, a partial read or an agent's claim are insufficient.
+pub fn read_receipt(root:&Path,spec:&str,dispatch:u64,source:&str,sha:&str)->Option<Value> {
+    let connection=open(root,false).ok()?;
+    connection.query_row("SELECT id,observed_at FROM receipts WHERE spec=?1 AND dispatch=?2 AND json_extract(payload,'$.tool')='Read' AND json_extract(payload,'$.source')=?3 AND json_extract(payload,'$.output_sha256')=?4 AND json_extract(payload,'$.result_status')='succeeded' ORDER BY observed_at DESC LIMIT 1",
+        params![spec,i64::try_from(dispatch).ok()?,source,sha],|row|Ok(json!({"receipt":row.get::<_,String>(0)?,"observed_at":row.get::<_,String>(1)?,"body_delivered":true,"understanding_verified":false}))).ok()
+}
+
 /// The only accepted assertion of freshness is an immutable native receipt
 /// from this exact dispatch. Historical references retain the original date.
 pub fn resolve(
@@ -235,6 +243,18 @@ mod tests {
             result_status: "failed".into(),
             observed_at: "2026-01-01T01:00:00Z".into(),
         }
+    }
+    #[test]
+    fn reading_evidence_requires_this_attempt_this_body_and_success() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let mut read=receipt();read.tool="Read".into();read.source=".claude/skills/store/SKILL.md".into();
+        read.output_sha256=digest(b"full procedure");read.result_status="succeeded".into();read.exit_code=None;
+        record(root,&read).unwrap();
+        let observed=read_receipt(root,"demo",10,&read.source,&read.output_sha256).unwrap();
+        assert_eq!(observed["body_delivered"],true);assert_eq!(observed["understanding_verified"],false);
+        assert!(read_receipt(root,"demo",11,&read.source,&read.output_sha256).is_none());
+        assert!(read_receipt(root,"demo",10,&read.source,&digest(b"partial procedure")).is_none());
+        assert!(read_receipt(root,"other",10,&read.source,&read.output_sha256).is_none());
     }
     #[test]
     fn a_replayed_call_keeps_its_date_and_conflicting_output_is_rejected() {

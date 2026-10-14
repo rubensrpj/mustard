@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 
 use crate::domain::normalize::Languages;
 use crate::domain::project_map::{
-    Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
+    Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapGraph, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
     PullComment, PullOfCommit, PullText, Pulls,
 };
 use crate::io::map_db::{self, Block, Kind, MapDb};
@@ -460,6 +460,14 @@ pub const EXPERTISE: MapBlock = written(block!("expertise", version 1, {
     "expertise_exports" at list(&["expertise_exports"]) => ["id" Text, "payload" Text]
 }));
 
+/// Native observations, bound to the scanned snapshot, never project rules.
+pub const PROJECT_PROFILE: MapBlock = written(block!("project_profile", version 1, {
+    "project_profile" at Place::One => [
+        "fingerprint" Text ["project_profile", "fingerprint"],
+        "payload" Json ["project_profile", "data"]
+    ]
+}));
+
 /// O bloco declarado por [`block!`] como escrito: convertido na troca de
 /// versão, nunca apagado.
 const fn written(mut declared: MapBlock) -> MapBlock {
@@ -530,12 +538,12 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
 /// das specs, o do glossário e o das notas de sentido.
-const DECLARED: [&MapBlock; 14] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES, &EXPERTISE];
+const DECLARED: [&MapBlock; 15] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES, &EXPERTISE, &PROJECT_PROFILE];
 
 /// Os mesmos blocos, como o banco os abre.
-pub(crate) const DB_BLOCKS: [Block; 17] =
+pub(crate) const DB_BLOCKS: [Block; 18] =
     [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
-    crate::io::knowledge::precise::BLOCK, EXPERTISE.block];
+    crate::io::knowledge::precise::BLOCK, EXPERTISE.block, PROJECT_PROFILE.block];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -1525,6 +1533,11 @@ pub(crate) fn open_existing(model: &Path) -> std::result::Result<MapDb, MapRefus
     open(model).map_err(unreadable)
 }
 
+pub(crate) fn read_only_existing(model:&Path)->std::result::Result<MapDb,MapRefusal> {
+    existing(model)?;
+    MapDb::read_only(model).map_err(unreadable)
+}
+
 /// [`open_existing`] com a espera `wait` pela trava de outra gravação, para
 /// quem desiste logo em vez de segurar a ação de quem o chamou.
 pub(crate) fn open_existing_waiting(model: &Path, wait: std::time::Duration) -> std::result::Result<MapDb, MapRefusal> {
@@ -2012,6 +2025,12 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
         }
     }
     if changed.is_empty() {
+        // A newly declared derived block can be empty even when the scanner's
+        // source blocks are unchanged. Fill it once without rereading source.
+        let profile:Option<String>=db.conn().query_row("SELECT payload FROM project_profile LIMIT 1",[],|row|row.get(0)).ok();
+        let stale=profile.as_deref().and_then(|text|serde_json::from_str::<Value>(text).ok())
+            .is_none_or(|data|data["version"]!=crate::io::project_profile::VERSION || data["status"]=="unavailable");
+        if stale { db.write(|conn| sync_project_profile(conn))?; }
         return Ok(false);
     }
     db.write(|tx| {
@@ -2047,10 +2066,32 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
         if changed.iter().any(|(block, _)| block.name() == DECLS.name()) {
             map_glossary::drop_stale(tx)?;
         }
+        if changed.iter().any(|(block, _)| [CENSUS.name(),FILES.name(),DECLS.name(),GRAPH.name(),ROUTES.name()].contains(&block.name())) {
+            sync_project_profile(tx)?;
+        }
         map_revision::bump(tx)?;
         Ok(())
     })?;
     Ok(true)
+}
+
+fn sync_project_profile(conn: &Connection) -> Result<()> {
+    // Read compact structural columns, never the per-file analysis/body packs.
+    let result=(|| {
+    let map = ProjectMap { modules: example_modules(conn, false)?, projects: projects(conn)?,
+        languages: languages(conn)?, skeleton: skeleton(conn)?, graph: MapGraph {top_fan_in:fan_in(conn)?},
+        ..ProjectMap::default() };
+    crate::io::project_profile::sync(conn, &map)
+    })();
+    if result.is_err() {
+        // A derived projection cannot break writes/reads of independent map
+        // blocks. Withdraw its old evidence rather than leave a stale profile
+        // appearing current when a structural column cannot be interpreted.
+        conn.execute("DELETE FROM project_profile",[])?;
+        conn.execute("INSERT INTO project_profile(fingerprint,payload) VALUES ('unavailable',?1)",
+            ["{\"status\":\"unavailable\",\"reason\":\"incomplete-profile-input\",\"model_calls\":0}"])?;
+    }
+    Ok(())
 }
 
 /// As linhas que `map` dá a cada tabela de cada bloco.
@@ -2533,6 +2574,7 @@ mod tests {
                 "knowledge_notes",
                 "expertise",
                 "expertise_exports",
+                "project_profile",
                 "blocks"
             ]
         );

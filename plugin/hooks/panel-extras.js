@@ -111,6 +111,18 @@ export function diagnosticsPanel(data,view,actions,h) {
     text(`RTK: ${health.rtk?.enabled?t('habilitado','enabled'):t('desligado','off')} · ${health.rtk?.executable_available?t('executável disponível','executable available'):t('executável não confirmado','executable unconfirmed')}`),
     text(`Jev: ${health.jev?.credential_available?t('credencial disponível','credential available'):t('credencial indisponível','credential unavailable')}`),
     text(`${t('Vetores indexados','Indexed vectors')}: ${health.vectors?.indexed_chunks ?? t('não medido','not measured')}`));
+  const loaders=diagnostics?.plugin_loaders?.observations || [];
+  if(loaders.length)rows.push(section(t('Plugin fornecido às sessões Claude neste projeto','Plugin supplied to Claude sessions in this project'),[
+    ...loaders.map(loader=>loaderDetails(loader)),
+    note(t('Argumentos do processo identificam a cópia solicitada; não comprovam abertura do painel.','Process arguments identify the requested copy; they do not prove pane rendering.')),
+  ]));
+  function loaderDetails(loader) {
+    return section(`Mustard ${loader.plugin_version || '—'} · PID ${loader.pid}`,[
+      text(loader.mods_module_present?t('Módulo Mods presente.','Mods module present.'):t('Esta cópia não contém o módulo Mods.','This copy does not contain the Mods module.')),
+      ...(loader.matches_running_version===false?[text(t('Versão diferente do runtime consultado. Atualize o plugin no cliente que abriu esta sessão SSH.','Different version from the queried runtime. Update the plugin in the client that opened this SSH session.'))]:[]),
+      note(loader.plugin_root),
+    ]);
+  }
   if(hosts.length)rows.push(section(t('Ferramentas · últimas sessões observadas','Tools · latest observed sessions'),[
     text(`${hosts.reduce((sum,host)=>sum+(host.tool_failures || 0),0)} ${t('ocorrências acumuladas nestas sessões','accumulated occurrences in these sessions')}`),
     ...(unknown?[note(`${unknown} ${t('registros antigos têm somente contagem, sem causa. Não é possível atribuí-los a um defeito do Mustard.','older records contain only a count, without a cause. They cannot be attributed to a Mustard defect.')}`)]:[]),

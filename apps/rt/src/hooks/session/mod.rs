@@ -1,4 +1,5 @@
 pub(crate) mod conversation_size;
+pub(crate) mod analysis_guard;
 pub mod injectables;
 pub mod prompt_entry;
 pub mod session_cleanup_observer;

@@ -118,6 +118,12 @@ pub struct MapDb {
 }
 
 impl MapDb {
+    /// Projection reads must never migrate or create a database.
+    pub(crate) fn read_only(path:&Path)->Result<Self> {
+        let conn=Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.busy_timeout(Duration::from_millis(25))?;
+        Ok(Self {conn})
+    }
     /// Abre o mapa gravado em `path`, criando o arquivo se faltar, e põe em
     /// dia cada bloco de `blocks` cuja versão falta ou difere: só aquele
     /// bloco, numa transação própria, com `root` — a raiz do projeto — para o

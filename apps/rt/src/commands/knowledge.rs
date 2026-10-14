@@ -3,7 +3,7 @@ use std::path::Path;
 
 mod evaluation;
 
-pub struct Modes<'a> { pub import_scip: Option<&'a Path>,
+pub struct Modes<'a> { pub profile:bool, pub import_scip: Option<&'a Path>,
     pub prepare_session: Option<&'a str>, pub session_model: Option<&'a str>, pub complete_session: Option<&'a Path>,
     pub cancel_session: Option<&'a str>,
     pub source_manifest: Option<&'a Path>,
@@ -25,6 +25,7 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         tree.as_path()
     } else {anchor.as_path()};
     let answer: Result<String, String> = (|| {
+        if modes.profile {return Ok(mustard_core::io::project_profile::summary(root,&query.file.map(str::to_owned).into_iter().collect::<Vec<_>>()).to_string());}
         if let Some(id)=modes.cancel_session {
             return mustard_core::io::knowledge::enrichment::cancel_session(root,id).map(|v|v.to_string());
         }

@@ -1,0 +1,358 @@
+{
+  "date": "2026-10-14",
+  "base_commit": "230d55ac5a09b48a08873ed5a0b542616103e353",
+  "branch": "codex/review-agnostic-orchestration",
+  "platform": "Linux",
+  "rust_distinct_passing": 4154,
+  "rust_ignored": 2,
+  "reconciliation": "Initial full run found template budget/text changes; the complete core and runtime suites were rerun. Growth packing then changed; all runtime units passed, its one outdated integration expectation was corrected, and all 301 runtime integrations passed again. The final Jev cache selection passed its three focused tests. Other successful workspace suites remain unchanged. A new regression verifies that a previously emitted wave signal survives a smaller context; all 31 conversation-size tests passed.",
+  "runs": {
+    "workspace_initial": {
+      "log_sha256": "a73644ee5bbffdf09da76dd330c36b086c2531f528c4cd54d9f477fe6d7b9dfb",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 53,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "FAILED",
+          "passed": 1230,
+          "failed": 1,
+          "ignored": 0
+        },
+        {
+          "result": "FAILED",
+          "passed": 38,
+          "failed": 1,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 1937,
+          "failed": 0,
+          "ignored": 2
+        },
+        {
+          "result": "FAILED",
+          "passed": 297,
+          "failed": 4,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 97,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 480,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "core_rt_after_template_fix": {
+      "log_sha256": "956d749e733dddd890ada16801632e05dd492f88713a93f60dfb13e39fc45314",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 1231,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 39,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 1937,
+          "failed": 0,
+          "ignored": 2
+        },
+        {
+          "result": "ok",
+          "passed": 301,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "rt_after_growth_fix": {
+      "log_sha256": "71a6edb7e917922a9248095b4102faa853fa842a8f28750120c373ee649edc04",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 1936,
+          "failed": 0,
+          "ignored": 2
+        },
+        {
+          "result": "FAILED",
+          "passed": 300,
+          "failed": 1,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "rt_integration_final": {
+      "log_sha256": "258f91bd2e4d9e25c803e06ef1c96aacef067270f9d60b89032ffe33af6ed1da",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 301,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "jev_selection_final": {
+      "log_sha256": "9151978c5506a7845b8669e79f3ff942c179187016009a14ec7cc7330e662a8c",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "wave_signal_final": {
+      "log_sha256": "ea5157b67a9c7de9be2538d4a32b59dac6053e220258425d6212cadc6d9cba9d",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 31,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    }
+  },
+  "mods": {
+    "2.1.296": {
+      "passed": 62,
+      "failed": 0,
+      "log_sha256": "edff66c415a808980ad5376b7f7818b7153004d62bd60ea3bf9193f3fae2f330",
+      "authenticated_model_run": false,
+      "actual_desktop_paint_verified": false
+    },
+    "2.1.295": {
+      "passed": 62,
+      "failed": 0,
+      "log_sha256": "3555b37354ffffa02ad0baf8a3ccc7ca7946483ae79bbd47be9ec8dc43abc01d",
+      "authenticated_model_run": false,
+      "actual_desktop_paint_verified": false
+    }
+  },
+  "clippy": {
+    "workspace": {
+      "passed": true,
+      "log_sha256": "0988151ab820321ca06c0ebfc0480236ba7a42b23fd017ea67c7920a83abec52"
+    },
+    "rt_final": {
+      "passed": true,
+      "log_sha256": "0257734e321f00e676d4790fb65aec290d42487f2f9cc91c44fee5e58b27a583"
+    },
+    "rt_final_after_signal_regression": {
+      "passed": true,
+      "log_sha256": "e4e7f275bf31c04be53af4716f1146120c358f1098b6a832d956f5dc214cf37c"
+    }
+  },
+  "validation_routing_python_tests": 22,
+  "source_hashes": {
+    "apps/rt/src/commands/doctor/cli.rs": "7377f6bb0f9dfe7235695bde49a9f6de74ee830a3217ebab10474e53662fdd36",
+    "apps/rt/src/commands/doctor/doctor.rs": "36d2aa2b8d66b9083a73e5874da6e0a29c4ac024e0947a0af52ae718c71c6970",
+    "apps/rt/src/commands/expertise.rs": "090a2268b0efb7c21d701dbfa2e546c230eb819a2525561fd0aa1c779aa11b84",
+    "apps/rt/src/commands/flow/round/answer.rs": "7924e57c866dfc9e6eabc0819cfdb614e635a64f437ea8a54d933c4ea8ea3ecf",
+    "apps/rt/src/commands/flow/round/backlog.rs": "4b8d56b59a4b19fa6238edbb52bea98b9b0c0e74d7a0cbffbac70d330c91f463",
+    "apps/rt/src/commands/flow/round/dependencies.rs": "7b5138eb11a9aaa0067e0770a0b2a5e3dbe9240a80e7d10cc6c02955e355c08b",
+    "apps/rt/src/commands/flow/round/environment.rs": "6c1c193a08d164c291627fd1be31ab89f89341c0beb0a9754e769b1edd30ccfa",
+    "apps/rt/src/commands/flow/round/queue.rs": "5d5fe6553f3ce6ef759daddbb9252f3aa3830a04d3ecdf3775b10eb34ab6b581",
+    "apps/rt/src/commands/panel/diagnostics.rs": "b11044fc5f3b5b52621ed710f46101d86dd9ffebdd509f36344bb73a654b924a",
+    "apps/rt/src/commands/statusline/preview.rs": "bbe446b2c98c09fa96bf454a76fdda4a1d80b17a210d9fc2ff4ca204efc9d252",
+    "apps/rt/src/hooks/session/conversation_size.rs": "e713c38fc55b5ec6ec747743c65dfd24a15222941444ca29cb77bc63c8c864ab",
+    "apps/rt/src/shared/expertise_selection.rs": "c9a436285ef7fb03513e64551204e829c1b246929cb3891a26e64ce5d7bde722",
+    "apps/rt/src/shared/host_installation.rs": "2e8e29150b6fd6e5861e4da7db6f414a82090975879d9e027f461209f9cec2ab",
+    "apps/rt/src/shared/mod.rs": "eb1e5c2a70ea8e5878c4e9929eda0093429e377edc79a14cde77f58849b596ae",
+    "apps/rt/src/shared/task_size.rs": "82a88afe2453d96605a04c61c4c0dab9c39bb81ca19b52242da25ae1767858f1",
+    "apps/rt/tests/doctor_follows_config_dir.rs": "adcfa34f3f8ff7de4d80f0561d11b6a3539b84f0e8eebec1e8bd3d9237c06a76",
+    "apps/rt/tests/plugin_agents.rs": "03e2090e711d4198b73571e4332e886da08a43d1ca58cb14ac3e7e86c926b1ed",
+    "apps/rt/tests/round_dispatch.rs": "a0e0d680f5a713bf2451cad2d0422713c5030de817ce3f916f993003a882da0d",
+    "apps/rt/tests/run_command_surface.rs": "ccf75256cd62467da7b379ac8a73f27f09fc33c30493b2bf93ec874c136148ac",
+    "packages/core/src/domain/command_detect.rs": "e94bcedd326b00fd49cd62d9c407d0ee9478858abd92ad6abadf1f653ca13241",
+    "packages/core/src/io/expertise/authoring.rs": "991b80686a831471ca928b990810fe22e7a530f5ece1f557eb1122b011a9711f",
+    "packages/core/src/io/expertise/export.rs": "9f03700f1b53e3106a8fb5cff70e1a218b8940acc290c0e052b41734f8648903",
+    "packages/core/src/io/expertise/workflow.rs": "abe8fc430805dac07496c062dd5110472a3cbdf60868544680a9f8e860bf0745",
+    "packages/core/src/io/knowledge/enrichment/session.rs": "8c19ad821ce7e0243bdf3e1107e38a7767564f91996ca3f86148c1dbf5bbf629",
+    "packages/core/src/io/knowledge/enrichment/session/context.rs": "cfe4208ef914c44feaee85bcf95d768773d59a08fdef9c42034d99eb5a332bc1",
+    "packages/core/src/io/map_meaning.rs": "8a44bee78548800ba9c532d360b468d2f0a622c9756fdb7f718f37587df080b9",
+    "packages/core/src/io/wave_prompt.rs": "0cb02e8cdc09aa473186237eedfe91aca5d80fa3702e5eeb0669e36f346ae964",
+    "packages/core/src/platform/i18n/flow.rs": "280a52ce2ba7b1a0734c2e20666f80030eaac0e3fe1f5527c69c6d9401d7e23b",
+    "packages/core/templates/agents/en-US/wave.md": "d133832299bd537c653bf3fdcfc574de4031af361b1a7cd062edbc15e4d8f07f",
+    "packages/core/templates/agents/pt-BR/wave.md": "83299d246cbfd60a2cf0b4c59a5c699066a3ff8eaccc472c2f1f482d2677abd9",
+    "packaging/installer/RELEASE-BODY.md": "303181fef59f71dbc8d498d60f26fbed8c635517ec4488a964e627d5dc199a49",
+    "plugin/hooks/panel-content.js": "09c6cd6fc9841167239d530d53b6e91e44a6dccb387b9b10d1019fdc80759770",
+    "plugin/hooks/panel-economy.js": "886f868364022fc2d1c95c268167ced4c5e3e28e4f4552242e6e0976532bbc5b",
+    "plugin/hooks/panel-extras.js": "5319f11fcfe6deda278dfdb8f1e39e2d4e2db9b9d2a2c6851c97a0297b0b1a1e",
+    "plugin/hooks/panel-modern.test.ts": "8bdc2fa8944d96fe51fac07d7d951f27a738017909261ac0f9bf7d27a659a8f0",
+    "plugin/hooks/panel-view.js": "4b00a2fca79ea9abf7f4ed0924d2c7cb8accf5d0ce592f25216a1a0d3153da0c",
+    "plugin/hooks/panel.test.ts": "229cabd370ac7702d7feefb3086606907791541e76e0f4a663a106683ca265d9",
+    "plugin/hooks/register.js": "c260cc1d9d116a931478f3cd071bbf0892250e271f0ced7c1fab70259e348a8c",
+    "scripts/bench-panel-layout.mjs": "9efd10a93a89f1a84fa3f570a56007cb535722a03b7e0020e598ec9841681949"
+  },
+  "isolated_search_regression": {
+    "typescript_service": {
+      "files": 1601,
+      "vectors_enabled": true,
+      "summary": {
+        "targets": 5,
+        "visible": 5,
+        "complete_bodies": 5,
+        "view_bytes": 64673,
+        "native_parity": 10,
+        "requests": 10
+      },
+      "gains": 0,
+      "regressions": 0,
+      "requests_sha256": "f1a62eb8b216de4e79ebabb33e89c193feff158196424254a2cd4ab95030dfed",
+      "current_binary_sha256": "f7600a44389b7ceca5e7b82d345cb5ad45cdd711532cbac942dece1d94d709bc",
+      "labels_sha256": "13464a9b2a3bb24befcad2ff40058dfb992ac7b7d5b5a675934f886c69641340",
+      "remote_model_calls": 0,
+      "limits": [
+        "Task-guided known targets, not an independent accuracy evaluation.",
+        "Visible source ranges are not proof of behavior or complete implementation context.",
+        "Output bytes are not billed tokens; no host model ran."
+      ]
+    },
+    "react_application": {
+      "files": 3392,
+      "vectors_enabled": true,
+      "summary": {
+        "targets": 2,
+        "visible": 2,
+        "complete_bodies": 1,
+        "view_bytes": 52137,
+        "native_parity": 9,
+        "requests": 9
+      },
+      "gains": 0,
+      "regressions": 0,
+      "requests_sha256": "6ccdb3b9aaa2c6530cc1fd8209f7c77ef7eddcaa6caf9f8567ae6ba2230b90a3",
+      "current_binary_sha256": "f7600a44389b7ceca5e7b82d345cb5ad45cdd711532cbac942dece1d94d709bc",
+      "labels_sha256": "aa6fac10dd31147ae85af043c6ae97fce83dd04c9c7418d71b753302c9c40df3",
+      "remote_model_calls": 0,
+      "limits": [
+        "Task-guided known targets, not an independent accuracy evaluation.",
+        "Visible source ranges are not proof of behavior or complete implementation context.",
+        "Output bytes are not billed tokens; no host model ran."
+      ]
+    },
+    "csharp_services": {
+      "files": 1615,
+      "vectors_enabled": true,
+      "summary": {
+        "targets": 3,
+        "visible": 3,
+        "complete_bodies": 0,
+        "view_bytes": 42382,
+        "native_parity": 6,
+        "requests": 6
+      },
+      "gains": 0,
+      "regressions": 0,
+      "requests_sha256": "dd1f72a8f7bd82055cbb6bf0a36e0b4a194985da84af982bd4477a0484504354",
+      "current_binary_sha256": "47876dea32626f6650b1e91d2d3561b0258cad5347aa9c98b7091eac9e31dcb6",
+      "labels_sha256": "ebcedb2f95000281ec6f5434ea5761d3b7988f623716271346566f2a6ca4939a",
+      "remote_model_calls": 0,
+      "limits": [
+        "Task-guided known targets, not an independent accuracy evaluation.",
+        "Visible source ranges are not proof of behavior or complete implementation context.",
+        "Output bytes are not billed tokens; no host model ran."
+      ]
+    }
+  },
+  "wave_policy": {
+    "initial_input_and_inherited_summaries": "measured from the child context",
+    "additional_work_signal_tokens": 150000,
+    "example_initial_tokens": 50000,
+    "example_signal_total_tokens": 200000,
+    "signal_interrupts_current_task": false,
+    "finish_only_gate": "accepted task-end after signal",
+    "packing_work_budget": 150000,
+    "fixed_initial_context_discount": false,
+    "signal_persists_after_context_shrinks": true
+  },
+  "session_interpretation_policy": {
+    "max_total_input_tokens": 100000,
+    "effort": "medium",
+    "known_violations_rejected_before_persistence": true,
+    "unknown_telemetry": "unknown, not compliant by inference",
+    "separate_generation_process_or_api": false
+  },
+  "preservation": {
+    "active_application_code_specs_configuration_runtime": "unchanged",
+    "root_untracked_user_audit": "unchanged",
+    "evaluation_sources": "disposable copies of frozen snapshots; no application execution"
+  },
+  "limits": [
+    "No authenticated Haiku/Luna or live Jev evaluation ran in this review.",
+    "Desktop SSH visual open/reopen and host agent discovery require the user host after release.",
+    "Known-target search regressions do not prove general accuracy or end-to-end LLM savings.",
+    "No new search-ranking algorithm gain is claimed.",
+    "Output bytes and synthetic UI text are not billed tokens."
+  ]
+}

@@ -1,0 +1,121 @@
+{
+  "verified_at": "2026-10-14T11:46:27.514120+00:00",
+  "base_candidate": "0edec4040a2917f79302c511164c705a8fd4a8b4",
+  "branch": "codex/review-agnostic-orchestration",
+  "unreleased": true,
+  "main_unchanged": "230d55ac5a09b48a08873ed5a0b542616103e353",
+  "live_backend_modified": false,
+  "rust": {
+    "passed": 4167,
+    "ignored": 2,
+    "failed": 0,
+    "log_sha256": "e51db6d7ed31a76e2822aeb58a23a341f27132a319d6944651f7ff423285e9a9"
+  },
+  "clippy": {
+    "warnings_as_errors": true,
+    "passed": true,
+    "log_sha256": "a6dd039eb9219f7d062083430dd02d7494399b6f17737b2505624967e90239d6"
+  },
+  "mods": {
+    "2.1.296": {
+      "passed": 63,
+      "failed": 0,
+      "authenticated_model_run": false,
+      "actual_desktop_paint_verified": false,
+      "log_sha256": "6b2fdd20e2524e7ca8002a8423c97c49fcd72571441a245e86d90e6b96793e1a"
+    },
+    "2.1.299": {
+      "passed": 63,
+      "failed": 0,
+      "authenticated_model_run": false,
+      "actual_desktop_paint_verified": false,
+      "log_sha256": "2ef261d68a80fa41f03ee0d4491f5174f3644f912fa034da1cd504ce47481f01"
+    }
+  },
+  "search": {
+    "florestal": {
+      "requests": 10,
+      "native_parity": 10,
+      "labels": 5,
+      "visible_labels": 5,
+      "profile_available": true,
+      "profile_version": 2
+    },
+    "sialia": {
+      "requests": 9,
+      "native_parity": 9,
+      "labels": 2,
+      "visible_labels": 2,
+      "profile_available": true,
+      "profile_version": 2
+    },
+    "sialia-dotnet": {
+      "requests": 6,
+      "native_parity": 6,
+      "labels": 3,
+      "visible_labels": 3,
+      "profile_available": true,
+      "profile_version": 2
+    }
+  },
+  "search_limits": [
+    "Same frozen source and known targets; not independent global accuracy.",
+    "Wall time includes simultaneous local verification load; not a controlled latency gain.",
+    "Native parity compares full result and exit; contexts are not implementation proof.",
+    "Sialia frontend snapshot excludes hollow .gitmodules metadata only in its disposable copy; backend source is tested in the separate C# snapshot. This is not a scan of the entire live Sialia checkout."
+  ],
+  "remote_model_calls_during_search": 0,
+  "source_sha256": {
+    "apps/rt/src/commands/expertise.rs": "3812e806e137b4d01e9d0f67c517bff41ec632d49e28d30d0a8f21b2768c5e08",
+    "apps/rt/src/commands/flow/round.rs": "9a3de0e185013bbe7f1c10223dc54ecfd4082da7edda3632e990a5fa3c79d9d7",
+    "apps/rt/src/commands/flow/round/answer.rs": "8789fd55ea55fb64ed3cbcfe25a5c2f2356b40f5d2a8435c34df6f6887b6f64e",
+    "apps/rt/src/commands/knowledge.rs": "170c8b161bf95591b87c04b96e373d9d8c7173e81fdfa7d706487d6b1b9d2c83",
+    "apps/rt/src/commands/panel/dashboard.rs": "9a8eca1ef406ba877a9d4cb06ef6a8a9f9912d72c44c02711430e0dd9ef23af8",
+    "apps/rt/src/commands/panel/delivery_metrics.rs": "9842e4c885e7e2156c8ac6b9057b66bd6ab417e0ff55e8b9c069fabc58ba3769",
+    "apps/rt/src/commands/panel/mod.rs": "1341470f7f75a90a8c02368029ef2e197d30e40cb2fb01b11607782be44690fb",
+    "apps/rt/src/commands/scan_cli.rs": "22b7777fbaf2d183f390d186d1692e8a65e48771d57bd01879db401085d16767",
+    "apps/rt/src/dispatch.rs": "2c7c982009e4335e4729f10953e3f3806394c1713b77a18e462b4050b2cc09b8",
+    "apps/rt/src/hooks/session/analysis_guard.rs": "45dab5f69521c538650ddfe129553ea140169014b7ffb03879447917fb7585d3",
+    "apps/rt/src/hooks/session/conversation_size.rs": "1d3a2cbdb10542e9bd65c33d981f585baeef60762d549b56c6a9127bb5ac0f9f",
+    "apps/rt/src/hooks/session/mod.rs": "ed3cbb38f0d075da83945b9e33d5f46ec87235eab50f865954ce28f98f47b2dd",
+    "apps/rt/src/shared/expertise_selection.rs": "bf706b55c79579390ebc6ec27520faa17c7096c705f7f2d5f3194d13d4b3d0ed",
+    "apps/rt/src/shared/search_gateway.rs": "48805b63ddf16aac326dcf1fc5566464ff3753a03fcab9d4b434aee545e04081",
+    "apps/rt/src/shared/tool_observations.rs": "09169ac13952a90e6dd391542b9f1f03cfa4ca49de72dc2f67791174776f98ec",
+    "apps/rt/tests/run_command_surface.rs": "8382ab90ab79a7d8b1bf766b4ba7efd5fb2d970f7b04284d543ec71a40a88997",
+    "packages/core/src/domain/pattern.rs": "dc1069d93ffbbfdaf9e3c98598ca54e3c22ea6f880102bb0c9de33e3e622c565",
+    "packages/core/src/io/expertise/workflow.rs": "a672cab71bdd416455ce72e2829df1a4ed2324c1846ce9da2a30f6454d09ab81",
+    "packages/core/src/io/knowledge/enrichment/session.rs": "aa9553e26c76609668e0ddcc6c40ee06779feac7420bb6966ce99bb77ef1a180",
+    "packages/core/src/io/map_db.rs": "38c86e73d7c7d8f6faeb92d48c53027403c3c64632f2ae894dc658ce39ea8aba",
+    "packages/core/src/io/mod.rs": "f5d27125571907dfea7787627c168829b252aa4cfdc49a5eb645d47af1480daa",
+    "packages/core/src/io/observations.rs": "c17a6a5f6ed1fb97d1e75dbbe2f13259f225e87fd28146b93a74193ca416e09a",
+    "packages/core/src/io/project_map.rs": "9aaffd7faff8b4d5eac9f34a922f2618c60f07569f5541c9cfadb82496c67c3a",
+    "packages/core/src/io/project_profile.rs": "627b11adf32b13dddb4da0e76c1cb297a6fb4d6f3185feea1f59b6c61cf2cfee",
+    "packages/core/src/io/wave_prompt.rs": "6a293fe45be1ba3c0689409d22fcb9c5bf61f3b0328cd8dca258fb188d2347de",
+    "packages/core/src/platform/codex.rs": "d3f8e0041a729f7d78b9eb2a8d1022aaeb556928b74ba9fca92b3e2751fa38c0",
+    "packages/core/src/platform/mod.rs": "2c48fecd89138e4581107d3e691b1c38e177451d7947a8f2ab3beec573641408",
+    "packages/core/src/platform/session_models.rs": "25eab5aea6e01039f74d11d745841587852949686e4079cb451c4adeddc6f1e9",
+    "packages/core/templates/agents/en-US/analysis.md": "133a40638eeb933dfb748372d0f415bf6d3a89e06fc8065e372f0766a3ffc2ad",
+    "packages/core/templates/agents/pt-BR/analysis.md": "fde3027e698a0accd6e93409b0024de63a25bc4db4d7eec42d5fb9c420c9c81d",
+    "plugin/hooks/analysis-policy.js": "4fb5921d0b1d47bbe235d0f130c5b6cca8eb6b9907bd790f460265fbc109785b",
+    "plugin/hooks/panel-economy.js": "a6981d7a487cd365d397188b5cf262bf9a03453a3ebc3a305ff50db1b3af07fa",
+    "plugin/hooks/panel-modern.test.ts": "41609dfeb28fb0133ae6bb2f954f2cbdbd985f25d88a466920cba4166e0e4e5e",
+    "plugin/hooks/panel-view.js": "c2e33d7fc8e6e0ca2786dec58835953d805cccedde4d42e530ff313969e1db7c",
+    "plugin/hooks/panel.test.ts": "bfa40895391c57f7f1009878649a5c75709b9aa9615c1704c01c934e2981e5c0",
+    "plugin/hooks/register.js": "753c4c47ff661d6a8eb6bb4425a432b0acba061ed72c964495c911b2716ff5b3"
+  },
+  "external_acceptance_pending": [
+    "Actual Windows Desktop/SSH paint after installation of the new release.",
+    "Authenticated Haiku/Luna generation, actual model/effort/full-input telemetry and discovery.",
+    "Equivalent accepted task comparison for net token savings, rework and code quality."
+  ],
+  "implementation_scope": [
+    "Persisted source-derived project conventions, read-only projections and version invalidation.",
+    "Task-aware reviewed procedure fit with abstention and bounded optional Jev.",
+    "Preparation gate and source/rule-bound explicit native guidance choice.",
+    "Family/medium/input receipt enforcement and native latest-family capability adaptation.",
+    "Read-only native analysis tools and isolated Haiku model/effort controls.",
+    "Exact/literal searches avoid remote selection.",
+    "Accepted-work/retry/proof/usage metrics and immutable complete skill-read evidence.",
+    "Dark Mods hierarchy, native project profile and actionable consumption views."
+  ]
+}

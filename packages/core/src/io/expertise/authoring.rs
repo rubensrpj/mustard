@@ -10,10 +10,22 @@ use std::path::Path;
 
 fn name(query: &str, file: Option<&str>) -> String {
     let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!(
-        "procedure-{}",
-        &digest(format!("{normalized}\0{}", file.unwrap_or_default()).as_bytes())[..16]
-    )
+    let words = crate::domain::text::fold_accents(&normalized).to_lowercase();
+    let slug = words.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty()).take(5).collect::<Vec<_>>().join("-");
+    let slug = slug.chars().take(36).collect::<String>();
+    let slug = slug.trim_matches('-');
+    format!("{}-{}", if slug.is_empty() { "procedure" } else { slug },
+        &digest(format!("{normalized}\0{}", file.unwrap_or_default()).as_bytes())[..12])
+}
+
+fn existing_name(root: &Path, query: &str, file: Option<&str>) -> Result<String, String> {
+    let current = name(query, file);
+    // Existing source-bound procedures stay reusable after an upgrade. Do
+    // not regenerate a valid older procedure solely to rename its files.
+    let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    let legacy = format!("procedure-{}", &digest(format!("{normalized}\0{}", file.unwrap_or_default()).as_bytes())[..16]);
+    Ok(if list(root)?.iter().any(|profile| profile.name == legacy) { legacy } else { current })
 }
 
 fn topic(query: &str) -> String {
@@ -35,7 +47,7 @@ pub fn prepare(
     if !["claude", "codex"].contains(&host) {
         return Err("expertise-unknown-host".into());
     }
-    let name = name(query, file);
+    let name = existing_name(root, query, file)?;
     if let Some(profile) = list(root)?.into_iter().find(|p| p.name == name) {
         // Reuse a current draft even before review; never pay to rewrite it.
         if super::sources_current(root, &profile)
@@ -91,7 +103,7 @@ pub fn complete(
     }
     let note: Interpretation =
         serde_json::from_value(report["interpretation"].clone()).map_err(|e| e.to_string())?;
-    report["draft_result"] = draft(root, &name(query, file), &note)?;
+    report["draft_result"] = draft(root, &existing_name(root, query, file)?, &note)?;
     Ok(report)
 }
 
@@ -168,5 +180,29 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn names_are_readable_bounded_and_keep_task_and_scope_identity() {
+        let short = name("Validar transações do banco", Some("store.rs"));
+        assert!(short.starts_with("validar-transacoes-do-banco-"), "{short}");
+        assert_eq!(short, name("  Validar transações\n do banco ", Some("store.rs")));
+        assert_ne!(short, name("Validar transações do banco", Some("other.rs")));
+        assert!(name(&"a".repeat(1500), None).len() <= 56);
+        assert!(name("修复读取", None).starts_with("procedure-"));
+    }
+
+    #[test]
+    fn upgrading_the_name_scheme_keeps_an_existing_procedure() {
+        let (dir, mut profile) = super::super::tests::fixture();
+        let root = dir.path();
+        let query = "reuse transactions";
+        let file = Some("store.rs");
+        profile.name = format!("procedure-{}", &digest(format!("{query}\0store.rs").as_bytes())[..16]);
+        record(root, &profile).unwrap();
+        let reused = prepare(root, query, file, "claude", None).unwrap();
+        assert_eq!(reused["draft"]["name"], profile.name);
+        assert_eq!(reused["session_model_calls"], 0);
+        assert!(reused.get("delegation").is_none());
     }
 }

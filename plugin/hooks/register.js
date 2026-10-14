@@ -2,6 +2,7 @@ import searchSchema from './search-schema.js';
 import {completeDelivery} from './delivery-check.js';
 import {renderPanel,initialPanelView} from './panel-view.js';
 import {sections,hostReceipt} from './panel-runtime.js';
+import {analysisSpawn,analysisTool,fullAnalysisInput,isAnalysis} from './analysis-policy.js';
 import {shellImpactPane} from './panel-extras.js';
 // Local observation only. Runtime events remain the source of truth; the
 // poller coalesces overlapping reads and never calls a model or search tool.
@@ -23,6 +24,7 @@ let consumptionMeasuredAt;
 let panelWanted=false;
 let refreshQueued=false,sourceRevision,queryIdentity;
 let restoredView=false;
+let openingQueue=Promise.resolve();
 let impact,impactAction,operationBusy=false;
 let shellImpact;
 const impactId='mustard-impact';
@@ -51,6 +53,7 @@ let measurementQueue = Promise.resolve();
 const searchPurposes = ['locate','understand','spec','implement','validate'];
 const searchTools = ['rg','grep','git','Grep','Glob','Read','Symbol','Trace','Structure','References'];
 let evidenceEpoch, evidenceAcknowledged = new Map();
+const analysisAgents=new Map();
 function resetEvidence() {
   evidenceEpoch=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
   evidenceAcknowledged.clear();
@@ -188,11 +191,18 @@ function recordMeasurement($, measurement) {
   });
   return measurementQueue;
 }
-async function openPanel($, name) {
+function openPanel($, name) {
     panelWanted=true;
     void persist($);
+    // A command and a Desktop attach may arrive together. Serialize their
+    // lifecycles so a slower first opening cannot install a second poller.
+    openingQueue=openingQueue.catch(()=>{}).then(()=>panelWanted?performOpen($,name):{text:t('Painel fechado.','Pane closed.')});
+    return openingQueue;
+}
+async function performOpen($, name) {
     panelEvent('open-request');
     stopPanel();
+    const ticket=revision;
     if (name) selected = name;
     try {
       // open() on an existing id only focuses/retitles it. Explicitly reopen
@@ -200,6 +210,10 @@ async function openPanel($, name) {
       // after the module was reloaded while the host retained its pane.
       try { await $.ui.close({id}); } catch { /* A detached/reloaded host may no longer know this pane. Still attempt open. */ }
       await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
+      if(!panelWanted || ticket!==revision){
+        await $.ui.close({id});
+        return {text:t('A abertura foi cancelada.','Opening was cancelled.')};
+      }
       opened = true;
       panelEvent('open-accepted');
       timer = $.clock.every(10000, () => { void refresh($); });
@@ -384,6 +398,7 @@ export function register(on) {
   on('turn.complete', async ($, e, next) => {
     const result=await next(e);
     if(e.agentId)await recordMeasurement($,hostReceipt(e));
+    if(e.agentId)analysisAgents.delete(e.agentId);
     requestRefresh($);
     return result;
   });
@@ -406,8 +421,12 @@ export function register(on) {
     return next(e);
   });
   on('ui.close', { id }, async ($, e, next) => {
-    panelEvent('close');
-    if(e.origin?.kind!=='plugin')panelWanted=false;
+    panelEvent('close',e.origin?.kind);
+    // Local closes already call stopPanel before the API. A delayed event
+    // from the preceding pane must not stop the replacement's poller.
+    if(e.origin?.kind==='plugin')return next(e);
+    // Reload unloads the visual tree, not the user's request to keep it open.
+    if(e.origin?.kind!=='unload')panelWanted=false;
     void persist($);
     stopPanel();
     return next(e);
@@ -442,20 +461,35 @@ export function register(on) {
   });
   on('ui.fault',async ($,e,next)=>{panelEvent('ui-fault',e.surface);void diagnostic($,'panel','render','ui-fault');return next(e);});
   on('agent.spawn',async ($,e,next)=>{
-    const result=await next(e);
+    const prepared=analysisSpawn(e);
+    if(prepared.deny)return prepared;
+    const result=await next(prepared);
+    if(result.agentId && isAnalysis(e.subagentType))analysisAgents.set(result.agentId,{input:null,model:result.model});
     if(result.agentId && !result.deny)await recordMeasurement($,{kind:'spawn',agent_id:result.agentId,model:result.model,agent_type:e.subagentType});
     requestRefresh($);return result;
   });
+  on('tool.check',async ($,e,next)=>{
+    const blocked=analysisTool(e,analysisAgents.get(e.agentId));
+    return blocked || next(e);
+  });
   on('turn.step',async function* ($,e,next){
-    const result=yield* next(e);
+    const analysis=analysisAgents.get(e.agentId);
+    if(analysis?.input>=90000) {
+      const answer='[Mustard] Analysis stopped before another model request to preserve the fixed 100000-token input budget. Use current source evidence; do not persist an invented interpretation.';
+      yield {kind:'text',index:0,text:answer};
+      return {turnId:e.turnId,index:e.index,answer,toolUses:[],stopReason:'end_turn',usage:null};
+    }
+    const result=yield* next(analysis?{...e,model:'haiku',effort:'medium'}:e);
+    if(analysis)analysis.input=fullAnalysisInput(result.usage);
     if(result.usage)await recordMeasurement($,hostReceipt(e,result));
     requestRefresh($);return result;
   });
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if(e.requestId===impactId)return shellImpactPane(await $.ui.resolve(e),shellImpact,async()=>{shellImpact=undefined;await $.ui.close({id:impactId});});
     if (e.requestId !== id) return next(e);
-    // Record transitions only, not each 2s redraw.
-    if(!panelEvents.some(row=>row.kind==='render' && row.surface===e.surface))panelEvent('render',e.surface);
+    // Observe every opening independently, without logging each redraw.
+    const requestIndex=panelEvents.findLastIndex(event=>event.kind==='open-request');
+    if(!panelEvents.slice(requestIndex+1).some(row=>row.kind==='render' && row.surface===e.surface))panelEvent('render',e.surface);
     const redraw=()=>$.ui.invalidate('ui.render');
     return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
       data,usage,problem,selected,view,publicationMessage,publishing,settings,impact,operationBusy,actions:{

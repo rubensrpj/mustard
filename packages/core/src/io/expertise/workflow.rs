@@ -23,6 +23,15 @@ fn coverage(profile: &Profile, files: &[String]) -> usize {
         .count()
 }
 
+/// The purpose includes the assigned work, not just the broad wave title.
+/// Keep planning text out of the source search's literal input arguments.
+pub fn wave_task(log:&crate::domain::spec_events::SpecLog,wave:u64)->String {
+    let mut seen=BTreeSet::new();
+    log.block(crate::domain::spec_events::BlockQuery::Wave(wave)).into_iter().filter(|e|e.event_type=="task")
+        .flat_map(|e|["title","text","agent"].into_iter().filter_map(|field|e.str_field(field)))
+        .filter(|text|seen.insert(text.split_whitespace().collect::<Vec<_>>().join(" "))).collect::<Vec<_>>().join("\n")
+}
+
 /// A broad navigation recipe cannot displace a reviewed project procedure.
 /// Only equally covering authored candidates need a semantic comparison.
 pub fn candidates(root: &Path, files: &[String]) -> Vec<Profile> {
@@ -72,12 +81,42 @@ pub fn ambiguous(root: &Path, files: &[String]) -> Vec<Profile> {
 }
 
 pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &str) -> Selection {
+    select_many(root,files,&preferred.into_iter().map(str::to_owned).collect::<Vec<_>>(),source)
+}
+
+/// A typed fit decision can retain complementary procedures for the same
+/// files. File coverage alone cannot express distinct task concerns.
+pub fn select_many(root: &Path, files: &[String], preferred: &[String], source: &str) -> Selection {
+    select_task(root,files,preferred,source,None)
+}
+
+fn task_terms(query:&str,files:&[String])->BTreeSet<String> {
+    use crate::domain::text::{fold,words,COMMON_WORDS_PT,COMMON_WORDS_EN};
+    let file_words:BTreeSet<_>=files.iter().flat_map(|file|words(file).map(fold)).collect();
+    words(&fold(query)).filter(|word|word.len()>3 && !COMMON_WORDS_PT.contains(word)
+        && !COMMON_WORDS_EN.contains(word) && !file_words.contains(*word)).map(str::to_owned).collect()
+}
+
+/// This is lexical evidence only, never a semantic guarantee. No positive
+/// task evidence means abstention, rather than loading by path overlap.
+pub fn task_fit(profile:&Profile,query:&str,files:&[String])->usize {
+    let content=crate::domain::text::fold(&format!("{} {}",profile.description,profile.procedure));
+    let terms:BTreeSet<_>=crate::domain::text::words(&content).collect();
+    task_terms(query,files).iter().filter(|word|terms.contains(word.as_str())).count()
+}
+
+pub fn select_for_task(root:&Path,files:&[String],query:&str,preferred:&[String],source:&str)->Selection {
+    select_task(root,files,preferred,source,Some(query))
+}
+
+fn select_task(root:&Path,files:&[String],preferred:&[String],source:&str,query:Option<&str>)->Selection {
     let mut available = candidates(root, files);
-    let accepted = preferred.and_then(|name| available.iter().position(|p| p.name == name));
-    if let Some(at) = accepted {
-        let first = available.remove(at);
-        available.insert(0, first);
+    let accepted:BTreeSet<_> = preferred.iter().filter(|name|available.iter().any(|profile|profile.name==name.as_str())).cloned().collect();
+    if let Some(query)=query {
+        available.retain(|profile|profile.origin!="authored" || accepted.contains(&profile.name) || task_fit(profile,query,files)>0);
+        available.sort_by_key(|profile|std::cmp::Reverse(task_fit(profile,query,files)));
     }
+    available.sort_by_key(|profile|preferred.iter().position(|name|*name==profile.name).unwrap_or(usize::MAX));
     let mut covered = BTreeSet::new();
     let selected: Vec<_> = available
         .into_iter()
@@ -88,7 +127,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
                 .cloned()
                 .collect();
             covered.extend(adds.iter().cloned());
-            !adds.is_empty()
+            !adds.is_empty() || accepted.contains(&profile.name)
         })
         .collect();
     let pending_review = list(root)
@@ -99,7 +138,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
         .collect();
     let reason = if selected.is_empty() {
         "generic executor; no current matching specialization"
-    } else if accepted.is_some() && source.starts_with("jev") {
+    } else if !accepted.is_empty() && source.starts_with("jev") {
         "typed choice among current, equally covering procedures; native gates preserved"
     } else {
         "reuse current procedures first, then navigation for uncovered task files"
@@ -107,6 +146,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
     let fingerprint = digest(
         &serde_json::to_vec(&(
             files,
+            query,
             selected
                 .iter()
                 .map(|p| review_fingerprint(root, p))
@@ -125,7 +165,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
             .filter(|file| !covered.contains(*file))
             .cloned()
             .collect(),
-        source: if accepted.is_some() {
+        source: if !accepted.is_empty() {
             source.into()
         } else {
             "native".into()
@@ -133,14 +173,32 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
     }
 }
 
+/// Re-check all reviewed path candidates, including a single procedure. A
+/// path match alone cannot prove that any procedure fits the current task.
+pub fn task_candidates(root:&Path,files:&[String])->Vec<Profile> {
+    let mut unique=BTreeSet::new();
+    let peers:Vec<_>=candidates(root,files).into_iter().filter(|p|p.origin=="authored")
+        .filter(|p|unique.insert((p.procedure.split_whitespace().collect::<Vec<_>>().join(" "),p.paths.clone())))
+        .collect();
+    if peers.len()<=254 {peers} else {Vec::new()}
+}
+
+pub fn restore_for_task(root:&Path,files:&[String],query:&str,stored:Option<&Selection>)->Selection {
+    if let Some(stored)=stored {
+        let current=select_for_task(root,files,query,&stored.profiles,&stored.source);
+        if current.fingerprint==stored.fingerprint {return current;}
+    }
+    select_for_task(root,files,query,&[],"native")
+}
+
 /// A saved preference belongs to the exact reviewed evidence it compared.
 /// Re-reviewing a changed procedure with the same name cannot revive it.
 pub fn restore(root: &Path, files: &[String], stored: Option<&Selection>) -> Selection {
     if let Some(stored) = stored {
-        let current = select(
+        let current = select_many(
             root,
             files,
-            stored.profiles.first().map(String::as_str),
+            &stored.profiles,
             &stored.source,
         );
         if current.fingerprint == stored.fingerprint {
@@ -159,10 +217,17 @@ pub fn prepare(
     preferred: Option<&str>,
     source: &str,
 ) -> Result<Value, String> {
+    prepare_selected(root,host,select(root,files,preferred,source))
+}
+
+pub fn prepare_for_task(root:&Path,files:&[String],host:&str,query:&str)->Result<Value,String> {
+    prepare_selected(root,host,select_for_task(root,files,query,&[],"native"))
+}
+
+fn prepare_selected(root:&Path,host:&str,selection:Selection)->Result<Value,String> {
     if !["claude", "codex"].contains(&host) {
         return Err("expertise-unknown-host".into());
     }
-    let selection = select(root, files, preferred, source);
     let authored:BTreeSet<_>=list(root)?.into_iter().filter(|profile|profile.origin=="authored").map(|profile|profile.name).collect();
     let exports = selection
         .profiles
@@ -182,32 +247,95 @@ pub fn prepare(
 /// work or block dispatch. The conductor evaluates whether the native evidence
 /// already suffices and whether a reusable isolated procedure adds value.
 pub fn dispatch_preparation(root: &Path, files: &[String], query: &str) -> Option<Value> {
-    if files.len() < 2 || !crate::io::project_map::model_path(root).is_file() {
+    if files.is_empty() || query.trim().is_empty() || !crate::io::project_map::model_path(root).is_file() {
         return None;
     }
     let current = candidates(root, files);
-    if current.is_empty() || current.iter().any(|p| p.origin == "authored") {
-        return None;
-    }
     // Respect an explicitly maintained project skill. It is reviewed by the
     // existing wave skill/rule path rather than replaced by a generated one.
-    if crate::io::wave_prompt::has_scoped_skill(root, files) {
+    let uncovered: Vec<_> = files.iter().filter(|file| {
+        !current.iter().any(|profile| profile.origin == "authored" && matches(profile, &[(*file).clone()]) && task_fit(profile,query,files)>0)
+            && !crate::io::wave_prompt::has_scoped_skill(root, &[(*file).clone()])
+    }).cloned().collect();
+    if uncovered.is_empty() {
         return None;
     }
-    let query = query.chars().take(1400).collect::<String>();
+    // The CLI bounds UTF-8 bytes, not characters. A Portuguese task must
+    // produce valid preparation arguments just like an ASCII task does.
+    let query = query.char_indices().take_while(|(at, ch)| at + ch.len_utf8() <= 1400).map(|(_, ch)| ch).collect::<String>();
+    let pending:Vec<_>=list(root).unwrap_or_default().into_iter().filter(|p|p.origin=="authored" && matches(p,files)
+        && task_fit(p,&query,files)>0 && !active(root,p)).map(|p|p.name).collect();
+    let fingerprint=preparation_identity(root,files,&query);
+    let acknowledged=std::fs::read_to_string(native_ack_path(root,&fingerprint)).ok().as_deref()==Some(&fingerprint);
+    let required=!pending.is_empty() && !acknowledged;
+    let args = |host: &str| {
+        let mut args = vec!["run".to_string(), "expertise".into(), "--prepare".into(), "--host".into(), host.into(), "--query".into(), query.clone()];
+        for file in &uncovered { args.extend(["--file".into(), file.clone()]); }
+        args
+    };
     Some(
-        json!({"query":query,"files":files,"required":false,"model_calls":0,
-        "pending_review":select(root,files,None,"native").pending_review,
-        "claude_args":["run","expertise","--prepare","--host","claude","--query",query],
-        "codex_args":["run","expertise","--prepare","--host","codex","--query",query],
-        "next":"Optional: use the current host's arguments only if source-based native guidance is insufficient and a reusable procedure is needed. File count alone does not justify a model call. Reuse a current draft or analysis before delegating. Complete a bounded native-session receipt and review its exact fingerprint before using a new procedure. Native navigation remains available. Do not launch another CLI/API."}),
+        json!({"query":query,"files":uncovered,"required":required,"fingerprint":fingerprint,"native_acknowledged":acknowledged,"model_calls":0,
+        "state":if required {"review-required"}else{"native-guidance-available"},
+        "pending_review":pending,
+        "claude_args":args("claude"),
+        "codex_args":args("codex"),
+        "next":"If required, inspect the pending draft and current rules before dispatch: update/review its fingerprint, or deliberately use expertise --native --query <same task> --file <scope> after checking native guidance. Otherwise native dispatch is available; prepare a reusable procedure only if needed. Reuse a current draft/analysis; never start another CLI/API."}),
     )
+}
+
+fn preparation_identity(root:&Path,files:&[String],query:&str)->String {
+    let versions:Vec<_>=files.iter().map(|file|(file,std::fs::read(root.join(file)).ok().map(|bytes|digest(&bytes)))).collect();
+    digest(json!({"task":query.split_whitespace().collect::<Vec<_>>().join(" "),"sources":versions,
+        "rules":crate::io::knowledge::RuleContext::of(root,files),"procedures":list(root).unwrap_or_default().into_iter()
+        .filter(|p|matches(p,files)).map(|p|(p.name.clone(),review_fingerprint(root,&p),p.reviewed)).collect::<Vec<_>>()}).to_string().as_bytes())
+}
+fn native_ack_path(root:&Path,fingerprint:&str)->std::path::PathBuf {
+    root.join(".claude/.cache/expertise-native").join(fingerprint)
+}
+pub fn acknowledge_native(root:&Path,files:&[String],query:&str)->Result<Value,String> {
+    if files.is_empty() || files.len()>256 || query.trim().is_empty() || query.len()>1400 {return Err("expertise-native-needs-task-and-files".into());}
+    if files.iter().any(|file|file.len()>512 || file.contains('\\') || std::path::Path::new(file).components()
+        .any(|part|!matches!(part,std::path::Component::Normal(_))) || root.join(file).canonicalize().ok()
+        .zip(root.canonicalize().ok()).is_some_and(|(file,root)|!file.starts_with(root))) {return Err("expertise-invalid-scope".into());}
+    let fingerprint=preparation_identity(root,files,query);
+    let path=native_ack_path(root,&fingerprint);let parent=path.parent().ok_or("expertise-invalid-path")?;
+    std::fs::create_dir_all(parent).map_err(|e|e.to_string())?;
+    if !parent.canonicalize().map_err(|e|e.to_string())?.starts_with(root.canonicalize().map_err(|e|e.to_string())?) {return Err("expertise-path-outside-project".into());}
+    crate::io::fs::write_atomic(&path,fingerprint.as_bytes()).map_err(|e|e.to_string())?;
+    Ok(json!({"ok":true,"native_guidance_reviewed":true,"fingerprint":fingerprint,"model_calls":0,
+        "limits":"This clears preparation for these task sources/rules only; it does not approve code, tests, scope changes or an authored draft."}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::io::expertise::{record, review};
+    #[test]
+    fn task_fit_abstains_from_unrelated_procedure_and_preparation_is_source_bound() {
+        let (dir,mut p)=crate::io::expertise::tests::fixture();let root=dir.path();
+        p.description="Transactions and rollback".into();p.procedure="Reuse transactions and verify rollback.".into();
+        let files=vec!["store.rs".into()];
+        let draft=record(root,&p).unwrap();
+        assert_eq!(dispatch_preparation(root,&files,"Change transactions").unwrap()["required"],true);
+        acknowledge_native(root,&files,"Change transactions").unwrap();
+        assert_eq!(dispatch_preparation(root,&files,"Change transactions").unwrap()["required"],false);
+        std::fs::write(root.join("AGENTS.md"),"Use current project schemas").unwrap();
+        assert_eq!(dispatch_preparation(root,&files,"Change transactions").unwrap()["required"],true);
+        // Review against the changed project rules, not the obsolete receipt.
+        assert!(review(root,&p.name,draft["fingerprint"].as_str().unwrap()).is_err());
+        let draft=record(root,&p).unwrap();review(root,&p.name,draft["fingerprint"].as_str().unwrap()).unwrap();
+        assert!(dispatch_preparation(root,&files,"Change transactions").is_none());
+        assert!(select_for_task(root,&files,"Adjust visual component",&[],"native").profiles.is_empty());
+        let chosen=select_for_task(root,&files,"Change transactions",&[],"native");assert_eq!(chosen.profiles,[p.name.clone()]);
+        assert!(restore_for_task(root,&files,"Adjust visual component",Some(&chosen)).profiles.is_empty());
+    }
+    #[test]
+    fn unique_area_without_navigation_still_offers_preparation_without_forcing_inference() {
+        let (dir,_)=crate::io::expertise::tests::fixture();
+        let proposed=dispatch_preparation(dir.path(),&["unique.rs".into()],"Inspect archive").unwrap();
+        assert_eq!(proposed["required"],false);assert_eq!(proposed["model_calls"],0);
+        assert_eq!(proposed["files"],json!(["unique.rs"]));
+    }
     #[test]
     fn current_procedures_win_and_changed_rules_withdraw_them() {
         let (dir, mut p) = crate::io::expertise::tests::fixture();
@@ -277,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_file_navigation_suggests_preparation_without_forcing_a_model_or_blocking_dispatch() {
+    fn uncovered_navigation_suggests_scoped_preparation_without_forcing_a_model() {
         let (dir, mut p) = crate::io::expertise::tests::fixture();
         let root = dir.path();
         p.paths = vec![
@@ -307,11 +435,20 @@ mod tests {
         let suggested = dispatch_preparation(root, &files, "Change transactions").unwrap();
         assert_eq!(suggested["required"], false);
         assert_eq!(suggested["model_calls"], 0);
-        assert!(dispatch_preparation(root, &files[..1], "Change transactions").is_none());
+        assert!(dispatch_preparation(root, &files[..1], "Change transactions").is_some());
+        let unicode = dispatch_preparation(root, &files, &"é".repeat(1400)).unwrap();
+        assert!(unicode["query"].as_str().unwrap().len() <= 1400);
         p.origin = "authored".into();
+        p.procedure="Change transactions using existing source contracts.".into();
         p.name = "transactions".into();
         let draft = record(root, &p).unwrap();
         review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
         assert!(dispatch_preparation(root, &files, "Change transactions").is_none());
+        p.paths = vec![files[0].clone()];
+        let draft = record(root, &p).unwrap();
+        review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
+        let partial = dispatch_preparation(root, &files, "Change transactions").unwrap();
+        assert_eq!(partial["files"], json!([files[1]]));
+        assert!(partial["claude_args"].as_array().unwrap().iter().any(|arg| arg == "--file"));
     }
 }

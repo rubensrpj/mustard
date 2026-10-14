@@ -29,7 +29,6 @@ use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::shared::dag::{BacklogTask, Reserved, pack_by_affinity, pack_by_kind, sets_cross, touches_whole_tree};
 use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
-use crate::shared::task_size::wave_budget;
 
 /// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
 /// ([`Board`]), que volta com o tipo de trabalho de cada tarefa, o tamanho
@@ -53,7 +52,8 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// tamanho dela e o quanto ela muda o mesmo que cada onda em andamento. A onda
 /// junta as tarefas do mesmo tipo, tenham ou não arquivo em comum, até a soma
 /// do tamanho delas chegar ao que um agente faz antes do limite da conversa
-/// dele (`WAVE_LIMIT`, menos o começo da conversa; [`wave_budget`]): o que
+/// de trabalho adicional (`WAVE_LIMIT`): entrada e resumos herdados não
+/// reduzem esse horizonte. O que
 /// passa disso fecha a onda e vai para outra, e a tarefa que sozinha passa do
 /// teto sai sozinha. A de tipo incerto sai sozinha, e a que muda o mesmo que
 /// uma onda aberta espera no backlog. As ondas saem na ordem fixa dos tipos —
@@ -251,11 +251,11 @@ pub(crate) fn dispatch_backlog(
     };
     let affinity = affinity_board.affinities();
     let batches = match &judging {
-        Some((_, _, Ok(judged))) if affinity.is_empty() => pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of, wave_budget(WAVE_LIMIT)),
-        Some((_, _, Ok(judged))) => pack_by_affinity(&population, &order, &waiting, &busy, &judged.tasks, &code_of, (wave_budget(WAVE_LIMIT), &affinity)),
+        Some((_, _, Ok(judged))) if affinity.is_empty() => pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of, WAVE_LIMIT),
+        Some((_, _, Ok(judged))) => pack_by_affinity(&population, &order, &waiting, &busy, &judged.tasks, &code_of, (WAVE_LIMIT, &affinity)),
         _ => {
             let mut batches = if order.is_empty() { Vec::new() } else {
-                pack_by_local_evidence(&population, &order, &waiting, &busy, &super::evidence::links(&affinity_board), wave_budget(WAVE_LIMIT))
+                pack_by_local_evidence(&population, &order, &waiting, &busy, &super::evidence::links(&affinity_board), WAVE_LIMIT)
             };
             // O lote com a tarefa marcada como prioridade primeiro; depois o
             // curinga da árvore inteira; os outros pela tarefa de código mais
@@ -317,7 +317,7 @@ pub(crate) fn dispatch_backlog(
             if chosen.iter().any(|(batch, _)| batch.tasks.contains(&id)) || sets_cross(&task.files, &busy) { continue; }
             let target = chosen.iter().position(|(batch, _)| !touches_whole_tree(&batch.files)
                 && (sets_cross(&task.files, &batch.files) || batch.tasks.iter().any(|other| links.contains(&(id,*other)) || links.contains(&(*other,id))))
-                && batch.tasks.iter().map(&weight).sum::<u64>().saturating_add(weight(&id)) <= wave_budget(WAVE_LIMIT));
+                && batch.tasks.iter().map(&weight).sum::<u64>().saturating_add(weight(&id)) <= WAVE_LIMIT);
             let Some(at) = target else { continue; };
             if chosen.iter().enumerate().any(|(other,(batch,_))| other != at && sets_cross(&task.files, &batch.files)) { continue; }
             chosen[at].0.tasks.push(id);

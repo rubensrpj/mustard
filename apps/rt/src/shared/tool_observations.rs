@@ -16,6 +16,9 @@ pub(crate) fn capture(
     event: &str,
     input: &HookInput,
 ) -> Option<Result<(), &'static str>> {
+    if event=="PostToolUse" && input.tool_name.as_deref()==Some("Read") {
+        return skill_read(root,host,input);
+    }
     if !["PostToolUse", "PostToolUseFailure"].contains(&event)
         || input.tool_name.as_deref() != Some("Bash")
     {
@@ -166,8 +169,42 @@ pub(crate) fn capture(
     )
 }
 
+fn skill_read(root:&Path,host:&str,input:&HookInput)->Option<Result<(),&'static str>> {
+    let (spec,wave,dispatch)=super::host_observation::tool_binding(root,host,input)?;
+    let call=input.raw.get("tool_use_id").or_else(||input.raw.get("call_id"))?.as_str()?;
+    let actor=input.agent_id.as_deref()?;
+    let path=input.tool_input["file_path"].as_str()?;
+    let content=input.raw.pointer("/tool_response/file/content")?.as_str()?;
+    let log=spec_events::read(&spec_events::spec_file(root,&spec).ok()?).ok()??;
+    let send=log.events.iter().rev().find(|e|e.event_type=="send" && e.wave()==Some(wave) && log.dispatch_position(e.id)==dispatch)?;
+    let sha=observed_skill(send,path,content)?;
+    let receipt=Receipt {version:1,spec,dispatch,wave,host:host.into(),actor:actor.into(),call:call.into(),tool:"Read".into(),source:path.into(),
+        input_sha256:observations::digest(input.tool_input.to_string().as_bytes()),output_sha256:sha,exit_code:None,
+        result_status:"succeeded".into(),observed_at:chrono::Utc::now().to_rfc3339()};
+    Some(observations::record(root,&receipt).map(|_|()).map_err(|_|"skill-read-receipt-failed"))
+}
+
+fn observed_skill(send:&mustard_core::domain::spec_events::SpecEvent,path:&str,content:&str)->Option<String> {
+    if content.len()>64_000 {return None;}
+    let sha=observations::digest(content.as_bytes());
+    send.fields.get("skills")?.as_array()?.iter().any(|skill|skill["path"]==path && skill["sha"]==sha).then_some(sha)
+}
+
 pub(crate) fn list(root: &Path, spec: &str, dispatch: Option<u64>) -> Vec<Value> {
     dispatch
         .and_then(|dispatch| observations::list(root, spec, dispatch).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)] mod tests {
+    use super::*;use serde_json::json;
+    #[test] fn a_partial_or_different_skill_read_is_not_confirmed() {
+        let text="Reuse the existing transaction helper.\n";
+        let log=mustard_core::domain::spec_events::parse_log(&json!({"id":1,"type":"send","wave":1,
+            "skills":[{"path":"/project/.claude/skills/storage/SKILL.md","sha":observations::digest(text.as_bytes())}]}).to_string());
+        let send=&log.events[0];let path="/project/.claude/skills/storage/SKILL.md";
+        assert!(observed_skill(send,path,text).is_some());
+        assert!(observed_skill(send,path,"Reuse the existing").is_none());
+        assert!(observed_skill(send,"/other/SKILL.md",text).is_none());
+    }
 }

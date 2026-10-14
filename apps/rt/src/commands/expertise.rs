@@ -2,10 +2,11 @@ use std::path::Path;
 use mustard_core::io::expertise;
 
 #[allow(clippy::too_many_arguments)]
-pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>, export: Option<&str>, prepare: bool,
+pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>, export: Option<&str>, prepare: bool,native:bool,
     prepare_session:Option<&str>,complete_session:Option<&Path>,query:Option<&str>,host: &str, files: &[String]) {
     let started=std::time::Instant::now();
     let result = (|| {
+        if native {return expertise::workflow::acknowledge_native(root,files,query.ok_or("expertise-short-task-required")?);}
         if prepare_session.is_some() || complete_session.is_some() {
             if files.len()>1 {return Err("expertise-session-accepts-one-file-scope".into());}
             let query=query.ok_or("expertise-short-task-required")?;
@@ -33,12 +34,15 @@ pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>,
         }
         if let Some(name) = export { return expertise::export(root, name, host); }
         if prepare {
-            let mut prepared=expertise::workflow::prepare(root,files,host,None,"native")?;
+            let mut prepared=if let Some(query)=query {expertise::workflow::prepare_for_task(root,files,host,query)?}
+                else {expertise::workflow::prepare(root,files,host,None,"native")?};
             if let Some(query)=query {
                 let current=expertise::workflow::candidates(root,files);
-                if !current.iter().any(|profile|profile.origin=="authored") {
+                if files.is_empty() || files.iter().any(|file| !current.iter().any(|profile|
+                    profile.origin=="authored" && expertise::workflow::task_fit(profile,query,files)>0 && expertise::matches(profile, std::slice::from_ref(file)))) {
                     let config=mustard_core::ProjectConfig::load(root);
-                    prepared["procedure_preparation"]=expertise::authoring::prepare(root,query,None,host,
+                    let file = if files.len()==1 {files.first().map(String::as_str)}else{None};
+                    prepared["procedure_preparation"]=expertise::authoring::prepare(root,query,file,host,
                         config.ai.session_models.get(host).map(String::as_str))?;
                 }
             }

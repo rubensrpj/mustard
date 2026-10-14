@@ -17,6 +17,21 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+#[test]
+fn explicit_project_diagnosis_works_from_another_directory_without_installing_anything() {
+    let dir=tempfile::tempdir().unwrap();
+    let project=dir.path().join("project");let caller=dir.path().join("caller");
+    fs::create_dir(&project).unwrap();fs::create_dir(&caller).unwrap();fs::write(project.join("mustard.json"),"{}").unwrap();
+    let result=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).current_dir(&caller)
+        .env("MUSTARD_RT_DELEGATED","1").env("CLAUDE_CONFIG_DIR",dir.path().join("host"))
+        .args(["run","doctor","--root"]).arg(&project).args(["--check","session-plugins","--json"]).output().unwrap();
+    assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
+    let report:serde_json::Value=serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["checks"][0]["name"],"session-plugins");
+    assert_eq!(report["checks"][0]["status"],"skip");
+    assert!(!project.join(".claude").exists());assert!(!caller.join(".claude").exists());
+}
+
 /// Grava o registro dos plugins em `config`, com uma instalação por par
 /// `(pasta, versão)`, na ordem dada.
 fn seed_registry(config: &Path, installs: &[(&Path, &str)]) {

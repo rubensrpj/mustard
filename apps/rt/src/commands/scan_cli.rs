@@ -40,6 +40,9 @@ pub enum ScanCmd {
         /// Reuse and export current profiles for the task; list stale drafts.
         #[arg(long, conflicts_with_all = ["sync", "record", "review", "export"])]
         prepare: bool,
+        /// Deliberately use current native guidance instead of a stale procedure.
+        #[arg(long,requires="query",conflicts_with_all=["sync","record","review","export","prepare","prepare_session","complete_session"])]
+        native: bool,
         /// Prepare a missing procedure using a native subagent of this session.
         #[arg(long, value_parser = ["claude", "codex"], requires = "query", conflicts_with_all = ["sync", "record", "review", "export", "prepare", "complete_session"])]
         prepare_session: Option<String>,
@@ -95,6 +98,9 @@ pub enum ScanCmd {
     Knowledge {
         #[arg(long, default_value = ".")]
         root: PathBuf,
+        /// Read the persisted native project profile; --file scopes conventions.
+        #[arg(long, conflicts_with_all=["query","intent","purpose","symbol","direction","refresh","record","prepare_session","session_model","complete_session","cancel_session","import_scip","source_manifest","coverage","topics","evaluate","responsibility","all","detail","markdown","out"])]
+        profile: bool,
         #[arg(long, default_value = "")]
         query: String,
         /// What the current task is trying to establish; never rewrites a literal pattern.
@@ -276,13 +282,13 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Expertise { root, sync, record, review, export, prepare, prepare_session, complete_session, query, host, file } =>
-            super::expertise::run(&root, sync, record.as_deref(), review.as_deref(), export.as_deref(), prepare,
+        ScanCmd::Expertise { root, sync, record, review, export, prepare, native, prepare_session, complete_session, query, host, file } =>
+            super::expertise::run(&root, sync, record.as_deref(), review.as_deref(), export.as_deref(), prepare,native,
                 prepare_session.as_deref(), complete_session.as_deref(), query.as_deref(), &host, &file),
         ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
         }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
         ),
-        ScanCmd::Knowledge { root, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
+        ScanCmd::Knowledge { root, profile, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
             import_scip,
             source_manifest, prepare_session, session_model, complete_session, cancel_session,
         } => {
@@ -307,6 +313,7 @@ pub fn dispatch(cmd: ScanCmd) {
                 out.as_deref(),
                 record.as_deref(),
                 super::knowledge::Modes {
+                    profile,
                     prepare_session: prepare_session.as_deref(), session_model: session_model.as_deref(), complete_session: complete_session.as_deref(),
                     cancel_session: cancel_session.as_deref(),
                     import_scip: import_scip.as_deref(),

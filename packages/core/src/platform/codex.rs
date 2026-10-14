@@ -7,6 +7,15 @@ use crate::io::{fs, sha256::Sha256};
 
 fn hash(bytes: &[u8]) -> String { let mut hash = Sha256::new(); hash.update(bytes); hash.hex_digest() }
 
+/// Parse the host's installed definition at this adapter boundary. The hook
+/// need not add a second TOML parser or assume an ignored sandbox option.
+pub fn analysis_configuration(root:&Path)->Value {
+    std::fs::read_to_string(root.join(".codex/agents/mustard-analysis.toml")).ok()
+        .and_then(|text|toml::from_str::<toml::Value>(&text).ok())
+        .map(|v|json!({"model":v.get("model").and_then(toml::Value::as_str),
+            "effort":v.get("model_reasoning_effort").and_then(toml::Value::as_str)})).unwrap_or(Value::Null)
+}
+
 fn read_object(path: &Path) -> Result<Value, String> {
     match std::fs::read(path) {
         Ok(bytes) => {
@@ -69,15 +78,17 @@ pub fn install(root: &Path) -> Result<Value, String> {
         if !already { entries.push(json!({"matcher":"*","hooks":[{"type":"command","command":command,"timeout":30}]})); }
     }
     let mut assets = vec![(".agents/skills/mustard/SKILL.md".to_string(),
-        "---\nname: mustard\ndescription: Use Mustard for project code searches, specification and wave execution in projects with mustard.json.\n---\n\nSearch through the mustard MCP search tool, preserving native tool/input and adding a short intent/purpose. CLI fallback: `mustard-rt run search --shell-output --intent \"<question>\" --purpose implement -- rg -n \"<pattern>\" .`. Read a known range with the same search contract's Read operation. Reuse current knowledge before more reading. `mustard-rt run resume` gives the active spec's next step. `mustard-rt run expertise --sync` refreshes navigation profiles without inference. For a missing interpretation, `mustard-rt run knowledge --query \"<question>\" --prepare-session codex` prepares bounded evidence for the current session's native subagent; prefer gpt-6-luna when available, inherit otherwise. Fixed full-input budget: 100000 tokens; isolated task, no parent transcript. No new Codex/Claude CLI or generation API. Complete with the returned receipt contract; unknown model/usage stays unknown. Mandatory rules and wave gates always apply.\n".to_string())];
+        "---\nname: mustard\ndescription: Use Mustard for project code searches, specification and wave execution in projects with mustard.json.\n---\n\nSearch through the mustard MCP search tool, preserving native tool/input and adding a short intent/purpose. CLI fallback: `mustard-rt run search --shell-output --intent \"<question>\" --purpose implement -- rg -n \"<pattern>\" .`. Read a known range with the same search contract's Read operation. Reuse current knowledge before more reading. `mustard-rt run resume` gives the active spec's next step. `mustard-rt run expertise --sync` refreshes navigation profiles without inference. For a missing interpretation, `mustard-rt run knowledge --query \"<question>\" --prepare-session codex` prepares bounded evidence for the current session's native subagent; resolve the latest listed Luna with medium effort from the fresh native model catalogue; if unavailable, use native evidence without delegation. Fixed full-input budget: 100000 tokens; isolated task, no parent transcript. No new Codex/Claude CLI or generation API. Complete with the returned receipt contract; unknown model/usage stays unknown. Mandatory rules and wave gates always apply.\n".to_string())];
     for (name, raw) in crate::platform::seeds::agent_texts(config.language().text_or_default()).into_iter()
         .chain(std::iter::once(("analysis",crate::platform::seeds::analysis_agent_text(config.language().text_or_default())))) {
         let body = raw.strip_prefix("---\n").and_then(|s|s.split_once("\n---")).map(|(_,body)|body.trim()).ok_or("codex-install-invalid-agent-template")?;
         let mut agent=json!({"name":format!("mustard-{name}"),"description":format!("Mustard {name} executor; obey the binary request and project rules."),"developer_instructions":body.replace("Claude Code","Codex").replace("Haiku","Luna").replace("--prepare-session claude","--prepare-session codex")});
         if name=="analysis" {
-            agent["model"]=json!(config.ai.session_models.get("codex").map_or("gpt-6-luna",String::as_str));
+            let resolution=crate::platform::session_models::resolve("codex",config.ai.session_models.get("codex").map(String::as_str));
+            agent["model"]=resolution["model"].as_str().map_or_else(||json!("gpt-6-luna"),|model|json!(model));
             agent["model_reasoning_effort"]=json!("medium");
-            agent["sandbox_mode"]=json!("read-only");
+            // Codex agents inherit the parent's sandbox. Native tool guards
+            // enforce this analysis role; an ignored TOML field cannot do so.
         }
         assets.push((format!(".codex/agents/mustard-{name}.toml"), toml::to_string(&agent).map_err(|e|e.to_string())?));
     }
@@ -149,7 +160,7 @@ mod tests {
         let analysis:toml::Value=toml::from_str(&std::fs::read_to_string(root.join(".codex/agents/mustard-analysis.toml")).unwrap()).unwrap();
         assert_eq!(analysis["model"].as_str(),Some("gpt-6-luna"));
         assert_eq!(analysis["model_reasoning_effort"].as_str(),Some("medium"));
-        assert_eq!(analysis["sandbox_mode"].as_str(),Some("read-only"));
+        assert!(analysis.get("sandbox_mode").is_none());
         assert!(!analysis["developer_instructions"].as_str().unwrap().contains("--prepare-session claude"));
         let text = std::fs::read_to_string(root.join(".codex/config.toml")).unwrap(); assert!(text.starts_with("# keep this comment"));
         let hooks: Value = serde_json::from_str(&std::fs::read_to_string(root.join(".codex/hooks.json")).unwrap()).unwrap();

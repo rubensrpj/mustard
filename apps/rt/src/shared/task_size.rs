@@ -5,8 +5,8 @@
 //! código o agente lê e muda para fazê-la. A tabela deste módulo traduz a nota
 //! em quanto a conversa do agente cresce, e a montagem
 //! ([`crate::shared::dag::pack_by_kind`]) fecha o lote do tipo quando a soma
-//! das tarefas chega ao teto: o limite do agente de onda menos o que a
-//! conversa já pesa ao começar.
+//! das tarefas chega ao horizonte de trabalho adicional da onda. Entrada
+//! inicial e resumos herdados precedem esse horizonte.
 //!
 //! ## De onde saiu a tabela
 //!
@@ -37,17 +37,6 @@ pub(crate) const GROWTH_TOKENS: [u64; 4] = [35_000, 65_000, 95_000, 125_000];
 /// Use the same conservative local estimate in packing and final cleanups.
 pub(crate) fn native_growth(files: usize) -> u64 {
     growth_tokens(match files { 1 => 0.0, 2..=3 => 1.0, 4..=6 => 2.0, _ => 3.0 })
-}
-
-/// Quanto a conversa do agente já pesa ao começar, antes da primeira tarefa:
-/// o pedido, as regras do projeto e o que ele lê para se situar.
-pub(crate) const AGENT_START_TOKENS: u64 = 40_000;
-
-/// O teto da soma dos tamanhos das tarefas de uma onda, para um agente cuja
-/// conversa pode chegar a `limit` tokens: o limite menos o que ela pesa ao
-/// começar.
-pub(crate) fn wave_budget(limit: u64) -> u64 {
-    limit.saturating_sub(AGENT_START_TOKENS)
 }
 
 /// A pergunta de tamanho da tarefa de chave `key` (`t11`), no formato de nota
@@ -102,20 +91,6 @@ mod tests {
         assert_eq!(growth_tokens(-1.0), 35_000);
         assert_eq!(growth_tokens(7.0), 125_000);
         assert_eq!(growth_tokens(f64::NAN), 125_000);
-    }
-
-    /// O teto de um agente que pode ir a 150 mil tokens é 110 mil: os 40 mil
-    /// do começo da conversa ficam de fora, e nenhum limite menor que eles dá
-    /// teto negativo.
-    #[test]
-    fn the_budget_is_the_limit_minus_what_the_conversation_weighs_at_the_start() {
-        assert_eq!(wave_budget(150_000), 110_000);
-        assert_eq!(wave_budget(30_000), 0);
-        assert_eq!(
-            wave_budget(crate::hooks::session::conversation_size::WAVE_LIMIT),
-            110_000,
-            "o limite do agente de onda mudou: o teto da montagem muda junto"
-        );
     }
 
     /// A pergunta leva a tarefa pela chave, a nota de quatro níveis em ordem,

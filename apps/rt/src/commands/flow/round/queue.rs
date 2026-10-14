@@ -3124,11 +3124,10 @@ mod tests {
         assert_eq!(wave_order(root, 3), vec![three]);
     }
 
-    /// As tarefas pequenas do mesmo tipo vão juntas até 110 mil tokens: duas de
-    /// 50 mil (100 mil) saem juntas, e a terceira, que passaria do teto, sai na
-    /// onda seguinte, quando há vaga.
+    /// Três tarefas de 50 mil cabem no horizonte de trabalho de 150 mil;
+    /// a entrada inicial não é subtraída novamente da estimativa.
     #[test]
-    fn tasks_of_one_kind_fill_a_wave_up_to_the_budget_and_the_rest_goes_to_the_next() {
+    fn three_fifty_thousand_tasks_fit_the_exact_work_budget() {
         use crate::shared::dag::TaskKind;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3139,17 +3138,14 @@ mod tests {
 
         let judge = judging_sized(|_| TaskKind::Feature, |_| 0.5);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2]));
-        assert_eq!(wave_order(root, 1), vec![one, two], "50 mil mais 50 mil cabem");
-        assert_eq!(wave_order(root, 2), vec![three], "a terceira passaria de 110 mil");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1]));
+        assert_eq!(wave_order(root, 1), vec![one, two, three], "150 mil de trabalho cabem");
     }
 
-    /// O teto da montagem acompanha o limite do agente de onda: 150 mil menos
-    /// os 40 mil do começo, 110 mil. Duas tarefas do mesmo tipo de nota 1
-    /// (65 mil cada, 130 mil juntas) passam dele e saem em duas ondas; o teto
-    /// de 140 mil da decisão antiga as juntaria numa só.
+    /// Duas tarefas de 65 mil compartilham uma onda: entrada e resumos não
+    /// reduzem os 150 mil de trabalho, evitando uma onda extra de cerimônia.
     #[test]
-    fn two_tasks_of_level_one_pass_the_budget_the_wave_limit_leaves_and_leave_in_two_waves() {
+    fn two_level_one_tasks_share_a_wave_without_a_fixed_initial_context_discount() {
         use crate::shared::dag::TaskKind;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3159,9 +3155,8 @@ mod tests {
 
         let judge = judging_sized(|_| TaskKind::Feature, |_| 1.0);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2]));
-        assert_eq!(wave_order(root, 1), vec![one], "130 mil passam de 110 mil");
-        assert_eq!(wave_order(root, 2), vec![two]);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1]));
+        assert_eq!(wave_order(root, 1), vec![one,two], "130 mil de trabalho cabem no horizonte de 150 mil");
     }
 
     /// Com vaga para uma onda só, a que passou do teto fica no backlog, sem
