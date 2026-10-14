@@ -719,6 +719,9 @@ impl SpecLog {
     /// da revisão recorta as ondas só pelo veredito final mais novo. Um
     /// veredito sem o campo final não conta: só o veredito final
     /// do agente de teste dedicado pode pôr uma onda em modo de conserto.
+    /// Só o resultado `rejected` conta: a marca solta (`released`), que o
+    /// fechamento grava depois da reprovação sem prova, é a mais nova da onda
+    /// e a tira daqui.
     #[must_use]
     pub fn last_rejected(&self) -> BTreeMap<u64, u64> {
         self.verdicts_by_wave()

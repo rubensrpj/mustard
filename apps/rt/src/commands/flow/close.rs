@@ -74,6 +74,8 @@ use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
+mod stale_marks;
+
 /// As opções de `mustard-rt run close`.
 #[derive(Default)]
 pub struct CloseOpts {
@@ -334,6 +336,10 @@ fn run_close(
 
     let log = read(&path)?;
     super::validation::review_elapsed(root, &spec, &log).map_err(CloseRefusal::Refused)?;
+    // A reprovação que o lint ou a suíte gravaram sem citar arquivo da onda
+    // sai antes de a obra ser conferida: a onda solta não trava mais o
+    // fechamento, que segue para a máquina sem pedir conserto.
+    let log = if stale_marks::release(root, &spec, &log, lang).map_err(CloseRefusal::Refused)?.is_empty() { log } else { read(&path)? };
     finished(&log)?;
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a
     // leitura acima assume: sem ele, o fechamento não abre outro pedido, e a
@@ -1327,12 +1333,12 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
 
-    fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
+    pub(super) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
         crate::commands::flow::round::review::test_conductor_review(&opts.root, opts.spec.as_deref().unwrap_or("x"));
         actual_round_for(opts, session)
     }
 
-    fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
+    pub(super) fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
         crate::commands::flow::round::review::test_conductor_review(&opts.root, opts.spec.as_deref().unwrap_or("x"));
         super::close_for(opts, session)
     }
@@ -1409,7 +1415,7 @@ mod tests {
     }
 
     /// O arquivo da tarefa da onda `n`.
-    fn wave_file(n: u64) -> String {
+    pub(super) fn wave_file(n: u64) -> String {
         format!("src/w{n}.rs")
     }
 
@@ -1417,7 +1423,7 @@ mod tests {
     /// arquivo dela, despachadas e entregues juntas. A rodada não pede
     /// revisão de onda nenhuma: a entrega já basta, e falta só o fechamento
     /// pedir o agente de teste dedicado.
-    fn ready_with_waves(root: &Path, spec: &str, proofs: &[&str], waves: u64) {
+    pub(super) fn ready_with_waves(root: &Path, spec: &str, proofs: &[&str], waves: u64) {
         ready_with_checked(root, spec, proofs, waves, &[]);
     }
 
@@ -4049,7 +4055,7 @@ exit "${2:-0}"
     /// antes das ondas, e ganha `lib/fora.rs` num commit que a obra não fez,
     /// que a branch junta depois. Esse arquivo fica no projeto sem a branch o
     /// ter mudado; os das ondas, a branch mudou.
-    fn branched_from_dev(root: &Path) {
+    pub(super) fn branched_from_dev(root: &Path) {
         let out = Command::new("git").args(["rev-list", "--max-parents=0", "HEAD"]).current_dir(root).output().unwrap();
         let seed = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let outside = tempdir().unwrap();

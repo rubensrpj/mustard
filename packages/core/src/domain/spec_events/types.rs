@@ -399,6 +399,9 @@ const CRITERION_FORMS: &[&str] =
 const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
 const ROLES: &[&str] = &["wave", "review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
+/// O resultado de uma marca da máquina numa onda: a reprovação, que põe a
+/// onda em conserto, ou a soltura, que tira a reprovação que não tinha prova.
+const FAILURE_RESULTS: &[&str] = &["rejected", "released"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 
@@ -670,7 +673,7 @@ pub const TYPES: &[TypeSpec] = &[
         false,
         &[
             req("wave", Kind::Int),
-            req("result", Kind::OneOf(VERDICTS)),
+            req("result", Kind::OneOf(FAILURE_RESULTS)),
             TEXT,
             req("final", Kind::Bool),
             req("fingerprint", Kind::Text),
