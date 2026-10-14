@@ -1624,37 +1624,91 @@ mod tests {
         }
     }
 
-    /// Cada linguagem, com o arquivo, o texto da base e a declaração nova sem
-    /// uso, escrita privada e exportada: a privada fica dentro do arquivo, e
-    /// a exportada alguém de fora do projeto pode usar.
-    const NEW_CODE: [(&str, &str, &str, &str, &str); 3] = [
-        ("src/math.rs", "pub fn run_sum() -> u32 {\n    1\n}\n", "fn lonely_total() -> u32 {\n    2\n}\n", "pub fn lonely_total() -> u32 {\n    2\n}\n", "lonely_total"),
-        (
-            "web/math.ts",
-            "export function runSum(): number {\n  return 1;\n}\n",
-            "function lonelyTotal(): number {\n  return 2;\n}\n",
-            "export function lonelyTotal(): number {\n  return 2;\n}\n",
-            "lonelyTotal",
-        ),
-        (
-            "App/Calc.cs",
-            "namespace App {\n  public class Calc {\n    public int RunSum() { return 1; }\n",
-            "    private int LonelyTotal() { return 2; }\n",
-            "    public int LonelyTotal() { return 2; }\n",
-            "LonelyTotal",
-        ),
+    /// O código novo sem uso de uma linguagem: o arquivo, o texto da base, o
+    /// que fecha o arquivo depois do código posto, e a declaração nova, com o
+    /// texto e o nome, escrita privada (fica dentro do arquivo ou do pacote) e
+    /// em cada forma exportada (alguém de fora do projeto pode usar).
+    struct NewCode {
+        file: &'static str,
+        base: &'static str,
+        closing: &'static str,
+        private: (&'static str, &'static str),
+        exported: &'static [(&'static str, &'static str)],
+    }
+
+    /// Cada linguagem que o scan lê, com a visibilidade que ela escreve: a
+    /// palavra (`pub`, `export`, `public`), a maiúscula do Go, o sublinhado do
+    /// Python e do Dart, o membro do PHP sem `private`. No TypeScript, o nome
+    /// exportado à parte (`export { nome }`, `module.exports`) também é de fora.
+    const NEW_CODE: [NewCode; 7] = [
+        NewCode {
+            file: "src/math.rs",
+            base: "pub fn run_sum() -> u32 {\n    1\n}\n",
+            closing: "",
+            private: ("fn lonely_total() -> u32 {\n    2\n}\n", "lonely_total"),
+            exported: &[("pub fn lonely_total() -> u32 {\n    2\n}\n", "lonely_total")],
+        },
+        NewCode {
+            file: "web/math.ts",
+            base: "export function runSum(): number {\n  return 1;\n}\n",
+            closing: "",
+            private: ("function lonelyTotal(): number {\n  return 2;\n}\n", "lonelyTotal"),
+            exported: &[
+                ("export function lonelyTotal(): number {\n  return 2;\n}\n", "lonelyTotal"),
+                ("function lonelyTotal(): number {\n  return 2;\n}\n\nexport { lonelyTotal };\n", "lonelyTotal"),
+                ("function lonelyTotal(): number {\n  return 2;\n}\n\nmodule.exports = { lonelyTotal };\n", "lonelyTotal"),
+            ],
+        },
+        NewCode {
+            file: "App/Calc.cs",
+            base: "namespace App {\n  public class Calc {\n    public int RunSum() { return 1; }\n",
+            closing: "  }\n}\n",
+            private: ("    private int LonelyTotal() { return 2; }\n", "LonelyTotal"),
+            exported: &[("    public int LonelyTotal() { return 2; }\n", "LonelyTotal")],
+        },
+        NewCode {
+            file: "calc/calc.go",
+            base: "package calc\n\nfunc RunSum() int {\n\treturn 1\n}\n",
+            closing: "",
+            private: ("\nfunc lonelyTotal() int {\n\treturn 2\n}\n", "lonelyTotal"),
+            exported: &[("\nfunc LonelyTotal() int {\n\treturn 2\n}\n", "LonelyTotal")],
+        },
+        NewCode {
+            file: "shop/calc.py",
+            base: "def run_sum():\n    return 1\n",
+            closing: "",
+            private: ("\n\ndef _lonely_total():\n    return 2\n", "_lonely_total"),
+            exported: &[("\n\ndef lonely_total():\n    return 2\n", "lonely_total")],
+        },
+        NewCode {
+            file: "lib/calc.dart",
+            base: "int runSum() => 1;\n",
+            closing: "",
+            private: ("\nint _lonelyTotal() => 2;\n", "_lonelyTotal"),
+            exported: &[("\nint lonelyTotal() => 2;\n", "lonelyTotal")],
+        },
+        NewCode {
+            file: "src/Calc.php",
+            base: "<?php\nclass Calc {\n    public function runSum(): int { return 1; }\n",
+            closing: "}\n",
+            private: ("    private function lonelyTotal(): int { return 2; }\n", "lonelyTotal"),
+            exported: &[
+                ("    public function lonelyTotal(): int { return 2; }\n", "lonelyTotal"),
+                ("    function lonelyTotal(): int { return 2; }\n", "lonelyTotal"),
+            ],
+        },
     ];
 
     /// A análise final do código que a onda 1 pôs em `file`: o texto `base`
-    /// comitado, `added` escrito depois dele, e os dois mapas do scan de
-    /// verdade, o da base e o de depois, sem saída de compilador nenhuma.
-    fn final_by_the_real_scan(file: &str, base: &str, added: &str) -> Vec<Finding> {
+    /// comitado, `added` escrito depois dele, `closing` no fim dos dois, e os
+    /// dois mapas do scan de verdade, o da base e o de depois, sem saída de
+    /// compilador nenhuma.
+    fn final_by_the_real_scan(NewCode { file, base, closing, .. }: &NewCode, added: &str) -> Vec<Finding> {
         let scan = mustard_core::Scan::locate();
         assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
         let dir = tempdir().unwrap();
         let maps = tempdir().unwrap();
         let root = dir.path();
-        let closing = if file.ends_with(".cs") { "  }\n}\n" } else { "" };
         std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
         std::fs::write(root.join(file), format!("{base}{closing}")).unwrap();
         git_at(root, &["init", "-q"]);
@@ -1668,14 +1722,16 @@ mod tests {
         let before = mapped("base.db");
         std::fs::write(root.join(file), format!("{base}{added}{closing}")).unwrap();
         let after = mapped("after.db");
-        final_findings(root, &AfterWave { base: before, after, changed: vec![(1, vec![file.into()])] }, Locale::PtBr, &[])
+        final_findings(root, &AfterWave { base: before, after, changed: vec![(1, vec![(*file).into()])] }, Locale::PtBr, &[])
     }
 
     #[test]
     fn a_new_private_declaration_without_use_refuses_the_close_by_the_map() {
-        for (file, base, private, _, name) in NEW_CODE {
-            let findings = final_by_the_real_scan(file, base, private);
+        for code in &NEW_CODE {
+            let (private, name) = code.private;
+            let findings = final_by_the_real_scan(code, private);
             let refused: Vec<&str> = findings.iter().filter(|f| f.refuses).map(|f| f.text.as_str()).collect();
+            let file = code.file;
             assert_eq!(refused.len(), 1, "{file}: {refused:?}");
             assert!(refused[0].contains(&format!("`{name}` em `{file}`")) && refused[0].contains("é código novo sem uso fora de teste"), "{file}: {refused:?}");
         }
@@ -1683,10 +1739,13 @@ mod tests {
 
     #[test]
     fn an_exported_declaration_without_use_only_warns() {
-        for (file, base, _, exported, name) in NEW_CODE {
-            let findings = final_by_the_real_scan(file, base, exported);
-            assert!(findings.iter().all(|f| !f.refuses), "{file}: {:?}", findings.iter().map(|f| &f.text).collect::<Vec<_>>());
-            assert!(findings.iter().any(|f| f.text.contains(&format!("`{name}` em `{file}`"))), "{file}: the warning stays");
+        for code in &NEW_CODE {
+            for (exported, name) in code.exported {
+                let findings = final_by_the_real_scan(code, exported);
+                let file = code.file;
+                assert!(findings.iter().all(|f| !f.refuses), "{file} `{name}`: {:?}", findings.iter().map(|f| &f.text).collect::<Vec<_>>());
+                assert!(findings.iter().any(|f| f.text.contains(&format!("`{name}` em `{file}`"))), "{file} `{name}`: the warning stays");
+            }
         }
     }
 }

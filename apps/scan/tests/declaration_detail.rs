@@ -441,3 +441,129 @@ fn the_header_the_comment_and_the_line_come_out_the_same_in_every_language() {
     assert!(!calls.contains(&"var"), "var não é chamada: {calls:?}");
 
 }
+
+/// O arquivo de cada linguagem sem palavra de visibilidade, com declarações
+/// que a regra dela deixa ver fora e outras que ela guarda.
+const VISIBILITY_FILES: [(&str, &str); 4] = [
+    (
+        "calc/calc.go",
+        "package calc\n\nconst Limit = 10\nconst limit = 3\n\ntype Box struct {\n\tTotal int\n\tcount int\n}\n\n\
+         type box struct{}\n\ntype Reader interface {\n\tRead() int\n\treset()\n}\n\ntype Alias = Box\n\n\
+         func Sum() int {\n\ttype Local struct{}\n\treturn 1\n}\n\nfunc sum() int { return 2 }\n\n\
+         func (b *Box) Add() {}\n\nfunc (b *Box) add() {}\n",
+    ),
+    (
+        "shop/calc.py",
+        "LIMIT = 10\n_limit = 3\n\n\nclass Box:\n    total = 0\n    _count = 0\n\n    def __init__(self):\n        pass\n\n\
+         \x20   def add(self):\n        pass\n\n    def _reset(self):\n        pass\n\n    @property\n    def size(self):\n        return 1\n\n\n\
+         class _Hidden:\n    pass\n\n\n@decorate\nclass Point:\n    x: int = 0\n\n\n\
+         def run():\n    def inner():\n        pass\n    return inner\n\n\ndef _helper():\n    pass\n",
+    ),
+    (
+        "lib/calc.dart",
+        "const limit = 10;\nconst _limit = 3;\n\nint run() => 1;\nint _helper() => 2;\n\n\
+         class Box {\n  int total = 0;\n  int _count = 0;\n  static const max = 5;\n  Box();\n  Box.empty();\n  Box._internal();\n\
+         \x20 int add() => 1;\n  int _reset() => 0;\n  int get size => 1;\n}\n\nclass _Hidden {}\n\n\
+         enum Color { red, green }\n\nmixin Walker {}\n\nextension Words on String {}\n",
+    ),
+    (
+        "src/Calc.php",
+        "<?php\nnamespace Shop;\n\nconst LIMIT = 10;\n\nfunction run(): int { return 1; }\n\n\
+         interface Reader { public function read(): int; }\n\ntrait Counts { private function tick(): void {} }\n\n\
+         enum Color { case Red; }\n\nclass Calc {\n    public const MAX = 5;\n    private const MIN = 1;\n\
+         \x20   public int $total = 0;\n    protected int $count = 0;\n    var $legacy;\n\
+         \x20   public function add(): int { return 1; }\n    function plain(): int { return 2; }\n\
+         \x20   private function reset(): void {}\n    PROTECTED function guard(): void {}\n\
+         \x20   public private(set) int $size = 0;\n}\n",
+    ),
+];
+
+/// Na linguagem que não escreve a visibilidade numa palavra, o mapa marca a
+/// declaração que ela deixa ver fora do arquivo ou do pacote pela regra
+/// dela: no Go, o nome com maiúscula, e o tipo e a constante só no topo; no
+/// Python, o nome sem sublinhado na frente (ou entre sublinhados duplos), no
+/// topo do módulo ou no corpo de uma classe; no Dart, o nome sem sublinhado
+/// na frente; no PHP, tudo o que é global e o membro que não é `private` nem
+/// `protected`.
+#[test]
+fn the_map_marks_what_each_language_lets_outside_see_by_its_own_rule() {
+    let temp = tempfile::Builder::new().prefix("scan-visible-").tempdir().unwrap();
+    let dir = temp.path();
+    for (file, body) in VISIBILITY_FILES {
+        write(dir, file, body);
+    }
+    let map = scan(dir);
+    let marks = |file: &str| {
+        let mut seen: [Vec<String>; 2] = Default::default();
+        for (_, decl) in every_declaration(&map).into_iter().filter(|(at, _)| *at == file) {
+            let exported = decl["syntax"]["exported"] == true;
+            seen[usize::from(exported)].push(format!("{} {}", decl["kind"].as_str().unwrap(), decl["name"].as_str().unwrap()));
+        }
+        seen.iter_mut().for_each(|names| names.sort());
+        let [hidden, shown] = seen;
+        (shown, hidden)
+    };
+    let names = |list: &[&str]| -> Vec<String> {
+        let mut out: Vec<String> = list.iter().map(ToString::to_string).collect();
+        out.sort();
+        out
+    };
+    assert_eq!(
+        marks("calc/calc.go"),
+        (
+            names(&["const Limit", "struct Box", "field Total", "interface Reader", "method Read", "type Alias", "function Sum", "method Add"]),
+            names(&["const limit", "field count", "struct box", "method reset", "struct Local", "function sum", "method add"]),
+        )
+    );
+    assert_eq!(
+        marks("shop/calc.py"),
+        (
+            names(&["const LIMIT", "class Box", "field total", "method __init__", "method add", "method size", "class Point", "field x", "function run"]),
+            names(&["const _limit", "field _count", "method _reset", "class _Hidden", "function inner", "function _helper"]),
+        )
+    );
+    assert_eq!(
+        marks("lib/calc.dart"),
+        (
+            names(&[
+                "const limit",
+                "function run",
+                "class Box",
+                "field total",
+                "const max",
+                "method Box",
+                "method empty",
+                "method add",
+                "property size",
+                "enum Color",
+                "enum_member red",
+                "enum_member green",
+                "mixin Walker",
+                "extension Words",
+            ]),
+            names(&["const _limit", "function _helper", "field _count", "method _internal", "method _reset", "class _Hidden"]),
+        )
+    );
+    assert_eq!(
+        marks("src/Calc.php"),
+        (
+            names(&[
+                "const LIMIT",
+                "function run",
+                "interface Reader",
+                "method read",
+                "trait Counts",
+                "enum Color",
+                "enum_member Red",
+                "class Calc",
+                "const MAX",
+                "property total",
+                "property legacy",
+                "method add",
+                "method plain",
+                "property size",
+            ]),
+            names(&["method tick", "const MIN", "property count", "method reset", "method guard"]),
+        )
+    );
+}

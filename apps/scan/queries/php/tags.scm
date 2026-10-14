@@ -57,3 +57,21 @@
 ; texto) e a declaração que o contém.
 (string) @text
 (encapsed_string) @text
+
+; A declaração que o PHP deixa ver fora do arquivo: a classe, a interface, o
+; traço, o enum, a função e a constante do topo, que são globais, e o membro
+; de um tipo, público quando não diz o contrário. Quem está fora do projeto
+; pode usá-la, e a falta de uso dentro dele não diz que ela sobra. O membro
+; `private` ou `protected` (a palavra em qualquer caixa) fica dentro do tipo;
+; o `private(set)` só fecha a escrita.
+[(class_declaration)
+ (interface_declaration)
+ (trait_declaration)
+ (enum_declaration)
+ (function_definition)
+ (const_declaration)
+ (method_declaration)
+ (property_declaration)
+ (enum_case)] @visible
+((_ (visibility_modifier) @_access) @hidden
+  (#match? @_access "^(?i)(?:private|protected)$"))

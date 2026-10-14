@@ -155,3 +155,26 @@
 ; A string escrita sozinha no começo do módulo é a documentação dele, e não
 ; texto fixo.
 (module . (expression_statement (string (string_content) @doc)))
+
+; A declaração que o Python deixa ver fora do módulo: a de nome sem
+; sublinhado na frente, e o nome especial entre sublinhados duplos
+; (`__init__`, `__all__`), que a própria língua chama. Quem está fora do
+; projeto pode usá-la, e a falta de uso dentro dele não diz que ela sobra. A
+; classe, a função e a constante valem no topo do módulo, porque as escritas
+; dentro de uma função são locais dela; o membro vale no corpo de uma classe.
+((module [
+    (class_definition name: (identifier) @_name) @visible
+    (function_definition name: (identifier) @_name) @visible
+    (decorated_definition definition: [
+      (class_definition name: (identifier) @_name)
+      (function_definition name: (identifier) @_name)] @visible)
+    (expression_statement (assignment left: (identifier) @_name) @visible)])
+  (#match? @_name "^(?:[^_]|__.+__$)"))
+((class_definition body: (block [
+    (class_definition name: (identifier) @_name) @visible
+    (function_definition name: (identifier) @_name) @visible
+    (decorated_definition definition: [
+      (class_definition name: (identifier) @_name)
+      (function_definition name: (identifier) @_name)] @visible)
+    (expression_statement (assignment left: (identifier) @_name) @visible)]))
+  (#match? @_name "^(?:[^_]|__.+__$)"))
