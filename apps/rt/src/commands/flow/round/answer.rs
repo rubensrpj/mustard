@@ -683,8 +683,11 @@ pub(super) fn run_entered_round(
     }
     let jev = waves_jev.filter.as_deref();
     let judge = jev.map(|jev| move |board: &Board| jev.judge_backlog(board));
-    dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), judge.as_ref().map(|judge| judge as &Judge<'_>))
-        .map_err(RoundRefusal::Refused)?;
+    // O motivo exato de cada tarefa pronta que a montagem deixou de fora vai
+    // ao `held` da resposta, no fim da rodada.
+    let assembled = dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), judge.as_ref().map(|judge| judge as &Judge<'_>))
+        .map_err(RoundRefusal::Refused)?
+        .1;
     // A tarefa do backlog que não cobre item nenhum não forma onda: a rodada
     // a nomeia, porque ela fica no backlog e segura o fechamento.
     let uncovered = backlog_uncovered(&locked);
@@ -1064,7 +1067,7 @@ pub(super) fn run_entered_round(
     let now = current.as_ref().unwrap_or(&log);
     // A tarefa pronta que ficou na fila sai com o motivo, lido da spec de
     // depois dos envios desta rodada, e o próximo passo o diz numa linha.
-    let queued = super::scheduling::held(root, now, lang);
+    let queued = super::scheduling::held(root, now, lang, &assembled);
     let then = match &queued {
         Some(queued) => [then, queued.line.clone()].into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" "),
         None => then,

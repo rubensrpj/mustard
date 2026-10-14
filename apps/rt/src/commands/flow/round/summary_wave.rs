@@ -118,7 +118,7 @@ mod tests {
         let summary = stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![left], "o resumo vem antes, com o que ele deixou");
         assert_eq!(wave_order(root, 2), vec![lower], "a de código mais baixo sai depois");
         let log = spec_now(root);
@@ -129,7 +129,7 @@ mod tests {
         sent(root, 1, Some(summary));
         sent(root, 2, None);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "nenhuma onda nova");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![]), "nenhuma onda nova");
     }
 
     /// A tarefa pronta que divide arquivo, direto, com uma das que o resumo
@@ -147,7 +147,7 @@ mod tests {
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![left, along], "a que divide arquivo vai de carona");
         assert_eq!(wave_order(root, 2), vec![apart], "a da corrente espera, e a sem relação sai à parte");
         assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a da corrente segue no backlog");
@@ -164,7 +164,7 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
 
         let left = backlog_task_on(root, said, crit, "Mexer nos dois.", &["src/b.rs", "src/a.rs"]);
@@ -174,7 +174,7 @@ mod tests {
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2]));
         assert_eq!(wave_order(root, 2), vec![apart], "só a que não divide arquivo sai");
         assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a que divide espera a vez");
         assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
@@ -189,14 +189,14 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let other = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2, 3]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2, 3]));
         assert_eq!(wave_order(root, 2), vec![left], "summary stays attached");
         assert_eq!(wave_order(root, 3), vec![other], "independent small work uses a slot");
     }
@@ -292,7 +292,7 @@ mod tests {
         stopped_in(root, 8, &[two]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
         assert_eq!(wave_order(root, 1), vec![one], "only the task of its own summary");
         assert_eq!(spec_now(root).current(two).and_then(|task| task.wave()), None, "it waits for its own summary");
     }

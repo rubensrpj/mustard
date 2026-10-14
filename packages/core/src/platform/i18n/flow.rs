@@ -1160,14 +1160,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.queued.file", Locale::EnUs) => "file {files}, held by wave {wave}",
         ("round.queued.cleanup", Locale::PtBr) => "limpeza: sai depois das outras tarefas do backlog",
         ("round.queued.cleanup", Locale::EnUs) => "cleanup: goes out after the other backlog tasks",
-        ("round.queued.assembly", Locale::PtBr) => {
-            "pronta e com vaga, mas fora desta montagem. Ela voltou ao backlog nesta rodada, ou divide código com \
-             uma onda aberta ou com outra tarefa que espera. A próxima rodada confere de novo"
-        }
-        ("round.queued.assembly", Locale::EnUs) => {
-            "ready with a free slot, but left out of this assembly. It returned to the backlog this round, or shares \
-             code with an open wave or another waiting task. The next round checks again"
-        }
+        ("round.queued.assembly", Locale::PtBr) => "pronta e com vaga, mas fora desta montagem. A próxima rodada confere de novo",
+        ("round.queued.assembly", Locale::EnUs) => "ready with a free slot, but left out of this assembly. The next round checks again",
+        ("round.queued.reads", Locale::PtBr) => "lê {files}, que a onda {wave} muda, pelo mapa do scan",
+        ("round.queued.reads", Locale::EnUs) => "reads {files}, which wave {wave} changes, per the scan map",
+        ("round.queued.read_by", Locale::PtBr) => "muda {files}, que a onda {wave} lê, pelo mapa do scan",
+        ("round.queued.read_by", Locale::EnUs) => "changes {files}, which wave {wave} reads, per the scan map",
+        ("round.queued.judged", Locale::PtBr) => "o Jev julgou {chance}% de chance de ela mudar o mesmo que uma onda em andamento",
+        ("round.queued.judged", Locale::EnUs) => "Jev judged a {chance}% chance that it changes the same as a running wave",
+        ("round.queued.behind", Locale::PtBr) => "reservada atrás de {task}, que também ficou e divide {files} com ela",
+        ("round.queued.behind", Locale::EnUs) => "held behind {task}, which also stayed and shares {files} with it",
+        ("round.queued.behind_lot", Locale::PtBr) => "no mesmo assunto de {task}, que também ficou",
+        ("round.queued.behind_lot", Locale::EnUs) => "in the same subject as {task}, which also stayed",
+        ("round.queued.arrived", Locale::PtBr) => "chegou ao backlog nesta rodada e entra na montagem da próxima",
+        ("round.queued.arrived", Locale::EnUs) => "reached the backlog this round and joins the next round's assembly",
+        ("round.queued.line_held", Locale::PtBr) => "{task} ficou: {detail}.",
+        ("round.queued.line_held", Locale::EnUs) => "{task} stayed: {detail}.",
         ("round.queued.line_capacity", Locale::PtBr) => "Sem vaga para {tasks}: {detail}. A fila anda quando uma onda voltar.",
         ("round.queued.line_capacity", Locale::EnUs) => "No slot for {tasks}: {detail}. The queue moves when a wave returns.",
         ("round.queued.line_file", Locale::PtBr) => "{task} espera o {detail}.",
@@ -1888,7 +1896,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 254, 0x61ea_7a5c_03e3_be6f);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 261, 0xb758_e951_7daf_2145);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

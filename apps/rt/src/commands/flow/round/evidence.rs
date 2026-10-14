@@ -210,7 +210,7 @@ mod tests {
         let b = backlog_task_on(root, said, crit, "Change contract.", &["src/b.rs"]);
         let log = spec_now(root);
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None),
+            dispatch_backlog(root, "x", &log, &log, 4, None).map(|(formed, _)| formed),
             Ok(vec![1])
         );
         assert_eq!(wave_order(root, 1), vec![a, b]);
@@ -224,7 +224,7 @@ mod tests {
         backlog_task_on(root, said, crit, "Change contract.", &["src/b.rs"]);
         let log = spec_now(root);
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None),
+            dispatch_backlog(root, "x", &log, &log, 4, None).map(|(formed, _)| formed),
             Ok(vec![1])
         );
         seed_running(root, 1);
@@ -235,13 +235,13 @@ mod tests {
             mustard_core::domain::map_filter::FilterError,
         > { panic!("an exact native reservation needs no paid judgement") };
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, Some(&never)),
+            dispatch_backlog(root, "x", &log, &log, 4, Some(&never)).map(|(formed, _)| formed),
             Ok(vec![])
         );
         let independent = backlog_task_on(root, said, crit, "Change docs.", &["README.md"]);
         let log = spec_now(root);
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None),
+            dispatch_backlog(root, "x", &log, &log, 4, None).map(|(formed, _)| formed),
             Ok(vec![2])
         );
         assert_eq!(wave_order(root, 2), vec![independent]);
