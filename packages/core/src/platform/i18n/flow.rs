@@ -993,6 +993,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_repeated", Locale::EnUs) => {
             "Leftover from wave {wave} that repeats task {task}, still to deliver: {detail}"
         }
+        ("round.wave_left_without_tasks", Locale::PtBr) => {
+            "A onda {wave} saiu do ar por ficar sem tarefa: o pedido {send} segue sem volta, e nenhuma tarefa viva \
+             aponta a onda. A fila, a retomada e a rodada deixam de listá-la."
+        }
+        ("round.wave_left_without_tasks", Locale::EnUs) => {
+            "Wave {wave} left the air for having no task: request {send} has no return, and no live task points to \
+             the wave. The queue, the resume and the round no longer list it."
+        }
         ("round.leftover_without_files", Locale::PtBr) => {
             "Sobra sem arquivo declarado: grave uma versão nova da tarefa com os arquivos e as \
              dependências antes de ela sair numa onda."
@@ -1831,7 +1839,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 242, 0x55f8_c00e_203b_e28c);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 243, 0x5820_66cf_e1a1_acba);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2052,6 +2060,7 @@ mod tests {
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
+            ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
             ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.held_return", &["{wave}", "{hint}"][..]),

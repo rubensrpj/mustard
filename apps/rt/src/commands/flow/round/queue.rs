@@ -7,13 +7,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
+use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::leftovers::is_cleanup;
 use super::stops::waves_replanned;
 use crate::commands::wave::wave_overlap_check::{WaveGraph, wave_graph};
+use crate::commands::spec_events::write::record;
 use crate::shared::dag::{sets_cross, touches_whole_tree};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
@@ -192,6 +195,14 @@ pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// mudado, até sair de novo ou voltar.
 pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     let planned = log.planned_waves();
+    sends_without_return(log).into_iter().filter(|(n, _)| planned.contains(n)).collect()
+}
+
+/// As ondas com pedido despachado e sem volta, cada uma com o número do
+/// pedido, estejam ou não no plano: a leitura que [`unanswered_sends`]
+/// restringe às do plano e que [`waves_left_without_tasks`] restringe às que
+/// saíram dele.
+fn sends_without_return(log: &SpecLog) -> BTreeMap<u64, u64> {
     let verdicts = log.verdicts_by_wave();
     let dispatches=log.last_dispatch_by_wave();
     let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
@@ -202,7 +213,6 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     }
     log.last_by_wave("send")
         .into_iter()
-        .filter(|(n, _)| planned.contains(n))
         .filter(|(n, sent)| {
             // A entrega e o veredito se comparam com o lugar em que o envio
             // despachou a onda, e não com a versão mais nova dele: a versão
@@ -218,6 +228,66 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
         })
         .collect()
 }
+
+/// As ondas que saíram do ar por ficar sem tarefa, cada uma com o número do
+/// pedido dela: a onda tem pedido sem volta, continua gravada, e nenhuma
+/// tarefa viva aponta mais o número dela — a tarefa foi removida, ou regravada
+/// fora da onda. Sem tarefa ela sai do plano ([`SpecLog::planned_waves`]) e,
+/// pela mesma leitura, do andamento ([`waves_in_progress`]) em toda chamada:
+/// rodada com relatório ou com despacho, retomada e fila.
+pub(crate) fn waves_left_without_tasks(log: &SpecLog) -> BTreeMap<u64, u64> {
+    let planned = log.planned_waves();
+    let recorded: BTreeSet<u64> =
+        log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").filter_map(SpecEvent::wave).collect();
+    sends_without_return(log).into_iter().filter(|(n, _)| recorded.contains(n) && !planned.contains(n)).collect()
+}
+
+/// Grava, uma vez por onda, a nota do binário dizendo que a onda saiu do ar
+/// por ficar sem tarefa ([`waves_left_without_tasks`]), no idioma `lang`, e
+/// devolve o que gravou. A nota leva o código da onda nas chaves: a onda que
+/// já tem a sua não ganha outra.
+pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Vec<Value>, Refusal> {
+    let left = waves_left_without_tasks(log);
+    if left.is_empty() {
+        return Ok(Vec::new());
+    }
+    let codes = log.codes();
+    let keys = |e: &SpecEvent| -> Vec<String> {
+        e.fields.get("keys").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+    };
+    let noted: BTreeSet<String> = log
+        .block(BlockQuery::Block(Block::Notes))
+        .into_iter()
+        .filter(|e| e.event_type == "note" && e.str_field("author") == Some("binary"))
+        .map(keys)
+        .filter(|keys| keys.iter().any(|key| key == WAVE_LEFT_KEY))
+        .flatten()
+        .collect();
+    let waves = log.block(BlockQuery::Block(Block::Waves));
+    let mut recorded = Vec::new();
+    for (wave, sent) in left {
+        let Some(event) = waves.iter().rfind(|e| e.event_type == "wave" && e.wave() == Some(wave)) else {
+            continue;
+        };
+        let code = codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
+        if noted.contains(&code) {
+            continue;
+        }
+        let send = codes.get(&sent).cloned().unwrap_or_else(|| sent.to_string());
+        let text = translate("round.wave_left_without_tasks", lang).replace("{wave}", &wave.to_string()).replace("{send}", &send);
+        let mut draft = Map::new();
+        draft.insert("text".into(), json!(text));
+        draft.insert("keys".into(), json!([code, WAVE_LEFT_KEY]));
+        draft.insert("label".into(), json!(code));
+        draft.insert("author".into(), json!("binary"));
+        let written = record(start, spec, "note", draft, PhaseWriter::Binary)?;
+        recorded.push(json!({ "wave": wave, "type": "note", "id": written.written.id, "text": text }));
+    }
+    Ok(recorded)
+}
+
+/// A chave que marca a nota de onda que saiu do ar por ficar sem tarefa.
+const WAVE_LEFT_KEY: &str = "wave-left-without-tasks";
 
 /// O pedido de revisão aberto, pelo número dele: o último envio de revisão,
 /// que o fechamento grava, sem veredito oficial depois dele. A volta que o
@@ -3807,5 +3877,53 @@ mod tests {
         assert!(request.contains("Preserve root-contract in full."), "{request}");
         assert!(request.contains("Preserve source-contract in full."), "{request}");
         assert!(!request.contains("Unrelated directory contract."), "{request}");
+    }
+
+
+    /// Duas ondas saem, uma num arquivo TypeScript e outra num C#, e a única
+    /// tarefa da onda 1 é removida com o pedido dela ainda aberto. A rodada
+    /// com relatório já não lista a onda 1 em andamento e grava a nota do
+    /// binário que diz por quê; a rodada de despacho seguinte também não a
+    /// lista e não grava outra nota; a leitura do andamento e a das vagas
+    /// ocupadas, que a retomada e a fila usam, também a deixam de fora.
+    #[test]
+    fn a_wave_whose_tasks_were_all_removed_leaves_the_air_in_every_round() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["web/app.ts"], &[]), (2, &["src/Program.cs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+        let log = spec_now(root);
+        let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
+        let code = log.codes().get(&task).cloned().unwrap();
+        let send = log.codes().get(&log.last_by_wave("send")[&1]).cloned().unwrap();
+        let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Já foi feito fora da onda."}));
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+
+        let notes = || -> Vec<String> {
+            spec_now(root)
+                .visible()
+                .into_iter()
+                .filter(|e| e.event_type == "note" && e.str_field("author") == Some("binary"))
+                .filter_map(|e| e.str_field("text").map(str::to_string))
+                .collect()
+        };
+        let said = translate("round.wave_left_without_tasks", Locale::PtBr).replace("{wave}", "1").replace("{send}", &send);
+
+        let reported = round(root, "x", Some(&line("USAGE", json!({"wave": 2}))));
+        assert_eq!(reported["ok"], json!(true), "{reported}");
+        assert_eq!(waves_in(&reported, "running"), vec![2], "a onda sem tarefa sai do ar na rodada com relatório: {reported}");
+        assert_eq!(notes(), vec![said.clone()], "a rodada grava a nota que diz por quê: {reported}");
+        let recorded = reported["recorded"].as_array().cloned().unwrap_or_default();
+        assert!(recorded.iter().any(|r| r["type"] == json!("note") && r["wave"] == json!(1)), "{reported}");
+
+        let dispatched = round(root, "x", None);
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+        assert_eq!(waves_in(&dispatched, "running"), vec![2], "nem a rodada de despacho a lista: {dispatched}");
+        assert_eq!(notes(), vec![said], "a nota sai uma vez só: {dispatched}");
+
+        let log = spec_now(root);
+        assert_eq!(waves_in_progress(&log).into_keys().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(open_sends(&log).into_keys().collect::<Vec<_>>(), vec![2]);
     }
 }

@@ -664,6 +664,9 @@ pub(super) fn run_entered_round(
     // logo depois dele, é anotado agora, antes de qualquer despacho: sem ele
     // o fechamento recusa a obra.
     recorded.extend(super::lost_commit::record_lost_commits(&opts.root, root, &spec, &locked, lang, &held_lock)?);
+    // A onda que saiu do ar por ficar sem tarefa ganha, uma vez, a nota que
+    // diz por quê: a rodada já não a lista, e quem conduz vê o motivo.
+    recorded.extend(super::queue::record_waves_left_without_tasks(&opts.root, &spec, &locked, lang).map_err(RoundRefusal::Refused)?);
     let mut dispatch_timing = super::super::validation::Stage::new(root, &spec, "delivery", "dispatch-preparation", true);
     let waves_jev = crate::shared::jev::for_waves(root, &spec);
     if waves_jev.key_in_git && first_warning(root, session, "round.key_in_git") {
