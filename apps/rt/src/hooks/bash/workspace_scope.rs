@@ -1,5 +1,6 @@
 //! A conductor may inspect a wave checkout, but a Bash cd must not strand the
-//! main session there. Workers keep their own cwd. No checkout/reset is run.
+//! main session there. Workers keep their own cwd, and a command Mustard runs
+//! in its own process has no host shell to strand. No checkout/reset is run.
 use super::lex;
 use mustard_core::{
     domain::model::contract::{Ctx, HookInput, Verdict},
@@ -7,11 +8,11 @@ use mustard_core::{
 };
 use std::path::Path;
 
-pub(super) fn isolate(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verdict {
+pub(super) fn isolate(input: &HookInput, ctx: &Ctx, verdict: Verdict, host_shell: bool) -> Verdict {
     let verdict = normalize_test(input, ctx, verdict);
     let verdict = bind_identity(input, verdict);
     let verdict = crate::hooks::write::wave_copy::guard_bash(input, ctx, verdict);
-    if input.is_subagent() {
+    if input.is_subagent() || !host_shell {
         return verdict;
     }
     let (command, previous_note) = match &verdict {
@@ -159,16 +160,16 @@ mod tests {
         let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(mustard_core::domain::model::contract::Trigger::PreToolUse));
         let jest: HookInput =
             serde_json::from_value(json!({"cwd":root,"tool_name":"Bash","tool_input":{"command":"jest --roots src src/example.spec.ts"}})).unwrap();
-        let Verdict::Rewrite { tool_input, .. } = isolate(&jest, &ctx, Verdict::Allow) else {
+        let Verdict::Rewrite { tool_input, .. } = isolate(&jest, &ctx, Verdict::Allow, true) else {
             panic!("Jest root normalization");
         };
         assert_eq!(tool_input["command"], "jest --roots=src src/example.spec.ts");
-        assert!(matches!(isolate(&jest, &ctx, Verdict::Deny { reason: "existing protection".into() }), Verdict::Deny { .. }));
+        assert!(matches!(isolate(&jest, &ctx, Verdict::Deny { reason: "existing protection".into() }, true), Verdict::Deny { .. }));
         let mut input: HookInput = serde_json::from_value(
             json!({"cwd":root,"tool_name":"Bash","tool_input":{"command":format!("cd '{}' && pwd # comment",copy.display()),"timeout":1000}}),
         )
         .unwrap();
-        let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow) else {
+        let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow, true) else {
             panic!("copy isolation");
         };
         assert_eq!(tool_input["timeout"], 1000);
@@ -180,7 +181,7 @@ mod tests {
             assert_eq!(lines.lines().collect::<Vec<_>>(), vec![copy.to_str().unwrap(), root.to_str().unwrap()]);
             input.cwd = Some(copy.to_string_lossy().into_owned());
             input.tool_input["command"] = json!("exit 7");
-            let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow) else {
+            let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow, true) else {
                 panic!("root recovery");
             };
             let command = format!("{}\ncode=$?\npwd\nexit $code", tool_input["command"].as_str().unwrap());
@@ -195,7 +196,8 @@ mod tests {
             assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), root.to_str().unwrap());
         }
         input.agent_id = Some("worker".into());
-        assert!(matches!(isolate(&input, &ctx, Verdict::Allow), Verdict::Allow));
+        assert!(matches!(isolate(&input, &ctx, Verdict::Allow, true), Verdict::Allow));
         git(&["worktree", "remove", "--force", copy.to_str().unwrap()]);
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
 }

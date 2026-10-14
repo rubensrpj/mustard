@@ -1,6 +1,6 @@
 //! Shared gateway for CLI and host adapters; never evaluates shell request text.
 use mustard_core::domain::code_search::{Invocation, Request};
-use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
 use serde_json::json;
 use std::path::Path;
 
@@ -220,8 +220,8 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
             &ctx,
         )
     } else {
-        crate::hooks::bash::command_guard::CommandGuard
-            .evaluate(&input, &ctx)
+        // A busca roda aqui, sem shell: a cópia como raiz não prende ninguém.
+        crate::hooks::bash::command_guard::CommandGuard::evaluate_in_process(&input, &ctx)
             .map_err(|e| e.to_string())?
     };
     match verdict {

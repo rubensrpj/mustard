@@ -40,15 +40,17 @@ impl CommandGuard {
     fn command_of(input: &HookInput) -> Option<String> {
         input.tool_input.get("command").and_then(|v| v.as_str()).map(str::to_string)
     }
-}
 
-impl Check for CommandGuard {
-    /// Roda as quatro conferências no `PreToolUse` do Bash; qualquer outro
-    /// evento ou ferramenta passa.
-    ///
-    /// A trava dos comandos que destroem trabalho não tem modo: ela sempre
-    /// recusa.
-    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
+    /// As mesmas conferências para o comando que o próprio Mustard roda no
+    /// processo dele, como a busca: sem shell do host, não há diretório do
+    /// condutor a guardar, e o comando não volta embrulhado no subshell que
+    /// devolve o condutor ao checkout principal.
+    pub(crate) fn evaluate_in_process(input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
+        Self::verdict(input, ctx, false)
+    }
+
+    /// As conferências; `host_shell` diz se o comando roda no shell do host.
+    fn verdict(input: &HookInput, ctx: &Ctx, host_shell: bool) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
@@ -76,17 +78,29 @@ impl Check for CommandGuard {
         if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {
             return Ok(verdict);
         }
+        let isolate = |verdict| super::workspace_scope::isolate(input, ctx, verdict, host_shell);
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
-            return Ok(super::workspace_scope::isolate(input, ctx, super::config_read::rewrite(&cmd, input, ctx).unwrap_or(verdict)));
+            return Ok(isolate(super::config_read::rewrite(&cmd, input, ctx).unwrap_or(verdict)));
         }
         let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {
-            return Ok(super::workspace_scope::isolate(input, ctx, verdict));
+            return Ok(isolate(verdict));
         }
         if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
-            return Ok(super::workspace_scope::isolate(input, ctx, verdict));
+            return Ok(isolate(verdict));
         }
-        Ok(super::workspace_scope::isolate(input, ctx, crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow)))
+        Ok(isolate(crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow)))
+    }
+}
+
+impl Check for CommandGuard {
+    /// Roda as quatro conferências no `PreToolUse` do Bash; qualquer outro
+    /// evento ou ferramenta passa.
+    ///
+    /// A trava dos comandos que destroem trabalho não tem modo: ela sempre
+    /// recusa.
+    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
+        Self::verdict(input, ctx, true)
     }
 }
 

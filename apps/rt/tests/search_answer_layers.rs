@@ -124,16 +124,17 @@ fn wave_copies() -> WaveCopies {
     WaveCopies { _dir: dir, root, own, other }
 }
 
-/// O que a chamada do Bash do agente roda, de dentro da cópia dele, depois do
-/// gancho: o código de saída, a saída e, para as mensagens, o comando que
-/// rodou com tudo o que ele escreveu.
+/// O que a chamada do Bash roda, de dentro da cópia `own`, depois do gancho,
+/// pedida pelo agente `agent` ou, sem ele, pelo condutor: o código de saída,
+/// a saída e, para as mensagens, o comando que rodou com tudo o que ele
+/// escreveu.
 #[cfg(unix)]
-fn as_wave_agent(copies: &WaveCopies, command: &str) -> (Option<i32>, String, String) {
+fn in_own_copy(copies: &WaveCopies, agent: Option<&str>, command: &str) -> (Option<i32>, String, String) {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
     let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":copies.own,
-        "session_id":"wave-session","agent_id":"wave-agent","tool_input":{"command":command}});
+        "session_id":"wave-session","agent_id":agent,"tool_input":{"command":command}});
     let mut hook = Command::new(binary).args(["on", "PreToolUse"]).current_dir(&copies.own).env("CLAUDE_PROJECT_DIR", &copies.root)
         .env("MUSTARD_RT_DELEGATED", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     hook.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
@@ -164,10 +165,40 @@ fn a_wave_agent_search_inside_its_copy_runs() {
         "grep -n quartz src/a.py",
         "mustard-rt run search --shell-output --intent 'Find quartz' --purpose implement -- grep -n quartz src/a.py",
     ] {
-        let (code, stdout, detail) = as_wave_agent(&copies, command);
+        let (code, stdout, detail) = in_own_copy(&copies, Some("wave-agent"), command);
         assert_eq!(code, Some(0), "{detail}");
         assert!(stdout.contains("def quartz"), "{detail}");
     }
+}
+
+/// Quem a busca não sabe nomear também busca numa cópia de onda: a ferramenta
+/// de busca, que roda o programa sem shell, e o condutor com o shell na cópia.
+/// A busca roda no próprio processo e não tem shell a prender na cópia, então
+/// não devolve o subshell do condutor, que a trava da cópia recusaria ao
+/// agente de onda. O shell do condutor segue voltando ao checkout principal
+/// pelo gancho.
+#[cfg(unix)]
+#[test]
+fn a_search_in_a_wave_copy_runs_for_a_caller_without_identity() {
+    let copies = wave_copies();
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let tool = std::process::Command::new(binary)
+        .args(["run", "search", "--root"])
+        .arg(&copies.own)
+        .args(["--shell-output", "--intent", "Find quartz", "--purpose", "implement", "--", "grep", "-n", "quartz", "src/a.py"])
+        .current_dir(&copies.root)
+        .env("MUSTARD_RT_DELEGATED", "1")
+        .env_remove("MUSTARD_SESSION_ID")
+        .env_remove("MUSTARD_AGENT_ID")
+        .output()
+        .unwrap();
+    let detail = format!("{}{}", String::from_utf8_lossy(&tool.stdout), String::from_utf8_lossy(&tool.stderr));
+    assert_eq!(tool.status.code(), Some(0), "{detail}");
+    assert!(String::from_utf8_lossy(&tool.stdout).contains("def quartz"), "{detail}");
+    let (code, stdout, detail) = in_own_copy(&copies, None, "grep -n quartz src/a.py");
+    assert!(detail.starts_with(&format!("cd -- '{}' && (", copies.root.display())), "{detail}");
+    assert_eq!(code, Some(0), "{detail}");
+    assert!(stdout.contains("def quartz"), "{detail}");
 }
 
 /// A busca do mesmo agente apontada para a cópia de outra onda segue recusada.
@@ -179,7 +210,7 @@ fn a_wave_agent_search_in_another_waves_copy_is_refused() {
         "mustard-rt run search --root '{}' --shell-output --intent 'Find quartz' --purpose implement -- grep -n quartz src/a.py",
         copies.other.display()
     );
-    let (code, stdout, detail) = as_wave_agent(&copies, &command);
+    let (code, stdout, detail) = in_own_copy(&copies, Some("wave-agent"), &command);
     assert_eq!(code, Some(2), "{detail}");
     assert!(!stdout.contains("def quartz"), "{detail}");
 }
