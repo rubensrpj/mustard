@@ -204,20 +204,38 @@ fn stat_of(pid: u32) -> Option<(u32, u64)> {
     Some((ppid, starttime))
 }
 
+/// `true` quando um processo com este nome (`/proc/<pid>/comm`), este
+/// executável (`/proc/<pid>/exe`) e esta linha de comando é um Claude Code. A
+/// lista é fechada, uma entrada por jeito de instalar o Claude Code: o binário
+/// nativo, de nome `claude`; o aplicativo de desktop, cujo executável mora na
+/// pasta `ccd-cli` e leva a versão por nome; e o pacote npm
+/// `@anthropic-ai/claude-code`, que o `node` roda. O nome sozinho não basta:
+/// no aplicativo de desktop ele é a versão, e nada nele diz `claude`. Foi
+/// assim que a rodada gravou, no lugar do Claude Code, o processo dela mesma,
+/// que morre em seguida, e o gancho do despacho barrou toda onda como órfã.
+pub(crate) fn is_claude_code(comm: &str, exe: &str, cmdline: &str) -> bool {
+    comm.trim() == "claude"
+        || Path::new(exe).parent().and_then(Path::file_name).is_some_and(|folder| folder == "ccd-cli")
+        || cmdline.contains("@anthropic-ai/claude-code/")
+}
+
 /// O processo que responde por este envio, com o número e a hora de início —
 /// o par que [`process_alive`] confere depois. Sobe pelos pais em `/proc` até
-/// achar um de nome `claude` e devolve esse, com um limite de 64 subidas para
-/// nunca entrar em laço. Sem nenhum pai `claude` — uma rodada tocada por um
-/// script, por um teste ou pela linha de comando —, devolve o processo atual,
-/// que é quem manda a onda ali. O envio nunca sai sem o par: quem lê depois
-/// compara um processo com o relógio, em vez de ler ausência de dado como
-/// prova de morte.
+/// achar um Claude Code ([`is_claude_code`]) e devolve esse, com um limite de
+/// 64 subidas para nunca entrar em laço. Sem nenhum pai Claude Code — uma
+/// rodada tocada por um script, por um teste ou pela linha de comando —,
+/// devolve o processo atual, que é quem manda a onda ali. O envio nunca sai
+/// sem o par: quem lê depois compara um processo com o relógio, em vez de ler
+/// ausência de dado como prova de morte.
 #[cfg(target_os = "linux")]
 pub(crate) fn sender_process() -> (u32, u64) {
     let mut pid = std::process::id();
     for _ in 0..64 {
         let Some((ppid, starttime)) = stat_of(pid) else { break };
-        if std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|comm| comm.trim() == "claude") {
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
+        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        if is_claude_code(&comm, &exe, &cmdline) {
             return (pid, starttime);
         }
         if ppid == 0 || ppid == pid {
@@ -294,6 +312,22 @@ mod tests {
     use super::*;
     use std::process::{Child, Command, Stdio};
     use tempfile::tempdir;
+
+    /// Os três jeitos de instalar o Claude Code contam como o processo dele, e
+    /// o servidor do aplicativo de desktop e o shell que roda o comando não.
+    #[test]
+    fn the_desktop_app_cli_counts_as_the_claude_code_process() {
+        assert!(is_claude_code("claude\n", "/home/x/.local/bin/claude", "claude\0"));
+        assert!(is_claude_code(
+            "2.1.295-8b2928c\n",
+            "/home/x/.claude/remote/ccd-cli/2.1.295-8b2928c330c4",
+            "/home/x/.claude/remote/ccd-cli/2.1.295-8b2928c330c4\0--output-format\0stream-json\0"
+        ));
+        assert!(is_claude_code("node\n", "/usr/bin/node", "node\0/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js\0"));
+        assert!(!is_claude_code("server\n", "/home/x/.claude/remote/srv/abc/server", "/home/x/.claude/remote/srv/abc/server\0--serve\0"));
+        assert!(!is_claude_code("zsh\n", "/usr/bin/zsh", "zsh\0-c\0mustard-rt run round\0"));
+        assert!(!is_claude_code("", "", ""));
+    }
 
     fn spawn(cmd: &mut Command) -> Child {
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("spawn the fixture process")
