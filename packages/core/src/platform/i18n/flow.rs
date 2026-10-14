@@ -188,10 +188,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Code or configuration changed during final validation. Inspect the change and close again against the current version."
         }
         ("close.repair_next", Locale::PtBr) => {
-            "Conserto final registrado. Rode `mustard-rt run round` para obter o envio autorizado de conserto; depois integre e repita o fechamento. A atribuição é pelos critérios quando disponível; sem ela, conferir a integração inteira."
+            "Conserto final registrado. Rode `mustard-rt run round` para obter o envio autorizado de conserto; depois integre e repita o fechamento. A onda volta ao conserto pelo critério dela que falhou, ou porque a saída cita um arquivo da obra que ela declarou ou entregou."
         }
         ("close.repair_next", Locale::EnUs) => {
-            "Final repair recorded. Run `mustard-rt run round` for the authorized repair dispatch, then integrate and close again. Attribution follows criteria when available; otherwise inspect the complete integration."
+            "Final repair recorded. Run `mustard-rt run round` for the authorized repair dispatch, then integrate and close again. A wave returns to repair through its own failing criterion, or because the output cites a work file it declared or delivered."
+        }
+        // O lint ou a suíte do fechamento que caiu sem citar arquivo de onda
+        // da obra: o que a saída citou, e que nenhuma onda reabriu.
+        ("close.cited_outside", Locale::PtBr) => {
+            "A saída cita {files}, e nenhum desses arquivos é da obra: a branch não os mudou. Nenhuma onda reabriu. \
+             Mostre a saída ao usuário e pergunte o que fazer com esses arquivos; resolvido isso, repita o fechamento."
+        }
+        ("close.cited_outside", Locale::EnUs) => {
+            "The output cites {files}, and none of these files belongs to the work: the branch did not change them. No wave \
+             reopened. Show the output to the user and ask what to do with these files; once that is settled, close again."
+        }
+        ("close.cited_nothing", Locale::PtBr) => {
+            "A saída não cita arquivo nenhum do projeto, e por isso nenhum da obra. Nenhuma onda reabriu. \
+             Mostre a saída ao usuário e pergunte o que fazer; resolvido isso, repita o fechamento."
+        }
+        ("close.cited_nothing", Locale::EnUs) => {
+            "The output cites no project file, so none from the work. No wave reopened. \
+             Show the output to the user and ask what to do; once that is settled, close again."
+        }
+        ("close.cited_unowned", Locale::PtBr) => {
+            "A saída cita arquivo que a branch mudou, mas que nenhuma onda declarou nem entregou. Nenhuma onda reabriu. \
+             Mostre a saída ao usuário e pergunte o que fazer; resolvido isso, repita o fechamento."
+        }
+        ("close.cited_unowned", Locale::EnUs) => {
+            "The output cites a file the branch changed, but no wave declared or delivered it. No wave reopened. \
+             Show the output to the user and ask what to do; once that is settled, close again."
         }
         ("close.not_running", Locale::PtBr) => "A spec está na fase {phase} e não está em execução: só fecha o que estava correndo.",
         ("close.not_running", Locale::EnUs) => "The spec is in the {phase} phase and is not running: only work in flight closes.",
@@ -1781,7 +1807,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 236, 0x1863_c791_cd1c_0247);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 239, 0xdc21_a31d_e3ff_6416);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -1886,6 +1912,9 @@ mod tests {
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
+            ("close.cited_outside", &["{files}"][..]),
+            ("close.cited_nothing", &[][..]),
+            ("close.cited_unowned", &[][..]),
             ("close.server_command_not_declared", &["{key}"][..]),
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),

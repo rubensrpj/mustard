@@ -2429,9 +2429,11 @@ mod tests {
         assert_eq!(delivered_count(root), 1);
     }
 
-    /// A delivery runs its build and pertinent proofs. A declared failing
-    /// lint/suite is deferred until close, where its native failure opens
-    /// repair without undoing the already integrated delivery.
+    /// A entrega roda a compilação e as provas pertinentes. O lint ou a suíte
+    /// declarados que caem ficam para o fechamento, que recusa com a saída
+    /// deles sem desfazer a entrega já integrada. A saída que não cita arquivo
+    /// nenhum não reabre onda: a recusa diz isso, e nenhuma reprovação é
+    /// gravada.
     #[cfg(unix)]
     #[test]
     fn a_red_lint_or_suite_is_deferred_to_the_final_validation() {
@@ -2458,9 +2460,11 @@ mod tests {
             });
             assert_eq!(final_check["ok"], false, "{final_check}");
             assert_eq!(final_check["reason"], reason, "{final_check}");
-            assert!(final_check["hint"].as_str().unwrap_or_default().contains("final-failure"), "{final_check}");
+            let hint = final_check["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("final-failure"), "{final_check}");
+            assert!(hint.contains(translate("close.cited_nothing", Locale::PtBr)), "{final_check}");
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            assert!(log.events.iter().any(|e| e.event_type == "validation_failure"));
+            assert!(!log.events.iter().any(|e| e.event_type == "validation_failure"), "no wave reopens: {final_check}");
             assert_eq!(delivered_count(root), 1, "the integrated delivery remains");
         }
     }
