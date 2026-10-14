@@ -125,9 +125,14 @@ fn structure_ready(db:&MapDb)->Result<bool,String> {
     Ok(true)
 }
 
-/// Mark only the source versions the completed native scan was asked to learn.
+/// Marca só as versões de fonte que a passada nativa terminada foi chamada a
+/// aprender. O mapa já tem de existir: a confirmação nunca cria um. Só o bloco
+/// deste módulo é posto em dia ([`open`]): numa cópia, `root` é o checkout
+/// principal, e o bloco do mapa dele gravado por outra versão do programa
+/// fica para a passada do próprio checkout principal.
 pub fn scanned(root: &Path, tree: &Path, learning: &Value) -> Result<(), String> {
-    let mut db = super::open_existing(&store::model_path(root)).map_err(|e| format!("{e:?}"))?;
+    store::existing(&store::model_path(root)).map_err(|e| format!("{e:?}"))?;
+    let mut db = open(root)?;
     db.write(|tx| {
         for (file, digest) in learning["source_hashes"].as_object().into_iter().flatten() {
             if let Some(digest) = digest.as_str() {

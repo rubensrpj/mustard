@@ -238,6 +238,31 @@ fn an_inherited_map_with_an_outdated_block_is_left_for_the_scan_to_rebuild() {
     assert_eq!((after["needs_scan"].clone(),version()),(json!(false),current),"{after}");
 }
 
+/// Numa cópia, a confirmação da passada vai ao mapa do checkout principal. O
+/// bloco dele gravado por outra versão do programa fica para a passada dele:
+/// a confirmação grava a fonte aprendida na cópia sem refazer o bloco.
+#[test]
+fn the_acknowledgement_from_a_copy_leaves_an_outdated_block_of_the_main_map_to_its_scan() {
+    let dir=tempfile::tempdir().unwrap();
+    let (main,copy)=(dir.path().join("main"),dir.path().join("copy"));
+    let source="export function entry(): number { return 1; }";
+    for folder in [&main,&copy] {
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(folder.join("mustard.json"),"{}").unwrap();
+        std::fs::write(folder.join("entry.ts"),format!("{source}\n")).unwrap();
+    }
+    model::scan(&main,&main.join(".claude"),&["--native"]);
+    let map=|| rusqlite::Connection::open(main.join(".claude/grain.db")).unwrap();
+    let version=|| map().query_row("SELECT version FROM blocks WHERE name='knowledge_index'",[],|row|row.get::<_,u32>(0)).unwrap();
+    let current=version();
+    map().execute("UPDATE blocks SET version=?1 WHERE name='knowledge_index'",[current-1]).unwrap();
+    let learning=mustard_core::io::knowledge::observations::record(&main,&copy,&[("entry.ts".into(),1,source.into())]).unwrap();
+    assert_eq!(learning["needs_scan"],true,"{learning}");
+    mustard_core::io::knowledge::observations::scanned(&main,&copy,&learning).unwrap();
+    let indexed:String=map().query_row("SELECT indexed FROM search_files WHERE tree=?1 AND path='entry.ts'",[learning["tree"].as_str().unwrap()],|row|row.get(0)).unwrap();
+    assert_eq!((json!(indexed),version()),(learning["source_hashes"]["entry.ts"].clone(),current-1),"{learning}");
+}
+
 #[test]
 fn exact_entry_follows_current_dependency_with_no_query_word_and_preserves_native_result() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();

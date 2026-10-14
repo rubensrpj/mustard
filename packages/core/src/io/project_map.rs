@@ -1546,7 +1546,7 @@ pub(crate) fn open_existing_waiting(model: &Path, wait: std::time::Duration) -> 
 }
 
 /// A recusa do mapa que falta ou que não começa como um banco.
-fn existing(model: &Path) -> std::result::Result<(), MapRefusal> {
+pub(crate) fn existing(model: &Path) -> std::result::Result<(), MapRefusal> {
     if !exists_at(model) {
         return Err(MapRefusal::MapMissing);
     }
