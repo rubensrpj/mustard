@@ -141,6 +141,8 @@ pub(crate) mod item_choice;
 mod keep;
 mod leftovers;
 mod lost_commit;
+mod planning;
+pub(crate) use planning::needs_planning;
 mod queue;
 mod read_check;
 mod rehearsal;

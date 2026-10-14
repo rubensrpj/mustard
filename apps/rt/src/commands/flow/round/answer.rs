@@ -998,13 +998,14 @@ pub(super) fn run_entered_round(
         // não fecha. A tarefa que ficou pronta pela entrega desta mesma
         // rodada só vira lote na rodada seguinte, porque o backlog foi formado
         // pela leitura de entrada; sem tarefa pronta e sem nada em andamento,
-        // as que sobraram estão presas, e a resposta as nomeia.
+        // as que sobraram estão presas, e a resposta as nomeia, com a que
+        // espera plano à parte, dizendo o que falta a ela.
         let shown = |ids: &mut dyn Iterator<Item = u64>| -> String {
             ids.map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect::<Vec<_>>().join(", ")
         };
         let ready = backlog_ready(&log);
         if ready.is_empty() {
-            translate("round.backlog_stuck", lang).replace("{tasks}", &shown(&mut backlog_left(&log).into_iter()))
+            super::planning::stuck_backlog_line(&log, &codes, lang)
         } else {
             let state = State::from_log(&log);
             let step = crate::commands::flow::resume::step_command("round", &spec, &state);

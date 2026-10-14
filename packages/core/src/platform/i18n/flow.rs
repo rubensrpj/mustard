@@ -1189,6 +1189,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Every planned wave is done, but the backlog still holds tasks {tasks}, ready to become a \
              batch. The work does not close with a task in the backlog. Run the round again with `{command}`."
         }
+        ("round.backlog_needs_planning", Locale::PtBr) => {
+            "As tarefas {tasks} do backlog esperam plano. Estão presas sem arquivo nenhum e não saem numa \
+             onda até ganhar arquivos e dependências. Leia cada uma pelo item e grave uma versão nova, com \
+             `replaces`, os arquivos e as dependências e sem o `blocked_by`."
+        }
+        ("round.backlog_needs_planning", Locale::EnUs) => {
+            "Backlog tasks {tasks} wait for planning. They are held without any file and do not go out in a \
+             wave until they get files and dependencies. Read each one by its item and write a new version, \
+             with `replaces`, the files and the dependencies and without `blocked_by`."
+        }
         ("round.backlog_stuck", Locale::PtBr) => {
             "Nada a despachar e nada em andamento, mas o backlog ainda tem as tarefas {tasks}, presas. \
              Nenhuma tem todas as dependências entregues e cobre algum item. Mostre ao usuário o que as segura \
@@ -1875,7 +1885,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 253, 0x805a_cf0f_7cec_b38b);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 254, 0xefe2_d30e_d410_d7a0);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2117,6 +2127,7 @@ mod tests {
             ("round.review_open", &[][..]),
             ("round.missing", &["{wave}"][..]),
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
+            ("round.backlog_needs_planning", &["{tasks}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
             ("round.agents_refreshed", &["{files}"][..]),

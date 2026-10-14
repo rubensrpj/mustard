@@ -1,6 +1,6 @@
 //! Cheap, read-only explanation of the declared queue. Source relationships
 //! are checked at dispatch; observing the queue never scans or calls a model.
-use super::{leftovers::is_cleanup, queue};
+use super::{leftovers::is_cleanup, planning::needs_planning, queue};
 use crate::shared::dag::files_cross;
 use mustard_core::domain::{spec_events::SpecLog, spec_state::State};
 use mustard_core::platform::i18n::{Locale, translate};
@@ -81,7 +81,7 @@ fn queue(root: &Path, log: &SpecLog) -> Queue {
                 .any(|other| !other.done && log.get(other.id).is_some_and(|e| !is_cleanup(e)));
         let reason = if !active {
             "spec-not-running"
-        } else if entry.blocked && entry.files.is_empty() {
+        } else if needs_planning(task) {
             // A tarefa presa sem arquivo nenhum, como a que nasce da sobra
             // que não cita arquivo: espera quem conduz a obra planejá-la.
             "needs-planning"

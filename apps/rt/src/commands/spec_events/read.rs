@@ -48,7 +48,9 @@
 //! - `delivered-<n>` traz a entrega vigente da onda: a que a rodada assumiu
 //!   ou, sem ela, a volta do agente. Do `agreed`, só o que não foi cumprido.
 //! - `backlog` traz as tarefas ainda por entregar, uma por linha, e no fim o
-//!   total de tarefas e de arquivos.
+//!   total de tarefas e de arquivos. A tarefa presa sem arquivo nenhum, que
+//!   não sai numa onda até ganhar arquivos e dependências, vem marcada com
+//!   `needs_planning`.
 //! - `request-<n>` devolve, em texto puro, o pedido gravado no último envio da
 //!   onda, igual byte a byte: é por ele que o agente lê o próprio pedido.
 //!   `request-review` faz o mesmo com o último envio do revisor final, que
@@ -449,8 +451,11 @@ fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<String> 
 
 /// As tarefas ainda por entregar, uma linha por tarefa na ordem do código:
 /// o código, o número da versão vigente, a onda (ou `null`), quantos
-/// arquivos ela declara e as tarefas ainda por entregar de que depende. O
-/// total conta as tarefas e os arquivos distintos entre todas.
+/// arquivos ela declara e as tarefas ainda por entregar de que depende. A
+/// que espera plano ([`needs_planning`](crate::commands::flow::round::needs_planning))
+/// leva também `needs_planning`: o `files: 0` sozinho não diz que ela fica
+/// fora das ondas até quem conduz a obra planejá-la. O total conta as
+/// tarefas e os arquivos distintos entre todas.
 fn backlog_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> (Vec<String>, Value) {
     let left = crate::commands::flow::round::tasks_left(log);
     let code_of = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
@@ -467,6 +472,9 @@ fn backlog_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> (Vec<String>, 
             line.insert("files".into(), json!(task.files.len()));
             let waits: Vec<String> = task.depends_on.iter().map(|id| code_of(*id)).collect();
             line.insert("depends_on".into(), json!(waits));
+            if log.get(task.id).is_some_and(crate::commands::flow::round::needs_planning) {
+                line.insert("needs_planning".into(), json!(true));
+            }
             shown_line(&line)
         })
         .collect();
