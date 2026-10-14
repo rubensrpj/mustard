@@ -18,6 +18,9 @@
 //! - **scratch-residue** (`--residue` só) — tamanho total das sobras que o
 //!   `clean` recolheria e o da compilação compartilhada, pela MESMA
 //!   varredura dele. WARN quando há sobra ou quando a compilação passou do teto.
+//! - **binaries** — o commit e a data de três programas: o que roda o
+//!   diagnóstico, o `mustard-rt` do plugin instalado e o primeiro do `PATH`.
+//!   WARN quando dois vêm de commits diferentes ou quando um não diz o commit.
 //! - **drift** — compare by hash the folders a fresh payload owns
 //!   (`CORE_FOLDERS`) between the installed `.claude/` and the
 //!   `templates/` source. Degrades to `skip` when `templates/` is not
@@ -54,11 +57,13 @@
 //! de uma conferência, os eventos de gancho que o binário conhece, as opções e
 //! a lista das conferências, na ordem em que o comando as roda. Cada
 //! conferência mora numa parte da pasta ao lado, por assunto: a ligação dos
-//! ganchos (`wiring`), as sobras (`residue`), o desvio dos moldes (`drift`), o
+//! ganchos (`wiring`), as sobras (`residue`), o commit dos três programas
+//! (`binaries`), o desvio dos moldes (`drift`), o
 //! que a máquina tem instalado (`host`), a proteção das bases (`protection`),
 //! o estado das specs (`specs`), o que o Mustard deixa no projeto (`project`)
 //! e a saída do relatório (`report`).
 
+mod binaries;
 mod drift;
 mod host;
 mod project;
@@ -71,6 +76,7 @@ mod wiring;
 use mustard_core::ClaudePaths;
 use std::path::PathBuf;
 
+use binaries::check_binaries;
 use drift::check_drift;
 use host::{check_claude_cli, check_nerd_font, check_rtk, lsp_check};
 use project::{check_claude_md, check_scan_output, check_switches};
@@ -248,6 +254,8 @@ const CHECKS: &[Check] = &[
         runs: Runs::Round,
         check: |place| bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&place.cwd)),
     },
+    // De que commit vêm o programa em uso, o do plugin e o do sistema.
+    Check { runs: Runs::Named("binaries"), check: |place| check_binaries(place.project().lang) },
     Check { runs: Runs::Round, check: |place| check_drift(&place.claude_dir) },
     Check { runs: Runs::Round, check: |place| check_state_health(&place.claude_dir) },
     Check { runs: Runs::Round, check: |_| check_claude_cli() },

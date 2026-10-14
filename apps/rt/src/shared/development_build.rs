@@ -130,7 +130,7 @@ fn stamped_commit(version: &str) -> Option<&str> {
 /// abre, não termina no prazo ou não imprime nada. Roda com a guarda de um
 /// salto ligada: sem ela, a passagem da chamada a um plugin mais novo
 /// responderia no lugar do programa, e a versão lida seria a dele.
-fn version_of(program: &Path) -> Option<String> {
+pub(crate) fn version_of(program: &Path) -> Option<String> {
     let mut child = std::process::Command::new(program)
         .arg("--version")
         .env("MUSTARD_RT_DELEGATED", "1")

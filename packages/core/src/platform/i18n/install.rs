@@ -58,6 +58,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              rules); on Azure DevOps, Project settings → Repositories → Policies, on the branch. \
              To declare the bases, run `mustard init` and answer the bases question."
         }
+        // The commit of the three Mustard programs, as the `doctor` reads them.
+        ("doctor.binaries.unstamped", Locale::PtBr) => {
+            "Sem commit na linha de versão: {programs}. Esse programa responde só o número da \
+             versão, e nada prova de que código ele veio; troque-o por um que diga o commit."
+        }
+        ("doctor.binaries.unstamped", Locale::EnUs) => {
+            "No commit in the version line: {programs}. That program answers only the version \
+             number, and nothing proves which code it came from; replace it with one that says the commit."
+        }
+        ("doctor.binaries.diverge", Locale::PtBr) => {
+            "Os programas do Mustard vêm de commits diferentes: {stamps}. O que roda pode não ser \
+             o código que se pensa; atualize o que ficou para trás até os três dizerem o mesmo commit."
+        }
+        ("doctor.binaries.diverge", Locale::EnUs) => {
+            "The Mustard programs come from different commits: {stamps}. What runs may not be the \
+             code you think; update the one left behind until all three say the same commit."
+        }
         // The `doctor` checks that what the scan writes stays outside git.
         ("doctor.scan_output.visible", Locale::PtBr) => {
             "O mapa do scan fica visível para o git: {paths}. O scan só escreve fora do git: tire \
@@ -151,8 +168,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("install.rs"),
             super::PREFIXES,
-            14,
-            0xea98_e94c_67e0_5d3a,
+            16,
+            0x1f48_8912_4986_4f02,
         );
     }
 
@@ -167,6 +184,8 @@ mod tests {
             ("doctor.switches.signature_on", &[][..]),
             ("doctor.switches.language_unknown", &["{field}", "{value}"][..]),
             ("doctor.claude_md.leftovers", &["{paths}"][..]),
+            ("doctor.binaries.unstamped", &["{programs}"][..]),
+            ("doctor.binaries.diverge", &["{stamps}"][..]),
             ("cleanup.deny_rule_to_swap", &["{file}", "{from}", "{to}"][..]),
             ("cleanup.deny_rule_swapped", &["{file}", "{from}", "{to}"][..]),
         ] {
