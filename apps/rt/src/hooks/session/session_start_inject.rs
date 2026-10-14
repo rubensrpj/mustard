@@ -806,6 +806,54 @@ mod tests {
         assert_eq!(kept, vec![resume.1], "every ceding notice went, the declared text last, and the resume stays");
     }
 
+    /// O início da sessão de um projeto recém-semeado, nos dois idiomas, diz
+    /// o que o gancho faz com o agente: o pedido e a tarefa quem grava é o
+    /// condutor. A frase velha, que mandava todo agente gravar na spec, não
+    /// volta, e cada gravação que o texto reserva ao condutor é mesmo recusada
+    /// pela trava do terminal quando vem de um agente.
+    #[test]
+    fn the_session_start_says_the_conductor_records_what_the_hook_refuses_to_an_agent() {
+        use crate::hooks::bash::command_guard::CommandGuard;
+        for (lang, old, hook, conductor) in [
+            (Locale::PtBr, "todo agente grava na spec", "o gancho", "o condutor grava"),
+            (Locale::EnUs, "every agent records in the spec", "the hook", "the conductor records"),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let config = json!({
+                "version": mustard_core::harness_version(),
+                "language": {"text": lang.as_str()},
+                "inject": mustard_core::platform::project_seed::default_inject_entries(),
+            });
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            mustard_core::platform::project_seed::seed_harness_texts(&root.join(".claude"), lang, Default::default()).unwrap();
+
+            let context = context_of(root, &session_input("s-condutor", "startup"), NO_REGISTRY, NO_SCRATCH);
+            assert!(!context.contains(old), "{lang:?}: the session start still tells every agent to record in the spec: {context}");
+            let line = context
+                .lines()
+                .find(|line| line.contains(conductor))
+                .unwrap_or_else(|| panic!("{lang:?}: the session start does not say the conductor records: {context}"));
+            let refused = line
+                .find(hook)
+                .and_then(|from| line[from..].find(conductor).map(|to| &line[from..from + to]))
+                .unwrap_or_else(|| panic!("{lang:?}: the line does not say what the hook refuses before the conductor records: {line}"));
+            for kind in ["request", "task"] {
+                assert!(refused.contains(kind), "{lang:?}: the hook's refusal does not name `run write {kind}`: {line}");
+                let input = HookInput {
+                    tool_name: Some("Bash".to_string()),
+                    tool_input: json!({ "command": format!("mustard-rt run write {kind} --spec uma-spec --json '{{}}'") }),
+                    hook_event_name: Some("PreToolUse".to_string()),
+                    agent_id: Some("wave-agent".to_string()),
+                    ..HookInput::default()
+                };
+                let guard = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
+                let verdict = CommandGuard.evaluate(&input, &guard).unwrap();
+                assert!(matches!(verdict, Verdict::Deny { .. }), "{lang:?}: the hook lets an agent run `run write {kind}`: {verdict:?}");
+            }
+        }
+    }
+
     /// O mapa do início da sessão, nos dois idiomas, chega inteiro numa sessão
     /// com spec aberta, pendências, versão velha, branches mergeadas e sobras
     /// no disco: o todo passaria do teto, e são os avisos que saem antes dele.

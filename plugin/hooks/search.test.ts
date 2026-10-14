@@ -1,13 +1,15 @@
 import { test, expect, mock } from 'claude-code/testing';
 
+const envelopeOf=(argv:string[])=>JSON.parse(argv[argv.indexOf('--request')+1]);
+
 test('investigative discovery permits native ambiguity decisions while exact requests and opt-outs stay native',async ($,on)=>{
   mock.env(on,{});
   on('session.start',($,e)=>({cwd:e.cwd}));on('session.cwd',()=>({value:'/fixture'}));
   on('command.register',()=>({value:null}));on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   const routed=[];
-  on('tool.call',{tool:'Bash'},($,e)=>{
-    routed.push(JSON.parse(e.command.match(/--request '(.*?)' --shell-output/)[1]).request);
-    return {result:{stdout:'native evidence',stderr:''}};
+  on('process.run',($,e)=>{
+    routed.push(envelopeOf(e.argv).request);
+    return {value:{exitCode:0,stdout:'native evidence',stderr:''}};
   });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const requests=[
@@ -21,11 +23,12 @@ test('investigative discovery permits native ambiguity decisions while exact req
   for(let i=0;i<requests.length;i++)expect(routed[i].input).toEqual(requests[i].input);
 });
 
-test('gateway tool transports task evidence and intent through host permissions',async ($,on)=>{
+test('gateway tool runs the Mustard binary directly with the task evidence request',async ($,on)=>{
   mock.env(on,{});
-  let shellCalls=0,processCalls=0,registrations=0;
+  let processCalls=0,registrations=0;
   on('session.start',($,e)=>({cwd:e.cwd}));
   on('session.cwd',()=>({value:'/fixture with spaces'}));
+  on('session.id',()=>({value:'fixture-session'}));
   on('command.register',()=>({value:null}));
   on('tool.register',($,e)=>{
     expect(e.name).toBe('search');
@@ -34,25 +37,41 @@ test('gateway tool transports task evidence and intent through host permissions'
     registrations++;
     return {value:{tool:'mcp__mustard__search'}};
   });
-  on('process.run',()=>{processCalls++;throw new Error('Search must not bypass host tools');});
-  on('tool.call',{tool:'Bash'},($,e)=>{
-    shellCalls++;
-    expect(e.command).toContain('run search --root');
-    expect(e.command).toContain('--shell-output');
-    expect(e.command).toContain('"pattern":"save|restore"');
-    expect(e.command).toContain('"intent":"repair persistence"');
-    expect(e.command).toContain('"purpose":"spec"');
-    expect(e.command).toContain('"choose":false');
-    expect(e.command).toContain('"schema_version":1');
-    return {result:{stdout:'# task evidence (Spec)\n@ src/store\n12 | save',stderr:'',interrupted:false,isImage:false}};
+  on('process.run',($,e)=>{
+    processCalls++;
+    expect(e.argv[0]).toMatch(/\/bin\/mustard-rt$/);
+    expect(e.argv.slice(1)).toEqual(['run','search','--root','/fixture with spaces','--request',e.argv[6],'--shell-output']);
+    const envelope=envelopeOf(e.argv);
+    expect(envelope.schema_version).toBe(1);
+    expect(envelope.request).toEqual({tool:'Grep',input:{pattern:'save|restore',output_mode:'content','-n':true},intent:'repair persistence',purpose:'spec',choose:false});
+    expect(envelope.context.session).toBe('fixture-session');
+    expect(e.init.cwd).toBe('/fixture with spaces');
+    expect(e.init.timeoutMs).toBe(120000);
+    expect(e.init.env).toEqual({MUSTARD_SESSION_ID:'fixture-session'});
+    return {value:{exitCode:0,stdout:'# task evidence (Spec)\n@ src/store\n12 | save',stderr:''}};
   });
   await $.session.start({cwd:'/fixture with spaces',surface:'terminal',isInteractive:true});
   const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'Grep',input:{pattern:'save|restore',output_mode:'content','-n':true},intent:'repair persistence',purpose:'spec',choose:false}});
   expect(result.result).toBe('# task evidence (Spec)\n@ src/store\n12 | save');
   expect(result.isError).toBeUndefined();
-  expect(shellCalls).toBe(1);
-  expect(processCalls).toBe(0);
+  expect(processCalls).toBe(1);
   expect(registrations).toBe(1);
+});
+
+test('search never routes through the Bash tool',async ($,on)=>{
+  mock.env(on,{});
+  let shellCalls=0;
+  on('session.start',($,e)=>({cwd:e.cwd}));
+  on('session.cwd',()=>({value:'/fixture'}));
+  on('command.register',()=>({value:null}));
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  on('tool.call',{tool:'Bash'},()=>{shellCalls++;throw new Error('Search must not route through the Bash tool');});
+  on('process.run',()=>({value:{exitCode:0,stdout:'src/store.ts:12:save',stderr:''}}));
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['-n','save','src']},intent:'',purpose:'locate'}});
+  expect(result.result).toBe('src/store.ts:12:save');
+  expect(result.isError).toBeUndefined();
+  expect(shellCalls).toBe(0);
 });
 
 test('gateway returns native search errors instead of dropping stderr',async ($,on)=>{
@@ -61,23 +80,36 @@ test('gateway returns native search errors instead of dropping stderr',async ($,
   on('session.cwd',()=>({value:'/fixture'}));
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
-  on('tool.call',{tool:'Bash'},()=>({result:{stdout:'',stderr:'rg: regex parse error'},isError:true}));
+  on('process.run',()=>({value:{exitCode:2,stdout:'',stderr:'rg: regex parse error'}}));
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['[','src']},intent:'',purpose:'locate'}});
   expect(result.result).toBe('rg: regex parse error');
   expect(result.isError).toBe(true);
 });
 
-test('a refused host execution never becomes gateway evidence',async ($,on)=>{
+test('a failed process run never becomes gateway evidence',async ($,on)=>{
   mock.env(on,{});
+  const receipt='b'.repeat(64),contexts=[];let exitCode=1;
   on('session.start',($,e)=>({cwd:e.cwd}));
   on('session.cwd',()=>({value:'/fixture'}));
+  on('session.id',()=>({value:'fixture-session'}));
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
-  on('tool.call',{tool:'Bash'},()=>({deny:'fixture permission refusal'}));
+  on('process.run',($,e)=>{
+    contexts.push(envelopeOf(e.argv).context);
+    return {value:{exitCode,stdout:`partial\n# mustard-delivery:${receipt}:7:b5d43e6c2878bc7a\n`,stderr:''}};
+  });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
-  const result=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['-n','save','src']},intent:'',purpose:'locate'}});
-  expect(result.deny).toBe('fixture permission refusal');
+  const request={tool:'rg',input:{args:['-n','alpha','a.ts']},intent:'inspect alpha',purpose:'implement'};
+  const failed=await $.tool.call({tool:'mcp__mustard__search',request});
+  expect(failed.result).toBe('partial');
+  expect(failed.isError).toBe(true);
+  exitCode=0;
+  await $.tool.call({tool:'mcp__mustard__search',request});
+  expect(contexts[1].acknowledged).toEqual([]);
+  // The same complete delivery is accepted once the run succeeds.
+  await $.tool.call({tool:'mcp__mustard__search',request});
+  expect(contexts[2].acknowledged).toEqual([receipt]);
 });
 
 test('invalid investigations get a corrective result before any host execution',async ($,on)=>{
@@ -87,7 +119,6 @@ test('invalid investigations get a corrective result before any host execution',
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   on('process.run',()=>{executions++;throw new Error('No process for invalid input');});
-  on('tool.call',{tool:'Bash'},()=>{executions++;throw new Error('No search for invalid input');});
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   for(const request of [
     {tool:'rg',input:{args:['save','src']},intent:'question'},
@@ -116,10 +147,9 @@ test('delivery receipts are acknowledged only in the same agent and uncompressed
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   on('session.compact',()=>({skip:'test controls context reset'}));
-  on('tool.call',{tool:'Bash'},($,e)=>{
-    const encoded=e.command.match(/--request '(.*?)' --shell-output/)[1];
-    contexts.push(JSON.parse(encoded).context);
-    return {result:{stdout:`evidence\n# mustard-delivery:${receipt}:8:ae70fc8f5906c564\n`,stderr:''}};
+  on('process.run',($,e)=>{
+    contexts.push(envelopeOf(e.argv).context);
+    return {value:{exitCode:0,stdout:`evidence\n# mustard-delivery:${receipt}:8:ae70fc8f5906c564\n`,stderr:''}};
   });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const request={tool:'Symbol',input:{file_path:'a.ts',symbol:'alpha'},intent:'inspect alpha',purpose:'implement'};
@@ -137,27 +167,23 @@ test('delivery receipts are acknowledged only in the same agent and uncompressed
   expect(contexts[3].epoch===contexts[1].epoch).toBe(false);
 });
 
-test('failed, interrupted or truncated host deliveries never acknowledge their receipt',async ($,on)=>{
+test('truncated deliveries never acknowledge their receipt',async ($,on)=>{
   mock.env(on,{});
-  const receipt='b'.repeat(64),contexts=[];let mode='error';
+  const receipt='b'.repeat(64),contexts=[];
   on('session.start',($,e)=>({cwd:e.cwd}));
   on('session.cwd',()=>({value:'/fixture'}));
   on('session.id',()=>({value:'fixture-session'}));
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
-  on('tool.call',{tool:'Bash'},($,e)=>{
-    contexts.push(JSON.parse(e.command.match(/--request '(.*?)' --shell-output/)[1]).context);
-    return {result:{stdout:`${mode==='truncated'?'cut':'partial'}\n# mustard-delivery:${receipt}:7:b5d43e6c2878bc7a\n`,stderr:'failed',interrupted:mode==='interrupted'},isError:mode==='error'};
+  on('process.run',($,e)=>{
+    contexts.push(envelopeOf(e.argv).context);
+    return {value:{exitCode:0,stdout:`cut\n# mustard-delivery:${receipt}:7:b5d43e6c2878bc7a\n`,stderr:''}};
   });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const request={tool:'rg',input:{args:['-n','alpha','a.ts']},intent:'inspect alpha',purpose:'implement'};
   await $.tool.call({tool:'mcp__mustard__search',request});
   await $.tool.call({tool:'mcp__mustard__search',request});
   expect(contexts[1].acknowledged).toEqual([]);
-  for (const next of ['truncated','interrupted']) {
-    mode=next;await $.tool.call({tool:'mcp__mustard__search',request});await $.tool.call({tool:'mcp__mustard__search',request});
-    expect(contexts.at(-1).acknowledged).toEqual([]);
-  }
 });
 
 test('minimal Grep and Read requests return registered-tool text rather than an MCP envelope',async ($,on)=>{
@@ -167,7 +193,7 @@ test('minimal Grep and Read requests return registered-tool text rather than an 
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   const output='50 | async generateOriginalMenuUrl() {\n51 |   return storage.url;\n52 | }';
-  on('tool.call',{tool:'Bash'},()=>({result:{stdout:output,stderr:'',interrupted:false,isImage:false}}));
+  on('process.run',()=>({value:{exitCode:0,stdout:output,stderr:''}}));
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   for(const request of [
     {tool:'Grep',input:{pattern:'generateOriginalMenuUrl',output_mode:'content','-n':true},intent:'Locate the original menu generator',purpose:'locate'},
@@ -181,36 +207,37 @@ test('minimal Grep and Read requests return registered-tool text rather than an 
   }
 });
 
-test('core error text and interrupted output remain errors at the tool-call boundary',async ($,on)=>{
+test('silent failures and unfinished runs remain errors with their reason at the tool-call boundary',async ($,on)=>{
   mock.env(on,{});
   on('session.start',($,e)=>({cwd:e.cwd}));
   on('session.cwd',()=>({value:'/fixture'}));
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
-  const failures=[
-    {result:'Process exited with code 2',isError:true},
-    {result:undefined,text:'Bash execution failed',isError:true},
-    {result:{stdout:'partial evidence',stderr:'Search interrupted',interrupted:true}},
-  ];
-  let at=0;
-  on('tool.call',{tool:'Bash'},()=>failures[at++]);
+  let unfinished=false;
+  on('process.run',()=>{
+    // A skipped answer leaves the host run rejected, as a timeout does.
+    if(unfinished)throw new Error('run never finished');
+    return {value:{exitCode:2,stdout:'',stderr:''}};
+  });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const request={tool:'Grep',input:{pattern:'generateOriginalMenuUrl'},intent:'',purpose:'locate'};
-  for(const text of ['Process exited with code 2','Bash execution failed','partial evidence\nstderr:\nSearch interrupted']) {
-    const answer=await $.tool.call({tool:'mcp__mustard__search',request});
-    expect(answer.result).toBe(text);
-    expect(answer.isError).toBe(true);
-  }
+  const silent=await $.tool.call({tool:'mcp__mustard__search',request});
+  expect(silent.result).toBe('Process exited with code 2');
+  expect(silent.isError).toBe(true);
+  unfinished=true;
+  const aborted=await $.tool.call({tool:'mcp__mustard__search',request});
+  expect(aborted.result).toMatch(/^Mustard search did not finish: \S/);
+  expect(aborted.isError).toBe(true);
 });
 
-test('empty searches and stderr warnings preserve their native text without an error envelope',async ($,on)=>{
+test('successful empty output and stderr warnings preserve their native text without an error envelope',async ($,on)=>{
   mock.env(on,{});
   on('session.start',($,e)=>({cwd:e.cwd}));
   on('session.cwd',()=>({value:'/fixture'}));
   on('command.register',()=>({value:null}));
   on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
   let warning=false;
-  on('tool.call',{tool:'Bash'},()=>({result:{stdout:'',stderr:warning?'rg: warning':'',interrupted:false,isImage:false}}));
+  on('process.run',()=>({value:{exitCode:0,stdout:'',stderr:warning?'rg: warning':''}}));
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
   const request={tool:'Grep',input:{pattern:'notPresent'},intent:'',purpose:'locate'};
   const empty=await $.tool.call({tool:'mcp__mustard__search',request});

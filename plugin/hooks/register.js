@@ -334,10 +334,6 @@ export function register(on) {
     if(problem) return {result:`search-contract: ${problem}. Retry with {request:{tool,input,intent,purpose,choose?}}; preserve original search arguments.`,isError:true};
     const cwd=await $.session.cwd();
     // MCP arguments are fields of e; the nested request avoids reserved tool.
-    // Use Bash through the host tool API so
-    // permissions, classic hooks and the shell sandbox still apply. A process
-    // launched directly by a mod would bypass that boundary.
-    const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
     // The binary decides whether a source-backed ambiguity actually exists.
     // Allow that decision for investigations without requiring the conductor
     // to remember a flag. Literal lookup, exact reads and explicit opt-outs
@@ -346,17 +342,30 @@ export function register(on) {
     const envelope={schema_version:1,request:{...request,choose}};
     const agent=e.agentId || 'main';
     const epoch=evidenceEpoch;
+    let env;
     try {
       const session=await $.session.id();
-      if ([session,agent,epoch].every(value=>typeof value==='string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value))) {
+      const identity=value=>typeof value==='string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value);
+      // The binary records the call under this session, as a shell run did.
+      if (identity(session)) env={MUSTARD_SESSION_ID:session};
+      if ([session,agent,epoch].every(identity)) {
         envelope.context={session,agent,epoch,acknowledged:[...(evidenceAcknowledged.get(agent)||[])]};
       }
     } catch { /* Without a host delivery identity every body is delivered again. */ }
-    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(envelope)),'--shell-output'].join(' ');
-    const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
-    if(result.deny) return {deny:result.deny};
-    const failed=result.isError===true || result.result?.interrupted===true;
-    let stdout=result.result?.stdout ?? result.text ?? (typeof result.result==='string' ? result.result : '');
+    // The host already approved this tool's own call, so the binary runs
+    // directly, without a shell. A Bash call made here would carry no model
+    // request for the auto mode classifier to judge. The command and read
+    // guards still run inside the binary before any search executes.
+    let run;
+    try {
+      run=await $.process.run([await runtime($),'run','search','--root',cwd,'--request',JSON.stringify(envelope),'--shell-output'],
+        {cwd,timeoutMs:120000,...(env?{env}:{})});
+    } catch (error) {
+      // A timeout or a binary that never started delivers no evidence.
+      return {result:`Mustard search did not finish: ${error?.message || error}`,isError:true};
+    }
+    const failed=run.exitCode!==0;
+    let stdout=run.stdout || '';
     const receipt=/\n# mustard-delivery:([a-f0-9]{64}):(\d+):([a-f0-9]{16})\n?$/.exec(stdout);
     if (receipt && envelope.context && epoch===evidenceEpoch && !failed
         && completeDelivery(stdout.slice(0,receipt.index),receipt)) {
@@ -366,10 +375,12 @@ export function register(on) {
       evidenceAcknowledged.set(agent,acknowledged);
     }
     if(receipt)stdout=stdout.slice(0,receipt.index);
-    const stderr=result.result?.stderr || '';
+    const stderr=run.stderr || '';
+    const text=stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:'');
     // Mods validates the registered tool's result as content, not as an MCP
     // tools/call envelope. Error status belongs to the tool.call reply itself.
-    return {result:stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:''),...(failed ? {isError:true} : {})};
+    // A silent failure still names its exit code.
+    return failed ? {result:text || `Process exited with code ${run.exitCode}`,isError:true} : {result:text};
   });
   // Observe completed operations without replacing permissions or the
   // native orchestration. Coalesce bursts; retain polling for external edits.
