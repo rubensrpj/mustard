@@ -364,7 +364,11 @@ export function register(on) {
       // A timeout or a binary that never started delivers no evidence.
       return {result:`Mustard search did not finish: ${error?.message || error}`,isError:true};
     }
-    const failed=run.exitCode!==0;
+    // Exit 1 is how rg, grep, git grep, Grep and Glob say nothing matched, and
+    // the binary's own report already counts it as ok. Read has no such
+    // answer, so its exit 1 stays a failure.
+    const unmatched=run.exitCode===1 && request.tool!=='Read';
+    const failed=run.exitCode!==0 && !unmatched;
     let stdout=run.stdout || '';
     const receipt=/\n# mustard-delivery:([a-f0-9]{64}):(\d+):([a-f0-9]{16})\n?$/.exec(stdout);
     if (receipt && envelope.context && epoch===evidenceEpoch && !failed
@@ -379,8 +383,10 @@ export function register(on) {
     const text=stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:'');
     // Mods validates the registered tool's result as content, not as an MCP
     // tools/call envelope. Error status belongs to the tool.call reply itself.
-    // A silent failure still names its exit code.
-    return failed ? {result:text || `Process exited with code ${run.exitCode}`,isError:true} : {result:text};
+    // A silent failure still names its exit code; so does a silent search
+    // that matched nothing, without the error status.
+    if(failed) return {result:text || `Process exited with code ${run.exitCode}`,isError:true};
+    return {result:text || (unmatched?'No matches (exit code 1)':'')};
   });
   // Observe completed operations without replacing permissions or the
   // native orchestration. Coalesce bursts; retain polling for external edits.

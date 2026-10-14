@@ -87,9 +87,32 @@ test('gateway returns native search errors instead of dropping stderr',async ($,
   expect(result.isError).toBe(true);
 });
 
+test('a search without matches is a result, while a Read that exits 1 stays an error',async ($,on)=>{
+  mock.env(on,{});
+  on('session.start',($,e)=>({cwd:e.cwd}));
+  on('session.cwd',()=>({value:'/fixture'}));
+  on('command.register',()=>({value:null}));
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  // The binary exits 1 when nothing matches: rg prints nothing, Grep prints numFiles 0.
+  let stdout='';
+  on('process.run',()=>({value:{exitCode:1,stdout,stderr:''}}));
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  const literal=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'rg',input:{args:['-n','notPresent','src']},intent:'',purpose:'locate'}});
+  expect(literal.result).toBe('No matches (exit code 1)');
+  expect(literal.isError).toBeUndefined();
+  stdout='{"mode":"files_with_matches","filenames":[],"numFiles":0,"truncated":false}\n';
+  const grep=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'Grep',input:{pattern:'notPresent'},intent:'',purpose:'locate'}});
+  expect(grep.result).toBe(stdout);
+  expect(grep.isError).toBeUndefined();
+  stdout='';
+  const read=await $.tool.call({tool:'mcp__mustard__search',request:{tool:'Read',input:{file_path:'/fixture/a.ts'},intent:'',purpose:'locate'}});
+  expect(read.result).toBe('Process exited with code 1');
+  expect(read.isError).toBe(true);
+});
+
 test('a failed process run never becomes gateway evidence',async ($,on)=>{
   mock.env(on,{});
-  const receipt='b'.repeat(64),contexts=[];let exitCode=1;
+  const receipt='b'.repeat(64),contexts=[];let exitCode=2;
   on('session.start',($,e)=>({cwd:e.cwd}));
   on('session.cwd',()=>({value:'/fixture'}));
   on('session.id',()=>({value:'fixture-session'}));
