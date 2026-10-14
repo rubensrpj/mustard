@@ -1538,6 +1538,32 @@ pub(crate) fn read_only_existing(model:&Path)->std::result::Result<MapDb,MapRefu
     MapDb::read_only(model).map_err(unreadable)
 }
 
+/// Se a abertura do mapa em `model` teria de pôr algum bloco em dia: um bloco
+/// que a porta declara falta ou foi gravado noutra versão do formato, como no
+/// mapa herdado de outra versão do programa. A abertura refaz esse bloco sob a
+/// trava de gravação ([`MapDb::open`]) — o índice de conhecimento relê todo
+/// texto analisado, dezenas de segundos num projeto grande —, e com a passada
+/// do scan refazendo o mesmo bloco, quem abre espera a trava dela e desiste.
+/// Quem só lê e não pode segurar quem o chamou, como a busca, deixa esse mapa
+/// para a passada. Lê só a tabela de blocos, por uma conexão que não grava nem
+/// espera a trava. `false` sem o mapa, com um arquivo que não é banco ou com a
+/// tabela que não se lê: aí a abertura responde como sempre.
+#[must_use]
+pub(crate) fn needs_block_update(model: &Path) -> bool {
+    read_only_existing(model).is_ok_and(|db| outdated_block(&db).unwrap_or(false))
+}
+
+/// Se algum bloco que a porta declara falta no mapa aberto `db` ou está
+/// gravado noutra versão do formato que a deste programa.
+pub(crate) fn outdated_block(db: &MapDb) -> Result<bool> {
+    for block in &DB_BLOCKS {
+        if db.version(block.name)? != Some(block.version) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// [`open_existing`] com a espera `wait` pela trava de outra gravação, para
 /// quem desiste logo em vez de segurar a ação de quem o chamou.
 pub(crate) fn open_existing_waiting(model: &Path, wait: std::time::Duration) -> std::result::Result<MapDb, MapRefusal> {

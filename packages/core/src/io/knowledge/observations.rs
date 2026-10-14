@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 pub(crate) const BLOCK:Block=Block {
     name:"search_facts",version:1,tables:&["search_files","search_facts"],
@@ -24,6 +25,12 @@ fn hash(bytes: &[u8]) -> String {
     digest.update(bytes);
     digest.hex_digest()
 }
+/// Quanto a gravação do que a busca aprendeu espera a trava num mapa com bloco
+/// a pôr em dia. Quem a segura é, quase sempre, a passada do scan refazendo o
+/// bloco, por dezenas de segundos num projeto grande: a busca não espera por
+/// ela, e a fonte que não se gravou segue pendente para a passada.
+const OUTDATED_WAIT: Duration = Duration::from_millis(200);
+
 fn tree_key(tree: &Path) -> String {
     hash(tree.to_string_lossy().as_bytes())
 }
@@ -69,11 +76,15 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
     // A block written by another program version is rebuilt by the next scan.
     // A source hash learned under the old schema cannot acknowledge it.
     let structure_ready=structure_ready(&db)?;
+    let outdated=store::outdated_block(&db).map_err(|e|e.to_string())?;
+    if outdated {
+        db.conn().busy_timeout(OUTDATED_WAIT).map_err(|e|e.to_string())?;
+    }
     let key = tree_key(tree);
     let mut added = 0;
     let mut reused = 0;
     let mut pending = Vec::new();
-    db.write(|tx| {
+    let written = db.write(|tx| {
         for (file,(digest,_)) in &sources {
             let old:Option<String>=tx.query_row("SELECT sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0)).optional()?;
             if old.as_ref().is_some_and(|old|old!=digest) {tx.execute("DELETE FROM search_facts WHERE tree=?1 AND path=?2",params![key,file])?;}
@@ -99,10 +110,19 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             added+=1;
         }
         Ok(())
-    }).map_err(|e|e.to_string())?;
+    });
+    let source_hashes=sources.iter().map(|(file,(digest,_))|(file,digest)).collect::<BTreeMap<_,_>>();
+    match written {
+        Ok(()) => {}
+        // O mapa que espera a passada segue pedindo por ela, com toda fonte
+        // pendente, mesmo sem a gravação.
+        Err(reason) if outdated => return Ok(json!({"status":"not-stored","reason":reason.to_string(),"new_facts":0,"needs_scan":true,
+            "pending_paths":sources.keys().collect::<Vec<_>>(),"tree":key,"source_hashes":source_hashes,"interpretations_recorded":0})),
+        Err(reason) => return Err(reason.to_string()),
+    }
     Ok(
         json!({"status":"stored-current-source-facts","new_facts":added,"reused_facts":reused,"needs_scan":!pending.is_empty(),"pending_paths":pending,"omitted_line_witnesses":hits.len().saturating_sub(witnesses.len()),
-        "tree":key,"source_hashes":sources.iter().map(|(file,(digest,_))|(file,digest)).collect::<BTreeMap<_,_>>(),"interpretations_recorded":0}),
+        "tree":key,"source_hashes":source_hashes,"interpretations_recorded":0}),
     )
 }
 
@@ -116,9 +136,7 @@ fn open(root:&Path)->Result<MapDb,String> {
 }
 
 fn structure_ready(db:&MapDb)->Result<bool,String> {
-    for block in &store::DB_BLOCKS {
-        if db.version(block.name).map_err(|e|e.to_string())? != Some(block.version) {return Ok(false);}
-    }
+    if store::outdated_block(db).map_err(|e|e.to_string())? {return Ok(false);}
     for block in [&store::CENSUS,&store::FILES,&store::DECLS,&store::GRAPH,&store::RESOURCES] {
         if db.mark(block.name()).map_err(|e|e.to_string())?.is_none_or(|mark|mark.is_empty()) {return Ok(false);}
     }

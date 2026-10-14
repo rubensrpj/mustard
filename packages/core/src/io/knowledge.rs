@@ -30,8 +30,10 @@ pub mod waves;
 pub use navigation::Direction;
 
 /// Inventory evidence for search diagnostics, never a completeness guarantee.
+/// A contagem lê o mapa sem pôr bloco nenhum em dia: o bloco noutra versão é
+/// da passada do scan, e esperar a trava dela seguraria a busca.
 pub(crate) fn indexed_file_count(root: &Path) -> Option<u64> {
-    let db = open_existing(&store::model_path(root)).ok()?;
+    let db = store::read_only_existing(&store::model_path(root)).ok()?;
     let count: i64 = db.conn().query_row("SELECT count(*) FROM knowledge_files", [], |row| row.get(0)).ok()?;
     u64::try_from(count).ok()
 }

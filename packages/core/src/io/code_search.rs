@@ -56,6 +56,10 @@ pub fn observe(root: &Path, tree: &Path, cwd: &Path, request: &Request, answer: 
 }
 
 /// Reuse the executed result after refreshing the scan; never rerun the search.
+/// O mapa com bloco a pôr em dia ([`crate::io::project_map::needs_block_update`])
+/// não se cruza nem se investiga: abri-lo refaria o bloco, que é da passada do
+/// scan, e com ela rodando cada abertura esperaria a trava dela. A resposta
+/// fica com o resultado nativo e diz que o índice não está em dia.
 pub fn enrich(
     root: &Path,
     tree: &Path,
@@ -67,6 +71,7 @@ pub fn enrich(
     let hits = occurrences(tree, cwd, request, &answer.report["result"], &answer.stdout);
     observe(root,tree,cwd,request,answer);
     let task_requested=task::requested(request) && matches!(answer.exit_code,0|1);
+    let outdated = crate::io::project_map::needs_block_update(&crate::io::project_map::model_path(root));
     let borrowed: Vec<_> = hits
         .iter()
         .map(|(file, line, text)| Occurrence {
@@ -75,26 +80,31 @@ pub fn enrich(
             text,
         })
         .collect();
+    // `Some(None)`: havia o que cruzar, e o mapa não deu como.
     let crossed = (!borrowed.is_empty()).then(|| {
-        cross_hits_for(
-            root,
-            tree,
-            &borrowed,
-            &request.intent,
-            request.purpose,
-            if request.choose && !task_requested { selector } else { None },
-        )
+        (!outdated)
+            .then(|| {
+                cross_hits_for(
+                    root,
+                    tree,
+                    &borrowed,
+                    &request.intent,
+                    request.purpose,
+                    if request.choose && !task_requested { selector } else { None },
+                )
+            })
+            .and_then(Result::ok)
     });
     let (evidence, status) = match crossed {
-        Some(Ok(report))
+        Some(Some(report))
             if ["symbols", "files"]
                 .iter()
                 .any(|key| report[key].as_array().is_some_and(|v| !v.is_empty())) =>
         {
             (report, "enriched")
         }
-        Some(Ok(_)) => (Value::Null, "no-current-index-owner"),
-        Some(Err(_)) => (Value::Null, "index-unavailable-or-stale"),
+        Some(Some(_)) => (Value::Null, "no-current-index-owner"),
+        Some(None) => (Value::Null, "index-unavailable-or-stale"),
         None => (Value::Null, "no-crossable-occurrences"),
     };
     answer.report["schema_version"] = json!(1);
@@ -121,6 +131,10 @@ pub fn enrich(
         // caller can explicitly refine its pattern or query knowledge.
         if answer.exit_code == 1 && answer.stdout.is_empty() {
             answer.report["task_context"]=json!({"status":"native-fallback","reason":"native-no-matches; refine the original pattern or explicitly query knowledge","remote_model_calls":0});
+            return;
+        }
+        if outdated {
+            answer.report["task_context"]=json!({"status":"native-fallback","reason":"map-block-outdated; the scan pass rebuilds it","remote_model_calls":0});
             return;
         }
         match task::investigate(root,tree,cwd,request,answer,if request.choose {selector}else{None}) {
