@@ -49,6 +49,10 @@ pub(crate) fn snapshot(root: &Path, log: &SpecLog) -> Value {
                 .any(|other| !other.done && log.get(other.id).is_some_and(|e| !is_cleanup(e)));
         let reason = if !active {
             "spec-not-running"
+        } else if entry.blocked && entry.files.is_empty() {
+            // A tarefa presa sem arquivo nenhum, como a que nasce da sobra
+            // que não cita arquivo: espera quem conduz a obra planejá-la.
+            "needs-planning"
         } else if entry.blocked {
             "task-blocked"
         } else if uncovered.contains(id) {

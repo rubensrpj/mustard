@@ -75,6 +75,7 @@ use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 mod stale_marks;
+mod unused;
 
 /// As opções de `mustard-rt run close`.
 #[derive(Default)]
@@ -145,8 +146,11 @@ enum CloseRefusal {
         code: String,
         output: String,
     },
+    /// A análise de declarações sem uso recusou, com o texto dos achados que
+    /// recusam e o mesmo `no_wave` do lint.
     NewUnused {
         text: String,
+        no_wave: Option<String>,
     },
     ValidationInputsChanged,
     /// Um critério cuja prova saiu verde sem rodar teste nenhum, com o
@@ -192,7 +196,7 @@ impl CloseRefusal {
         };
         match self {
             Self::Refused(refusal) => refusal.message(lang),
-            Self::NewUnused { text } => text.clone(),
+            Self::NewUnused { text, no_wave } => with_no_wave(text.clone(), no_wave.as_deref()),
             Self::ValidationInputsChanged => translate("close.validation_inputs_changed", lang).into(),
             Self::Report(refusal) => refusal.message(lang),
             Self::NotRunning { phase } => fill("close.not_running", &[("{phase}", phase.clone())]),
@@ -385,8 +389,8 @@ fn run_close(
     let unowned_tests = unowned_test_hints(root, &log, lang);
     let unused_hints = crate::commands::flow::round::final_unused(root, &spec, &log, lang, &[])
         .into_iter()
-        .filter(|(_, refuses, _)| !refuses)
-        .map(|(_, _, hint)| hint)
+        .filter(|(refuses, _)| !refuses)
+        .map(|(_, hint)| hint)
         .collect::<Vec<_>>();
 
     let log = read(&path)?;
@@ -692,10 +696,8 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
             ProofFault::Failed(output) => CloseRefusal::CriterionFailed { code: failed.code, output },
         }),
         None => {
-            let unused = crate::commands::flow::round::final_unused(root, spec, log, lang, &native_outputs);
-            let failures = unused.into_iter().filter(|(_, refuses, _)| *refuses).map(|(_, _, text)| text).collect::<Vec<_>>();
-            if !failures.is_empty() {
-                return Err(CloseRefusal::NewUnused { text: failures.join("\n") });
+            if let Some(refusal) = unused::refusal(root, spec, log, lang, &native_outputs) {
+                return Err(refusal);
             }
             let after = super::validation::fingerprint(root, log);
             if before != after {
@@ -720,12 +722,15 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
 /// ([`super::validation::cited`]). Sem onda citada, nenhuma reabre: eles
 /// rodam pela primeira vez aqui, sobre a obra inteira, e não há base para
 /// culpar ninguém; a recusa diz o que a saída citou, e a decisão é do
-/// usuário. O critério que falha reabre as ondas que o cobrem, e a análise
-/// de declarações sem uso, todas.
+/// usuário. A análise de declarações sem uso passa pela mesma leitura, com o
+/// texto dos achados que recusam, que cita o arquivo de cada declaração: a
+/// onda de cada achado vem dos commits da obra, e o commit de duas ondas daria
+/// a cada uma os arquivos da outra. O critério que falha reabre as ondas que
+/// o cobrem.
 fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: CloseRefusal, lang: Locale) -> CloseRefusal {
     let planned: Vec<u64> = log.planned_waves().into_iter().collect();
     let implicated: Vec<u64> = match &failure {
-        CloseRefusal::LintFailed { output, .. } | CloseRefusal::SuiteFailed { output, .. } => {
+        CloseRefusal::LintFailed { output, .. } | CloseRefusal::SuiteFailed { output, .. } | CloseRefusal::NewUnused { text: output, .. } => {
             let cited = super::validation::cited(root, output, &super::validation::Work::of(root, log, &planned));
             if cited.waves.is_empty() {
                 return no_wave_reopened(failure, &cited, lang);
@@ -736,7 +741,6 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
             let criterion = log.codes().into_iter().find(|(_, c)| c == code).map(|(id, _)| id);
             planned.into_iter().filter(|w| criterion.is_none_or(|id| log.criteria_for_waves(&[*w]).iter().any(|c| c.id == id))).collect()
         }
-        CloseRefusal::NewUnused { .. } => planned,
         _ => return failure,
     };
     let fingerprint = super::validation::fingerprint(root, log).unwrap_or_else(|| "unknown".into());
@@ -760,8 +764,9 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
     failure
 }
 
-/// A falha do lint ou da suíte (`failure`) cuja saída não cita arquivo de
-/// onda da obra, com o que ela citou (`cited`) dito na recusa: os arquivos de
+/// A falha do lint, da suíte ou da análise de declarações sem uso
+/// (`failure`) cuja saída não cita arquivo de onda da obra, com o que ela
+/// citou (`cited`) dito na recusa: os arquivos de
 /// fora da obra, nenhum arquivo do projeto, ou arquivo que a branch mudou sem
 /// onda que o declarasse ou entregasse; e, em todo caso, que nenhuma onda
 /// reabriu.
@@ -777,6 +782,7 @@ fn no_wave_reopened(failure: CloseRefusal, cited: &super::validation::Cited, lan
     match failure {
         CloseRefusal::LintFailed { command, output, .. } => CloseRefusal::LintFailed { command, output, no_wave: Some(why) },
         CloseRefusal::SuiteFailed { command, output, .. } => CloseRefusal::SuiteFailed { command, output, no_wave: Some(why) },
+        CloseRefusal::NewUnused { text, .. } => CloseRefusal::NewUnused { text, no_wave: Some(why) },
         other => other,
     }
 }
@@ -1374,7 +1380,7 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
-    fn git_at(root: &Path, args: &[&str]) {
+    pub(super) fn git_at(root: &Path, args: &[&str]) {
         let out = Command::new("git")
             .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
             .args(args)

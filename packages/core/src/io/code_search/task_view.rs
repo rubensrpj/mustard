@@ -238,6 +238,18 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     if context["static_references_partial"] == true {
         text.push_str("# Additional static target references omitted; expand an exact symbol.\n");
     }
+    let mut previous_native = "";
+    for item in context["native_lines"]["lines"].as_array().into_iter().flatten() {
+        let file = item["source"]["file"].as_str().unwrap_or_default();
+        if previous_native != file {
+            let _ = writeln!(text, "@ {file}\n# Pattern hits not shown above:");
+            previous_native = file;
+        }
+        let _ = writeln!(text, "{} | {}", item["source"]["line"], item["text"].as_str().unwrap_or_default());
+    }
+    if let Some(omitted) = context["native_lines"]["omitted"].as_u64().filter(|n| *n > 0) {
+        let _ = writeln!(text, "# Gap: {omitted} other pattern hits not shown; repeat with purpose=locate.");
+    }
     for item in live.into_iter().flatten() {
         let _ = writeln!(
             text,
@@ -286,6 +298,9 @@ fn coalesce_files(text:String,context:&Value)->String {
         for item in context[key].as_array().into_iter().flatten() {
             if let Some(file)=item["source"]["file"].as_str(){files.insert(file);}
         }
+    }
+    for item in context["native_lines"]["lines"].as_array().into_iter().flatten() {
+        if let Some(file)=item["source"]["file"].as_str(){files.insert(file);}
     }
     for key in ["steps","test_mentions"] {
         for item in context["chain"][key].as_array().into_iter().flatten() {

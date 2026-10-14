@@ -987,6 +987,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_joined", Locale::EnUs) => {
             concat!("Leftover from wave {wave}, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
         }
+        ("round.leftover_repeated", Locale::PtBr) => {
+            "Sobra da onda {wave} que repete a tarefa {task}, ainda por entregar: {detail}"
+        }
+        ("round.leftover_repeated", Locale::EnUs) => {
+            "Leftover from wave {wave} that repeats task {task}, still to deliver: {detail}"
+        }
+        ("round.leftover_without_files", Locale::PtBr) => {
+            "Sobra sem arquivo declarado: grave uma versão nova da tarefa com os arquivos e as \
+             dependências antes de ela sair numa onda."
+        }
+        ("round.leftover_without_files", Locale::EnUs) => {
+            "Leftover without a declared file: write a new version of the task with its files and \
+             dependencies before it goes out in a wave."
+        }
         ("round.tasks_returned", Locale::PtBr) => {
             "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
              de plano anotada quando houve. Se a mudança altera uma decisão ou o que a tarefa pede, \
@@ -1817,7 +1831,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 240, 0xe61e_5a81_f74f_766b);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 242, 0x55f8_c00e_203b_e28c);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2037,6 +2051,8 @@ mod tests {
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
+            ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
+            ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.held_return", &["{wave}", "{hint}"][..]),
             ("round.code_kept", &["{wave}", "{copy}", "{ref}"][..]),

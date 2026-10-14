@@ -28,7 +28,7 @@ use super::commit::{
 };
 use super::copy_check::check_against_copies;
 use super::finish_check::unfinished_work;
-use super::leftovers::{Leftover, leftover_tasks, leftovers_of};
+use super::leftovers::{Leftover, leftover_events, leftovers_of};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
@@ -944,9 +944,10 @@ struct CheckedReport {
     /// devolveu: sem a onda que a levou, de volta ao backlog.
     undone_tasks: Vec<(u64, Rehearsed)>,
     /// Uma tarefa nova no backlog por item combinado que a entrega de uma
-    /// onda marcou `met:false` e por sobra, com a onda que a apontou: também
-    /// sem onda própria, para a rodada seguinte formar o lote.
-    wave_tasks: Vec<(u64, Rehearsed)>,
+    /// onda marcou `met:false` e por sobra, com a onda que a apontou e o tipo
+    /// do evento: também sem onda própria, para a rodada seguinte formar o
+    /// lote. A sobra que repete uma tarefa ainda por entregar vem como nota.
+    wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -971,8 +972,8 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// commit. O entregou vai também em cada onda que o conserto fecha, e o item
 /// combinado que a entrega não cumpriu e cada sobra viram tarefa no backlog,
 /// pela mesma conferência das tarefas que nascem do veredito — a sobra cujos
-/// arquivos já estão numa tarefa aberta vira uma linha nela
-/// ([`leftover_tasks`]). A tarefa que a
+/// arquivos já estão numa tarefa aberta vira uma linha nela, e a que repete
+/// uma tarefa ainda por entregar vira nota que a aponta ([`leftover_events`]). A tarefa que a
 /// onda não fez volta ao backlog antes das entregas, com a mudança aceita
 /// anotada no idioma `lang`, e leva o item combinado que a onda não cumpriu
 /// ([`join_unmet`]), que então não vira tarefa nova.
@@ -1064,7 +1065,7 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
             if wave == report.wave && !report.agreed.is_empty() {
                 draft.insert("agreed".into(), json!(report.agreed));
                 let tasks = settle_wave_agreed(check.log(), report, &mut draft, &mut covered_now)?;
-                wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
+                wave_tasks.extend(tasks.into_iter().map(|task| (wave, "task", task)));
             }
             draft.insert("author".into(), json!("wave"));
             deliveries.push((wave, rehearse(&mut check, "delivered", draft)?));
@@ -1074,8 +1075,12 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // A sobra que entra numa tarefa que voltou ao backlog nesta rodada aponta
     // o número que o ensaio deu à volta: a gravação de verdade o troca pelo
     // dela.
-    wave_tasks.extend(leftover_tasks(root, check.log(), &found, lang));
-    let wave_tasks = wave_tasks.into_iter().map(|(wave, task)| Ok((wave, rehearse(&mut check, "task", task)?))).collect::<Result<Vec<_>, Refusal>>()?;
+    let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
+    wave_tasks.extend(leftover_events(root, check.log(), &found, &returning, lang));
+    let wave_tasks = wave_tasks
+        .into_iter()
+        .map(|(wave, kind, draft)| Ok((wave, kind, rehearse(&mut check, kind, draft)?)))
+        .collect::<Result<Vec<_>, Refusal>>()?;
     // O consumo, que só se sabe na volta: quando a rodada mede algum dos
     // cinco campos, o envio da onda ganha uma versão nova com eles, sem
     // remontar o resto do que foi enviado — também na onda que uma rodada
@@ -1197,9 +1202,9 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         recorded.push(json!({ "wave": wave, "type": "delivered", "id": id, "text": text,
             "files": files, "proofs": own }));
     }
-    for (wave, task) in wave_tasks {
-        let (id, replaces) = recording.record("task", task)?;
-        let mut entry = json!({ "wave": wave, "type": "task", "id": id });
+    for (wave, kind, event) in wave_tasks {
+        let (id, replaces) = recording.record(kind, event)?;
+        let mut entry = json!({ "wave": wave, "type": kind, "id": id });
         if let Some(replaces) = replaces {
             entry["replaces"] = replaces;
         }
@@ -4670,12 +4675,7 @@ fn main() { sum_by_the_new_name(); }
     /// pergunta: a sem `kind`, a `cosmetic`, a `breaks` e a de um `kind` que
     /// a volta antiga ainda traga, que é aceita e fica sem ele. A tarefa nova
     /// leva o título, o detalhe, o autor da onda e o arquivo que o detalhe
-    /// cita e que existe. A mesma sobra, vista de novo por outra onda na
-    /// rodada seguinte, não vira segunda tarefa: todos os arquivos dela já
-    /// estão na tarefa aberta, e essa tarefa ganha uma versão nova com a
-    /// sobra numa linha da parte do agente. A sobra que cita um arquivo a
-    /// mais que a tarefa, e a que não cita arquivo nenhum, mesmo com o título
-    /// repetido, viram tarefa nova. A lista de pendências do projeto não
+    /// cita e que existe. A lista de pendências do projeto não
     /// ganha item nenhum, nem com a sobra que repete o título de uma
     /// pendência já aberta, e o fechamento não ganha pendência nova a
     /// perguntar. A sobra sem título é recusada na gravação, com o texto
@@ -4691,15 +4691,9 @@ fn main() { sum_by_the_new_name(); }
 ",
         )
         .unwrap();
-        std::fs::write(
-            root.join("src/c.rs"),
-            "fn main() {}
-",
-        )
-        .unwrap();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         git_at(root, &["checkout", "-q", "-b", "feature/x"]);
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
         let open = pending_at(&PendingOpts {
             root: root.to_path_buf(),
             add: true,
@@ -4766,56 +4760,6 @@ fn main() { sum_by_the_new_name(); }
         assert_eq!(tasks[2].fields["text"], json!(cites), "{:?}", tasks[2].fields);
         assert_eq!(tasks[2].fields["files"], json!([{"path": "src/commit.rs"}]), "{:?}", tasks[2].fields);
         assert_eq!(tasks[0].fields["files"], json!([]), "{:?}", tasks[0].fields);
-
-        // A onda 2 volta na rodada seguinte com a mesma sobra em
-        // `src/commit.rs`, uma que cita também `src/c.rs` e uma sem arquivo.
-        std::fs::write(
-            root.join("src/b.rs"),
-            "fn main() {}
-",
-        )
-        .unwrap();
-        let wider = "Sem o índice, `src/commit.rs` e `src/c.rs` param.";
-        let wrote = returned(
-            root,
-            json!({"wave": 2, "text": "O dois saiu.", "files": ["src/b.rs"],
-            "commit": "o dois sai", "leftovers": [
-                {"title": "A leitura para sem o índice", "detail": cites},
-                {"title": "A leitura para nos dois", "detail": wider},
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
-            ]}),
-        );
-        assert_eq!(wrote["ok"], json!(true), "{wrote}");
-        let again = round(root, "x", None);
-        assert_eq!(again["ok"], json!(true), "{again}");
-        let entries: Vec<Value> = again["recorded"].as_array().into_iter().flatten().filter(|r| r["type"] == json!("task")).cloned().collect();
-        assert_eq!(entries.len(), 3, "{again}");
-        assert_eq!(entries[0]["replaces"], json!(tasks[2].id), "a tarefa aberta ganha versão nova: {again}");
-        assert!(entries[1].get("replaces").is_none() && entries[2].get("replaces").is_none(), "{again}");
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let joined = log.get(entries[0]["id"].as_u64().unwrap()).unwrap();
-        let line = translate("round.leftover_joined", Locale::PtBr)
-            .replace("{wave}", "2")
-            .replace("{title}", "A leitura para sem o índice")
-            .replace("{detail}", cites);
-        assert_eq!(joined.fields["agent"], json!(line), "{:?}", joined.fields);
-        assert_eq!(
-            (&joined.fields["title"], &joined.fields["text"], &joined.fields["files"]),
-            (&json!("A leitura para sem o índice"), &json!(cites), &json!([{"path": "src/commit.rs"}])),
-            "o resto da tarefa fica como estava"
-        );
-        // A rodada pode já ter posto a tarefa num lote do backlog, numa versão
-        // mais nova ainda: conta a tarefa vigente, pelo título.
-        let same: Vec<&SpecEvent> =
-            log.visible().into_iter().filter(|e| e.event_type == "task" && e.str_field("title") == Some("A leitura para sem o índice")).collect();
-        assert_eq!(same.len(), 1, "duas rodadas com a mesma sobra dão uma tarefa só: {same:?}");
-        assert!(same[0].id == joined.id || same[0].replaced().contains(&joined.id), "{same:?}");
-        let wider_task = log.get(entries[1]["id"].as_u64().unwrap()).unwrap();
-        let wider_files: BTreeSet<&str> = wider_task.fields["files"].as_array().into_iter().flatten().filter_map(|file| file["path"].as_str()).collect();
-        assert_eq!(wider_files, BTreeSet::from(["src/c.rs", "src/commit.rs"]), "um arquivo a mais, tarefa nova");
-        let untied = log.get(entries[2]["id"].as_u64().unwrap()).unwrap();
-        assert_eq!(untied.fields["title"], json!("O log não gira"), "sem arquivo, a sobra vira tarefa nova");
 
         assert_eq!(ledger(), ledger_before, "a lista de pendências do projeto não ganha item");
         assert_eq!(born(), born_before, "nenhuma pendência nova espera a pergunta do fechamento");
@@ -4963,9 +4907,9 @@ fn main() { sum_by_the_new_name(); }
             .join("\n"),
         );
         let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into(), cleanup: false };
-        let task = leftover_task(dir.path(), &log, 1, &leftover);
+        let task = leftover_task(dir.path(), &log, 1, &leftover, Locale::PtBr);
         assert_eq!(task.get("covers"), Some(&json!([1, 2])), "{task:?}");
-        let task = leftover_task(dir.path(), &log, 2, &leftover);
+        let task = leftover_task(dir.path(), &log, 2, &leftover, Locale::PtBr);
         assert!(!task.contains_key("covers"), "onda sem critério, tarefa sem `covers`: {task:?}");
     }
 

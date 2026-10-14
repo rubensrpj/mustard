@@ -37,6 +37,7 @@ pub(super) fn investigate(
         .map(str::to_string)
         .collect();
     let mut follow_up = Value::Null;
+    let mut native_hits = super::occurrences(tree, cwd, request, &answer.report["result"], &answer.stdout);
     if request.tool == "Grep" && answer.report["result"]["mode"] == "files_with_matches" {
         // Discovery gives paths, not matching declarations. Resolve the
         // pattern to line coordinates internally before asking the catalogue.
@@ -68,7 +69,11 @@ pub(super) fn investigate(
             }
         }
         follow_up = json!({"operation":"file-discovery-to-native-content","occurrences_crossed":hits.len(),"source_bytes":found.stdout.len(),"native_original_preserved":true});
+        native_hits = hits;
     }
+    // Owners of the pattern's own hits, before question words add others.
+    let native_owners: BTreeSet<String> = seeds.iter().cloned().collect();
+    let native_files: BTreeSet<String> = native_hits.iter().map(|hit| hit.0.clone()).collect();
     let complementary=super::discovery::probe(root,tree,request,&scope,&mut seeds);
     let opts = Query {
         text: if scope.clues.trim().is_empty() {
@@ -101,6 +106,10 @@ pub(super) fn investigate(
     )
     .map_err(|e| format!("{e:?}"))?;
     report["complementary_discovery"]=complementary;
+    // A file the pattern never hit cannot lend source lines to the evidence.
+    if let Some(live)=report["investigation"]["live_matches"].as_array_mut() {
+        live.retain(|item|item["source"]["file"].as_str().is_some_and(|file|native_files.contains(file)));
+    }
     if !knowledge::generation(root).is_ok_and(|now| now == generation) {
         return Err("task-scan-changed-during-discovery".into());
     }
@@ -294,7 +303,7 @@ pub(super) fn investigate(
         }
         item["source_excerpt"] = excerpt;
         item["recommended"] = json!(recommendations.contains(&card.id));
-        item["native_search_owner"] = json!(seeds.contains(&card.id));
+        item["native_search_owner"] = json!(native_owners.contains(&card.id));
         item["read"] = json!({"tool":"Read","input":{"file_path":card.source.file,"offset":card.source.line,"limit":card.source.end_line-card.source.line+1}});
         item["body_comment"] = json!(card.body_comment);
         item["tests"] = json!(card.tests);
@@ -308,7 +317,7 @@ pub(super) fn investigate(
         items.push(item);
         item_slots.push(own_slots);
     }
-    let primary = report["cards"]
+    let primary: BTreeSet<String> = report["cards"]
         .as_array()
         .into_iter()
         .flatten()
@@ -318,12 +327,21 @@ pub(super) fn investigate(
     let declarations:BTreeSet<_>=cards.iter().enumerate()
         .filter(|(_,card)|selection::declaration_only(card,&source_text[&card.source.file]))
         .map(|(i,_)|i).collect();
+    // Source bodies come only from a file the pattern hit or from a
+    // declaration a hit's owner links to; the rest stay expandable ranges.
+    let mut linked:BTreeSet<String>=cards.iter().filter(|card|native_owners.contains(&card.id))
+        .flat_map(|card|&card.outgoing).filter_map(|edge|edge["target"].as_str().map(str::to_string)).collect();
+    let admitted=|card:&Card,linked:&BTreeSet<String>|native_files.contains(&card.source.file) || linked.contains(&card.id);
+    let admitted_ids:BTreeSet<_>=cards.iter().filter(|card|admitted(card,&linked)).map(|card|card.id.clone()).collect();
+    let admitted_primary:BTreeSet<String>=primary.iter().filter(|id|admitted_ids.contains(*id)).cloned().collect();
+    let admitted_recommendations:Vec<String>=recommendations.iter().filter(|id|admitted_ids.contains(*id)).cloned().collect();
+    let admitted_anchors:BTreeSet<String>=anchors.iter().filter(|id|admitted_ids.contains(*id)).cloned().collect();
     let bodies = selection::task_bodies_with_declarations(
         &cards,
         &item_slots,
-        &primary,
-        &recommendations,
-        &anchors,
+        &admitted_primary,
+        &admitted_recommendations,
+        &admitted_anchors,
         &request.intent,
         &languages,
         &declarations,
@@ -360,14 +378,31 @@ pub(super) fn investigate(
         .map(|(_, slot)| slot.clone())
         .collect();
     report["cards"] = json!(items);
-    let chain_eligible:BTreeSet<_> = cards.iter().enumerate().filter(|(i,card)| anchors.contains(&card.id) || recommendations.contains(&card.id)
-        || (anchors.is_empty() && (bodies.contains(i) || (primary.contains(&card.id) && decision_ids.contains(&card.id)))))
+    let chain_eligible:BTreeSet<_> = cards.iter().enumerate().filter(|(i,card)| admitted_ids.contains(&card.id) && (anchors.contains(&card.id) || recommendations.contains(&card.id)
+        || (anchors.is_empty() && (bodies.contains(i) || (primary.contains(&card.id) && decision_ids.contains(&card.id))))))
         .map(|(i,_)|i).collect();
     let explicit=anchors.iter().chain(&recommendations).cloned().collect();
     let chain_seeds:Vec<_>=selection::follow_up_order(&cards,&chain_eligible,&explicit).into_iter().take(4).map(|i|cards[i].clone()).collect();
     let mut chained_items = report["cards"].as_array().cloned().unwrap_or_default();
     report["chain"] = super::chain::expand(root,tree,&scope.files,&chain_seeds,&mut chained_items,&mut matcher,request.purpose,&request.intent)?;
+    for key in ["steps","relations"] {
+        for edge in report["chain"][key].as_array().into_iter().flatten() {
+            if edge["from"].as_str().is_some_and(|from|native_owners.contains(from)) && let Some(to)=edge["to"].as_str() {linked.insert(to.into());}
+        }
+    }
+    for item in &mut chained_items {
+        let linked_here=item["source"]["file"].as_str().is_some_and(|file|native_files.contains(file))
+            || item["id"].as_str().is_some_and(|id|linked.contains(id));
+        if item["initial_source_excerpt"]==true && !linked_here {
+            item["initial_source_excerpt"]=json!(false);item["initial_reference"]=json!(true);
+        }
+    }
+    if let Some(mentions)=report["chain"]["test_mentions"].as_array_mut() {
+        mentions.retain(|test|test["source"]["file"].as_str().is_some_and(|file|native_files.contains(file))
+            || test["symbol"].as_str().is_some_and(|id|native_owners.contains(id)));
+    }
     report["cards"] = json!(chained_items);
+    report["native_lines"] = native_lines(tree,&native_hits,&report["cards"]);
     for item in report["cards"].as_array_mut().into_iter().flatten() {
         let missing:Vec<_>=item["source_excerpt"]["missing_ranges"].as_array().into_iter().flatten().map(|range|
             json!({"tool":"Read","input":{"file_path":item["source"]["file"],"offset":range["line"],
@@ -435,6 +470,59 @@ pub(super) fn investigate(
     Ok(report)
 }
 
+/// Pattern hits no delivered excerpt shows (top-level script code, an owner
+/// listed only as a range) keep their current lines. Smaller files go first,
+/// so a short file never loses its hits to a large one; the rest is counted,
+/// never dropped silently.
+fn native_lines(tree: &Path, hits: &[(String, u64, String)], cards: &Value) -> Value {
+    const LIMIT: usize = 64;
+    let Ok(registry) = crate::domain::knowledge::resources::Registry::load() else {
+        return json!({"lines":[],"omitted":hits.len()});
+    };
+    let shown: BTreeSet<(&str, u64)> = cards.as_array().into_iter().flatten()
+        .filter(|card| card["initial_source_excerpt"] == true)
+        .flat_map(|card| {
+            let file = card["source"]["file"].as_str().unwrap_or_default();
+            card["source_excerpt"]["text"].as_str().unwrap_or_default().lines()
+                .filter_map(move |row| super::source_view::row(row).map(|(line, _)| (file, line)))
+        })
+        .collect();
+    let mut files = BTreeMap::<&str, Vec<(u64, &str)>>::new();
+    for (file, line, text) in hits {
+        if !shown.contains(&(file.as_str(), *line)) {
+            files.entry(file).or_default().push((*line, text));
+        }
+    }
+    let mut sources: Vec<_> = files
+        .into_iter()
+        .map(|(file, rows)| (investigation::safe_read(tree, file, &registry), file, rows))
+        .collect();
+    sources.sort_by_key(|(text, file, _)| (text.as_ref().map_or(usize::MAX, String::len), *file));
+    let (mut lines, mut omitted) = (Vec::new(), 0);
+    for (text, file, mut rows) in sources {
+        rows.sort_unstable();
+        rows.dedup();
+        let Some(text) = text.filter(|_| lines.len() + rows.len() <= LIMIT) else {
+            omitted += rows.len();
+            continue;
+        };
+        let digest = {
+            let mut hash = crate::io::sha256::Sha256::new();
+            hash.update(text.as_bytes());
+            hash.hex_digest()
+        };
+        let current: Vec<_> = text.lines().collect();
+        for (line, row) in rows {
+            if current.get(line.saturating_sub(1) as usize) == Some(&row) {
+                lines.push(json!({"source":Source{file:file.into(),line,end_line:line,sha256:digest.clone()},"text":row}));
+            } else {
+                omitted += 1;
+            }
+        }
+    }
+    json!({"lines":lines,"omitted":omitted})
+}
+
 fn accept(
     groups: &[selection::Ambiguity],
     decisions: Decisions,
@@ -486,6 +574,7 @@ fn verify(root: &Path, tree: &Path, generation: &str, cards: &[Card], report: &V
             .as_array()
             .into_iter()
             .flatten()
+            .chain(report["native_lines"]["lines"].as_array().into_iter().flatten())
             .all(|item| {
                 serde_json::from_value::<Source>(item["source"].clone())
                     .is_ok_and(|source| knowledge::current(tree, &source, &mut hashes))

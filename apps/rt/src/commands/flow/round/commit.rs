@@ -297,14 +297,19 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
     refreshed
 }
 
-pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(u64, bool, String)> {
+/// Os achados da análise final de declarações sem uso da spec `spec`: se
+/// cada um recusa o fechamento e o texto dele, que cita o arquivo. Sem o mapa
+/// da base ou o de agora, um aviso só, que não recusa. A onda de cada achado
+/// fica de fora: ela sai dos commits da obra, e o commit de duas ondas daria a
+/// cada uma os arquivos da outra; quem reabre se decide pelo arquivo citado.
+pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(bool, String)> {
     let base = mustard_core::io::spec_events::spec_file(root, spec)
         .ok()
         .and_then(|p| std::fs::read(p.parent()?.join("validation-base-map.json")).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let after = mustard_core::io::project_map::read(root).ok();
     let (Some(base), Some(after)) = (base, after) else {
-        return vec![(0, false, translate("round.after_wave.analysis_unknown", lang).to_string())];
+        return vec![(false, translate("round.after_wave.analysis_unknown", lang).to_string())];
     };
     let changed = log
         .visible()
@@ -319,7 +324,7 @@ pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale,
                 .collect::<Vec<_>>()
         })
         .collect();
-    super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.wave, f.refuses, f.text)).collect()
+    super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.refuses, f.text)).collect()
 }
 
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta

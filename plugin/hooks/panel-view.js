@@ -217,6 +217,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
         'file-reservation':['Arquivo reservado','File reserved'],capacity:['Aguarda vaga','Waiting for capacity'],
         'missing-criteria':['Falta vínculo com critério','Missing acceptance criterion'],'cleanup-last':['Limpeza aguarda implementação','Cleanup waits for implementation'],
         'task-blocked':['Tarefa impedida; revise a condição antes de reenviar','Task blocked; revise the condition before dispatch'],
+        'needs-planning':['A planejar: faltam arquivos e dependências','To plan: files and dependencies missing'],
         'spec-not-running':['Spec fora de execução','Spec is not running']};
       rows.push(section(t('Fila de trabalho','Work queue'),[
         text(`${fmt(queue.backlog)} ${t('tarefas no backlog','backlog tasks')} · ${fmt(queue.ready)} ${t('prontas','ready')}`),
