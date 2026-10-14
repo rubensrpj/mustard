@@ -4,8 +4,8 @@
 //! quatro conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
-//! - [`reading`] — protege leituras que expõem a chave; leitores simples são
-//!   substituídos por bytes mascarados, sem aprovar a execução da linha inteira;
+//! - [`reading`] — recusa leituras que expõem a chave; a recusa de um leitor
+//!   simples traz pronto o comando que lê o arquivo com a chave escondida;
 //! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
 //!   caminho do Windows (`> C:\...`), que o shell POSIX transformaria num
 //!   arquivo com nome estranho na pasta atual;
@@ -14,8 +14,10 @@
 //!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
 //!   completo;
 //!
-//! [`reading`] protege a leitura do `mustard.json` que guarda a chave do
-//!   Jev, com orientação curta nos formatos sem substituição segura, e responde a busca por palavra
+//! [`reading`] recusa a leitura do `mustard.json` que guarda a chave do
+//!   Jev: a recusa vence qualquer outro gancho que troque o comando e traz
+//!   pronto o comando mascarado, ou uma orientação curta nos formatos sem
+//!   troca segura. Ela também responde a busca por palavra
 //!   em pastas de código com a marca do mapa: a resposta agrupada por função
 //!   no lugar da busca que mostra linhas, quando o mapa crava; a busca comum
 //!   com a nota do mapa junto, quando a marca é parcial (ela passa antes pelo
@@ -79,10 +81,17 @@ impl CommandGuard {
             return Ok(verdict);
         }
         let isolate = |verdict| super::workspace_scope::isolate(input, ctx, verdict, host_shell);
-        if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
-            return Ok(isolate(super::config_read::rewrite(&cmd, input, ctx).unwrap_or(verdict)));
-        }
         let lang = ctx.config.language().text_or_default();
+        if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
+            // A recusa vence a troca que outro gancho faça no mesmo comando; uma
+            // troca feita aqui poderia perder para a dele. Quando o formato
+            // permite, a recusa traz pronto, na última linha, o comando que lê
+            // o arquivo com a chave escondida.
+            let verdict = super::config_read::masked_command(&cmd, input, ctx).map_or(verdict, |command| Verdict::Deny {
+                reason: crate::shared::say::say("config_key.masked_command", lang, &[("{command}", &command)]),
+            });
+            return Ok(isolate(verdict));
+        }
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {
             return Ok(isolate(verdict));
         }

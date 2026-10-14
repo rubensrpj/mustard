@@ -250,15 +250,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // Onde começam os testes escritos dentro do arquivo.
         ("code_route.tests_from", Locale::PtBr) => "testes a partir da linha {line}",
         ("code_route.tests_from", Locale::EnUs) => "tests from line {line}",
-        // A leitura do arquivo de configuração que guarda a chave do Jev
-        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
-        // o arquivo inteiro, já sem o valor da chave.
+        // A leitura do arquivo com a chave num formato sem troca segura é
+        // recusada sem comando pronto. `{file}` é o arquivo como o comando o
+        // nomeou.
         ("config_key.shell_unsupported", Locale::PtBr) => {
             "[Mustard] Leitura de {file} bloqueada para proteger a chave. Esse formato de comando não permite substituição segura. Nenhuma etapa foi executada. Use `mustard-rt run config-read --file '{file}'` para ler a configuração mascarada e execute as outras etapas separadamente."
         }
         ("config_key.shell_unsupported", Locale::EnUs) => {
             "[Mustard] Reading {file} was blocked to protect the key. This command format cannot be safely rewritten. No step was executed. Use `mustard-rt run config-read --file '{file}'` to read the masked configuration and run other steps separately."
         }
+        // A leitura do arquivo com a chave num formato que tem troca segura é
+        // recusada, e a recusa vence qualquer outro gancho que troque o
+        // comando. `{command}` vem do chamador, sozinho depois da última
+        // quebra de linha: o mesmo comando, com cada leitura já mascarada.
+        ("config_key.masked_command", Locale::PtBr) => {
+            "[Mustard] A leitura da configuração foi barrada para proteger a chave do Jev. Nenhuma etapa foi executada. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por *** e mantém as outras etapas na mesma ordem.\n{command}"
+        }
+        ("config_key.masked_command", Locale::EnUs) => {
+            "[Mustard] Reading the configuration was blocked to protect the Jev key. No step was executed. Run the command below as is: it does the same read with the key replaced by *** and keeps the other steps in the same order.\n{command}"
+        }
+        // A leitura do arquivo de configuração que guarda a chave do Jev
+        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
+        // o arquivo inteiro, já sem o valor da chave.
         ("config_key.hidden", Locale::PtBr) => {
             "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
              arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original."
@@ -566,8 +579,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            74,
-            0xf473_197a_53ee_7e93,
+            75,
+            0xe269_30cb_4373_bc5e,
         );
     }
 
@@ -588,6 +601,7 @@ mod tests {
                 ("config_key.hidden", &[("{file}", "mustard"), ("{text}", word)][..]),
                 ("config_key.swept", &[("{file}", "mustard"), ("{fix}", word)][..]),
                 ("config_key.swept_tool", &[("{file}", "mustard")][..]),
+                ("config_key.masked_command", &[("{command}", word)][..]),
             ] {
                 let text = slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
@@ -612,6 +626,7 @@ mod tests {
             ("config_key.hidden", &["{file}", "{text}"][..]),
             ("config_key.swept", &["{file}", "{fix}"][..]),
             ("config_key.swept_tool", &["{file}"][..]),
+            ("config_key.masked_command", &["{command}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),

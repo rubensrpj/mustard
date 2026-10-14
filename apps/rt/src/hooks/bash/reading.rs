@@ -14,10 +14,12 @@ use crate::shared::word_search;
 #[cfg(test)]
 use crate::shared::word_search::Dialect;
 
-/// Os programas que mostram o texto de um arquivo.
+/// Os programas que mostram o texto de um arquivo. Os do `rtk` (`read`,
+/// `json`, `smart`, `diff`, `log`) entram pelo nome que sobra depois que a
+/// leitura do comando tira o `rtk` da frente.
 pub(crate) const READERS: &[&str] = &[
     "cat", "tac", "nl", "head", "tail", "less", "more", "bat", "grep", "egrep", "fgrep", "rg", "jq", "sed", "awk", "cut", "sort", "strings", "xxd", "od",
-    "base64",
+    "base64", "read", "json", "smart", "diff", "log",
 ];
 
 /// As opções do `grep` que levam um valor: as curtas, e as longas quando o
@@ -829,18 +831,17 @@ mod tests {
         }
     }
 
-    /// O leitor simples recebe uma reescrita segura; formatos não suportados
-    /// orientam sem despejar o arquivo. O que só
-    /// lista o arquivo, e o arquivo sem a chave, passam.
+    /// O leitor simples é recusado com o comando mascarado pronto na última
+    /// linha; formatos não suportados orientam sem despejar o arquivo. O que
+    /// só lista o arquivo, e o arquivo sem a chave, passam.
     #[test]
     fn the_config_file_with_the_key_never_reaches_the_terminal() {
         let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
         let (_dir, root) = fixture::project(&config, true);
         for command in ["cat mustard.json", "grep -n jev ./mustard.json", "cd src && head ../mustard.json"] {
-            let Verdict::Rewrite { tool_input, note } = run(&root, command) else { panic!("expected safe rewrite: {command}"); };
-            assert!(tool_input["command"].as_str().unwrap().contains("run config-read"));
-            assert!(!tool_input.to_string().contains(fixture::FAKE_KEY));
-            assert!(note.is_none());
+            let reason = refused(run(&root, command), command);
+            assert!(reason.lines().last().is_some_and(|ready| ready.contains("run config-read --file")), "{command}: {reason}");
+            assert!(!reason.contains(fixture::FAKE_KEY), "{command}: {reason}");
         }
         let reason = refused(run(&root, "jq . < mustard.json"), "unsupported stdin script");
         assert!(reason.contains("config-read") && !reason.contains(r#""jev""#));
@@ -863,10 +864,9 @@ mod tests {
     #[test]
     fn a_config_read_leaves_chained_tests_in_the_original_shell() {
         let (_dir,root)=fixture::project(&format!(r#"{{"jev":{{"key":"{}"}}}}"#,fixture::FAKE_KEY),true);
-        let Verdict::Rewrite { tool_input, note } = run(&root,"cat mustard.json && cargo test") else { panic!("expected safe rewrite"); };
-        assert!(tool_input["command"].as_str().unwrap().ends_with(" && cargo test"));
-        assert!(!tool_input.to_string().contains(fixture::FAKE_KEY));
-        assert!(note.is_none());
+        let reason = refused(run(&root,"cat mustard.json && cargo test"), "a read chained to a test");
+        assert!(reason.lines().last().is_some_and(|ready| ready.ends_with(" && cargo test")), "{reason}");
+        assert!(!reason.contains(fixture::FAKE_KEY));
     }
     /// A busca recursiva que passaria pelo `mustard.json` com a chave é
     /// recusada com a opção que o deixa de fora, e o motivo nunca traz a

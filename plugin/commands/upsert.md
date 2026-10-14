@@ -18,7 +18,7 @@ argument-hint: [--doctor]
 
 `mustard-rt run doctor` only reads and names fixes. `--check <name>` runs one check, `--residue` seeks dead references, `--json` answers in JSON.
 
-`mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'` filters masked keys. Supported shell reads rewrite automatically; other readers are refused.
+`mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'` filters masked keys. Every shell read of the key file is refused; a supported read's refusal ends with the masked command, ready to run.
 
 ## Upkeep
 
