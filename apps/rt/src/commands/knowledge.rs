@@ -10,6 +10,68 @@ pub struct Modes<'a> { pub profile:bool, pub import_scip: Option<&'a Path>,
     pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
 
+/// O teto, em bytes, da resposta de uma consulta que vai para a conversa. O
+/// terminal do Claude Code guarda fora da conversa a saída acima de 30.000
+/// caracteres, e o agente vê só o começo dela. Um caractere ocupa ao menos um
+/// byte, então a resposta dentro do teto cabe nesse limite, com folga para o
+/// que o terminal junta a ela.
+const CONVERSATION_BYTES: usize = 25_000;
+
+/// Os campos que o cartão encolhido guarda: quem ele é, como foi achado e
+/// onde está a fonte, para ler as linhas dela ou expandi-lo com `--symbol`.
+const CARD_IDENTITY: [&str; 8] = ["id", "name", "kind", "signature", "source", "documentation", "test_only", "retrieval"];
+
+/// A resposta da consulta, encolhida até caber em `cap` bytes. A que já cabe
+/// sai como era. A maior encolhe do que menos falta faz ao que mais faz e
+/// para assim que cabe: primeiro sai o trecho de código das alternativas, que
+/// guardam o arquivo e as linhas; depois os cartões, do último ao primeiro,
+/// ficam só com a identidade e a fonte; por fim saem os documentos e as
+/// interpretações, do último ao primeiro. Todo cartão fica, na mesma ordem.
+/// `conversation_cap` conta o que saiu, e uma lacuna diz como pedir a
+/// resposta inteira. Se nem assim cabe, a resposta sai como ficou.
+fn fit_conversation(mut report: serde_json::Value, cap: usize) -> String {
+    fn count(report: &mut serde_json::Value, field: &str) {
+        let counted = report["conversation_cap"][field].as_u64().unwrap_or(0);
+        report["conversation_cap"][field] = json!(counted + 1);
+    }
+    let whole = report.to_string();
+    if whole.len() <= cap {
+        return whole;
+    }
+    report["conversation_cap"] = json!({"cap_bytes": cap, "original_bytes": whole.len(), "alternative_excerpts_omitted": 0,
+        "compacted_cards": 0, "omitted_resources": 0, "omitted_interpretations": 0});
+    if let Some(gaps) = report["gaps"].as_array_mut() {
+        gaps.push(json!(format!("Answer compacted to fit the conversation cap of {cap} bytes (see conversation_cap); compacted cards keep their identity and source range to read. Repeat with --out <file>.json for the whole answer, or expand one card with --symbol <id>.")));
+    }
+    let mut excerpts = 0;
+    for card in report["cards"].as_array_mut().into_iter().flatten() {
+        for alternative in card["alternatives"].as_array_mut().into_iter().flatten() {
+            excerpts += usize::from(alternative.as_object_mut().and_then(|fields| fields.remove("source_excerpt")).is_some());
+        }
+    }
+    report["conversation_cap"]["alternative_excerpts_omitted"] = json!(excerpts);
+    let mut text = report.to_string();
+    let cards = report["cards"].as_array().map_or(0, Vec::len);
+    for at in (0..cards).rev() {
+        if text.len() <= cap {
+            return text;
+        }
+        if let Some(fields) = report["cards"][at].as_object_mut() {
+            fields.retain(|key, _| CARD_IDENTITY.contains(&key.as_str()));
+            fields.insert("conversation_compacted".into(), json!(true));
+        }
+        count(&mut report, "compacted_cards");
+        text = report.to_string();
+    }
+    for (list, field) in [("resources", "omitted_resources"), ("interpretations", "omitted_interpretations")] {
+        while text.len() > cap && report[list].as_array_mut().and_then(Vec::pop).is_some() {
+            count(&mut report, field);
+            text = report.to_string();
+        }
+    }
+    text
+}
+
 fn read_manifest<T:serde::de::DeserializeOwned>(path:&Path)->Result<T,String> {
     if std::fs::metadata(path).map_err(|e|e.to_string())?.len()>1_000_000 {return Err("knowledge-manifest-too-large".into());}
     serde_json::from_str(&std::fs::read_to_string(path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
@@ -79,7 +141,11 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
             (report,text)
         } else {
             let (report,map)=if modes.responsibility {mustard_core::io::knowledge::query_with_selector(root,&tree,query,selector)} else {mustard_core::io::knowledge::query_for(root,&tree,query,modes.task)}.map_err(|e|format!("{e:?}"))?;
-            let text=if markdown {mustard_core::domain::knowledge::markdown(&report,&map)}else{report.to_string()};
+            // A resposta que vai para a conversa respeita o teto; o arquivo de
+            // `--out` e a exportação de `--all` saem inteiros.
+            let text=if markdown {mustard_core::domain::knowledge::markdown(&report,&map)}
+                else if out.is_none() && !query.all {fit_conversation(report.clone(),CONVERSATION_BYTES)}
+                else {report.to_string()};
             (report,text)
         };
         if let Some(out) = out {
