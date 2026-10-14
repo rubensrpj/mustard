@@ -71,7 +71,8 @@
 //!   fechamento, procura o posto sem uso, e a prova é do mapa, em qualquer
 //!   linguagem: o achado recusa quando a declaração não é exportada (o scan
 //!   marca a que a linguagem deixa ver fora do arquivo: `pub`, `export`,
-//!   `public`) e o nome não está escrito noutro lugar fora de teste, pela
+//!   `public`, e a do topo do arquivo cujo nome ela deixa ver à parte, como
+//!   em `export { nome }`, `module.exports` e `__all__`) e o nome não está escrito noutro lugar fora de teste, pela
 //!   mesma busca do órfão. A exportada, que alguém de fora do projeto pode
 //!   usar, só avisa, e a de nome escrito noutro lugar também, a não ser que a
 //!   saída do compilador aponte a mesma declaração como sem uso: o aviso dele
@@ -1638,8 +1639,9 @@ mod tests {
 
     /// Cada linguagem que o scan lê, com a visibilidade que ela escreve: a
     /// palavra (`pub`, `export`, `public`), a maiúscula do Go, o sublinhado do
-    /// Python e do Dart, o membro do PHP sem `private`. No TypeScript, o nome
-    /// exportado à parte (`export { nome }`, `module.exports`) também é de fora.
+    /// Python e do Dart, o membro do PHP sem `private`. O nome exportado à
+    /// parte (`export { nome }`, `module.exports`, `__all__`) e a função posta
+    /// no objeto `exports` também são de fora.
     const NEW_CODE: [NewCode; 7] = [
         NewCode {
             file: "src/math.rs",
@@ -1657,6 +1659,7 @@ mod tests {
                 ("export function lonelyTotal(): number {\n  return 2;\n}\n", "lonelyTotal"),
                 ("function lonelyTotal(): number {\n  return 2;\n}\n\nexport { lonelyTotal };\n", "lonelyTotal"),
                 ("function lonelyTotal(): number {\n  return 2;\n}\n\nmodule.exports = { lonelyTotal };\n", "lonelyTotal"),
+                ("exports.lonelyTotal = function (): number {\n  return 2;\n};\n", "lonelyTotal"),
             ],
         },
         NewCode {
@@ -1678,7 +1681,10 @@ mod tests {
             base: "def run_sum():\n    return 1\n",
             closing: "",
             private: ("\n\ndef _lonely_total():\n    return 2\n", "_lonely_total"),
-            exported: &[("\n\ndef lonely_total():\n    return 2\n", "lonely_total")],
+            exported: &[
+                ("\n\ndef lonely_total():\n    return 2\n", "lonely_total"),
+                ("\n\ndef _lonely_total():\n    return 2\n\n\n__all__ = ['_lonely_total']\n", "_lonely_total"),
+            ],
         },
         NewCode {
             file: "lib/calc.dart",
@@ -1702,8 +1708,8 @@ mod tests {
     /// A análise final do código que a onda 1 pôs em `file`: o texto `base`
     /// comitado, `added` escrito depois dele, `closing` no fim dos dois, e os
     /// dois mapas do scan de verdade, o da base e o de depois, sem saída de
-    /// compilador nenhuma.
-    fn final_by_the_real_scan(NewCode { file, base, closing, .. }: &NewCode, added: &str) -> Vec<Finding> {
+    /// compilador nenhuma; com os achados, o mapa de depois.
+    fn final_by_the_real_scan(NewCode { file, base, closing, .. }: &NewCode, added: &str) -> (Vec<Finding>, ProjectMap) {
         let scan = mustard_core::Scan::locate();
         assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
         let dir = tempdir().unwrap();
@@ -1722,14 +1728,15 @@ mod tests {
         let before = mapped("base.db");
         std::fs::write(root.join(file), format!("{base}{added}{closing}")).unwrap();
         let after = mapped("after.db");
-        final_findings(root, &AfterWave { base: before, after, changed: vec![(1, vec![(*file).into()])] }, Locale::PtBr, &[])
+        let findings = final_findings(root, &AfterWave { base: before, after: after.clone(), changed: vec![(1, vec![(*file).into()])] }, Locale::PtBr, &[]);
+        (findings, after)
     }
 
     #[test]
     fn a_new_private_declaration_without_use_refuses_the_close_by_the_map() {
         for code in &NEW_CODE {
             let (private, name) = code.private;
-            let findings = final_by_the_real_scan(code, private);
+            let (findings, _) = final_by_the_real_scan(code, private);
             let refused: Vec<&str> = findings.iter().filter(|f| f.refuses).map(|f| f.text.as_str()).collect();
             let file = code.file;
             assert_eq!(refused.len(), 1, "{file}: {refused:?}");
@@ -1741,8 +1748,11 @@ mod tests {
     fn an_exported_declaration_without_use_only_warns() {
         for code in &NEW_CODE {
             for (exported, name) in code.exported {
-                let findings = final_by_the_real_scan(code, exported);
+                let (findings, after) = final_by_the_real_scan(code, exported);
                 let file = code.file;
+                // A marca vem do mapa, e não do nome escrito noutra linha.
+                let decl = after.module(file).and_then(|m| m.declarations.iter().find(|d| d.name == *name));
+                assert!(decl.is_some_and(super::exported), "{file} `{name}`: the map marks it exported");
                 assert!(findings.iter().all(|f| !f.refuses), "{file} `{name}`: {:?}", findings.iter().map(|f| &f.text).collect::<Vec<_>>());
                 assert!(findings.iter().any(|f| f.text.contains(&format!("`{name}` em `{file}`"))), "{file} `{name}`: the warning stays");
             }

@@ -272,3 +272,41 @@
   (#not-eq? @_access "public"))
 ((public_field_definition (accessibility_modifier) @_access) @hidden
   (#not-eq? @_access "public"))
+
+; O nome que o arquivo deixa ver fora escrito à parte da declaração, no topo
+; dele: o de `export { a, b as c }` (o nome de dentro do arquivo, `b`; o
+; repasse, que tem `from`, não nomeia declaração do arquivo), o de
+; `export default a`, o de `module.exports = a` e de
+; `module.exports = { a, chave: b }`, e o valor de `exports.chave = a` e de
+; `module.exports.chave = a`. A declaração do topo do arquivo com esse nome é
+; de fora, como a que o `export` escreve.
+(program (export_statement !source (export_clause (export_specifier name: (identifier) @visible.name))))
+(program (export_statement value: (identifier) @visible.name))
+((program (expression_statement (assignment_expression
+    left: (member_expression object: (identifier) @_module property: (property_identifier) @_exports)
+    right: [(identifier) @visible.name
+            (object [(shorthand_property_identifier) @visible.name (pair value: (identifier) @visible.name)])])))
+  (#eq? @_module "module")
+  (#eq? @_exports "exports"))
+((program (expression_statement (assignment_expression
+    left: (member_expression object: (identifier) @_exports)
+    right: (identifier) @visible.name)))
+  (#eq? @_exports "exports"))
+((program (expression_statement (assignment_expression
+    left: (member_expression object: (member_expression object: (identifier) @_module property: (property_identifier) @_exports))
+    right: (identifier) @visible.name)))
+  (#eq? @_module "module")
+  (#eq? @_exports "exports"))
+
+; A função que o JavaScript antigo declara já no objeto `exports`
+; (`exports.ler = function () {}`, `module.exports.ler = () => {}`,
+; `module.exports = function ler() {}`) é de fora, como a que o `export`
+; escreve.
+((program (expression_statement (assignment_expression
+    left: (member_expression object: (identifier) @_exports))) @visible)
+  (#eq? @_exports "exports"))
+((program (expression_statement (assignment_expression
+    left: [(member_expression object: (identifier) @_module property: (property_identifier) @_exports)
+           (member_expression object: (member_expression object: (identifier) @_module property: (property_identifier) @_exports))])) @visible)
+  (#eq? @_module "module")
+  (#eq? @_exports "exports"))

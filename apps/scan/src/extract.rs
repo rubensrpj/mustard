@@ -41,6 +41,7 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 mod line_end;
 mod chunks;
+mod named_exports;
 mod typed;
 
 #[derive(Default)]
@@ -471,6 +472,11 @@ enum CapKind {
     /// [`CapKind::Visible`] pattern took it (the `private` member of an
     /// exported class): hidden wins.
     Hidden,
+    /// A name the language makes visible outside the file apart from the
+    /// declaration (`a` in `export { a }`, the text in `__all__ = ['a']`):
+    /// the declaration of that name at the top of the file is visible, as
+    /// if a [`CapKind::Visible`] pattern took its node.
+    VisibleName,
     /// The body of a declaration that the grammar keeps beside it rather than
     /// inside it: the declaration ends where its body ends.
     Body,
@@ -546,6 +552,7 @@ fn classify(cap: &str) -> CapKind {
         "decoration" => CapKind::Decoration,
         "visible" => CapKind::Visible,
         "hidden" => CapKind::Hidden,
+        "visible.name" => CapKind::VisibleName,
         "body" => CapKind::Body,
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
@@ -680,6 +687,8 @@ impl Analyzer {
         // minus the ones it keeps hidden.
         let mut visible: Spans = BTreeSet::new();
         let mut hidden: Spans = BTreeSet::new();
+        // The names the language makes visible apart from the declaration.
+        let mut visible_names: BTreeSet<String> = BTreeSet::new();
         // What an import or a namespace capture covers: the names written
         // there are the path of the import, not a use of what they name.
         let mut import_spans: Spans = BTreeSet::new();
@@ -863,6 +872,11 @@ impl Analyzer {
                     CapKind::Hidden => {
                         hidden.insert((node.start_byte(), node.end_byte()));
                     }
+                    CapKind::VisibleName => {
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            visible_names.insert(t.trim().to_string());
+                        }
+                    }
                     CapKind::Body => {
                         body_end = Some(node.end_position().row + 1);
                     }
@@ -990,6 +1004,10 @@ impl Analyzer {
                 }
             }
         }
+
+        // The name made visible apart from the declaration makes visible the
+        // declaration of that name at the top of the file.
+        visible.extend(named_exports::top_declarations(decls.values().map(|h| (h.node, h.name.as_str())), &visible_names));
 
         // Where each declaration's own name is written: that name followed by
         // `(` is the header, not a call.

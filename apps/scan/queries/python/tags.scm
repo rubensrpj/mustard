@@ -178,3 +178,14 @@
       (function_definition name: (identifier) @_name)] @visible)
     (expression_statement (assignment left: (identifier) @_name) @visible)]))
   (#match? @_name "^(?:[^_]|__.+__$)"))
+
+; O nome que o módulo deixa ver fora pela lista `__all__` escrita no topo dele
+; (`__all__ = ['_ler']`, `__all__ += ('_gravar',)`, em lista ou em tupla): a
+; declaração do topo do módulo com esse nome é de fora, ainda que comece por
+; sublinhado.
+((module (expression_statement [
+    (assignment left: (identifier) @_all
+      right: [(list (string (string_content) @visible.name)) (tuple (string (string_content) @visible.name))])
+    (augmented_assignment left: (identifier) @_all
+      right: [(list (string (string_content) @visible.name)) (tuple (string (string_content) @visible.name))])]))
+  (#eq? @_all "__all__"))

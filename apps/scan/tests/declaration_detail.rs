@@ -442,6 +442,26 @@ fn the_header_the_comment_and_the_line_come_out_the_same_in_every_language() {
 
 }
 
+/// As declarações de `file` no mapa, cada uma como `tipo nome`, em ordem: as
+/// que o mapa marca como vistas fora do arquivo e as que não marca.
+fn marks(map: &Value, file: &str) -> (Vec<String>, Vec<String>) {
+    let mut seen: [Vec<String>; 2] = Default::default();
+    for (_, decl) in every_declaration(map).into_iter().filter(|(at, _)| *at == file) {
+        let exported = decl["syntax"]["exported"] == true;
+        seen[usize::from(exported)].push(format!("{} {}", decl["kind"].as_str().unwrap(), decl["name"].as_str().unwrap()));
+    }
+    seen.iter_mut().for_each(|names| names.sort());
+    let [hidden, shown] = seen;
+    (shown, hidden)
+}
+
+/// Os nomes de `list`, em ordem, para comparar com [`marks`].
+fn names(list: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = list.iter().map(ToString::to_string).collect();
+    out.sort();
+    out
+}
+
 /// O arquivo de cada linguagem sem palavra de visibilidade, com declarações
 /// que a regra dela deixa ver fora e outras que ela guarda.
 const VISIBILITY_FILES: [(&str, &str); 4] = [
@@ -493,21 +513,7 @@ fn the_map_marks_what_each_language_lets_outside_see_by_its_own_rule() {
         write(dir, file, body);
     }
     let map = scan(dir);
-    let marks = |file: &str| {
-        let mut seen: [Vec<String>; 2] = Default::default();
-        for (_, decl) in every_declaration(&map).into_iter().filter(|(at, _)| *at == file) {
-            let exported = decl["syntax"]["exported"] == true;
-            seen[usize::from(exported)].push(format!("{} {}", decl["kind"].as_str().unwrap(), decl["name"].as_str().unwrap()));
-        }
-        seen.iter_mut().for_each(|names| names.sort());
-        let [hidden, shown] = seen;
-        (shown, hidden)
-    };
-    let names = |list: &[&str]| -> Vec<String> {
-        let mut out: Vec<String> = list.iter().map(ToString::to_string).collect();
-        out.sort();
-        out
-    };
+    let marks = |file: &str| marks(&map, file);
     assert_eq!(
         marks("calc/calc.go"),
         (
@@ -565,5 +571,51 @@ fn the_map_marks_what_each_language_lets_outside_see_by_its_own_rule() {
             ]),
             names(&["method tick", "const MIN", "property count", "method reset", "method guard"]),
         )
+    );
+}
+
+/// O nome que a linguagem deixa ver fora escrito à parte da declaração marca a
+/// declaração do topo do arquivo com esse nome: no TypeScript e no JavaScript,
+/// o de `export { nome }`, de `export default nome` e de `module.exports`, e
+/// a função declarada já no objeto `exports`; no Python, o texto da lista
+/// `__all__`, ainda que o nome comece por sublinhado. O método e a função
+/// local de mesmo nome, escritos dentro de outra declaração, e o nome de um
+/// repasse, que vem de outro arquivo, não são marcados.
+#[test]
+fn a_name_exported_apart_from_its_declaration_marks_the_top_declaration_of_that_name() {
+    let temp = tempfile::Builder::new().prefix("scan-visible-name-").tempdir().unwrap();
+    let dir = temp.path();
+    write(
+        dir,
+        "web/sum.ts",
+        "function a() {}\nfunction kept() {}\nconst half = () => 1;\n\nclass Box {\n  a() {}\n}\n\n\
+         function outer() {\n  function a() {}\n  return a;\n}\n\nexport { a, half as metade };\nexport { kept } from './other';\n",
+    );
+    write(
+        dir,
+        "web/old.js",
+        "function ler() {}\nfunction gravar() {}\nfunction solto() {}\nconst somar = () => 1;\n\n\
+         exports.apagar = function () {};\nmodule.exports = { ler, salvar: gravar };\nmodule.exports.somar = somar;\n",
+    );
+    write(dir, "web/Tela.tsx", "function Tela() {\n  return <p>oi</p>;\n}\nfunction Outra() {}\nexport function Rodape() {}\n\nexport default Tela;\n");
+    write(
+        dir,
+        "py/calc.py",
+        "def _ler():\n    pass\n\n\ndef _gravar():\n    pass\n\n\ndef _solto():\n    pass\n\n\n\
+         class Caixa:\n    def _ler(self):\n        pass\n\n\n__all__ = ['_ler']\n__all__ += ('_gravar',)\n",
+    );
+    let map = scan(dir);
+    assert_eq!(
+        marks(&map, "web/sum.ts"),
+        (names(&["function a", "const half", "function half"]), names(&["function kept", "class Box", "method a", "function outer", "function a"]))
+    );
+    assert_eq!(
+        marks(&map, "web/old.js"),
+        (names(&["function ler", "function gravar", "const somar", "function somar", "function apagar"]), names(&["function solto"]))
+    );
+    assert_eq!(marks(&map, "web/Tela.tsx"), (names(&["function Tela", "function Rodape"]), names(&["function Outra"])));
+    assert_eq!(
+        marks(&map, "py/calc.py"),
+        (names(&["function _ler", "function _gravar", "class Caixa", "const __all__"]), names(&["function _solto", "method _ler"]))
     );
 }
