@@ -24,7 +24,7 @@ pub(super) fn report(host: &str, model: &str, input_tokens: Option<u64>) -> Valu
             "source":policy.map(|p|p.3),"checked_at":policy.map(|_|"2026-10-12")},
         "subscription_cost":"unknown",
         "next":if input_tokens.is_some_and(|tokens|tokens>TARGET) {
-            "Keep this valid result; reduce the next task context, without forwarding the parent transcript."
+            "Do not accept an over-budget session receipt; use native evidence or prepare a smaller isolated task without the parent transcript."
         } else {"Reuse current knowledge before requesting another interpretation."}})
 }
 

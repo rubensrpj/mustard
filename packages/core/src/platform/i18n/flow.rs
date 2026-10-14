@@ -517,26 +517,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.notice", Locale::EnUs) => {
             "[Mustard] Context reached {tokens} thousand tokens. Finish the current step and use `/compact` or `/clear`. Resume: {line}"
         }
-        // A medida no fim de uma tarefa do agente de onda, quando ainda cabe
-        // outra: o contexto total, o crescimento sem a leitura do resumo, o limite, o
-        // gasto da maior tarefa e a ordem de seguir.
+        // A entrada e os resumos herdados precedem o horizonte de trabalho.
+        ("conversation_size.wave_signal", Locale::PtBr) => {
+            "[Mustard] Sinal de conclusão: entrada e resumos herdados, {baseline} mil tokens; trabalho, {counted} mil; contexto total, {now} mil. O sinal é entrada + {limit} mil = {total_limit} mil. Termine a tarefa atual, execute os testes mínimos, grave o resumo e devolva ao orquestrador. Não comece outra tarefa. A tarefa atual continua liberada."
+        }
+        ("conversation_size.wave_signal", Locale::EnUs) => {
+            "[Mustard] Wrap-up signal: initial input and inherited summaries, {baseline} thousand tokens; work, {counted} thousand; total context, {now} thousand. The signal is initial input + {limit} thousand = {total_limit} thousand. Finish the current task, run minimal tests, record the summary and return to the orchestrator. Do not start another task. The current task remains executable."
+        }
         ("conversation_size.wave_continue", Locale::PtBr) => {
-            "[Mustard] Fim de tarefa com contexto total em {now} mil tokens; crescimento sem a leitura do resumo \
-             anterior, {counted} mil. O horizonte do contexto total é {limit} mil, e a maior tarefa acrescentou {largest} \
-             mil. Siga para a próxima tarefa."
+            "[Mustard] Fim de tarefa: contexto total, {now} mil tokens; entrada e resumos herdados, {baseline} mil; trabalho, {counted} mil. O sinal é entrada + {limit} mil = {total_limit} mil. A maior tarefa acrescentou {largest} mil. Siga para a próxima tarefa."
         }
         ("conversation_size.wave_continue", Locale::EnUs) => {
-            "[Mustard] Task finished with total context at {now} thousand tokens; growth excluding the \
-             previous summary read is {counted} thousand. The total-context horizon is {limit} thousand, and the \
-             largest task added {largest} thousand. Go on to the next task."
+            "[Mustard] Task finished: total context, {now} thousand tokens; initial input and inherited summaries, {baseline} thousand; work, {counted} thousand. The signal is initial input + {limit} thousand = {total_limit} thousand. The largest task added {largest} thousand. Go on to the next task."
         }
         // A mesma medida quando outra tarefa não cabe: a ordem de entregar,
         // que fecha a trava, e como escrever o resumo, em cinco blocos fixos.
         // O texto da entrega é o único lugar do resumo.
         ("conversation_size.wave_deliver", Locale::PtBr) => {
-            "[Mustard] Fim de tarefa com contexto total em {now} mil tokens; crescimento sem a leitura do resumo \
-             anterior, {counted} mil. O horizonte do contexto total é {limit} mil, e a maior tarefa acrescentou {largest} \
-             mil: não comece outra tarefa. Conclua a tarefa atual e execute os testes mínimos dela, mesmo acima do horizonte. Grave a entrega, com as tarefas não começadas em `undone`. O texto \
+            "[Mustard] Fim de tarefa: contexto total, {now} mil tokens; entrada e resumos herdados, {baseline} mil; trabalho, {counted} mil. O sinal é entrada + {limit} mil = {total_limit} mil. A maior tarefa acrescentou {largest} \
+             mil: não comece outra tarefa. Conclua a tarefa atual e execute os testes mínimos dela, mesmo acima do sinal. Grave a entrega, com as tarefas não começadas em `undone`. O texto \
              dela é o resumo, e um agente novo continua só por ele. Escreva cinco blocos, nesta \
              ordem. Estado: se compila, cada teste que rodou, com o comando e o resultado, e o que \
              não rodou. Feito: cada tarefa concluída numa frase. Decidido: cada escolha que vale \
@@ -547,9 +546,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Rode os comandos declarados de compilar, testar e verificar. Devolva o relatório a quem conduz."
         }
         ("conversation_size.wave_deliver", Locale::EnUs) => {
-            "[Mustard] Task finished with total context at {now} thousand tokens; growth excluding the \
-             previous summary read is {counted} thousand. The total-context horizon is {limit} thousand, and the \
-             largest task added {largest} thousand: do not start another task. Finish the current task and run its minimal tests, even above the horizon. Record the delivery, with \
+            "[Mustard] Task finished: total context, {now} thousand tokens; initial input and inherited summaries, {baseline} thousand; work, {counted} thousand. The signal is initial input + {limit} thousand = {total_limit} thousand. The \
+             largest task added {largest} thousand: do not start another task. Finish the current task and run its minimal tests, even above the signal. Record the delivery, with \
              the tasks not started in `undone`. Its text is the summary, and a new agent continues \
              from it alone. Write five blocks, in this order. State: whether it builds, each test \
              that ran, with the command and the result, and what did not run. Done: each finished \
@@ -1785,7 +1783,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 235, 0x7b9d_8d2d_ab3b_445d);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 236, 0x592b_7dd0_64d3_1aea);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -1944,8 +1942,9 @@ mod tests {
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{line}"][..]),
-            ("conversation_size.wave_continue", &["{now}", "{counted}", "{limit}", "{largest}"][..]),
-            ("conversation_size.wave_deliver", &["{now}", "{counted}", "{limit}", "{largest}"][..]),
+            ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}"][..]),
+            ("conversation_size.wave_continue", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}", "{largest}"][..]),
+            ("conversation_size.wave_deliver", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}", "{largest}"][..]),
             ("conversation_size.wave_locked", &["{build}"][..]),
             ("conversation_size.wave_locked_build", &["{command}"][..]),
             ("wave_prompt.summary.title", &[][..]),

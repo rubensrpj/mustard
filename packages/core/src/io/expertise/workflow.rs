@@ -72,12 +72,15 @@ pub fn ambiguous(root: &Path, files: &[String]) -> Vec<Profile> {
 }
 
 pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &str) -> Selection {
+    select_many(root,files,&preferred.into_iter().map(str::to_owned).collect::<Vec<_>>(),source)
+}
+
+/// A typed fit decision can retain complementary procedures for the same
+/// files. File coverage alone cannot express distinct task concerns.
+pub fn select_many(root: &Path, files: &[String], preferred: &[String], source: &str) -> Selection {
     let mut available = candidates(root, files);
-    let accepted = preferred.and_then(|name| available.iter().position(|p| p.name == name));
-    if let Some(at) = accepted {
-        let first = available.remove(at);
-        available.insert(0, first);
-    }
+    let accepted:BTreeSet<_> = preferred.iter().filter(|name|available.iter().any(|profile|profile.name==name.as_str())).cloned().collect();
+    available.sort_by_key(|profile|preferred.iter().position(|name|*name==profile.name).unwrap_or(usize::MAX));
     let mut covered = BTreeSet::new();
     let selected: Vec<_> = available
         .into_iter()
@@ -88,7 +91,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
                 .cloned()
                 .collect();
             covered.extend(adds.iter().cloned());
-            !adds.is_empty()
+            !adds.is_empty() || accepted.contains(&profile.name)
         })
         .collect();
     let pending_review = list(root)
@@ -99,7 +102,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
         .collect();
     let reason = if selected.is_empty() {
         "generic executor; no current matching specialization"
-    } else if accepted.is_some() && source.starts_with("jev") {
+    } else if !accepted.is_empty() && source.starts_with("jev") {
         "typed choice among current, equally covering procedures; native gates preserved"
     } else {
         "reuse current procedures first, then navigation for uncovered task files"
@@ -125,7 +128,7 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
             .filter(|file| !covered.contains(*file))
             .cloned()
             .collect(),
-        source: if accepted.is_some() {
+        source: if !accepted.is_empty() {
             source.into()
         } else {
             "native".into()
@@ -137,10 +140,10 @@ pub fn select(root: &Path, files: &[String], preferred: Option<&str>, source: &s
 /// Re-reviewing a changed procedure with the same name cannot revive it.
 pub fn restore(root: &Path, files: &[String], stored: Option<&Selection>) -> Selection {
     if let Some(stored) = stored {
-        let current = select(
+        let current = select_many(
             root,
             files,
-            stored.profiles.first().map(String::as_str),
+            &stored.profiles,
             &stored.source,
         );
         if current.fingerprint == stored.fingerprint {

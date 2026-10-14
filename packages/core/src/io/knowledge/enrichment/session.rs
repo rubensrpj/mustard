@@ -154,6 +154,14 @@ pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> R
         || receipt.effort.as_deref().is_some_and(|value| !crate::domain::config::AGENT_EFFORTS.contains(&value)) {
         return Err("knowledge-session-invalid-receipt".into());
     }
+    // Unknown host telemetry remains unknown. Observed noncompliance must
+    // never become a reusable analysis merely because its prose is valid.
+    if receipt.input_tokens.is_some_and(|tokens| tokens > context::TARGET) {
+        return Err("knowledge-session-input-exceeds-100000".into());
+    }
+    if receipt.effort.as_deref().is_some_and(|effort| effort != "medium") {
+        return Err("knowledge-session-medium-effort-required".into());
+    }
     let folder = directory(root);
     let _lock = LockedFile::exclusive_if_free(&folder.join(format!("{}.lock", receipt.request_id))).map_err(|e| e.to_string())?.ok_or("knowledge-session-busy-retry")?;
     let path = folder.join(format!("{}.json", receipt.request_id));
@@ -302,6 +310,28 @@ mod tests {
                 let next = prepare_session(dir.path(), dir.path(), "backup", None, 8, "codex", None).unwrap();
                 assert_ne!(next["request_id"], prepared["request_id"]);
             }
+        }
+    }
+
+    #[test]
+    fn observed_budget_or_effort_violation_never_persists_and_can_be_retried() {
+        for host in ["claude", "codex"] {
+            let dir = fixture();
+            let prepared = prepare_session(dir.path(), dir.path(), "backup", None, 8, host, None).unwrap();
+            let mut reply = receipt(&prepared["request_id"]);
+            reply.input_tokens = Some(context::TARGET + 1);
+            assert_eq!(complete_session(dir.path(), dir.path(), &reply).unwrap_err(), "knowledge-session-input-exceeds-100000");
+            reply.input_tokens = Some(context::TARGET);
+            reply.effort = Some("high".into());
+            assert_eq!(complete_session(dir.path(), dir.path(), &reply).unwrap_err(), "knowledge-session-medium-effort-required");
+            assert!(interpretations(dir.path()).unwrap().is_empty());
+            reply.effort = Some("medium".into());
+            let accepted = complete_session(dir.path(), dir.path(), &reply).unwrap();
+            assert_eq!(accepted["context"]["target_observed"], true);
+            assert_eq!(accepted["effort_observed"], true);
+            let mut duplicate = receipt(&prepared["request_id"]);
+            duplicate.input_tokens = Some(context::TARGET + 1);
+            assert!(complete_session(dir.path(), dir.path(), &duplicate).is_err(), "cached data cannot conceal an invalid receipt");
         }
     }
 }

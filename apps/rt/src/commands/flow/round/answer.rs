@@ -731,7 +731,6 @@ pub(super) fn run_entered_round(
     let mut specialization_preparation=Vec::new();
     for wave in &ready {
         let files=wave_files(&log,*wave);
-        if log.block(BlockQuery::Wave(*wave)).iter().any(|task|task.str_field("skill").is_some()) {continue;}
         let query=mustard_core::domain::wave_prompt::tasks_text(&log,*wave);
         if let Some(mut preparation)=mustard_core::io::expertise::workflow::dispatch_preparation(root,&files,&query) {
             preparation["wave"]=json!(wave);specialization_preparation.push(preparation);

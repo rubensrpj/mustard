@@ -34,7 +34,7 @@ fn assets(root: &Path, profile: &Profile, host: &str) -> Result<Vec<(String, Str
             }).collect::<Vec<_>>().join("\n");
             let common = root.join(".claude/agents/mustard/wave.md").to_string_lossy().replace('\\', "/");
             let agent = if root.join(".claude/agents/mustard/wave.md").is_file() {
-                format!("---\n{header}\nskills: [{name}]\n---\n\nFollow the wave execution protocol in `{common}` before working. The dispatch provides the task, mandatory project rules and exact evidence. Use Mustard for source search. Work in the assigned copy, preserve the approved scope, record pertinent tests and return `blocked_by`/`undone` when access or decisions are missing. Do not commit or change the plan. At 150,000 tokens finish the current task, minimal tests and summary; start no new task.")
+                format!("---\n{header}\nskills: [{name}]\n---\n\nFollow the wave execution protocol in `{common}` before working. The dispatch provides the task, mandatory project rules and exact evidence. Use Mustard for source search. Work in the assigned copy, preserve the approved scope, record pertinent tests and return `blocked_by`/`undone` when access or decisions are missing. Do not commit or change the plan. After 150,000 work tokens beyond initial input and inherited summaries, finish the current task, minimal tests and summary; start no new task. Initial 50,000 means the signal at total 200,000.")
             } else {
                 format!("---\n{header}\nskills: [{name}]\n---{text}")
             };
@@ -45,7 +45,7 @@ fn assets(root: &Path, profile: &Profile, host: &str) -> Result<Vec<(String, Str
             let common = body.strip_prefix("---\n").and_then(|body| body.split_once("\n---")).map(|(_, body)| body.trim()).ok_or("expertise-executor-template-invalid")?;
             let protocol = root.join(".claude/agents/mustard/wave.md");
             let common = if protocol.is_file() {
-                format!("Read the shared wave protocol at {} before working. Follow the dispatched task and mandatory project rules. Use Mustard for source search. Do not commit or change the plan. Record pertinent tests and return blocked_by/undone for missing access or decisions. At 150,000 tokens finish the task, minimal tests and summary; start no new task.", protocol.to_string_lossy())
+                format!("Read the shared wave protocol at {} before working. Follow the dispatched task and mandatory project rules. Use Mustard for source search. Do not commit or change the plan. Record pertinent tests and return blocked_by/undone for missing access or decisions. After 150,000 work tokens beyond initial input and inherited summaries, finish the task, minimal tests and summary; start no new task. Initial 50,000 means the signal at total 200,000.", protocol.to_string_lossy())
             } else {common.replace("Claude Code", "Codex")};
             let instructions = format!("{common}\n\nUse .agents/skills/{name}/SKILL.md for the requested area. Its scope is navigation evidence, not edit authorization.");
             let agent = toml::to_string(&json!({"name":name,"description":profile.description,"developer_instructions":instructions})).map_err(|e| e.to_string())?;

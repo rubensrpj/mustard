@@ -954,7 +954,7 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
 
 /// A montagem fecha a onda no teto de tamanho que o Jev estimou: três tarefas do
 /// mesmo tipo e de nível 3 (125 mil tokens cada) saem em três ondas, e três de
-/// nota 0,5 (50 mil), em duas, as duas primeiras juntas (100 mil).
+/// nota 0,5 (50 mil), em uma. A quarta de 50 mil abre outra onda.
 #[test]
 fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
     let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
@@ -964,9 +964,9 @@ fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
     assert_eq!(biggest.requests().len(), 3, "um perfil por tarefa, com tipo e tamanho juntos");
 
     let small = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.5);
-    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &small);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"], &["e.rs"]], &small);
     project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "nota 0,5: 100 mil cabem, 150 mil não");
+    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1],tasks[2]], vec![tasks[3]]], "150 mil de trabalho cabem; 200 mil abrem outra onda");
 }
 
 /// Sem chave, ou com a chamada recusada, o tamanho não entra: três tarefas do
