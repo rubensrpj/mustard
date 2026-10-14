@@ -18,8 +18,8 @@
 //!   onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
 //!   a medida chega só no fim de cada tarefa: no resultado do passo de término
 //!   (`run write step` com o código de uma tarefa no `item`), o gancho de
-//!   depois da ferramenta diz o tamanho da conversa, sem o resumo da onda
-//!   anterior que ele leu, o limite de [`WAVE_LIMIT`] tokens e a ordem de
+//!   depois da ferramenta diz o tamanho total da conversa, o crescimento
+//!   descontando a leitura do resumo anterior, o horizonte de [`WAVE_LIMIT`] tokens e a ordem de
 //!   seguir para a próxima tarefa ou de entregar. Manda entregar quando o
 //!   tamanho passou do limite, ou quando o que resta até ele é menos que o
 //!   gasto da maior tarefa já terminada na conversa: a diferença de tamanho
@@ -78,8 +78,7 @@ use crate::hooks::bash::lex::{Segment, segments};
 pub(crate) const CONDUCTOR_FIRST_NOTICE: u64 = 200_000;
 pub(crate) const CONDUCTOR_STEP: u64 = 100_000;
 
-/// O tamanho que a conversa do agente de onda pode ter, em tokens, sem contar
-/// o resumo da onda anterior que ele leu: o fim de tarefa que passou dele, ou
+/// O tamanho total da conversa do agente de onda, incluindo resumos: o fim de tarefa que passou dele, ou
 /// que deixa até ele menos que a maior tarefa feita, manda entregar.
 pub(crate) const WAVE_LIMIT: u64 = 150_000;
 
@@ -463,7 +462,7 @@ fn finishes_a_task(input: &HookInput) -> bool {
 
 /// A medida do fim de tarefa ao agente de onda: no resultado do passo de
 /// término ([`finishes_a_task`]) do subagente de `input`, o tamanho da
-/// conversa, sem o resumo que ele leu, o limite, o gasto da maior tarefa já
+/// conversa inteira, o limite, o crescimento da maior tarefa já
 /// terminada e a ordem. Manda entregar quando o tamanho passou de
 /// [`WAVE_LIMIT`], quando o que resta até ele é menos que aquele gasto, ou
 /// quando a ordem já saiu; senão, manda seguir. Guarda o tamanho do passo e,
@@ -498,9 +497,11 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
         .map(|pair| pair[1].saturating_sub(pair[0]))
         .max()
         .unwrap_or(0);
-    let deliver = order.exists() || counted >= WAVE_LIMIT || WAVE_LIMIT.saturating_sub(counted) < largest;
+    // Summaries occupy context too. Subtract them only when estimating the
+    // growth of task work, never from the capacity available for a new task.
+    let deliver = order.exists() || context.now >= WAVE_LIMIT || WAVE_LIMIT.saturating_sub(context.now) < largest;
     if deliver {
-        write_mark(&order, counted);
+        write_mark(&order, context.now);
     }
     let thousands = |tokens: u64| (tokens / 1000).to_string();
     let key = if deliver { "conversation_size.wave_deliver" } else { "conversation_size.wave_continue" };
@@ -1071,14 +1072,14 @@ mod tests {
                 (
                     "Go on to the next task.",
                     "Record the delivery, with the tasks not started in `undone`.",
-                    "60 thousand. The horizon is 150 thousand, and the largest task took 30 thousand.",
+                    "60 thousand. The total-context horizon is 150 thousand, and the largest task added 30 thousand.",
                     "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass",
                 )
             } else {
                 (
                     "Siga para a próxima tarefa.",
                     "Grave a entrega, com as tarefas não começadas em `undone`.",
-                    "60 mil. O horizonte é 150 mil, e a maior tarefa gastou 30 mil.",
+                    "60 mil. O horizonte do contexto total é 150 mil, e a maior tarefa acrescentou 30 mil.",
                     "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`",
                 )
             };
@@ -1124,7 +1125,7 @@ mod tests {
         let mut replies = vec![agent_reply(30_000, Some("read"))];
         for (tokens, order, locked) in [(80_000, "Siga", false), (100_000, "Siga", false), (101_000, "Grave a entrega", true)] {
             let reading = agent_finishes(root, &mut replies, tokens, Locale::PtBr).expect("the task end reads");
-            assert!(reading.contains("a maior tarefa gastou 50 mil") && reading.contains(order), "{tokens}: {reading}");
+            assert!(reading.contains("a maior tarefa acrescentou 50 mil") && reading.contains(order), "{tokens}: {reading}");
             assert_eq!(read().is_some(), locked, "{tokens}: the lock");
         }
     }
@@ -1165,17 +1166,17 @@ mod tests {
         assert!(last.contains("158 mil") && last.contains("Grave a entrega"), "{last}");
     }
 
-    /// O resumo da onda anterior que o agente leu sai da conta do fim de
-    /// tarefa: o salto do tamanho entre a resposta que o lê e a seguinte,
+    /// O resumo anterior sai apenas da estimativa de crescimento do trabalho.
+    /// O contexto total permanece inteiro para decidir se cabe outra tarefa.
+    /// A medição identifica o salto entre a resposta que lê o resumo e a seguinte,
     /// pelo número da onda (`run read delivered-<n>`) ou pelo código da
     /// entrega (`run read item-<código>`), somado quando o agente lê dois, e
     /// também quando a leitura sai junto de outra ferramenta, na mesma
     /// resposta (duas linhas com o mesmo `message.id`). Com um resumo de 100
-    /// mil, 250 mil de conversa contam 150 mil; com dois, de 60 e 50 mil, 260
-    /// mil contam 150 mil. Ler o pedido ou o item de uma tarefa não tira
-    /// nada: 230 mil contam inteiros.
+    /// mil e contexto de 250 mil, o crescimento reportado é 150 mil; a
+    /// capacidade usa os 250 mil. Ler o pedido ou uma tarefa não desconta nada.
     #[test]
-    fn the_summary_read_comes_off_the_count_at_the_task_end() {
+    fn summary_read_is_reported_separately_from_total_context() {
         let with_id = |tokens, action, id: &str| {
             let mut reply: Value = serde_json::from_str(&agent_reply(tokens, Some(action))).unwrap();
             reply["message"]["id"] = id.into();
@@ -1199,8 +1200,21 @@ mod tests {
         ] {
             let dir = open_project_in("x", Locale::PtBr);
             let reading = agent_finishes(dir.path(), &mut replies, now, Locale::PtBr).expect("the task end reads");
-            let told = format!("conversa em {} mil tokens; sem o resumo da onda anterior, {counted} mil.", now / 1000);
+            let told = format!("contexto total em {} mil tokens; crescimento sem a leitura do resumo anterior, {counted} mil.", now / 1000);
             assert!(reading.contains(&told), "{told}: {reading}");
+        }
+    }
+
+    #[test]
+    fn inherited_summaries_never_create_capacity_for_another_task() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for total in [145_000, 160_000] {
+                let dir=open_project_in("x",lang);
+                let mut replies=vec![agent_reply(10_000,Some("summary")),agent_reply(110_000,Some("edit"))];
+                let text=agent_finishes(dir.path(),&mut replies,total,lang).expect("task boundary measured");
+                assert!(text.contains(if lang==Locale::PtBr {"não comece outra tarefa"}else{"do not start another task"}),"{text}");
+                assert!(text.contains(if lang==Locale::PtBr {"testes mínimos dela"}else{"minimal tests"}),"{text}");
+            }
         }
     }
 
@@ -1247,7 +1261,7 @@ mod tests {
         let verdict = crate::dispatch::run_event(Some(Trigger::PreToolUse), &read).verdict;
         assert!(matches!(verdict, Verdict::Deny { .. }), "the lock survives the clear: {verdict:?}");
         let again = injected(&finishing(agent_after_clear(root, &[261_000]))).expect("the task end reads after the clear");
-        assert!(again.contains("261 mil tokens; sem o resumo da onda anterior, 161 mil"), "{again}");
+        assert!(again.contains("261 mil tokens; crescimento sem a leitura do resumo anterior, 161 mil"), "{again}");
     }
 
     /// O motivo com que o gancho de antes da ferramenta recusa a chamada de

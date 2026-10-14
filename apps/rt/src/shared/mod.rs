@@ -73,6 +73,7 @@ pub(crate) mod evidence;
 pub(crate) mod expertise_selection;
 pub(crate) mod host_observation;
 pub(crate) mod integration_health;
+pub(crate) mod host_installation;
 pub(crate) mod return_triage;
 pub mod jev;
 pub(crate) mod knowledge_selection;

@@ -23,6 +23,7 @@ let consumptionMeasuredAt;
 let panelWanted=false;
 let refreshQueued=false,sourceRevision,queryIdentity;
 let restoredView=false;
+let openingQueue=Promise.resolve();
 let impact,impactAction,operationBusy=false;
 let shellImpact;
 const impactId='mustard-impact';
@@ -188,11 +189,18 @@ function recordMeasurement($, measurement) {
   });
   return measurementQueue;
 }
-async function openPanel($, name) {
+function openPanel($, name) {
     panelWanted=true;
     void persist($);
+    // A command and a Desktop attach may arrive together. Serialize their
+    // lifecycles so a slower first opening cannot install a second poller.
+    openingQueue=openingQueue.catch(()=>{}).then(()=>panelWanted?performOpen($,name):{text:t('Painel fechado.','Pane closed.')});
+    return openingQueue;
+}
+async function performOpen($, name) {
     panelEvent('open-request');
     stopPanel();
+    const ticket=revision;
     if (name) selected = name;
     try {
       // open() on an existing id only focuses/retitles it. Explicitly reopen
@@ -200,6 +208,10 @@ async function openPanel($, name) {
       // after the module was reloaded while the host retained its pane.
       try { await $.ui.close({id}); } catch { /* A detached/reloaded host may no longer know this pane. Still attempt open. */ }
       await $.ui.open({ id, title: 'Mustard', focus: true, closeOnEscape: true, rows:36, columns:100 });
+      if(!panelWanted || ticket!==revision){
+        await $.ui.close({id});
+        return {text:t('A abertura foi cancelada.','Opening was cancelled.')};
+      }
       opened = true;
       panelEvent('open-accepted');
       timer = $.clock.every(10000, () => { void refresh($); });
@@ -406,8 +418,12 @@ export function register(on) {
     return next(e);
   });
   on('ui.close', { id }, async ($, e, next) => {
-    panelEvent('close');
-    if(e.origin?.kind!=='plugin')panelWanted=false;
+    panelEvent('close',e.origin?.kind);
+    // Local closes already call stopPanel before the API. A delayed event
+    // from the preceding pane must not stop the replacement's poller.
+    if(e.origin?.kind==='plugin')return next(e);
+    // Reload unloads the visual tree, not the user's request to keep it open.
+    if(e.origin?.kind!=='unload')panelWanted=false;
     void persist($);
     stopPanel();
     return next(e);
@@ -454,8 +470,9 @@ export function register(on) {
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if(e.requestId===impactId)return shellImpactPane(await $.ui.resolve(e),shellImpact,async()=>{shellImpact=undefined;await $.ui.close({id:impactId});});
     if (e.requestId !== id) return next(e);
-    // Record transitions only, not each 2s redraw.
-    if(!panelEvents.some(row=>row.kind==='render' && row.surface===e.surface))panelEvent('render',e.surface);
+    // Observe every opening independently, without logging each redraw.
+    const requestIndex=panelEvents.findLastIndex(event=>event.kind==='open-request');
+    if(!panelEvents.slice(requestIndex+1).some(row=>row.kind==='render' && row.surface===e.surface))panelEvent('render',e.surface);
     const redraw=()=>$.ui.invalidate('ui.render');
     return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,bodyRows:e.props.scroll?.bodyRows,
       data,usage,problem,selected,view,publicationMessage,publishing,settings,impact,operationBusy,actions:{

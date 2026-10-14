@@ -518,24 +518,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Context reached {tokens} thousand tokens. Finish the current step and use `/compact` or `/clear`. Resume: {line}"
         }
         // A medida no fim de uma tarefa do agente de onda, quando ainda cabe
-        // outra: o tamanho da conversa, sem o resumo que ele leu, o limite, o
+        // outra: o contexto total, o crescimento sem a leitura do resumo, o limite, o
         // gasto da maior tarefa e a ordem de seguir.
         ("conversation_size.wave_continue", Locale::PtBr) => {
-            "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
-             anterior, {counted} mil. O horizonte é {limit} mil, e a maior tarefa gastou {largest} \
+            "[Mustard] Fim de tarefa com contexto total em {now} mil tokens; crescimento sem a leitura do resumo \
+             anterior, {counted} mil. O horizonte do contexto total é {limit} mil, e a maior tarefa acrescentou {largest} \
              mil. Siga para a próxima tarefa."
         }
         ("conversation_size.wave_continue", Locale::EnUs) => {
-            "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
-             previous wave's summary, {counted} thousand. The horizon is {limit} thousand, and the \
-             largest task took {largest} thousand. Go on to the next task."
+            "[Mustard] Task finished with total context at {now} thousand tokens; growth excluding the \
+             previous summary read is {counted} thousand. The total-context horizon is {limit} thousand, and the \
+             largest task added {largest} thousand. Go on to the next task."
         }
         // A mesma medida quando outra tarefa não cabe: a ordem de entregar,
         // que fecha a trava, e como escrever o resumo, em cinco blocos fixos.
         // O texto da entrega é o único lugar do resumo.
         ("conversation_size.wave_deliver", Locale::PtBr) => {
-            "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
-             anterior, {counted} mil. O horizonte é {limit} mil, e a maior tarefa gastou {largest} \
+            "[Mustard] Fim de tarefa com contexto total em {now} mil tokens; crescimento sem a leitura do resumo \
+             anterior, {counted} mil. O horizonte do contexto total é {limit} mil, e a maior tarefa acrescentou {largest} \
              mil: não comece outra tarefa. Conclua a tarefa atual e execute os testes mínimos dela, mesmo acima do horizonte. Grave a entrega, com as tarefas não começadas em `undone`. O texto \
              dela é o resumo, e um agente novo continua só por ele. Escreva cinco blocos, nesta \
              ordem. Estado: se compila, cada teste que rodou, com o comando e o resultado, e o que \
@@ -547,9 +547,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Rode os comandos declarados de compilar, testar e verificar. Devolva o relatório a quem conduz."
         }
         ("conversation_size.wave_deliver", Locale::EnUs) => {
-            "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
-             previous wave's summary, {counted} thousand. The horizon is {limit} thousand, and the \
-             largest task took {largest} thousand: do not start another task. Finish the current task and run its minimal tests, even above the horizon. Record the delivery, with \
+            "[Mustard] Task finished with total context at {now} thousand tokens; growth excluding the \
+             previous summary read is {counted} thousand. The total-context horizon is {limit} thousand, and the \
+             largest task added {largest} thousand: do not start another task. Finish the current task and run its minimal tests, even above the horizon. Record the delivery, with \
              the tasks not started in `undone`. Its text is the summary, and a new agent continues \
              from it alone. Write five blocks, in this order. State: whether it builds, each test \
              that ran, with the command and the result, and what did not run. Done: each finished \
@@ -1785,7 +1785,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 235, 0xbbaf_e9f4_20a6_bbe7);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 235, 0x7b9d_8d2d_ab3b_445d);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

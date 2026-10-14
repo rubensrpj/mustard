@@ -15,7 +15,7 @@ fn synthetic_segments(lang: SupportedLocale) -> Vec<Segment> {
     let payload = serde_json::json!({"model":{"display_name":"Sonnet 5.5"},"context_window":{"remaining_percentage":76}});
     let phase = mustard_core::translate("page.phase.running", lang);
     let mut segments = vec![
-        Segment::new(SegmentKind::Unit, format!("pi-cardapio-original · {phase}")),
+        Segment::new(SegmentKind::Unit, format!("example-spec · {phase}")),
         model_segment(&payload),
     ];
     segments.extend(context_segment(&payload, lang));
@@ -57,7 +57,7 @@ mod tests {
             let segments = synthetic_segments(lang);
             assert_eq!(segments.len(), 3);
             let text = segments.iter().map(|segment| segment.text.clone()).collect::<Vec<_>>().join(" ");
-            assert!(text.contains(context) && text.contains("pi-cardapio-original") && text.contains("Sonnet 5.5"));
+            assert!(text.contains(context) && text.contains("example-spec") && text.contains("Sonnet 5.5"));
             for absent in ["Mustard 0.", "vs média", "rtk poupou", "5h49m"] {
                 assert!(!text.contains(absent), "{text}");
             }

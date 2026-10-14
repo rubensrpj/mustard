@@ -155,7 +155,8 @@ fn ascend_to_js_root(dir: &Path, stop_at: &Path) -> Option<(PathBuf, String)> {
 /// a `pnpm-workspace.yaml` (workspace-root marker) implies `pnpm`. A bare
 /// `package.json` with none of these yields `None` — Mustard does not guess a
 /// manager (it will not assume `npm`).
-fn detect_js_package_manager(dir: &Path) -> Option<String> {
+#[must_use]
+pub fn detect_js_package_manager(dir: &Path) -> Option<String> {
     if dir.join("pnpm-lock.yaml").is_file() {
         return Some("pnpm".into());
     }
@@ -165,7 +166,7 @@ fn detect_js_package_manager(dir: &Path) -> Option<String> {
     if dir.join("package-lock.json").is_file() {
         return Some("npm".into());
     }
-    if dir.join("bun.lockb").is_file() {
+    if dir.join("bun.lock").is_file() || dir.join("bun.lockb").is_file() {
         return Some("bun".into());
     }
     if dir.join("package.json").is_file()

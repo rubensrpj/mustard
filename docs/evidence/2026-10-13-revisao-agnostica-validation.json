@@ -1,0 +1,217 @@
+{
+  "base_commit": "230d55ac5a09b48a08873ed5a0b542616103e353",
+  "branch": "codex/review-agnostic-orchestration",
+  "platform": "Linux",
+  "rust_distinct_passing": 4147,
+  "rust_ignored": 2,
+  "runs": {
+    "workspace": {
+      "log_sha256": "905f6bad588cd168083896a850b960a52d5f921ee9ae8682bcd40ef16f6a3426",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 53,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "FAILED",
+          "passed": 1227,
+          "failed": 1,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 39,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 1934,
+          "failed": 0,
+          "ignored": 2
+        },
+        {
+          "result": "ok",
+          "passed": 299,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 97,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 480,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "core": {
+      "log_sha256": "92d44f00f407cace28ae9bf5b4521a67f69e63322f04c5f38e51cc95272080da",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 1228,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "doctor_unit": {
+      "log_sha256": "1a48ac66c596f44186c57fe57441a75c193484384a4fa624071d8155034ace54",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 52,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "doctor_integration": {
+      "log_sha256": "5025c57382d32c8413911c96d6fff650f613cd4d4126e4a263a6dd75bc1977c5",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "environment": {
+      "log_sha256": "7562ffb6d11e03b30a5b4a0a5588edc990626bdf1db17045d7c9a2d6459c8b0a",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "command_detection": {
+      "log_sha256": "a2c5dd49be0586187d3c7c2a3834ee9e43c403598b0e5ef440f19b9e65c3beae",
+      "suites": [
+        {
+          "result": "ok",
+          "passed": 13,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "mods_2.1.296": {
+      "log_sha256": "4c05cd9ba6f231039b6424042f26d88621e283db03bdf5a27998f45b4be469f0",
+      "suites": [],
+      "passed": 62
+    },
+    "mods_2.1.295": {
+      "log_sha256": "e8c895e2ecab0758bbdbe96b660e3c01d8c639d4841a28bcea070e798634234a",
+      "suites": [],
+      "passed": 62
+    }
+  },
+  "reconciliation": [
+    "Workspace run passed every suite except the expected i18n text checksum. The checksum was updated for the intentional wording change and all 1228 core unit tests were rerun successfully.",
+    "Doctor gained --root after the workspace run: 52 doctor unit tests and both doctor integration tests passed; one integration test is new. Counts are distinct tests, not a sum of reruns.",
+    "The final generator change was verified by all three environment tests and all 13 command-detection tests."
+  ],
+  "commands": [
+    "cargo test --workspace --no-fail-fast -- --test-threads=8",
+    "cargo test -p mustard-core --lib",
+    "cargo test -p mustard-rt --lib commands::doctor",
+    "cargo test -p mustard-rt --test it doctor_follows_config_dir",
+    "cargo test -p mustard-rt --lib commands::flow::round::environment",
+    "cargo test -p mustard-core --lib domain::command_detect",
+    "claude plugin validate ./plugin",
+    "claude plugin test ./plugin",
+    "cargo clippy --workspace --all-targets -- -D warnings"
+  ],
+  "source_sha256": {
+    "apps/rt/src/commands/doctor/cli.rs": "7377f6bb0f9dfe7235695bde49a9f6de74ee830a3217ebab10474e53662fdd36",
+    "apps/rt/src/commands/doctor/doctor.rs": "36d2aa2b8d66b9083a73e5874da6e0a29c4ac024e0947a0af52ae718c71c6970",
+    "apps/rt/src/commands/expertise.rs": "090a2268b0efb7c21d701dbfa2e546c230eb819a2525561fd0aa1c779aa11b84",
+    "apps/rt/src/commands/flow/round/dependencies.rs": "7b5138eb11a9aaa0067e0770a0b2a5e3dbe9240a80e7d10cc6c02955e355c08b",
+    "apps/rt/src/commands/flow/round/environment.rs": "6c1c193a08d164c291627fd1be31ab89f89341c0beb0a9754e769b1edd30ccfa",
+    "apps/rt/src/commands/panel/diagnostics.rs": "b11044fc5f3b5b52621ed710f46101d86dd9ffebdd509f36344bb73a654b924a",
+    "apps/rt/src/commands/statusline/preview.rs": "bbe446b2c98c09fa96bf454a76fdda4a1d80b17a210d9fc2ff4ca204efc9d252",
+    "apps/rt/src/hooks/session/conversation_size.rs": "623a7bc543a16b10fee80918c43bb9d92f2485aaff84b1746ff9aca959c563fe",
+    "apps/rt/src/shared/mod.rs": "eb1e5c2a70ea8e5878c4e9929eda0093429e377edc79a14cde77f58849b596ae",
+    "apps/rt/tests/doctor_follows_config_dir.rs": "adcfa34f3f8ff7de4d80f0561d11b6a3539b84f0e8eebec1e8bd3d9237c06a76",
+    "packages/core/src/domain/command_detect.rs": "e94bcedd326b00fd49cd62d9c407d0ee9478858abd92ad6abadf1f653ca13241",
+    "packages/core/src/io/expertise/workflow.rs": "a8cf603614355ff599477f49a04329c73b1332dafe4beaebb5d4f217d8478ce4",
+    "packages/core/src/io/map_meaning.rs": "8a44bee78548800ba9c532d360b468d2f0a622c9756fdb7f718f37587df080b9",
+    "packages/core/src/io/wave_prompt.rs": "0cb02e8cdc09aa473186237eedfe91aca5d80fa3702e5eeb0669e36f346ae964",
+    "packages/core/src/platform/i18n/flow.rs": "c2f1fc0fd7e2a94e8cf18eca2e627d2c79e0de1dab8b12feb537fbcc42012375",
+    "plugin/hooks/panel-content.js": "09c6cd6fc9841167239d530d53b6e91e44a6dccb387b9b10d1019fdc80759770",
+    "plugin/hooks/panel-economy.js": "886f868364022fc2d1c95c268167ced4c5e3e28e4f4552242e6e0976532bbc5b",
+    "plugin/hooks/panel-extras.js": "5319f11fcfe6deda278dfdb8f1e39e2d4e2db9b9d2a2c6851c97a0297b0b1a1e",
+    "plugin/hooks/panel-modern.test.ts": "8bdc2fa8944d96fe51fac07d7d951f27a738017909261ac0f9bf7d27a659a8f0",
+    "plugin/hooks/panel-view.js": "4b00a2fca79ea9abf7f4ed0924d2c7cb8accf5d0ce592f25216a1a0d3153da0c",
+    "plugin/hooks/panel.test.ts": "229cabd370ac7702d7feefb3086606907791541e76e0f4a663a106683ca265d9",
+    "plugin/hooks/register.js": "c260cc1d9d116a931478f3cd071bbf0892250e271f0ced7c1fab70259e348a8c",
+    "apps/rt/src/shared/host_installation.rs": "2e8e29150b6fd6e5861e4da7db6f414a82090975879d9e027f461209f9cec2ab",
+    "scripts/bench-panel-layout.mjs": "9efd10a93a89f1a84fa3f570a56007cb535722a03b7e0020e598ec9841681949"
+  },
+  "real_session_observation": {
+    "desktop_reported_version": "2.37337.1",
+    "ssh_helper_version": "2.1.295",
+    "explicitly_supplied_mustard_version": "0.1.68",
+    "mods_javascript_files_present": false,
+    "module_execution_or_paint_proven": false
+  },
+  "limits": [
+    "No authenticated Haiku/Luna generation or live Jev evaluation was performed.",
+    "No application code, spec, configuration or active runtime in Florestal was changed.",
+    "Native hook tests and UI-tree measurements do not prove Desktop paint, search accuracy or net LLM savings.",
+    "No PR or release created for this review."
+  ],
+  "clippy": {
+    "result": "pass",
+    "warnings_as_errors": true,
+    "all_targets": true,
+    "log_sha256": "24b27af274df13f80303d570cea8b16ae1e792a476ddd8f59c7fa996ba6001f8"
+  },
+  "plugin_validation": {
+    "result": "pass",
+    "host": "2.1.296",
+    "log_sha256": "aaaea4c58195cba6ed4cf9fcae658666e59fad33a0dab342f764175ad2383eca"
+  }
+}

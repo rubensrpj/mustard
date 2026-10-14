@@ -182,24 +182,35 @@ pub fn prepare(
 /// work or block dispatch. The conductor evaluates whether the native evidence
 /// already suffices and whether a reusable isolated procedure adds value.
 pub fn dispatch_preparation(root: &Path, files: &[String], query: &str) -> Option<Value> {
-    if files.len() < 2 || !crate::io::project_map::model_path(root).is_file() {
+    if files.is_empty() || query.trim().is_empty() || !crate::io::project_map::model_path(root).is_file() {
         return None;
     }
     let current = candidates(root, files);
-    if current.is_empty() || current.iter().any(|p| p.origin == "authored") {
+    if current.is_empty() {
         return None;
     }
     // Respect an explicitly maintained project skill. It is reviewed by the
     // existing wave skill/rule path rather than replaced by a generated one.
-    if crate::io::wave_prompt::has_scoped_skill(root, files) {
+    let uncovered: Vec<_> = files.iter().filter(|file| {
+        !current.iter().any(|profile| profile.origin == "authored" && matches(profile, &[(*file).clone()]))
+            && !crate::io::wave_prompt::has_scoped_skill(root, &[(*file).clone()])
+    }).cloned().collect();
+    if uncovered.is_empty() {
         return None;
     }
-    let query = query.chars().take(1400).collect::<String>();
+    // The CLI bounds UTF-8 bytes, not characters. A Portuguese task must
+    // produce valid preparation arguments just like an ASCII task does.
+    let query = query.char_indices().take_while(|(at, ch)| at + ch.len_utf8() <= 1400).map(|(_, ch)| ch).collect::<String>();
+    let args = |host: &str| {
+        let mut args = vec!["run".to_string(), "expertise".into(), "--prepare".into(), "--host".into(), host.into(), "--query".into(), query.clone()];
+        for file in &uncovered { args.extend(["--file".into(), file.clone()]); }
+        args
+    };
     Some(
-        json!({"query":query,"files":files,"required":false,"model_calls":0,
+        json!({"query":query,"files":uncovered,"required":false,"model_calls":0,
         "pending_review":select(root,files,None,"native").pending_review,
-        "claude_args":["run","expertise","--prepare","--host","claude","--query",query],
-        "codex_args":["run","expertise","--prepare","--host","codex","--query",query],
+        "claude_args":args("claude"),
+        "codex_args":args("codex"),
         "next":"Optional: use the current host's arguments only if source-based native guidance is insufficient and a reusable procedure is needed. File count alone does not justify a model call. Reuse a current draft or analysis before delegating. Complete a bounded native-session receipt and review its exact fingerprint before using a new procedure. Native navigation remains available. Do not launch another CLI/API."}),
     )
 }
@@ -277,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_file_navigation_suggests_preparation_without_forcing_a_model_or_blocking_dispatch() {
+    fn uncovered_navigation_suggests_scoped_preparation_without_forcing_a_model() {
         let (dir, mut p) = crate::io::expertise::tests::fixture();
         let root = dir.path();
         p.paths = vec![
@@ -307,11 +318,19 @@ mod tests {
         let suggested = dispatch_preparation(root, &files, "Change transactions").unwrap();
         assert_eq!(suggested["required"], false);
         assert_eq!(suggested["model_calls"], 0);
-        assert!(dispatch_preparation(root, &files[..1], "Change transactions").is_none());
+        assert!(dispatch_preparation(root, &files[..1], "Change transactions").is_some());
+        let unicode = dispatch_preparation(root, &files, &"é".repeat(1400)).unwrap();
+        assert!(unicode["query"].as_str().unwrap().len() <= 1400);
         p.origin = "authored".into();
         p.name = "transactions".into();
         let draft = record(root, &p).unwrap();
         review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
         assert!(dispatch_preparation(root, &files, "Change transactions").is_none());
+        p.paths = vec![files[0].clone()];
+        let draft = record(root, &p).unwrap();
+        review(root, &p.name, draft["fingerprint"].as_str().unwrap()).unwrap();
+        let partial = dispatch_preparation(root, &files, "Change transactions").unwrap();
+        assert_eq!(partial["files"], json!([files[1]]));
+        assert!(partial["claude_args"].as_array().unwrap().iter().any(|arg| arg == "--file"));
     }
 }

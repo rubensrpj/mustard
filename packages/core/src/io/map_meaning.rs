@@ -1,6 +1,6 @@
 //! `map_meaning` — o sentido de cada declaração e de cada palavra do projeto,
-//! guardado no mapa como vetores somente com `ai.vectors: true`.
-//! O padrão retorna antes de abrir o banco ou carregar o modelo.
+//! guardado no mapa como vetores locais, habilitados por padrão.
+//! `ai.vectors: false` retorna antes de abrir o banco ou carregar o modelo.
 //!
 //! O modelo é estático e mora dentro do programa (`assets/meaning/`): uma
 //! tabela de vetores por pedaço de palavra, e o vetor de um texto é a média

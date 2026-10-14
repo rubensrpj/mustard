@@ -822,17 +822,18 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             chosen.push((name, Some((text, file))));
         }
     }
-    // Prefer an existing project procedure. Native profiles only fill a
-    // missing scoped guide and retain the generic executor for live sessions
-    // that have not discovered newly exported agent definitions yet.
-    if chosen.is_empty() {
+    // Reviewed procedures complement explicit project skills. One existing
+    // skill cannot suppress a selected specialization for another concern.
+    // Native navigation stays in the index and is never exported as a skill.
+    {
         let host = context.flight.host.as_deref()
             .or_else(|| log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|send| send.str_field("host")))
             .filter(|host| ["claude", "codex"].contains(host)).unwrap_or("claude");
         for name in &expertise.profiles {
             if let Ok(out) = crate::io::expertise::export(root,name,host)
                 && let Some(path) = out["skill"].as_str()
-                && let Ok(text) = std::fs::read_to_string(root.join(path)) {
+                && let Ok(text) = std::fs::read_to_string(root.join(path))
+                && !chosen.iter().any(|(_, source)| source.as_ref().is_some_and(|(_, file)| file == &root.join(path))) {
                 chosen.push((format!("mustard-{name}"),Some((text,root.join(path)))));
             }
         }
@@ -1386,6 +1387,41 @@ mod tests {
         assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("skills/subtrair/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
+    }
+
+    #[test]
+    fn reviewed_specialization_complements_an_explicit_project_skill() {
+        use crate::io::expertise::{self, Profile};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let source = "fn read() {}\n";
+        std::fs::write(root.join("store.rs"), source).unwrap();
+        let mut hash = crate::io::sha256::Sha256::new();
+        hash.update(source.as_bytes());
+        let sha = hash.hex_digest();
+        write_map(root, &json!({"modules":[{"path":"store.rs","language":"rust",
+            "analysis":{"content_sha256":sha},"declarations":[{"name":"read","kind":"function","line":1,"end_line":1}]}]}));
+        let profile = Profile { name:"database".into(),description:"Use when updating storage transactions.".into(),
+            paths:vec!["store.rs".into()],procedure:"Reuse the current transaction boundary; inspect store.rs:1 before changing it.".into(),
+            sources:vec![crate::domain::knowledge::Source {file:"store.rs".into(),line:1,end_line:1,sha256:sha}],
+            origin:"authored".into(),reviewed:None,rule_context:None };
+        let draft=expertise::record(root,&profile).unwrap();
+        expertise::review(root,"database",draft["fingerprint"].as_str().unwrap()).unwrap();
+        write_skill(root,"","project-contract","---\nname: project-contract\ndescription: Project validation procedure.\n---\n\nInspect store.rs:1 before changing storage.\n");
+        let log=log_of(&[
+            ("wave",json!({"n":1,"text":"Update storage","criteria":[],"done_when":"Verified"})),
+            ("task",json!({"wave":1,"text":"Update transaction","skill":"project-contract","files":[{"path":"store.rs"}]})),
+        ]);
+        for host in ["claude","codex"] {
+            let flight=Flight {host:Some(host.into()),..Default::default()};
+            let built=prompts(root,"storage-change",&log,Locale::EnUs,&flight).remove(0);
+            assert!(built.bad_skills.is_empty(),"{:?}",built.bad_skills);
+            let names:Vec<_>=built.skills.iter().filter_map(|skill| skill["name"].as_str()).collect();
+            assert!(names.contains(&"project-contract"),"{names:?}");
+            assert!(names.contains(&"mustard-database"),"{names:?}");
+            assert_eq!(names.iter().filter(|name|**name=="mustard-database").count(),1);
+            assert!(!built.text.contains(&profile.procedure),"progressive disclosure retains references, not repeated skill bodies");
+        }
     }
 
     #[test]

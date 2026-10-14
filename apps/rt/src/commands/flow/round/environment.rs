@@ -90,25 +90,31 @@ fn stale(root: &Path) -> Option<Stale> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let runner = package["packageManager"]
-        .as_str()
-        .and_then(|s| s.split('@').next())
-        .filter(|s| matches!(*s, "npm" | "pnpm" | "yarn" | "bun"))
-        .unwrap_or_else(|| {
-            if root.join("pnpm-lock.yaml").is_file() {
-                "pnpm"
-            } else if root.join("yarn.lock").is_file() {
-                "yarn"
-            } else {
-                "npm"
-            }
-        });
-    let script = ["prisma:generate", "generate:prisma", "db:generate"]
-        .into_iter()
-        .find(|name| package["scripts"][*name].as_str().is_some_and(|s| s.contains("prisma generate")));
+    let runner = mustard_core::domain::command_detect::detect_js_package_manager(root)
+        .filter(|runner| matches!(runner.as_str(), "npm" | "pnpm" | "yarn" | "bun"));
+    let scripts: Vec<_> = package["scripts"].as_object().into_iter().flatten().filter_map(|(name, body)| {
+        body.as_str().filter(|body| crate::hooks::bash::lex::segments(body).iter().any(|segment| {
+            let prisma=|name:&str| matches!(name.rsplit(['/', '\\']).next().unwrap_or(name),"prisma"|"prisma.cmd"|"prisma.exe");
+            let args:Vec<_>=segment.args.iter().map(|arg|arg.text.as_str()).collect();
+            let direct=|args:&[&str]| args.first().is_some_and(|name|prisma(name)) && args.get(1)==Some(&"generate");
+            prisma(segment.name()) && args.first()==Some(&"generate")
+                || match segment.name() {
+                    "npx"|"bunx" => direct(&args),
+                    "pnpm"|"yarn"|"bun" => direct(&args) || args.first()==Some(&"exec") && direct(&args[1..]),
+                    "npm" => args.first()==Some(&"exec") && direct(&args[1..]),
+                    _ => false,
+                }
+        })).map(|_|name)
+    }).collect();
+    // Script names belong to the project. Multiple possible generators need
+    // an explicit preparation decision, rather than an arbitrary alias win.
+    let command = match (runner, scripts.as_slice()) {
+        (Some(runner), [script]) => Some(format!("{runner} run {}",crate::shared::search_gateway::quote(script))),
+        _ => None,
+    };
     Some(Stale {
         models: changed,
-        command: script.map(|script| format!("{runner} run {script}")),
+        command,
     })
 }
 
@@ -129,8 +135,8 @@ pub(super) fn prepare(root: &Path, spec: &str, lang: Locale) -> Result<(), Round
         json!({"ok":false,"reason":"round-generated-client-stale","generator":"prisma",
         "models":stale_client.models,"prepare_command":stale_client.command,"preparation":attempt,"agent_rework_required":false,
         "hint":match lang {
-            Locale::PtBr=>"O cliente gerado do Prisma difere do schema atual. O preparo não resolveu ou não há script de geração declarado. Corrija o preparo no repositório principal e repita a rodada. As entregas foram preservadas; não devolva as ondas aos agentes por esta falha.",
-            Locale::EnUs=>"The generated Prisma client differs from the current schema. Preparation did not resolve it or no generator script is declared. Fix preparation in the main repository and repeat the round. Deliveries are preserved; do not send the waves back to their agents for this failure."
+            Locale::PtBr=>"O cliente gerado do Prisma difere do schema atual. O preparo não resolveu ou não foi identificado um único script de geração com gerenciador declarado. Corrija o preparo no repositório principal e repita a rodada. As entregas foram preservadas; não devolva as ondas aos agentes por esta falha.",
+            Locale::EnUs=>"The generated Prisma client differs from the current schema. Preparation did not resolve it or no unique generator script with a declared package manager was identified. Fix preparation in the main repository and repeat the round. Deliveries are preserved; do not send the waves back to their agents for this failure."
         }}),
     ))
 }
@@ -162,7 +168,17 @@ mod tests {
         std::fs::write(root.join("prisma/schema/plan.prisma"), new).unwrap();
         let diagnostic = stale(root).unwrap();
         assert_eq!(diagnostic.models, vec!["model Plan"]);
-        assert_eq!(diagnostic.command.as_deref(), Some("pnpm run prisma:generate"));
+        assert_eq!(diagnostic.command.as_deref(), Some("pnpm run 'prisma:generate'"));
+        std::fs::write(root.join("package.json"), r#"{"packageManager":"bun@1.3.0","scripts":{"refresh generated types":"custom-runner prisma generate","notes":"echo prisma generate"}}"#).unwrap();
+        assert!(stale(root).unwrap().command.is_none(),"unknown wrappers must not become invented preparation commands");
+        std::fs::write(root.join("package.json"), r#"{"packageManager":"bun@1.3.0","scripts":{"refresh generated types":"prisma generate","notes":"echo prisma generate"}}"#).unwrap();
+        assert_eq!(stale(root).unwrap().command.as_deref(),Some("bun run 'refresh generated types'"));
+        std::fs::write(root.join("package.json"), r#"{"packageManager":"bun@1.3.0","scripts":{"first":"prisma generate","second":"bunx prisma generate"}}"#).unwrap();
+        assert!(stale(root).unwrap().command.is_none(),"multiple generators need explicit preparation");
+        std::fs::write(root.join("package.json"), r#"{"scripts":{"generate":"prisma generate"}}"#).unwrap();
+        assert!(stale(root).unwrap().command.is_none(),"no package manager may be guessed");
+        std::fs::write(root.join("bun.lock"),"{}").unwrap();
+        assert_eq!(stale(root).unwrap().command.as_deref(),Some("bun run 'generate'"));
         std::fs::write(root.join("node_modules/.prisma/client/schema.prisma"), new).unwrap();
         assert!(stale(root).unwrap().models.is_empty());
     }

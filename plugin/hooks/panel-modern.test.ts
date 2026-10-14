@@ -59,6 +59,26 @@ test('a module restart restores the requested pane, selection and section withou
   expect(f.opens).toBe(1);expect(f.commands[0]).toContain('ideas');
   expect(await f.pane.find({type:'Text',text:'Ideias do projeto'})).toBeDefined();expect(f.turns).toBe(0);await f.pane.press({key:'close'});
 });
+test('each reopening records its own render and preserves a single poller',async ($,on)=>{
+  const f=await fixture($,on);
+  await f.pane.unmount();
+  await $.command.run({command:'mustard-panel',args:''});
+  const pane=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',requestId:'mustard-panel',
+    props:{id:'mustard-panel',title:'Mustard',bodyColumns:120,scroll:{bodyRows:40}}});
+  const details=await $.command.run({command:'mustard-panel',args:'--diagnose'});
+  expect(details.text.match(/render:desktop/g)?.length).toBe(2);
+  const before=f.queries;await f.clock.advance(10000);
+  expect(f.queries).toBe(before+1);
+  expect(f.turns).toBe(0);await pane.press({key:'close'});
+});
+test('concurrent opening requests leave only one refresh timer',async ($,on)=>{
+  const f=await fixture($,on);
+  await Promise.all([$.command.run({command:'mustard-panel',args:''}),$.command.run({command:'mustard-panel',args:''})]);
+  expect(f.opens).toBe(3);
+  const before=f.queries;await f.clock.advance(10000);
+  expect(f.queries).toBe(before+1);
+  expect(f.turns).toBe(0);await f.pane.press({key:'close'});
+});
 test('costless host measurements still reach the native recorder',async ($,on)=>{
   const f=await fixture($,on);
   await $.session.measure({context:{tokens:30000,window:200000,percent:15},rateLimits:[],changed:['context']});
@@ -120,9 +140,11 @@ test('economy overview exposes scope and incomplete waves without claiming net s
   f.snapshot.specs[0].operations={calls:20,refusals:4,search:{calls:1,enriched:1,fallback:0,local_model_calls:1,remote_model_calls:0,
     paired_calls:1,native_bytes:100,delivered_bytes:150,reduced_calls:0,expanded_calls:1}};
   await f.pane.press({key:'tab-Consumo'});
-  for(const text of ['Economia total: não medida','1. Redução de saída · projeto','2. Jev · gasto adicional no projeto','3. Ondas · spec selecionada','4. Scan e atrito · spec selecionada'])
+  for(const text of ['Economia total: não medida','Spec selecionada · consumo e atrito','Scan · buscas desta spec','Projeto · histórico separado da spec'])
     expect(await f.pane.find({type:'Text',text})).toBeDefined();
   expect(await f.pane.find({type:'Text',text:'Saída nativa → entregue nas buscas medidas: 100 → 150 bytes'})).toBeDefined();
+  expect(await f.pane.find({type:'Text',text:'50% mais texto; verificar se o contexto adicional ajudou.'})).toBeDefined();
+  expect(await f.pane.find({type:'Text',text:'RTK · período: 01/10/2026 → 13/10/2026'})).toBeDefined();
   await f.pane.press({key:'economy-waves'});
   expect(await f.pane.find({type:'Text',text:'1 arquivos na entrega'})).toBeDefined();
   expect(await f.pane.find({type:'Text',text:'Consumo não medido'})).toBeDefined();
@@ -137,6 +159,16 @@ test('diagnostics separates historical counts from explained tool outcomes',asyn
   expect(await f.pane.find({type:'Text',text:'6 ocorrências na sessão'})).toBeDefined();
   expect(await f.pane.find({type:'Text',text:'Último evento recebido: PreToolUse. Este evento não é a causa da contagem.'})).toBeDefined();
   expect(f.turns).toBe(0);expect(f.publications).toBe(0);await f.pane.press({key:'close'});
+});
+
+test('diagnostics identifies an old SSH plugin separately from local installation health',async ($,on)=>{
+  const f=await fixture($,on);
+  f.snapshot.diagnostics.plugin_loaders={supported:true,observations:[{pid:11,plugin_version:'0.1.68',
+    plugin_root:'/remote/plugins/old-copy',mods_module_present:false,matches_running_version:false}]};
+  await f.pane.press({key:'tab-Diagnóstico'});
+  expect(await f.pane.find({type:'Text',text:'Esta cópia não contém o módulo Mods.'})).toBeDefined();
+  expect(await f.pane.find({type:'Text',text:/Atualize o plugin no cliente que abriu esta sessão SSH/})).toBeDefined();
+  expect(f.turns).toBe(0);await f.pane.press({key:'close'});
 });
 test('a slow section or spec transition shows loading rather than a false empty plan',()=>{
   const element=type=>props=>({type,props});

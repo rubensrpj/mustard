@@ -172,6 +172,7 @@ pub fn known_hook_events() -> std::collections::BTreeSet<String> {
 
 /// Options for `mustard-rt run doctor`.
 pub struct DoctorOpts {
+    pub root: Option<PathBuf>,
     /// Also scan for dead file/script references (slower).
     pub residue: bool,
     /// A conferência que roda sozinha, por um dos nomes da lista.
@@ -188,9 +189,9 @@ struct Place {
 
 impl Place {
     /// A pasta de onde o comando foi chamado.
-    fn here() -> Self {
-        let cwd = crate::shared::context::env::workspace_root_strict()
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    fn at(root: Option<&std::path::Path>) -> Self {
+        let cwd = root.map(std::path::Path::to_path_buf).unwrap_or_else(|| crate::shared::context::env::workspace_root_strict()
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))));
         let claude_dir = ClaudePaths::for_project(&cwd)
             .map(|p| p.claude_dir())
             .unwrap_or_else(|_| cwd.clone());
@@ -226,6 +227,14 @@ struct Check {
 /// que o `--check` aceita na linha de comando, a escolha dele, a mensagem de
 /// conferência desconhecida e a rodada inteira.
 const CHECKS: &[Check] = &[
+    Check {runs:Runs::Named("session-plugins"),check:|place| {
+        let report=crate::shared::host_installation::snapshot(&place.project().root);
+        let rows=report["observations"].as_array();
+        let status=if rows.is_none_or(Vec::is_empty) {Status::Skip}
+            else if rows.is_some_and(|rows|rows.iter().any(|row|row["matches_running_version"]==false || row["mods_module_present"]==false)) {Status::Warn}
+            else {Status::Ok};
+        CheckResult {name:"session-plugins",status,details:vec![report.to_string()]}
+    }},
     Check {runs:Runs::Named("integrations"),check:|place| {
         let report=crate::shared::integration_health::snapshot(&place.project().root);
         if report["ok"]==true {CheckResult::ok("integrations")}
@@ -339,7 +348,7 @@ fn answer(list: &[Check], opts: &DoctorOpts, place: &Place) -> Result<Vec<CheckR
 
 /// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
 pub fn run(opts: DoctorOpts) {
-    let results = match answer(CHECKS, &opts, &Place::here()) {
+    let results = match answer(CHECKS, &opts, &Place::at(opts.root.as_deref())) {
         Ok(results) => results,
         Err(unknown) => {
             eprintln!("{unknown}");
@@ -448,7 +457,7 @@ mod tests {
     fn the_full_round_includes_the_rtk_check() {
         let dir = tempdir().unwrap();
         let place = Place { cwd: dir.path().to_path_buf(), claude_dir: dir.path().join(".claude") };
-        let opts = DoctorOpts { residue: false, check: None, format: "text".into() };
+        let opts = DoctorOpts { root: None, residue: false, check: None, format: "text".into() };
         let all = answer(CHECKS, &opts, &place).unwrap();
         assert!(all.iter().any(|r| r.name == "rtk"), "expected a check named 'rtk' in the round: {:?}", all.iter().map(|r| r.name).collect::<Vec<_>>());
     }
@@ -465,6 +474,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let place = Place { cwd: dir.path().to_path_buf(), claude_dir: dir.path().join(".claude") };
         let opts = |check: Option<&str>| DoctorOpts {
+            root: None,
             residue: false,
             check: check.map(str::to_string),
             format: "text".into(),

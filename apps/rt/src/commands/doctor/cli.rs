@@ -27,6 +27,9 @@ pub enum DoctorCmd {
     /// Pass `--json` as a shortcut for `--format json`.
     #[command(display_order = 20)]
     Doctor {
+        /// Project to inspect without changing the caller's working directory.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
@@ -48,10 +51,11 @@ pub enum DoctorCmd {
 /// Dispatch one `doctor`-family `run` subcommand.
 pub fn dispatch(cmd: DoctorCmd) {
     match cmd {
-        DoctorCmd::Doctor { residue, check, format, json } => {
+        DoctorCmd::Doctor { root, residue, check, format, json } => {
             // `--json` is a shorthand for `--format json`.
             let effective_format = if json { "json".to_string() } else { format };
             doctor::doctor::run(doctor::doctor::DoctorOpts {
+                root,
                 residue,
                 check,
                 format: effective_format,

@@ -46,5 +46,6 @@ pub(super) fn snapshot(root:&Path)->Value {
     }
     events.sort_by(|a,b|a["at"].as_str().cmp(&b["at"].as_str()));
     if events.len()>256 {events.drain(..events.len()-256);}
-    super::safe_value(json!({"events":events,"health":crate::shared::integration_health::snapshot(root),"local_only":true,"model_calls":0}))
+    super::safe_value(json!({"events":events,"health":crate::shared::integration_health::snapshot(root),
+        "plugin_loaders":crate::shared::host_installation::snapshot(root),"local_only":true,"model_calls":0}))
 }

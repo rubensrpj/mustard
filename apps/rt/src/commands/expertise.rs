@@ -36,9 +36,11 @@ pub fn run(root: &Path, sync: bool, record: Option<&Path>, review: Option<&str>,
             let mut prepared=expertise::workflow::prepare(root,files,host,None,"native")?;
             if let Some(query)=query {
                 let current=expertise::workflow::candidates(root,files);
-                if !current.iter().any(|profile|profile.origin=="authored") {
+                if files.is_empty() || files.iter().any(|file| !current.iter().any(|profile|
+                    profile.origin=="authored" && expertise::matches(profile, std::slice::from_ref(file)))) {
                     let config=mustard_core::ProjectConfig::load(root);
-                    prepared["procedure_preparation"]=expertise::authoring::prepare(root,query,None,host,
+                    let file = if files.len()==1 {files.first().map(String::as_str)}else{None};
+                    prepared["procedure_preparation"]=expertise::authoring::prepare(root,query,file,host,
                         config.ai.session_models.get(host).map(String::as_str))?;
                 }
             }

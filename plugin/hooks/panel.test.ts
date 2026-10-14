@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing';
-import {contentPage,waveText} from './panel-content.js';
+import {contentPage,waveText,definitionText} from './panel-content.js';
 
 test('delivery keeps native observations distinct from historical claims and agent interpretation',()=>{
   const detail={delivery:{text:'O acesso atual não foi conferido.',observations:[
@@ -221,7 +221,8 @@ test('project scope, unknown measurements and explicit publication remain clear'
   expect(await pane.find({key:'publish'})).toBeUndefined();
   await pane.press({key:'tab-Consumo'});
   expect(await pane.find({type:'Text',text:'Economia total: não medida'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'RTK ainda sem medição deste projeto.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'RTK · redução estimada de saída'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Não medido'})).toBeDefined();
   await pane.select({key:'usage-section',value:'Histórico'});
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'Acumulado do histórico disponível; inclui hoje parcialmente.'})).toBeDefined();
@@ -351,6 +352,18 @@ test('content pagination preserves all Unicode text within the official surface 
     const page=contentPage(original,n);expect(page.text.length).toBeLessThanOrEqual(10000);parts.push(page.text);
   }
   expect(parts.join('')).toBe(original);
+});
+
+test('readable definition values and page boundaries preserve source evidence',()=>{
+  const text=definitionText({text:'Confirm current behavior',facts:[{text:'Observed result',source:{file:'src/storage.rs',line:12}}],
+    proof:{command:'cargo test storage',result:'pass'}});
+  expect(text).not.toContain('[object Object]');
+  expect(text).toContain('src/storage.rs');expect(text).toContain('cargo test storage');
+  const paragraphs=['First paragraph with context.\n\n','Second paragraph with details.\n\n','Last paragraph.'];
+  const original=paragraphs.join(''),first=contentPage(original,0,48),parts=[];
+  for(let n=0;n<first.pages;n++)parts.push(contentPage(original,n,48).text);
+  expect(parts.join('')).toBe(original);
+  expect(parts[0]).toBe(paragraphs[0]);
 });
 
 test('panel updates locally, preserves unknown usage, and stops on close', async ($, on) => {

@@ -18,7 +18,9 @@ export function definitionText(item, english=false) {
   for(const [field,names] of Object.entries(labels)) {
     const value=item[field];
     if(value===undefined || value===null || Array.isArray(value) && !value.length)continue;
-    const body=Array.isArray(value) ? value.map(entry=>typeof entry==='object' ? `${entry.text || entry.path || JSON.stringify(entry)}${entry.source ? ` (${entry.source})` : ''}` : entry).join('\n- ') : String(value);
+    const printable=entry=>entry!==null && typeof entry==='object'?JSON.stringify(entry,null,2):String(entry);
+    const body=Array.isArray(value) ? value.map(entry=>entry!==null && typeof entry==='object'
+      ? `${entry.text || entry.path || printable(entry)}${entry.source ? ` (${printable(entry.source)})` : ''}` : printable(entry)).join('\n- ') : printable(value);
     lines.push(`**${names[english?1:0]}**\n${Array.isArray(value)?'- ':''}${body}`);
   }
   return lines.filter(Boolean).join('\n\n');
@@ -69,11 +71,28 @@ export function waveText(detail, view, english=false) {
     plan.depends_on?.length ? `${english?'Depends on waves':'Depende das ondas'}: ${plan.depends_on.join(', ')}` : ''].filter(Boolean).join('\n\n');
 }
 
-// The official text surface limit is 10,000 characters. Page the complete
-// original text; no silent truncation and no invented reconstruction.
+// Keep each view small on both hosts while preserving the complete original.
+// This local paging budget is not a claim about a host's maximum tree size.
 export function contentPage(value, requested=0, size=4000) {
   const points=Array.from(String(value ?? ''));
-  const pages=Math.max(1,Math.ceil(points.length/size));
+  size=Math.max(1,Math.min(4000,Math.floor(size)||4000));
+  const chunks=[];
+  for(let start=0;start<points.length;) {
+    let end=Math.min(points.length,start+size);
+    if(end<points.length) {
+      // Prefer complete paragraphs/lines, then words. Oversized uninterrupted
+      // content still pages losslessly at the surface limit.
+      const minimum=start+Math.floor(size/2);
+      const boundary=separator=>{
+        for(let at=end-separator.length;at>=minimum;at--)
+          if(separator.every((point,n)=>points[at+n]===point))return at+separator.length;
+      };
+      end=boundary(['\n','\n']) ?? boundary(['\n']) ?? boundary([' ']) ?? end;
+    }
+    chunks.push(points.slice(start,end).join(''));start=end;
+  }
+  if(!chunks.length)chunks.push('');
+  const pages=chunks.length;
   const page=Math.max(0,Math.min(requested,pages-1));
-  return {text:points.slice(page*size,(page+1)*size).join(''),page,pages};
+  return {text:chunks[page],page,pages};
 }

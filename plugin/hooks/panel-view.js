@@ -20,7 +20,7 @@ export function panelPalette(surface) {
 export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,settings,impact,operationBusy,actions}) {
   const {Box,Text,Button,Select,Input,Link,Markdown,Code,Svg}=elements;
   const theme=panelPalette(surface), english=data?.project?.language==='en-US';
-  const compact=bodyRows>0 && bodyRows<24;
+  const compact=surface==='terminal' || bodyRows>0 && bodyRows<24;
   const t=(pt,en)=>english?en:pt;
   const clean=value=>String(value ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g,'');
   const text=(value,props={})=>Text({children:clean(value),color:theme.ink,wrap:'wrap',...props});
@@ -46,7 +46,7 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
   const row=children=>Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children});
   const section=(title,children)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1,backgroundColor:theme.surface}),
     children:[Box({marginBottom:compact?0:1,children:[text(title,{bold:true,color:theme.accentText})]}),...children]});
-  const card=(label,value)=>Box({flexDirection:'column',borderStyle:'round',borderColor:theme.line,paddingX:1,flexGrow:1,backgroundColor:theme.surface,
+  const card=(label,value)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',paddingX:1}),borderColor:theme.line,flexGrow:1,backgroundColor:theme.surface,
     children:[note(label),text(value,{bold:true})]});
   const content=(value,raw=false)=>raw && Code ? Code({source:clean(value),language:'markdown',wrap:'wrap'}) : !raw && Markdown ? Markdown({text:clean(value)}) : raw ? text(value) : Box({flexDirection:'column',rowGap:1,children:clean(value).split('\n\n').map(paragraph=>{
     const label=paragraph.match(/^\*\*([^\n]+)\*\*\n([\s\S]*)$/);
@@ -74,9 +74,9 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
   const tabs=allTabs.filter(([key])=>!profile || profile.tabs.includes(key) || key===view.tab || key==='Configurações');
   const helpers={t,text,note,row,section,button,picker,Input,fmt,date,content,tabs:Object.fromEntries(allTabs.map(([key,pt,en])=>[key,t(pt,en)]))};
   const rows=[row([text('MUSTARD',{bold:true,color:theme.accentText}),...(data?[text(data.project.name || 'Mustard',{bold:true})]:[])])];
-  if(data && !compact)rows.push(note(data.project.branch || t('Sem branch','No branch')));
+  if(data)rows.push(note(data.project.branch || t('Sem branch','No branch')));
   if(data && !compact)rows.push(...profileControls(data,view,actions,helpers));
-  if(surface!=='mobile' && (compact || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
+  if(surface!=='mobile' && (bodyRows>0 && bodyRows<24 || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
     tabs.map(([value,pt,en])=>({value,label:t(pt,en)})),view.tab,go));
   else rows.push(row(tabs.map(([key,pt,en],index)=>button(`tab-${key}`,t(pt,en),()=>go(key),{active:view.tab===key,hotkey:String(index+1)}))));
   if(problem)rows.push(section(t('Atualização indisponível','Update unavailable'),[text(problem),note(`${t('Último estado','Last state')}: ${date(data?.at)}`)]));

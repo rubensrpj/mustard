@@ -1,0 +1,81 @@
+{
+  "baseline": {
+    "terminal": {
+      "text_characters": 1704,
+      "text_blocks": 42,
+      "bordered_boxes": 27
+    },
+    "desktop": {
+      "text_characters": 1704,
+      "text_blocks": 42,
+      "bordered_boxes": 27
+    }
+  },
+  "candidate": {
+    "terminal": {
+      "text_characters": 885,
+      "text_blocks": 27,
+      "bordered_boxes": 0
+    },
+    "desktop": {
+      "text_characters": 885,
+      "text_blocks": 27,
+      "bordered_boxes": 26
+    }
+  },
+  "gain": {
+    "terminal": {
+      "text_characters": {
+        "before": 1704,
+        "after": 885,
+        "reduction_percent": 48.06
+      },
+      "text_blocks": {
+        "before": 42,
+        "after": 27,
+        "reduction_percent": 35.71
+      },
+      "bordered_boxes": {
+        "before": 27,
+        "after": 0,
+        "reduction_percent": 100
+      }
+    },
+    "desktop": {
+      "text_characters": {
+        "before": 1704,
+        "after": 885,
+        "reduction_percent": 48.06
+      },
+      "text_blocks": {
+        "before": 42,
+        "after": 27,
+        "reduction_percent": 35.71
+      },
+      "bordered_boxes": {
+        "before": 27,
+        "after": 26,
+        "reduction_percent": 3.7
+      }
+    }
+  },
+  "source_hashes": {
+    "baseline": {
+      "panel-view.js": "ac98ace7c6f9fefac9363571834952f2d83467f40fa4ba26a442fc0d3144ec1c",
+      "panel-economy.js": "05a73dcb75b63d10db096477a20b51baa1937361f454eddeabe0d133c8e807af",
+      "panel-content.js": "758cbab5582246d2af410d03ead3605f97691850e8f1c3f1b48e7c285c4f6de5",
+      "panel-extras.js": "acf3ce5df5d17964c0e3c40f4711a62e4056be1ddba69085f51e23a4bc6067c0"
+    },
+    "candidate": {
+      "panel-view.js": "4b00a2fca79ea9abf7f4ed0924d2c7cb8accf5d0ce592f25216a1a0d3153da0c",
+      "panel-economy.js": "886f868364022fc2d1c95c268167ced4c5e3e28e4f4552242e6e0976532bbc5b",
+      "panel-content.js": "09c6cd6fc9841167239d530d53b6e91e44a6dccb387b9b10d1019fdc80759770",
+      "panel-extras.js": "5319f11fcfe6deda278dfdb8f1e39e2d4e2db9b9d2a2c6851c97a0297b0b1a1e"
+    }
+  },
+  "limits": [
+    "Synthetic UI tree, not actual host rendering or a viewport fit measurement.",
+    "Text characters count Text nodes, excluding labels/options of controls. They are not LLM tokens or subscription savings.",
+    "The same data and viewport were used in both arms."
+  ]
+}
