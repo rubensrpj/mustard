@@ -126,13 +126,21 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Os arquivos do núcleo que os dois scripts de build incluem por caminho,
-/// relativos à raiz do repositório.
+/// Os arquivos do núcleo que os scripts de build incluem por caminho,
+/// relativos à raiz do repositório. Os dois scripts incluem o `sha256.rs` e o
+/// `tree_state.rs`; o `hooks_digest.rs` entra só no do `mustard-rt` (e no do
+/// scan, que inclui o script do `mustard-rt` inteiro).
 const SHARED_BY_PATH: [&str; 3] = ["packages/core/src/io/sha256.rs", "packages/core/src/io/tree_state.rs", "packages/core/src/io/hooks_digest.rs"];
 
 /// Um projeto git em `root` com dois pacotes, cada um com um dos dois
 /// scripts de build de verdade — o do `mustard-rt` e o do `mustard` — e um
 /// binário que só imprime a versão que o script carimbou.
+///
+/// O projeto traz as pastas do plugin que o script do `mustard-rt` vigia, a
+/// dos ganchos e a da interface, com o tema. O cargo roda de novo, a cada
+/// compilação, o script que vigia um caminho que não existe; com as pastas no
+/// lugar, ele só roda quando algo vigiado muda, e a nova compilação depois da
+/// troca de commit prova a vigia do commit.
 fn stamped_project(root: &Path) {
     let write = |path: &str, body: &str| {
         let path = root.join(path);
@@ -151,6 +159,7 @@ fn stamped_project(root: &Path) {
         write(&format!("{crate_dir}/src/main.rs"), "fn main() {\n    println!(\"{}\", env!(\"MUSTARD_VERSION_FULL\"));\n}\n");
     }
     write("plugin/hooks/hooks.json", "{}\n");
+    write("plugin/ui/theme.js", "export const theme = {};\n");
     write(".gitignore", "target/\nCargo.lock\n");
     write("LEIAME.md", "um\n");
     git_in(root, &["init", "-q"]);

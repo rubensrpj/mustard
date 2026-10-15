@@ -185,6 +185,22 @@ mod tests {
         let budget=Budget::start(&stale,Duration::from_secs(1));
         assert!(!host_binaries_ready(&plugin,&plugin.version,&stale,&budget),"a current stamp cannot hide an old companion");
     }
+    /// A cópia do plugin em `dir` que o anfitrião carregaria: o manifesto com
+    /// o número desta compilação e as pastas de ganchos que ela entrega.
+    fn shipped_plugin_copy(dir:&Path)->mustard_core::platform::harness::InstalledPlugin {
+        let version=mustard_core::harness_version();
+        std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+        std::fs::write(dir.join(".claude-plugin/plugin.json"),json!({"name":"mustard","version":version}).to_string()).unwrap();
+        let shipped=Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        for folder in mustard_core::io::hooks_digest::HOOK_FOLDERS {
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+            for entry in std::fs::read_dir(shipped.join(folder)).unwrap() {
+                let path=entry.unwrap().path();
+                if path.is_file() {std::fs::copy(&path,dir.join(folder).join(path.file_name().unwrap())).unwrap();}
+            }
+        }
+        mustard_core::platform::harness::InstalledPlugin{dir:dir.into(),version}
+    }
     /// Um plugin instalado com o número desta compilação só confere quando os
     /// ganchos da cópia e a `ui/` que eles importam têm o conteúdo dos que ela
     /// entrega: o mesmo número com um `register.js` ou um tema velho fica não
@@ -192,18 +208,8 @@ mod tests {
     #[test]
     fn a_cached_plugin_with_the_same_version_and_old_hooks_is_not_current() {
         let dir=tempfile::tempdir().unwrap();
-        let version=mustard_core::harness_version();
-        let plugin=mustard_core::platform::harness::InstalledPlugin{dir:dir.path().into(),version:version.clone()};
-        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
-        std::fs::write(dir.path().join(".claude-plugin/plugin.json"),json!({"name":"mustard","version":version}).to_string()).unwrap();
-        let shipped=Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
-        for folder in ["hooks","ui"] {
-            std::fs::create_dir_all(dir.path().join(folder)).unwrap();
-            for entry in std::fs::read_dir(shipped.join(folder)).unwrap() {
-                let path=entry.unwrap().path();
-                if path.is_file() {std::fs::copy(&path,dir.path().join(folder).join(path.file_name().unwrap())).unwrap();}
-            }
-        }
+        let plugin=shipped_plugin_copy(dir.path());
+        let version=plugin.version.clone();
         let hooks=dir.path().join("hooks");
         assert!(plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"the hooks of this build are current");
         let theme=std::fs::read_to_string(dir.path().join("ui/theme.js")).unwrap();
@@ -219,12 +225,32 @@ mod tests {
         std::fs::remove_file(hooks.join("hooks.json")).unwrap();
         assert!(!plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"a copy missing the manifest is not current");
     }
+    /// A conclusão confere a versão do plugin pelos ganchos da cópia, não só
+    /// pelo número: a cópia com o número e os ganchos desta compilação tem a
+    /// versão pronta, e a mesma cópia com um gancho velho fica não pronta.
+    #[test]
+    fn the_installation_marks_the_plugin_version_not_ready_when_only_the_hooks_changed() {
+        let project=tempfile::tempdir().unwrap();
+        let report=installed_project(project.path());
+        let cached=tempfile::tempdir().unwrap();
+        let plugin=shipped_plugin_copy(cached.path());
+        let plugin_version=|plugin| {
+            let receipt=finish_with_install(project.path(),&report,&MissingPrograms,Duration::from_secs(1),Some(plugin),"http://127.0.0.1:9/v1/systemone");
+            component(&receipt,"plugin-version")
+        };
+        let current=plugin_version(plugin.clone());
+        assert_eq!(current["ready"],true,"the hooks of this build under its number are the current plugin: {current}");
+        let register=cached.path().join("hooks/register.js");
+        let body=std::fs::read_to_string(&register).unwrap();
+        std::fs::write(&register,format!("{body}\n// old build\n")).unwrap();
+        let old=plugin_version(plugin);
+        assert_eq!(old["ready"],false,"the same number with an old hook is not the plugin of this build: {old}");
+        assert!(old["remedy"].as_str().is_some_and(|remedy|remedy.contains("reinstall the Mustard plugin")),"{old}");
+    }
     #[test]
     fn files_written_without_a_working_scan_and_host_are_not_a_complete_installation() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        assert!(std::process::Command::new("git").args(["init","-q"]).current_dir(root).status().unwrap().success());
-        let project=mustard_core::platform::project_seed::upsert_project(root,Some(&mustard_core::harness_version()),mustard_core::platform::project_seed::InstallMode::Private).unwrap();
-        let report=Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,local_files_found:None,installation:None,scan:Some(json!({"ok":false,"reason":"missing-scan"}))};
+        let report=Report{scan:Some(json!({"ok":false,"reason":"missing-scan"})),..installed_project(root)};
         let result=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(1),None,"http://127.0.0.1:9/v1/systemone");
         assert_eq!(result["complete"],false);
         assert_eq!(result["host_ready"],false);
@@ -259,17 +285,29 @@ mod tests {
         (url,rx)
     }
 
-    /// O projeto instalado em `root` com a busca pelo Jev e a chave no
-    /// `mustard.json`, e o relatório da instalação dele.
-    fn keyed_install(root:&Path)->Report {
+    /// O projeto instalado em `root`, num repositório git, e o relatório da
+    /// instalação dele, sem anfitrião e sem passada do scan.
+    fn installed_project(root:&Path)->Report {
         assert!(std::process::Command::new("git").args(["init","-q"]).current_dir(root).status().unwrap().success());
         let project=mustard_core::platform::project_seed::upsert_project(root,Some(&mustard_core::harness_version()),mustard_core::platform::project_seed::InstallMode::Private).unwrap();
-        std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":true},"judgement":{"search":{"filter":"jev"}},"jev":{"key":"sk-installed"}}).to_string()).unwrap();
         Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,local_files_found:None,installation:None,scan:None}
     }
 
+    /// O projeto instalado em `root` com a busca pelo Jev e a chave no
+    /// `mustard.json`, e o relatório da instalação dele.
+    fn keyed_install(root:&Path)->Report {
+        let report=installed_project(root);
+        std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":true},"judgement":{"search":{"filter":"jev"}},"jev":{"key":"sk-installed"}}).to_string()).unwrap();
+        report
+    }
+
+    /// A conferência `name` do recibo da instalação.
+    fn component(receipt:&Value,name:&str)->Value {
+        receipt["checks"].as_array().unwrap().iter().find(|check|check["component"]==name).cloned().unwrap()
+    }
+
     fn jev(receipt:&Value)->Value {
-        receipt["checks"].as_array().unwrap().iter().find(|check|check["component"]=="jev-configuration").cloned().unwrap()
+        component(receipt,"jev-configuration")
     }
 
     /// Com a chave presente, a instalação lista os modelos do serviço, sem
