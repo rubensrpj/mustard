@@ -8,15 +8,32 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
     if !mustard_core::ProjectConfig::exists(&root) {return json!({"ok":true,"recorded":false});}
     if session.is_empty() || session.len()>200 {return json!({"ok":false,"reason":"usage-invalid-session"});}
     let fail=|reason:&'static str,detail:String|(reason,detail);
-    let result=(||->Result<(),(&'static str,String)>{
-        let mut held=mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&file(&root,session)).map_err(|e|fail("live-usage-busy",e.to_string()))?
+    let result=(||->Result<Option<String>,(&'static str,String)>{
+        let path=file(&root,session);
+        let mut held=mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&path).map_err(|e|fail("live-usage-busy",e.to_string()))?
             .ok_or_else(||fail("live-usage-busy","another recording holds the live usage file".into()))?;
         let raw=held.read_to_string().map_err(|e|fail("live-usage-unreadable",e.to_string()))?;
         if raw.len()>2_000_000 {return Err(fail("live-usage-capacity",format!("{} bytes, limit 2000000",raw.len())));}
-        let mut data=if raw.is_empty(){json!({"schema_version":1,"agents":{},"steps":{},"main":{}})}else{serde_json::from_str::<Value>(&raw).map_err(|e|fail("live-usage-unreadable",e.to_string()))?};
-        if data["schema_version"]!=1 || !data["agents"].is_object() || !data["steps"].is_object() {
-            return Err(fail("live-usage-unreadable","schema_version 1 with agents and steps objects expected".into()));
-        }
+        let fresh=||json!({"schema_version":1,"agents":{},"steps":{},"main":{}});
+        let parsed=if raw.is_empty(){Ok(fresh())}else{serde_json::from_str::<Value>(&raw).map_err(|e|e.to_string()).and_then(|data|{
+            if data["schema_version"]==1 && data["agents"].is_object() && data["steps"].is_object() {Ok(data)}
+            else {Err("schema_version 1 with agents and steps objects expected".to_string())}
+        })};
+        // O arquivo que não se lê mais (a troca cortada por um processo morto
+        // ou por uma queda de energia) não derruba toda medição até a sessão
+        // acabar: o texto dele fica guardado ao lado, com a hora no nome, e a
+        // visão ao vivo recomeça vazia na hora, traga esta medição o que trouxer.
+        let (mut data,restarted)=match parsed {
+            Ok(data)=>(data,None),
+            Err(error)=>{
+                let stem=path.file_stem().map(|stem|stem.to_string_lossy().into_owned()).unwrap_or_default();
+                let kept=path.with_file_name(format!("{stem}.unreadable-{}.json",chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")));
+                mustard_core::io::fs::write_atomic(&kept,raw.as_bytes()).map_err(|e|fail("live-usage-unreadable",format!("{error}; not kept: {e}")))?;
+                held.replace(fresh().to_string().as_bytes()).map_err(|e|fail("live-usage-write-failed",e.to_string()))?;
+                let name=kept.file_name().map(|name|name.to_string_lossy().into_owned()).unwrap_or_default();
+                (fresh(),Some(format!("{error}; previous text kept in {name}")))
+            }
+        };
         let now=chrono::Utc::now().to_rfc3339();
         if let Some(context)=input.get("context").filter(|v|v.is_object()) {
             let mut projected=json!({});
@@ -44,7 +61,7 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
             let fields=["input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens"];
             let mut tokens=json!({});
             for field in fields {if let Some(n)=input["usage"][field].as_u64().filter(|n|*n<=1_000_000_000){tokens[field]=json!(n);}}
-            if tokens.as_object().is_none_or(|fields|fields.is_empty()) {return Ok(());}
+            if tokens.as_object().is_none_or(|fields|fields.is_empty()) {return Ok(restarted);}
             let previous=&data["steps"][&step];
             if previous.is_null() {
                 if data["steps"].as_object().is_some_and(|steps|steps.len()>=8192) {return Err(fail("live-usage-capacity","8192 steps already recorded".into()));}
@@ -58,15 +75,23 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
         }
         if actor=="main" {data["main"]=row;}else{data["agents"][key]=row;}
         data["measured_at"]=json!(now);data["origin"]=json!("native-host-events");
-        held.replace(data.to_string().as_bytes()).map_err(|e|fail("live-usage-write-failed",e.to_string()))?;Ok(())
+        held.replace(data.to_string().as_bytes()).map_err(|e|fail("live-usage-write-failed",e.to_string()))?;Ok(restarted)
     })();
+    let diagnose=|reason:&str,detail:&str|{
+        let event=json!({"component":"usage","operation":"record","reason":reason,"detail":detail,"session":session});
+        super::diagnostics::record(&root,&event)["ok"]==true
+    };
     result.map_or_else(|(reason,detail)|{
         // The failure enters the diagnostics with its cause whoever sent the
         // measurement; `diagnosed` tells the caller not to record it again.
-        let event=json!({"component":"usage","operation":"record","reason":reason,"detail":detail,"session":session});
-        let diagnosed=super::diagnostics::record(&root,&event)["ok"]==true;
+        let diagnosed=diagnose(reason,&detail);
         json!({"ok":false,"reason":reason,"detail":detail,"diagnosed":diagnosed})
-    },|()|json!({"ok":true,"recorded":true}))
+    },|restarted|{
+        // O recomeço não é falha desta medição, mas a visão perdida e o lugar
+        // onde o texto dela ficou entram no diagnóstico.
+        if let Some(note)=restarted {diagnose("live-usage-unreadable",&note);}
+        json!({"ok":true,"recorded":true})
+    })
 }
 pub(super) fn snapshot(root:&Path,session:Option<&str>)->Value {
     let Some(session)=session else {return Value::Null;};
@@ -96,21 +121,47 @@ mod tests {
         assert_eq!(row["input_tokens"],20);assert_eq!(row["requests"],1);assert_eq!(view["context"]["tokens"],125);
         assert!(view.get("steps").is_none());assert!(snapshot(root,Some("other")).is_null());
     }
-    /// A live file cut in the middle of a rewrite, as the full disk left it,
-    /// makes the measurement fail with the parse error as its cause, and that
-    /// cause reaches the diagnostics once, even when the cost was recorded.
+    /// O passo já gravado com outros tokens faz a medição falhar com o
+    /// conflito como causa, e essa causa chega ao diagnóstico uma vez, mesmo
+    /// quando o custo foi gravado.
     #[test]
     fn a_failing_live_recording_leaves_its_cause_in_the_diagnostics() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
-        std::fs::create_dir_all(file(root,"s").parent().unwrap()).unwrap();
-        std::fs::write(file(root,"s"),r#"{"schema_version":1,"agents":{"a":{"id":"unterminated"#).unwrap();
-        let measurement=json!({"kind":"measure","cost":{"usd":0.5},"model":"fixture"});
-        let answer=super::super::consumption::record(root,"s",&measurement);
-        assert_eq!((answer["ok"].clone(),answer["live"]["reason"].clone(),answer["live"]["diagnosed"].clone()),(json!(true),json!("live-usage-unreadable"),json!(true)),"{answer}");
+        let step=|tokens:u64|json!({"kind":"step","agent_id":"a","turn_id":"t","index":0,"usage":{"input_tokens":tokens},"cost":{"usd":0.5},"model":"fixture"});
+        assert_eq!(record(root,"s",&step(20))["ok"],true);
+        let answer=super::super::consumption::record(root,"s",&step(30));
+        assert_eq!((answer["ok"].clone(),answer["live"]["reason"].clone(),answer["live"]["diagnosed"].clone()),(json!(true),json!("usage-step-conflict"),json!(true)),"{answer}");
         let detail=answer["live"]["detail"].as_str().unwrap();
-        assert!(detail.contains("EOF while parsing"),"{detail}");
+        assert_eq!(detail,"step t:0 already recorded with other tokens");
         let events:Vec<Value>=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/panel/diagnostics.json")).unwrap()).unwrap();
         let recorded:Vec<_>=events.iter().map(|event|(event["component"].clone(),event["operation"].clone(),event["reason"].clone(),event["detail"].clone(),event["session"].clone())).collect();
-        assert_eq!(recorded,[(json!("usage"),json!("record"),json!("live-usage-unreadable"),json!(detail),json!("s"))]);
+        assert_eq!(recorded,[(json!("usage"),json!("record"),json!("usage-step-conflict"),json!(detail),json!("s"))]);
+    }
+    /// O arquivo ao vivo cortado por um processo morto, ou que não é mais a
+    /// visão ao vivo, não derruba mais toda medição até a sessão acabar: a
+    /// medição seguinte grava numa visão nova, o texto velho fica ao lado, o
+    /// diagnóstico diz onde ele ficou, e as medições depois dela acham um
+    /// arquivo legível.
+    #[test]
+    fn a_cut_live_file_is_kept_aside_and_the_next_measurement_is_recorded() {
+        for cut in [r#"{"schema_version":1,"agents":{"a":{"id":"unterminated"#,r#"{"schema_version":2,"agents":{}}"#] {
+            let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+            let live=file(root,"s");let folder=live.parent().unwrap();std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(&live,cut).unwrap();
+            for index in 0..2 {
+                let step=json!({"kind":"step","agent_id":"a","turn_id":"t","index":index,"model":"fixture","usage":{"input_tokens":20}});
+                assert_eq!(record(root,"s",&step),json!({"ok":true,"recorded":true}),"{cut}");
+            }
+            let row=snapshot(root,Some("s"))["agents"].as_object().unwrap().values().next().unwrap().clone();
+            assert_eq!((row["input_tokens"].clone(),row["requests"].clone()),(json!(40),json!(2)),"{cut}");
+            let stem=live.file_stem().unwrap().to_string_lossy().into_owned();
+            let kept:Vec<_>=std::fs::read_dir(folder).unwrap().filter_map(Result::ok).map(|entry|entry.path())
+                .filter(|path|path.file_name().unwrap().to_string_lossy().starts_with(&format!("{stem}.unreadable-"))).collect();
+            assert_eq!(kept.len(),1,"{cut}");assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(),cut);
+            let events:Vec<Value>=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/panel/diagnostics.json")).unwrap()).unwrap();
+            assert_eq!(events.iter().map(|event|(event["reason"].clone(),event["session"].clone())).collect::<Vec<_>>(),[(json!("live-usage-unreadable"),json!("s"))]);
+            let name=kept[0].file_name().unwrap().to_string_lossy().into_owned();
+            assert!(events[0]["detail"].as_str().unwrap().ends_with(&format!("; previous text kept in {name}")),"{}",events[0]);
+        }
     }
 }

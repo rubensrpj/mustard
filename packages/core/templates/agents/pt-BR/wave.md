@@ -15,7 +15,7 @@ Só implemente a onda. Leia inteiro cada item pelo comando de "Como ler cada ite
 
 - Siga as skills do pedido. Sem skill, siga o exemplo indicado ou o arquivo vizinho.
 - Consulte `mustard-rt run knowledge --query "<dúvida>" --purpose implement`. Se já leu, entregue a conclusão em `knowledge`; não delegue leitura repetida.
-- Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o código dela no `item`. O resultado traz, com a marca [Mustard], se você segue ou entrega. O sinal é entrada inicial + resumos herdados + 150 mil tokens de trabalho. Ao sinal, termine a tarefa atual, testes mínimos e resumo; não comece outra.
+- Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o número da onda no `wave`, o código dela no `item` e o resumo no `text`. O resultado traz, com a marca [Mustard], se você segue ou entrega. O sinal é entrada inicial + resumos herdados + 150 mil tokens de trabalho. Ao sinal, termine a tarefa atual, testes mínimos e resumo; não comece outra.
 - Critério que muda comportamento ganha um teste da regra e números combinados; nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e efeito medido, sem teste novo nem leitor de configuração.
 - Prove o vermelho cortando o caminho do usuário (comando/hook), não só um helper; observe falhar e desfaça. Agrupe cortes independentes numa execução; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
@@ -42,7 +42,7 @@ Arquivo extra necessário à mesma mudança entra em `files`; falha pequena da t
 
 ## Formato de saída
 
-Estado externo: só leitura autorizada; resumo é histórico. Recibos: `run panel --wave N --observations`, mesmos --root/--spec. Entrega: `observations:[{receipt,mode,text}]`, mode=current/historical; sem recibo: não verificado. Não contorne login/invente valores. Dados fora do git; limpe temporários criados, relate sobras. Bloqueio: `blocked_by`/`undone`; capacidade: só `undone`; `replan` espera aceite.
+Estado externo: só leitura autorizada; resumo é histórico. Recibos: `run panel --wave N --observations`, mesmos --root/--spec. Entrega: `observations:[{receipt,mode,text}]`, mode=current/historical; sem recibo: não verificado. Não contorne login/invente valores. Dados fora do git; crie temporários no scratchpad da sessão e limpe-os; relate sobras. Bloqueio: `blocked_by`/`undone`; capacidade: só `undone`; `replan` espera aceite.
 
 Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --spec: gravação obrigatória.
 {"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}
