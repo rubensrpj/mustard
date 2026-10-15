@@ -422,18 +422,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.rm_recursive_force", Locale::EnUs) => {
             "deleting a folder by force (`rm` with `-r` and `-f`)"
         }
-        // O caminho permitido, na linha seguinte à do comando: só a pasta do
-        // temporário do sistema que é do usuário e fica fora de qualquer
-        // checkout, que o `clean --path` confere antes de apagar.
+        // O caminho permitido, na linha seguinte à do comando: só a pasta ou o
+        // arquivo do temporário do sistema que é do usuário e fica fora de
+        // qualquer checkout, que o `clean --path` confere antes de apagar.
         ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
-            "Para apagar uma pasta do temporário do sistema que é sua e fica fora de qualquer \
-             checkout do git, rode `mustard-rt run clean --path <pasta>`: ele confere a pasta antes \
-             de apagar. Vale também para uma pasta dentro do scratchpad da sessão."
+            "Para apagar uma pasta ou um arquivo do temporário do sistema, rode `mustard-rt run clean \
+             --path <caminho>`. O caminho tem de ser seu e ficar fora de qualquer checkout do git. O \
+             comando confere isso antes de apagar. Vale também dentro do scratchpad da sessão."
         }
         ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
-            "To delete a folder of the system temp directory that is yours and lies outside any git \
-             checkout, run `mustard-rt run clean --path <folder>`: it checks the folder before \
-             deleting it. It also takes a folder inside the session scratchpad."
+            "To delete a folder or a file of the system temp directory, run `mustard-rt run clean \
+             --path <path>`. The path must be yours and lie outside any git checkout. The command \
+             checks this before deleting. It also works inside the session scratchpad."
         }
         ("command_guard.force_push", Locale::PtBr) => {
             "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
@@ -583,7 +583,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             75,
-            0x74d2_720e_6ace_2384,
+            0x1391_f9f7_1ef8_ab51,
         );
     }
 

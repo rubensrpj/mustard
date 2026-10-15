@@ -56,10 +56,10 @@ impl Danger {
     }
 
     /// The catalogue key of the allowed way to do the same job, when there is
-    /// one. Only a folder deleted by force has it: a folder of the system temp
-    /// directory that the user owns and that lies outside any git checkout,
-    /// the session scratchpad included, goes through the command that checks
-    /// the folder before deleting it.
+    /// one. Only a folder deleted by force has it: a folder or a file of the
+    /// system temp directory that the user owns and that lies outside any git
+    /// checkout, the session scratchpad included, goes through the command
+    /// that checks the path before deleting it.
     fn instead(&self) -> Option<&'static str> {
         match self {
             Self::RecursiveForceDelete => Some("command_guard.rm_recursive_force_instead"),
@@ -573,10 +573,11 @@ mod tests {
         assert_eq!(
             reason,
             "Comando barrado: apagar pasta à força (`rm` com `-r` e `-f`). Isso apaga trabalho sem \
-             volta.\nComando: rm -rf pasta\nPara apagar uma pasta do temporário do sistema que é sua e \
-             fica fora de qualquer checkout do git, rode `mustard-rt run clean --path <pasta>`: ele \
-             confere a pasta antes de apagar. Vale também para uma pasta dentro do scratchpad da \
-             sessão.\nSe for isso mesmo, peça ao usuário para rodar o comando no terminal dele."
+             volta.\nComando: rm -rf pasta\nPara apagar uma pasta ou um arquivo do temporário do \
+             sistema, rode `mustard-rt run clean --path <caminho>`. O caminho tem de ser seu e ficar \
+             fora de qualquer checkout do git. O comando confere isso antes de apagar. Vale também \
+             dentro do scratchpad da sessão.\nSe for isso mesmo, peça ao usuário para rodar o comando \
+             no terminal dele."
         );
 
         ctx.config.language.text = Some("en-US".to_string());
@@ -586,10 +587,10 @@ mod tests {
         assert_eq!(
             reason,
             "Command blocked: deleting a folder by force (`rm` with `-r` and `-f`). This destroys \
-             work with no way back.\nCommand: rm -rf pasta\nTo delete a folder of the system temp \
-             directory that is yours and lies outside any git checkout, run `mustard-rt run clean \
-             --path <folder>`: it checks the folder before deleting it. It also takes a folder inside \
-             the session scratchpad.\nIf this is really what you want, ask the user to run the \
+             work with no way back.\nCommand: rm -rf pasta\nTo delete a folder or a file of the \
+             system temp directory, run `mustard-rt run clean --path <path>`. The path must be yours \
+             and lie outside any git checkout. The command checks this before deleting. It also works \
+             inside the session scratchpad.\nIf this is really what you want, ask the user to run the \
              command in their own terminal."
         );
 
@@ -603,8 +604,8 @@ mod tests {
     }
 
     /// The refusal of a folder deleted by force, in any spelling, names the
-    /// command that deletes a folder of the temp directory after checking it,
-    /// in both languages. Every other danger is refused without
+    /// command that deletes a folder or a file of the temp directory after
+    /// checking it, in both languages. Every other danger is refused without
     /// that line: the allowed way does not do their job.
     #[test]
     fn only_the_forced_folder_delete_points_to_the_allowed_way() {
@@ -615,8 +616,8 @@ mod tests {
             other => panic!("{cmd} must be denied: {other:?}"),
         };
         for (language, allowed) in [
-            ("pt-BR", "rode `mustard-rt run clean --path <pasta>`"),
-            ("en-US", "run `mustard-rt run clean --path <folder>`"),
+            ("pt-BR", "rode `mustard-rt run clean --path <caminho>`"),
+            ("en-US", "run `mustard-rt run clean --path <path>`"),
         ] {
             ctx.config.language.text = Some(language.to_string());
             for cmd in ["rm -rf /tmp/copia", "rm -r -f build", "rm --recursive --force target", "bash -c \"rm -fr x\""] {
