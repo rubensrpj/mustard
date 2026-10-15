@@ -313,6 +313,72 @@ pub(super) fn exact_name(root: &Path, options: &Query<'_>) -> std::result::Resul
         .is_some())
 }
 
+/// As declarações que a pergunta cita pelo nome: cada palavra dela escrita
+/// como nome de código ([`cited_names`]) igual ao nome de uma declaração
+/// do mapa, sem distinguir maiúsculas, a grafia exata antes. O nome com mais
+/// homônimos que as vagas da resposta não conta: ele não diz qual declaração a
+/// pergunta quer, e encheria a resposta. O nome de menos homônimos vem antes;
+/// no empate, o que a pergunta escreve primeiro.
+pub(super) fn named(root: &Path, options: &Query<'_>) -> std::result::Result<Vec<String>, MapRefusal> {
+    let words = cited_names(options.text);
+    if options.all || words.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slots = options.limit.clamp(1, 50);
+    let fetch = i64::try_from(slots + 1).unwrap_or(i64::MAX);
+    let db = store::open_existing(&store::model_path(root))?;
+    let mut statement = db
+        .conn()
+        .prepare("SELECT id FROM knowledge_symbols WHERE name=?1 COLLATE NOCASE AND (?2 IS NULL OR path=?2) ORDER BY name=?1 DESC,path,line LIMIT ?3")
+        .map_err(|e| unreadable(e.into()))?;
+    let mut groups = Vec::new();
+    for word in words {
+        let ids = statement
+            .query_map(params![word, options.file, fetch], |r| r.get::<_, String>(0))
+            .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+            .map_err(|e| unreadable(e.into()))?;
+        if ids.len() <= slots {
+            groups.push(ids);
+        }
+    }
+    groups.sort_by_key(Vec::len);
+    let mut named = Vec::new();
+    for id in groups.into_iter().flatten() {
+        if !named.contains(&id) {
+            named.push(id);
+        }
+    }
+    Ok(named)
+}
+
+/// As palavras que a pergunta escreve como nome de código, e não como prosa,
+/// na ordem e sem repetir: com `_`, `$` ou algarismo, com maiúscula depois da
+/// primeira letra (`retry_limit`, `maxRetries`, `PATH_RULE`) ou com maiúscula
+/// no meio de uma frase (`Modes`). A palavra de prosa que por acaso também
+/// nomeia uma declaração (`round`, ou `Timeout` abrindo a frase) fica para a
+/// semelhança.
+fn cited_names(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let (mut opening, mut start) = (true, None);
+    for (at, c) in text.char_indices().chain([(text.len(), '\n')]) {
+        if c.is_alphanumeric() || c == '_' || c == '$' {
+            start.get_or_insert(at);
+            continue;
+        }
+        if let Some(from) = start.take() {
+            let word = &text[from..at];
+            let capital = word.chars().next().is_some_and(char::is_uppercase);
+            let code = word.chars().any(|c| c == '_' || c == '$' || c.is_numeric()) || word.chars().skip(1).any(char::is_uppercase);
+            if (code || (capital && !opening)) && !names.contains(&word) {
+                names.push(word);
+            }
+            opening = false;
+        }
+        opening |= matches!(c, '.' | '!' | '?');
+    }
+    names
+}
+
 pub(super) fn ensure_languages(root:&Path)->std::result::Result<(),MapRefusal> {
     let mut db=store::open_existing(&store::model_path(root))?;
     let languages=Languages::of_project(root);
