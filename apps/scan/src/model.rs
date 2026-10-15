@@ -86,13 +86,15 @@ impl ProjectModel {
 
     /// Grava o modelo no mapa em `path`, com a marca `mark` em cada bloco.
     /// Só os blocos que mudaram se regravam, numa transação só; com tudo
-    /// igual, nada se grava e a resposta é `false`. O índice de busca que se
+    /// igual, nada se grava e `written` é `false`. O índice de busca que se
     /// refaz com os arquivos e as declarações prepara as palavras nas línguas
-    /// `languages`.
-    pub fn save(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
+    /// `languages`. Os cartões de conhecimento se refazem só nos arquivos
+    /// cujas entradas mudaram desde os que o arquivo tomado do mapa anterior
+    /// já traz; `enriched` diz quantos.
+    pub fn save(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<Saved> {
         let mut raw = serde_json::to_value(self)?;
-        mustard_core::domain::knowledge::enrich(&mut raw);
-        Ok(store::save_at(path, &raw, mark, languages)?)
+        let enriched = mustard_core::domain::knowledge::enrich(&mut raw).len();
+        Ok(Saved { written: store::save_at(path, &raw, mark, languages)?, enriched })
     }
 
     /// Grava só o censo do modelo no mapa em `path`, com a marca `mark`; os
@@ -105,6 +107,15 @@ impl ProjectModel {
     pub fn save_resources(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
         Ok(store::save_blocks_at(path, &[&store::CENSUS,&store::RESOURCES], &serde_json::to_value(self)?, mark, languages)?)
     }
+}
+
+/// O que uma gravação do modelo inteiro fez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Saved {
+    /// Algum bloco do mapa se regravou.
+    pub written: bool,
+    /// Quantos arquivos tiveram os cartões de conhecimento refeitos.
+    pub enriched: usize,
 }
 
 /// One compilation unit / project in the workspace (one per build manifest)

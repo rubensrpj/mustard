@@ -801,3 +801,38 @@ fn a_pass_that_rereads_only_the_importer_follows_what_the_kept_file_passes_on() 
     assert_eq!(deps_in_the_map(dir, "web/src/tela.ts"), vec![json!("web/src/pedidos/pedido.service.ts")]);
     same_as_a_full_pass(dir);
 }
+
+/// A passada que relê um arquivo refaz os cartões de conhecimento só dos
+/// arquivos cujas entradas mudaram: o arquivo editado e, quando a declaração
+/// chamada muda de linha, o arquivo que a chama, cujo cartão aponta para ela.
+/// Os outros ficam com os cartões que já tinham, e o mapa sai igual ao da
+/// leitura inteira.
+#[test]
+fn rereading_one_file_rebuilds_only_the_cards_whose_inputs_changed() {
+    let temp = project(
+        "scan-cards-",
+        &[
+            ("src/total.ts", "export function total(): number {\n  return 1;\n}\n"),
+            ("src/pedido.ts", "import { total } from './total';\n\nexport function pedido(): number {\n  return total() + 1;\n}\n"),
+            ("src/avulso.ts", "export function avulso(): number {\n  return 3;\n}\n"),
+            ("src/outro.ts", "export function outro(): number {\n  return 4;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let first = scan(dir, &[]);
+    assert_eq!(first["full"], json!(true), "{first}");
+    assert_eq!(first["enriched"], first["files"], "{first}");
+
+    // Só o corpo de um arquivo que ninguém chama muda.
+    write(dir, "src/avulso.ts", "export function avulso(): number {\n  return 5;\n}\n");
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/avulso.ts"]), "{second}");
+    assert_eq!(second["enriched"], json!(1), "{second}");
+
+    // A função chamada desce uma linha: o arquivo dela e o de quem a chama.
+    write(dir, "src/total.ts", "// Soma do pedido.\nexport function total(): number {\n  return 1;\n}\n");
+    let third = scan(dir, &[]);
+    assert_eq!(third["read"], json!(["src/total.ts"]), "{third}");
+    assert_eq!(third["enriched"], json!(2), "{third}");
+    same_as_a_full_pass(dir);
+}

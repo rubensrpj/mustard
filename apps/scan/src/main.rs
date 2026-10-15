@@ -246,10 +246,11 @@ fn main() -> Result<()> {
                 }
             };
             // Nothing changed → the file is left alone (same bytes, same date).
-            let written = if analysis.census_only {
-                if analysis.resources_changed {
+            let saved = if analysis.census_only {
+                let written = if analysis.resources_changed {
                     analysis.model.save_resources(&out, refresh::FORMAT, &Languages::of(&config))?
-                } else { analysis.model.save_census(&out, refresh::FORMAT)? }
+                } else { analysis.model.save_census(&out, refresh::FORMAT)? };
+                model::Saved { written, enriched: 0 }
             } else {
                 analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
             };
@@ -263,6 +264,7 @@ fn main() -> Result<()> {
                     "ok": true,
                     "full": analysis.full,
                     "read": analysis.read,
+                    "enriched": saved.enriched,
                     "files": analysis.model.modules.len(),
                     "resources": analysis.model.resources.len(),
                     "resource_issues": analysis.model.resources.iter().filter(|file| !file.issue.is_empty()).map(|file|
@@ -285,7 +287,7 @@ fn main() -> Result<()> {
                 } else {
                     print_summary(&analysis.model);
                 }
-                if written {
+                if saved.written {
                     println!("\nMap written to {}", out.display());
                 } else {
                     println!("\nMap unchanged at {}", out.display());
