@@ -430,6 +430,35 @@ fn meaning_vectors(out: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Um comentário acrescentado no fim de um arquivo, fora de toda declaração,
+/// não muda o texto compilado de declaração nenhuma: a passada que relê o
+/// arquivo não calcula vetor nenhum, nem de sentido nem de código, e as
+/// tabelas de vetores ficam como estavam, as do outro arquivo inclusive. Num
+/// projeto em TypeScript.
+#[test]
+fn a_comment_at_the_end_of_a_file_recomputes_no_declaration_vector() {
+    let orders = "/** Places the customer order and charges the invoice. */\nexport function placeOrder(total: number): number {\n  return total * 2;\n}\n";
+    let temp = project(
+        "scan-trailing-comment-",
+        &[
+            ("src/orders.ts", orders),
+            ("src/shipping.ts", "import { placeOrder } from './orders';\n/** Ships the parcel to the warehouse address. */\nexport class ParcelShipper {\n  ship(weight: number): number {\n    return placeOrder(weight) + 1;\n  }\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let map = model::path_in(&map_folder(dir));
+    let first = scan(dir, &[]);
+    assert!(first["vectors"].as_u64().is_some_and(|count| count > 0), "{first}");
+    let before = meaning_vectors(&map);
+    assert!(before.iter().any(|row| row.contains("ParcelShipper")), "{before:?}");
+
+    write(dir, "src/orders.ts", &format!("{orders}\n// Reviewed by the billing team.\n"));
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/orders.ts"]), "{second}");
+    assert_eq!(second["vectors"], json!(0), "no compiled text changed: {second}");
+    assert_eq!(meaning_vectors(&map), before, "every declaration keeps its vector");
+}
+
 /// Duas passadas ao mesmo tempo no mesmo projeto terminam sem erro ao gravar
 /// os vetores de sentido, e os vetores ficam os de uma passada só. O mapa vem
 /// do scan; cada rodada esvazia o bloco de sentido e larga juntas duas
