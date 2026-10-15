@@ -123,7 +123,7 @@ const SCRATCHPAD_DIR: &str = "scratchpad";
 const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
 
 /// O que o `--path` aceita, dito depois do motivo de toda recusa dele.
-const PATH_RULE: &str = "--path deletes only a folder or a regular file of the system temp directory that the current user owns, that lies outside any git checkout and that is named by its own path, not by a symbolic link";
+const PATH_RULE: &str = "--path deletes only a folder or a regular file of the system temp directory that the current user owns, that lies outside any git checkout and whose own name is not a symbolic link";
 
 // ---------------------------------------------------------------------------
 // Opções + relatório
@@ -1249,9 +1249,12 @@ mod tests {
     /// A pasta que o agente criou no temp sai pelo `--path`, tenha o que
     /// tiver: a do `mktemp -d` no topo do temp, com cópias `.bak` e um
     /// repositório de teste em TypeScript (a forma da pasta que um agente não
-    /// conseguiu limpar), e a do `scratchpad/` de uma sessão. O próprio
-    /// `scratchpad/` fica, a pasta fora do temp é recusada com a regra do
-    /// `--path`, e um link no `scratchpad/` é julgado pelo destino.
+    /// conseguiu limpar), e a do `scratchpad/` de uma sessão. A pasta real
+    /// escrita com a barra no fim (a que o completar do shell põe) ou com
+    /// `/.` sai do mesmo jeito: a recusa do link lê o nome do caminho, não o
+    /// texto digitado. O próprio `scratchpad/` fica, a pasta fora do temp é
+    /// recusada com a regra do `--path`, e um link no `scratchpad/` é julgado
+    /// pelo destino.
     #[test]
     fn path_removes_any_folder_the_agent_made_in_the_temp_directory() {
         let base = tempdir().unwrap();
@@ -1272,6 +1275,16 @@ mod tests {
         let removed = remove_path(&proof, &roots).unwrap();
         assert_eq!(removed, fs::canonicalize(&pad).unwrap().join("prova"));
         assert!(!proof.exists(), "the folder made in the scratchpad goes");
+        for (name, spelling) in [("slash", "/"), ("dot", "/.")] {
+            let folder = pad.join(name);
+            typescript_repo(&folder);
+            let mut given = folder.clone().into_os_string();
+            given.push(spelling);
+            let removed = remove_path(Path::new(&given), &roots)
+                .unwrap_or_else(|e| panic!("the real folder given as {given:?} goes: {e}"));
+            assert_eq!(removed, fs::canonicalize(&pad).unwrap().join(name));
+            assert!(!folder.exists(), "the real folder given as {given:?} goes");
+        }
         assert!(pad.is_dir(), "the scratchpad itself stays");
 
         let err = remove_path(&outside, &roots).unwrap_err();
