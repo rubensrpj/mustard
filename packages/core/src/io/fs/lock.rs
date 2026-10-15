@@ -34,6 +34,8 @@ pub fn temp_lock_path(kind: &str, target: &Path) -> PathBuf {
 #[derive(Debug)]
 pub struct LockedFile {
     file: File,
+    /// O caminho travado: a troca de conteúdo põe o arquivo novo nele.
+    path: PathBuf,
 }
 
 impl LockedFile {
@@ -45,9 +47,13 @@ impl LockedFile {
     /// [`Error::Io`] quando a pasta não pode ser criada, o arquivo não abre ou
     /// a trava falha.
     pub fn exclusive(path: &Path) -> Result<Self> {
-        let file = open_creating(path)?;
-        file.lock()?;
-        Ok(Self { file })
+        loop {
+            let file = open_creating(path)?;
+            file.lock()?;
+            if still_at(&file, path)? {
+                return Ok(Self { file, path: path.to_path_buf() });
+            }
+        }
     }
 
     /// Como [`LockedFile::exclusive`], mas sem esperar: `None` quando outro
@@ -58,11 +64,36 @@ impl LockedFile {
     /// [`Error::Io`] quando a pasta não pode ser criada, o arquivo não abre ou
     /// a trava falha por outro motivo que não estar presa.
     pub fn exclusive_if_free(path: &Path) -> Result<Option<Self>> {
-        let file = open_creating(path)?;
-        match file.try_lock() {
-            Ok(()) => Ok(Some(Self { file })),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        loop {
+            let file = open_creating(path)?;
+            match file.try_lock() {
+                Ok(()) if still_at(&file, path)? => return Ok(Some(Self { file, path: path.to_path_buf() })),
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+                Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+            }
+        }
+    }
+
+    /// Como [`LockedFile::exclusive_if_free`], mas espera a trava soltar por
+    /// até `patience`: `None` só quando outro manipulador ainda a segura no
+    /// fim da espera. Serve a quem grava algo curto e prefere esperar a
+    /// gravação do lado terminar a perder a própria.
+    ///
+    /// # Errors
+    ///
+    /// Os mesmos de [`LockedFile::exclusive_if_free`].
+    pub fn exclusive_within(path: &Path, patience: std::time::Duration) -> Result<Option<Self>> {
+        let deadline = std::time::Instant::now() + patience;
+        loop {
+            if let Some(held) = Self::exclusive_if_free(path)? {
+                return Ok(Some(held));
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(LOCK_POLL.min(deadline - now));
         }
     }
 
@@ -74,15 +105,19 @@ impl LockedFile {
     /// [`Error::NotFound`] quando o arquivo não existe; [`Error::Io`] quando ele
     /// não abre ou a trava falha.
     pub fn existing(path: &Path) -> Result<Self> {
-        let file = match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err(Error::NotFound(path.display().to_string()));
+        loop {
+            let file = match OpenOptions::new().read(true).write(true).open(path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    return Err(Error::NotFound(path.display().to_string()));
+                }
+                Err(e) => return Err(e.into()),
+            };
+            file.lock()?;
+            if still_at(&file, path)? {
+                return Ok(Self { file, path: path.to_path_buf() });
             }
-            Err(e) => return Err(e.into()),
-        };
-        file.lock()?;
-        Ok(Self { file })
+        }
     }
 
     /// O conteúdo inteiro, lido pelo manipulador que segura a trava. Um byte
@@ -111,17 +146,23 @@ impl LockedFile {
         Ok(append_or_rollback(&mut self.file, line)?)
     }
 
-    /// Troca o conteúdo inteiro por `contents`, pelo mesmo manipulador. Não é
-    /// uma troca atômica por arquivo novo: trocar o arquivo de lugar deixaria
-    /// quem espera a trava preso ao arquivo velho. Se a escrita, o corte ou a
-    /// confirmação falha, o conteúdo de antes volta: o disco cheio no meio da
-    /// troca não deixa um arquivo pela metade, que nenhuma leitura entende.
+    /// Troca o conteúdo inteiro por `contents`. Onde o sistema diz qual
+    /// arquivo mora num caminho (Unix), o conteúdo novo vai inteiro para um
+    /// arquivo ao lado, já com a trava, e só então toma o lugar do velho: o
+    /// processo morto no meio da escrita deixa o arquivo de antes intacto, e
+    /// quem esperava a trava no arquivo velho percebe a troca e trava o novo.
+    /// Nos outros sistemas a troca regrava o mesmo arquivo, e se a escrita, o
+    /// corte ou a confirmação falha, o conteúdo de antes volta.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] quando a escrita falha; o erro é o da escrita, mesmo
     /// quando a volta do conteúdo de antes também falha.
     pub fn replace(&mut self, contents: &[u8]) -> Result<()> {
+        if cfg!(unix) {
+            self.file = swap_in(&self.file, &self.path, contents)?;
+            return Ok(());
+        }
         self.file.seek(SeekFrom::Start(0))?;
         let mut before = Vec::new();
         self.file.read_to_end(&mut before)?;
@@ -146,6 +187,58 @@ impl Drop for LockedFile {
         // Fechar o arquivo já solta a trava; soltar antes deixa claro quando.
         let _ = self.file.unlock();
     }
+}
+
+/// O intervalo entre as tentativas de quem espera a trava por tempo limitado.
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Se `file`, já travado, ainda é o arquivo que mora em `path`. A troca de
+/// conteúdo põe um arquivo novo no caminho; quem esperava a trava no velho
+/// recebe `false` e abre o caminho de novo, em vez de ler e gravar num
+/// arquivo que ninguém mais lê.
+#[cfg(unix)]
+fn still_at(file: &File, path: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let held = file.metadata()?;
+    match std::fs::metadata(path) {
+        Ok(now) => Ok(held.dev() == now.dev() && held.ino() == now.ino()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Fora do Unix a troca regrava o mesmo arquivo, então o arquivo travado é
+/// sempre o do caminho.
+#[cfg(not(unix))]
+fn still_at(_file: &File, _path: &Path) -> Result<bool> {
+    Ok(true)
+}
+
+/// Grava `contents` num arquivo novo ao lado de `path`, com as permissões de
+/// `old`, confirma no disco, trava o novo e só então o põe no lugar de
+/// `path`. Volta o arquivo novo, já travado: entre a troca e a volta ninguém
+/// o pega. Se algo falha antes da troca, o arquivo ao lado some e `path`
+/// fica como estava.
+fn swap_in(old: &File, path: &Path, contents: &[u8]) -> std::io::Result<File> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let side = path.with_file_name(format!(".{name}.{}-{serial}.swap", std::process::id()));
+    let swapped = (|| {
+        let mut file = OpenOptions::new().read(true).write(true).create_new(true).open(&side)?;
+        file.set_permissions(old.metadata()?.permissions())?;
+        file.lock()?;
+        file.write_all(contents)?;
+        if super::disk_sync() {
+            file.sync_all()?;
+        }
+        std::fs::rename(&side, path)?;
+        Ok(file)
+    })();
+    if swapped.is_err() {
+        let _ = std::fs::remove_file(&side);
+    }
+    swapped
 }
 
 /// O que a gravação de uma linha pede do destino: escrever, medir o fim,
@@ -206,14 +299,19 @@ fn open_creating(path: &Path) -> Result<File> {
 /// [`Error::NotFound`] quando o arquivo não existe; [`Error::Io`] quando a
 /// leitura ou a trava falham.
 pub fn read_shared(path: &Path) -> Result<String> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(Error::NotFound(path.display().to_string()));
+    let mut file = loop {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                return Err(Error::NotFound(path.display().to_string()));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        file.lock_shared()?;
+        if still_at(&file, path)? {
+            break file;
         }
-        Err(e) => return Err(e.into()),
     };
-    file.lock_shared()?;
     let mut bytes = Vec::new();
     let read = file.read_to_end(&mut bytes);
     let _ = file.unlock();
@@ -420,6 +518,61 @@ mod tests {
             .expect("bash runs the test binary under the size limit");
         assert!(out.status.success(), "the child failed: {}", String::from_utf8_lossy(&out.stdout));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "same content as before");
+    }
+
+    /// O processo morto pelo limite de tamanho de arquivo (o `ulimit -f` sem
+    /// ignorar o sinal dele) no meio de uma troca de conteúdo deixa o arquivo
+    /// com o conteúdo de antes, inteiro: a escrita cortada é a de um arquivo
+    /// ao lado, que nunca tomou o lugar do outro.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_killed_in_the_middle_of_a_replace_leaves_the_previous_content() {
+        use std::os::unix::process::ExitStatusExt;
+        const FILE: &str = "MUSTARD_REPLACE_KILLED_FILE";
+        if let Ok(path) = std::env::var(FILE) {
+            let mut file = LockedFile::exclusive(Path::new(&path)).unwrap();
+            let _ = file.replace(format!("{{\"events\":\"{}\"}}", "b".repeat(80 * 1024)).as_bytes());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diagnostics.json");
+        let before = format!("{{\"events\":\"{}\"}}", "a".repeat(40 * 1024));
+        std::fs::write(&path, &before).unwrap();
+        let test = "a_process_killed_in_the_middle_of_a_replace_leaves_the_previous_content";
+        let out = std::process::Command::new("bash")
+            .args(["-c", "ulimit -f 64 && exec \"$0\" \"$@\""])
+            .arg(std::env::current_exe().unwrap())
+            .args([test, "--test-threads=1"])
+            .env(FILE, &path)
+            .output()
+            .expect("bash runs the test binary under the size limit");
+        assert_eq!(out.status.signal(), Some(25), "the child dies by SIGXFSZ mid-write: {:?}", out.status);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "same content as before");
+    }
+
+    /// Quem esperava a trava enquanto o conteúdo foi trocado trava o arquivo
+    /// que ficou no caminho: lê o conteúdo novo, e a linha que acrescenta fica
+    /// no arquivo que todos leem.
+    #[test]
+    fn a_waiter_during_a_replace_locks_the_file_left_at_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        let mut held = LockedFile::exclusive(&path).unwrap();
+        held.replace(b"um\n").unwrap();
+        let waiter = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let mut file = LockedFile::exclusive(&path).unwrap();
+                let seen = file.read_to_string().unwrap();
+                file.append_line("tres").unwrap();
+                seen
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        held.replace(b"dois\n").unwrap();
+        drop(held);
+        assert_eq!(waiter.join().unwrap(), "dois\n");
+        assert_eq!(read_shared(&path).unwrap(), "dois\ntres\n");
     }
 
     /// Uma gravação pela trava que esbarra no limite de tamanho de arquivo do

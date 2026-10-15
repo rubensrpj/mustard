@@ -442,9 +442,14 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let mut order = Vec::new();
     let mut reasons = BTreeMap::new();
     let max = if all { indexed_symbols } else { limit.clamp(1, 50) };
-    // A declaração citada toma a vaga antes das interpretações e referências.
+    // Reserve response slots for relationships; filling every slot with
+    // lexical seeds prevented the completion/entry caller from ever appearing.
+    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)}
+        else if guided && direction != Direction::Outgoing && depth > 0 {max.saturating_sub((max/3).max(1)).max(1)} else {max};
+    // A declaração citada toma a vaga antes das interpretações e referências,
+    // sem tomar a reserva das relações.
     for i in named.iter().filter_map(|id| cards.iter().position(|card| &card.id == id)) {
-        if selected.len() < max && current(tree, &cards[i].source, &mut hashes) && selected.insert(i) {
+        if selected.len() < seed_limit && current(tree, &cards[i].source, &mut hashes) && selected.insert(i) {
             order.push(i);
             reasons.insert(i, "exact-name");
         }
@@ -493,10 +498,6 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             stale_cards += 1;
         }
     }
-    // Reserve response slots for relationships; filling every slot with
-    // lexical seeds prevented the completion/entry caller from ever appearing.
-    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)}
-        else if guided && direction != Direction::Outgoing && depth > 0 {max.saturating_sub((max/3).max(1)).max(1)} else {max};
     let mut ranking = Vec::new();
     let mut local_hybrid_index = false;
     if let Some(discovery) = discovery {
@@ -1103,5 +1104,54 @@ use super::*;
         let dir = scanned_typescript(&files);
         let cards = implement_answer(dir.path(), "Timeout. Does runJob retry the upload after a timeout?", 2);
         assert_eq!(cards.first().map(String::as_str), Some("src/upload.ts:retryUpload"), "{cards:?}");
+    }
+
+    #[test]
+    fn a_word_cited_only_by_its_capitals_names_only_the_same_spelling() {
+        for (file, text, question) in [
+            ("src/theme.ts", "export const MUSTARD = 1;\n", "how does the Mustard retry the upload after a timeout"),
+            ("src/client.ts", "export function api(): number {\n  return 1;\n}\n", "how does the API retry the upload after a timeout"),
+        ] {
+            let dir = scanned_typescript(&[(file, text), ("src/upload.ts", UPLOAD)]);
+            let cards = implement_answer(dir.path(), question, 3);
+            assert_eq!(cards.first().map(String::as_str), Some("src/upload.ts:retryUpload"), "{question}: {cards:?}");
+        }
+    }
+
+    #[test]
+    fn the_spelling_the_question_writes_comes_before_its_case_variants() {
+        let dir = scanned_typescript(&[
+            ("src/a.ts", "export const uploadTimeout = 5000;\n"),
+            ("src/b.ts", "export class UploadTimeout {}\n"),
+            ("src/upload.ts", UPLOAD),
+        ]);
+        let cards = implement_answer(dir.path(), "how does the UploadTimeout stop the upload retry", 3);
+        assert_eq!(cards[..2], ["src/b.ts:UploadTimeout", "src/a.ts:uploadTimeout"], "{cards:?}");
+    }
+
+    #[test]
+    fn the_cited_name_with_fewer_homonyms_comes_first() {
+        let dir = scanned_typescript(&[
+            ("src/jobs/one.ts", "export function runJob(): void {}\n"),
+            ("src/jobs/two.ts", "export function runJob(): void {}\n"),
+            ("src/upload.ts", UPLOAD),
+        ]);
+        let cards = implement_answer(dir.path(), "does runJob call retryUpload after a timeout", 3);
+        assert_eq!(cards[..3], ["src/upload.ts:retryUpload", "src/jobs/one.ts:runJob", "src/jobs/two.ts:runJob"], "{cards:?}");
+    }
+
+    #[test]
+    fn cited_declarations_leave_the_caller_reserve_of_a_guided_navigation() {
+        let dir = scanned_typescript(&[
+            ("src/upload.ts", "export function retryUpload(request: string): string {\n  return request;\n}\n"),
+            ("src/cancel.ts", "export function cancelUpload(): void {}\n"),
+            ("src/pause.ts", "export function pauseUpload(): void {}\n"),
+            ("src/send.ts", "import { retryUpload } from \"./upload\";\n\nexport function sendRequest(request: string): string {\n  return retryUpload(request);\n}\n"),
+        ]);
+        let opts = Query { text: "who calls retryUpload, cancelUpload or pauseUpload", file: None, limit: 3, depth: 1, all: false, detail: false, symbol: None, direction: Direction::Callers, refresh: false };
+        let task = knowledge::investigation::Task { intent: "Trace who retries the upload", purpose: knowledge::investigation::Purpose::Implement };
+        let report = query_for(dir.path(), dir.path(), &opts, task).unwrap().0;
+        let cards: Vec<_> = report["cards"].as_array().unwrap().iter().map(|card| card["name"].as_str().unwrap()).collect();
+        assert_eq!(cards, ["retryUpload", "cancelUpload", "sendRequest"], "{report}");
     }
 }

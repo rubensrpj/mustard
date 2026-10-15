@@ -69,12 +69,11 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
     };
     checks.push(check("jev-configuration",key_ready,&remedy));
     let project_ready=checks.iter().all(|check|check["ready"]==true);
-    let host_version=plugin.as_ref().is_some_and(|plugin|plugin.version==expected &&
-        std::fs::read_to_string(plugin.dir.join(".claude-plugin/plugin.json")).ok().and_then(|raw|serde_json::from_str::<Value>(&raw).ok()).is_some_and(|doc|doc["version"]==expected));
+    let host_version=plugin.as_ref().is_some_and(|plugin|plugin_current(plugin,&expected,SHIPPED_HOOKS_DIGEST));
     let host_binaries=host_version && plugin.as_ref().is_some_and(|plugin|host_binaries_ready(plugin,&expected,runner,&budget));
     let host_enabled=host_version && plugin.as_ref().is_some_and(|plugin|enabled_plugin(plugin,runner,&budget));
     let host_ready=host_binaries && host_enabled;
-    checks.push(check("plugin-version",host_version,"update the Mustard plugin, then restart Claude Code"));
+    checks.push(check("plugin-version",host_version,"update or reinstall the Mustard plugin so its hooks match this build, then restart Claude Code"));
     checks.push(check("plugin-binaries",host_binaries,"run the installed plugin's bin/mustard-boot --version; retry mustard-rt run upsert"));
     checks.push(check("plugin-enabled",host_enabled,"enable Mustard with claude plugin enable <installed-plugin-id>, then restart Claude Code"));
     let mut receipt=json!({"schema_version":1,"version":expected,"at":chrono::Utc::now().to_rfc3339(),
@@ -90,6 +89,19 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
     let saved=serde_json::to_vec(&receipt).is_ok_and(|bytes|mustard_core::io::fs::write_atomic(root.join(".claude/mustard/installation.json"),&bytes).is_ok());
     if !saved {receipt["complete"]=json!(false);receipt["receipt_saved"]=json!(false);}
     receipt
+}
+
+/// O resumo dos ganchos que esta compilação entrega, gravado pelo `build.rs`.
+const SHIPPED_HOOKS_DIGEST:&str=env!("MUSTARD_PLUGIN_HOOKS_DIGEST");
+
+/// O plugin instalado é o desta compilação: o registro e o manifesto dizem o
+/// número esperado, e os ganchos da cópia que o anfitrião carrega têm o
+/// conteúdo destes. O número sozinho não basta: o desenvolvimento repete o
+/// número, e o cache do anfitrião guarda os ganchos velhos sob ele.
+fn plugin_current(plugin:&mustard_core::platform::harness::InstalledPlugin,expected:&str,hooks:&str)->bool {
+    plugin.version==expected
+        && std::fs::read_to_string(plugin.dir.join(".claude-plugin/plugin.json")).ok().and_then(|raw|serde_json::from_str::<Value>(&raw).ok()).is_some_and(|doc|doc["version"]==expected)
+        && mustard_core::io::hooks_digest::hooks_digest(&plugin.dir).is_some_and(|digest|digest==hooks)
 }
 
 fn enabled_plugin(plugin:&mustard_core::platform::harness::InstalledPlugin,runner:&impl ToolRunner,budget:&Budget<'_,impl ToolRunner>)->bool {
@@ -172,6 +184,40 @@ mod tests {
         let stale=Versions{stale_scan:true};
         let budget=Budget::start(&stale,Duration::from_secs(1));
         assert!(!host_binaries_ready(&plugin,&plugin.version,&stale,&budget),"a current stamp cannot hide an old companion");
+    }
+    /// Um plugin instalado com o número desta compilação só confere quando os
+    /// ganchos da cópia e a `ui/` que eles importam têm o conteúdo dos que ela
+    /// entrega: o mesmo número com um `register.js` ou um tema velho fica não
+    /// pronto, e a cópia que só troca o fim de linha confere.
+    #[test]
+    fn a_cached_plugin_with_the_same_version_and_old_hooks_is_not_current() {
+        let dir=tempfile::tempdir().unwrap();
+        let version=mustard_core::harness_version();
+        let plugin=mustard_core::platform::harness::InstalledPlugin{dir:dir.path().into(),version:version.clone()};
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(dir.path().join(".claude-plugin/plugin.json"),json!({"name":"mustard","version":version}).to_string()).unwrap();
+        let shipped=Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        for folder in ["hooks","ui"] {
+            std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+            for entry in std::fs::read_dir(shipped.join(folder)).unwrap() {
+                let path=entry.unwrap().path();
+                if path.is_file() {std::fs::copy(&path,dir.path().join(folder).join(path.file_name().unwrap())).unwrap();}
+            }
+        }
+        let hooks=dir.path().join("hooks");
+        assert!(plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"the hooks of this build are current");
+        let theme=std::fs::read_to_string(dir.path().join("ui/theme.js")).unwrap();
+        std::fs::write(dir.path().join("ui/theme.js"),format!("{theme}\n// old theme\n")).unwrap();
+        assert!(!plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"the same version with an old theme the hooks import is not current");
+        std::fs::write(dir.path().join("ui/theme.js"),theme).unwrap();
+        let register=std::fs::read_to_string(hooks.join("register.js")).unwrap();
+        std::fs::write(hooks.join("register.js"),register.replace('\n',"\r\n")).unwrap();
+        assert!(plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"a copy with other line endings holds the same hooks");
+        std::fs::write(hooks.join("register.js"),format!("{register}\n// old build\n")).unwrap();
+        assert!(!plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"the same version with old hooks is not the plugin of this build");
+        std::fs::write(hooks.join("register.js"),register).unwrap();
+        std::fs::remove_file(hooks.join("hooks.json")).unwrap();
+        assert!(!plugin_current(&plugin,&version,SHIPPED_HOOKS_DIGEST),"a copy missing the manifest is not current");
     }
     #[test]
     fn files_written_without_a_working_scan_and_host_are_not_a_complete_installation() {

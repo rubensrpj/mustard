@@ -128,7 +128,7 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
 
 /// Os arquivos do núcleo que os dois scripts de build incluem por caminho,
 /// relativos à raiz do repositório.
-const SHARED_BY_PATH: [&str; 2] = ["packages/core/src/io/sha256.rs", "packages/core/src/io/tree_state.rs"];
+const SHARED_BY_PATH: [&str; 3] = ["packages/core/src/io/sha256.rs", "packages/core/src/io/tree_state.rs", "packages/core/src/io/hooks_digest.rs"];
 
 /// Um projeto git em `root` com dois pacotes, cada um com um dos dois
 /// scripts de build de verdade — o do `mustard-rt` e o do `mustard` — e um

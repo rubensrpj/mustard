@@ -9,6 +9,8 @@ use std::path::{Path,PathBuf};
 /// para os novos entrarem.
 const STEP_LIMIT:usize=8192;
 const BYTE_LIMIT:usize=2_000_000;
+/// Quanto uma medição espera a outra que grava o mesmo arquivo terminar.
+const LOCK_PATIENCE:std::time::Duration=std::time::Duration::from_millis(1000);
 pub(super) fn file(root:&Path,session:&str)->PathBuf {root.join(".claude/mustard/usage/live").join(format!("{}.json",blake3::hash(session.as_bytes())))}
 fn forget_oldest(steps:&mut Map<String,Value>,count:usize) {*steps=std::mem::take(steps).into_iter().skip(count).collect();}
 /// O texto a gravar, dentro do limite: os passos mais velhos saem até caber.
@@ -34,8 +36,10 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
     let fail=|reason:&'static str,detail:String|(reason,detail);
     let result=(||->Result<Option<String>,(&'static str,String)>{
         let path=file(&root,session);
-        let mut held=mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&path).map_err(|e|fail("live-usage-busy",e.to_string()))?
-            .ok_or_else(||fail("live-usage-busy","another recording holds the live usage file".into()))?;
+        // Duas medições ao mesmo tempo: a segunda espera a primeira gravar,
+        // por pouco tempo, em vez de perder o passo dela.
+        let mut held=mustard_core::io::fs::lock::LockedFile::exclusive_within(&path,LOCK_PATIENCE).map_err(|e|fail("live-usage-busy",e.to_string()))?
+            .ok_or_else(||fail("live-usage-busy",format!("another recording held the live usage file for {} ms",LOCK_PATIENCE.as_millis())))?;
         let raw=held.read_to_string().map_err(|e|fail("live-usage-unreadable",e.to_string()))?;
         // O arquivo maior que o limite, que uma versão anterior deixava ao
         // gravar além dele, é lido e volta ao limite na gravação desta medição.
@@ -146,6 +150,23 @@ mod tests {
         let view=snapshot(root,Some("s"));let row=view["agents"].as_object().unwrap().values().next().unwrap();
         assert_eq!(row["input_tokens"],20);assert_eq!(row["requests"],1);assert_eq!(view["context"]["tokens"],125);
         assert!(view.get("steps").is_none());assert!(snapshot(root,Some("other")).is_null());
+    }
+    /// A medição que chega enquanto outra grava o arquivo ao vivo espera ela
+    /// soltar e grava o próprio passo; só a gravação que segura o arquivo além
+    /// da espera faz a medição desistir, com a causa.
+    #[test]
+    fn a_measurement_waits_for_another_one_recording_the_live_file() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path().to_path_buf();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let live=file(&root,"s");
+        let other=mustard_core::io::fs::lock::LockedFile::exclusive(&live).unwrap();
+        let waiting={let root=root.clone();std::thread::spawn(move||record(&root,"s",&step(0)))};
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(other);
+        assert_eq!(waiting.join().unwrap(),json!({"ok":true,"recorded":true}));
+        assert_eq!(kept_steps(&live),[step_key(0)]);
+        let _held=mustard_core::io::fs::lock::LockedFile::exclusive(&live).unwrap();
+        let answer=record(&root,"s",&step(1));
+        assert_eq!((answer["ok"].clone(),answer["reason"].clone()),(json!(false),json!("live-usage-busy")),"{answer}");
     }
     /// O passo já gravado com outros tokens faz a medição falhar com o
     /// conflito como causa, e essa causa chega ao diagnóstico uma vez, mesmo

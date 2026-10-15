@@ -315,10 +315,12 @@ pub(super) fn exact_name(root: &Path, options: &Query<'_>) -> std::result::Resul
 
 /// As declarações que a pergunta cita pelo nome: cada palavra dela escrita
 /// como nome de código ([`cited_names`]) igual ao nome de uma declaração
-/// do mapa, sem distinguir maiúsculas, a grafia exata antes. O nome com mais
-/// homônimos que as vagas da resposta não conta: ele não diz qual declaração a
-/// pergunta quer, e encheria a resposta. O nome de menos homônimos vem antes;
-/// no empate, o que a pergunta escreve primeiro.
+/// do mapa, sem distinguir maiúsculas, a grafia exata antes. A palavra que só
+/// a maiúscula faz nome exige a mesma grafia: `Mustard` numa frase não cita a
+/// constante `MUSTARD`. O nome com mais homônimos que as vagas da resposta não
+/// conta: ele não diz qual declaração a pergunta quer, e encheria a resposta.
+/// O nome de menos homônimos vem antes; no empate, o que a pergunta escreve
+/// primeiro.
 pub(super) fn named(root: &Path, options: &Query<'_>) -> std::result::Result<Vec<String>, MapRefusal> {
     let words = cited_names(options.text);
     if options.all || words.is_empty() {
@@ -329,12 +331,12 @@ pub(super) fn named(root: &Path, options: &Query<'_>) -> std::result::Result<Vec
     let db = store::open_existing(&store::model_path(root))?;
     let mut statement = db
         .conn()
-        .prepare("SELECT id FROM knowledge_symbols WHERE name=?1 COLLATE NOCASE AND (?2 IS NULL OR path=?2) ORDER BY name=?1 DESC,path,line LIMIT ?3")
+        .prepare("SELECT id FROM knowledge_symbols WHERE name=?1 COLLATE NOCASE AND (?4=0 OR name=?1) AND (?2 IS NULL OR path=?2) ORDER BY name=?1 DESC,path,line LIMIT ?3")
         .map_err(|e| unreadable(e.into()))?;
     let mut groups = Vec::new();
-    for word in words {
+    for Cited { word, exact } in words {
         let ids = statement
-            .query_map(params![word, options.file, fetch], |r| r.get::<_, String>(0))
+            .query_map(params![word, options.file, fetch, exact], |r| r.get::<_, String>(0))
             .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
             .map_err(|e| unreadable(e.into()))?;
         if ids.len() <= slots {
@@ -351,14 +353,23 @@ pub(super) fn named(root: &Path, options: &Query<'_>) -> std::result::Result<Vec
     Ok(named)
 }
 
+/// Uma palavra da pergunta escrita como nome de código. `exact` quando só a
+/// maiúscula a faz nome: ela cita só a declaração de mesma grafia.
+struct Cited<'a> {
+    word: &'a str,
+    exact: bool,
+}
+
 /// As palavras que a pergunta escreve como nome de código, e não como prosa,
-/// na ordem e sem repetir: com `_`, `$` ou algarismo, com maiúscula depois da
-/// primeira letra (`retry_limit`, `maxRetries`, `PATH_RULE`) ou com maiúscula
-/// no meio de uma frase (`Modes`). A palavra de prosa que por acaso também
-/// nomeia uma declaração (`round`, ou `Timeout` abrindo a frase) fica para a
-/// semelhança.
-fn cited_names(text: &str) -> Vec<&str> {
-    let mut names = Vec::new();
+/// na ordem e sem repetir. Pela forma, que casa sem distinguir maiúsculas:
+/// com `_`, `$` ou algarismo, ou com maiúscula depois da primeira letra junto
+/// de minúscula (`retry_limit`, `maxRetries`, `PATH_RULE`). Só pela maiúscula,
+/// que exige a mesma grafia: a sigla toda em maiúsculas (`API`) e a palavra
+/// com maiúscula no meio de uma frase (`Modes`). A palavra de prosa que por
+/// acaso também nomeia uma declaração (`round`, ou `Timeout` abrindo a frase
+/// ou a linha) fica para a semelhança.
+fn cited_names(text: &str) -> Vec<Cited<'_>> {
+    let mut names: Vec<Cited<'_>> = Vec::new();
     let (mut opening, mut start) = (true, None);
     for (at, c) in text.char_indices().chain([(text.len(), '\n')]) {
         if c.is_alphanumeric() || c == '_' || c == '$' {
@@ -368,13 +379,16 @@ fn cited_names(text: &str) -> Vec<&str> {
         if let Some(from) = start.take() {
             let word = &text[from..at];
             let capital = word.chars().next().is_some_and(char::is_uppercase);
-            let code = word.chars().any(|c| c == '_' || c == '$' || c.is_numeric()) || word.chars().skip(1).any(char::is_uppercase);
-            if (code || (capital && !opening)) && !names.contains(&word) {
-                names.push(word);
+            let inner_capital = word.chars().skip(1).any(char::is_uppercase);
+            let lower = word.chars().any(char::is_lowercase);
+            let code = word.chars().any(|c| c == '_' || c == '$' || c.is_numeric()) || (inner_capital && lower);
+            let acronym = inner_capital && !lower;
+            if (code || acronym || (capital && !opening)) && !names.iter().any(|cited| cited.word == word) {
+                names.push(Cited { word, exact: !code });
             }
             opening = false;
         }
-        opening |= matches!(c, '.' | '!' | '?');
+        opening |= matches!(c, '.' | '!' | '?' | '\n');
     }
     names
 }
@@ -625,4 +639,15 @@ pub(super) fn fts_query(terms: &[Vec<String>], join: &str) -> String {
 
 pub(super) fn integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|e| Error::Parse(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_break_opens_a_new_sentence_for_cited_names() {
+        let words: Vec<_> = cited_names("fix the upload retry\nTimeout and Backoff\n- Modes stay").into_iter().map(|cited| cited.word).collect();
+        assert_eq!(words, ["Backoff"]);
+    }
 }
