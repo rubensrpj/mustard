@@ -1108,13 +1108,30 @@ fn named_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
 
 /// Os comandos que o relato `text` nomeia como prova: em cada linha, os que
 /// vêm entre crases depois de uma marca de prova ([`PROOF_MARKERS`]), até o
-/// fim da linha, na ordem em que aparecem.
+/// fim da linha, na ordem em que aparecem. Os trechos entre crases saem da
+/// linha inteira, e só conta a marca escrita fora deles: a marca citada
+/// dentro de um trecho entre crases não marca nada, e a prosa que vem depois
+/// dela nunca vira comando.
 #[must_use]
 pub fn marked_proofs(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| PROOF_MARKERS.iter().filter_map(|marker| line.find(marker).map(|at| at + marker.len())).min().map(|at| &line[at..]))
-        .flat_map(quoted_commands)
-        .collect()
+    text.lines().flat_map(proofs_after_marker).collect()
+}
+
+/// Os trechos entre crases de `line` que começam depois de uma marca de prova
+/// escrita fora de crase, sem os espaços das pontas e sem os vazios. Pelo
+/// corte em crase, as partes de índice par ficam fora de crase e as de índice
+/// ímpar, dentro.
+fn proofs_after_marker(line: &str) -> Vec<String> {
+    let mut marked = false;
+    let mut found = Vec::new();
+    for (index, piece) in line.split('`').enumerate() {
+        if index % 2 == 0 {
+            marked = marked || PROOF_MARKERS.iter().any(|marker| piece.contains(marker));
+        } else if marked && !piece.trim().is_empty() {
+            found.push(piece.trim().to_string());
+        }
+    }
+    found
 }
 
 /// Os trechos entre crases de `line`, sem os espaços das pontas e sem os
@@ -1834,6 +1851,18 @@ mod tests {
         assert_eq!(done(5, &declared), "npm test -- total");
         assert_eq!(done(6, &declared), "npx tsc --noEmit");
         assert_eq!(done(6, &Commands::default()), "Nome", "sem compilação declarada, os títulos");
+    }
+
+    /// A marca de prova citada dentro de crase não marca nada: a prosa entre
+    /// os trechos nunca vira comando, e só os comandos depois da marca escrita
+    /// fora de crase contam, num projeto TypeScript como em qualquer outro.
+    #[test]
+    fn a_proof_marker_inside_backticks_never_turns_prose_into_commands() {
+        let quoted_marker = "Grave a sobra (`Prova:` no detalhe) ou mande `npm run lint`; ver `src/a.ts` em `src/b.ts`.";
+        assert_eq!(marked_proofs(quoted_marker), Vec::<String>::new(), "sem marca fora de crase, nenhuma prova");
+
+        let both = "Cite `Prova:` no detalhe. Prova: `npm test -- soma` e `npx tsc --noEmit`.";
+        assert_eq!(marked_proofs(both), ["npm test -- soma", "npx tsc --noEmit"]);
     }
 
     #[test]
