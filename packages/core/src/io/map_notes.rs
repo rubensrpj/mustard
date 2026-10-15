@@ -43,7 +43,7 @@ use crate::domain::project_map::{MapRefusal,clean_path};
 use crate::io::map_db::table_exists;
 use crate::io::map_notes_fresh::FRESH;
 use crate::io::map_search::refresh_files;
-use crate::io::project_map::{open_existing, unreadable};
+use crate::io::project_map::{FILES, NOTES, open_existing, open_reading, unreadable};
 use crate::io::{map_meaning, map_revision};
 
 /// A nota que se grava: o arquivo, a declaração (vazia na nota do arquivo
@@ -184,7 +184,7 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
 ///
 /// Sem o mapa ou com ele ilegível.
 pub fn of_at(model: &Path, file: &str, name: &str) -> std::result::Result<Option<Note>, MapRefusal> {
-    let db = open_existing(model)?;
+    let db = open_reading(model, &[&FILES, &NOTES])?;
     let file = clean_path(file);
     if !table_exists(db.conn(), "notes").map_err(unreadable)? {
         return Ok(None);

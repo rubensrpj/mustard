@@ -8,6 +8,10 @@
 //! só pelo próprio [`LockedFile`], nunca pelas funções soltas de [`super`], e
 //! quem só lê usa [`read_shared`], que espera a trava de escrita soltar.
 //!
+//! A troca de conteúdo põe um arquivo novo no caminho. Toda forma de travar
+//! confere, depois de receber a trava, que o arquivo travado ainda é o que
+//! mora no caminho, e abre o caminho de novo quando não é.
+//!
 //! Como [`super::real`], este módulo fala com o disco de verdade: uma trava só
 //! existe num arquivo real, e não há dublê de teste para ela.
 
@@ -106,13 +110,7 @@ impl LockedFile {
     /// não abre ou a trava falha.
     pub fn existing(path: &Path) -> Result<Self> {
         loop {
-            let file = match OpenOptions::new().read(true).write(true).open(path) {
-                Ok(file) => file,
-                Err(e) if e.kind() == ErrorKind::NotFound => {
-                    return Err(Error::NotFound(path.display().to_string()));
-                }
-                Err(e) => return Err(e.into()),
-            };
+            let file = open_existing(path, true)?;
             file.lock()?;
             if still_at(&file, path)? {
                 return Ok(Self { file, path: path.to_path_buf() });
@@ -146,38 +144,19 @@ impl LockedFile {
         Ok(append_or_rollback(&mut self.file, line)?)
     }
 
-    /// Troca o conteúdo inteiro por `contents`. Onde o sistema diz qual
-    /// arquivo mora num caminho (Unix), o conteúdo novo vai inteiro para um
-    /// arquivo ao lado, já com a trava, e só então toma o lugar do velho: o
-    /// processo morto no meio da escrita deixa o arquivo de antes intacto, e
-    /// quem esperava a trava no arquivo velho percebe a troca e trava o novo.
-    /// Nos outros sistemas a troca regrava o mesmo arquivo, e se a escrita, o
-    /// corte ou a confirmação falha, o conteúdo de antes volta.
+    /// Troca o conteúdo inteiro por `contents`. O conteúdo novo vai inteiro
+    /// para um arquivo ao lado, já com a trava, e só então toma o lugar do
+    /// velho: o processo morto no meio da escrita deixa o arquivo de antes
+    /// intacto, e quem esperava a trava no arquivo velho percebe a troca e
+    /// trava o novo. O arquivo ao lado que um processo morto largou some na
+    /// troca seguinte do mesmo caminho.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] quando a escrita falha; o erro é o da escrita, mesmo
-    /// quando a volta do conteúdo de antes também falha.
+    /// [`Error::Io`] quando a escrita, a confirmação ou a troca falham; o
+    /// arquivo do caminho fica com o conteúdo de antes.
     pub fn replace(&mut self, contents: &[u8]) -> Result<()> {
-        if cfg!(unix) {
-            self.file = swap_in(&self.file, &self.path, contents)?;
-            return Ok(());
-        }
-        self.file.seek(SeekFrom::Start(0))?;
-        let mut before = Vec::new();
-        self.file.read_to_end(&mut before)?;
-        let file = &mut self.file;
-        let written = file
-            .seek(SeekFrom::Start(0))
-            .and_then(|_| file.write_all(contents))
-            .and_then(|()| file.set_len(contents.len() as u64))
-            .and_then(|()| if super::disk_sync() { file.sync_all() } else { Ok(()) });
-        if let Err(err) = written {
-            // As páginas do conteúdo de antes já estavam no disco: regravá-las
-            // não pede espaço novo.
-            let _ = file.seek(SeekFrom::Start(0)).and_then(|_| file.write_all(&before)).and_then(|()| file.set_len(before.len() as u64));
-            return Err(err.into());
-        }
+        self.file = swap_in(&self.file, &self.path, contents)?;
         Ok(())
     }
 }
@@ -195,7 +174,8 @@ const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 /// Se `file`, já travado, ainda é o arquivo que mora em `path`. A troca de
 /// conteúdo põe um arquivo novo no caminho; quem esperava a trava no velho
 /// recebe `false` e abre o caminho de novo, em vez de ler e gravar num
-/// arquivo que ninguém mais lê.
+/// arquivo que ninguém mais lê. No Unix a identidade é o dispositivo e o
+/// número do arquivo.
 #[cfg(unix)]
 fn still_at(file: &File, path: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
@@ -207,31 +187,51 @@ fn still_at(file: &File, path: &Path) -> Result<bool> {
     }
 }
 
-/// Fora do Unix a troca regrava o mesmo arquivo, então o arquivo travado é
-/// sempre o do caminho.
-#[cfg(not(unix))]
-fn still_at(_file: &File, _path: &Path) -> Result<bool> {
-    Ok(true)
+/// Como a do Unix, com a identidade do Windows: o volume e o índice do
+/// arquivo, que o sistema dá a cada manipulador aberto
+/// (`GetFileInformationByHandle`).
+#[cfg(windows)]
+fn still_at(file: &File, path: &Path) -> Result<bool> {
+    use winapi_util::file::information;
+    let held = information(file)?;
+    let now = match File::open(path) {
+        Ok(now) => information(&now)?,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(held.volume_serial_number() == now.volume_serial_number() && held.file_index() == now.file_index())
 }
 
-/// Grava `contents` num arquivo novo ao lado de `path`, com as permissões de
-/// `old`, confirma no disco, trava o novo e só então o põe no lugar de
-/// `path`. Volta o arquivo novo, já travado: entre a troca e a volta ninguém
-/// o pega. Se algo falha antes da troca, o arquivo ao lado some e `path`
-/// fica como estava.
+/// A extensão do arquivo ao lado em que a troca escreve o conteúdo novo.
+const SWAP_EXTENSION: &str = "swap";
+
+/// O arquivo ao lado de `path` em que a troca escreve o conteúdo novo:
+/// `.<nome>.<pid>.<hora>.swap`, o mesmo nome da gravação atômica de
+/// [`super::real`] com outra extensão. A hora no nome deixa o processo que
+/// herda o número de um morto livre do arquivo que o morto largou.
+pub(crate) fn swap_path_for(path: &Path) -> PathBuf {
+    super::real::temp_path_for(path, SWAP_EXTENSION)
+}
+
+/// Grava `contents` em [`swap_path_for`], com as permissões de `old`,
+/// confirma no disco e só então o põe no lugar de `path`. O arquivo novo é
+/// travado assim que nasce: volta já travado, e entre a troca e a volta
+/// ninguém o pega. Se algo falha antes da troca, o arquivo ao lado some e
+/// `path` fica como estava. Antes de escrever, apaga os arquivos ao lado que
+/// trocas mortas no meio largaram.
 fn swap_in(old: &File, path: &Path, contents: &[u8]) -> std::io::Result<File> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let side = path.with_file_name(format!(".{name}.{}-{serial}.swap", std::process::id()));
+    let side = swap_path_for(path);
+    clear_dead_swaps(&side);
     let swapped = (|| {
         let mut file = OpenOptions::new().read(true).write(true).create_new(true).open(&side)?;
-        file.set_permissions(old.metadata()?.permissions())?;
         file.lock()?;
+        file.set_permissions(old.metadata()?.permissions())?;
         file.write_all(contents)?;
         if super::disk_sync() {
             file.sync_all()?;
         }
+        #[cfg(test)]
+        tests::reached(tests::Step::SideWritten);
         std::fs::rename(&side, path)?;
         Ok(file)
     })();
@@ -239,6 +239,36 @@ fn swap_in(old: &File, path: &Path, contents: &[u8]) -> std::io::Result<File> {
         let _ = std::fs::remove_file(&side);
     }
     swapped
+}
+
+/// Apaga, na pasta de `side`, os arquivos ao lado do mesmo caminho que uma
+/// troca morta no meio largou. A troca em curso trava o seu desde que ele
+/// nasce, e o sistema solta a trava de quem morre: o arquivo ao lado que se
+/// deixa travar não tem mais dono. Vale também para o nome que a troca usava
+/// antes de levar a hora (`.<nome>.<pid>-<n>.swap`). Uma falha aqui não
+/// impede a troca: o arquivo largado espera a próxima.
+fn clear_dead_swaps(side: &Path) {
+    let Some(ours) = side.file_name().and_then(|name| name.to_str()) else { return };
+    // `.<nome>.<pid>.<hora>.swap`: o começo, até o pid, é o mesmo em toda troca
+    // do caminho.
+    let Some(start) = ours.rsplitn(4, '.').nth(3) else { return };
+    let suffix = format!(".{SWAP_EXTENSION}");
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    let dir = side.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(middle) = name.to_str().and_then(|name| name.strip_prefix(start)).and_then(|rest| rest.strip_prefix('.')).and_then(|rest| rest.strip_suffix(suffix.as_str())) else {
+            continue;
+        };
+        if !middle.split_once(['.', '-']).is_some_and(|(pid, serial)| digits(pid) && digits(serial)) {
+            continue;
+        }
+        let Ok(left) = File::open(entry.path()) else { continue };
+        if left.try_lock().is_ok() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// O que a gravação de uma linha pede do destino: escrever, medir o fim,
@@ -288,7 +318,25 @@ fn open_creating(path: &Path) -> Result<File> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
-    Ok(OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?)
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+    #[cfg(test)]
+    tests::reached(tests::Step::Opened);
+    Ok(file)
+}
+
+/// Abre `path`, que precisa existir, para ler e, com `write`, também
+/// escrever.
+fn open_existing(path: &Path, write: bool) -> Result<File> {
+    let file = match OpenOptions::new().read(true).write(write).open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(Error::NotFound(path.display().to_string()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    #[cfg(test)]
+    tests::reached(tests::Step::Opened);
+    Ok(file)
 }
 
 /// Lê `path` inteiro com a trava compartilhada: espera uma gravação em curso
@@ -300,13 +348,7 @@ fn open_creating(path: &Path) -> Result<File> {
 /// leitura ou a trava falham.
 pub fn read_shared(path: &Path) -> Result<String> {
     let mut file = loop {
-        let file = match File::open(path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err(Error::NotFound(path.display().to_string()));
-            }
-            Err(e) => return Err(e.into()),
-        };
+        let file = open_existing(path, false)?;
         file.lock_shared()?;
         if still_at(&file, path)? {
             break file;
@@ -520,59 +562,191 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "same content as before");
     }
 
-    /// O processo morto pelo limite de tamanho de arquivo (o `ulimit -f` sem
-    /// ignorar o sinal dele) no meio de uma troca de conteúdo deixa o arquivo
-    /// com o conteúdo de antes, inteiro: a escrita cortada é a de um arquivo
-    /// ao lado, que nunca tomou o lugar do outro.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_process_killed_in_the_middle_of_a_replace_leaves_the_previous_content() {
-        use std::os::unix::process::ExitStatusExt;
-        const FILE: &str = "MUSTARD_REPLACE_KILLED_FILE";
-        if let Ok(path) = std::env::var(FILE) {
-            let mut file = LockedFile::exclusive(Path::new(&path)).unwrap();
-            let _ = file.replace(format!("{{\"events\":\"{}\"}}", "b".repeat(80 * 1024)).as_bytes());
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("diagnostics.json");
-        let before = format!("{{\"events\":\"{}\"}}", "a".repeat(40 * 1024));
-        std::fs::write(&path, &before).unwrap();
-        let test = "a_process_killed_in_the_middle_of_a_replace_leaves_the_previous_content";
-        let out = std::process::Command::new("bash")
-            .args(["-c", "ulimit -f 64 && exec \"$0\" \"$@\""])
-            .arg(std::env::current_exe().unwrap())
-            .args([test, "--test-threads=1"])
-            .env(FILE, &path)
-            .output()
-            .expect("bash runs the test binary under the size limit");
-        assert_eq!(out.status.signal(), Some(25), "the child dies by SIGXFSZ mid-write: {:?}", out.status);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "same content as before");
+    /// Os pontos em que um teste segura a linha que trava ou troca, para pôr a
+    /// outra ponta ali sem pausa medida no relógio.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Step {
+        /// O arquivo do caminho acabou de abrir, e a trava ainda não foi pedida.
+        Opened,
+        /// O conteúdo novo está inteiro no arquivo ao lado, ainda fora do lugar.
+        SideWritten,
     }
 
-    /// Quem esperava a trava enquanto o conteúdo foi trocado trava o arquivo
-    /// que ficou no caminho: lê o conteúdo novo, e a linha que acrescenta fica
-    /// no arquivo que todos leem.
-    #[test]
-    fn a_waiter_during_a_replace_locks_the_file_left_at_the_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("index.json");
-        let mut held = LockedFile::exclusive(&path).unwrap();
+    thread_local! {
+        static ON_STEP: std::cell::RefCell<Option<Box<dyn FnMut(Step)>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Roda o que a linha atual pediu para `step`; nas outras linhas, nada.
+    pub(super) fn reached(step: Step) {
+        ON_STEP.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(step);
+            }
+        });
+    }
+
+    /// Pede que a linha atual rode `hook` em cada ponto que alcançar.
+    fn on_step(hook: impl FnMut(Step) + 'static) {
+        ON_STEP.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    /// Põe "um\n" em `path`, segura a trava e roda `form` noutra linha, que
+    /// para logo depois de abrir o arquivo pela primeira vez. Com o arquivo
+    /// velho aberto lá, troca o conteúdo para "dois\n" e só então deixa `form`
+    /// pedir a trava. Volta a trava, presa no arquivo novo, e a linha de `form`.
+    fn swap_after_open<T: Send + 'static>(path: &Path, form: impl FnOnce(&Path) -> T + Send + 'static) -> (LockedFile, std::thread::JoinHandle<T>) {
+        let mut held = LockedFile::exclusive(path).unwrap();
         held.replace(b"um\n").unwrap();
+        let (opened, at_open) = std::sync::mpsc::channel::<()>();
+        let (go, wait_go) = std::sync::mpsc::channel::<()>();
         let waiter = {
-            let path = path.clone();
+            let path = path.to_path_buf();
             std::thread::spawn(move || {
-                let mut file = LockedFile::exclusive(&path).unwrap();
-                let seen = file.read_to_string().unwrap();
-                file.append_line("tres").unwrap();
-                seen
+                let mut first = Some((opened, wait_go));
+                on_step(move |step| {
+                    if step == Step::Opened
+                        && let Some((opened, wait_go)) = first.take()
+                    {
+                        opened.send(()).unwrap();
+                        wait_go.recv().unwrap();
+                    }
+                });
+                form(&path)
             })
         };
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        at_open.recv().unwrap();
         held.replace(b"dois\n").unwrap();
+        go.send(()).unwrap();
+        (held, waiter)
+    }
+
+    /// Quem espera a trava exclusiva no arquivo que uma troca tira do caminho
+    /// trava o arquivo que ficou no lugar: lê o conteúdo novo, e a linha que
+    /// acrescenta fica no arquivo que todos leem.
+    #[test]
+    fn the_exclusive_lock_waited_across_a_swap_holds_the_file_left_at_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        let (held, waiter) = swap_after_open(&path, |path| {
+            let mut file = LockedFile::exclusive(path).unwrap();
+            let seen = file.read_to_string().unwrap();
+            file.append_line("tres").unwrap();
+            seen
+        });
         drop(held);
         assert_eq!(waiter.join().unwrap(), "dois\n");
         assert_eq!(read_shared(&path).unwrap(), "dois\ntres\n");
+    }
+
+    /// A mesma regra na trava de um arquivo que precisa existir.
+    #[test]
+    fn the_lock_of_an_existing_file_waited_across_a_swap_holds_the_file_left_at_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        let (held, waiter) = swap_after_open(&path, |path| {
+            let mut file = LockedFile::existing(path).unwrap();
+            let seen = file.read_to_string().unwrap();
+            file.append_line("tres").unwrap();
+            seen
+        });
+        drop(held);
+        assert_eq!(waiter.join().unwrap(), "dois\n");
+        assert_eq!(read_shared(&path).unwrap(), "dois\ntres\n");
+    }
+
+    /// A trava pedida sem esperar, no arquivo que uma troca acaba de tirar do
+    /// caminho, abre o caminho de novo: o arquivo que ficou lá está preso, e
+    /// ela volta vazia em vez de travar o velho, que ninguém mais lê.
+    #[test]
+    fn the_lock_asked_without_waiting_after_a_swap_looks_at_the_file_left_at_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        let (held, waiter) = swap_after_open(&path, |path| LockedFile::exclusive_if_free(path).unwrap().map(|mut file| file.read_to_string().unwrap()));
+        assert_eq!(waiter.join().unwrap(), None, "the file at the path is held");
+        drop(held);
+    }
+
+    /// Quem lê com a trava compartilhada através de uma troca lê o conteúdo
+    /// novo, do arquivo que ficou no caminho.
+    #[test]
+    fn a_shared_read_waited_across_a_swap_reads_the_file_left_at_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        let (held, waiter) = swap_after_open(&path, |path| read_shared(path).unwrap());
+        drop(held);
+        assert_eq!(waiter.join().unwrap(), "dois\n");
+    }
+
+    /// O que a troca no filho escreve na saída quando o conteúdo novo está
+    /// inteiro no arquivo ao lado.
+    const SIDE_WRITTEN: &str = "side-written";
+
+    /// Os nomes da pasta `dir`, menos `but`, em ordem.
+    fn names_besides(dir: &Path, but: &str) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| name != but).collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Um processo morto no meio de uma troca, com o conteúdo novo inteiro no
+    /// arquivo ao lado e ainda fora do lugar, deixa o arquivo com o conteúdo
+    /// de antes. A troca seguinte do mesmo caminho apaga o arquivo ao lado que
+    /// ele largou, e também o do nome sem a hora, e deixa o de uma troca que
+    /// ainda segura a trava dele.
+    #[test]
+    fn a_swap_killed_midway_keeps_the_previous_content_and_the_next_swap_clears_its_leftover() {
+        const FILE: &str = "MUSTARD_SWAP_KILLED_FILE";
+        if let Ok(path) = std::env::var(FILE) {
+            on_step(|step| {
+                if step == Step::SideWritten {
+                    // Direto na saída, sem a captura do teste: o pai lê esta linha.
+                    let mut out = std::io::stdout();
+                    let _ = writeln!(out, "{SIDE_WRITTEN}").and_then(|()| out.flush());
+                    loop {
+                        std::thread::park();
+                    }
+                }
+            });
+            let mut file = LockedFile::exclusive(Path::new(&path)).unwrap();
+            let _ = file.replace(b"dois\n");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        std::fs::write(&path, "um\n").unwrap();
+        let test = "a_swap_killed_midway_keeps_the_previous_content_and_the_next_swap_clears_its_leftover";
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--test-threads=1"])
+            .env(FILE, &path)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let written = std::io::BufRead::lines(out).map_while(std::result::Result::ok).any(|line| line.contains(SIDE_WRITTEN));
+        assert!(written, "the child stops with the new content written beside the file");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "um\n", "same content as before");
+        let left = names_besides(dir.path(), "index.json");
+        assert_eq!(left.len(), 1, "the dead swap left its file: {left:?}");
+        // O sistema solta a trava do processo morto; no Windows, até um
+        // instante depois do fim dele.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while File::open(dir.path().join(&left[0])).unwrap().try_lock().is_err() {
+            assert!(std::time::Instant::now() < deadline, "the dead process still holds its swap file");
+            std::thread::sleep(LOCK_POLL);
+        }
+        std::fs::write(dir.path().join(".index.json.4242-0.swap"), "x").unwrap();
+        let live = swap_path_for(&path);
+        std::fs::write(&live, "y").unwrap();
+        let live_lock = File::open(&live).unwrap();
+        live_lock.lock().unwrap();
+
+        LockedFile::exclusive(&path).unwrap().replace(b"tres\n").unwrap();
+
+        assert_eq!(read_shared(&path).unwrap(), "tres\n");
+        let live_name = live.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(names_besides(dir.path(), "index.json"), [live_name], "only the swap still held is left");
     }
 
     /// Uma gravação pela trava que esbarra no limite de tamanho de arquivo do

@@ -1122,6 +1122,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "winapi-util",
  "yaml-rust2",
 ]
 

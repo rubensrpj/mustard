@@ -93,21 +93,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Mustard is turned off in this project (`enabled: false` in mustard.json): none of its \
              hooks act here. To turn it back on, remove the key or set it to `true`."
         }
-        ("doctor.switches.rtk_missing", Locale::PtBr) => {
-            "A opção `rtk` do mustard.json está ligada, mas o gancho `rtk hook claude` não está no \
-             .claude/settings.local.json. Rode `mustard-rt run upsert` para alinhar os dois."
+        ("doctor.switches.rtk_hook_left", Locale::PtBr) => {
+            "O gancho do próprio rtk (`rtk hook claude`) continua no .claude/settings.local.json. \
+             O gancho do Mustard já faz a troca do rtk, e os dois trocando o mesmo comando disputam \
+             a vez. Rode `mustard-rt run upsert` para tirá-lo."
         }
-        ("doctor.switches.rtk_missing", Locale::EnUs) => {
-            "The `rtk` option in mustard.json is on, but the `rtk hook claude` hook is not in \
-             .claude/settings.local.json. Run `mustard-rt run upsert` to line the two up."
+        ("doctor.switches.rtk_hook_left", Locale::EnUs) => {
+            "rtk's own hook (`rtk hook claude`) is still in .claude/settings.local.json. Mustard's \
+             hook already makes rtk's swap, and two hooks rewriting the same command race each \
+             other. Run `mustard-rt run upsert` to take it out."
         }
-        ("doctor.switches.rtk_left", Locale::PtBr) => {
-            "A opção `rtk` do mustard.json está desligada, mas o gancho `rtk hook claude` continua no \
-             .claude/settings.local.json. Rode `mustard-rt run upsert` para alinhar os dois."
+        ("doctor.switches.rtk_hook_home", Locale::PtBr) => {
+            "O gancho do próprio rtk (`rtk hook claude`) está nas configurações da pasta pessoal \
+             ({path}), posto por `rtk init -g`. O gancho do Mustard já faz a troca do rtk, e os \
+             dois trocando o mesmo comando disputam a vez: tire o gancho desse arquivo."
         }
-        ("doctor.switches.rtk_left", Locale::EnUs) => {
-            "The `rtk` option in mustard.json is off, but the `rtk hook claude` hook is still in \
-             .claude/settings.local.json. Run `mustard-rt run upsert` to line the two up."
+        ("doctor.switches.rtk_hook_home", Locale::EnUs) => {
+            "rtk's own hook (`rtk hook claude`) is in the personal settings ({path}), put there by \
+             `rtk init -g`. Mustard's hook already makes rtk's swap, and two hooks rewriting the \
+             same command race each other: take the hook out of that file."
         }
         ("doctor.switches.signature_on", Locale::PtBr) => {
             "A assinatura do Claude Code nos commits e pull requests está ligada no \
@@ -169,7 +173,7 @@ mod tests {
             include_str!("install.rs"),
             super::PREFIXES,
             16,
-            0x1f48_8912_4986_4f02,
+            0x983f_5b07_480b_44d6,
         );
     }
 
@@ -179,8 +183,8 @@ mod tests {
     fn i18n_translates_switch_and_cleanup_keys() {
         for (key, slots) in [
             ("doctor.switches.off", &[][..]),
-            ("doctor.switches.rtk_missing", &[][..]),
-            ("doctor.switches.rtk_left", &[][..]),
+            ("doctor.switches.rtk_hook_left", &[][..]),
+            ("doctor.switches.rtk_hook_home", &["{path}"][..]),
             ("doctor.switches.signature_on", &[][..]),
             ("doctor.switches.language_unknown", &["{field}", "{value}"][..]),
             ("doctor.claude_md.leftovers", &["{paths}"][..]),

@@ -286,7 +286,9 @@ struct Declaration {
 ///
 /// A passada lê e calcula fora da trava de gravação ([`read_pass`]) e grava
 /// dentro dela ([`write_pass`]): duas passadas ao mesmo tempo no mesmo mapa
-/// terminam as duas, e o bloco fica o de uma passada só.
+/// terminam as duas. Quando as duas partem do mesmo mapa, o bloco fica o de
+/// uma passada só; com mapas de versões diferentes, vale o da última a gravar,
+/// e o carimbo que ela guardou faz a passada seguinte refazer o que mudou.
 ///
 /// Mapa sem declarações, ou sem o modelo carregado, fica como está.
 pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {

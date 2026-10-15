@@ -25,9 +25,10 @@
 //!   uma linha da marca quando ela só lista nomes ou conta, ou, sem achado, a
 //!   busca comum com uma linha do que o mapa não achou.
 //!
-//! A primeira que decide vence. Trocar o `cargo` da linha de comando por
-//! `rtk` não é feito aqui: o gancho do próprio rtk faz isso; `waiting` só
-//! cobre o caminho completo, que esse gancho não alcança.
+//! A primeira que decide vence. Depois delas, no shell do host e com a opção
+//! `rtk` ligada, o comando passa pela troca do rtk ([`super::rtk_swap`]),
+//! feita aqui mesmo com a cópia do rtk que acompanha o Mustard: o Mustard é o
+//! único gancho que troca o comando do Bash.
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
@@ -80,7 +81,14 @@ impl CommandGuard {
         if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {
             return Ok(verdict);
         }
-        let isolate = |verdict| super::workspace_scope::isolate(input, ctx, verdict, host_shell);
+        // A cópia do rtk só é procurada quando a troca vai acontecer: shell do
+        // host, projeto com mustard.json e a opção `rtk` ligada.
+        let root = std::path::Path::new(&ctx.project_dir);
+        let rtk = (host_shell && ctx.config.rtk() && mustard_core::ProjectConfig::exists(root))
+            .then(super::rtk_swap::bundled)
+            .flatten();
+        let runner = mustard_core::platform::code_tools::MachineRunner::new(&std::env::var("PATH").unwrap_or_default()).at(root);
+        let isolate = |verdict| super::workspace_scope::isolate(input, ctx, verdict, host_shell, rtk.as_deref().map(|copy| (copy, &runner)));
         let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             // A recusa vence a troca que outro gancho faça no mesmo comando; uma
@@ -95,7 +103,7 @@ impl CommandGuard {
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {
             return Ok(isolate(verdict));
         }
-        if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
+        if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang, rtk.as_deref()) {
             return Ok(isolate(verdict));
         }
         Ok(isolate(crate::shared::search_gateway::before_bash(input,ctx).unwrap_or(Verdict::Allow)))

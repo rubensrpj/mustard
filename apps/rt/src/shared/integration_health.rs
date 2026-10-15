@@ -38,9 +38,10 @@ pub(crate) fn snapshot(root: &Path) -> Value {
     if receipt["complete"] != true || receipt["version"] != version {
         issues.push("installation-unverified-for-running-version");
     }
-    let rtk_available = crate::shared::proc::resolves("rtk");
-    let codex_rtk_hook=super::rtk_gain::codex_hook_configured(root);
-    let rtk_matches=!switches.rtk_diverges() || config.rtk() && codex_rtk_hook==Some(true);
+    // The swap runs the rtk copy that ships with Mustard, never the PATH one,
+    // and rtk's own hook left in the local settings races it.
+    let rtk_available = crate::hooks::bash::rtk_swap::bundled().is_some();
+    let rtk_matches=!switches.rtk_hook_left();
     if config.rtk() && (!rtk_available || !rtk_matches) {
         issues.push("rtk-incomplete");
     }
@@ -49,8 +50,7 @@ pub(crate) fn snapshot(root: &Path) -> Value {
     }
     json!({"ok":issues.is_empty(),"issues":issues,"running_version":version,"project_version":config.version,
         "configuration_readable":!config.unreadable,"installation_receipt_current":receipt["complete"]==true && receipt["version"]==version,
-        "rtk":{"enabled":config.rtk(),"executable_available":rtk_available,"hook_configured":switches.rtk_hook,
-            "hook_configured_by_host":{"claude":switches.rtk_hook,"codex":codex_rtk_hook},"configuration_matches":rtk_matches},
+        "rtk":{"enabled":config.rtk(),"executable_available":rtk_available,"own_hook_left":switches.rtk_hook,"configuration_matches":rtk_matches},
         "jev":{"credential_available":key.is_ok(),"credential_error":key.err().map(|e|e.reason()),"purposes":purposes,"balance_checked":false},
         "vectors":mustard_core::io::code_vectors::status(root),"hosts":super::host_observation::snapshot(root),
         "remedy":"Run mustard-rt run upsert for this project with the intended installed version; setup-codex installs Codex files. Review native hook trust in the host. Never replace an active wave's runtime mid-execution.",

@@ -9,7 +9,7 @@ fn native_settings_are_safe_versioned_and_change_only_selected_fields() {
     std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
     let secret="synthetic-cli-settings-key";
     std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":false},"jev":{"key":secret},"future":"preserve"}).to_string()).unwrap();
-    std::fs::write(root.join(".claude/settings.local.json"),"{}").unwrap();
+    std::fs::write(root.join(".claude/settings.local.json"),r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#).unwrap();
     let run=|patch:Option<Value>| {
         let mut command=Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
         command.args(["run","settings","--root"]).arg(root).current_dir(root).env("MUSTARD_RT_DELEGATED","1");
@@ -25,7 +25,8 @@ fn native_settings_are_safe_versioned_and_change_only_selected_fields() {
     let config:Value=serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
     assert_eq!(config["future"],"preserve");assert_eq!(config["jev"]["key"],secret);
     assert_eq!(config["ai"]["fallback"],true);assert_eq!(config["judgement"]["search"]["filter"],"jev");
-    assert!(std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap().contains("rtk hook claude"));
+    // The rtk option turns Mustard's own swap; rtk's own hook leaves the local settings.
+    assert!(!std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap().contains("rtk hook claude"));
     assert!(std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap().contains("model: opus"));
     assert!(!root.join(".claude/judgements").exists());assert!(!root.join(".claude/grain.db").exists());
 }

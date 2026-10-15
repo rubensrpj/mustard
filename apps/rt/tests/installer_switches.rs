@@ -121,32 +121,30 @@ fn upsert_preserves_a_historical_page_template_without_automatic_publication() {
     assert_eq!(rewritten, stale, "updating local tracking does not rewrite historical published resources");
 }
 
-/// A opção `rtk` do `mustard.json` desligada e religada: o gancho
-/// `rtk hook claude` sai e volta no `.claude/settings.local.json`, nada muda
-/// na pasta pessoal nem no arquivo da equipe, e, com os dois divergentes, o
-/// `doctor` acusa.
+/// O gancho do próprio rtk (`rtk hook claude`) deixado no
+/// `.claude/settings.local.json`, com a opção `rtk` ligada ou desligada: o
+/// `doctor` avisa que ele disputa a troca com o gancho do Mustard, a
+/// reinstalação o tira, e nada muda na pasta pessoal nem no arquivo da equipe.
 #[test]
-fn the_rtk_option_takes_the_hook_out_and_brings_it_back() {
+fn the_install_takes_rtk_own_hook_out_whatever_the_option() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (root, home) = installed(dir.path());
-    assert!(rtk_hook_in_local_settings(&root), "the hook comes on by default");
+    assert!(!rtk_hook_in_local_settings(&root), "the install never writes rtk's own hook");
     assert!(doctor(&root, &home).contains("OK    switches"), "{}", doctor(&root, &home));
 
-    set(&root, "rtk", false);
-    let diverged = doctor(&root, &home);
-    assert!(diverged.contains("WARN  switches") && diverged.contains("continua no"), "{diverged}");
-    upsert(&root, &home);
-    assert!(!rtk_hook_in_local_settings(&root), "the hook leaves when the option is off");
-    assert!(doctor(&root, &home).contains("OK    switches"), "{}", doctor(&root, &home));
-    nothing_outside_and_no_silencer(&root, &home);
-
-    set(&root, "rtk", true);
-    let diverged = doctor(&root, &home);
-    assert!(diverged.contains("WARN  switches") && diverged.contains("não está no"), "{diverged}");
-    upsert(&root, &home);
-    assert!(rtk_hook_in_local_settings(&root), "the hook comes back when the option is on");
-    assert!(doctor(&root, &home).contains("OK    switches"), "{}", doctor(&root, &home));
-    nothing_outside_and_no_silencer(&root, &home);
+    for option in [true, false] {
+        set(&root, "rtk", option);
+        let path = root.join(".claude/settings.local.json");
+        let mut settings: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("local")).expect("json");
+        settings["hooks"] = json!({"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]});
+        std::fs::write(&path, serde_json::to_string_pretty(&settings).expect("json")).expect("write local");
+        let left = doctor(&root, &home);
+        assert!(left.contains("WARN  switches") && left.contains("continua no"), "rtk {option}: {left}");
+        upsert(&root, &home);
+        assert!(!rtk_hook_in_local_settings(&root), "rtk {option}: the hook leaves");
+        assert!(doctor(&root, &home).contains("OK    switches"), "{}", doctor(&root, &home));
+        nothing_outside_and_no_silencer(&root, &home);
+    }
 }
 
 /// A chave `enabled` do `mustard.json` desligada e religada num projeto com

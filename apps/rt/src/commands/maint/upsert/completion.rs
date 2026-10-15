@@ -30,7 +30,7 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
         check("project-version",!config.unreadable && config.version.as_deref()==Some(&expected),"mustard-rt run upsert"),
         check("shipped-texts",current_texts,"mustard-rt run upsert"),
         check("local-settings",settings.as_ref().is_some_and(Value::is_object),"mustard-rt run upsert"),
-        check("rtk-hook",!switches.rtk_diverges(),"mustard-rt run upsert"),
+        check("rtk-hook",!switches.rtk_hook_left(),"mustard-rt run upsert"),
         check("scan",scan["ok"]==true && root.join(".claude/grain.db").is_file(),"mustard-rt run scan; mustard-rt run upsert"),
         check("spec-search",report.search_warning.is_none(),"mustard-rt run upsert"),
         check("language-tools",report.code_tool_warnings.is_empty(),"see codeToolWarnings"),

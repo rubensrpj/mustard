@@ -56,7 +56,7 @@ use mustard_core::Setting;
 use mustard_core::domain::map_filter::Verdict;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
-use mustard_core::domain::scan::{HistoryReport, ScanReport};
+use mustard_core::domain::scan::{HistoryReport, NativePass, ScanReport};
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::map_notes::{self, NewNote};
@@ -186,17 +186,43 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
     if opts.question==Question::Audit {
         return mustard_core::io::knowledge::audit::run(&project.root).unwrap_or_else(|error|refused(&error,project.lang));
     }
-    crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
-    let _ = map_specs::sync(&project.root, &project.languages);
+    // A passada que segue em segundo plano (`busy`) deixa a resposta com o
+    // mapa de antes, e a resposta diz isso.
+    let running = std::cell::Cell::new(false);
+    let watched = |root: &Path, out: &Path| {
+        let report = mine(root, out)?;
+        running.set(report.busy);
+        Ok(report)
+    };
+    crate::commands::flow::round::refresh_map_if_stale(&project.root, &watched);
+    if reads_specs(opts.question) {
+        let _ = map_specs::sync(&project.root, &project.languages);
+    }
     let lang = project.lang;
-    match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
+    let mut report = match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
         Ok(report) => {
             remember(opts, &project.root, &project.languages, &report);
             report
         }
         Err(refusal) => refused(&refusal, lang),
+    };
+    if running.get() {
+        report["refreshing"] = json!(mustard_core::translate("map.refreshing", lang));
     }
+    report
 }
+
+/// Se a pergunta lê o bloco das specs, que a resposta põe em dia antes dela:
+/// as partes de um arquivo, o trecho de uma declaração, quem a usa, quem
+/// importa o arquivo e os testes dele não o leem, e não esperam a gravação.
+fn reads_specs(question: Question) -> bool {
+    !matches!(question, Question::Summary | Question::Slice | Question::Users | Question::Importers | Question::Tests)
+}
+
+/// Quanto a pergunta ao mapa espera a passada que o põe em dia, o mesmo prazo
+/// da busca: passado ele, a passada segue sozinha e a resposta sai do mapa de
+/// antes, com o aviso.
+const REFRESH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Compatibility spelling of the source-first gateway. No scan or remote
 /// filter is required to execute a literal search.
@@ -928,7 +954,11 @@ fn history_number(root: &Path, session: Option<&str>, lang: Locale, (key, settin
 /// sai como texto, e as demais, como JSON.
 pub fn run(opts: &MapOpts) {
     let scan = mustard_core::Scan::locate();
-    let report = map_at(opts, &|root, out| scan.scan_then_read_history(root, out), &|root, out, file, moves| scan.history(root, out, file, moves), &jev);
+    let mine = |root: &Path, out: &Path| match scan.scan_native_within(root, out, REFRESH_WAIT)? {
+        NativePass::Done(report) => Ok(report),
+        NativePass::Running => Ok(ScanReport { busy: true, ..ScanReport::default() }),
+    };
+    let report = map_at(opts, &mine, &|root, out, file, moves| scan.history(root, out, file, moves), &jev);
     match report["answer"].as_str().filter(|_| report["question"] == "search") {
         // A resposta ao texto do `Grep` sai como o gancho a dá: o texto só.
         Some(answer) => println!("{answer}"),
@@ -1835,6 +1865,44 @@ mod tests {
     /// Antes de cada resposta, o mapa se confere com o conteúdo de agora:
     /// um arquivo editado sem commit é relido, e a pergunta seguinte já
     /// responde a linha nova; sem nada mudado, o scan não roda.
+    /// Com a passada do mapa ainda em segundo plano, a pergunta não espera:
+    /// responde com o mapa de antes e diz que ele segue em atualização. O
+    /// arquivo que o mapa não tem é recusado na hora; a passada que acabou não
+    /// deixa aviso.
+    #[test]
+    fn a_question_while_the_map_refreshes_answers_from_the_previous_map() {
+        let dir = project_with_map();
+        let root = dir.path();
+        let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output().expect("git");
+        assert!(init.status.success());
+        let calls = std::cell::Cell::new(0);
+        let busy = std::cell::Cell::new(true);
+        let mine = |_: &Path, _: &Path| {
+            calls.set(calls.get() + 1);
+            Ok(ScanReport { busy: busy.get(), ..ScanReport::default() })
+        };
+        let no_trace = |_: &Path, _: &Path, _: &str, _: usize| panic!("these questions never read a history");
+
+        let mut slice = ask(root, Question::Slice);
+        slice.file = Some("packages/core/src/domain/pay.rs".to_string());
+        slice.name = Some("Payment".to_string());
+        let report = map_at(&slice, &mine, &no_trace);
+        assert_eq!(report["reason"], json!("unknown-file"), "{report}");
+        assert_eq!(report["refreshing"], json!(mustard_core::translate("map.refreshing", Locale::PtBr)), "{report}");
+        assert_eq!(calls.get(), 1);
+
+        let mut summary = ask(root, Question::Summary);
+        summary.file = Some("packages/core/src/pay.rs".to_string());
+        let report = map_at(&summary, &mine, &no_trace);
+        assert_eq!(report["parts"][0]["name"], json!("Payment"), "{report}");
+        assert!(report["refreshing"].is_string(), "{report}");
+
+        busy.set(false);
+        let report = map_at(&summary, &mine, &no_trace);
+        assert_eq!(report["parts"][0]["name"], json!("Payment"), "{report}");
+        assert!(report.get("refreshing").is_none(), "{report}");
+    }
+
     #[test]
     fn a_question_after_an_edit_without_commit_answers_the_new_line() {
         let scan = mustard_core::Scan::locate();
@@ -2850,7 +2918,12 @@ mod tests {
 
         /// A montagem que entrega este filtro, como a chave no projeto.
         fn assemble(&self) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
-            move |_, _| Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+            self.assemble_named("jev")
+        }
+
+        /// [`Self::assemble`] com o filtro montado sob o nome `name`.
+        fn assemble_named(&self, name: &'static str) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+            move |_, _| Ok(Assembled { name, filter: Box::new(self.clone()), warning: None })
         }
 
         /// A montagem com a chave achada no projeto como a busca de verdade a
@@ -3566,8 +3639,9 @@ mod tests {
 
     /// A busca com filtro e o registro da chamada da rodada ao Jev gravam a
     /// mesma medida para a mesma resposta: o filtro, o tempo dele, os tokens,
-    /// o custo, os pedidos e o modelo; e, na falha, o nome com o motivo e o
-    /// tempo até ela, sem tokens, custo, pedidos nem modelo.
+    /// o custo, os pedidos e o modelo; o filtro de outro nome grava o nome
+    /// dele; e, na falha, o nome com o motivo e o tempo até ela, sem tokens,
+    /// custo, pedidos nem modelo.
     #[test]
     fn the_search_and_the_jev_call_record_write_the_same_measure() {
         use crate::shared::jev::{ITEMS_CALL, record_jev_call};
@@ -3585,6 +3659,14 @@ mod tests {
         let expected = vec![json!("jev"), json!(21_000), json!(882), json!(3), json!("jev-1.13.0")];
         assert_eq!((measure(&calls[0]), measure(&calls[1])), (expected.clone(), expected), "{calls:?}");
         assert_eq!((&calls[0]["filter_ms"], &calls[1]["filter_ms"]), (&json!(40), &json!(40)), "{calls:?}");
+
+        // Outro nome de filtro, com a mesma medida: a gravação leva o nome do
+        // filtro montado, e não um nome fixo.
+        let other = search_project_on("outro-filtro");
+        searched(&search_opts(other.path(), "pedido", Some("onde o pedido é gravado"), None), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble_named("outro"));
+        let calls = calls_of(other.path(), "outro-filtro");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(measure(&calls[0]), vec![json!("outro"), json!(21_000), json!(882), json!(3), json!("jev-1.13.0")], "{calls:?}");
 
         let failing = search_project_on("falha-medida");
         let refused = FilterError::Refused { status: 429 };

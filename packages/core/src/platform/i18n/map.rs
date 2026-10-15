@@ -169,6 +169,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Who uses `{name}`, as file:line:caller. Proven links come first. \
              Suspect ones follow, grouped by the declarations the call may reach."
         }
+        ("map.refreshing", Locale::PtBr) => {
+            "O mapa segue em atualização, em segundo plano. Esta resposta veio do mapa de antes; repita a pergunta depois para ver o mapa novo."
+        }
+        ("map.refreshing", Locale::EnUs) => {
+            "The map is still being refreshed in the background. This answer came from the previous map; ask again later to see the new one."
+        }
         ("map.users.none", Locale::PtBr) => "Ninguém usa `{name}` de `{file}`.",
         ("map.users.none", Locale::EnUs) => "Nothing uses `{name}` from `{file}`.",
         ("map.users.suspect", Locale::PtBr) => {
@@ -463,8 +469,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            79,
-            0xfff0_0d3f_6d2d_5166,
+            80,
+            0x8c4c_b4a6_f52d_8849,
         );
     }
 
@@ -482,6 +488,7 @@ mod tests {
                 "map.search.pass",
                 "map.users.head",
                 "map.users.none",
+                "map.refreshing",
                 "map.users.suspect",
                 "map.users.common.one",
                 "map.users.common.many",
@@ -735,6 +742,7 @@ mod tests {
             ("map.summary.ask", &[][..]),
             ("map.users.head", &["{name}"][..]),
             ("map.users.none", &["{name}", "{file}"][..]),
+            ("map.refreshing", &[][..]),
             ("map.users.suspect", &[][..]),
             ("map.users.common.one", &["{name}"][..]),
             ("map.users.common.many", &["{count}", "{name}"][..]),

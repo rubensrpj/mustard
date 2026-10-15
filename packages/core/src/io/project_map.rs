@@ -562,6 +562,8 @@ pub(crate) const DB_BLOCKS: [Block; 18] =
 mod block_formats;
 #[cfg(test)]
 mod concurrent_saves;
+mod reading;
+pub(crate) use reading::open_reading;
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -839,7 +841,7 @@ pub fn read_for(root: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, 
 /// a leitura do mapa que o scan gravou num caminho escolhido por quem o
 /// chamou.
 pub fn read_for_at(model: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
-    let db = open_existing(model)?;
+    let db = open_reading(model, map_fill::read_by(need))?;
     map_fill::refuse(&db, map_fill::read_by(need))?;
     part_of(&db, need).map_err(unreadable)
 }
@@ -1547,7 +1549,8 @@ fn example_modules(conn: &Connection, words: bool) -> Result<Vec<MapModule>> {
 /// que o gravou; um bloco que ela grava voltou vazio numa troca de formato
 /// ([`map_fill::unfilled`]); ou a passada foi de outro scan que o de
 /// `scan_format`, a marca do que refaria o mapa ([`map_format`]), mesmo com o
-/// projeto parado. `scan_format` só é chamado quando o mapa traz marca com
+/// projeto parado; ou um bloco do mapa está noutra versão do formato, que só
+/// a passada refaz. `scan_format` só é chamado quando o mapa traz marca com
 /// que comparar, e sem marca do scan (`None`) a compilação dele não conta:
 /// quem não acha o scan não tem como refazer o mapa. Lê só o estado gravado e
 /// as marcas dos blocos, nunca o mapa inteiro. Sem o arquivo do mapa, dentro
@@ -1557,6 +1560,11 @@ fn example_modules(conn: &Connection, words: bool) -> Result<Vec<MapModule>> {
 #[must_use]
 pub fn is_behind(root: &Path, scan_format: &dyn Fn() -> Option<String>) -> bool {
     if !exists_at(&model_path(root)) {
+        return inside_work_tree(root);
+    }
+    // O bloco noutra versão do formato é a passada do scan que o refaz: quem
+    // só confere não o refaz sob a trava nem espera a de outra gravação.
+    if reading::has_outdated_block(&model_path(root)) == Some(true) {
         return inside_work_tree(root);
     }
     let Ok(db) = open_existing(&model_path(root)) else {

@@ -9,8 +9,9 @@ use std::path::{Path,PathBuf};
 /// para os novos entrarem.
 const STEP_LIMIT:usize=8192;
 const BYTE_LIMIT:usize=2_000_000;
-/// Quanto uma medição espera a outra que grava o mesmo arquivo terminar.
-const LOCK_PATIENCE:std::time::Duration=std::time::Duration::from_millis(1000);
+/// Quanto uma gravação do painel (a medição ao vivo, o diagnóstico) espera a
+/// outra que grava o mesmo arquivo terminar.
+pub(super) const LOCK_PATIENCE:std::time::Duration=std::time::Duration::from_millis(1000);
 pub(super) fn file(root:&Path,session:&str)->PathBuf {root.join(".claude/mustard/usage/live").join(format!("{}.json",blake3::hash(session.as_bytes())))}
 fn forget_oldest(steps:&mut Map<String,Value>,count:usize) {*steps=std::mem::take(steps).into_iter().skip(count).collect();}
 /// O texto a gravar, dentro do limite: os passos mais velhos saem até caber.
@@ -48,10 +49,11 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
             if data["schema_version"]==1 && data["agents"].is_object() && data["steps"].is_object() {Ok(data)}
             else {Err("schema_version 1 with agents and steps objects expected".to_string())}
         })};
-        // O arquivo que não se lê mais (a troca cortada por um processo morto
-        // ou por uma queda de energia) não derruba toda medição até a sessão
-        // acabar: o texto dele fica guardado ao lado, com a hora no nome, e a
-        // visão ao vivo recomeça vazia na hora, traga esta medição o que trouxer.
+        // O arquivo que não se lê mais (o que uma versão anterior regravava no
+        // lugar e um processo morto cortou, ou o que uma queda de energia
+        // perdeu antes de o disco confirmar) não derruba toda medição até a
+        // sessão acabar: o texto dele fica guardado ao lado, com a hora no nome,
+        // e a visão ao vivo recomeça vazia na hora, traga esta medição o que trouxer.
         let (mut data,restarted)=match parsed {
             Ok(data)=>(data,None),
             Err(error)=>{

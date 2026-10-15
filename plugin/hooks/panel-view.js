@@ -276,9 +276,8 @@ export function renderPanel({elements,surface,columns,bodyRows,data,usage,proble
     }
     if(usageView==='RTK')rows.push(section(t('RTK neste projeto','RTK for this project'),[
       text(rtk.configured===false?t('Filtro desligado na configuração.','Filter disabled in configuration.'):
-        rtk.hook_configured_by_host?['Claude','Codex'].map(host=>`${host}: ${rtk.hook_configured_by_host[host.toLowerCase()]===true?t('hook configurado','hook configured'):rtk.hook_configured_by_host[host.toLowerCase()]===false?t('hook ausente','hook absent'):t('não confirmado','unconfirmed')}`).join(' · '):
-        rtk.hook_configured===true?t('Hook configurado para comandos compatíveis.','Hook configured for supported commands.'):
-          t('Hook não confirmado; confira o diagnóstico da instalação.','Hook not confirmed; check installation diagnostics.')),
+        rtk.own_hook_left===true?t('O gancho do próprio RTK continua nas configurações locais e disputa a troca com o Mustard; execute mustard-rt run upsert.','RTK\'s own hook is still in the local settings and races Mustard\'s swap; run mustard-rt run upsert.'):
+          t('O gancho do Mustard faz a troca do RTK nos comandos compatíveis.','Mustard\'s hook makes the RTK swap on supported commands.')),
       note(t('Configuração não comprova confiança do host nem execução. Os comandos registrados abaixo mostram o uso observado.','Configuration does not prove host trust or execution. Recorded commands below show observed use.')),
       ...(rtk.status==='measured'?[
         text(`${t('Comandos registrados','Recorded commands')}: ${fmt(rtk.commands)}`),

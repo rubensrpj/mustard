@@ -21,8 +21,11 @@ pub(super) fn record(root:&Path,input:&Value)->Value {
     if event["component"].is_null() || event["reason"].is_null() {return json!({"ok":false,"reason":"diagnostic-invalid"});}
     let path=root.join(".claude/mustard/panel/diagnostics.json");
     let result=(||->Result<(),(&str,String)>{
-        let mut lock=mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&path).map_err(|e|("diagnostics-busy",e.to_string()))?
-            .ok_or(("diagnostics-busy","another recording holds the diagnostics file".to_string()))?;
+        // Dois diagnósticos ao mesmo tempo: o segundo espera o primeiro gravar,
+        // por pouco tempo, em vez de se perder.
+        let patience=super::live_usage::LOCK_PATIENCE;
+        let mut lock=mustard_core::io::fs::lock::LockedFile::exclusive_within(&path,patience).map_err(|e|("diagnostics-busy",e.to_string()))?
+            .ok_or_else(||("diagnostics-busy",format!("another recording held the diagnostics file for {} ms",patience.as_millis())))?;
         let raw=lock.read_to_string().map_err(|e|("diagnostics-unreadable",e.to_string()))?;
         let mut events=match if raw.is_empty(){Ok(Vec::new())}else{serde_json::from_str::<Vec<Value>>(&raw)} {
             Ok(events)=>events,
@@ -88,5 +91,25 @@ mod tests {
         let reasons:Vec<_>=events.iter().map(|event|(event["reason"].clone(),event["detail"].as_str().is_some())).collect();
         assert_eq!(reasons,[(json!("diagnostics-unreadable"),true),(json!("panel-query-failed"),true)]);
         assert_eq!(events[1]["detail"],"exit 1: database is locked");
+    }
+    /// O diagnóstico que chega enquanto outro grava o arquivo espera ele soltar
+    /// e grava o próprio; só a gravação que segura o arquivo a espera inteira
+    /// faz o diagnóstico desistir, com a causa, e não antes do fim dela.
+    #[test]
+    fn a_diagnostic_waits_for_another_one_recording_the_file() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let path=root.join(".claude/mustard/panel/diagnostics.json");
+        let failure=json!({"component":"panel","operation":"refresh","reason":"panel-query-failed","session":"s"});
+        let other=mustard_core::io::fs::lock::LockedFile::exclusive(&path).unwrap();
+        let releasing=std::thread::spawn(move||{std::thread::sleep(std::time::Duration::from_millis(100));drop(other);});
+        assert_eq!(record(root,&failure),json!({"ok":true}));
+        releasing.join().unwrap();
+        let events:Vec<Value>=serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(events.iter().map(|event|event["reason"].clone()).collect::<Vec<_>>(),[json!("panel-query-failed")]);
+        let _held=mustard_core::io::fs::lock::LockedFile::exclusive(&path).unwrap();
+        let started=std::time::Instant::now();
+        let answer=record(root,&failure);
+        assert_eq!((answer["ok"].clone(),answer["reason"].clone()),(json!(false),json!("diagnostics-busy")),"{answer}");
+        assert!(started.elapsed()>=super::super::live_usage::LOCK_PATIENCE,"gave up after {:?}",started.elapsed());
     }
 }

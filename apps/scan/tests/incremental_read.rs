@@ -469,7 +469,7 @@ fn two_passes_at_the_same_time_write_the_meaning_vectors_of_a_single_pass() {
             passes.into_iter().filter_map(|pass| pass.join().unwrap().err()).collect()
         });
         assert!(failures.is_empty(), "round {round}: both passes write the vectors: {failures:?}");
-        assert!(meaning_vectors(&map) == expected, "round {round}: the vectors of two passes are those of one");
+        assert_eq!(meaning_vectors(&map), expected, "round {round}: the vectors of two passes are those of one");
     }
 }
 

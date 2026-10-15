@@ -42,7 +42,7 @@ fn read(root:&Path)->Value {
     let switches=mustard_core::Switches::read(root);
     json!({"ok":true,"schema_version":1,"revision":revision(root,&text),"values":values,
         "jev":super::jev_usage::configuration(root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok()),
-        "rtk":{"hook_configured":switches.rtk_hook},
+        "rtk":{"own_hook_left":switches.rtk_hook},
         "index_present":mustard_core::io::project_map::model_path(root).is_file(),
         "availability":crate::shared::integration_health::snapshot(root)})
 }
@@ -100,17 +100,22 @@ fn apply(root:&Path,text:&str)->Value {
         }else {put(&mut next,&path,value.clone())};
         if !ok {return refused("settings-invalid-section");}
     }
-    let Ok(config)=serde_json::from_value::<ProjectConfig>(next.clone()) else {return refused("settings-invalid-section");};
+    if serde_json::from_value::<ProjectConfig>(next.clone()).is_err() {return refused("settings-invalid-section");}
     // Prepare derived writes before changing anything. Invalid host settings
     // cannot erase hooks or private environment choices.
     let local_path=root.join(".claude/settings.local.json");
-    let local=if changes.contains_key("rtk") {
-        let Ok(raw)=mustard_core::io::fs::read_to_string(&local_path) else {return refused("settings-local-missing");};
-        let Ok(Value::Object(mut object))=serde_json::from_str::<Value>(&raw) else {return refused("settings-local-invalid");};
-        mustard_core::platform::project_seed::settings::apply_rtk_hook(&mut object,config.rtk());
-        if mustard_core::platform::project_seed::settings::rtk_hook_present(&object)!=config.rtk() {return refused("settings-local-invalid");}
-        Some(Value::Object(object))
-    }else {None};
+    // The rtk option turns the swap Mustard's own hook makes. Touching it also
+    // takes rtk's own hook out of the local settings, where it would race
+    // Mustard's hook for the same command; a missing file holds no hook.
+    let local=match mustard_core::io::fs::read_to_string(&local_path) {
+        Ok(raw) if changes.contains_key("rtk") => {
+            let Ok(Value::Object(mut object))=serde_json::from_str::<Value>(&raw) else {return refused("settings-local-invalid");};
+            let before=object.clone();
+            mustard_core::platform::project_seed::settings::remove_rtk_hook(&mut object);
+            (object!=before).then_some(Value::Object(object))
+        }
+        _=>None,
+    };
     let Ok(mut bytes)=serde_json::to_vec_pretty(&next) else {return refused("settings-write-failed");};
     bytes.push(b'\n');
     if document(root).is_none_or(|(now,_)|request["revision"]!=revision(root,&now)) {return refused("settings-conflict");}
@@ -187,15 +192,21 @@ mod tests {
         assert_eq!(value["judgement"]["context"]["extra"],"keep");
         assert_eq!(value["judgement"]["search"]["filter"],"jev");assert_eq!(value["ai"]["vectors"],false);
         let local=std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap();
-        assert!(local.contains(SECRET) && local.contains("other hook") && local.contains("rtk hook claude"));
+        assert!(local.contains(SECRET) && local.contains("other hook") && !local.contains("rtk hook claude"));
         let agent=std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         assert!(agent.contains("model: opus") && agent.contains("effort: high"));
         let receipt:Value=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/installation.json")).unwrap()).unwrap();
         assert_eq!(receipt["complete"],false);assert_eq!(receipt["settings_changed"],true);
+        let left=r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"},{"type":"command","command":"other hook"}]}]}}"#;
+        std::fs::write(root.join(".claude/settings.local.json"),left).unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.join(".claude/settings.local.json"),std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let off=patch(root,json!({"rtk":false,"jev_search":false,"enabled":false}));
         assert_eq!(off["ok"],true);assert_eq!(off["values"]["enabled"],false);
         let local=std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap();
-        assert!(!local.contains("rtk hook claude") && local.contains("other hook"));
+        assert!(!local.contains("rtk hook claude") && local.contains("other hook"),"rtk's own hook leaves, the user's stays: {local}");
         assert_eq!(document(root).unwrap().1["judgement"]["search"]["filter"],"none");
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
@@ -228,7 +239,7 @@ mod tests {
     #[test]
     fn invalid_local_hooks_refuse_the_entire_patch_before_writing() {
         let dir=fixture();let root=dir.path();let before=std::fs::read(root.join("mustard.json")).unwrap();
-        std::fs::write(root.join(".claude/settings.local.json"),r#"{"hooks":[]}"#).unwrap();
+        std::fs::write(root.join(".claude/settings.local.json"),r#"["not an object"]"#).unwrap();
         assert_eq!(patch(root,json!({"rtk":true,"vectors":false}))["reason"],"settings-local-invalid");
         assert_eq!(std::fs::read(root.join("mustard.json")).unwrap(),before);
         std::fs::write(root.join("mustard.json"),"{broken").unwrap();
