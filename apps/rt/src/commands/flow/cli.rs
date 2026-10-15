@@ -81,6 +81,11 @@ pub enum FlowCmd {
         /// mostrados de uma vez para um sim só.
         #[arg(long)]
         condensed: bool,
+        /// A resposta inteira, com cada ponto da lista e o conhecimento achado.
+        /// Sem ela, vêm a dica, o próximo ponto, os códigos dos pontos abertos
+        /// e só o que a dica manda usar.
+        #[arg(long)]
+        full: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -138,19 +143,28 @@ pub enum FlowCmd {
         /// esta opção, o comando somente consulta o estado.
         #[arg(long)]
         dispatch: bool,
+        /// A resposta inteira, com cada tarefa segurada e o detalhe dela. Sem
+        /// ela, as seguradas vêm agrupadas pelo motivo, com o detalhe uma vez.
+        #[arg(long)]
+        full: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
     /// Prepara e mostra o diff real da onda para revisão antes do commit.
     /// Depois de ler o diff, passe `REVIEWED` com wave, fingerprint e note no
-    /// relatório da rodada. Mudança posterior invalida a revisão.
+    /// relatório da rodada. Mudança posterior invalida a revisão. A resposta
+    /// abre com a impressão digital, traz o diff inteiro e cada regra do
+    /// projeto pelo caminho e pelo tamanho.
     #[command(display_order = 22)]
     ReviewWave {
         #[arg(long)]
         wave: u64,
         #[arg(long)]
         spec: Option<String>,
+        /// A resposta inteira, com o texto de cada regra do projeto.
+        #[arg(long)]
+        full: bool,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -304,22 +318,22 @@ pub fn dispatch(cmd: FlowCmd) {
     match cmd {
         FlowCmd::Evidence {root,spec,wave,point,receipt,text}=>{
             let report=flow::evidence::run(&root,spec.as_deref(),wave,point.as_deref(),receipt.as_deref(),text.as_deref());
-            flow::answer("evidence",&root,spec.as_deref(),started,&report);
+            flow::answer("evidence",&root,spec.as_deref(),started,&report, false);
         }
         FlowCmd::Open { kind, name, base, pending, root } => {
             let opts = flow::open::OpenOpts { root, kind, name, base, pending };
             let named = opts.name.clone();
-            flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts));
+            flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts), false);
         }
-        FlowCmd::Grill { spec, kinds, condensed, root } => {
+        FlowCmd::Grill { spec, kinds, condensed, full, root } => {
             let opts = flow::grill::GrillOpts { root, spec, kinds, condensed };
-            flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts));
+            flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts), full);
         }
         FlowCmd::Plan { spec, root } => {
             let opts = flow::plan::PlanOpts { root, spec };
-            flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts));
+            flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts), false);
         }
-        FlowCmd::Round { spec, report, root, dispatch } => {
+        FlowCmd::Round { spec, report, root, dispatch, full } => {
             if !dispatch && report.is_none() {
                 let mut out = flow::resume::resume_at(&flow::resume::ResumeOpts { root, spec });
                 out["mode"] = serde_json::json!("status");
@@ -331,31 +345,31 @@ pub fn dispatch(cmd: FlowCmd) {
                 return;
             }
             let opts = flow::round::RoundOpts { root, spec, report };
-            flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
+            flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts), full);
         }
-        FlowCmd::ReviewWave { wave, spec, root } => {
+        FlowCmd::ReviewWave { wave, spec, full, root } => {
             let out = flow::round::review::view_at(&root, spec.as_deref(), wave);
-            flow::answer("review-wave", &root, spec.as_deref(), started, &out);
+            flow::answer("review-wave", &root, spec.as_deref(), started, &out, full);
         }
         FlowCmd::Close { spec, report, pending_later, root } => {
             let opts = flow::close::CloseOpts { root, spec, report, pending_later };
-            flow::answer("close", &opts.root, opts.spec.as_deref(), started, &flow::close::close_at(&opts));
+            flow::answer("close", &opts.root, opts.spec.as_deref(), started, &flow::close::close_at(&opts), false);
         }
         FlowCmd::Resume { spec, root } => {
             let opts = flow::resume::ResumeOpts { root, spec };
-            flow::answer("resume", &opts.root, opts.spec.as_deref(), started, &flow::resume::resume_at(&opts));
+            flow::answer("resume", &opts.root, opts.spec.as_deref(), started, &flow::resume::resume_at(&opts), false);
         }
         FlowCmd::Discard { spec, remote, delete, confirm, root } => {
             let opts = flow::discard::DiscardOpts { root, spec, remote, delete, confirm };
-            flow::answer("discard", &opts.root, opts.spec.as_deref(), started, &flow::discard::discard_at(&opts));
+            flow::answer("discard", &opts.root, opts.spec.as_deref(), started, &flow::discard::discard_at(&opts), false);
         }
         FlowCmd::Reopen { reason, fix, spec, root } => {
             let opts = flow::reopen::ReopenOpts { root, spec, reason, fix };
-            flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts));
+            flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts), false);
         }
         FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
             let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
-            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts));
+            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
         }
     }
 }

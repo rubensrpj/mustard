@@ -482,6 +482,64 @@ fn backlog_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> (Vec<String>, 
     (lines, json!({ "tasks": left.len(), "files": files.len() }))
 }
 
+/// A resposta curta do backlog: o total logo depois de `ok`, e cada linha sem
+/// a onda vazia e sem a lista vazia de dependências. Com `--full`, a de
+/// [`backlog_lines`] inteira.
+pub(crate) fn short_backlog(report: &Value) -> Value {
+    let mut out = Map::new();
+    out.insert("ok".into(), report["ok"].clone());
+    out.insert("total".into(), report["total"].clone());
+    for (key, value) in report.as_object().into_iter().flatten() {
+        let value = match key.as_str() {
+            "ok" | "total" => continue,
+            "events" => json!(value.as_array().into_iter().flatten().map(|line| {
+                let mut line = line.clone();
+                if let Some(fields) = line.as_object_mut() {
+                    fields.retain(|_, field| !field.is_null() && field.as_array().is_none_or(|list| !list.is_empty()));
+                }
+                line
+            }).collect::<Vec<_>>()),
+            _ => value.clone(),
+        };
+        out.insert(key.clone(), value);
+    }
+    Value::Object(out)
+}
+
+/// A leitura do bloco `block` como sai: a do backlog passa pela resposta
+/// curta ([`projection`](crate::commands::flow::projection)), salvo com
+/// `full`; as outras saem como vieram.
+fn shortened(block: &str, text: String, full: bool) -> String {
+    if !matches!(ReadQuery::parse(block), Some(ReadQuery::Backlog)) {
+        return text;
+    }
+    let Ok(report) = serde_json::from_str::<Value>(&text) else {
+        return text;
+    };
+    crate::commands::flow::projection("backlog", &report, full).map_or(text, |short| render_value(&short))
+}
+
+/// A resposta já projetada, no molde de [`render`]: um evento por linha.
+fn render_value(report: &Value) -> String {
+    let mut out = String::from("{");
+    for (at, (key, value)) in report.as_object().into_iter().flatten().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        out.push_str(&json!(key).to_string());
+        out.push(':');
+        match value.as_array().filter(|_| key == "events") {
+            Some(events) => {
+                let lines: Vec<String> = events.iter().map(Value::to_string).collect();
+                out.push_str(&if lines.is_empty() { "[]".to_string() } else { format!("[\n{}\n]", lines.join(",\n")) });
+            }
+            None => out.push_str(&value.to_string()),
+        }
+    }
+    out.push('}');
+    out
+}
+
 /// A soma das chamadas de cada comando, uma linha por comando, na ordem do
 /// nome: quantas são; as falhas por motivo, a recusa pelo motivo dela (ou
 /// `refused`, quando ela não diz) e a falha do filtro, em que a busca volta
@@ -703,10 +761,11 @@ pub(crate) fn read_by_command(command: &str) -> String {
 
 /// Run `read` and print the block; exit 1 on a refusal. The recorded request
 /// of a wave, or of the final review, and the final review request the close
-/// would build now print byte for byte, with no newline added.
-pub fn run(opts: &ReadOpts) {
+/// would build now print byte for byte, with no newline added. The backlog
+/// prints its short answer unless `full` asks for the whole one.
+pub fn run(opts: &ReadOpts, full: bool) {
     let started = std::time::Instant::now();
-    let result = read_at(opts);
+    let result = read_at(opts).map(|text| shortened(&opts.block, text, full));
     // Reads from a dispatched request already record each required item.
     // Keep those receipts separate from the CLI invocation's own measure.
     let report = match &result {

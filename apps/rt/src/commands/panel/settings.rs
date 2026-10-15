@@ -16,6 +16,18 @@ pub(super) fn run(start:&Path,patch:Option<&str>)->Value {
     if let Some(patch)=patch {apply(&root,patch)} else {read(&root)}
 }
 
+/// A resposta curta dos ajustes: só os valores atuais e a revisão, que a
+/// troca pede, com o resultado da gravação quando houve uma. A situação do
+/// Jev, do rtk, do índice e das integrações, que o painel mostra, vem com
+/// `--full`.
+pub(crate) fn short(report:&Value)->Value {
+    let mut out=serde_json::Map::new();
+    for key in ["ok","schema_version","revision","values","saved","pending","scan_recommended","agent_changes_apply_to"] {
+        if let Some(value)=report.get(key) {out.insert(key.into(),value.clone());}
+    }
+    Value::Object(out)
+}
+
 fn refused(reason:&str)->Value {json!({"ok":false,"schema_version":1,"reason":reason})}
 fn document(root:&Path)->Option<(String,Value)> {
     let text=mustard_core::io::fs::read_to_string(root.join("mustard.json")).ok()?;

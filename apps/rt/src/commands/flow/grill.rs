@@ -326,6 +326,38 @@ pub(crate) fn projection(full: &Value) -> Value {
     out
 }
 
+/// A resposta curta do levantamento, tirada de [`projection`]: primeiro a
+/// dica, o próximo ponto e os códigos dos pontos abertos; depois só o que a
+/// dica manda usar — as mensagens sem destino, os itens que a volta ao
+/// levantamento toca, os itens retidos e o objetivo ainda sem aceite. No
+/// condensado, a dica manda mostrar todos os pontos, e eles vêm. O resto,
+/// com `--full`.
+pub(crate) fn short(projected: &Value) -> Value {
+    let points = projected["points"].as_array().map_or(&[][..], Vec::as_slice);
+    let open: Vec<&Value> = points.iter().filter(|point| point["status"] == "open").map(|point| &point["code"]).collect();
+    let mut out = json!({"ok": true, "hint": projected["hint"]});
+    if let Some(next) = projected.get("next") {
+        out["next"] = next.clone();
+    }
+    out["open"] = json!(open);
+    out["spec"] = projected["spec"].clone();
+    if projected["condensed"] == true {
+        out["points"] = json!(points);
+    }
+    for key in ["unrouted", "reason", "touched", "touched_hint", "withheld", "warnings"] {
+        if let Some(value) = projected.get(key) {
+            out[key] = value.clone();
+        }
+    }
+    if projected["goal_approval"]["confirmed"] == false {
+        out["goal_approval"] = projected["goal_approval"].clone();
+    }
+    let mut expand = projected["expand"].clone();
+    expand["full"] = json!("mustard-rt run grill --full");
+    out["expand"] = expand;
+    out
+}
+
 /// O motivo da volta ao levantamento: o do último `state` que pôs a spec em
 /// levantamento trazendo um motivo. `None` numa spec que nunca voltou.
 fn return_reason(log: &SpecLog) -> Option<&str> {
@@ -439,7 +471,7 @@ pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
     }
     let root_arg = root.to_string_lossy().into_owned();
     let argv = ["run"].into_iter().chain(line.split_whitespace().skip(2)).chain(["--root", &root_arg]);
-    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root }) }) = clap::Parser::try_parse_from(argv) else {
+    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root, .. }) }) = clap::Parser::try_parse_from(argv) else {
         panic!("not the grill: {line}");
     };
     grill_for(&GrillOpts { root, spec, kinds, condensed }, None)

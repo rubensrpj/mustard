@@ -176,6 +176,22 @@ pub(super) fn held(root: &Path, log: &SpecLog, lang: Locale, assembled: &BTreeMa
     Some(Held { tasks, line: line.join(" ") })
 }
 
+/// As tarefas seguradas de [`held`] agrupadas: uma entrada por motivo e
+/// detalhe, com o detalhe uma vez e os códigos das tarefas na ordem em que
+/// vieram. Dezesseis tarefas sem vaga dão uma entrada só, com a frase da vaga
+/// uma vez; duas julgadas pelo Jev com chances diferentes dão duas.
+pub(crate) fn grouped(held: &[Value]) -> Vec<Value> {
+    let mut groups: Vec<Value> = Vec::new();
+    for row in held {
+        let same = |group: &&mut Value| group["reason"] == row["reason"] && group["detail"] == row["detail"];
+        match groups.iter_mut().find(same).and_then(|group| group["tasks"].as_array_mut()) {
+            Some(tasks) => tasks.push(row["task"].clone()),
+            None => groups.push(json!({"reason": row["reason"], "detail": row["detail"], "tasks": [row["task"]]})),
+        }
+    }
+    groups
+}
+
 /// O detalhe do motivo exato que a montagem deu à tarefa pronta que ficou.
 fn exact(hold: &Hold, lang: Locale) -> String {
     match hold {
@@ -268,6 +284,37 @@ mod tests {
         assert_eq!((detail(0), detail(1), detail(2)), (slots.clone(), slots.clone(), slots), "the limit, its source and the occupied waves: {out}");
         let next = out["next"].as_str().unwrap_or_default();
         assert!(next.contains(&detail(0)) && next.contains(&codes[&free[2]]) && next.contains(&codes[&free[3]]) && next.contains(&codes[&same]), "{next}");
+    }
+
+    /// Uma vaga só, ocupada pela onda 1, e dezesseis tarefas prontas num
+    /// projeto TypeScript. A resposta inteira segura cada uma com a frase da
+    /// vaga; a curta agrupa as dezesseis numa entrada, com a frase uma vez e
+    /// os códigos na ordem.
+    #[test]
+    fn short_answer_names_the_full_slot_once_for_sixteen_held_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        backlog_task_on(root, said, crit, "Change the page.", &["web/app.ts"]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let held: Vec<u64> = (0..16).map(|n| backlog_task_on(root, said, crit, &format!("Change screen {n}."), &[&format!("web/screen{n}.ts")])).collect();
+        let out = round(root, "x", None);
+        assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
+        let lang = crate::commands::spec_events::project(root).lang;
+        let slots = translate("round.queued.capacity", lang)
+            .replace("{limit}", "1")
+            .replace("{origin}", translate("round.queued.origin_config", lang))
+            .replace("{occupied}", "1")
+            .replace("{waves}", "1");
+        let whole = crate::commands::flow::projection("round", &out, true).unwrap();
+        assert_eq!(whole["held"].to_string().matches(&slots).count(), 16, "{whole}");
+        let short = crate::commands::flow::projection("round", &out, false).unwrap();
+        let codes = spec_now(root).codes();
+        let expected: Vec<Value> = held.iter().map(|id| json!(codes[id])).collect();
+        assert_eq!(short["held"], json!([{"reason": "capacity", "detail": slots, "tasks": expected}]), "{short}");
+        assert_eq!(short["held"].to_string().matches(&slots).count(), 1, "{short}");
+        assert!(short.to_string().len() < whole.to_string().len(), "{short}");
     }
 
     /// O Jev julga que uma tarefa pronta muda o mesmo que uma onda em

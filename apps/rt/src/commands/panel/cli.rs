@@ -23,6 +23,10 @@ pub enum PanelCmd {
         /// {schema_version:1,revision,changes:{vectors,jev,rtk,build_command,test_command,lint_command,max_compiling_waves,...}}; never credentials.
         #[arg(long)]
         json: Option<String>,
+        /// The whole answer: besides the current values and the revision,
+        /// the state of Jev, rtk, the index and the integrations.
+        #[arg(long)]
+        full: bool,
     },
     /// Publish an explicit static snapshot using the configured native destination.
     #[command(display_order = 27)]
@@ -100,7 +104,10 @@ pub fn dispatch(cmd: PanelCmd) {
             }
             println!("{}",super::safe_value(result));
         },
-        PanelCmd::Settings {root,json} => println!("{}",super::settings::run(&root,json.as_deref())),
+        PanelCmd::Settings {root,json,full} => {
+            let report=super::settings::run(&root,json.as_deref());
+            println!("{}",crate::commands::flow::projection("settings",&report,full).unwrap_or(report));
+        }
         PanelCmd::Publish {
             root,
             spec,

@@ -232,6 +232,17 @@ pub(crate) fn projection(report: &Value) -> Value {
     out
 }
 
+/// A resposta curta da rodada: a de [`projection`], com as tarefas seguradas
+/// agrupadas pelo motivo ([`scheduling::grouped`]) — a frase da vaga cheia
+/// sai uma vez, e não uma por tarefa.
+pub(crate) fn short(projected: &Value) -> Value {
+    let mut out = projected.clone();
+    if let Some(held) = out.get("held").and_then(Value::as_array) {
+        out["held"] = json!(scheduling::grouped(held));
+    }
+    out
+}
+
 #[cfg(test)]
 mod transport_tests {
     use super::*;

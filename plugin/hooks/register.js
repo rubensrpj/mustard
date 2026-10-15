@@ -104,7 +104,7 @@ async function settingsOperation($,operation='load') {
   $.ui.invalidate('ui.render');
   try {
     const cwd=await $.session.cwd();
-    let args=['run','settings','--root',cwd],scan=false;
+    let args=['run','settings','--root',cwd,'--full'],scan=false;
     if(operation==='save')args.push('--json',JSON.stringify({schema_version:1,revision:settings.revision,changes:settings.changes}));
     if(operation==='scan') {scan=true;args=['run','scan','--root',cwd];}
     const result=await $.process.run([await runtime($),...args],{cwd,timeoutMs:scan?110000:10000});
@@ -118,7 +118,7 @@ async function settingsOperation($,operation='load') {
     if(scan) {
       settings={...settings,message:['Índice atualizado.','Index updated.']};
       // Refresh safe availability without disturbing saved choices.
-      const fresh=await $.process.run([await runtime($),'run','settings','--root',cwd],{cwd,timeoutMs:10000});
+      const fresh=await $.process.run([await runtime($),'run','settings','--root',cwd,'--full'],{cwd,timeoutMs:10000});
       if(!opened || ticket!==settingsRevision)return;
       const next=JSON.parse(fresh.stdout);
       if(fresh.exitCode===0 && next.ok===true && next.schema_version===1)settings={...next,loaded:true,changes:{},message:settings.message};

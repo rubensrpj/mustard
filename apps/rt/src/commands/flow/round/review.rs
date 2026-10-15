@@ -62,6 +62,25 @@ pub(crate) fn view_at(start: &Path, named: Option<&str>, wave: u64) -> Value {
     result.unwrap_or_else(|hint: String| json!({"ok":false,"reason":"wave-review-unavailable","wave":wave,"hint":hint}))
 }
 
+/// A resposta curta da revisão de onda: a impressão digital logo depois de
+/// `ok`, o diff inteiro e cada regra do projeto pelo caminho e pelo tamanho
+/// do texto, em bytes. O texto da regra vem com `--full` ou lendo o arquivo.
+pub(crate) fn short(report: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    out.insert("ok".into(), report["ok"].clone());
+    out.insert("fingerprint".into(), report["fingerprint"].clone());
+    for (key, value) in report.as_object().into_iter().flatten() {
+        let value = match key.as_str() {
+            "ok" | "fingerprint" => continue,
+            "project_rules" => json!(value.as_array().into_iter().flatten().map(|rule| json!({
+                "source": rule["source"], "path": rule["path"], "bytes": rule["text"].as_str().map_or(0, str::len)})).collect::<Vec<_>>()),
+            _ => value.clone(),
+        };
+        out.insert(key.clone(), value);
+    }
+    Value::Object(out)
+}
+
 fn review_dir(root: &Path, log: &SpecLog, wave: u64) -> std::path::PathBuf {
     real_changed_files(root, log, wave).filter(|files| !files.is_empty())
         .and_then(|_| copy_of(log, wave)).unwrap_or_else(|| root.to_path_buf())
@@ -290,6 +309,38 @@ mod tests {
         assert!(accepted["commit"].is_object(), "{accepted}");
         assert!(std::fs::read_to_string(root.join("src/a.rs")).unwrap().contains("changed_again"));
     }
+    /// A revisão de uma onda que mudou `web/app.ts`, com uma regra do projeto
+    /// na raiz. A resposta curta abre com a impressão digital logo depois de
+    /// `ok`, traz o diff inteiro e a regra só pelo caminho e pelo tamanho; a
+    /// inteira traz o texto da regra.
+    #[test]
+    fn short_answer_opens_the_review_with_the_fingerprint_and_rules_without_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["web/app.ts"], &[])]);
+        round(root, "x", None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = copy_of(&log, 1).unwrap();
+        std::fs::create_dir_all(copy.join("web")).unwrap();
+        std::fs::write(copy.join("web/app.ts"), "export const changed = 1;\n").unwrap();
+        let out = returned(root, json!({"wave":1,"text":"Concluída.","files":["web/app.ts"],"commit":"Muda a página"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let rule = "Use shared schemas; never duplicate types.";
+        std::fs::write(root.join("CLAUDE.md"), format!("{rule}\n")).unwrap();
+        let view = view_at(root, Some("x"), 1);
+        assert_eq!(view["ok"], true, "{view}");
+        let short = crate::commands::flow::projection("review-wave", &view, false).unwrap();
+        let keys: Vec<&String> = short.as_object().unwrap().keys().collect();
+        assert_eq!(keys[..2], ["ok", "fingerprint"], "{short}");
+        assert_eq!(short["fingerprint"], view["fingerprint"]);
+        assert!(short["diff"].as_str().unwrap().contains("export const changed = 1;"), "{short}");
+        assert_eq!(short["diff"], view["diff"]);
+        assert_eq!(short["project_rules"], json!([{"source":"project","path":"CLAUDE.md","bytes":rule.len()}]), "{short}");
+        assert!(!short.to_string().contains(rule), "{short}");
+        assert_eq!(crate::commands::flow::projection("review-wave", &view, true), None, "the whole answer is the view itself");
+        assert_eq!(view["project_rules"][0]["text"], rule);
+    }
+
     /// A onda que recebe a tarefa que a rodada criou para refazer um item
     /// não cumprido tem como planejados os arquivos do item: na revisão, só
     /// o arquivo fora deles fica fora do escopo.

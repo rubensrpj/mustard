@@ -16,6 +16,7 @@ mod settings;
 mod wave_usage;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
+pub(crate) use settings::short as short_settings;
 
 use std::collections::BTreeSet;
 use std::path::Path;

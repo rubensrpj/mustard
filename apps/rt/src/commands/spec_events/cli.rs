@@ -74,6 +74,11 @@ pub enum SpecEventsCmd {
         /// command by its name, like `map search`.
         #[arg(long)]
         term: Option<String>,
+        /// The whole answer. Without it, `backlog` opens with the total and
+        /// leaves out of each line the empty wave and the empty dependency
+        /// list; the other blocks read the same either way.
+        #[arg(long)]
+        full: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -190,8 +195,8 @@ fn fields_of_each_type() -> String {
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
     match cmd {
-        SpecEventsCmd::Read { block, spec, term, root } => {
-            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term });
+        SpecEventsCmd::Read { block, spec, term, full, root } => {
+            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term }, full);
         }
         SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
             spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
