@@ -258,8 +258,10 @@ fn member_dirs(root: &Path, pattern: &str) -> Vec<PathBuf> {
 
 /// Os alvos de teste do pacote da pasta `dir`, com o manifesto `manifest`, em
 /// ordem: os `[[test]]` declarados e, sem `autotests = false`, os que o cargo
-/// acha sozinho, cada `tests/<alvo>.rs` e cada `tests/<alvo>/main.rs`.
-fn test_targets(dir: &Path, manifest: &toml::Table) -> Vec<String> {
+/// acha sozinho, cada `tests/<alvo>.rs` e cada `tests/<alvo>/main.rs` — no
+/// disco ou entre os arquivos que o trabalho declara criar, `created`,
+/// relativos a `root`.
+fn test_targets(root: &Path, dir: &Path, manifest: &toml::Table, created: &BTreeSet<String>) -> Vec<String> {
     let declared = manifest.get("test").and_then(toml::Value::as_array).into_iter().flatten();
     let mut targets: BTreeSet<String> =
         declared.filter_map(|target| target.get("name").and_then(toml::Value::as_str)).map(str::to_string).collect();
@@ -275,20 +277,33 @@ fn test_targets(dir: &Path, manifest: &toml::Table) -> Vec<String> {
             };
             targets.extend(found.and_then(|name| name.to_str()).map(str::to_string));
         }
+        let tests = dir.strip_prefix(root).unwrap_or(dir).join("tests");
+        let tests = tests.to_string_lossy().replace('\\', "/");
+        let tests = tests.trim_start_matches("./");
+        for path in created {
+            let Some(rest) = path.strip_prefix(tests).and_then(|rest| rest.strip_prefix('/')) else { continue };
+            let found = match rest.split_once('/') {
+                Some((name, "main.rs")) => Some(name),
+                None => rest.strip_suffix(".rs"),
+                Some(_) => None,
+            };
+            targets.extend(found.filter(|name| !name.is_empty()).map(str::to_string));
+        }
     }
     targets.into_iter().collect()
 }
 
 /// Os alvos de teste do pacote `package`, achado pelo nome no manifesto do
-/// Cargo de `root` ou nos dos membros do workspace dele. `None` quando a raiz
-/// não tem manifesto do Cargo ou nenhum deles é desse pacote.
-fn package_test_targets(root: &Path, package: &str) -> Option<Vec<String>> {
+/// Cargo de `root` ou nos dos membros do workspace dele, com os que o
+/// trabalho declara criar em `created`. `None` quando a raiz não tem
+/// manifesto do Cargo ou nenhum deles é desse pacote.
+fn package_test_targets(root: &Path, package: &str, created: &BTreeSet<String>) -> Option<Vec<String>> {
     let top = manifest(root)?;
     let named = |manifest: &toml::Table| {
         manifest.get("package").and_then(|package| package.get("name")).and_then(toml::Value::as_str) == Some(package)
     };
     if named(&top) {
-        return Some(test_targets(root, &top));
+        return Some(test_targets(root, root, &top, created));
     }
     let members = top.get("workspace").and_then(|workspace| workspace.get("members")).and_then(toml::Value::as_array);
     members
@@ -296,24 +311,28 @@ fn package_test_targets(root: &Path, package: &str) -> Option<Vec<String>> {
         .flatten()
         .filter_map(toml::Value::as_str)
         .flat_map(|member| member_dirs(root, member))
-        .find_map(|dir| manifest(&dir).filter(named).map(|found| test_targets(&dir, &found)))
+        .find_map(|dir| manifest(&dir).filter(named).map(|found| test_targets(root, &dir, &found, created)))
+}
+
+/// O começo de um comando simples: quantas palavras vêm antes do programa
+/// (as atribuições de ambiente e o `!`) e se o `!` está lá.
+fn program_at(words: &[&str]) -> (usize, bool) {
+    let at = words.iter().take_while(|word| env_assignment(word)).count();
+    if words.get(at) == Some(&"!") { (at + 1, true) } else { (at, false) }
 }
 
 /// A recusa do primeiro `cargo test -p <pacote> --test <alvo>` da prova cujo
-/// alvo o pacote não tem, com os alvos que ele tem; o alvo escrito como
-/// padrão (`*`, `?`, `[`) e o pacote que os manifestos de `root` não acham
-/// ficam sem conferência.
-fn missing_test_target(root: &Path, all: &[Piece]) -> Option<Refusal> {
+/// alvo o pacote não tem, nem o trabalho declara criar (`created`), com os
+/// alvos que ele tem; o alvo escrito como padrão (`*`, `?`, `[`) e o pacote
+/// que os manifestos de `root` não acham ficam sem conferência.
+fn missing_test_target(root: &Path, all: &[Piece], created: &BTreeSet<String>) -> Option<Refusal> {
     for words in commands(all) {
-        let mut at = words.iter().take_while(|word| env_assignment(word)).count();
-        if words.get(at) == Some(&"!") {
-            at += 1;
-        }
+        let (at, _) = program_at(&words);
         if words.get(at) != Some(&"cargo") {
             continue;
         }
         let Some((package, cited)) = cited_test_targets(&words[at + 1..]) else { continue };
-        let Some(targets) = package_test_targets(root, package) else { continue };
+        let Some(targets) = package_test_targets(root, package, created) else { continue };
         let missing = cited.into_iter().find(|target| !target.contains(['*', '?', '[']) && !targets.iter().any(|known| known == target));
         if let Some(target) = missing {
             return Some(Refusal::ProofTestTargetMissing { package: package.to_string(), target: target.to_string(), targets });
@@ -322,18 +341,158 @@ fn missing_test_target(root: &Path, all: &[Piece]) -> Option<Refusal> {
     None
 }
 
-/// O defeito da prova `proof`, com os manifestos do projeto em `root`, ou
+/// Os programas cujo primeiro argumento solto é um padrão ou um roteiro, e
+/// não um arquivo.
+const PATTERN_FIRST: &[&str] = &["grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "jq", "perl"];
+
+/// Os programas que criam, movem ou apagam os caminhos que recebem, e as
+/// construções que conferem se um caminho existe: o caminho que eles citam é
+/// o assunto do comando, e não algo que precisa existir antes dele.
+const PATH_SUBJECT: &[&str] = &["test", "[", "[[", "mkdir", "touch", "tee", "cp", "mv", "ln", "rm", "install", "rsync"];
+
+/// As opções que mandam a ferramenta trabalhar noutra pasta: o caminho
+/// relativo do comando que as traz deixa de ser relativo à raiz.
+const ELSEWHERE: &[&str] = &[
+    "-C", "--prefix", "--cwd", "--dir", "--directory", "--filter", "--workspace", "--project", "--manifest-path", "--rootdir", "--root-dir",
+];
+
+/// O caminho relativo que a palavra `word` de um comando cita, já sem o `./`
+/// da frente, a barra do fim, o `/...` com que o `go` pede os pacotes de
+/// baixo e o `::` com que o teste é escolhido dentro do arquivo; `None`
+/// quando ela não tem cara de caminho — opção, expansão, padrão,
+/// redirecionamento, endereço, caminho absoluto, ou palavra sem barra que
+/// não termina em extensão de código nem segue a convenção de testes do
+/// mapa.
+fn cited_path(word: &str) -> Option<String> {
+    let word = word.split_once("::").map_or(word, |(path, _)| path);
+    let path = relative_dir(word)?;
+    let named = word.contains('/')
+        || mustard_core::domain::source_lang::language_of_path(&path).is_some()
+        || mustard_core::domain::ast::is_test_path(&path) && path.contains('.');
+    named.then_some(path)
+}
+
+/// A palavra `word` como caminho relativo, sem o `./` da frente, a barra do
+/// fim e o `/...` do `go`; `None` quando ela não é um caminho relativo
+/// escrito só com letras, números e `_-./+` — o pacote com escopo
+/// (`@escopo/nome`), o caminho absoluto e a opção também ficam de fora.
+fn relative_dir(word: &str) -> Option<String> {
+    let plain = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '+');
+    if word.is_empty() || word.starts_with(['-', '/']) || word.contains("//") || !word.chars().all(plain) {
+        return None;
+    }
+    let path = word.strip_suffix("/...").unwrap_or(word).trim_end_matches('/');
+    let path = path.strip_prefix("./").unwrap_or(path);
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// `true` quando o trabalho declara criar o caminho `path` ou algo dentro
+/// dele (`created`).
+fn declared(path: &str, created: &BTreeSet<String>) -> bool {
+    let inside = format!("{path}/");
+    created.iter().any(|file| file == path || file.starts_with(&inside))
+}
+
+/// A recusa do primeiro caminho relativo que um comando da prova cita e que
+/// não existe no projeto em `root`, nem o trabalho declara criar
+/// (`created`), em qualquer ferramenta: o comando que roda com um arquivo de
+/// teste que não existe falha só quando a onda o roda, ou passa sem provar
+/// nada. O `cd` muda a pasta de que os caminhos seguintes partem; o comando
+/// que trabalha noutra pasta ([`ELSEWHERE`]) e o que tem o caminho como
+/// assunto ([`PATH_SUBJECT`]) ficam sem conferência; o `git` só tem os
+/// caminhos depois de `--`; e o primeiro argumento de uma busca é o padrão.
+/// Depois de um `cd` que não se segue (`cd -`, `cd ~`), nada mais é conferido.
+fn missing_path(root: &Path, all: &[Piece], created: &BTreeSet<String>) -> Option<Refusal> {
+    let mut base = Some(PathBuf::new());
+    for words in commands(all) {
+        let Some(here) = base.clone() else { break };
+        let (at, _) = program_at(&words);
+        let Some(&program) = words.get(at) else { continue };
+        let args = &words[at + 1..];
+        if PATH_SUBJECT.contains(&program) || args.iter().any(|arg| ELSEWHERE.contains(&arg.split('=').next().unwrap_or(arg))) {
+            continue;
+        }
+        let mut cited: Vec<&str> = Vec::new();
+        let mut redirected = false;
+        let mut skip_pattern = PATTERN_FIRST.contains(&program) || (program == "git" && git_subcommand(args) == Some("grep"));
+        let mut after_dashes = false;
+        for arg in args {
+            if redirected {
+                redirected = false;
+                continue;
+            }
+            if arg.contains(['>', '<']) {
+                redirected = arg.ends_with(['>', '<']);
+                continue;
+            }
+            if *arg == "--" {
+                after_dashes = true;
+                continue;
+            }
+            if arg.starts_with('-') {
+                continue;
+            }
+            if skip_pattern {
+                skip_pattern = false;
+                continue;
+            }
+            if program != "git" || after_dashes {
+                cited.push(arg);
+            }
+        }
+        let paths: Vec<String> = if program == "cd" {
+            let dir = match (cited.as_slice(), args.len()) {
+                ([dir], 1) => relative_dir(dir),
+                _ => None,
+            };
+            base = dir.as_ref().map(|dir| if dir == "." { here.clone() } else { here.join(dir) });
+            dir.into_iter().filter(|dir| dir != ".").collect()
+        } else {
+            cited.into_iter().filter_map(cited_path).collect()
+        };
+        for path in paths {
+            let relative = here.join(&path);
+            let shown = relative.to_string_lossy().replace('\\', "/");
+            if !root.join(&relative).exists() && !declared(&shown, created) {
+                return Some(Refusal::ProofPathMissing { path: shown });
+            }
+        }
+    }
+    None
+}
+
+/// O caminho `path` como os arquivos declarados se comparam: com `/`, sem
+/// espaços nas pontas e sem o `./` da frente.
+pub(crate) fn relative_path(path: &str) -> String {
+    let path = path.trim().replace('\\', "/");
+    path.strip_prefix("./").map_or_else(|| path.clone(), str::to_string)
+}
+
+/// Os arquivos que a tarefa de campos `fields` declara criar: os de `files`
+/// marcados com `new: true` ([`relative_path`]).
+pub(crate) fn created_files(fields: &serde_json::Map<String, serde_json::Value>) -> BTreeSet<String> {
+    let files = fields.get("files").and_then(serde_json::Value::as_array).into_iter().flatten();
+    files
+        .filter(|file| file.get("new").and_then(serde_json::Value::as_bool) == Some(true))
+        .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
+        .map(relative_path)
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// O defeito da prova `proof`, com o projeto em `root` e os arquivos que o
+/// trabalho declara criar em `created` (relativos à raiz, com `/`), ou
 /// `None` quando ela se sustenta. A prova em branco fica para a conferência
 /// do campo obrigatório.
 #[must_use]
-pub(crate) fn proof_defect(root: &Path, proof: &str) -> Option<Refusal> {
-    proof_defect_finding(root, proof, resolves)
+pub(crate) fn proof_defect(root: &Path, proof: &str, created: &BTreeSet<String>) -> Option<Refusal> {
+    proof_defect_finding(root, proof, created, resolves)
 }
 
 /// O mesmo que [`proof_defect`], com `finds` dizendo quais programas existem:
 /// a conferência não olha a máquina de quem a roda, e o teste dela escolhe os
 /// programas que existem em vez de depender dos que estão instalados.
-fn proof_defect_finding(root: &Path, proof: &str, finds: impl Fn(&str) -> bool) -> Option<Refusal> {
+fn proof_defect_finding(root: &Path, proof: &str, created: &BTreeSet<String>, finds: impl Fn(&str) -> bool) -> Option<Refusal> {
     let proof = proof.trim();
     if proof.is_empty() {
         return None;
@@ -368,7 +527,7 @@ fn proof_defect_finding(root: &Path, proof: &str, finds: impl Fn(&str) -> bool) 
     if (git_grep || SEARCH_PROGRAMS.contains(&program)) && lone && !negated && !quiet(args) {
         return Some(Refusal::ProofSearchNotNegated { found: proof.to_string() });
     }
-    missing_test_target(root, &all)
+    missing_test_target(root, &all, created).or_else(|| missing_path(root, &all, created))
 }
 
 #[cfg(test)]
@@ -380,7 +539,7 @@ mod tests {
     const INSTALLED: [&str; 9] = ["cargo", "git", "grep", "rg", "node", "find", "echo", "npx", "npm"];
 
     fn reason(proof: &str) -> Option<&'static str> {
-        proof_defect_finding(Path::new("."), proof, |program| INSTALLED.contains(&program)).map(|refusal| refusal.reason())
+        proof_defect_finding(Path::new("."), proof, &BTreeSet::new(), |program| INSTALLED.contains(&program)).map(|refusal| refusal.reason())
     }
 
     /// A prova escrita em prosa, ou com o nome solto de um teste, não tem
@@ -392,13 +551,13 @@ mod tests {
         assert_eq!(reason("sum_comes_out_right"), Some("proof-program-unknown"));
         assert_eq!(reason("PATH=x sai vazio"), Some("proof-program-unknown"));
         assert_eq!(reason("! sai vazio"), Some("proof-program-unknown"));
-        let named = proof_defect(Path::new("."), "sai vazio").unwrap().message(mustard_core::platform::i18n::Locale::PtBr);
+        let named = proof_defect(Path::new("."), "sai vazio", &BTreeSet::new()).unwrap().message(mustard_core::platform::i18n::Locale::PtBr);
         assert!(named.contains("sai"), "a recusa diz o termo que falhou: {named}");
         // A conferência de verdade acha o programa pelo executor das provas: o
         // que a máquina tem passa, e o que ela não tem é recusado.
         let shell = if cfg!(windows) { "cmd /c ver" } else { "sh -c true" };
-        assert!(proof_defect(Path::new("."), shell).is_none(), "{shell}");
-        assert!(proof_defect(Path::new("."), "mustard-definitely-not-a-real-program-xyz --help").is_some());
+        assert!(proof_defect(Path::new("."), shell, &BTreeSet::new()).is_none(), "{shell}");
+        assert!(proof_defect(Path::new("."), "mustard-definitely-not-a-real-program-xyz --help", &BTreeSet::new()).is_some());
         for fine in [
             "cargo test",
             "git --version",
@@ -489,7 +648,7 @@ mod tests {
         put("apps/scan/tests/e2e/main.rs", "");
         put("apps/scan/tests/fixtures/data.txt", "");
         put("packages/core/Cargo.toml", "[package]\nname = \"mustard-core\"\n");
-        let defect = |proof: &str| proof_defect_finding(root, proof, |program| INSTALLED.contains(&program));
+        let defect = |proof: &str| proof_defect_finding(root, proof, &BTreeSet::new(), |program| INSTALLED.contains(&program));
 
         let refused = defect("cargo test -p mustard-rt --test agents_find_code_through_the_map").unwrap();
         assert_eq!(
@@ -502,8 +661,9 @@ mod tests {
         );
         let message = refused.message(mustard_core::platform::i18n::Locale::PtBr);
         assert!(message.contains("agents_find_code_through_the_map") && message.contains(": it."), "{message}");
+        // O pacote sem alvo nenhum tem frase própria, sem lista vazia.
         let none = defect("cargo test -p mustard-core --test it").unwrap().message(mustard_core::platform::i18n::Locale::EnUs);
-        assert!(none.contains("are: none."), "{none}");
+        assert!(none.contains("has no test target at all") && !none.contains(": ."), "{none}");
         for (proof, target, targets) in [
             ("cargo test -p scan --test nope", "nope", vec!["e2e", "graph"]),
             ("cargo build -j 2 && CARGO_TARGET_DIR=x cargo test --package=scan --test=gone", "gone", vec!["e2e", "graph"]),
@@ -532,12 +692,88 @@ mod tests {
             assert_eq!(defect(fine), None, "{fine}");
         }
 
-        // Um projeto em TypeScript, sem manifesto do Cargo: a prova de outra
-        // ferramenta, e até um `cargo test` com alvo, não têm o que conferir.
+        // O alvo que a tarefa declara criar, marcado como novo na lista de
+        // arquivos, conta como alvo do pacote quando o cargo acha os alvos
+        // sozinho; com `autotests = false`, o arquivo novo não vira alvo.
+        let created: BTreeSet<String> =
+            ["packages/core/tests/novo.rs", "apps/scan/tests/fresh/main.rs", "apps/rt/tests/novo.rs"].map(str::to_string).into();
+        let with_new = |proof: &str| proof_defect_finding(root, proof, &created, |program| INSTALLED.contains(&program));
+        assert_eq!(with_new("cargo test -p mustard-core --test novo"), None);
+        assert_eq!(with_new("cargo test -p scan --test fresh"), None);
+        assert_eq!(with_new("cargo test -p mustard-rt --test novo").map(|refusal| refusal.reason()), Some("proof-test-target-missing"));
+        assert_eq!(defect("cargo test -p mustard-core --test novo").map(|refusal| refusal.reason()), Some("proof-test-target-missing"));
+
+        // Um projeto em TypeScript, sem manifesto do Cargo: o `cargo test`
+        // com alvo não tem o que conferir.
         let web = tempfile::tempdir().unwrap();
         std::fs::write(web.path().join("package.json"), r#"{"name":"web","scripts":{"test":"vitest"}}"#).unwrap();
-        for fine in ["npx vitest run src/sum.test.ts", "npm test --workspace web -- --test sum", "cargo test -p web --test sum"] {
-            assert_eq!(proof_defect_finding(web.path(), fine, |program| INSTALLED.contains(&program)), None, "{fine}");
+        for fine in ["npm test --workspace web -- --test sum", "cargo test -p web --test sum"] {
+            assert_eq!(proof_defect_finding(web.path(), fine, &BTreeSet::new(), |program| INSTALLED.contains(&program)), None, "{fine}");
+        }
+    }
+
+    /// Em qualquer ferramenta, o caminho relativo que a prova cita e que o
+    /// projeto não tem é recusado, dizendo o caminho: o arquivo de teste do
+    /// vitest, do pytest, a pasta do `go test` e a do `dotnet test`, também
+    /// depois de um `cd`. O caminho que existe passa, e o que a tarefa
+    /// declara criar também. O padrão de uma busca, o argumento do `git`
+    /// antes de `--`, o pacote com escopo, o comando que trabalha noutra
+    /// pasta, o que tem o caminho como assunto e o redirecionamento ficam sem
+    /// conferência.
+    #[test]
+    fn a_path_the_project_lacks_is_refused_in_any_tool() {
+        let web = tempfile::tempdir().unwrap();
+        let root = web.path();
+        for (path, text) in [
+            ("package.json", r#"{"name":"web","scripts":{"test":"vitest"}}"#),
+            ("src/sum.ts", "export const sum = (a: number, b: number) => a + b;\n"),
+            ("src/sum.test.ts", ""),
+            ("apps/site/src/page.test.ts", ""),
+            ("docs/here.md", ""),
+        ] {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), text).unwrap();
+        }
+        let created: BTreeSet<String> = ["src/novo.test.ts"].map(str::to_string).into();
+        // Toda ferramenta conta como instalada: o caso aqui é só o caminho.
+        let defect = |proof: &str| proof_defect_finding(root, proof, &created, |_| true);
+
+        for (proof, path) in [
+            ("npx vitest run src/nao_existe.test.ts", "src/nao_existe.test.ts"),
+            ("npx vitest run sum.test.ts", "sum.test.ts"),
+            ("pytest tests/test_nao_existe.py::test_soma", "tests/test_nao_existe.py"),
+            ("go test ./pkg/gone/...", "pkg/gone"),
+            ("dotnet test tests/App.Tests", "tests/App.Tests"),
+            ("cd apps/site && npx vitest run src/gone.test.ts", "apps/site/src/gone.test.ts"),
+            ("cd apps/gone && npx vitest run", "apps/gone"),
+            ("! rg -n 'a/b' docs/gone.md", "docs/gone.md"),
+            ("npm test -- src/nao_existe.test.ts", "src/nao_existe.test.ts"),
+        ] {
+            assert_eq!(defect(proof), Some(Refusal::ProofPathMissing { path: path.into() }), "{proof}");
+        }
+        let message = defect("npx vitest run src/nao_existe.test.ts").unwrap().message(mustard_core::platform::i18n::Locale::PtBr);
+        assert!(message.contains("src/nao_existe.test.ts"), "a recusa diz o caminho: {message}");
+
+        for fine in [
+            "npx vitest run src/sum.test.ts",
+            "npx vitest run ./src/sum.test.ts",
+            "npx vitest run src/novo.test.ts",
+            "cd apps/site && npx vitest run src/page.test.ts",
+            "go test ./...",
+            "! rg -n 'x/y' docs/here.md",
+            "grep -q 'src/gone.ts' docs/here.md",
+            "git log origin/main",
+            "git diff --exit-code -- src/sum.ts",
+            "npx @biomejs/biome check src",
+            "npm test --workspace web -- src/gone.test.ts",
+            "test -f src/gone.ts",
+            "! test -e src/gone.ts",
+            "node -e \"require('./src/gone.js')\"",
+            "npx vitest run > out/log.txt",
+            "cargo test -j 2 -p web --lib -- flow::plan",
+            "cd - && npx vitest run src/gone.test.ts",
+        ] {
+            assert_eq!(defect(fine), None, "{fine}");
         }
     }
 

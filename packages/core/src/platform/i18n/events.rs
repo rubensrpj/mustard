@@ -220,8 +220,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              are: {targets}. Name one of them in --test, with the test's name as a filter after it, \
              or drop --test and keep only the filter. Nothing was written."
         }
-        ("spec_events.proof_test_targets_none", Locale::PtBr) => "nenhum",
-        ("spec_events.proof_test_targets_none", Locale::EnUs) => "none",
+        ("spec_events.proof_test_target_missing_none", Locale::PtBr) => {
+            "A prova roda o alvo de teste {target} do pacote {package}, e o pacote não tem alvo de \
+             teste nenhum. O cargo recusa o comando antes de rodar teste nenhum. Tire o --test e \
+             deixe só o nome do teste como filtro. Se a tarefa cria o alvo, declare o arquivo dele \
+             na lista de arquivos, marcado como novo. Nada foi gravado."
+        }
+        ("spec_events.proof_test_target_missing_none", Locale::EnUs) => {
+            "The proof runs test target {target} of package {package}, and the package has no test \
+             target at all. Cargo refuses the command before running any test. Drop --test and \
+             keep only the test's name as a filter, or declare the target's file in the task's \
+             files, marked as new. Nothing was written."
+        }
+        ("spec_events.proof_path_missing", Locale::PtBr) => {
+            "A prova cita o caminho {path}, que não existe no projeto. O comando falha quando a \
+             onda o roda, ou passa sem provar nada. Corrija o caminho, ou declare o arquivo na \
+             lista de arquivos da tarefa, marcado como novo, quando é a tarefa que o cria. Nada \
+             foi gravado."
+        }
+        ("spec_events.proof_path_missing", Locale::EnUs) => {
+            "The proof cites the path {path}, which does not exist in the project. The command \
+             fails when the wave runs it, or passes without proving anything. Fix the path, or \
+             declare the file in the task's files, marked as new, when the task creates it. \
+             Nothing was written."
+        }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -972,8 +994,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            125,
-            0x4753_d0ff_1db3_1bc8,
+            126,
+            0x4db1_a50b_d4d3_064c,
         );
     }
 
@@ -1011,7 +1033,8 @@ mod tests {
             ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
             ("spec_events.proof_search_not_negated", &["{found}"][..]),
             ("spec_events.proof_test_target_missing", &["{package}", "{target}", "{targets}"][..]),
-            ("spec_events.proof_test_targets_none", &[][..]),
+            ("spec_events.proof_test_target_missing_none", &["{target}", "{package}"][..]),
+            ("spec_events.proof_path_missing", &["{path}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.empty_text", &["{type}", "{field}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),

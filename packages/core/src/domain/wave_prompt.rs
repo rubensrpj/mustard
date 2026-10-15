@@ -1088,6 +1088,14 @@ const PROOF_MARKERS: &[&str] = &["Prova:", "Proof:"];
 /// palavras — vale para qualquer ferramenta, e nenhuma é conhecida aqui.
 fn named_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
     let fields: Vec<&str> = ["text", "agent"].iter().filter_map(|field| item.str_field(field)).collect();
+    proofs_named_in(&fields, test)
+}
+
+/// A mesma seleção de [`named_proofs`] sobre os textos `fields` de um relato
+/// que ainda não foi gravado: a gravação de um pedido, e a da sobra que a
+/// rodada converte em pedido, conferem as provas que a onda vai rodar.
+#[must_use]
+pub fn proofs_named_in(fields: &[&str], test: Option<&str>) -> Vec<String> {
     let mut named: Vec<String> = fields.iter().flat_map(|text| marked_proofs(text)).collect();
     if named.is_empty() {
         let head: Vec<&str> =

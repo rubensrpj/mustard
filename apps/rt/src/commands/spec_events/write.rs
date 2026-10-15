@@ -207,11 +207,12 @@ use mustard_core::domain::spec_state::{
     PhaseWriter, SpecState, State, birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::domain::wave_prompt::{marked_proofs, owner_rule};
+use mustard_core::domain::wave_prompt::{marked_proofs, owner_rule, proofs_named_in};
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
+use super::proof_check::{created_files, proof_defect, relative_path};
 use crate::commands::flow::round::{backlog_return, waves_left_without_tasks};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
@@ -549,23 +550,63 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
         point_to_open_pending(start, draft)?;
     }
     // A prova do critério é o comando que a rodada e o fechamento rodam: a que
-    // não roda, liga comandos por `;`, é uma busca sem `!` ou cita um alvo de
-    // teste que o pacote não tem recusa antes de gravar.
-    if event_type == "criterion"
-        && let Some(refusal) = draft.get("proof").and_then(Value::as_str).and_then(|proof| super::proof_check::proof_defect(start, proof))
-    {
-        return Err(refusal);
-    }
-    // A tarefa nomeia a prova dela na linha `Prova:` do texto ou da parte do
-    // agente, e a onda roda esses comandos no fim: cada um passa pela mesma
-    // conferência.
-    if event_type == "task" {
-        let named = ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).flat_map(marked_proofs);
-        if let Some(refusal) = named.into_iter().find_map(|proof| super::proof_check::proof_defect(start, &proof)) {
+    // não roda, liga comandos por `;`, é uma busca sem `!`, cita um alvo de
+    // teste que o pacote não tem ou um caminho que o projeto não tem recusa
+    // antes de gravar. O que uma tarefa da spec declara criar conta como
+    // existente.
+    let named: Vec<String> = match event_type {
+        "criterion" => draft.get("proof").and_then(Value::as_str).map(str::to_string).into_iter().collect(),
+        // A tarefa nomeia a prova dela na linha `Prova:` do texto ou da parte
+        // do agente, e a onda roda esses comandos no fim.
+        "task" => ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).flat_map(marked_proofs).collect(),
+        // O pronto-quando da onda sai das provas que o pedido coberto nomeia,
+        // pela mesma seleção da formação do lote.
+        "request" => {
+            let fields: Vec<&str> = ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).collect();
+            proofs_named_in(&fields, project_test(start).as_deref())
+        }
+        _ => Vec::new(),
+    };
+    if !named.is_empty() {
+        let root = checkout(start);
+        let created = if event_type == "task" { created_files(draft) } else { spec_created(start, spec.trim()) };
+        if let Some(refusal) = named.iter().find_map(|proof| proof_defect(&root, proof, &created)) {
             return Err(refusal);
         }
     }
+    // A sobra que a volta da onda traz vira, na rodada, um pedido com o
+    // detalhe dela como relato, e a rodada não confere o que grava: as provas
+    // que esse pedido vai nomear passam aqui, com os arquivos que a sobra
+    // declara mudar como os que ela cria.
+    if event_type == "delivered" {
+        let root = checkout(start);
+        let test = project_test(start);
+        for leftover in draft.get("leftovers").and_then(Value::as_array).into_iter().flatten() {
+            let Some(detail) = leftover.get("detail").and_then(Value::as_str) else { continue };
+            let created: BTreeSet<String> =
+                leftover.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(relative_path).collect();
+            let proofs = proofs_named_in(&[detail], test.as_deref());
+            if let Some(refusal) = proofs.iter().find_map(|proof| proof_defect(&root, proof, &created)) {
+                return Err(refusal);
+            }
+        }
+    }
     Ok(())
+}
+
+/// O comando de teste que o projeto de `start` declara: é por ele que a
+/// seleção das provas de um relato reconhece a prova sem marca.
+fn project_test(start: &Path) -> Option<String> {
+    mustard_core::ProjectConfig::load(&super::project(start).root).commands().test
+}
+
+/// Os arquivos que as tarefas vigentes da spec `spec`, lida no projeto de
+/// `start`, declaram criar: um critério ou um pedido pode citar o arquivo de
+/// teste que uma tarefa já declarou.
+fn spec_created(start: &Path, spec: &str) -> BTreeSet<String> {
+    let Ok(path) = store::spec_file(&super::project(start).root, spec) else { return BTreeSet::new() };
+    let Ok(Some(log)) = store::read(&path) else { return BTreeSet::new() };
+    log.visible().into_iter().filter(|event| event.event_type == "task").flat_map(|task| created_files(&task.fields)).collect()
 }
 
 /// A spec `spec` foi aberta: o arquivo de eventos dela existe, ou a pasta é
@@ -2342,6 +2383,70 @@ mod tests {
 
         let accepted = write(root, "task", &task("cargo test -p mustard-rt --test it agents_find_code_through_the_map"));
         assert_eq!(accepted["ok"], json!(true), "{accepted}");
+
+        // A tarefa que declara criar o arquivo do alvo, marcado como novo,
+        // tem a prova dele aceita.
+        let declares = json!({"title": "Alvo novo", "text": "Cria o alvo novo.",
+            "agent": "Prova: `cargo test -p calc --test novo`.", "files": [{"path": "calc/tests/novo.rs", "new": true}],
+            "depends_on": [], "covers": [crit], "origin": said});
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"apps/rt\", \"calc\"]\n").unwrap();
+        std::fs::create_dir_all(root.join("calc")).unwrap();
+        std::fs::write(root.join("calc/Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+        let created = write(root, "task", &declares.to_string());
+        assert_eq!(created["ok"], json!(true), "{created}");
+        let mut undeclared = declares.clone();
+        undeclared["files"] = json!([{"path": "calc/src/lib.rs"}]);
+        assert_eq!(write(root, "task", &undeclared.to_string())["reason"], json!("proof-test-target-missing"));
+    }
+
+    /// O pronto-quando da onda sai das provas que o pedido coberto nomeia, e
+    /// a gravação do pedido as confere pela mesma seleção: o pedido cuja
+    /// prova cita um alvo que o pacote não tem, ou um arquivo de teste que o
+    /// projeto não tem, é recusado sem gravar; com o alvo e o arquivo que
+    /// existem, é gravado. A sobra da volta de uma onda, que a rodada converte
+    /// em pedido, passa pela mesma conferência na gravação da volta, com os
+    /// arquivos que ela declara como os que ela cria.
+    #[test]
+    fn a_request_whose_proof_names_a_missing_target_or_file_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/soma.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        std::fs::write(root.join("web/src/sum.test.ts"), "").unwrap();
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let request = |proof: &str| {
+            json!({"title": "Soma certa", "text": "A soma sai certa.", "agent": format!("Prova: `{proof}`."),
+            "effect": "new_waves", "keys": ["soma"], "origin": said})
+            .to_string()
+        };
+
+        let before = lines(root);
+        for (proof, reason) in [
+            ("cargo test -p calc --test nope", "proof-test-target-missing"),
+            ("npx vitest run web/src/nao_existe.test.ts", "proof-path-missing"),
+        ] {
+            let refused = write(root, "request", &request(proof));
+            assert_eq!(refused["reason"], json!(reason), "{proof}: {refused}");
+            assert_eq!(lines(root), before, "{proof}: nada foi gravado");
+        }
+        for proof in ["cargo test -p calc --test soma", "npx vitest run web/src/sum.test.ts"] {
+            let accepted = write(root, "request", &request(proof));
+            assert_eq!(accepted["ok"], json!(true), "{proof}: {accepted}");
+        }
+
+        let delivered = |files: Value| {
+            let mut draft = json!({"wave": 1, "text": "feito", "leftovers": [{"title": "Teste novo", "files": files,
+                "detail": "Falta o teste da soma. Prova: `npx vitest run web/src/novo.test.ts`"}]})
+            .as_object()
+            .cloned()
+            .unwrap();
+            draft_rules(root, "teste", "delivered", &mut draft, true)
+        };
+        assert_eq!(delivered(json!(["web/src/sum.ts"])), Err(Refusal::ProofPathMissing { path: "web/src/novo.test.ts".into() }));
+        assert_eq!(delivered(json!(["web/src/novo.test.ts"])), Ok(()));
     }
 
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada

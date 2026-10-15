@@ -223,6 +223,11 @@ pub enum Refusal {
     /// de rodar teste nenhum. `targets` são os alvos de teste que o pacote
     /// tem, vazio quando ele não tem nenhum. Nada é gravado.
     ProofTestTargetMissing { package: String, target: String, targets: Vec<String> },
+    /// A prova que cita um caminho relativo, `path`, que não existe no
+    /// projeto e que o trabalho não declara criar: o comando falha quando a
+    /// onda o roda, ou passa sem provar nada, em qualquer ferramenta. Nada é
+    /// gravado.
+    ProofPathMissing { path: String },
     /// Um pedido gravado pelo assistente numa spec que já fechou, com a fase
     /// `phase` (fechada ou com o pull request aberto). Ela recebe o pedido
     /// depois de reaberta, na mesma spec e na mesma branch: a mensagem aponta
@@ -380,6 +385,7 @@ impl Refusal {
             Self::ProofChainedBySemicolon { .. } => "proof-chained-by-semicolon",
             Self::ProofSearchNotNegated { .. } => "proof-search-not-negated",
             Self::ProofTestTargetMissing { .. } => "proof-test-target-missing",
+            Self::ProofPathMissing { .. } => "proof-path-missing",
             Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
             Self::WorkOnFinishedSpec { .. } => "work-on-finished-spec",
             Self::Io { .. } => "io-failed",
@@ -670,16 +676,14 @@ impl Refusal {
                 fill("spec_events.proof_search_not_negated", &[("{found}", found.clone())])
             }
             Self::ProofTestTargetMissing { package, target, targets } => {
-                let targets = if targets.is_empty() {
-                    translate("spec_events.proof_test_targets_none", lang).to_string()
+                let key = if targets.is_empty() {
+                    "spec_events.proof_test_target_missing_none"
                 } else {
-                    targets.join(", ")
+                    "spec_events.proof_test_target_missing"
                 };
-                fill(
-                    "spec_events.proof_test_target_missing",
-                    &[("{package}", package.clone()), ("{target}", target.clone()), ("{targets}", targets)],
-                )
+                fill(key, &[("{package}", package.clone()), ("{target}", target.clone()), ("{targets}", targets.join(", "))])
             }
+            Self::ProofPathMissing { path } => fill("spec_events.proof_path_missing", &[("{path}", path.clone())]),
             Self::RequestOnClosedSpec { spec, phase } => fill(
                 "spec_events.request_on_closed_spec",
                 &[("{spec}", spec.clone()), ("{phase}", phase.clone())],

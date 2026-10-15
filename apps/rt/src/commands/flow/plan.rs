@@ -425,10 +425,11 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
 
     // A prova de cada critério é o comando que a rodada e o fechamento
     // rodam: a que não roda, liga comandos por `;`, é uma busca sem `!` ou
-    // cita um alvo de teste que o pacote não tem segura a pergunta de
-    // aprovação.
+    // cita um alvo de teste ou um caminho que o projeto não tem, nem uma
+    // tarefa do plano declara criar, segura a pergunta de aprovação.
+    let created: BTreeSet<String> = tasks.iter().flat_map(|task| spec_events::proof_check::created_files(&task.fields)).collect();
     for criterion in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
-        let refusal = criterion.str_field("proof").and_then(|proof| spec_events::proof_check::proof_defect(root, proof));
+        let refusal = criterion.str_field("proof").and_then(|proof| spec_events::proof_check::proof_defect(root, proof, &created));
         if let Some(refusal) = refusal {
             out.push(PlanFinding::Proof { criterion: code_of(criterion), refusal });
         }
@@ -823,6 +824,44 @@ mod tests {
         let hints: Vec<String> =
             report["blocking"].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f["hint"].as_str().map(str::to_string)).collect();
         assert!(hints.iter().any(|h| h.starts_with("MSTD-CRIT-") && h.contains("sai")), "{hints:?}");
+    }
+
+    /// O critério gravado cru, sem passar pela gravação, com uma prova que
+    /// cita um alvo de teste ou um arquivo que o projeto não tem, segura a
+    /// pergunta de aprovação: os manifestos e os arquivos são lidos da raiz
+    /// do plano. O alvo e o arquivo que uma tarefa do plano declara criar
+    /// passam.
+    #[test]
+    fn a_criterion_proof_citing_what_the_project_lacks_holds_the_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/soma.rs"), "").unwrap();
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Cria os testes novos.",
+            "files": [{"path": "tests/novo.rs", "new": true}, {"path": "web/novo.test.ts", "new": true}], "origin": said}),
+        );
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let mut next = log.max_id();
+        for proof in ["cargo test -p calc --test nope", "npx vitest run web/gone.test.ts", "cargo test -p calc --test novo", "npx vitest run web/novo.test.ts"] {
+            next += 1;
+            append_raw(root, "x", "criterion", json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said}), next);
+        }
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let blocking = reasons(&report, "blocking");
+        assert_eq!(blocking.iter().filter(|r| *r == "proof-test-target-missing").count(), 1, "{report}");
+        assert_eq!(blocking.iter().filter(|r| *r == "proof-path-missing").count(), 1, "{report}");
+        let hints = hints_of(&report, "blocking", "proof-path-missing");
+        assert!(hints.iter().any(|hint| hint.contains("web/gone.test.ts")), "{hints:?}");
     }
 
     /// As citações do plano passam pela mesma conferência do ponto do

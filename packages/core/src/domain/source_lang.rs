@@ -73,7 +73,7 @@ const EXT_LANG: &[(&str, &str)] = &[
 /// `\` separators (tool targets arrive in both shapes on Windows) and any
 /// trailing backtick left by a markdown bullet.
 #[must_use]
-pub(crate) fn language_of_path(path: &str) -> Option<&'static str> {
+pub fn language_of_path(path: &str) -> Option<&'static str> {
     let name = path
         .rsplit(['/', '\\'])
         .next()
