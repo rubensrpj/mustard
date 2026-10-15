@@ -48,10 +48,11 @@ pub enum MaintCmd {
     ///
     /// Só lista por padrão; `--apply` apaga as listadas e esvazia a
     /// compilação compartilhada `~/.cache/mustard/scratch-target` acima de
-    /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
-    /// de conferir que ela está no temp do sistema, é do usuário e fica fora
-    /// de qualquer checkout do git — senão é recusado (exit 1), e a recusa diz
-    /// isso. A exclusão é do próprio binário, nunca de shell.
+    /// 8 GB. `--path <caminho>` apaga uma pasta ou um arquivo regular só, sem
+    /// o filtro de idade, depois de conferir que ele está no temp do sistema,
+    /// é do usuário, fica fora de qualquer checkout do git e não é um link
+    /// simbólico — senão é recusado (exit 1), e a recusa diz isso. A exclusão
+    /// é do próprio binário, nunca de shell.
     ///
     /// Sem `--path`, lista também as cópias de obra do projeto da pasta
     /// atual: saem as de obra fechada, descartada ou que não existe mais, sem
@@ -70,8 +71,9 @@ pub enum MaintCmd {
         /// Apaga as candidatas listadas. Obrigatório para mexer no disco.
         #[arg(long)]
         apply: bool,
-        /// Apaga só esta pasta, conferida, sem o filtro de idade. Não combina
-        /// com `--apply`: são dois modos, e um calado pelo outro engana.
+        /// Apaga só esta pasta ou este arquivo, conferido, sem o filtro de
+        /// idade. Não combina com `--apply`: são dois modos, e um calado pelo
+        /// outro engana.
         #[arg(long, conflicts_with = "apply")]
         path: Option<PathBuf>,
     },
