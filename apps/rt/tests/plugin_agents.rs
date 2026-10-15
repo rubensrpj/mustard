@@ -378,8 +378,9 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
 /// a linha do passo nomeia cada campo que a gravação do passo exige, para a
 /// primeira gravação não voltar recusada; que o passo responde, com a marca
 /// do Mustard, se o agente segue ou entrega, e que a resposta se obedece; que
-/// tarefa começada se conclui antes da entrega; e não manda mais parar no
-/// meio da tarefa, nem conta chamadas de folga.
+/// o sinal chega aos 75% da janela do modelo, ou após 150 mil de trabalho
+/// sem janela conhecida; que tarefa começada se conclui antes da entrega; e
+/// não manda mais parar no meio da tarefa, nem conta chamadas de folga.
 #[test]
 fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started() {
     let said = [
@@ -389,6 +390,7 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
             [
                 "ao terminar tarefa, com o número da onda no `wave`, o código dela no `item`",
                 "O resultado traz, com a marca [Mustard], se você segue ou entrega",
+                "O sinal chega aos 75% da janela do modelo; sem janela conhecida,",
                 "entrada inicial + resumos herdados + 150 mil tokens de trabalho",
                 "termine a tarefa atual, testes mínimos e resumo; não comece outra",
             ],
@@ -400,6 +402,7 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
             [
                 "on finishing a task, with the wave number in `wave`, its code in `item`",
                 "The result says, marked [Mustard], whether you go on or deliver",
+                "The signal comes at 75% of the model's window; with no known window,",
                 "initial input + inherited summaries + 150 thousand work tokens",
                 "finish the current task, minimal tests and summary; start no other task",
             ],

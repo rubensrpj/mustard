@@ -554,13 +554,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.notice", Locale::EnUs) => {
             "[Mustard] Context reached {tokens} thousand tokens. Finish the current step and use `/compact` or `/clear`. Resume: {line}"
         }
-        // A entrada e os resumos herdados precedem o horizonte de trabalho.
+        // A entrada e os resumos herdados precedem o horizonte de trabalho,
+        // e o aviso diz a janela do modelo com que o horizonte foi medido.
         ("conversation_size.wave_signal", Locale::PtBr) => {
-            "[Mustard] Sinal de conclusão: entrada e resumos herdados, {baseline} mil tokens; trabalho, {counted} mil; contexto total, {now} mil. O sinal é entrada + {limit} mil = {total_limit} mil. Termine a tarefa atual, execute os testes mínimos, grave o resumo e devolva ao orquestrador. Não comece outra tarefa. A tarefa atual continua liberada."
+            "[Mustard] Sinal de conclusão: entrada e resumos herdados, {baseline} mil tokens; trabalho, {counted} mil; contexto total, {now} mil. {basis} O sinal é entrada + {limit} mil = {total_limit} mil. Termine a tarefa atual, execute os testes mínimos, grave o resumo e devolva ao orquestrador. Não comece outra tarefa. A tarefa atual continua liberada."
         }
         ("conversation_size.wave_signal", Locale::EnUs) => {
-            "[Mustard] Wrap-up signal: initial input and inherited summaries, {baseline} thousand tokens; work, {counted} thousand; total context, {now} thousand. The signal is initial input + {limit} thousand = {total_limit} thousand. Finish the current task, run minimal tests, record the summary and return to the orchestrator. Do not start another task. The current task remains executable."
+            "[Mustard] Wrap-up signal: initial input and inherited summaries, {baseline} thousand tokens; work, {counted} thousand; total context, {now} thousand. {basis} The signal is initial input + {limit} thousand = {total_limit} thousand. Finish the current task, run minimal tests, record the summary and return to the orchestrator. Do not start another task. The current task remains executable."
         }
+        // A janela que o sinal usou: a do modelo da onda, conhecida pela
+        // tabela da API, ou nenhuma, e então vale o horizonte fixo. O
+        // tamanho dela vai por extenso: 1 milhão, ou o número de mil.
+        ("conversation_size.window_known", Locale::PtBr) => {
+            "Janela do modelo {model}: {window}; o sinal chega aos {share}% dela."
+        }
+        ("conversation_size.window_known", Locale::EnUs) => {
+            "Window of model {model}: {window}; the signal comes at {share}% of it."
+        }
+        ("conversation_size.window_million", Locale::PtBr) => "1 milhão de tokens",
+        ("conversation_size.window_million", Locale::EnUs) => "1 million tokens",
+        ("conversation_size.window_thousands", Locale::PtBr) => "{n} mil tokens",
+        ("conversation_size.window_thousands", Locale::EnUs) => "{n} thousand tokens",
+        ("conversation_size.window_unknown", Locale::PtBr) => "Janela do modelo desconhecida: vale o horizonte fixo de trabalho.",
+        ("conversation_size.window_unknown", Locale::EnUs) => "Model window unknown: the fixed work horizon applies.",
         ("conversation_size.wave_continue", Locale::PtBr) => {
             "[Mustard] Fim de tarefa: contexto total, {now} mil tokens; entrada e resumos herdados, {baseline} mil; trabalho, {counted} mil. O sinal é entrada + {limit} mil = {total_limit} mil. A maior tarefa acrescentou {largest} mil. Siga para a próxima tarefa."
         }
@@ -1926,7 +1942,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 266, 0x41cb_2dde_801c_7b81);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 270, 0xeeb3_030b_aa1e_c50c);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2088,7 +2104,11 @@ mod tests {
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{line}"][..]),
-            ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}"][..]),
+            ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{basis}", "{limit}", "{total_limit}"][..]),
+            ("conversation_size.window_known", &["{model}", "{window}", "{share}"][..]),
+            ("conversation_size.window_million", &[][..]),
+            ("conversation_size.window_thousands", &["{n}"][..]),
+            ("conversation_size.window_unknown", &[][..]),
             ("conversation_size.wave_continue", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}", "{largest}"][..]),
             ("conversation_size.wave_deliver", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}", "{largest}"][..]),
             ("conversation_size.wave_locked", &["{build}"][..]),

@@ -176,7 +176,7 @@ apagar recursos remotos requer operação separada na conta do usuário.
 Protocolo: [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)
 e [API de deployments](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/).
 
-Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de 100 mil, uma vez por faixa. Limpar ou compactar a sessão reinicia essa contagem. Para o agente, 150 mil são um horizonte de capacidade: ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
+Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de 100 mil, uma vez por faixa. Limpar ou compactar a sessão reinicia essa contagem. Para o agente, o sinal chega aos 75% da janela do modelo que o atende, pela tabela da documentação da API; sem janela conhecida, depois de 150 mil tokens de trabalho além da entrada e dos resumos herdados. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
 
 O painel conta as chamadas observadas do fluxo, leitura, gravação e busca, inclusive recusas. A medição de transporte de `read`, `write` e `search` fica em `.claude/mustard/operations/<spec>.ndjson`, separada dos itens e dos recibos obrigatórios de leitura do agente. Uma gravação recusada não muda o histórico canônico da spec. Bytes são medidos; tokens de transporte são aproximações pelo tamanho do texto, sem guardar o conteúdo dos argumentos. Essas contagens não demonstram, sozinhas, economia de tokens ou de dinheiro.
 
