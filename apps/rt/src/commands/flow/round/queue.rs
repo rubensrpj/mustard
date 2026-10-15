@@ -325,15 +325,23 @@ pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>)
 /// versão antiga, também sem o par.
 const NO_HOST_PROCESS: &str = "no_host_process";
 
+/// O campo do envio gravado junto do par quando o par é do hospedeiro
+/// reconhecido: é ele que separa o par de agora do par do envio de versão
+/// antiga feito no Codex, que guardava o processo da própria rodada.
+const HOST_PAIR: &str = "host_pair";
+
 /// Os campos que dizem, no envio, qual hospedeiro o mandou: o par
 /// (`claude_pid`, `claude_started`) do hospedeiro reconhecido
-/// ([`crate::commands::flow::stuck::sender_process`]) ou, sem nenhum, a marca
-/// [`NO_HOST_PROCESS`]. [`host_still_here`] lê de volta o que sai daqui.
-pub(super) fn sender_fields(sender: Option<(u32, u64)>) -> Map<String, Value> {
+/// ([`crate::commands::flow::stuck::sender_process`]), com a marca
+/// [`HOST_PAIR`], ou, sem nenhum, a marca [`NO_HOST_PROCESS`]. O despacho do
+/// agente novo de uma onda que voltou grava o hospedeiro dele por aqui
+/// também. [`host_still_here`] lê de volta o que sai daqui.
+pub(crate) fn sender_fields(sender: Option<(u32, u64)>) -> Map<String, Value> {
     let mut fields = Map::new();
     if let Some((pid, started)) = sender {
         fields.insert("claude_pid".into(), json!(pid));
         fields.insert("claude_started".into(), json!(started));
+        fields.insert(HOST_PAIR.into(), json!(true));
     } else {
         fields.insert(NO_HOST_PROCESS.into(), json!(true));
     }
@@ -347,14 +355,20 @@ pub(super) fn sender_fields(sender: Option<(u32, u64)>) -> Map<String, Value> {
 /// orquestrador manda. A exceção é o envio de versão antiga sem o par, que só
 /// o Claude Code mandava: com o campo `host` dizendo `claude` e sem a marca
 /// [`NO_HOST_PROCESS`], ele segue a regra de antes — fechado no Linux, aberto
-/// fora dele.
+/// fora dele. O envio de versão antiga feito no Codex, com o par e sem a
+/// marca [`HOST_PAIR`], gravou o processo da própria rodada, que morre logo
+/// depois: esse par não diz nada do hospedeiro, e o envio conta como aberto,
+/// como o envio sem hospedeiro reconhecido.
 fn host_still_here(log: &SpecLog, sent: u64) -> bool {
     let Some(event) = log.get(sent) else {
         return false;
     };
     match (event.int("claude_pid"), event.int("claude_started")) {
         #[allow(clippy::cast_possible_truncation)]
-        (Some(pid), Some(started)) => crate::commands::flow::stuck::process_alive(pid as u32, started),
+        (Some(pid), Some(started)) => {
+            let round_pair = event.str_field("host") == Some("codex") && event.fields.get(HOST_PAIR).is_none();
+            round_pair || crate::commands::flow::stuck::process_alive(pid as u32, started)
+        }
         _ => {
             let older_claude_send = event.str_field("host") == Some("claude") && event.fields.get(NO_HOST_PROCESS).is_none();
             !older_claude_send || cfg!(not(target_os = "linux"))
@@ -1155,6 +1169,41 @@ mod tests {
         assert_eq!(waves_in(&second, "dispatch"), vec![2], "só a órfã de versão antiga do Claude Code sai de novo: {second}");
         let running = waves_in_progress(&store::read(&path).unwrap().unwrap());
         assert!(running.contains_key(&1) && running.contains_key(&3), "{running:?}: {second}");
+    }
+
+    /// O envio de versão antiga feito no Codex guardava, no lugar do
+    /// hospedeiro, o processo da própria rodada, que morre logo depois: com
+    /// esse par morto e sem a marca do par do hospedeiro, a onda não é dada
+    /// como órfã, não sai de novo e segue em andamento. O par morto com a
+    /// marca, de um Codex reconhecido que fechou, e o par morto do envio
+    /// antigo do Claude Code seguem órfãos e saem de novo. O projeto é em
+    /// TypeScript.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_older_codex_send_with_a_closed_pair_is_never_orphaned() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/app.ts"], &[]), (2, &["src/b.ts"], &[]), (3, &["src/c.ts"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        for (wave, host, marked) in [(1, "codex", false), (2, "codex", true), (3, "claude", false)] {
+            let log = store::read(&path).unwrap().unwrap();
+            let mut draft = send_revision(&log, wave, sender_fields(Some(closed_process()))).expect("the send of the wave");
+            draft.remove(NO_HOST_PROCESS);
+            if !marked {
+                draft.remove(HOST_PAIR);
+            }
+            draft.insert("host".into(), json!(host));
+            store::write_at(&path, "send", draft, &[], &at).unwrap();
+        }
+
+        let second = round(root, "x", None);
+        assert_eq!(waves_in(&second, "dispatch"), vec![2, 3], "o envio antigo do Codex com o par morto não sai de novo: {second}");
+        let running = waves_in_progress(&store::read(&path).unwrap().unwrap());
+        assert!(running.contains_key(&1), "{running:?}: {second}");
     }
 
     /// A onda que já entregou não é despachada de novo, mesmo sem pedido
@@ -3990,5 +4039,30 @@ mod tests {
         let log = spec_now(root);
         assert_eq!(waves_in_progress(&log).into_keys().collect::<Vec<_>>(), vec![2]);
         assert_eq!(open_sends(&log).into_keys().collect::<Vec<_>>(), vec![2]);
+    }
+    /// A remoção da única tarefa de uma onda enviada responde com o número
+    /// dessa onda, que sai do ar com ela, e nunca com a onda que segue com
+    /// tarefa. A remoção seguinte, de uma tarefa do backlog, fora de qualquer
+    /// onda, responde sem onda nenhuma: a onda que já tinha saído do ar não
+    /// volta à lista. O projeto é em TypeScript e C#.
+    #[test]
+    fn removing_the_only_task_of_a_sent_wave_answers_with_that_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["web/app.ts"], &[]), (2, &["src/Program.cs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+        let log = spec_now(root);
+        let first_of = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
+        let loose = backlog_task_on(root, first_of("message"), first_of("criterion"), "Mexer na tela de fora.", &["web/other.ts"]);
+        let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
+
+        let removed = write(root, "x", "remove", json!({"targets": [task], "reason": "Já foi feito fora da onda."}));
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+        assert_eq!(removed["waves_left_without_tasks"], json!([1]), "a remoção diz que a onda 1 saiu do ar: {removed}");
+
+        let outside = write(root, "x", "remove", json!({"targets": [loose], "reason": "Já foi feito fora da obra."}));
+        assert_eq!(outside["ok"], json!(true), "{outside}");
+        assert!(outside.get("waves_left_without_tasks").is_none(), "a tarefa de fora de qualquer onda não tira onda do ar: {outside}");
     }
 }

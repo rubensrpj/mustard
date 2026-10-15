@@ -853,6 +853,11 @@ pub const TYPES: &[TypeSpec] = &[
             // hospedeiro fora da lista —, e por isso sem o par: é o que o
             // separa do envio de versão antiga, também sem o par.
             opt("no_host_process", Kind::Bool),
+            // A marca do par que é do hospedeiro reconhecido: o envio de
+            // versão antiga feito no Codex traz o par sem ela, porque gravava
+            // o processo da própria rodada, e esse par não diz se o
+            // hospedeiro segue aberto.
+            opt("host_pair", Kind::Bool),
             // A reprovação de quem conduz a obra: a volta da onda que ele
             // reprovou, pelo número (`delivered`), e o motivo dele (`reason`).
             // Enquanto essa volta for a última da onda, ela fica fora do

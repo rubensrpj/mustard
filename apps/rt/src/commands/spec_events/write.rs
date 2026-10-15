@@ -70,6 +70,9 @@
 //! com a trava presa, a versão sem onda de cada tarefa que ainda levava o
 //! número dela, e a saída lista essas versões em `returned`. As tarefas da
 //! onda entregue ficam como estão, e o número da removida não volta a nascer.
+//! A remoção que deixa sem tarefa nenhuma uma onda com envio aberto lista em
+//! `waves_left_without_tasks` os números dessas ondas, que saem do ar com
+//! ela; a remoção que não tira onda nenhuma do ar não traz a lista.
 //! Um pedido (`request`) devolve em `next` o
 //! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram no
 //! backlog, ou as versões novas das que mudam, na mesma spec e na mesma branch.
@@ -209,7 +212,7 @@ use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::round::backlog_return;
+use crate::commands::flow::round::{backlog_return, waves_left_without_tasks};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -381,7 +384,7 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
         if event_type == "remove" { record_removal(&project, &opts.root, spec, draft) } else { record_in(&project, &opts.root, spec, event_type, draft, None) };
     drop(held);
     match recorded {
-        Ok(Recorded { written, survey, returned }) => {
+        Ok(Recorded { written, survey, returned, emptied_waves }) => {
             // O item gravado entra no bloco das specs do mapa. A gravação na
             // spec já está feita: a falha no mapa não a desfaz, e a próxima
             // resposta do mapa tenta de novo.
@@ -403,6 +406,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
             }
             if !returned.is_empty() {
                 report["returned"] = json!(returned);
+            }
+            if !emptied_waves.is_empty() {
+                report["waves_left_without_tasks"] = json!(emptied_waves);
             }
             // Se não deu para refazer a linha da spec no índice, o evento já
             // está no arquivo: fica o aviso. O nome citado num fato que o
@@ -610,6 +616,9 @@ pub struct Recorded {
     /// Os números das versões sem onda que a remoção de uma onda devolveu ao
     /// backlog ([`record_removal`]); vazio nas outras gravações.
     pub(crate) returned: Vec<u64>,
+    /// As ondas com envio aberto que a remoção tirou do ar por ficarem sem
+    /// tarefa nenhuma ([`record_removal`]); vazio nas outras gravações.
+    pub(crate) emptied_waves: Vec<u64>,
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
@@ -1010,14 +1019,18 @@ fn record_to(
         Some(locked) => locked.write_guarded(event_type, draft, &roots, find, guard, |_| {})?,
         None => store::write_guarded(&path, event_type, draft, &roots, find, guard, |_| {})?,
     };
-    Ok(Recorded { written, survey, returned: Vec::new() })
+    Ok(Recorded { written, survey, returned: Vec::new(), emptied_waves: Vec::new() })
 }
 
 /// A remoção que o modelo grava e, no mesmo trecho com a trava do arquivo
 /// presa, a volta ao backlog das tarefas da onda que ela tirou sem entrega
 /// ([`SpecLog::tasks_of_removed_waves`]): cada uma ganha a versão sem `wave`
 /// ([`backlog_return`]), gravada pelo programa. Sem isso a tarefa ficaria
-/// presa ao número de uma onda que não existe mais, fora do backlog.
+/// presa ao número de uma onda que não existe mais, fora do backlog. A
+/// remoção diz também as ondas com envio aberto que ela tirou do ar
+/// ([`waves_left_without_tasks`]): as que ficaram sem tarefa por ela, e não
+/// as que já estavam assim antes. Quem remove a tarefa errada vê que a onda
+/// que queria tirar do ar não está na lista.
 ///
 /// # Errors
 ///
@@ -1025,12 +1038,14 @@ fn record_to(
 fn record_removal(project: &super::Project, start: &Path, spec: &str, draft: Map<String, Value>) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
     let held = store::with_locked_writer(&path, |locked| -> Result<Recorded, Refusal> {
+        let before = waves_left_without_tasks(locked.log());
         let mut removal = record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked))?;
         let freed: Vec<Map<String, Value>> = locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
         for task in freed {
             let back = record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked))?;
             removal.returned.push(back.written.id);
         }
+        removal.emptied_waves = waves_left_without_tasks(locked.log()).into_keys().filter(|wave| !before.contains_key(wave)).collect();
         Ok(removal)
     })?;
     // Sem o arquivo de eventos, a gravação comum dá a recusa de sempre.

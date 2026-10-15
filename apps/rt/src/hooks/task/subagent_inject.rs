@@ -141,9 +141,11 @@ fn spec_log(root: &Path, spec: &str, lang: Locale) -> Result<SpecLog, String> {
 /// para ela ([`crate::commands::flow::round::wave_dispatch`]) no lugar do que
 /// o condutor escreveu. A onda recusada cujo agente se foi com o Claude Code
 /// que a mandou sai a um agente novo, um só ([`new_agent_fix`]), com o mesmo
-/// texto seguido do trecho de conserto. Fora isso, a onda que a spec não tem
-/// em andamento é barrada.
-fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64) -> Verdict {
+/// texto seguido do trecho de conserto; `host` acha o hospedeiro que
+/// despacha, gravado no envio para segurar a onda com o agente novo, e só é
+/// chamado quando a onda não está em andamento. Fora isso, a onda que a spec
+/// não tem em andamento é barrada.
+fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64, host: fn() -> Option<(u32, u64)>) -> Verdict {
     let project = crate::commands::spec_events::project(start);
     let lang = project.lang;
     let log = match spec_log(&project.root, spec, lang) {
@@ -167,7 +169,7 @@ fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64) -> Verd
         return replaced(input, "prompt", text, "subagent.dispatch_replaced", wave, lang);
     }
     let extra = supplemental_instructions(dispatch_prompt(input), &text);
-    let Some(fix) = new_agent_fix(&project.root, spec, wave, &extra, lang) else {
+    let Some(fix) = new_agent_fix(&project.root, spec, wave, host(), &extra, lang) else {
         let reason = say("subagent.wave_not_running", lang, &[("{spec}", spec), ("{wave}", &wave.to_string())]);
         return Verdict::Deny { reason };
     };
@@ -225,7 +227,8 @@ fn supplemental_instructions(sent: &str, canonical: &str) -> String {
 /// novo ([`crate::commands::flow::round::waves_awaiting_new_agent`]) — o da
 /// conferência que recusou a volta, ou o motivo de quem a reprovou —, com o
 /// despacho dele gravado: o envio da onda ganha uma versão com o hospedeiro
-/// atual ([`crate::commands::flow::stuck::sender_process`]), e outro despacho
+/// que despacha (`host`; no gancho, o que
+/// [`crate::commands::flow::stuck::sender_process`] acha), e outro despacho
 /// é barrado enquanto esse hospedeiro segue aberto; fechado também ele, a
 /// onda volta a aceitar um agente novo. Sem hospedeiro reconhecido, a versão
 /// sai sem ele, e a onda segue aceitando um agente novo, como antes do
@@ -233,15 +236,14 @@ fn supplemental_instructions(sent: &str, canonical: &str) -> String {
 /// onda segue voltada e o trecho segue valendo. Ler, conferir e gravar correm
 /// com a trava do arquivo de eventos presa: de dois despachos na mesma
 /// resposta, só um passa. Nada sem a gravação feita.
-fn new_agent_fix(root: &Path, spec: &str, wave: u64, instruction: &str, lang: Locale) -> Option<String> {
+fn new_agent_fix(root: &Path, spec: &str, wave: u64, host: Option<(u32, u64)>, instruction: &str, lang: Locale) -> Option<String> {
     let path = store::spec_file(root, spec).ok()?;
     let taken = store::with_locked_writer(&path, |locked| {
         let file = crate::commands::flow::round::waves_awaiting_new_agent(root, spec, locked.log()).remove(&wave)?;
         let fix = std::fs::read_to_string(file).ok()?;
         let mut extra = serde_json::Map::new();
-        if let Some((pid, started)) = crate::commands::flow::stuck::sender_process() {
-            extra.insert("claude_pid".into(), json!(pid));
-            extra.insert("claude_started".into(), json!(started));
+        if host.is_some() {
+            extra.extend(crate::commands::flow::round::sender_fields(host));
         }
         if !instruction.is_empty() {
             let sent = locked.log().last_by_wave("send").get(&wave).and_then(|id| locked.log().get(*id))?;
@@ -386,11 +388,11 @@ fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
     let language = ctx.config.language();
     let prompt = dispatch_prompt(input);
     if let Some((spec, wave)) = wave_of_title(heading_of(prompt), language.text_or_default()) {
-        return wave_dispatch(input, Path::new(&root), &spec, wave);
+        return wave_dispatch(input, Path::new(&root), &spec, wave, crate::commands::flow::stuck::sender_process);
     }
     if let Some(read) = mustard_core::domain::wave_prompt::ReadDispatch::of(prompt)
         && read.root == mustard_core::io::wave_prompt::shown(&mustard_core::io::spec_events::spec_root(Path::new(&root))) {
-        return wave_dispatch(input, Path::new(&root), &read.spec, read.wave);
+        return wave_dispatch(input, Path::new(&root), &read.spec, read.wave, crate::commands::flow::stuck::sender_process);
     }
     let line = language_line(&language);
     let mut text = if prompt.contains(&line) { prompt.to_string() } else { format!("{line}\n\n{prompt}") };
@@ -441,7 +443,7 @@ impl Check for SubagentInject {
         };
         let root = ctx.project_dir_or_cwd(input);
         if !supplemental_instructions(dispatch_prompt(input), "").is_empty() {
-            return Ok(wave_dispatch(input, Path::new(&root), &spec, wave));
+            return Ok(wave_dispatch(input, Path::new(&root), &spec, wave, crate::commands::flow::stuck::sender_process));
         }
         Ok(match assemble(Path::new(&root), &spec, wave) {
             Ok(text) => with_prompt(input, text),
@@ -469,14 +471,25 @@ mod tests {
     }
 
     /// O despacho de `prompt` ao agente `agent`, como o Claude Code o manda.
-    fn dispatch_to(root: &Path, agent: &str, prompt: &str) -> Verdict {
-        let input = HookInput {
+    fn task_input(agent: &str, prompt: &str) -> HookInput {
+        HookInput {
             hook_event_name: Some("PreToolUse".to_string()),
             tool_name: Some("Task".to_string()),
             tool_input: json!({ "prompt": prompt, "subagent_type": agent, "description": "onda" }),
             ..HookInput::default()
-        };
-        SubagentInject.evaluate(&input, &ctx(root)).expect("never errors")
+        }
+    }
+
+    /// O gancho diante do despacho de `prompt` ao agente `agent`.
+    fn dispatch_to(root: &Path, agent: &str, prompt: &str) -> Verdict {
+        SubagentInject.evaluate(&task_input(agent, prompt), &ctx(root)).expect("never errors")
+    }
+
+    /// O despacho de `prompt` ao agente da onda 1 da spec `x`, com o processo
+    /// do próprio teste como o hospedeiro que despacha: aberto até o fim do
+    /// teste, ele não depende de quem lançou a suíte.
+    fn dispatch_from_this_process(root: &Path, prompt: &str) -> Verdict {
+        wave_dispatch(&task_input("mustard-wave", prompt), root, "x", 1, || Some(crate::commands::flow::stuck::this_process()))
     }
 
     /// O texto que o despacho reescrito leva ao agente.
@@ -811,7 +824,8 @@ mod tests {
     /// A onda recusada ganha um agente novo só: de dois despachos ao mesmo
     /// tempo, um passa com o trecho e o outro é barrado, e o despacho seguinte
     /// também, enquanto o Claude Code que abriu o agente novo segue aberto.
-    /// Fechado também ele, a onda volta a aceitar um agente novo.
+    /// Fechado também ele, a onda volta a aceitar um agente novo. O hospedeiro
+    /// que despacha é o processo do próprio teste.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_second_new_agent_is_refused_while_the_first_ones_claude_code_is_open() {
@@ -832,7 +846,7 @@ mod tests {
                 .map(|_| {
                     scope.spawn(|| {
                         together.wait();
-                        dispatch_to(root, "mustard-wave", &sent)
+                        dispatch_from_this_process(root, &sent)
                     })
                 })
                 .collect();
@@ -841,14 +855,14 @@ mod tests {
         let (passed, barred): (Vec<Verdict>, Vec<Verdict>) = verdicts.into_iter().partition(|verdict| matches!(verdict, Verdict::Rewrite { .. }));
         assert_eq!(passed.into_iter().map(rewritten).collect::<Vec<_>>(), vec![new_agent.clone()], "one new agent");
         assert_eq!(barred.into_iter().map(denied).collect::<Vec<_>>(), vec![refused.clone()]);
-        assert_eq!(denied(dispatch_to(root, "mustard-wave", &sent)), refused, "the new agent's Claude Code is open");
+        assert_eq!(denied(dispatch_from_this_process(root, &sent)), refused, "the new agent's Claude Code is open");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let (pid, started) = crate::commands::flow::round::closed_process();
         let closed = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned().unwrap();
         let draft = crate::commands::flow::round::send_revision(&log, 1, closed).expect("the wave's send");
         crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(draft));
-        assert_eq!(rewritten(dispatch_to(root, "mustard-wave", &sent)), new_agent, "its Claude Code closed too");
+        assert_eq!(rewritten(dispatch_from_this_process(root, &sent)), new_agent, "its Claude Code closed too");
     }
 
     /// A onda cuja volta a rodada recusou, com o trecho de conserto em disco
@@ -889,6 +903,88 @@ mod tests {
         std::fs::write(&fix, format!("{SECTION}\n")).unwrap();
         let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
         assert_eq!(denied(dispatch_to(root, "mustard-wave", &format!("{title}\n\nConserte a onda."))), refused);
+    }
+
+    /// A volta que a rodada recusou, com o trecho de conserto em disco e o par
+    /// do envio já fechado, sai a um agente novo quando o envio é do Claude
+    /// Code, de versão antiga ou não, ou de um Codex reconhecido. O envio de
+    /// versão antiga feito no Codex, com o par da própria rodada e sem a marca
+    /// do par do hospedeiro, conta como aberto: a volta recusada não espera
+    /// agente novo, o despacho dele é barrado, e o conserto fica com o agente
+    /// que fez a onda. O trecho cita um arquivo TypeScript.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_refused_return_of_an_older_codex_send_does_not_wait_for_a_new_agent() {
+        let (pid, started) = crate::commands::flow::round::closed_process();
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let sent = format!("{title}\n\nConserte a onda.");
+        let refused = say("subagent.wave_not_running", Locale::PtBr, &[("{spec}", "x"), ("{wave}", "1")]);
+        for (host, marked, new_agent) in [("codex", false, false), ("codex", true, true), ("claude", false, true), ("claude", true, true)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            planned(root, 1);
+            approve(root);
+            let mut send = json!({"wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0",
+                "author": "binary", "host": host, "claude_pid": pid, "claude_started": started});
+            if marked {
+                send["host_pair"] = json!(true);
+            }
+            crate::shared::spec_state::seed_event(root, "x", "send", send);
+            crate::shared::spec_state::seed_event(root, "x", "delivered", json!({"wave": 1, "text": "Feito.", "files": [], "returned": true}));
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let fix = crate::commands::flow::round::fix_file(root, "x", &log, 1).expect("the pending return");
+            std::fs::create_dir_all(fix.parent().unwrap()).unwrap();
+            std::fs::write(&fix, "Onda 1, rodada de conserto 1 de 2:\n- `web/app.ts` linha 1 importa o que a regra barra.\n").unwrap();
+
+            let verdict = dispatch_to(root, "mustard-wave", &sent);
+            if new_agent {
+                assert!(matches!(verdict, Verdict::Rewrite { .. }), "{host} marked={marked}: {verdict:?}");
+            } else {
+                assert_eq!(denied(verdict), refused, "{host} marked={marked}");
+            }
+        }
+    }
+
+    /// A onda de um envio de versão antiga feito no Codex, que guardava o
+    /// processo da própria rodada no lugar do hospedeiro, e que quem conduz a
+    /// obra reprovou, sai a um agente novo. O despacho grava o hospedeiro do
+    /// agente novo como hospedeiro reconhecido: enquanto ele segue aberto, o
+    /// outro agente novo é barrado; fechado ele, a onda volta a aceitar um. O
+    /// hospedeiro que despacha é o processo do próprio teste.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_new_agent_of_an_older_codex_send_holds_the_wave_only_while_its_host_is_open() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        planned(root, 1);
+        approve(root);
+        let (pid, started) = crate::commands::flow::round::closed_process();
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        seed(
+            "send",
+            json!({"wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0",
+            "author": "binary", "host": "codex", "claude_pid": pid, "claude_started": started}),
+        );
+        let back = seed("delivered", json!({"wave": 1, "text": "Feito.", "files": [], "returned": true}));
+        let path = store::spec_file(root, "x").unwrap();
+        let rejected = json!({"rejected": {"delivered": back, "reason": "Faltou o teste."}}).as_object().cloned().unwrap();
+        let mut draft = crate::commands::flow::round::send_revision(&store::read(&path).unwrap().unwrap(), 1, rejected).expect("the wave's send");
+        draft.remove("claude_pid");
+        draft.remove("claude_started");
+        seed("send", Value::Object(draft));
+        let fix = crate::commands::flow::round::fix_file(root, "x", &store::read(&path).unwrap().unwrap(), 1).expect("the pending return");
+        std::fs::create_dir_all(fix.parent().unwrap()).unwrap();
+        std::fs::write(&fix, format!("{SECTION}\n")).unwrap();
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let sent = format!("{title}\n\nConserte a onda.");
+        let refused = say("subagent.wave_not_running", Locale::PtBr, &[("{spec}", "x"), ("{wave}", "1")]);
+
+        assert!(matches!(dispatch_from_this_process(root, &sent), Verdict::Rewrite { .. }), "the rejected wave goes to a new agent");
+        assert_eq!(denied(dispatch_from_this_process(root, &sent)), refused, "the new agent's host is open");
+        let closed = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned().unwrap();
+        let draft = crate::commands::flow::round::send_revision(&store::read(&path).unwrap().unwrap(), 1, closed).expect("the wave's send");
+        seed("send", Value::Object(draft));
+        assert!(matches!(dispatch_from_this_process(root, &sent), Verdict::Rewrite { .. }), "the new agent's host closed");
     }
 
     /// O pedido ao agente de exploração ganha no topo a resposta curta do

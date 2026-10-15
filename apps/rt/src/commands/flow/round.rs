@@ -184,7 +184,9 @@ use crate::shared::spec_state::session_from_env;
 pub(crate) use answer::{RoundRefusal, agents_refreshed, read_command, wave_dispatch};
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::Kept;
-pub(crate) use queue::{backlog_left, open_review, open_sends, send_revision, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix,
+pub(crate) use queue::{
+    backlog_left, open_review, open_sends, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_left_without_tasks,
+    waves_pending_fix,
 };
 pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
