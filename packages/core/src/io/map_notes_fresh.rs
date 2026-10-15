@@ -14,6 +14,9 @@
 //!   vetores de sentido: a nota da declaração, e a do arquivo em todas as
 //!   dele.
 //!
+//! A regra de a nota estar em dia mora aqui uma vez só ([`FRESH`]): a busca,
+//! o dizer de nota velha de `io::map_notes` e a auditoria do mapa a leem.
+//!
 //! Mapa sem nenhuma nota, ou sem a tabela, responde como sempre.
 
 use std::collections::HashMap;
@@ -22,6 +25,18 @@ use rusqlite::{params_from_iter, Connection};
 
 use crate::io::map_db::table_exists;
 use crate::platform::error::Result;
+
+/// A regra de a nota `n` (a linha de `notes` com esse apelido) estar em dia,
+/// para embutir num `WHERE`: ela guardou um SHA-256, o arquivo segue no mapa,
+/// o texto analisado dele é JSON e traz esse mesmo SHA-256 e, quando ela
+/// nomeia uma declaração, o arquivo ainda a tem. O texto analisado que não é
+/// JSON deixa a nota velha, sem derrubar quem a lê. Cada nota olha só o texto
+/// do próprio arquivo.
+pub(crate) const FRESH: &str = "n.sha256 IS NOT NULL \
+    AND EXISTS (SELECT 1 FROM files fresh_file WHERE fresh_file.path = n.file) \
+    AND EXISTS (SELECT 1 FROM texts fresh_text WHERE fresh_text.path = n.file \
+        AND CASE WHEN json_valid(fresh_text.analysis) THEN json_extract(fresh_text.analysis, '$.content_sha256') END = n.sha256) \
+    AND (n.name = '' OR EXISTS (SELECT 1 FROM decls fresh_decl WHERE fresh_decl.file = n.file AND fresh_decl.name = n.name))";
 
 /// Uma nota em dia como o índice a lê: o arquivo, a declaração, o texto e a
 /// linha da declaração no arquivo (`u64::MAX` na nota do arquivo inteiro, que
@@ -34,12 +49,11 @@ pub(crate) struct Fresh {
     pub line: u64,
 }
 
-/// As notas em dia do mapa aberto em `conn`, na ordem em que foram escritas:
-/// a cujo arquivo ainda tem o blob que ela guardou e, quando nomeia uma
-/// declaração, cuja declaração o arquivo ainda tem — uma linha por declaração
-/// de mesmo nome. Com `scope`, só as dos arquivos dados. A nota velha, a de
-/// arquivo que saiu do mapa e a da declaração que sumiu ficam de fora. Sem a
-/// tabela das notas, a lista é vazia.
+/// As notas em dia do mapa aberto em `conn`, pela regra de [`FRESH`], na
+/// ordem em que foram escritas — uma linha por declaração de mesmo nome. Com
+/// `scope`, só as dos arquivos dados. A nota velha, a de arquivo que saiu do
+/// mapa e a da declaração que sumiu ficam de fora. Sem a tabela das notas, a
+/// lista é vazia.
 pub(crate) fn fresh(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<Fresh>> {
     if !["notes", "files", "decls"].iter().all(|table| table_exists(conn, table).unwrap_or(false)) {
         return Ok(Vec::new());
@@ -50,10 +64,8 @@ pub(crate) fn fresh(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<Fre
     });
     let mut statement = conn.prepare(&format!(
         "SELECT n.file, n.name, n.text, d.line, d.rowid FROM notes n \
-         JOIN files f ON f.path = n.file \
-         JOIN texts t ON t.path = n.file AND n.sha256 IS NOT NULL AND json_extract(t.analysis, '$.content_sha256') = n.sha256 \
          LEFT JOIN decls d ON d.file = n.file AND d.name = n.name AND n.name <> '' \
-         WHERE (n.name = '' OR d.rowid IS NOT NULL){only} ORDER BY n.rowid, d.rowid"
+         WHERE ({FRESH}){only} ORDER BY n.rowid, d.rowid"
     ))?;
     let mut rows = statement.query(params_from_iter(scope.unwrap_or_default()))?;
     let mut out = Vec::new();

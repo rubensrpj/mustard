@@ -35,6 +35,7 @@ use rusqlite::{OptionalExtension,params};
 
 use crate::domain::project_map::{MapRefusal,clean_path};
 use crate::io::map_db::table_exists;
+use crate::io::map_notes_fresh::FRESH;
 use crate::io::map_search::refresh_files;
 use crate::io::project_map::{open_existing, unreadable};
 use crate::io::{map_meaning, map_revision};
@@ -56,7 +57,9 @@ pub struct Note {
     pub name: String,
     pub text: String,
     pub spec: String,
-    /// O arquivo mudou, ou saiu do mapa, depois que a nota foi escrita.
+    /// A nota não está em dia pela regra que a busca lê
+    /// (`io::map_notes_fresh`): o arquivo mudou, saiu do mapa ou perdeu a
+    /// declaração depois que ela foi escrita.
     pub stale: bool,
 }
 
@@ -136,8 +139,7 @@ pub fn of_at(model: &Path, file: &str, name: &str) -> std::result::Result<Option
     let found = db
         .conn()
         .query_row(
-            "SELECT n.text, n.spec, f.path IS NULL OR n.sha256 IS NULL OR json_extract(t.analysis, '$.content_sha256') IS NOT n.sha256 FROM notes n \
-             LEFT JOIN files f ON f.path = n.file LEFT JOIN texts t ON t.path = n.file WHERE n.file = ?1 AND n.name = ?2",
+            &format!("SELECT n.text, n.spec, NOT ({FRESH}) FROM notes n WHERE n.file = ?1 AND n.name = ?2"),
             [&file, name.trim()],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?)),
         )
@@ -349,6 +351,39 @@ mod tests {
         save_at(&model, &bare, "scan 3", &languages()).unwrap();
         assert!(of_at(&model, "src/ids.rs", "").unwrap().unwrap().stale);
         assert!(searched(&dir, ASK).is_empty());
+    }
+
+    /// A busca, o dizer de nota velha e a auditoria do mapa dão as mesmas
+    /// notas em dia: as do arquivo da fatura, cujo conteúdo não mudou. A da
+    /// função do arquivo que mudou e a do arquivo cujo texto analisado não é
+    /// JSON ficam velhas nas três, e nenhuma delas cai por causa do texto
+    /// estragado.
+    #[test]
+    fn the_search_the_stale_flag_and_the_audit_read_the_same_fresh_notes() {
+        let dir = saved("ids-1");
+        let notes = [("src/invoice.rs", ""), ("src/invoice.rs", "charge_invoice"), ("src/ids.rs", "check_digits"), ("src/config.rs", "parse_config")];
+        for (file, name) in notes {
+            write_note(&dir, file, name, NOTE);
+        }
+        rescanned(&dir, "ids-2");
+        opened(&dir).conn().execute("UPDATE texts SET analysis = 'not-json' WHERE path = 'src/config.rs'", []).unwrap();
+        let in_search: Vec<(String, String)> =
+            fresh(opened(&dir).conn(), None).unwrap().into_iter().map(|note| (note.file, note.name)).collect();
+        let model = model_path(dir.path());
+        let not_stale: Vec<(String, String)> = notes
+            .iter()
+            .filter(|(file, name)| !of_at(&model, file, name).unwrap().unwrap().stale)
+            .map(|(file, name)| ((*file).to_string(), (*name).to_string()))
+            .collect();
+        let expected = vec![("src/invoice.rs".to_string(), String::new()), ("src/invoice.rs".to_string(), "charge_invoice".to_string())];
+        assert_eq!((&in_search, &not_stale), (&expected, &expected));
+        let audit = crate::io::knowledge::audit::run(dir.path()).unwrap();
+        let counts = &audit["counts"];
+        assert_eq!(
+            (&counts["notes_fresh"], &counts["notes_stale"], &counts["functions_without_note"]),
+            (&json!(2), &json!(2), &json!(3)),
+            "{audit}"
+        );
     }
 
     /// O arquivo que saiu do mapa deixa a nota velha, e ela não é achada.

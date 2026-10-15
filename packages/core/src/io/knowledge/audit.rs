@@ -1,6 +1,7 @@
 //! Explicit native diagnostics of stored evidence and derived indexes.
 //! Structural consistency does not certify live sources or business meaning.
 use crate::domain::project_map::MapRefusal;
+use crate::io::map_notes_fresh::FRESH;
 use crate::io::project_map::{self as store, unreadable};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -43,6 +44,16 @@ pub fn run(root: &Path) -> Result<Value, MapRefusal> {
             ("unresolved_document_references","SELECT count(*) FROM knowledge_ref_issues"),
             ("interpretations","SELECT count(*) FROM knowledge_notes")
         ] {let n:i64=tx.query_row(sql,[],|r|r.get(0))?;counts.insert(key.into(),json!(n));}
+        // A frase em dia é a que a busca lê, pela mesma regra. Cada função e
+        // cada método, em toda linguagem que o scan lê, conta como sem frase
+        // quando nenhuma frase em dia o nomeia; a velha não vale.
+        let notes:i64=tx.query_row("SELECT count(*) FROM notes",[],|r|r.get(0))?;
+        let fresh:i64=tx.query_row(&format!("SELECT count(*) FROM notes n WHERE {FRESH}"),[],|r|r.get(0))?;
+        let without:i64=tx.query_row(&format!("SELECT count(*) FROM decls d0 LEFT JOIN (SELECT DISTINCT n.file,n.name FROM notes n WHERE {FRESH}) c \
+            ON c.file=d0.file AND c.name=d0.name WHERE d0.kind IN ('function','method') AND c.file IS NULL"),[],|r|r.get(0))?;
+        counts.insert("notes_fresh".into(),json!(fresh));
+        counts.insert("notes_stale".into(),json!(notes-fresh));
+        counts.insert("functions_without_note".into(),json!(without));
         let mut plans=Vec::new();
         for sql in [
             "SELECT id FROM knowledge_symbols WHERE name='example' COLLATE NOCASE",
