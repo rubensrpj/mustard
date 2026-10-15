@@ -949,8 +949,9 @@ fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
     assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1],tasks[2]], vec![tasks[3]]], "150 mil de trabalho cabem; 200 mil abrem outra onda");
 }
 
-/// Sem chave, ou com a chamada recusada, o tamanho não entra: três tarefas do
-/// mesmo arquivo saem numa onda só, como sempre. Com o Jev dizendo nível 3 para
+/// Sem chave, ou com a chamada recusada, o tamanho do Jev não entra: três
+/// tarefas do mesmo arquivo, de 35 mil cada pela estimativa local, cabem no
+/// teto da onda e saem numa onda só. Com o Jev dizendo nível 3 para
 /// elas, a montagem as separa, e as três saem, cada uma na sua onda, ainda que
 /// dividam o arquivo.
 #[test]

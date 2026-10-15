@@ -185,14 +185,15 @@ impl MeasureGate {
     /// # Errors
     /// O programa sem o commit no carimbo; o scan compilado que não está ao
     /// lado do programa (o que a busca no `PATH` acharia pode ser outra
-    /// versão) ou que não diz a marca.
+    /// versão), que é de antes de uma mudança no código dele ou que não diz a
+    /// marca.
     pub(crate) fn open() -> Result<Self> {
         let exe = std::env::current_exe().map_err(|e| Error::check_failed(format!("o programa da régua não se acha: {e}")))?;
         let proof = MeasureProof::of_program(&BuiltStamp::of_this_program(), &exe)?;
         let scan = Scan::locate();
         if !scan.is_compiled_alongside() {
             return Err(Error::check_failed(
-                "o scan compilado com este código não está ao lado do programa da régua; o do PATH pode ser de outra versão. Compile o scan junto (`cargo build --release -p scan`)",
+                "o scan compilado com este código não está ao lado do programa da régua, ou é de antes de uma mudança no código dele; o do PATH pode ser de outra versão. Compile o scan junto (`cargo build --release -p scan`)",
             ));
         }
         let expected = scan

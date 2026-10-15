@@ -82,8 +82,10 @@ pub(crate) enum Hold {
 /// trabalha na própria cópia, e a rodada junta no commit. A chamada grava um evento `call` com os tokens, o custo e
 /// o modelo, como a busca. Sem `judge` (sem chave, ou o Jev desligado), ou com
 /// a chamada falhando, o assunto combina os arquivos declarados e as relações
-/// atuais do scan, dentro da estimativa de tamanho. Os grupos que dividem
-/// arquivo continuam atômicos ([`pack_by_local_evidence`](crate::shared::dag::pack_by_local_evidence)). Em qualquer
+/// atuais do scan, dentro da estimativa de tamanho. O grupo que divide
+/// arquivo sai junto enquanto cabe no mesmo teto (`WAVE_LIMIT`); o que passa
+/// é cortado em ondas seguidas, na ordem das tarefas, e a tarefa que espera
+/// por ele só entra se couber ([`pack_by_local_evidence`](crate::shared::dag::pack_by_local_evidence)). Em qualquer
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
 ///
