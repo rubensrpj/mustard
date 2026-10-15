@@ -218,6 +218,11 @@ pub enum Refusal {
     /// sair vazia passa achando o resto. `found` é a prova como veio. Nada é
     /// gravado.
     ProofSearchNotNegated { found: String },
+    /// A prova que roda `cargo test` num pacote, `package`, com um alvo de
+    /// teste, `target`, que o pacote não tem: o cargo recusa o comando antes
+    /// de rodar teste nenhum. `targets` são os alvos de teste que o pacote
+    /// tem, vazio quando ele não tem nenhum. Nada é gravado.
+    ProofTestTargetMissing { package: String, target: String, targets: Vec<String> },
     /// Um pedido gravado pelo assistente numa spec que já fechou, com a fase
     /// `phase` (fechada ou com o pull request aberto). Ela recebe o pedido
     /// depois de reaberta, na mesma spec e na mesma branch: a mensagem aponta
@@ -374,6 +379,7 @@ impl Refusal {
             Self::ProofProgramUnknown { .. } => "proof-program-unknown",
             Self::ProofChainedBySemicolon { .. } => "proof-chained-by-semicolon",
             Self::ProofSearchNotNegated { .. } => "proof-search-not-negated",
+            Self::ProofTestTargetMissing { .. } => "proof-test-target-missing",
             Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
             Self::WorkOnFinishedSpec { .. } => "work-on-finished-spec",
             Self::Io { .. } => "io-failed",
@@ -662,6 +668,17 @@ impl Refusal {
             }
             Self::ProofSearchNotNegated { found } => {
                 fill("spec_events.proof_search_not_negated", &[("{found}", found.clone())])
+            }
+            Self::ProofTestTargetMissing { package, target, targets } => {
+                let targets = if targets.is_empty() {
+                    translate("spec_events.proof_test_targets_none", lang).to_string()
+                } else {
+                    targets.join(", ")
+                };
+                fill(
+                    "spec_events.proof_test_target_missing",
+                    &[("{package}", package.clone()), ("{target}", target.clone()), ("{targets}", targets)],
+                )
             }
             Self::RequestOnClosedSpec { spec, phase } => fill(
                 "spec_events.request_on_closed_spec",

@@ -424,10 +424,11 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     }
 
     // A prova de cada critério é o comando que a rodada e o fechamento
-    // rodam: a que não roda, liga comandos por `;` ou é uma busca sem `!`
-    // segura a pergunta de aprovação.
+    // rodam: a que não roda, liga comandos por `;`, é uma busca sem `!` ou
+    // cita um alvo de teste que o pacote não tem segura a pergunta de
+    // aprovação.
     for criterion in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
-        let refusal = criterion.str_field("proof").and_then(spec_events::proof_check::proof_defect);
+        let refusal = criterion.str_field("proof").and_then(|proof| spec_events::proof_check::proof_defect(root, proof));
         if let Some(refusal) = refusal {
             out.push(PlanFinding::Proof { criterion: code_of(criterion), refusal });
         }

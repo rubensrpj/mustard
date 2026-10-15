@@ -178,16 +178,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              single command and run the round again. Nothing was written."
         }
         ("spec_events.proof_program_unknown", Locale::PtBr) => {
-            "A prova do critério precisa ser um comando que roda, e o primeiro termo dela, {term}, \
-             não é um programa que o shell ache. Escreva no lugar o comando que demonstra o \
-             critério. A conferência que só se faz à mão vai para o texto do critério, e não para \
-             a prova. Nada foi gravado."
+            "A prova precisa ser um comando que roda, e o primeiro termo dela, {term}, não é um \
+             programa que o shell ache. Escreva no lugar o comando que demonstra o critério ou a \
+             tarefa. A conferência que só se faz à mão vai para o texto, e não para a prova. Nada \
+             foi gravado."
         }
         ("spec_events.proof_program_unknown", Locale::EnUs) => {
-            "A criterion's proof must be a command that runs, and its first term, {term}, is not a \
-             program the shell can find. Write the command that demonstrates the criterion \
-             instead. A check that can only be done by hand goes in the criterion's text, not in \
-             the proof. Nothing was written."
+            "A proof must be a command that runs, and its first term, {term}, is not a program the \
+             shell can find. Write the command that demonstrates the criterion or the task instead. \
+             A check that can only be done by hand goes in the text, not in the proof. Nothing was \
+             written."
         }
         ("spec_events.proof_chained_by_semicolon", Locale::PtBr) => {
             "A prova liga comandos por ponto e vírgula, e só o último decide o resultado: {found}. \
@@ -208,6 +208,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              must come out empty, put ! in front: the proof then passes when nothing is found. If \
              it must find the text, add -q. Nothing was written."
         }
+        ("spec_events.proof_test_target_missing", Locale::PtBr) => {
+            "A prova roda o alvo de teste {target} do pacote {package}, e o pacote não tem esse \
+             alvo. O cargo recusa o comando antes de rodar teste nenhum. Os alvos de teste do \
+             pacote são: {targets}. Cite um deles em --test, com o nome do teste como filtro depois \
+             dele, ou tire o --test e deixe só o filtro. Nada foi gravado."
+        }
+        ("spec_events.proof_test_target_missing", Locale::EnUs) => {
+            "The proof runs test target {target} of package {package}, and the package has no such \
+             target. Cargo refuses the command before running any test. The package's test targets \
+             are: {targets}. Name one of them in --test, with the test's name as a filter after it, \
+             or drop --test and keep only the filter. Nothing was written."
+        }
+        ("spec_events.proof_test_targets_none", Locale::PtBr) => "nenhum",
+        ("spec_events.proof_test_targets_none", Locale::EnUs) => "none",
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -958,8 +972,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            123,
-            0x24d0_d2e6_f1a4_ec77,
+            125,
+            0x4753_d0ff_1db3_1bc8,
         );
     }
 
@@ -996,6 +1010,8 @@ mod tests {
             ("spec_events.proof_program_unknown", &["{term}"][..]),
             ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
             ("spec_events.proof_search_not_negated", &["{found}"][..]),
+            ("spec_events.proof_test_target_missing", &["{package}", "{target}", "{targets}"][..]),
+            ("spec_events.proof_test_targets_none", &[][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.empty_text", &["{type}", "{field}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),

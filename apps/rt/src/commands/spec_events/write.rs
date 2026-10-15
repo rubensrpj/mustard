@@ -207,7 +207,7 @@ use mustard_core::domain::spec_state::{
     PhaseWriter, SpecState, State, birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::domain::wave_prompt::owner_rule;
+use mustard_core::domain::wave_prompt::{marked_proofs, owner_rule};
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -517,8 +517,9 @@ pub(crate) fn draft_object(json: &str) -> Result<Map<String, Value>, Refusal> {
 /// campos, antes de ler a spec: o autor do programa; o estado e o tipo de
 /// trabalho, que têm porta própria; os tipos que só o binário grava; a onda,
 /// que nasce do backlog; a fala que só um gancho grava; a pendência que o
-/// pedido adiado aponta, vista de `start`; e a prova do critério que não
-/// roda. Com `returns`, a volta da onda e a do revisor passam, para a
+/// pedido adiado aponta, vista de `start`; e a prova do critério, ou a que a
+/// linha `Prova:` da tarefa nomeia, que não se sustenta, com os manifestos
+/// do projeto lidos de `start`. Com `returns`, a volta da onda e a do revisor passam, para a
 /// conferência delas; sem ele, são recusadas como os outros tipos do binário.
 pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mut Map<String, Value>, returns: bool) -> Result<(), Refusal> {
     let spec = spec.trim().to_string();
@@ -547,12 +548,21 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
         point_to_open_pending(start, draft)?;
     }
     // A prova do critério é o comando que a rodada e o fechamento rodam: a que
-    // não roda, liga comandos por `;` ou é uma busca sem `!` recusa antes de
-    // gravar.
+    // não roda, liga comandos por `;`, é uma busca sem `!` ou cita um alvo de
+    // teste que o pacote não tem recusa antes de gravar.
     if event_type == "criterion"
-        && let Some(refusal) = draft.get("proof").and_then(Value::as_str).and_then(super::proof_check::proof_defect)
+        && let Some(refusal) = draft.get("proof").and_then(Value::as_str).and_then(|proof| super::proof_check::proof_defect(start, proof))
     {
         return Err(refusal);
+    }
+    // A tarefa nomeia a prova dela na linha `Prova:` do texto ou da parte do
+    // agente, e a onda roda esses comandos no fim: cada um passa pela mesma
+    // conferência.
+    if event_type == "task" {
+        let named = ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).flat_map(marked_proofs);
+        if let Some(refusal) = named.into_iter().find_map(|proof| super::proof_check::proof_defect(start, &proof)) {
+            return Err(refusal);
+        }
     }
     Ok(())
 }
@@ -2296,6 +2306,41 @@ mod tests {
         assert_eq!(kept["reason"], json!("proof-program-unknown"), "a regravação é conferida: {kept}");
         let fixed = write(root, "criterion", &revise("git --version"));
         assert_eq!(fixed["ok"], json!(true), "{fixed}");
+    }
+
+    /// A linha `Prova:` de uma tarefa nomeia o comando que a onda roda no fim,
+    /// e a gravação da tarefa o confere como confere a prova de um critério:
+    /// o `cargo test` com um alvo de teste que o pacote não tem é recusado
+    /// citando o alvo e os alvos que o pacote tem, sem gravar; com o alvo que
+    /// existe, e o nome do teste como filtro, a tarefa é gravada.
+    #[test]
+    fn a_task_whose_proof_names_a_missing_test_target_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"apps/rt\"]\n").unwrap();
+        std::fs::create_dir_all(root.join("apps/rt/tests")).unwrap();
+        std::fs::write(root.join("apps/rt/Cargo.toml"), "[package]\nname = \"mustard-rt\"\nautotests = false\n\n[[test]]\nname = \"it\"\n").unwrap();
+        std::fs::write(root.join("apps/rt/tests/it.rs"), "mod agents_find_code_through_the_map;\n").unwrap();
+        std::fs::write(root.join("apps/rt/tests/agents_find_code_through_the_map.rs"), "").unwrap();
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let crit = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "cargo test", "form": "ubiquitous", "origin": said}).to_string());
+        let crit = crit["id"].as_u64().unwrap_or_else(|| panic!("{crit}"));
+        let task = |proof: &str| {
+            json!({"title": "Agentes acham o código pelo mapa", "text": "Os agentes acham o código pelo mapa.",
+            "agent": format!("- mudar os moldes\nProva: `{proof}`."), "files": [], "depends_on": [], "covers": [crit], "origin": said})
+            .to_string()
+        };
+
+        let before = lines(root);
+        let refused = write(root, "task", &task("cargo test -p mustard-rt --test agents_find_code_through_the_map"));
+        assert_eq!(refused["reason"], json!("proof-test-target-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("agents_find_code_through_the_map") && hint.contains("mustard-rt") && hint.contains(": it."), "{hint}");
+        assert_eq!(lines(root), before, "nada foi gravado");
+
+        let accepted = write(root, "task", &task("cargo test -p mustard-rt --test it agents_find_code_through_the_map"));
+        assert_eq!(accepted["ok"], json!(true), "{accepted}");
     }
 
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada

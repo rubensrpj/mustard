@@ -1087,22 +1087,16 @@ const PROOF_MARKERS: &[&str] = &["Prova:", "Proof:"];
 /// (`test`), lido até a primeira opção e no máximo pelas duas primeiras
 /// palavras — vale para qualquer ferramenta, e nenhuma é conhecida aqui.
 fn named_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
-    let lines: Vec<&str> = ["text", "agent"].iter().filter_map(|field| item.str_field(field)).flat_map(str::lines).collect();
-    let quoted = |line: &str| -> Vec<String> {
-        line.split('`').skip(1).step_by(2).map(str::trim).filter(|command| !command.is_empty()).map(str::to_string).collect()
-    };
-    let mut named: Vec<String> = lines
-        .iter()
-        .filter_map(|line| PROOF_MARKERS.iter().filter_map(|marker| line.find(marker).map(|at| at + marker.len())).min().map(|at| &line[at..]))
-        .flat_map(quoted)
-        .collect();
+    let fields: Vec<&str> = ["text", "agent"].iter().filter_map(|field| item.str_field(field)).collect();
+    let mut named: Vec<String> = fields.iter().flat_map(|text| marked_proofs(text)).collect();
     if named.is_empty() {
         let head: Vec<&str> =
             test.map(|test| test.split_whitespace().take_while(|word| !word.starts_with('-')).take(2).collect()).unwrap_or_default();
         if !head.is_empty() {
-            named = lines
+            named = fields
                 .iter()
-                .flat_map(|line| quoted(line))
+                .flat_map(|text| text.lines())
+                .flat_map(quoted_commands)
                 .filter(|command| command.split_whitespace().take(head.len()).eq(head.iter().copied()))
                 .collect();
         }
@@ -1110,6 +1104,23 @@ fn named_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     named.retain(|command| seen.insert(command.clone()));
     named
+}
+
+/// Os comandos que o relato `text` nomeia como prova: em cada linha, os que
+/// vêm entre crases depois de uma marca de prova ([`PROOF_MARKERS`]), até o
+/// fim da linha, na ordem em que aparecem.
+#[must_use]
+pub fn marked_proofs(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| PROOF_MARKERS.iter().filter_map(|marker| line.find(marker).map(|at| at + marker.len())).min().map(|at| &line[at..]))
+        .flat_map(quoted_commands)
+        .collect()
+}
+
+/// Os trechos entre crases de `line`, sem os espaços das pontas e sem os
+/// vazios.
+fn quoted_commands(line: &str) -> Vec<String> {
+    line.split('`').skip(1).step_by(2).map(str::trim).filter(|command| !command.is_empty()).map(str::to_string).collect()
 }
 
 /// Os executores que o binário reconhece abrindo a prova de um critério,
