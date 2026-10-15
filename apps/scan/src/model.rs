@@ -55,15 +55,22 @@ pub struct ProjectModel {
     /// vazio. Não se grava como chave: a marca desta passada vai à gravação.
     #[serde(skip)]
     pub marks: BTreeMap<String, String>,
+    /// O carimbo do conteúdo do mapa de onde o modelo foi lido; vazio no
+    /// modelo que não veio de um mapa. Não se grava.
+    #[serde(skip)]
+    pub stamp: String,
 }
 
 impl ProjectModel {
-    /// O modelo gravado no mapa em `path`; `None` sem mapa, ou com um que não
-    /// se lê — a passada então lê tudo.
+    /// O modelo gravado no mapa em `path`, sem os cartões de conhecimento de
+    /// cada arquivo, que ficam no banco: a gravação que parte dele
+    /// ([`Self::save`] com ele como anterior) os mantém. `None` sem mapa, ou
+    /// com um que não se lê — a passada então lê tudo.
     pub fn load(path: &Path) -> Option<Self> {
-        let stored = store::read_stored_at(path).ok()?;
+        let stored = store::read_previous_at(path).ok()?;
         let mut model: Self = serde_json::from_str(&stored.json).ok()?;
         model.marks = stored.marks;
+        model.stamp = stored.stamp;
         Some(model)
     }
 
@@ -90,11 +97,28 @@ impl ProjectModel {
     /// refaz com os arquivos e as declarações prepara as palavras nas línguas
     /// `languages`. Os cartões de conhecimento se refazem só nos arquivos
     /// cujas entradas mudaram desde os que o arquivo tomado do mapa anterior
-    /// já traz; `enriched` diz quantos.
-    pub fn save(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<Saved> {
+    /// já traz; `enriched` diz quantos. Com `previous`, o modelo lido do mesmo
+    /// mapa ([`Self::load`]) de que este partiu, só se refazem as linhas dos
+    /// arquivos que mudaram desde ele, e os cartões que a leitura deixou no
+    /// banco ficam lá. Quando o mapa mudou depois da leitura, ou sem
+    /// `previous`, a gravação é inteira, e os cartões que o modelo não traz se
+    /// refazem.
+    pub fn save(&self, path: &Path, mark: &str, languages: &Languages, previous: Option<&ProjectModel>) -> anyhow::Result<Saved> {
+        use mustard_core::domain::knowledge::{enrich, forget_unloaded};
         let mut raw = serde_json::to_value(self)?;
-        let enriched = mustard_core::domain::knowledge::enrich(&mut raw).len();
-        Ok(Saved { written: store::save_at(path, &raw, mark, languages)?, enriched })
+        let mut enriched = enrich(&mut raw);
+        if let Some(previous) = previous.filter(|previous| !previous.stamp.is_empty()) {
+            let before = serde_json::to_value(previous)?;
+            if let Some(written) = store::save_since_at(path, &raw, &before, &previous.stamp, mark, languages)? {
+                return Ok(Saved { written, enriched: enriched.len() });
+            }
+        }
+        if forget_unloaded(&mut raw) {
+            enriched.extend(enrich(&mut raw));
+            enriched.sort();
+            enriched.dedup();
+        }
+        Ok(Saved { written: store::save_at(path, &raw, mark, languages)?, enriched: enriched.len() })
     }
 
     /// Grava só o censo do modelo no mapa em `path`, com a marca `mark`; os

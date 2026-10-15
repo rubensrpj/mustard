@@ -238,11 +238,12 @@ fn main() -> Result<()> {
             // quem avisa é quem chama o scan.
             let config = ProjectConfig::load(&path);
             let (max_same_name, _) = config.scan_max_same_name();
-            let analysis = match census_pass(&path, &out, all, max_same_name) {
-                Some(analysis) => analysis,
+            // O modelo da passada anterior fica até a gravação, que parte dele.
+            let (analysis, previous) = match census_pass(&path, &out, all, max_same_name) {
+                Some(analysis) => (analysis, None),
                 None => {
                     let previous: Option<ProjectModel> = if all { None } else { ProjectModel::load(&out) };
-                    analyze(&path, previous.as_ref(), max_same_name)?
+                    (analyze(&path, previous.as_ref(), max_same_name)?, previous)
                 }
             };
             // Nothing changed → the file is left alone (same bytes, same date).
@@ -252,7 +253,7 @@ fn main() -> Result<()> {
                 } else { analysis.model.save_census(&out, refresh::FORMAT)? };
                 model::Saved { written, enriched: 0 }
             } else {
-                analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
+                analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config), previous.as_ref())?
             };
             drop_legacy_map(&out)?;
             // O sentido de cada declaração e de cada palavra do mapa
@@ -796,6 +797,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
             state,
             history,
             marks: Default::default(),
+            stamp: String::new(),
         },
         read,
         full,
@@ -978,17 +980,11 @@ mod shouting_words;
 mod tests {
     use super::*;
 
-    #[test]
-    fn incremental_changes_deletions_and_new_files_match_a_complete_scan() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir(root.join("src")).unwrap();
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n").unwrap();
-        std::fs::write(root.join("src/lib.rs"), "mod math; pub fn total() -> u32 { math::sum() }\n").unwrap();
-        std::fs::write(root.join("src/math.rs"), "pub fn sum() -> u32 { 1 }\n").unwrap();
+    /// Põe `root` num repositório git, com tudo o que ele tem num commit.
+    fn commit_everything(root: &Path) {
         for args in [
             vec!["init", "-q"],
-            vec!["add", "Cargo.toml", "src"],
+            vec!["add", "-A"],
             vec![
                 "-c",
                 "user.name=Fixture",
@@ -1007,9 +1003,20 @@ mod tests {
             let ran = std::process::Command::new("git").args(args).current_dir(root).output().unwrap();
             assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
         }
+    }
+
+    #[test]
+    fn incremental_changes_deletions_and_new_files_match_a_complete_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "mod math; pub fn total() -> u32 { math::sum() }\n").unwrap();
+        std::fs::write(root.join("src/math.rs"), "pub fn sum() -> u32 { 1 }\n").unwrap();
+        commit_everything(root);
         let first = analyze(root, None, 20).unwrap();
         let db = root.join(".claude/grain.db");
-        first.model.save(&db, refresh::FORMAT, &Languages::of_project(root)).unwrap();
+        first.model.save(&db, refresh::FORMAT, &Languages::of_project(root), None).unwrap();
         let previous = ProjectModel::load(&db).unwrap();
         std::fs::remove_file(root.join("src/math.rs")).unwrap();
         std::fs::write(root.join("src/lib.rs"), "mod new_math; pub fn total() -> u32 { new_math::sum() }\n").unwrap();
@@ -1019,6 +1026,40 @@ mod tests {
         assert!(!incremental.full, "the actual incremental path must execute");
         assert_eq!(serde_json::to_value(&incremental.model.modules).unwrap(), serde_json::to_value(&complete.model.modules).unwrap());
         assert_eq!(serde_json::to_value(&incremental.model.graph).unwrap(), serde_json::to_value(&complete.model.graph).unwrap());
+    }
+
+    /// A passada que parte do mapa lido sem os cartões de conhecimento e acha
+    /// o mapa regravado depois da leitura grava o mapa inteiro, com os cartões
+    /// de todo arquivo refeitos: o mapa sai igual ao da leitura inteira.
+    #[test]
+    fn a_save_from_a_map_rewritten_after_the_read_rebuilds_every_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.ts"), "export function a(): number {\n  return 1;\n}\n").unwrap();
+        std::fs::write(root.join("src/b.ts"), "import { a } from './a';\n\nexport function b(): number {\n  return a() + 1;\n}\n").unwrap();
+        std::fs::write(root.join("src/c.ts"), "export class C {\n  run(): number {\n    return 3;\n  }\n}\n").unwrap();
+        commit_everything(root);
+        let languages = Languages::of_project(root);
+        let db = root.join(".claude/grain.db");
+        let whole = analyze(root, None, 20).unwrap().model.save(&db, refresh::FORMAT, &languages, None).unwrap();
+        assert!(whole.enriched > 0, "{whole:?}");
+        let previous = ProjectModel::load(&db).unwrap();
+
+        // Outra gravação passa pelo mapa, pela porta do núcleo, depois da leitura.
+        let mut stored: serde_json::Value = serde_json::from_str(&store::read_stored_at(&db).unwrap().json).unwrap();
+        stored["modules"][0]["loc"] = serde_json::json!(99);
+        assert!(store::save_at(&db, &stored, refresh::FORMAT, &languages).unwrap());
+
+        let pass = analyze(root, Some(&previous), 20).unwrap();
+        assert!(!pass.full, "the pass starts from the map it read");
+        let saved = pass.model.save(&db, refresh::FORMAT, &languages, Some(&previous)).unwrap();
+        assert_eq!(saved.enriched, whole.enriched, "every card is rebuilt");
+
+        let other = tempfile::tempdir().unwrap();
+        let complete = other.path().join("grain.db");
+        analyze(root, None, 20).unwrap().model.save(&complete, refresh::FORMAT, &languages, None).unwrap();
+        assert_eq!(store::read_stored_at(&db).unwrap().json, store::read_stored_at(&complete).unwrap().json);
     }
 
     fn manifest(path: &str, kind: &str, name: &str) -> model::Manifest {

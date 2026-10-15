@@ -140,8 +140,11 @@ fn short(text: &str, max: usize) -> String {
 /// entradas (`inputs`); o arquivo que chega com cartões desta versão e com a
 /// mesma marca fica com eles, sem refazer, e sai igual ao que a leitura
 /// inteira daria. A marca vale para a mesma compilação do scan, a única que
-/// toma arquivos do mapa anterior. Devolve os arquivos cujos cartões se
-/// refizeram, em ordem.
+/// toma arquivos do mapa anterior. O arquivo que chega com a marca e sem os
+/// cartões, que a leitura do mapa deixou no banco, também fica como está:
+/// quem grava os mantém de lá ou, sem como, os faz refazer
+/// ([`forget_unloaded`]). Devolve os arquivos cujos cartões se refizeram, em
+/// ordem.
 pub fn enrich(raw: &mut Value) -> Vec<String> {
     let Some(modules) = raw["modules"].as_array() else {
         return Vec::new();
@@ -224,7 +227,9 @@ pub fn enrich(raw: &mut Value) -> Vec<String> {
         .collect();
     let kept = |at: usize| {
         let knowledge = &modules[at]["analysis"]["knowledge"];
-        knowledge["version"] == VERSION && knowledge["inputs"] == fingerprints[at].as_str() && knowledge["cards"].is_array()
+        knowledge["version"] == VERSION
+            && knowledge["inputs"] == fingerprints[at].as_str()
+            && (knowledge["cards"].is_array() || knowledge.get("cards").is_none())
     };
     let mut fresh = BTreeMap::<usize, Vec<Card>>::new();
     for &at in carded.iter().filter(|&&at| !kept(at)) {
@@ -266,6 +271,22 @@ pub fn enrich(raw: &mut Value) -> Vec<String> {
     }
     rebuilt.sort();
     rebuilt
+}
+
+/// Tira a marca dos cartões de todo arquivo de `raw` que a traz sem os
+/// cartões, deixados no banco pela leitura do mapa, para o [`enrich`]
+/// seguinte os refazer: é o caminho da gravação que não tem de onde
+/// mantê-los. Diz se tirou de algum.
+pub fn forget_unloaded(raw: &mut Value) -> bool {
+    let mut forgot = false;
+    for module in raw["modules"].as_array_mut().into_iter().flatten() {
+        let unloaded = module["analysis"]["knowledge"].as_object().is_some_and(|knowledge| !knowledge.contains_key("cards"));
+        if let (true, Some(analysis)) = (unloaded, module["analysis"].as_object_mut()) {
+            analysis.remove("knowledge");
+            forgot = true;
+        }
+    }
+    forgot
 }
 
 /// The id of each card of `module`, in the order of its declarations, or of

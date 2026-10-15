@@ -829,6 +829,31 @@ fn a_pass_that_rereads_only_the_importer_follows_what_the_kept_file_passes_on() 
     same_as_a_full_pass(dir);
 }
 
+/// A passada que lê um arquivo novo e relê um que ganhou uma função
+/// regrava, depois deles, as linhas de um arquivo que não leu, com os
+/// cartões que só o banco guardava: só os cartões dos dois se refazem, e o
+/// mapa sai igual ao da leitura inteira.
+#[test]
+fn a_pass_that_moves_the_rows_of_an_untouched_file_keeps_its_cards() {
+    let temp = project(
+        "scan-moved-cards-",
+        &[
+            ("src/a.ts", "export function a(): number {\n  return 1;\n}\n"),
+            ("src/m.ts", "export function m(): number {\n  return 2;\n}\n"),
+            ("src/z.ts", "export function z(): number {\n  return 3;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    write(dir, "src/b.ts", "export function b(): number {\n  return 4;\n}\n");
+    write(dir, "src/m.ts", "export function m(): number {\n  return 2;\n}\n\nexport function n(): number {\n  return 5;\n}\n");
+    let report = scan(dir, &[]);
+    assert_eq!(report["read"], json!(["src/b.ts", "src/m.ts"]), "{report}");
+    assert_eq!(report["enriched"], json!(2), "{report}");
+    same_as_a_full_pass(dir);
+}
+
 /// A passada que relê um arquivo refaz os cartões de conhecimento só dos
 /// arquivos cujas entradas mudaram: o arquivo editado e, quando a declaração
 /// chamada muda de linha, o arquivo que a chama, cujo cartão aponta para ela.

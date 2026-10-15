@@ -564,7 +564,7 @@ pub fn read(root: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
 /// chamou.
 pub fn read_at(model: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
     let db = open_existing(model)?;
-    let json = map_text(db.conn(), every_column).map_err(unreadable)?;
+    let json = map_text(db.conn(), every_column, true).map_err(unreadable)?;
     let mut map: ProjectMap = serde_json::from_str(&json).map_err(|e| MapRefusal::MapUnreadable { detail: e.to_string() })?;
     map.lineage = lineages(db.conn(), None).map_err(unreadable)?;
     map.census_mark = db.mark(CENSUS.name()).map_err(unreadable)?.unwrap_or_default();
@@ -584,13 +584,25 @@ pub struct StoredMap {
     /// A marca de cada bloco, pelo nome dele: vazia no bloco que ninguém
     /// marcou depois que nasceu ou foi refeito.
     pub marks: BTreeMap<String, String>,
+    /// O carimbo do conteúdo do banco na leitura ([`map_revision::stamp`]):
+    /// a gravação que parte do que se leu confere que nada se gravou depois.
+    pub stamp: String,
 }
 
 /// O mapa gravado em `model` como o scan o escreveu, com as mesmas recusas
 /// de [`read`]: o que a passada seguinte do scan toma da anterior, e o que os
 /// testes dele conferem. Sem o arquivo, nada se cria.
 pub fn read_stored_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal> {
-    stored_part(model, every_column)
+    stored_part(model, every_column, true)
+}
+
+/// O mapa gravado em `model` como [`read_stored_at`], sem os cartões de
+/// conhecimento de cada arquivo, que pesam mais que o resto do mapa: é o que
+/// a passada que relê só o que mudou toma da anterior. Os cartões ficam no
+/// banco, e [`save_since_at`] mantém os de todo arquivo cuja análise não
+/// mudou.
+pub fn read_previous_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal> {
+    stored_part(model, every_column, false)
 }
 
 /// O estado da leitura gravado em `model`, com as mesmas recusas de
@@ -600,13 +612,13 @@ pub fn read_stored_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal
 /// a história, que ficam no banco. A coluna estragada que ela não lê não a
 /// recusa.
 pub fn read_state_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal> {
-    stored_part(model, state_column)
+    stored_part(model, state_column, true)
 }
 
 /// Only non-code packs, for a resource update that must leave code/graph/Git
 /// blocks untouched. Reading a resource never needs the whole code model.
 pub fn resources_at(model: &Path) -> std::result::Result<Vec<crate::domain::knowledge::resources::File>, MapRefusal> {
-    let stored = stored_part(model, |table,_| RESOURCES.tables.iter().any(|resource| resource.name == table.name))?;
+    let stored = stored_part(model, |table,_| RESOURCES.tables.iter().any(|resource| resource.name == table.name), true)?;
     #[derive(serde::Deserialize)]
     struct Packs { #[serde(default)] resources: Vec<crate::domain::knowledge::resources::File> }
     Ok(serde_json::from_str::<Packs>(&stored.json).map_err(|err| MapRefusal::MapUnreadable {detail:err.to_string()})?.resources)
@@ -633,12 +645,33 @@ fn state_column(table: &Table, column: &Column) -> bool {
         || (RESOURCES.tables.iter().any(|files| files.name == table.name) && ["path", "blob", "kind", "issue"].contains(&column.name))
 }
 
-/// O mapa gravado em `model` com só as colunas que `pick` escolhe, e a marca
-/// de cada bloco.
-fn stored_part(model: &Path, pick: Pick) -> std::result::Result<StoredMap, MapRefusal> {
+/// O mapa gravado em `model` com só as colunas que `pick` escolhe, os
+/// cartões de conhecimento só com `cards`, a marca de cada bloco e o
+/// carimbo do conteúdo. Tudo sai de uma leitura só, que começa pelo carimbo:
+/// a gravação que cai no meio dela fica para a leitura seguinte, e o carimbo
+/// diz o banco de onde o mapa saiu.
+fn stored_part(model: &Path, pick: Pick, cards: bool) -> std::result::Result<StoredMap, MapRefusal> {
     let db = open_existing(model)?;
-    let json = map_text(db.conn(), pick).map_err(unreadable)?;
-    Ok(StoredMap { json, marks: block_marks(&db)? })
+    let reading = db.conn().unchecked_transaction().map_err(|err| unreadable(err.into()))?;
+    let stamp = map_revision::stamp(&reading).map_err(unreadable)?;
+    let json = map_text(&reading, pick, cards).map_err(unreadable)?;
+    let marks = block_marks(&db)?;
+    drop(reading);
+    Ok(StoredMap { json, marks, stamp })
+}
+
+/// A tabela e a coluna em que moram os cartões de conhecimento de cada
+/// arquivo, e onde eles ficam dentro dela.
+const CARDS: (&str, &str, &str) = ("texts", "analysis", "$.knowledge.cards");
+
+/// A coluna como a leitura a seleciona: sem os cartões de conhecimento
+/// quando `cards` é falso, com o resto da análise do arquivo.
+fn selected(table: &Table, column: &Column, cards: bool) -> String {
+    let (table_name, column_name, inside) = CARDS;
+    if !cards && table.name == table_name && column.name == column_name {
+        return format!("json_remove({}, '{inside}')", quoted(column.name));
+    }
+    quoted(column.name)
 }
 
 /// A marca de cada bloco que tem linha no banco aberto `db`.
@@ -1694,8 +1727,9 @@ struct ModuleText {
 /// dos blocos: as chaves soltas, as listas e os arquivos com as declarações de
 /// cada um, só com as colunas que `pick` escolhe. A coluna em JSON entra como
 /// está; o texto que não se lê é recusado por quem lê o mapa. A tabela por
-/// arquivo que fica traz sempre a primeira coluna, a que diz o arquivo.
-fn map_text(conn: &Connection, pick: Pick) -> Result<String> {
+/// arquivo que fica traz sempre a primeira coluna, a que diz o arquivo. Sem
+/// `cards`, a análise de cada arquivo vem sem os cartões de conhecimento.
+fn map_text(conn: &Connection, pick: Pick, cards: bool) -> Result<String> {
     let mut top: Object = Vec::new();
     let mut modules: Vec<ModuleText> = Vec::new();
     let mut by_path: HashMap<Option<String>, usize> = HashMap::new();
@@ -1705,7 +1739,7 @@ fn map_text(conn: &Connection, pick: Pick) -> Result<String> {
         if columns.is_empty() {
             continue;
         }
-        let names: Vec<String> = columns.iter().map(|column| quoted(column.name)).collect();
+        let names: Vec<String> = columns.iter().map(|column| selected(table, column, cards)).collect();
         let mut stmt = conn.prepare(&format!("SELECT {} FROM {} ORDER BY rowid", names.join(", "), quoted(table.name)))?;
         let mut rows = stmt.query([])?;
         match table.place {
@@ -1946,7 +1980,25 @@ fn json_of(table: &Table, column: &Column, value: &Sql) -> std::result::Result<O
 /// A chave que não cabe na coluna dela ([`Error::Parse`]) e a falha do banco.
 pub fn save_at(model: &Path, map: &Value, mark: &str, languages: &Languages) -> Result<bool> {
     let fresh = rows_of(map).map_err(Error::Parse)?;
-    save_rows(model, BLOCKS.iter().zip(&fresh), mark, Some(languages))
+    Ok(save_rows(model, Fresh::Rows(BLOCKS.iter().zip(fresh).collect()), mark, Some(languages))? == Some(true))
+}
+
+/// Grava `map` no banco em `model` como [`save_at`], partindo de
+/// `previous`, o mapa que a passada leu dele com [`read_previous_at`], sem os
+/// cartões, quando o carimbo do banco era `stamp`. Nas tabelas de linhas por
+/// arquivo, só sai de `map` a coluna cujo valor mudou desde `previous`; o
+/// resto fica como o banco guarda, os cartões de conhecimento inclusive, sem
+/// que se façam as linhas dos arquivos que não mudaram. As linhas ficam na
+/// mesma ordem e com os mesmos números que [`save_at`] daria. `None`, sem
+/// gravar nada, quando o banco mudou depois da leitura ou um bloco de linhas
+/// por arquivo não tem a marca `mark`: aí a gravação é a de [`save_at`], com
+/// os cartões de todo arquivo.
+///
+/// # Errors
+///
+/// A chave que não cabe na coluna dela ([`Error::Parse`]) e a falha do banco.
+pub fn save_since_at(model: &Path, map: &Value, previous: &Value, stamp: &str, mark: &str, languages: &Languages) -> Result<Option<bool>> {
+    save_rows(model, Fresh::Since { map, previous, stamp }, mark, Some(languages))
 }
 
 /// Grava só o bloco `block` de `map` no banco em `model`, com a marca
@@ -1960,7 +2012,7 @@ pub fn save_at(model: &Path, map: &Value, mark: &str, languages: &Languages) -> 
 /// A chave que não cabe na coluna dela ([`Error::Parse`]) e a falha do banco.
 pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) -> Result<bool> {
     let fresh: BlockRows = block.tables.iter().map(|table| rows(table, map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
-    save_rows(model, [(block, &fresh)], mark, None)
+    Ok(save_rows(model, Fresh::Rows(vec![(block, fresh)]), mark, None)? == Some(true))
 }
 
 /// Replace selected scanner blocks and their derived indexes atomically.
@@ -1968,7 +2020,7 @@ pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) ->
 pub fn save_blocks_at(model: &Path, blocks: &[&MapBlock], map: &Value, mark: &str, languages: &Languages) -> Result<bool> {
     let fresh: Vec<BlockRows> = blocks.iter().map(|block| block.tables.iter().map(|table| rows(table,map)).collect())
         .collect::<std::result::Result<_,_>>().map_err(Error::Parse)?;
-    save_rows(model, blocks.iter().zip(&fresh).map(|(block,rows)|(*block,rows)), mark, Some(languages))
+    Ok(save_rows(model, Fresh::Rows(blocks.iter().copied().zip(fresh).collect()), mark, Some(languages))? == Some(true))
 }
 
 /// Grava a história das declarações de um arquivo, `lineage`, no mapa em
@@ -2031,35 +2083,78 @@ fn lineage_changes(lineage: &FileLineage) -> Result<Vec<Replacement<'static>>> {
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].
 type BlockRows = Vec<Vec<Row>>;
 
+/// De onde a gravação tira as linhas de cada bloco.
+enum Fresh<'m> {
+    /// As linhas de cada tabela de cada bloco, prontas.
+    Rows(Vec<(&'m MapBlock, BlockRows)>),
+    /// Todo bloco de [`BLOCKS`], do mapa `map`, partindo do mapa `previous`,
+    /// lido do banco quando o carimbo dele era `stamp` ([`save_since_at`]).
+    Since { map: &'m Value, previous: &'m Value, stamp: &'m str },
+}
+
 /// Grava as linhas `fresh` de cada bloco que elas trazem, com a marca
-/// `mark`; o bloco que ficou igual, com a mesma marca, não se regrava. No
-/// bloco que já tem a marca, só a tabela que mudou se grava, e a tabela de
-/// linhas por arquivo troca só as linhas que mudaram ([`row_changes`]).
-/// Regravado um bloco de que o índice de busca lê — os arquivos, as
-/// declarações ou as ligações, onde moram as chamadas —, o índice se acerta
-/// nas línguas `languages`: só nos documentos dos arquivos cujas linhas
-/// mudaram, quando só elas mudaram e o índice foi feito nessas línguas; senão
-/// ele se refaz inteiro. Sem as línguas, fica sem línguas, e a primeira busca
-/// o refaz nas dela. O catálogo dos símbolos segue a mesma conta.
-fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'b BlockRows)>, mark: &str, languages: Option<&Languages>) -> Result<bool> {
+/// `mark`: o que muda se planeja do banco ([`plan`]) e se grava numa
+/// transação só ([`commit`]). Devolve se gravou; `None`, sem gravar, só
+/// quando a gravação parte de um mapa anterior ([`Fresh::Since`]) que o banco
+/// já não guarda.
+fn save_rows(model: &Path, fresh: Fresh<'_>, mark: &str, languages: Option<&Languages>) -> Result<Option<bool>> {
     let head = head_of(model);
     if !head.is_empty() && head != SQLITE_HEADER {
         remove(model)?;
     }
     let mut db = open(model)?;
-    let mut changed: Vec<BlockWrite<'_>> = Vec::new();
-    for (block, tables) in fresh {
-        let marked = db.mark(block.name())?.as_deref() == Some(mark);
-        let mut writes = Vec::new();
-        for (table, rows) in block.tables.iter().zip(tables) {
-            if !marked {
-                writes.push((table, TableWrite::Whole(rows.as_slice())));
-                continue;
+    match plan(&db, fresh, mark)? {
+        Some(planned) => commit(&mut db, planned, mark, languages),
+        None => Ok(None),
+    }
+}
+
+/// O que uma gravação muda, planejado do banco antes da trava de gravação.
+struct Planned<'b> {
+    /// Cada bloco que se regrava, com o que muda em cada tabela dele.
+    changed: Vec<BlockWrite<'b>>,
+    /// Na gravação que parte de um mapa anterior, o carimbo do banco de que
+    /// o plano partiu: as linhas que ele troca pelo número só valem nele.
+    since: Option<&'b str>,
+}
+
+/// O que a gravação de `fresh` com a marca `mark` muda no banco aberto `db`.
+/// O bloco que ficou igual, com a mesma marca, não se regrava. No bloco que
+/// já tem a marca, só a tabela que mudou se grava, e a tabela de linhas por
+/// arquivo troca só as linhas que mudaram ([`row_changes`]); partindo de um
+/// mapa anterior, sem fazer as linhas dos arquivos que não mudaram
+/// ([`changes_since`]). `None` quando o mapa anterior não é mais o que o
+/// banco guarda, ou quando um bloco sem a marca regravaria inteiras as
+/// linhas por arquivo, com o que a leitura dele deixou no banco.
+fn plan<'b>(db: &MapDb, fresh: Fresh<'b>, mark: &str) -> Result<Option<Planned<'b>>> {
+    let (blocks, since): (Vec<(&MapBlock, Option<BlockRows>)>, Option<(&'b Value, Lines<'b>, &'b str)>) = match fresh {
+        Fresh::Rows(blocks) => (blocks.into_iter().map(|(block, rows)| (block, Some(rows))).collect(), None),
+        Fresh::Since { map, previous, stamp } => {
+            if map_revision::stamp(db.conn())? != stamp {
+                return Ok(None);
             }
-            let stored = numbered_rows_in(db.conn(), table)?;
-            let write = match table.place {
-                Place::Files | Place::Decls => row_changes(&stored, rows),
-                Place::One | Place::List { .. } => stored.iter().map(|(_, row)| row).ne(rows.iter()).then_some(TableWrite::Whole(rows.as_slice())),
+            (BLOCKS.iter().map(|block| (block, None)).collect(), Some((map, Lines::of(map, previous)?, stamp)))
+        }
+    };
+    let per_file = |table: &Table| matches!(table.place, Place::Files | Place::Decls);
+    let mut changed: Vec<BlockWrite<'b>> = Vec::new();
+    for (block, mut tables) in blocks {
+        let marked = db.mark(block.name())?.as_deref() == Some(mark);
+        if since.is_some() && !marked && block.tables.iter().any(per_file) {
+            return Ok(None);
+        }
+        let mut writes = Vec::new();
+        for (at, table) in block.tables.iter().enumerate() {
+            let write = match &since {
+                Some((_, lines, _)) if marked && per_file(table) => changes_since(db.conn(), table, lines.of_place(table.place))?,
+                _ => {
+                    let fresh_rows = match (tables.as_mut(), &since) {
+                        (Some(tables), _) => tables.get_mut(at).map(std::mem::take).unwrap_or_default(),
+                        (None, Some((map, _, _))) => rows(table, map).map_err(Error::Parse)?,
+                        (None, None) => Vec::new(),
+                    };
+                    if marked { stored_changes(db.conn(), table, fresh_rows)? } else { Some(TableWrite::Whole(fresh_rows)) }
+                }
             };
             writes.extend(write.map(|write| (table, write)));
         }
@@ -2067,6 +2162,20 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
             changed.push((block, writes));
         }
     }
+    Ok(Some(Planned { changed, since: since.map(|(_, _, stamp)| stamp) }))
+}
+
+/// Grava o que `planned` muda, com a marca `mark`, numa transação só.
+/// Regravado um bloco de que o índice de busca lê — os arquivos, as
+/// declarações ou as ligações, onde moram as chamadas —, o índice se acerta
+/// nas línguas `languages`: só nos documentos dos arquivos cujas linhas
+/// mudaram, quando só elas mudaram e o índice foi feito nessas línguas; senão
+/// ele se refaz inteiro. Sem as línguas, fica sem línguas, e a primeira busca
+/// o refaz nas dela. O catálogo dos símbolos segue a mesma conta. Devolve
+/// se gravou; `None`, sem gravar, quando o plano parte de um mapa anterior e
+/// outra gravação passou pelo banco depois que ele se planejou.
+fn commit(db: &mut MapDb, planned: Planned<'_>, mark: &str, languages: Option<&Languages>) -> Result<Option<bool>> {
+    let Planned { changed, since } = planned;
     if changed.is_empty() {
         // A newly declared derived block can be empty even when the scanner's
         // source blocks are unchanged. Fill it once without rereading source.
@@ -2074,7 +2183,7 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
         let stale=profile.as_deref().and_then(|text|serde_json::from_str::<Value>(text).ok())
             .is_none_or(|data|data["version"]!=crate::io::project_profile::VERSION || data["status"]=="unavailable");
         if stale { db.write(|conn| sync_project_profile(conn))?; }
-        return Ok(false);
+        return Ok(Some(false));
     }
     let touched = |names: &[&str]| changed.iter().any(|(block, _)| names.contains(&block.name()));
     let indexed = touched(&INDEXED_FROM.map(MapBlock::name));
@@ -2084,6 +2193,13 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
     let searched: Option<Vec<&str>> = searched.as_ref().map(|paths| paths.iter().map(String::as_str).collect());
     let catalogued = changed_paths(&changed, &[&DECLS]);
     db.write(|tx| {
+        // Conferido já com a trava: a gravação que caiu entre o plano e ela
+        // deixaria fora do lugar as linhas que ele troca pelo número.
+        if let Some(stamp) = since
+            && map_revision::stamp(tx)? != stamp
+        {
+            return Ok(None);
+        }
         // Os documentos que os arquivos mudados tinham, lidos antes de as
         // linhas deles mudarem de número.
         let stale = match (&searched, languages) {
@@ -2125,53 +2241,246 @@ fn save_rows<'b>(model: &Path, fresh: impl IntoIterator<Item = (&'b MapBlock, &'
             sync_project_profile(tx)?;
         }
         map_revision::bump(tx)?;
-        Ok(())
-    })?;
-    Ok(true)
+        Ok(Some(true))
+    })
+}
+
+/// O que muda na tabela `table`, de bloco marcado, das linhas gravadas para
+/// `fresh`; `None` quando nada mudou.
+fn stored_changes(conn: &Connection, table: &Table, fresh: Vec<Row>) -> Result<Option<TableWrite>> {
+    let stored = numbered_rows_in(conn, table)?;
+    Ok(match table.place {
+        Place::Files | Place::Decls => row_changes(&stored, fresh)?,
+        Place::One | Place::List { .. } => {
+            if stored.iter().map(|(_, row)| row).ne(fresh.iter()) { Some(TableWrite::Whole(fresh)) } else { None }
+        }
+    })
 }
 
 /// Um bloco que a gravação muda, com o que muda em cada tabela dele.
-type BlockWrite<'r> = (&'r MapBlock, Vec<(&'r Table, TableWrite<'r>)>);
+type BlockWrite<'r> = (&'r MapBlock, Vec<(&'r Table, TableWrite)>);
 
 /// Como uma tabela muda numa gravação.
-enum TableWrite<'r> {
+enum TableWrite {
     /// Todas as linhas saem e estas entram: a marca do bloco mudou, ou a
     /// tabela não é de linhas por arquivo.
-    Whole(&'r [Row]),
+    Whole(Vec<Row>),
     /// Só as linhas que mudaram: cada uma de `updates` troca de conteúdo no
     /// lugar, pelo número dela; da linha de número `from` em diante saem
     /// todas, e `tail` entra no lugar delas. `paths` são os arquivos dessas
     /// linhas.
-    Rows { updates: Vec<(i64, &'r Row)>, from: Option<i64>, tail: &'r [Row], paths: BTreeSet<String> },
+    Rows { updates: Vec<(i64, Row)>, from: Option<i64>, tail: Vec<Row>, paths: BTreeSet<String> },
+}
+
+/// Onde uma tabela de linhas por arquivo passa a se regravar, e o que troca
+/// no lugar antes disso ([`split_rows`]).
+struct Split {
+    /// A primeira posição em que o arquivo da linha nova deixa de bater com
+    /// o da gravada.
+    at: usize,
+    /// O número da linha gravada nessa posição, de onde a tabela se regrava.
+    from: Option<i64>,
+    /// As linhas de antes dela que trocam no lugar, pelo número.
+    updates: Vec<(i64, Row)>,
+    /// Os arquivos dessas linhas e os de toda linha da cauda, a que sai e a
+    /// que entra.
+    paths: BTreeSet<String>,
+}
+
+impl Split {
+    /// O que muda na tabela, com `tail` no lugar das linhas gravadas de
+    /// `from` em diante; `None` quando nada muda.
+    fn with_tail(self, tail: Vec<Row>) -> Option<TableWrite> {
+        let Self { from, updates, paths, .. } = self;
+        (!updates.is_empty() || from.is_some() || !tail.is_empty()).then_some(TableWrite::Rows { updates, from, tail, paths })
+    }
+}
+
+/// Como uma tabela de linhas por arquivo muda, das linhas gravadas — o
+/// número e o dono de cada uma, em `stored` — para as novas, cujos donos são
+/// `owners`: a linha do mesmo arquivo na mesma posição troca no lugar pelo
+/// que `changed` dá dela, pela posição e pelo número, quando dá; da primeira
+/// posição em que o arquivo deixa de bater — uma declaração a mais ou a
+/// menos, um arquivo que entrou ou saiu — em diante, a tabela se regrava.
+/// Assim as linhas ficam na mesma ordem e com os mesmos números que a
+/// gravação inteira daria, e quem lê o mapa não vê diferença.
+fn split_rows(stored: &[(i64, &Sql)], owners: &[&Sql], mut changed: impl FnMut(usize, i64) -> Result<Option<Row>>) -> Result<Split> {
+    let common = stored.len().min(owners.len());
+    let at = (0..common).find(|&at| stored[at].1 != owners[at]).unwrap_or(common);
+    let mut paths = BTreeSet::new();
+    let mut updates = Vec::new();
+    for (index, &(id, owner)) in stored[..at].iter().enumerate() {
+        if let Some(row) = changed(index, id)? {
+            paths.insert(text_of(owner));
+            updates.push((id, row));
+        }
+    }
+    paths.extend(stored[at..].iter().map(|(_, owner)| text_of(owner)));
+    paths.extend(owners[at..].iter().map(|owner| text_of(owner)));
+    Ok(Split { at, from: stored.get(at).map(|(id, _)| *id), updates, paths })
 }
 
 /// O que muda numa tabela de linhas por arquivo, das linhas gravadas
-/// `stored`, cada uma com o número dela, para `fresh`: a linha do mesmo
-/// arquivo na mesma posição troca no lugar; da primeira posição em que o
-/// arquivo deixa de bater — uma declaração a mais ou a menos, um arquivo que
-/// entrou ou saiu — em diante, a tabela se regrava. As linhas ficam na mesma
-/// ordem e com os mesmos números que a gravação inteira daria, e quem lê o
-/// mapa não vê diferença. `None` quando nada mudou.
-fn row_changes<'r>(stored: &[(i64, Row)], fresh: &'r [Row]) -> Option<TableWrite<'r>> {
-    let owner = |row: &Row| match row.first() {
-        Some(Sql::Text(path)) => path.clone(),
-        _ => String::new(),
+/// `stored`, cada uma com o número dela, para `fresh` ([`split_rows`]);
+/// `None` quando nada mudou.
+fn row_changes(stored: &[(i64, Row)], mut fresh: Vec<Row>) -> Result<Option<TableWrite>> {
+    let split = {
+        let stored_owners: Vec<(i64, &Sql)> = stored.iter().map(|(id, row)| (*id, row_owner(row))).collect();
+        let owners: Vec<&Sql> = fresh.iter().map(row_owner).collect();
+        split_rows(&stored_owners, &owners, |at, _| Ok((stored[at].1 != fresh[at]).then(|| fresh[at].clone())))?
     };
-    let common = stored.len().min(fresh.len());
-    let split = (0..common).find(|&at| stored[at].1.first() != fresh[at].first()).unwrap_or(common);
-    let mut paths = BTreeSet::new();
-    let mut updates = Vec::new();
-    for (old, new) in stored[..split].iter().zip(&fresh[..split]) {
-        if old.1 != *new {
-            updates.push((old.0, new));
-            paths.insert(owner(new));
+    let tail = fresh.split_off(split.at);
+    Ok(split.with_tail(tail))
+}
+
+/// A célula do dono de uma linha por arquivo, a primeira.
+fn row_owner(row: &Row) -> &Sql {
+    static NO_OWNER: Sql = Sql::Null;
+    row.first().unwrap_or(&NO_OWNER)
+}
+
+/// Uma linha nova de tabela por arquivo, na gravação que parte de um mapa
+/// anterior.
+struct Line<'m> {
+    /// O item de onde ela sai: o arquivo ou a declaração.
+    item: &'m Value,
+    /// O arquivo dono dela.
+    module: &'m Value,
+    /// O item que o mapa anterior tinha no mesmo lugar do mesmo arquivo.
+    old: Option<&'m Value>,
+    /// O dono como a primeira coluna o guarda: o caminho do arquivo.
+    owner: Sql,
+}
+
+/// As linhas novas das tabelas por arquivo, feitas uma vez para todas elas.
+struct Lines<'m> {
+    /// Uma por arquivo.
+    files: Vec<Line<'m>>,
+    /// Uma por declaração de cada arquivo.
+    decls: Vec<Line<'m>>,
+}
+
+impl<'m> Lines<'m> {
+    /// As linhas novas de `map`, cada uma com o item que `previous` tinha no
+    /// mesmo lugar do arquivo de mesmo caminho.
+    fn of(map: &'m Value, previous: &'m Value) -> Result<Self> {
+        let before: HashMap<&str, &Value> = items(previous, MODULES)
+            .map_err(Error::Parse)?
+            .iter()
+            .filter_map(|module| Some((module.get("path")?.as_str()?, module)))
+            .collect();
+        let mut lines = Self { files: Vec::new(), decls: Vec::new() };
+        for module in items(map, MODULES).map_err(Error::Parse)? {
+            let owner = match module.get("path") {
+                None | Some(Value::Null) => Sql::Null,
+                Some(Value::String(path)) => Sql::Text(path.clone()),
+                Some(other) => return Err(Error::Parse(format!("`modules.path` is not a text: {other}"))),
+            };
+            let old = module.get("path").and_then(Value::as_str).and_then(|path| before.get(path)).copied();
+            let old_decls = old.and_then(|old| items(old, DECLARATIONS).ok()).unwrap_or_default();
+            for (at, decl) in items(module, DECLARATIONS).map_err(Error::Parse)?.iter().enumerate() {
+                lines.decls.push(Line { item: decl, module, old: old_decls.get(at), owner: owner.clone() });
+            }
+            lines.files.push(Line { item: module, module, old, owner });
+        }
+        Ok(lines)
+    }
+
+    /// As linhas da tabela que mora em `place`.
+    fn of_place(&self, place: Place) -> &[Line<'m>] {
+        if matches!(place, Place::Decls) { &self.decls } else { &self.files }
+    }
+}
+
+/// O que muda na tabela de linhas por arquivo `table` para as linhas novas
+/// `lines`, como [`row_changes`] diria das linhas inteiras, sem fazer as
+/// linhas dos arquivos que não mudaram nem ler do banco mais que o dono de
+/// cada uma. A coluna cujo valor é o que era no mapa anterior fica como o
+/// banco a guarda, com o que a leitura dele deixou de fora; a linha em que
+/// toda coluna ficou assim não se lê nem se compara. Na cauda que se regrava
+/// ([`split_rows`]), as linhas que não mudaram se copiam do banco.
+fn changes_since(conn: &Connection, table: &Table, lines: &[Line<'_>]) -> Result<Option<TableWrite>> {
+    // A coluna do dono vem do arquivo, achado pelo mesmo caminho.
+    let kept = |line: &Line<'_>| -> Vec<bool> {
+        table
+            .columns
+            .iter()
+            .map(|column| column.cell == Cell::Owner || line.old.is_some_and(|old| same_value(find(line.item, column.key), find(old, column.key))))
+            .collect()
+    };
+    let merged = |line: &Line<'_>, kept: &[bool], stored: Option<&Row>| -> Result<Row> {
+        table.columns.iter().zip(kept).enumerate().map(|(index, (column, &kept))| match stored {
+            Some(row) if kept => Ok(row[index].clone()),
+            _ => cell(table, column, find(if column.cell == Cell::Owner { line.module } else { line.item }, column.key)).map_err(Error::Parse),
+        }).collect()
+    };
+    let name = quoted(table.name);
+    let columns: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
+    let Some(first) = columns.first() else {
+        return Ok(None);
+    };
+    let whole = |row: &rusqlite::Row<'_>| (0..columns.len()).map(|index| row.get::<_, Sql>(index)).collect::<rusqlite::Result<Row>>();
+    let stored: Vec<(i64, Sql)> = conn
+        .prepare(&format!("SELECT rowid, {first} FROM {name} ORDER BY rowid"))?
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Sql>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let stored_owners: Vec<(i64, &Sql)> = stored.iter().map(|(id, owner)| (*id, owner)).collect();
+    let owners: Vec<&Sql> = lines.iter().map(|line| &line.owner).collect();
+    let mut one = conn.prepare(&format!("SELECT {} FROM {name} WHERE rowid = ?1", columns.join(", ")))?;
+    let split = split_rows(&stored_owners, &owners, |at, id| {
+        let kept = kept(&lines[at]);
+        if kept.iter().all(|&kept| kept) {
+            return Ok(None);
+        }
+        let old: Row = one.query_row([id], whole)?;
+        let row = merged(&lines[at], &kept, Some(&old))?;
+        Ok((row != old).then_some(row))
+    })?;
+    // A linha gravada de cada arquivo da cauda, pela posição dela entre as
+    // do mesmo arquivo: é a que a passada anterior tinha no mesmo lugar.
+    let nth = |owners: &mut dyn Iterator<Item = &Sql>| -> Vec<usize> {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        owners
+            .map(|owner| {
+                let count = seen.entry(text_of(owner)).or_default();
+                *count += 1;
+                *count - 1
+            })
+            .collect()
+    };
+    let stored_nth = nth(&mut stored_owners.iter().map(|(_, owner)| *owner));
+    let fresh_nth = nth(&mut owners.iter().copied());
+    let mut old_tail: HashMap<(String, usize), Row> = HashMap::new();
+    if let Some(from) = split.from {
+        let mut rest = conn.prepare(&format!("SELECT {} FROM {name} WHERE rowid >= ?1 ORDER BY rowid", columns.join(", ")))?;
+        for (at, row) in (split.at..).zip(rest.query_map([from], whole)?) {
+            old_tail.insert((text_of(stored_owners[at].1), stored_nth[at]), row?);
         }
     }
-    let tail = &fresh[split..];
-    paths.extend(stored[split..].iter().map(|(_, row)| owner(row)));
-    paths.extend(tail.iter().map(owner));
-    let from = stored.get(split).map(|(id, _)| *id);
-    (!updates.is_empty() || from.is_some() || !tail.is_empty()).then_some(TableWrite::Rows { updates, from, tail, paths })
+    let mut tail = Vec::with_capacity(lines.len().saturating_sub(split.at));
+    for at in split.at..lines.len() {
+        let kept = kept(&lines[at]);
+        let old = old_tail.remove(&(text_of(owners[at]), fresh_nth[at]));
+        tail.push(match old {
+            Some(old) if kept.iter().all(|&kept| kept) => old,
+            old => merged(&lines[at], &kept, old.as_ref())?,
+        });
+    }
+    Ok(split.with_tail(tail))
+}
+
+/// O texto da célula do dono de uma linha; vazio quando ela não é texto.
+fn text_of(owner: &Sql) -> String {
+    match owner {
+        Sql::Text(path) => path.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Os dois valores dão a mesma célula: a chave que falta e o `null` dão a
+/// célula vazia.
+fn same_value(left: Option<&Value>, right: Option<&Value>) -> bool {
+    left.filter(|value| !value.is_null()) == right.filter(|value| !value.is_null())
 }
 
 /// Os arquivos cujas linhas por arquivo dos blocos `from` a gravação muda;
@@ -2192,13 +2501,13 @@ fn changed_paths(changed: &[BlockWrite<'_>], from: &[&MapBlock]) -> Option<BTree
 }
 
 /// Grava na tabela o que muda nela, dentro da transação `tx`.
-fn write_table(tx: &Connection, table: &Table, write: &TableWrite<'_>) -> Result<()> {
+fn write_table(tx: &Connection, table: &Table, write: &TableWrite) -> Result<()> {
     let name = quoted(table.name);
     let names: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
     let rows = match write {
         TableWrite::Whole(rows) => {
             tx.execute(&format!("DELETE FROM {name}"), [])?;
-            *rows
+            rows.as_slice()
         }
         TableWrite::Rows { updates, from, tail, .. } => {
             let sets: Vec<String> = names.iter().map(|column| format!("{column} = ?")).collect();
@@ -2210,7 +2519,7 @@ fn write_table(tx: &Connection, table: &Table, write: &TableWrite<'_>) -> Result
             if let Some(from) = from {
                 tx.execute(&format!("DELETE FROM {name} WHERE rowid >= ?1"), [from])?;
             }
-            *tail
+            tail.as_slice()
         }
     };
     let slots = vec!["?"; names.len()].join(", ");
@@ -2341,7 +2650,7 @@ pub fn write_text_at(model: &Path, text: &str) -> Result<()> {
     remove(model)?;
     let understood = serde_json::from_str::<Value>(text).ok().filter(Value::is_object).and_then(|map| rows_of(&map).ok());
     match understood {
-        Some(fresh) => save_rows(model, BLOCKS.iter().zip(&fresh), "", None).map(|_| ()),
+        Some(fresh) => save_rows(model, Fresh::Rows(BLOCKS.iter().zip(fresh).collect()), "", None).map(|_| ()),
         None => crate::io::fs::write_atomic(model, text.as_bytes()),
     }
 }
@@ -2684,6 +2993,127 @@ mod tests {
         assert!(save_at(&whole, &map(true), "scan 1", &languages()).unwrap());
         assert_eq!(search_index(&model), search_index(&whole));
         assert_eq!(read_stored_at(&model).unwrap().json, read_stored_at(&whole).unwrap().json);
+    }
+
+    /// Um mapa de seis arquivos, cada um com os cartões de conhecimento na
+    /// análise. Com `changed`, o terceiro ganha uma declaração e outros
+    /// cartões, a primeira declaração do quinto ganha um uso, o segundo e o
+    /// sexto ganham uma medida de qualidade e um arquivo novo entra depois do
+    /// segundo.
+    fn carded_map(changed: bool) -> Value {
+        let mut modules: Vec<Value> = (0..6)
+            .map(|at| {
+                let mut names = vec![format!("unit{at}Alpha"), format!("unit{at}Beta")];
+                if changed && at == 2 {
+                    names.insert(1, "unit2Added".to_string());
+                }
+                let declarations: Vec<Value> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(line, name)| {
+                        let used_by = if changed && at == 4 && line == 0 { json!(["src/m02.ts:2:unit2Added"]) } else { json!([]) };
+                        json!({"kind": "function", "name": name, "line": line + 1, "end_line": line + 1,
+                               "signature": format!("function {name}()"), "used_by": used_by})
+                    })
+                    .collect();
+                let inputs = format!("inputs-{at}-{}", changed && at == 2);
+                let mut module = json!({"path": format!("src/m{at:02}.ts"), "language": "typescript", "loc": 3, "declarations": declarations,
+                    "analysis": {"parse_complete": true, "knowledge": {"version": 2, "inputs": inputs, "cards": [{"id": format!("card-{at}"), "names": names}]}}});
+                if changed && (at == 1 || at == 5) {
+                    module["quality"] = json!({"lines": 9});
+                }
+                module
+            })
+            .collect();
+        if changed {
+            modules.insert(2, json!({"path": "src/m01x.ts", "language": "typescript", "loc": 1,
+                "declarations": [{"kind": "function", "name": "unitNew", "line": 1, "end_line": 1, "used_by": []}],
+                "analysis": {"knowledge": {"version": 2, "inputs": "inputs-new", "cards": [{"id": "card-new"}]}}}));
+        }
+        json!({"root": "/proj", "modules": modules})
+    }
+
+    /// O mapa como a passada que relê o terceiro arquivo e lê o novo o grava:
+    /// só esses dois trazem os cartões, refeitos, e os outros vêm da leitura
+    /// do mapa, que os deixou no banco.
+    fn as_saved_by_the_pass(mut map: Value) -> Value {
+        for module in map["modules"].as_array_mut().unwrap() {
+            if !["src/m02.ts", "src/m01x.ts"].contains(&module["path"].as_str().unwrap()) {
+                module["analysis"]["knowledge"].as_object_mut().unwrap().remove("cards");
+            }
+        }
+        map
+    }
+
+    /// A gravação que parte do mapa lido sem os cartões mantém os que ele
+    /// deixou no banco, mesmo na linha que muda por outra coluna e na que
+    /// muda de número porque um arquivo entrou e outro ganhou uma declaração
+    /// antes dela: o mapa, os números das linhas e o índice de busca saem
+    /// iguais aos da gravação inteira do mesmo mapa com os cartões.
+    #[test]
+    fn saving_since_the_previous_map_keeps_the_cards_it_left_in_the_database() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &carded_map(false), "scan 1", &languages()).unwrap());
+        let previous = read_previous_at(&model).unwrap();
+        let before: Value = serde_json::from_str(&previous.json).unwrap();
+        assert_eq!(before["modules"][0]["analysis"]["knowledge"], json!({"version": 2, "inputs": "inputs-0-false"}), "the cards stay in the database");
+
+        let map = as_saved_by_the_pass(carded_map(true));
+        assert_eq!(save_since_at(&model, &map, &before, &previous.stamp, "scan 1", &languages()).unwrap(), Some(true));
+
+        let fresh = tempdir().unwrap();
+        let whole = model_path(fresh.path());
+        assert!(save_at(&whole, &carded_map(true), "scan 1", &languages()).unwrap());
+        assert_eq!(read_stored_at(&model).unwrap().json, read_stored_at(&whole).unwrap().json);
+        assert_eq!(search_index(&model), search_index(&whole));
+        let texts = |model: &Path| -> Vec<(i64, String)> {
+            let db = open(model).unwrap();
+            let mut stmt = db.conn().prepare("SELECT rowid, path FROM texts ORDER BY rowid").unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(texts(&model), texts(&whole));
+    }
+
+    /// A gravação que parte de um mapa lido antes de outra gravação, ou de um
+    /// banco cujos blocos não têm a marca da passada, não grava nada e diz
+    /// que não gravou por isso.
+    #[test]
+    fn saving_since_a_map_the_database_no_longer_holds_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &carded_map(false), "scan 1", &languages()).unwrap());
+        let previous = read_previous_at(&model).unwrap();
+        let before: Value = serde_json::from_str(&previous.json).unwrap();
+        assert!(save_at(&model, &carded_map(true), "scan 1", &languages()).unwrap());
+        let bytes = std::fs::read(&model).unwrap();
+        assert_eq!(save_since_at(&model, &before, &before, &previous.stamp, "scan 1", &languages()).unwrap(), None);
+        let current = read_previous_at(&model).unwrap();
+        assert_eq!(save_since_at(&model, &before, &before, &current.stamp, "scan 2", &languages()).unwrap(), None);
+        assert_eq!(std::fs::read(&model).unwrap(), bytes);
+    }
+
+    /// Duas passadas que partem do mesmo mapa planejam a gravação ao mesmo
+    /// tempo: a que grava depois da outra acha o banco mudado já com a trava
+    /// e não troca linha nenhuma, e quem a chamou faz a gravação inteira.
+    #[test]
+    fn of_two_passes_saving_since_the_same_map_the_later_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &carded_map(false), "scan 1", &languages()).unwrap());
+        let previous = read_previous_at(&model).unwrap();
+        let before: Value = serde_json::from_str(&previous.json).unwrap();
+        let first_map = as_saved_by_the_pass(carded_map(true));
+        let mut second_map = before.clone();
+        second_map["modules"][0]["quality"] = json!({"lines": 4});
+
+        let (mut first, mut second) = (open(&model).unwrap(), open(&model).unwrap());
+        let first_plan = plan(&first, Fresh::Since { map: &first_map, previous: &before, stamp: &previous.stamp }, "scan 1").unwrap().unwrap();
+        let second_plan = plan(&second, Fresh::Since { map: &second_map, previous: &before, stamp: &previous.stamp }, "scan 1").unwrap().unwrap();
+        assert_eq!(commit(&mut first, first_plan, "scan 1", Some(&languages())).unwrap(), Some(true));
+        let written = read_stored_at(&model).unwrap().json;
+        assert_eq!(commit(&mut second, second_plan, "scan 1", Some(&languages())).unwrap(), None);
+        assert_eq!(read_stored_at(&model).unwrap().json, written);
     }
 
     /// O estado da leitura traz o censo inteiro e, de cada arquivo, só o
