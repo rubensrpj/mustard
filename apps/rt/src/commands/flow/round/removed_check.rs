@@ -94,6 +94,7 @@ use mustard_core::platform::git as git_exec;
 use mustard_core::platform::i18n::{Locale, translate};
 
 use super::commit::{AfterWave, Finding};
+use super::unused_evidence::Evidence;
 
 /// Os nomes de arquivo, sem a extensão e sem diferença de caixa, do registro
 /// de mudanças de um projeto.
@@ -146,7 +147,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
             }
         }
     }
-    out.extend(dead_code(root, maps, &created, lang, false, &[]));
+    out.extend(dead_code(root, maps, &created, lang, false, &Evidence::default()));
     out
 }
 
@@ -155,7 +156,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
 /// onda pôs e nada usa (posta, com a onda dona do arquivo). A que ainda tem
 /// o nome escrito fora de teste ([`cited_outside_tests`]) vai só como aviso:
 /// o texto pode ser um uso que o mapa não ligou.
-fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale, final_phase: bool, outputs: &[String]) -> Vec<Finding> {
+fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale, final_phase: bool, evidence: &Evidence) -> Vec<Finding> {
     let called = LazyCell::new(|| called_names(maps));
     let mut out = Vec::new();
     for module in maps.after.modules.iter().filter(|m| !is_test_path(&m.path) && !is_entry_file(&m.path, &m.language)) {
@@ -166,7 +167,7 @@ fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale, fi
             }
             match before.and_then(|b| b.declarations.iter().find(|d| same_piece(d, decl))) {
                 Some(old) => out.extend(lost_last_use(root, maps, created, lang, (module, decl, old))),
-                None if final_phase => out.extend(never_used(root, maps, created, lang, (module, decl), &called, outputs)),
+                None if final_phase => out.extend(never_used(root, maps, created, lang, (module, decl), &called, evidence)),
                 None => {}
             }
         }
@@ -176,7 +177,7 @@ fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale, fi
 
 pub(super) fn final_findings(root: &Path, maps: &AfterWave, lang: Locale, outputs: &[String]) -> Vec<Finding> {
     let created = created(root, maps);
-    dead_code(root, maps, &created, lang, true, outputs)
+    dead_code(root, maps, &created, lang, true, &Evidence::read(root, outputs))
 }
 
 /// O ponto de entrada nunca é código sem uso: a função principal, a que
@@ -219,7 +220,7 @@ fn never_used(
     lang: Locale,
     (module, decl): (&MapModule, &MapDecl),
     called: &BTreeSet<&str>,
-    outputs: &[String],
+    evidence: &Evidence,
 ) -> Vec<Finding> {
     let Some((wave, _)) = maps.changed.iter().find(|(_, files)| files.contains(&module.path)) else {
         return Vec::new();
@@ -229,7 +230,7 @@ fn never_used(
     }
     let cites = cited(root, &decl.name, created);
     let unlinked_text = cited_outside_tests(maps, module, decl, &cites);
-    let refuses = !exported(decl) && (!unlinked_text || super::unused_evidence::proves(root, module, decl, outputs));
+    let refuses = !exported(decl) && (!unlinked_text || super::unused_evidence::proves(root, module, decl, evidence));
     let says = |key: &str, file: &str, line: u64| Finding {
         wave: *wave,
         refuses,

@@ -13,8 +13,8 @@
 //! linha dela, e a linha de agora ainda traz o nome onde a ferramenta disse.
 //! O caminho relativo do aviso se lê a partir da pasta de onde a ferramenta
 //! rodou: a raiz do projeto, de onde os comandos rodam, ou a pasta do pacote
-//! que o `pnpm -r` põe na frente de cada linha do script dele. Outro formato
-//! não acrescenta nada.
+//! que o pnpm, o npm, o turbo ou o yarn dizem, cada um do seu jeito, que
+//! rodou o script ([`tool_lines`]). Outro formato não acrescenta nada.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -22,6 +22,8 @@ use std::sync::OnceLock;
 use mustard_core::domain::project_map::{MapDecl, MapModule};
 use regex::Regex;
 use serde_json::Value;
+
+use crate::commands::flow::validation::{Packages, tool_lines};
 
 /// Um aviso de declaração sem uso, como a ferramenta o escreveu: o arquivo,
 /// a linha, os nomes que ele cita e por onde se confere que ele fala da
@@ -93,10 +95,27 @@ fn patterns() -> Option<&'static Patterns> {
         .as_ref()
 }
 
-/// A saída de algum comando em `outputs` diz que `decl`, declarada em
-/// `module`, sobra: um aviso que cita o nome dela, no arquivo dela dentro de
-/// `root`, numa linha dela, e que ainda fala do texto de agora.
-pub(super) fn proves(root: &Path, module: &MapModule, decl: &MapDecl, outputs: &[String]) -> bool {
+/// Os avisos de declaração sem uso que as saídas dos comandos escreveram,
+/// lidos uma vez para a análise final inteira, com os pacotes do projeto.
+#[derive(Default)]
+pub(super) struct Evidence(Vec<Citation>);
+
+impl Evidence {
+    /// Os avisos das saídas `outputs` dos comandos que rodaram no projeto em
+    /// `root`, cada um com o arquivo a partir da raiz.
+    pub(super) fn read(root: &Path, outputs: &[String]) -> Self {
+        let Some(patterns) = patterns() else {
+            return Self::default();
+        };
+        let packages = Packages::of(root);
+        Self(outputs.iter().flat_map(|output| citations(patterns, output, &packages)).collect())
+    }
+}
+
+/// Algum aviso de `evidence` diz que `decl`, declarada em `module`, sobra:
+/// um aviso que cita o nome dela, no arquivo dela dentro de `root`, numa
+/// linha dela, e que ainda fala do texto de agora.
+pub(super) fn proves(root: &Path, module: &MapModule, decl: &MapDecl, evidence: &Evidence) -> bool {
     let Ok(current) = root.join(&module.path).canonicalize() else {
         return false;
     };
@@ -109,34 +128,40 @@ pub(super) fn proves(root: &Path, module: &MapModule, decl: &MapDecl, outputs: &
     let Ok(source) = std::fs::read_to_string(&current) else {
         return false;
     };
-    let Some(patterns) = patterns() else {
-        return false;
-    };
-    outputs.iter().flat_map(|output| citations(patterns, output)).any(|citation| lands(root, &current, &source, decl, &citation))
+    evidence.0.iter().any(|citation| lands(root, &current, &source, decl, citation))
 }
 
 /// Os avisos de declaração sem uso de `output`, em cada formato que se lê,
 /// com o arquivo a partir da raiz. O que uma ferramenta escreveu dentro de um
-/// pacote se lê junto, sem as linhas de outro pacote no meio, e o arquivo do
-/// aviso é o da pasta dele.
-fn citations(patterns: &Patterns, output: &str) -> Vec<Citation> {
+/// dos `packages` se lê junto, sem as linhas de outro pacote no meio, e o
+/// arquivo do aviso é o da pasta dele; o caminho relativo escrito num pacote
+/// que não se sabe qual é não leva a arquivo nenhum.
+fn citations(patterns: &Patterns, output: &str, packages: &Packages) -> Vec<Citation> {
     let plain = patterns.color.replace_all(output, "");
     let mut out = Vec::new();
-    for (dir, text) in by_dir(&plain) {
+    for (dir, text) in by_dir(&plain, packages) {
         let mut found = rustc_json(patterns, &text);
         found.extend(rustc_text(patterns, &text));
         found.extend(located(patterns, &text));
         found.extend(eslint_stylish(patterns, &text));
-        out.extend(found.into_iter().map(|citation| Citation { file: Path::new(dir).join(&citation.file), ..citation }));
+        for citation in found {
+            let file = match dir {
+                Some(dir) => Path::new(dir).join(&citation.file),
+                None if citation.file.is_absolute() => citation.file.clone(),
+                None => continue,
+            };
+            out.push(Citation { file, ..citation });
+        }
     }
     out
 }
 
 /// O texto de `output` junto pela pasta de onde rodou a ferramenta que o
-/// escreveu, na ordem em que cada pasta aparece.
-fn by_dir(output: &str) -> Vec<(&str, String)> {
-    let mut out: Vec<(&str, String)> = Vec::new();
-    for (dir, text) in crate::commands::flow::validation::tool_lines(output) {
+/// escreveu, na ordem em que cada pasta aparece; `None` junta o dos pacotes
+/// que não se sabe quais são.
+fn by_dir<'a>(output: &'a str, packages: &'a Packages) -> Vec<(Option<&'a str>, String)> {
+    let mut out: Vec<(Option<&str>, String)> = Vec::new();
+    for (dir, text) in tool_lines(output, packages) {
         let at = out.iter().position(|(seen, _)| *seen == dir).unwrap_or_else(|| {
             out.push((dir, String::new()));
             out.len() - 1
@@ -300,14 +325,14 @@ mod tests {
             "analysis":{"parse_complete":true,"relations":"syntactic-candidates"}}))
         .unwrap();
         let decl: MapDecl = serde_json::from_value(json!({"name":"unused_sum","kind":"function","line":1,"end_line":1})).unwrap();
-        assert!(!proves(dir.path(), &module, &decl, &[]));
+        assert!(!proves(dir.path(), &module, &decl, &Evidence::default()));
         let diagnostic = json!({"$message_type":"diagnostic","level":"warning","code":{"code":"dead_code"},
             "message":"function `unused_sum` is never used","spans":[{"file_name":"math.rs","line_start":1,
             "is_primary":true,"text":[{"text":"fn unused_sum() {}"}]}]})
         .to_string();
-        assert!(proves(dir.path(), &module, &decl, std::slice::from_ref(&diagnostic)));
+        assert!(proves(dir.path(), &module, &decl, &Evidence::read(dir.path(), std::slice::from_ref(&diagnostic))));
         std::fs::write(dir.path().join("math.rs"), "fn unused_sum() { runtime_registration(); }\n").unwrap();
-        assert!(!proves(dir.path(), &module, &decl, &[diagnostic]));
+        assert!(!proves(dir.path(), &module, &decl, &Evidence::read(dir.path(), &[diagnostic])));
     }
     #[test]
     fn actual_compiler_evidence_distinguishes_private_dead_code_from_a_public_contract() {
@@ -326,8 +351,9 @@ mod tests {
         let module: MapModule = serde_json::from_value(json!({"path":"math.rs","language":"rust"})).unwrap();
         let private: MapDecl = serde_json::from_value(json!({"name":"unused_sum","kind":"function","line":1,"end_line":1})).unwrap();
         let public: MapDecl = serde_json::from_value(json!({"name":"public_contract","kind":"function","line":3,"end_line":3})).unwrap();
-        assert!(proves(root, &module, &private, std::slice::from_ref(&output)));
-        assert!(!proves(root, &module, &public, std::slice::from_ref(&output)));
+        let evidence = Evidence::read(root, std::slice::from_ref(&output));
+        assert!(proves(root, &module, &private, &evidence));
+        assert!(!proves(root, &module, &public, &evidence));
         let after = serde_json::from_value(json!({"modules":[{"path":"math.rs","language":"rust","declarations":[
             {"name":"unused_sum","kind":"function","line":1,"end_line":1},
             {"name":"noted_sum","kind":"function","line":2,"end_line":2},
@@ -530,17 +556,17 @@ Time Elapsed 00:00:04.57
             std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
             std::fs::write(root.join(file), source).unwrap();
             let module: MapModule = serde_json::from_value(json!({"path": file})).unwrap();
-            let outputs = [output.replace("{root}", &root.to_string_lossy())];
+            let evidence = Evidence::read(root, &[output.replace("{root}", &root.to_string_lossy())]);
             for &(name, line, end_line) in unused {
-                assert!(proves(root, &module, &declared(name, line, end_line), &outputs), "{tool}: `{name}`");
+                assert!(proves(root, &module, &declared(name, line, end_line), &evidence), "{tool}: `{name}`");
             }
             for &(name, line, end_line) in kept {
-                assert!(!proves(root, &module, &declared(name, line, end_line), &outputs), "{tool}: `{name}`");
+                assert!(!proves(root, &module, &declared(name, line, end_line), &evidence), "{tool}: `{name}`");
             }
             let moved: String = source.lines().flat_map(|line| [" ", line, "\n"]).collect();
             std::fs::write(root.join(file), moved).unwrap();
             for &(name, line, end_line) in unused {
-                assert!(!proves(root, &module, &declared(name, line, end_line), &outputs), "{tool}, moved: `{name}`");
+                assert!(!proves(root, &module, &declared(name, line, end_line), &evidence), "{tool}, moved: `{name}`");
             }
         }
     }
@@ -579,28 +605,32 @@ Time Elapsed 00:00:04.57
         }
     }
 
-    /// O `src/a.ts` dos dois pacotes do monorepo de onde saiu a saída do
-    /// `pnpm -r lint`.
+    /// O `src/a.ts` da raiz e dos dois pacotes do monorepo de onde saiu a
+    /// saída do `pnpm -r lint`.
     const WORKSPACE_SOURCE: &str = "function lonelyTotal(): number {\n  return 2;\n}\n\nexport function runSum(): number {\n  return 1;\n}\n";
 
-    /// Num monorepo do pnpm de dois pacotes com o mesmo `src/a.ts`, com o mapa
-    /// do scan de verdade e uma nota que cita `lonelyTotal`: o tsc que o
-    /// `pnpm -r lint` rodou dentro de `packages/web` diz que ela sobra, com o
-    /// caminho a partir do pacote. Só a declaração desse pacote recusa; a do
-    /// outro, de mesmo nome na mesma linha, só avisa.
+    /// Num monorepo do pnpm com o mesmo `src/a.ts` na raiz e em dois pacotes,
+    /// com o mapa do scan de verdade e uma nota que cita `lonelyTotal`: o tsc
+    /// que o `pnpm -r lint` rodou dentro de `packages/web` diz que ela sobra,
+    /// com o caminho a partir do pacote. Só a declaração desse pacote recusa;
+    /// a da raiz e a do outro pacote, de mesmo nome na mesma linha, só avisam.
+    /// Na saída do pnpm de um pacote só, do npm, do turbo e do yarn, recusa a
+    /// declaração de cada pacote em que o tsc rodou e disse que ela sobra, e
+    /// só ela; o aviso escrito no bloco de um pacote que não se sabe qual é
+    /// não recusa nenhuma, nem a da raiz.
     #[test]
     fn a_warning_from_a_tool_run_inside_a_workspace_package_lands_only_on_that_package() {
         let scan = mustard_core::Scan::locate();
         assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let files = ["packages/web/src/a.ts", "packages/api/src/a.ts"];
+        let files = ["src/a.ts", "packages/web/src/a.ts", "packages/api/src/a.ts"];
         std::fs::write(root.join("pnpm-workspace.yaml"), "packages:\n  - \"packages/*\"\n").unwrap();
-        for (package, file) in ["web", "api"].into_iter().zip(files) {
+        for (name, file) in ["mono", "@mono/web", "@mono/api"].into_iter().zip(files) {
             std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
             std::fs::write(root.join(file), WORKSPACE_SOURCE).unwrap();
-            let manifest = json!({"name": format!("@mono/{package}"), "version": "1.0.0", "private": true, "scripts": {"lint": "tsc --noEmit -p ."}});
-            std::fs::write(root.join(format!("packages/{package}/package.json")), manifest.to_string()).unwrap();
+            let manifest = json!({"name": name, "version": "1.0.0", "private": true, "scripts": {"lint": "tsc --noEmit -p ."}});
+            std::fs::write(root.join(file).parent().unwrap().parent().unwrap().join("package.json"), manifest.to_string()).unwrap();
         }
         std::fs::write(root.join("notes.txt"), "lonelyTotal fica para a próxima versão\n").unwrap();
         super::super::tests::git_at(root, &["init", "-q"]);
@@ -621,8 +651,13 @@ Time Elapsed 00:00:04.57
                 })
                 .collect()
         };
-        assert_eq!(refuses(&[]), [false, false], "sem a ferramenta, as duas só avisam");
+        assert_eq!(refuses(&[]), [false, false, false], "sem a ferramenta, as três só avisam");
         let output = crate::commands::flow::validation::PNPM_RECURSIVE_LINT.replace("{root}", &root.to_string_lossy());
-        assert_eq!(refuses(&[output]), [true, false], "o aviso do tsc de `packages/web` recusa só a de lá");
+        assert_eq!(refuses(&[output]), [false, true, false], "o aviso do tsc de `packages/web` recusa só a de lá");
+        let tools = crate::commands::flow::validation::MONOREPO_LINT.into_iter().chain(crate::commands::flow::validation::PACKAGE_BLOCKS);
+        for (tool, output, dirs) in tools {
+            let ran = ["", "packages/web", "packages/api"].map(|dir| dirs.contains(&dir));
+            assert_eq!(refuses(&[output.replace("{root}", &root.to_string_lossy())]), ran, "{tool}");
+        }
     }
 }
