@@ -45,12 +45,23 @@ fn words(normalizer: &mut Normalizer, text: &str) -> String {
     normalizer.written_forms(text).into_iter().collect::<Vec<_>>().join(" ")
 }
 
+/// Os símbolos que uma sincronização do catálogo trocou: os arquivos cujos
+/// símbolos saíram e entraram de novo, e o número e o nome de cada símbolo
+/// que saiu ou entrou.
+#[derive(Debug, Default)]
+pub(crate) struct Swapped {
+    pub paths: BTreeSet<String>,
+    pub ids: BTreeSet<String>,
+    pub names: BTreeSet<String>,
+}
+
 /// Runs in the source transaction. Unchanged files retain their index rows.
 /// Com `scope`, os únicos arquivos cujas linhas mudaram nesta gravação, só
 /// eles se conferem: o arquivo de fora dele tem o mesmo texto da gravação em
 /// que se catalogou. Catálogo feito em outras línguas ou noutra versão se
-/// refaz inteiro, com ou sem `scope`.
-pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTreeSet<String>>) -> Result<()> {
+/// refaz inteiro, com ou sem `scope`. Devolve os símbolos trocados; `None`
+/// quando o catálogo se refez inteiro.
+pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTreeSet<String>>) -> Result<Option<Swapped>> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS knowledge_texts_path ON texts(path);")?;
     let codes = languages.codes().join(",");
     let stored: Option<String> = conn.query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional()?;
@@ -76,6 +87,7 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTre
         }
     };
     let mut present = BTreeSet::new();
+    let mut swapped = Swapped::default();
     for (path, analysis) in rows {
         present.insert(path.clone());
         let text = analysis.unwrap_or_default();
@@ -86,7 +98,7 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTre
         if old.as_deref() == Some(&fingerprint) {
             continue;
         }
-        remove(conn, &path)?;
+        remove(conn, &path, &mut swapped)?;
         let analysis: Value = if text.is_empty() { Value::Null } else { serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))? };
         if analysis["knowledge"]["version"] == knowledge::VERSION {
             for (position, value) in analysis["knowledge"]["cards"].as_array().into_iter().flatten().enumerate() {
@@ -96,6 +108,8 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTre
                     params![card.id, path, card.name, integer(card.source.line)?, integer(card.source.end_line)?, card.source.sha256, position as i64],
                 )?;
                 let rowid = conn.last_insert_rowid();
+                swapped.ids.insert(card.id.clone());
+                swapped.names.insert(card.name.clone());
                 let own = knowledge::evidence::own_text(&card);
                 conn.execute(
                     "INSERT INTO knowledge_fts(rowid,name,own,path,header,intent) VALUES (?1,?2,?3,?4,?5,?6)",
@@ -139,15 +153,24 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTre
     };
     for path in old {
         if !present.contains(&path) {
-            remove(conn, &path)?;
+            remove(conn, &path, &mut swapped)?;
         }
     }
     conn.execute("INSERT OR REPLACE INTO knowledge_meta(key,value) VALUES ('languages',?1)", [codes])?;
     conn.execute("INSERT OR REPLACE INTO knowledge_meta(key,value) VALUES ('evidence_version',?1)", [knowledge::VERSION.to_string()])?;
-    Ok(())
+    Ok(scope.map(|_| swapped))
 }
 
-fn remove(conn: &Connection, path: &str) -> Result<()> {
+/// Tira do catálogo os símbolos do arquivo `path`, contando em `swapped` o
+/// arquivo e o número e o nome de cada símbolo que sai.
+fn remove(conn: &Connection, path: &str, swapped: &mut Swapped) -> Result<()> {
+    let mut leaving = conn.prepare_cached("SELECT id,name FROM knowledge_symbols WHERE path=?1")?;
+    for row in leaving.query_map([path], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (id, name) = row?;
+        swapped.ids.insert(id);
+        swapped.names.insert(name);
+    }
+    swapped.paths.insert(path.to_string());
     conn.execute("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge_symbols WHERE path=?1)", [path])?;
     conn.execute("DELETE FROM knowledge_links WHERE source IN (SELECT id FROM knowledge_symbols WHERE path=?1)", [path])?;
     conn.execute("DELETE FROM knowledge_symbols WHERE path=?1", [path])?;

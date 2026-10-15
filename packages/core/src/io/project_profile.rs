@@ -116,7 +116,9 @@ fn specifier_observations(conn: &Connection, patterns: &pattern::Pattern) -> Res
     }).collect())
 }
 
-pub(crate) fn sync(conn: &Connection, map: &ProjectMap) -> Result<()> {
+/// O perfil observado do mapa aberto em `conn`, cujas colunas estruturais
+/// estão em `map`: a impressão digital e o conteúdo, sem gravar nada.
+pub(crate) fn observe(conn: &Connection, map: &ProjectMap) -> Result<(String, Value)> {
     let patterns = pattern::learn(map);
     let mut naming_by_area = BTreeMap::<String, BTreeMap<&str, (u64, Vec<Value>)>>::new();
     let mut names=conn.prepare("SELECT file,name,line FROM decls WHERE name IS NOT NULL AND line IS NOT NULL ORDER BY file,line")?;
@@ -188,12 +190,18 @@ pub(crate) fn sync(conn: &Connection, map: &ProjectMap) -> Result<()> {
             .to_string()
             .as_bytes(),
     );
+    Ok((fingerprint, payload))
+}
+
+/// Grava o perfil `payload`, de impressão digital `fingerprint`, no lugar do
+/// guardado; o perfil igual ao guardado fica como está.
+pub(crate) fn store(conn: &Connection, fingerprint: &str, payload: &Value) -> Result<()> {
     let old: Option<String> = conn
         .query_row("SELECT fingerprint FROM project_profile LIMIT 1", [], |r| {
             r.get(0)
         })
         .optional()?;
-    if old.as_deref() == Some(&fingerprint) {
+    if old.as_deref() == Some(fingerprint) {
         return Ok(());
     }
     conn.execute("DELETE FROM project_profile", [])?;
@@ -218,7 +226,13 @@ pub fn snapshot(root: &Path) -> Value {
             )
             .optional()?;
         let (fingerprint, text) = row.ok_or_else(|| Error::config("profile-not-yet-scanned"))?;
-        let data: Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+        // A gravação de alguns arquivos deixou o perfil para depois: ele se
+        // calcula na hora, sem gravar.
+        let (fingerprint, data) = if project_map::profile::left_behind(db.conn()) {
+            project_map::profile::observed(db.conn())?
+        } else {
+            (fingerprint, serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?)
+        };
         if data["status"] == "unavailable" {
             return Ok(json!({"available":false,"reason":data["reason"],"model_calls":0}));
         }

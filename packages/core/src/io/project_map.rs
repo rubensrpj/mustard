@@ -562,6 +562,7 @@ pub(crate) const DB_BLOCKS: [Block; 18] =
 mod block_formats;
 #[cfg(test)]
 mod concurrent_saves;
+pub(crate) mod profile;
 mod reading;
 pub(crate) use reading::open_reading;
 
@@ -2253,11 +2254,9 @@ fn commit(db: &mut MapDb, planned: Planned<'_>, mark: &str, languages: Option<&L
     // mesmo, sem a trava.
     if planned.changed.is_empty() && map_revision::stamp(db.conn())? == planned.stamp {
         // A newly declared derived block can be empty even when the scanner's
-        // source blocks are unchanged. Fill it once without rereading source.
-        let profile:Option<String>=db.conn().query_row("SELECT payload FROM project_profile LIMIT 1",[],|row|row.get(0)).ok();
-        let stale=profile.as_deref().and_then(|text|serde_json::from_str::<Value>(text).ok())
-            .is_none_or(|data|data["version"]!=crate::io::project_profile::VERSION || data["status"]=="unavailable");
-        if stale { db.write(|conn| sync_project_profile(conn))?; }
+        // source blocks are unchanged, and a save of some files leaves the
+        // profile for later. Fill it once without rereading source.
+        if profile::stale(db.conn()) { db.write(|conn| profile::sync(conn))?; }
         return Ok(Some(false));
     }
     db.write(|tx| {
@@ -2307,19 +2306,28 @@ fn commit(db: &mut MapDb, planned: Planned<'_>, mark: &str, languages: Option<&L
         if touched(&[RESOURCES.name()]) {
             crate::io::knowledge::resources::rebuild(tx, languages.unwrap_or(&Languages::new([])))?;
         }
-        if touched(&[DECLS.name()]) {
-            crate::io::knowledge::catalog::sync(tx, languages.unwrap_or(&Languages::new([])), catalogued.as_ref())?;
-        }
+        let swapped = if touched(&[DECLS.name()]) {
+            crate::io::knowledge::catalog::sync(tx, languages.unwrap_or(&Languages::new([])), catalogued.as_ref())?
+        } else {
+            Some(crate::io::knowledge::catalog::Swapped::default())
+        };
+        // Com os documentos iguais e só os símbolos de alguns arquivos
+        // trocados, as citações se refazem só nos documentos que os citam.
         if touched(&[DECLS.name(), RESOURCES.name()]) {
-            crate::io::knowledge::references::rebuild(tx)?;
+            match swapped.filter(|_| !touched(&[RESOURCES.name()])) {
+                Some(swapped) => crate::io::knowledge::references::settle(tx, &swapped)?,
+                None => crate::io::knowledge::references::rebuild(tx)?,
+            }
         }
         // Refeitas as declarações, a marca do glossário cuja declaração mudou
         // de nome ou sumiu sai junto.
         if touched(&[DECLS.name()]) {
             map_glossary::drop_stale(tx)?;
         }
+        // O perfil lê o projeto inteiro: a gravação que troca só as linhas de
+        // alguns arquivos deixa para depois o perfil que o mapa já guarda.
         if touched(&[CENSUS.name(), FILES.name(), DECLS.name(), GRAPH.name(), ROUTES.name()]) {
-            sync_project_profile(tx)?;
+            if changed_paths(&changed, &[&FILES, &DECLS]).is_some() && !profile::missing(tx) { profile::leave_behind(tx)?; } else { profile::sync(tx)?; }
         }
         map_revision::bump(tx)?;
         Ok(Some(true))
@@ -2607,25 +2615,6 @@ fn write_table(tx: &Connection, table: &Table, write: &TableWrite) -> Result<()>
     let mut insert = tx.prepare(&format!("INSERT INTO {name}({}) VALUES ({slots})", names.join(", ")))?;
     for row in rows {
         insert.execute(params_from_iter(row))?;
-    }
-    Ok(())
-}
-
-fn sync_project_profile(conn: &Connection) -> Result<()> {
-    // Read compact structural columns, never the per-file analysis/body packs.
-    let result=(|| {
-    let map = ProjectMap { modules: example_modules(conn, false)?, projects: projects(conn)?,
-        languages: languages(conn)?, skeleton: skeleton(conn)?, graph: MapGraph {top_fan_in:fan_in(conn)?},
-        ..ProjectMap::default() };
-    crate::io::project_profile::sync(conn, &map)
-    })();
-    if result.is_err() {
-        // A derived projection cannot break writes/reads of independent map
-        // blocks. Withdraw its old evidence rather than leave a stale profile
-        // appearing current when a structural column cannot be interpreted.
-        conn.execute("DELETE FROM project_profile",[])?;
-        conn.execute("INSERT INTO project_profile(fingerprint,payload) VALUES ('unavailable',?1)",
-            ["{\"status\":\"unavailable\",\"reason\":\"incomplete-profile-input\",\"model_calls\":0}"])?;
     }
     Ok(())
 }

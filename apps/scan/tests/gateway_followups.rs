@@ -238,6 +238,32 @@ fn an_inherited_map_with_an_outdated_block_is_left_for_the_scan_to_rebuild() {
     assert_eq!((after["needs_scan"].clone(),version()),(json!(false),current),"{after}");
 }
 
+/// Numa cópia com o mapa herdado de outra versão do programa, a pergunta pelas
+/// partes de um arquivo TypeScript não espera a trava de outra gravação nem
+/// refaz o bloco velho que ela não lê: responde na hora com o mapa que a
+/// passada do scan gravou, e o bloco velho fica para a passada seguinte.
+#[test]
+fn a_question_on_an_inherited_map_answers_without_waiting_for_an_outdated_block() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("entry.ts"),"export function entry(): number { return helper(); }\nfunction helper(): number { return 1; }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let path=model::path_in(&root.join(".claude"));
+    let version=|| rusqlite::Connection::open(&path).unwrap().query_row("SELECT version FROM blocks WHERE name='pulls'",[],|row|row.get::<_,i64>(0)).unwrap();
+    let current=version();
+    let writer=rusqlite::Connection::open(&path).unwrap();
+    writer.execute("UPDATE blocks SET version=version-1 WHERE name='pulls'",[]).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started=std::time::Instant::now();
+    let read=mustard_core::io::project_map::read_for_at(&path,mustard_core::io::project_map::Need::Parts("entry.ts")).unwrap();
+    let waited=started.elapsed();
+    let parts=mustard_core::domain::project_map::parts(&read,"entry.ts").unwrap();
+    writer.execute_batch("COMMIT").unwrap();
+    assert!(waited<std::time::Duration::from_secs(1),"the question waited {waited:?}");
+    let names:Vec<&str>=parts.parts.iter().map(|part|part.name.as_str()).collect();
+    assert_eq!((names,version()),(vec!["entry","helper"],current-1));
+}
+
 /// Numa cópia, a confirmação da passada vai ao mapa do checkout principal. O
 /// bloco dele gravado por outra versão do programa fica para a passada dele:
 /// a confirmação grava a fonte aprendida na cópia sem refazer o bloco.

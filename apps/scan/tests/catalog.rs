@@ -90,6 +90,42 @@ fn ambiguous_names_and_examples_do_not_create_document_links_and_line_addresses_
     assert_eq!(query(root, "fechamento aprovado")["cards"][0]["name"], "restoreLedger");
 }
 
+/// A gravação que troca só um arquivo TypeScript refaz as citações só do
+/// documento que cita esse arquivo, e deixa para depois o perfil do projeto:
+/// quem o lê nesse meio tempo o vê já com o arquivo novo, e a passada
+/// seguinte sem mudança o grava.
+#[test]
+fn a_save_of_one_file_settles_only_the_documents_citing_it_and_leaves_the_profile_for_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(root.join("mustard.json"), "{}").unwrap();
+    std::fs::write(root.join("src/store.ts"), "export function restoreLedger(): number { return 1; }\n").unwrap();
+    std::fs::write(root.join("src/books.ts"), "export function closeBooks(): number { return 2; }\n").unwrap();
+    std::fs::write(root.join("docs/recovery.md"), "# Recovery\nThe approved closing uses `restoreLedger`.\n").unwrap();
+    std::fs::write(root.join("docs/closing.md"), "# Closing\nThe month ends with `closeBooks`.\n").unwrap();
+    model::scan(root, &root.join(".claude"), &["--native"]);
+    let db = || rusqlite::Connection::open(store::model_path(root)).unwrap();
+    let cited_at = |resource: &str| db().query_row("SELECT ref_line FROM knowledge_resource_refs WHERE resource=?1", [resource], |r| r.get::<_, i64>(0)).unwrap();
+    let stored_lines = || serde_json::from_str::<Value>(&db().query_row("SELECT payload FROM project_profile", [], |r| r.get::<_, String>(0)).unwrap()).unwrap()["size"]["lines"].clone();
+    let mark = || db().query_row("SELECT mark FROM blocks WHERE name='project_profile'", [], |r| r.get::<_, Option<String>>(0)).unwrap();
+    // A citação que a gravação refizesse voltaria à linha 2.
+    db().execute("UPDATE knowledge_resource_refs SET ref_line=99 WHERE resource='docs/closing.md'", []).unwrap();
+    let before = stored_lines();
+
+    std::fs::write(root.join("src/store.ts"), "export function restoreLedger(): number {\n  return 3;\n}\n").unwrap();
+    model::scan(root, &root.join(".claude"), &["--native"]);
+    assert_eq!((cited_at("docs/recovery.md"), cited_at("docs/closing.md")), (2, 99));
+    assert_eq!(knowledge::audit::run(root).unwrap()["issues"], json!([]), "the citing document follows the new symbol");
+    assert_eq!((mark().as_deref(), stored_lines()), (Some("behind"), before.clone()));
+    let read = mustard_core::io::project_profile::snapshot(root);
+    assert_eq!(read["data"]["size"]["lines"], json!(before.as_u64().unwrap() + 2), "{read}");
+
+    model::scan(root, &root.join(".claude"), &["--native"]);
+    assert_eq!((mark().as_deref(), stored_lines()), (Some(""), read["data"]["size"]["lines"].clone()));
+}
+
 #[test]
 fn exact_lookup_hydrates_only_relevant_packs_and_uses_path_indexes() {
     let dir = fixture();

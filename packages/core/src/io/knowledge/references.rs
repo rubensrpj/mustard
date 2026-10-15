@@ -1,9 +1,10 @@
 //! Document-to-code addresses are maintained separately from call edges.
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use super::catalog::Swapped;
 use crate::domain::knowledge::resources::Section;
 use crate::domain::knowledge::{Card, Source, references};
 use crate::domain::project_map::MapRefusal;
@@ -18,37 +19,88 @@ pub(crate) fn rebuild(conn: &Connection) -> Result<()> {
     let rows = select.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
     for row in rows {
         let (path, hash, text) = row?;
-        let sections: Vec<Section> = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
-        let mut text = String::new();
-        let mut next_line = 1;
-        for section in &sections {
-            for _ in next_line..section.line {
-                text.push('\n');
-            }
-            text.push_str(&section.text);
-            next_line = section.end_line + 1;
+        resolve_document(conn, &path, &hash, &text)?;
+    }
+    Ok(())
+}
+
+/// Depois que o catálogo trocou só os símbolos de `swapped`, refaz as
+/// citações só dos documentos que podem ter mudado: os que apontavam para um
+/// símbolo trocado e os que citam, pelo endereço, um arquivo cujos símbolos
+/// se trocaram ou, pelo nome, um símbolo que saiu ou entrou. Cada documento
+/// se resolve sozinho, e o de fora fica com as citações que já tinha, as
+/// mesmas que a reconstrução inteira ([`rebuild`]) daria.
+pub(crate) fn settle(conn: &Connection, swapped: &Swapped) -> Result<()> {
+    if swapped.paths.is_empty() {
+        return Ok(());
+    }
+    let reaches = |document: &str, reference: &str| match references::address(document, reference) {
+        Some((relative, _)) => {
+            swapped.paths.contains(&relative)
+                || (!reference.starts_with('.') && references::address("index", reference).is_some_and(|(root, _)| swapped.paths.contains(&root)))
         }
-        for reference in references::extract(&text) {
-            let Some(section) = sections.iter().find(|s| s.line <= reference.line && reference.line <= s.end_line) else { continue };
-            let targets = resolve(conn, &path, &reference.text)?;
-            if targets.is_empty() {
-                conn.execute("INSERT INTO knowledge_ref_issues(resource,section,ref_line,reference,reason,candidates) VALUES (?1,?2,?3,?4,'unresolved-explicit-reference',0)",
-                    params![path,super::catalog::integer(section.line)?,super::catalog::integer(reference.line)?,reference.text])?;
-                continue;
-            }
-            let symbol_address = references::address(&path, &reference.text).is_none();
-            if symbol_address && targets.len() != 1 {
-                conn.execute(
-                    "INSERT INTO knowledge_ref_issues(resource,section,ref_line,reference,reason,candidates) VALUES (?1,?2,?3,?4,'ambiguous-symbol',?5)",
-                    params![path, super::catalog::integer(section.line)?, super::catalog::integer(reference.line)?, reference.text, targets.len() as i64],
-                )?;
-                continue;
-            }
-            for (target, target_hash) in targets {
-                conn.execute("INSERT OR IGNORE INTO knowledge_resource_refs(resource,section,ref_line,reference,target,kind,resource_sha256,target_sha256) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                    params![path,super::catalog::integer(section.line)?,super::catalog::integer(reference.line)?,reference.text,target,
-                        if symbol_address {"explicit-unique-symbol"} else {"explicit-file-address"},hash,target_hash])?;
-            }
+        None => swapped.names.contains(reference),
+    };
+    let mut documents = BTreeSet::new();
+    let mut resolved = conn.prepare("SELECT resource,reference,target FROM knowledge_resource_refs")?;
+    for row in resolved.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))? {
+        let (document, reference, target) = row?;
+        if swapped.ids.contains(&target) || reaches(&document, &reference) {
+            documents.insert(document);
+        }
+    }
+    let mut unresolved = conn.prepare("SELECT resource,reference FROM knowledge_ref_issues")?;
+    for row in unresolved.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (document, reference) = row?;
+        if reaches(&document, &reference) {
+            documents.insert(document);
+        }
+    }
+    let mut read = conn.prepare("SELECT sha256,sections FROM resource_files WHERE path=?1 AND issue='' AND kind='documentation'")?;
+    for document in documents {
+        conn.execute("DELETE FROM knowledge_resource_refs WHERE resource=?1", [&document])?;
+        conn.execute("DELETE FROM knowledge_ref_issues WHERE resource=?1", [&document])?;
+        if let Some((hash, text)) = read.query_row([&document], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).optional()? {
+            resolve_document(conn, &document, &hash, &text)?;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve cada citação do documento `path`, de conteúdo `hash`, cujas
+/// seções em JSON são `text`: o endereço achado vai às citações, e o que não
+/// se acha ou não se decide vai aos problemas.
+fn resolve_document(conn: &Connection, path: &str, hash: &str, text: &str) -> Result<()> {
+    let sections: Vec<Section> = serde_json::from_str(text).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut text = String::new();
+    let mut next_line = 1;
+    for section in &sections {
+        for _ in next_line..section.line {
+            text.push('\n');
+        }
+        text.push_str(&section.text);
+        next_line = section.end_line + 1;
+    }
+    for reference in references::extract(&text) {
+        let Some(section) = sections.iter().find(|s| s.line <= reference.line && reference.line <= s.end_line) else { continue };
+        let targets = resolve(conn, path, &reference.text)?;
+        if targets.is_empty() {
+            conn.execute("INSERT INTO knowledge_ref_issues(resource,section,ref_line,reference,reason,candidates) VALUES (?1,?2,?3,?4,'unresolved-explicit-reference',0)",
+                params![path,super::catalog::integer(section.line)?,super::catalog::integer(reference.line)?,reference.text])?;
+            continue;
+        }
+        let symbol_address = references::address(path, &reference.text).is_none();
+        if symbol_address && targets.len() != 1 {
+            conn.execute(
+                "INSERT INTO knowledge_ref_issues(resource,section,ref_line,reference,reason,candidates) VALUES (?1,?2,?3,?4,'ambiguous-symbol',?5)",
+                params![path, super::catalog::integer(section.line)?, super::catalog::integer(reference.line)?, reference.text, targets.len() as i64],
+            )?;
+            continue;
+        }
+        for (target, target_hash) in targets {
+            conn.execute("INSERT OR IGNORE INTO knowledge_resource_refs(resource,section,ref_line,reference,target,kind,resource_sha256,target_sha256) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![path,super::catalog::integer(section.line)?,super::catalog::integer(reference.line)?,reference.text,target,
+                    if symbol_address {"explicit-unique-symbol"} else {"explicit-file-address"},hash,target_hash])?;
         }
     }
     Ok(())
