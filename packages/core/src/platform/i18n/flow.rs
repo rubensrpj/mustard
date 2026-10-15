@@ -555,32 +555,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Context reached {tokens} thousand tokens. Finish the current step and use `/compact` or `/clear`. Resume: {line}"
         }
         // A entrada e os resumos herdados precedem o horizonte de trabalho,
-        // e o aviso diz a janela do modelo com que o horizonte foi medido.
+        // e o aviso diz a janela do modelo, que só serve de teto ao horizonte.
         ("conversation_size.wave_signal", Locale::PtBr) => {
             "[Mustard] Sinal de conclusão: entrada e resumos herdados, {baseline} mil tokens; trabalho, {counted} mil; contexto total, {now} mil. {basis} O sinal é entrada + {limit} mil = {total_limit} mil. Termine a tarefa atual, execute os testes mínimos, grave o resumo e devolva ao orquestrador. Não comece outra tarefa. A tarefa atual continua liberada."
         }
         ("conversation_size.wave_signal", Locale::EnUs) => {
             "[Mustard] Wrap-up signal: initial input and inherited summaries, {baseline} thousand tokens; work, {counted} thousand; total context, {now} thousand. {basis} The signal is initial input + {limit} thousand = {total_limit} thousand. Finish the current task, run minimal tests, record the summary and return to the orchestrator. Do not start another task. The current task remains executable."
         }
-        // A janela que o sinal usou: a do modelo da onda, conhecida pela
-        // tabela da API, ou nenhuma, e então vale o horizonte fixo. O
-        // tamanho dela vai por extenso: 1 milhão, ou o número de mil.
+        // A janela que serve de teto ao sinal: a do modelo da onda,
+        // conhecida pela tabela da API, ou nenhuma, e então o sinal fica sem
+        // teto. O tamanho dela vai por extenso: 1 milhão, ou o número de mil.
         ("conversation_size.window_known", Locale::PtBr) => {
-            "Janela do modelo {model}: {window}; o sinal chega aos {share}% dela."
+            "Janela do modelo {model}: {window}; o teto do sinal é {share}% dela."
         }
         ("conversation_size.window_known", Locale::EnUs) => {
-            "Window of model {model}: {window}; the signal comes at {share}% of it."
+            "Window of model {model}: {window}; the signal is capped at {share}% of it."
         }
         // A janela que o registro da conversa declara, sem o nome do modelo,
         // que a amostra de uso do Codex não traz.
-        ("conversation_size.window_declared", Locale::PtBr) => "Janela do modelo declarada pela conversa: {window}; o sinal chega aos {share}% dela.",
-        ("conversation_size.window_declared", Locale::EnUs) => "Model window declared by the conversation: {window}; the signal comes at {share}% of it.",
+        ("conversation_size.window_declared", Locale::PtBr) => "Janela do modelo declarada pela conversa: {window}; o teto do sinal é {share}% dela.",
+        ("conversation_size.window_declared", Locale::EnUs) => "Model window declared by the conversation: {window}; the signal is capped at {share}% of it.",
         ("conversation_size.window_million", Locale::PtBr) => "1 milhão de tokens",
         ("conversation_size.window_million", Locale::EnUs) => "1 million tokens",
         ("conversation_size.window_thousands", Locale::PtBr) => "{n} mil tokens",
         ("conversation_size.window_thousands", Locale::EnUs) => "{n} thousand tokens",
-        ("conversation_size.window_unknown", Locale::PtBr) => "Janela do modelo desconhecida: vale o horizonte fixo de trabalho.",
-        ("conversation_size.window_unknown", Locale::EnUs) => "Model window unknown: the fixed work horizon applies.",
+        ("conversation_size.window_unknown", Locale::PtBr) => "Janela do modelo desconhecida: o sinal fica sem teto.",
+        ("conversation_size.window_unknown", Locale::EnUs) => "Model window unknown: the signal has no cap.",
         ("conversation_size.wave_continue", Locale::PtBr) => {
             "[Mustard] Fim de tarefa: contexto total, {now} mil tokens; entrada e resumos herdados, {baseline} mil; trabalho, {counted} mil. O sinal é entrada + {limit} mil = {total_limit} mil. A maior tarefa acrescentou {largest} mil. Siga para a próxima tarefa."
         }

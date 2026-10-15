@@ -16,14 +16,14 @@
 //!   após `/clear` ou `/compact` reinicia as faixas; uma leitura menor não o
 //!   faz. Quem conduz nunca é recusado por tamanho. **No agente de
 //!   onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
-//!   o sinal chega quando a conversa passa de 75% da janela do modelo que
-//!   responde ao agente, pela tabela de
-//!   [`window_of`](mustard_core::domain::context_window::window_of): com 1
-//!   milhão, aos 750 mil. No Codex, a janela é a que o registro da conversa
-//!   declara (`model_context_window`) na última amostra de uso. Sem janela
-//!   conhecida, chega após 150 mil tokens de
-//!   trabalho além da entrada inicial e dos resumos herdados; com 50 mil de
-//!   entrada, aos 200 mil. O aviso diz a janela que usou.
+//!   o sinal chega após 150 mil tokens de trabalho além da entrada inicial e
+//!   dos resumos herdados, com qualquer modelo: com 50 mil de entrada, aos 200
+//!   mil. A janela do modelo que responde ao agente só serve de teto, quando
+//!   75% dela vem antes: pela tabela de
+//!   [`window_of`](mustard_core::domain::context_window::window_of) e, no
+//!   Codex, a que o registro da conversa declara (`model_context_window`) na
+//!   última amostra de uso. Com 1 milhão, o sinal segue nos 200 mil; com 200
+//!   mil de janela, chega aos 150 mil. O aviso diz a janela e o teto.
 //!   No meio da tarefa ele é apenas orientação: concluir a tarefa atual,
 //!   testes mínimos e resumo, sem começar outra. Só o término aceito da
 //!   tarefa fecha a trava de novas implementações. Estimar uma tarefa maior
@@ -84,13 +84,14 @@ use crate::hooks::bash::lex::{Segment, segments};
 pub(crate) const CONDUCTOR_FIRST_NOTICE: u64 = 200_000;
 pub(crate) const CONDUCTOR_STEP: u64 = 100_000;
 
-/// Crescimento de trabalho após a entrada inicial e os resumos herdados
-/// quando a janela do modelo da onda é desconhecida; é também o horizonte com
-/// que a rodada monta as ondas. O sinal pede conclusão da tarefa atual; não
+/// Crescimento de trabalho após a entrada inicial e os resumos herdados em
+/// que o sinal chega ao agente de onda, com qualquer modelo; a janela só o
+/// encurta, como teto ([`WINDOW_SHARE`]). É também o horizonte com que a
+/// rodada monta as ondas. O sinal pede conclusão da tarefa atual; não
 /// interrompe sua implementação.
 pub(crate) const WAVE_LIMIT: u64 = 150_000;
 
-/// A parte da janela do modelo da onda, em porcento, em que o sinal chega
+/// A parte da janela do modelo da onda, em porcento, que é o teto do sinal
 /// quando a janela é conhecida.
 const WINDOW_SHARE: u64 = 75;
 
@@ -190,7 +191,7 @@ fn declared_window(row: &Value) -> Option<u64> {
     row["payload"]["info"]["model_context_window"].as_u64()
 }
 
-/// O ponto do sinal dentro da janela `window`: [`WINDOW_SHARE`] dela.
+/// O teto do sinal dentro da janela `window`: [`WINDOW_SHARE`] dela.
 fn share_of(window: u64) -> u64 {
     window / 100 * WINDOW_SHARE
 }
@@ -319,10 +320,12 @@ impl WaveContext {
     /// A janela do modelo da onda: a que a conversa declara ou, sem ela, a da
     /// tabela da API, quando a tabela conhece o modelo.
     fn window(&self) -> Option<u64> { self.declared.or_else(|| self.model.as_deref().and_then(window_of)) }
-    /// O trabalho até o sinal: [`WINDOW_SHARE`] da janela do modelo menos a
-    /// entrada e os resumos herdados; sem janela conhecida, [`WAVE_LIMIT`].
+    /// O trabalho até o sinal: [`WAVE_LIMIT`], ou menos quando
+    /// [`WINDOW_SHARE`] da janela do modelo, menos a entrada e os resumos
+    /// herdados, vem antes. Sem janela conhecida, não há teto.
     fn limit(&self) -> u64 {
-        self.window().map_or(WAVE_LIMIT, |window| share_of(window).saturating_sub(self.baseline()))
+        let ceiling = self.window().map_or(u64::MAX, |window| share_of(window).saturating_sub(self.baseline()));
+        WAVE_LIMIT.min(ceiling)
     }
     /// O tamanho da conversa em que o sinal chega.
     fn signal_at(&self) -> u64 { self.baseline().saturating_add(self.limit()) }
@@ -537,8 +540,8 @@ fn wave_measurement(key: &str, context: &WaveContext, largest: u64, lang: Locale
 }
 
 /// O que o aviso diz da janela que usou: a que a conversa declara, ou a do
-/// modelo da onda, com o nome dele, e a parte em que o sinal chega; ou que
-/// ela é desconhecida.
+/// modelo da onda, com o nome dele, e a parte dela que é o teto do sinal; ou
+/// que ela é desconhecida, e o sinal fica sem teto.
 fn window_text(context: &WaveContext, lang: Locale) -> String {
     if let Some(window) = context.declared {
         return translate("conversation_size.window_declared", lang)
@@ -1374,15 +1377,16 @@ mod tests {
         }
     }
 
-    /// Com a janela de 1 milhão do modelo que responde ao agente, o sinal
-    /// chega aos 75% dela: com 50 mil de entrada, nem os 200 mil nem o fim de
-    /// tarefa ali mandam parar, e as chamadas seguintes só releem a conversa
-    /// dos 750 mil em diante; 749.999 ainda não avisa e 750 mil avisa,
-    /// dizendo a janela usada. A janela de 200 mil avisa aos 150 mil. O
-    /// modelo que a tabela não conhece fica no horizonte fixo — entrada + 150
-    /// mil —, e o sinal diz que a janela é desconhecida. Nos dois idiomas.
+    /// Com a janela de 1 milhão do modelo que responde ao agente e 50 mil de
+    /// entrada, o sinal chega após 150 mil de trabalho, e não aos 75% da
+    /// janela: 199.999 não avisa, e as chamadas seguintes só releem a
+    /// conversa dos 200 mil em diante; 200 mil avisa, dizendo a janela como
+    /// teto. O teto vira o sinal quando 75% da janela vem antes de entrada +
+    /// 150 mil: com 650 mil de entrada e 1 milhão, aos 750 mil; com 50 mil e a
+    /// janela de 200 mil, aos 150 mil. O modelo que a tabela não conhece fica
+    /// em entrada + 150 mil, e o sinal diz que não há teto. Nos dois idiomas.
     #[test]
-    fn the_wave_signal_follows_the_window_of_the_model_that_answers() {
+    fn the_wave_signal_is_input_plus_the_work_horizon_capped_by_the_model_window() {
         let named = |model: &str, tokens: u64, action: &str| {
             let mut reply: Value = serde_json::from_str(&agent_reply(tokens, Some(action))).unwrap();
             reply["message"]["model"] = model.into();
@@ -1392,41 +1396,33 @@ mod tests {
             let pt = lang == Locale::PtBr;
             let dir = open_project_in("x", lang);
             let root = dir.path();
-            let mut replies = vec![named("claude-opus-5-5", 50_000, "read"), named("claude-opus-5-5", 200_000, "edit")];
-            write_agent(root, &wave_request(lang), &replies);
-            // As chamadas seguintes não releem a conversa abaixo do ponto
-            // medido aqui: 75% da janela, e não entrada + 150 mil.
             let threshold = root.join(".claude/.session/size-threshold-agent-a1");
-            let stored = || std::fs::read_to_string(&threshold).unwrap_or_default();
-            assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: 200 thousand is below 75% of the 1M window");
-            assert_eq!(stored(), "750000", "{lang:?}: the measured call keeps the window's signal point");
-            let end = injected(&finishing(agent_after_tool(root))).unwrap_or_else(|| panic!("{lang:?}: the task end reads"));
-            assert!(end.contains(if pt { "Siga para a próxima tarefa" } else { "Go on to the next task" }), "{lang:?}: {end}");
-            assert_eq!(stored(), "750000", "{lang:?}: the task end keeps the window's signal point");
-            for (tokens, signals) in [(749_999, false), (750_000, true)] {
-                replies.push(named("claude-opus-5-5", tokens, "edit"));
-                write_agent(root, &wave_request(lang), &replies);
-                let signal = injected(&agent_after_tool(root));
-                assert_eq!(signal.is_some(), signals, "{lang:?} at {tokens}: {signal:?}");
-                if let Some(signal) = signal {
-                    let said = if pt {
-                        ["Janela do modelo claude-opus-5-5: 1 milhão de tokens; o sinal chega aos 75% dela.", "O sinal é entrada + 700 mil = 750 mil."]
-                    } else {
-                        ["Window of model claude-opus-5-5: 1 million tokens; the signal comes at 75% of it.", "The signal is initial input + 700 thousand = 750 thousand."]
-                    };
-                    assert!(said.iter().all(|said| signal.contains(said)), "{lang:?}: {signal}");
-                }
-            }
+            let mut replies = vec![named("claude-opus-5-5", 50_000, "read"), named("claude-opus-5-5", 199_999, "edit")];
+            write_agent(root, &wave_request(lang), &replies);
+            assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: 149,999 of work is below the horizon");
+            assert_eq!(std::fs::read_to_string(&threshold).unwrap_or_default(), "200000", "{lang:?}: the 1M window keeps input + 150 thousand");
+            replies.push(named("claude-opus-5-5", 200_000, "edit"));
+            write_agent(root, &wave_request(lang), &replies);
+            let signal = injected(&agent_after_tool(root)).unwrap_or_else(|| panic!("{lang:?}: the 1M window signals at 200 thousand"));
+            let said = if pt {
+                ["Janela do modelo claude-opus-5-5: 1 milhão de tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 150 mil = 200 mil."]
+            } else {
+                ["Window of model claude-opus-5-5: 1 million tokens; the signal is capped at 75% of it.", "The signal is initial input + 150 thousand = 200 thousand."]
+            };
+            assert!(said.iter().all(|said| signal.contains(said)), "{lang:?}: {signal}");
 
-            let smaller = [
-                ("claude-opus-4-20250514", 200_000, ["Janela do modelo desconhecida", "O sinal é entrada + 150 mil = 200 mil."], ["Model window unknown", "The signal is initial input + 150 thousand = 200 thousand."]),
-                ("claude-sonnet-4-5-20250929", 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O sinal é entrada + 100 mil = 150 mil."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The signal is initial input + 100 thousand = 150 thousand."]),
+            let others = [
+                ("claude-opus-5-5", 650_000, 750_000, ["1 milhão de tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 100 mil = 750 mil."], ["1 million tokens; the signal is capped at 75% of it.", "The signal is initial input + 100 thousand = 750 thousand."]),
+                ("claude-sonnet-4-5-20250929", 50_000, 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O sinal é entrada + 100 mil = 150 mil."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The signal is initial input + 100 thousand = 150 thousand."]),
+                ("claude-opus-4-20250514", 50_000, 200_000, ["Janela do modelo desconhecida: o sinal fica sem teto.", "O sinal é entrada + 150 mil = 200 mil."], ["Model window unknown: the signal has no cap.", "The signal is initial input + 150 thousand = 200 thousand."]),
             ];
-            for (model, at, said_pt, said_en) in smaller {
+            for (model, input, at, said_pt, said_en) in others {
                 let dir = open_project_in("x", lang);
                 let root = dir.path();
-                write_agent(root, &wave_request(lang), &[named(model, 50_000, "read"), named(model, at, "edit")]);
-                let signal = injected(&agent_after_tool(root)).unwrap_or_else(|| panic!("{lang:?}: {model} signals at {at}"));
+                write_agent(root, &wave_request(lang), &[named(model, input, "read"), named(model, at - 1, "edit")]);
+                assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: {model} from {input} is quiet just below {at}");
+                write_agent(root, &wave_request(lang), &[named(model, input, "read"), named(model, at, "edit")]);
+                let signal = injected(&agent_after_tool(root)).unwrap_or_else(|| panic!("{lang:?}: {model} from {input} signals at {at}"));
                 let said = if pt { said_pt } else { said_en };
                 assert!(said.iter().all(|said| signal.contains(said)), "{lang:?}: {signal}");
             }
@@ -1475,45 +1471,40 @@ mod tests {
         codex_event("PostToolUse", &call).map(|reply| reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_owned())
     }
 
-    /// Com 1 milhão declarado na conversa do Codex e 50 mil de entrada, nem
-    /// os 200 mil nem os 749.999 avisam, e os 750 mil avisam dizendo a
-    /// janela; a mesma conversa sem o campo avisa aos 200 mil, com a janela
-    /// desconhecida.
+    /// Com 1 milhão declarado na conversa do Codex e 50 mil de entrada, o
+    /// sinal segue em entrada + 150 mil: os 199.999 não avisam, e os 200 mil
+    /// avisam dizendo a janela declarada como teto; a mesma conversa sem o
+    /// campo avisa nos mesmos 200 mil, com a janela desconhecida.
     #[test]
-    fn codex_wave_signal_follows_the_declared_window() {
+    fn codex_declared_window_above_the_work_horizon_keeps_input_plus_the_horizon() {
         let dir = open_project("x");
         let root = dir.path();
-        let mut rows = vec![declared_sample(50_000, 1_000_000), declared_sample(200_000, 1_000_000)];
-        assert_eq!(codex_wave_notice(root, &rows), None, "200 thousand is below 75% of the declared 1M window");
-        for (tokens, signals) in [(749_999, false), (750_000, true)] {
-            rows.push(declared_sample(tokens, 1_000_000));
-            let signal = codex_wave_notice(root, &rows);
-            assert_eq!(signal.is_some(), signals, "at {tokens}: {signal:?}");
-            if let Some(signal) = signal {
-                let said = ["Janela do modelo declarada pela conversa: 1 milhão de tokens; o sinal chega aos 75% dela.", "O sinal é entrada + 700 mil = 750 mil."];
-                assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
-            }
-        }
+        let mut rows = vec![declared_sample(50_000, 1_000_000), declared_sample(199_999, 1_000_000)];
+        assert_eq!(codex_wave_notice(root, &rows), None, "149,999 of work is below the horizon");
+        rows.push(declared_sample(200_000, 1_000_000));
+        let signal = codex_wave_notice(root, &rows).expect("the declared 1M window signals at input + 150 thousand");
+        let said = ["Janela do modelo declarada pela conversa: 1 milhão de tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 150 mil = 200 mil."];
+        assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
 
         let dir = open_project("x");
         let signal = codex_wave_notice(dir.path(), &[codex_sample(50_000, 40_000), codex_sample(200_000, 190_000)])
-            .expect("without the declared window the fixed horizon signals at 200 thousand");
-        let said = ["Janela do modelo desconhecida", "O sinal é entrada + 150 mil = 200 mil."];
+            .expect("without the declared window the signal comes at 200 thousand");
+        let said = ["Janela do modelo desconhecida: o sinal fica sem teto.", "O sinal é entrada + 150 mil = 200 mil."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
     }
 
-    /// Uma janela declarada abaixo do horizonte fixo — 128 mil, sinal aos 96
-    /// mil — avisa antes dos 150 mil com que as chamadas sem medida deixam de
-    /// reler a conversa.
+    /// Uma janela declarada cujo teto vem antes de entrada + 150 mil — 128
+    /// mil, teto aos 96 mil, com 30 mil de entrada — avisa no teto, antes dos
+    /// 150 mil com que as chamadas sem medida deixam de reler a conversa.
     #[test]
-    fn codex_declared_window_below_the_fixed_horizon_signals_before_it() {
+    fn codex_declared_window_below_the_work_horizon_signals_at_its_cap() {
         let dir = open_project("x");
         let root = dir.path();
         let mut rows = vec![declared_sample(30_000, 128_000), declared_sample(95_999, 128_000)];
         assert_eq!(codex_wave_notice(root, &rows), None);
         rows.push(declared_sample(96_000, 128_000));
         let signal = codex_wave_notice(root, &rows).expect("75% of the declared 128 thousand is 96 thousand");
-        let said = ["Janela do modelo declarada pela conversa: 128 mil tokens;", "O sinal é entrada + 66 mil = 96 mil."];
+        let said = ["Janela do modelo declarada pela conversa: 128 mil tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 66 mil = 96 mil."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
     }
 

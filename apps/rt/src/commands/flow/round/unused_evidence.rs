@@ -16,6 +16,7 @@
 //! que o pnpm, o npm, o turbo ou o yarn dizem, cada um do seu jeito, que
 //! rodou o script ([`tool_lines`]). Outro formato não acrescenta nada.
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -96,19 +97,33 @@ fn patterns() -> Option<&'static Patterns> {
 }
 
 /// Os avisos de declaração sem uso que as saídas dos comandos escreveram,
-/// lidos uma vez para a análise final inteira, com os pacotes do projeto.
+/// lidos com os pacotes do projeto uma vez para a análise final inteira, e
+/// só quando uma declaração pede a prova deles ([`proves`]).
 #[derive(Default)]
-pub(super) struct Evidence(Vec<Citation>);
+pub(super) struct Evidence<'a> {
+    /// A raiz do projeto e as saídas dos comandos que rodaram nela.
+    source: Option<(&'a Path, &'a [String])>,
+    /// Os avisos, lidos na primeira vez que se pedem.
+    read: OnceCell<Vec<Citation>>,
+}
 
-impl Evidence {
+impl<'a> Evidence<'a> {
     /// Os avisos das saídas `outputs` dos comandos que rodaram no projeto em
-    /// `root`, cada um com o arquivo a partir da raiz.
-    pub(super) fn read(root: &Path, outputs: &[String]) -> Self {
-        let Some(patterns) = patterns() else {
-            return Self::default();
-        };
-        let packages = Packages::of(root);
-        Self(outputs.iter().flat_map(|output| citations(patterns, output, &packages)).collect())
+    /// `root`, cada um com o arquivo a partir da raiz, lidos na primeira vez
+    /// que se pedem.
+    pub(super) fn read(root: &'a Path, outputs: &'a [String]) -> Self {
+        Self { source: Some((root, outputs)), read: OnceCell::new() }
+    }
+
+    /// Os avisos, lidos agora se ainda não foram.
+    fn citations(&self) -> &[Citation] {
+        self.read.get_or_init(|| {
+            let (Some((root, outputs)), Some(patterns)) = (self.source, patterns()) else {
+                return Vec::new();
+            };
+            let packages = Packages::of(root);
+            outputs.iter().flat_map(|output| citations(patterns, output, &packages)).collect()
+        })
     }
 }
 
@@ -128,7 +143,7 @@ pub(super) fn proves(root: &Path, module: &MapModule, decl: &MapDecl, evidence: 
     let Ok(source) = std::fs::read_to_string(&current) else {
         return false;
     };
-    evidence.0.iter().any(|citation| lands(root, &current, &source, decl, citation))
+    evidence.citations().iter().any(|citation| lands(root, &current, &source, decl, citation))
 }
 
 /// Os avisos de declaração sem uso de `output`, em cada formato que se lê,
@@ -556,7 +571,8 @@ Time Elapsed 00:00:04.57
             std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
             std::fs::write(root.join(file), source).unwrap();
             let module: MapModule = serde_json::from_value(json!({"path": file})).unwrap();
-            let evidence = Evidence::read(root, &[output.replace("{root}", &root.to_string_lossy())]);
+            let outputs = [output.replace("{root}", &root.to_string_lossy())];
+            let evidence = Evidence::read(root, &outputs);
             for &(name, line, end_line) in unused {
                 assert!(proves(root, &module, &declared(name, line, end_line), &evidence), "{tool}: `{name}`");
             }
@@ -569,6 +585,23 @@ Time Elapsed 00:00:04.57
                 assert!(!proves(root, &module, &declared(name, line, end_line), &evidence), "{tool}, moved: `{name}`");
             }
         }
+    }
+
+    /// As saídas dos comandos se leem, com os pacotes do projeto, só quando
+    /// uma declaração pede a prova delas: a análise final em que nenhuma pede
+    /// não lê nada.
+    #[test]
+    fn the_outputs_are_read_only_when_a_declaration_asks_for_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::write(root.join("web/math.ts"), TYPESCRIPT).unwrap();
+        let outputs = [TSC.to_string()];
+        let evidence = Evidence::read(root, &outputs);
+        assert!(evidence.read.get().is_none(), "nenhuma declaração pediu a prova ainda");
+        let module: MapModule = serde_json::from_value(json!({"path": "web/math.ts"})).unwrap();
+        assert!(proves(root, &module, &declared("lonelyTotal", 1, 3), &evidence));
+        assert_eq!(evidence.read.get().map(Vec::len), Some(7), "os sete avisos do tsc, lidos no primeiro pedido");
     }
 
     /// No TypeScript, no JavaScript e no C#, com o mapa do scan de verdade: a
@@ -629,7 +662,12 @@ Time Elapsed 00:00:04.57
         for (name, file) in ["mono", "@mono/web", "@mono/api"].into_iter().zip(files) {
             std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
             std::fs::write(root.join(file), WORKSPACE_SOURCE).unwrap();
-            let manifest = json!({"name": name, "version": "1.0.0", "private": true, "scripts": {"lint": "tsc --noEmit -p ."}});
+            let mut manifest = json!({"name": name, "private": true, "scripts": {"lint": "tsc --noEmit -p ."}});
+            // O `packages/web` sem versão, como na saída do npm que anuncia o
+            // script dele só com `> lint`.
+            if name != "@mono/web" {
+                manifest["version"] = json!("1.0.0");
+            }
             std::fs::write(root.join(file).parent().unwrap().parent().unwrap().join("package.json"), manifest.to_string()).unwrap();
         }
         std::fs::write(root.join("notes.txt"), "lonelyTotal fica para a próxima versão\n").unwrap();

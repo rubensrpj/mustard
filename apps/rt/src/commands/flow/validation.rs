@@ -328,17 +328,37 @@ fn from_dir(dir: &str, word: &str) -> Option<String> {
 }
 
 /// Os pacotes do projeto que as ferramentas de monorepo do JavaScript (pnpm,
-/// npm, turbo e yarn) dizem ter rodado: a pasta de cada `package.json` do
-/// projeto, relativa à raiz, com `/` e vazia para a raiz, e o nome que ele
-/// declara, mais a pasta absoluta da raiz, que essas ferramentas escrevem na
-/// frente da pasta do pacote.
+/// npm, turbo e yarn) dizem ter rodado: o que o `package.json` de cada um
+/// declara ([`Package`]), mais a pasta absoluta da raiz, que essas
+/// ferramentas escrevem na frente da pasta do pacote.
 #[derive(Debug, Default)]
 pub(super) struct Packages {
     /// A pasta absoluta da raiz, com `/`, como foi dada e como o sistema a
     /// resolve.
     roots: Vec<String>,
-    /// A pasta e o nome de cada pacote.
-    found: Vec<(String, Option<String>)>,
+    /// Cada pacote, um por pasta.
+    found: Vec<Package>,
+}
+
+/// Um pacote do projeto, como o `package.json` dele o declara.
+#[derive(Debug)]
+struct Package {
+    /// A pasta do `package.json`, relativa à raiz, com `/` e vazia para a raiz.
+    dir: String,
+    /// O nome que ele declara.
+    name: Option<String>,
+    /// Ele declara nome e versão, e o npm anuncia o script dele com os dois
+    /// (`> @mono/web@1.0.0 lint`); sem um deles, o npm o anuncia só com o
+    /// script (`> lint`).
+    identified: bool,
+}
+
+impl Package {
+    /// O pacote da pasta `dir` cujo `package.json` traz `manifest`.
+    fn declared(dir: &str, manifest: &Value) -> Self {
+        let field = |key: &str| manifest.get(key).and_then(Value::as_str).filter(|value| !value.is_empty());
+        Self { dir: dir.to_string(), name: manifest.get("name").and_then(Value::as_str).map(str::to_string), identified: field("name").and(field("version")).is_some() }
+    }
 }
 
 impl Packages {
@@ -350,20 +370,19 @@ impl Packages {
     /// Os pacotes entre os arquivos `files` do projeto em `root`: cada
     /// `package.json` que se lê, uma vez por pasta.
     fn read<'a>(root: &Path, files: impl IntoIterator<Item = &'a str>) -> Self {
-        let mut found: Vec<(String, Option<String>)> = Vec::new();
+        let mut found: Vec<Package> = Vec::new();
         for file in files {
             let Some(dir) = file.strip_suffix("package.json").filter(|dir| dir.is_empty() || dir.ends_with('/')) else {
                 continue;
             };
             let dir = dir.trim_end_matches('/');
-            if found.iter().any(|(seen, _)| seen == dir) {
+            if found.iter().any(|seen| seen.dir == dir) {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(root.join(file)) else {
                 continue;
             };
-            let name = serde_json::from_str::<Value>(&text).ok().and_then(|manifest| manifest.get("name")?.as_str().map(str::to_string));
-            found.push((dir.to_string(), name));
+            found.push(Package::declared(dir, &serde_json::from_str::<Value>(&text).unwrap_or_default()));
         }
         let mut roots = vec![slashed(&root.to_string_lossy())];
         if let Some(real) = root.canonicalize().ok().map(|real| slashed(&real.to_string_lossy())).filter(|real| !roots.contains(real)) {
@@ -375,9 +394,9 @@ impl Packages {
     /// A pasta do único pacote de que `matches`, dadas a pasta e o nome, diz
     /// sim; com dois, nenhuma, para não ligar a linha ao pacote errado.
     fn only(&self, matches: impl Fn(&str, Option<&str>) -> bool) -> Option<&str> {
-        let mut found = self.found.iter().filter(|(dir, name)| matches(dir, name.as_deref()));
-        let (dir, _) = found.next()?;
-        found.next().is_none().then_some(dir.as_str())
+        let mut found = self.found.iter().filter(|package| matches(&package.dir, package.name.as_deref()));
+        let package = found.next()?;
+        found.next().is_none().then_some(package.dir.as_str())
     }
 
     /// A pasta do único pacote que declara o nome `name`.
@@ -397,14 +416,16 @@ impl Packages {
     fn at(&self, place: &str) -> Option<&str> {
         let place = slashed(place);
         let dir = self.roots.iter().find_map(|root| if place == *root { Some("") } else { place.strip_prefix(root.as_str())?.strip_prefix('/') })?;
-        self.found.iter().map(|(seen, _)| seen.as_str()).find(|seen| *seen == dir)
+        self.found.iter().map(|package| package.dir.as_str()).find(|seen| *seen == dir)
     }
 
     /// A pasta do pacote cujo script o anúncio `banner` abriu e cuja falha o
     /// rodapé seguinte diz, com a pasta absoluta `footer` quando ele a escreve:
     /// o pacote que fica na pasta do rodapé e na do anúncio, as duas a mesma,
-    /// e que declara o nome que o anúncio escreve. O rodapé de outro pacote, a
-    /// pasta que não é de pacote e a falta de pasta não dão pacote nenhum.
+    /// e que declara o nome que o anúncio escreve. O anúncio sem nome
+    /// (`> lint`), que o npm escreve no pacote sem nome ou sem versão, só fecha
+    /// com o rodapé de um pacote assim. O rodapé de outro pacote, a pasta que
+    /// não é de pacote e a falta de pasta não dão pacote nenhum.
     fn closing(&self, banner: &Banner, footer: Option<&str>) -> Option<&str> {
         let mut dir = None;
         for place in [banner.place, footer].into_iter().flatten() {
@@ -414,9 +435,12 @@ impl Packages {
             }
             dir = Some(found);
         }
-        let dir = dir?;
-        let declared = self.found.iter().find(|(seen, _)| seen == dir).and_then(|(_, name)| name.as_deref());
-        banner.name.is_none_or(|name| declared == Some(name).filter(|name| !name.is_empty())).then_some(dir)
+        let package = self.found.iter().find(|package| Some(package.dir.as_str()) == dir)?;
+        let announced = match banner.name {
+            Some(name) => package.name.as_deref() == Some(name).filter(|name| !name.is_empty()),
+            None => !package.identified,
+        };
+        announced.then_some(package.dir.as_str())
     }
 
     /// A pasta do pacote e o texto da linha `line` que o turbo
@@ -526,7 +550,9 @@ fn pnpm_prefix(dir: &str) -> String {
 ///   linhas dele. O bloco do anúncio vale só até o rodapé de falha do mesmo
 ///   pacote ([`footer`], [`Packages::closing`]); o bloco que acaba no
 ///   próximo anúncio ou no fim da saída, sem esse rodapé, pode ter a saída
-///   de outra ferramenta no fim, e as linhas dele ficam sem pacote.
+///   de outra ferramenta no fim, e as linhas dele ficam sem pacote. No
+///   projeto sem `package.json`, nenhum script de pacote se anuncia, e as
+///   linhas de anúncio e de rodapé são da raiz como as outras.
 ///
 /// A linha sem nada disso, fora de bloco, é da raiz.
 pub(super) fn tool_lines<'a>(output: &'a str, packages: &'a Packages) -> Vec<(Option<&'a str>, &'a str)> {
@@ -547,27 +573,28 @@ pub(super) fn tool_lines<'a>(output: &'a str, packages: &'a Packages) -> Vec<(Op
             out.push(found);
             continue;
         }
-        let next = lines.get(at + 1).copied();
-        if let Some(found) = banner(line, next) {
+        if !packages.found.is_empty()
+            && let Some(found) = banner(line, lines.get(at + 1).copied())
+        {
             open = Some((found, vec![out.len()]));
             out.push((None, line));
             continue;
         }
+        let Some((block, mut held)) = open.take() else {
+            out.push((Some(""), line));
+            continue;
+        };
         let previous = at.checked_sub(1).and_then(|before| lines.get(before)).copied();
-        match (open.take(), footer(line, previous)) {
-            (Some((block, held)), Some(end)) => {
-                let dir = packages.closing(&block, end.place);
-                for index in held {
-                    out[index].0 = dir;
-                }
-                out.push((Some(""), line));
+        if let Some(end) = footer(line, previous) {
+            let dir = packages.closing(&block, end.place);
+            for index in held {
+                out[index].0 = dir;
             }
-            (Some((block, mut held)), None) => {
-                held.push(out.len());
-                out.push((None, line));
-                open = Some((block, held));
-            }
-            (None, _) => out.push((Some(""), line)),
+            out.push((Some(""), line));
+        } else {
+            held.push(out.len());
+            out.push((None, line));
+            open = Some((block, held));
         }
     }
     out
@@ -890,9 +917,9 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
 mod tests {
     use std::collections::{BTreeSet, HashSet};
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::{Cited, MONOREPO_LINT, PACKAGE_BLOCKS, PNPM_RECURSIVE_LINT, Packages, Work, cited, cited_among, paths_in};
+    use super::{Cited, MONOREPO_LINT, PACKAGE_BLOCKS, PNPM_RECURSIVE_LINT, Package, Packages, Work, cited, cited_among, paths_in};
 
     /// A saída real de `pnpm -r --no-bail lint` (pnpm 10.18, tsc 7.0 com
     /// `noUnusedLocals`) num monorepo de quatro pacotes com o mesmo
@@ -941,16 +968,18 @@ Exit status 1
 ";
 
     /// Os pacotes de um projeto na pasta absoluta `root`: a pasta de cada um
-    /// e o nome que o `package.json` dele declara.
-    fn project(root: &str, found: &[(&str, Option<&str>)]) -> Packages {
-        Packages { roots: vec![root.to_string()], found: found.iter().map(|(dir, name)| ((*dir).to_string(), name.map(str::to_string))).collect() }
+    /// e o que o `package.json` dele traz.
+    fn project(root: &str, found: &[(&str, Value)]) -> Packages {
+        Packages { roots: vec![root.to_string()], found: found.iter().map(|(dir, manifest)| Package::declared(dir, manifest)).collect() }
     }
 
     /// Os pacotes de um projeto em `/repo`: a raiz, `mono`, e os das pastas
-    /// `dirs`, cada um com o nome `@mono/` mais o fim da pasta.
+    /// `dirs`, cada um com o nome `@mono/` mais o fim da pasta, todos na
+    /// versão `1.0.0`.
     fn packages(dirs: &[&str]) -> Packages {
-        let names: Vec<String> = dirs.iter().map(|dir| format!("@mono/{}", dir.rsplit('/').next().unwrap_or(dir))).collect();
-        let found: Vec<(&str, Option<&str>)> = std::iter::once(("", Some("mono"))).chain(dirs.iter().zip(&names).map(|(dir, name)| (*dir, Some(name.as_str())))).collect();
+        let found: Vec<(&str, Value)> = std::iter::once(("", json!({"name": "mono", "version": "1.0.0"})))
+            .chain(dirs.iter().map(|dir| (*dir, json!({"name": format!("@mono/{}", dir.rsplit('/').next().unwrap_or(dir)), "version": "1.0.0"}))))
+            .collect();
         project("/repo", &found)
     }
 
@@ -991,7 +1020,14 @@ Exit status 1
     fn each_monorepo_tool_cites_the_file_of_the_package_its_script_ran_in() {
         let known: HashSet<&str> = ["src/a.ts", "packages/web/src/a.ts", "packages/api/src/a.ts"].into_iter().collect();
         for (root, separator) in [("/repo", "/"), ("C:\\repo", "\\")] {
-            let packages = project(&root.replace('\\', "/"), &[("", Some("mono")), ("packages/web", Some("@mono/web")), ("packages/api", Some("@mono/api"))]);
+            let packages = project(
+                &root.replace('\\', "/"),
+                &[
+                    ("", json!({"name": "mono", "version": "1.0.0"})),
+                    ("packages/web", json!({"name": "@mono/web", "version": "1.0.0"})),
+                    ("packages/api", json!({"name": "@mono/api", "version": "1.0.0"})),
+                ],
+            );
             for (tool, output, dirs) in MONOREPO_LINT {
                 let output = ["web", "api"].into_iter().fold(output.to_string(), |text, name| {
                     text.replace(&format!("{{root}}/packages/{name}"), &[root, "packages", name].join(separator))
@@ -1013,7 +1049,18 @@ Exit status 1
         let output = "./src/b.rs(2,1): erro\nem C:\\repo\\web\\x.ts.\nde novo src/b.rs:2";
         assert_eq!(paths_in(output, &known, &Packages::default()), vec!["src/b.rs", "web/x.ts"]);
         let unknown_package = "> lint\n> tsc\n\nC:\\repo\\web\\x.ts(1,10): erro\nsrc/b.rs(2,1): erro";
-        assert_eq!(paths_in(unknown_package, &known, &Packages::default()), vec!["web/x.ts"], "num pacote que não se sabe qual é, só o absoluto cita");
+        assert_eq!(paths_in(unknown_package, &known, &packages(&[])), vec!["web/x.ts"], "num pacote que não se sabe qual é, só o absoluto cita");
+    }
+
+    /// No projeto sem `package.json`, nenhum script de pacote se anuncia: as
+    /// linhas `> ` seguidas e o rodapé de falha do pnpm são da raiz como as
+    /// outras, e o caminho relativo entre eles cita o arquivo da raiz.
+    #[test]
+    fn without_a_package_json_the_banner_and_footer_lines_belong_to_the_root() {
+        let known: HashSet<&str> = ["src/a.ts", "App/Calc.cs"].into_iter().collect();
+        let output = "> lint\n> tsc --noEmit -p .\n\nsrc/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never read.\n\
+            App/Calc.cs(8,14): warning IDE0051: Private member 'Calc.LonelyTotal' is unused\n\u{2009}ELIFECYCLE\u{2009} Command failed with exit code 1.\n";
+        assert_eq!(paths_in(output, &known, &Packages::default()), ["src/a.ts", "App/Calc.cs"]);
     }
 
     /// O anúncio do script de um pacote vale só até o rodapé de falha dele: o
@@ -1025,9 +1072,17 @@ Exit status 1
     #[test]
     fn a_package_block_holds_only_until_the_failure_footer_of_that_package() {
         let known: HashSet<&str> = ["src/a.ts", "packages/web/src/a.ts", "packages/api/src/a.ts"].into_iter().collect();
+        let packages = project(
+            "/repo",
+            &[
+                ("", json!({"name": "mono", "version": "1.0.0"})),
+                ("packages/web", json!({"name": "@mono/web"})),
+                ("packages/api", json!({"name": "@mono/api", "version": "1.0.0"})),
+            ],
+        );
         for (tool, output, dirs) in PACKAGE_BLOCKS {
             let expected: Vec<String> = dirs.iter().map(|dir| format!("{dir}/src/a.ts")).collect();
-            assert_eq!(paths_in(&output.replace("{root}", "/repo"), &known, &packages(&["packages/web", "packages/api"])), expected, "{tool}");
+            assert_eq!(paths_in(&output.replace("{root}", "/repo"), &known, &packages), expected, "{tool}");
         }
     }
 
@@ -1089,7 +1144,9 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
     /// que roda o tsc nela e depois `pnpm --filter … exec tsc` em
     /// `packages/api`, que cai sem anúncio, deixa as linhas da raiz e do
     /// pacote sem pacote. Na saída real do npm, o nome do anúncio (`mono`) não
-    /// é o do pacote do rodapé; na do pnpm, sem nome nenhum, a pasta do
+    /// é o do pacote do rodapé; na mesma saída com a raiz sem versão, que o
+    /// npm anuncia só com `> lint`, o pacote do rodapé declara nome e versão e
+    /// não seria anunciado assim; na do pnpm, sem nome nenhum, a pasta do
     /// anúncio (a raiz) não é a do rodapé.
     #[test]
     fn a_footer_of_another_package_leaves_the_block_without_package() {
@@ -1116,9 +1173,13 @@ undefined
 \u{2009}WARN\u{2009}  Local package.json exists, but node_modules missing, did you mean to install?
 ";
         let known: HashSet<&str> = ["src/a.ts", "packages/api/src/a.ts", "packages/api/src/b.ts"].into_iter().collect();
-        let named = project("/repo", &[("", Some("mono")), ("packages/api", Some("@mono/api"))]);
+        let api = ("packages/api", json!({"name": "@mono/api", "version": "1.0.0"}));
+        let named = project("/repo", &[("", json!({"name": "mono", "version": "1.0.0"})), api.clone()]);
         assert_eq!(paths_in(&NPM_ROOT_SCRIPT.replace("{root}", "/repo"), &known, &named), Vec::<&str>::new(), "npm");
-        let unnamed = project("/repo", &[("", None), ("packages/api", None)]);
+        let unversioned = project("/repo", &[("", json!({"name": "mono"})), api]);
+        let bare = NPM_ROOT_SCRIPT.replace("> mono@1.0.0 lint", "> lint").replace("{root}", "/repo");
+        assert_eq!(paths_in(&bare, &known, &unversioned), Vec::<&str>::new(), "npm, raiz sem versão");
+        let unnamed = project("/repo", &[("", json!({})), ("packages/api", json!({}))]);
         assert_eq!(paths_in(&PNPM_UNNAMED_ROOT_SCRIPT.replace("{root}", "/repo"), &known, &unnamed), Vec::<&str>::new(), "pnpm");
     }
 
@@ -1136,14 +1197,17 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
 \u{2009}WARN\u{2009}  Local package.json exists, but node_modules missing, did you mean to install?
 ";
         let known: HashSet<&str> = ["src/a.ts", "web/src/a.ts"].into_iter().collect();
-        let packages = project("/home/dev/web", &[("", None), ("web", None)]);
+        let packages = project("/home/dev/web", &[("", json!({})), ("web", json!({}))]);
         assert_eq!(paths_in(&PNPM_ROOT_SCRIPT.replace("{root}", "/home/dev/web"), &known, &packages), ["src/a.ts"]);
     }
 
     /// A leitura da rodada e do fechamento acha os pacotes pelo
     /// `package.json` de cada um no projeto: com a saída real do npm sem
     /// versão em `packages/web`, só a onda que mudou o `src/a.ts` de lá reabre.
-    /// Com a raiz dada por um atalho, a pasta que a ferramenta escreve é a de
+    /// O `package.json` que a obra mudou, e que o git também lista, conta uma
+    /// vez só: na saída real do turbo, que liga cada linha ao pacote pelo
+    /// nome, as duas ondas reabrem, e o `src/a.ts` da raiz fica de fora. Com a
+    /// raiz dada por um atalho, a pasta que a ferramenta escreve é a de
     /// verdade, e a leitura é a mesma.
     #[test]
     fn the_failure_reading_finds_the_packages_by_their_package_json() {
@@ -1160,16 +1224,18 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
             std::fs::write(root.join(folder).join("src/a.ts"), "function lonelyTotal(): number {\n  return 2;\n}\n").unwrap();
         }
         assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
-        let (web, api) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string());
-        let work = Work { changed: BTreeSet::from([web.clone(), api.clone()]), waves: vec![(1, vec![api]), (2, vec![web])] };
-        let written = |place: &std::path::Path| PACKAGE_BLOCKS[0].1.replace("{root}", &place.to_string_lossy());
-        let expected = Cited { waves: vec![2], outside: vec![], none: false };
-        assert_eq!(cited(root, &written(root), &work), expected);
+        let (web, api, manifest) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string(), "packages/web/package.json".to_string());
+        let work = Work { changed: BTreeSet::from([web.clone(), api.clone(), manifest.clone()]), waves: vec![(1, vec![api]), (2, vec![web, manifest])] };
         #[cfg(unix)]
-        {
-            let link = dir.path().join("link");
-            std::os::unix::fs::symlink(root, &link).unwrap();
-            assert_eq!(cited(&link, &written(&root.canonicalize().unwrap()), &work), expected, "pela pasta de verdade");
+        let link = dir.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root, &link).unwrap();
+        for ((tool, output, _), waves) in [(PACKAGE_BLOCKS[0], vec![2]), (MONOREPO_LINT[3], vec![1, 2])] {
+            let written = |place: &std::path::Path| output.replace("{root}", &place.to_string_lossy());
+            let expected = Cited { waves, outside: vec![], none: false };
+            assert_eq!(cited(root, &written(root), &work), expected, "{tool}");
+            #[cfg(unix)]
+            assert_eq!(cited(&link, &written(&root.canonicalize().unwrap()), &work), expected, "{tool}, pela pasta de verdade");
         }
     }
 }
