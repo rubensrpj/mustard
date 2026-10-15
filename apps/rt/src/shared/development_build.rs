@@ -129,11 +129,14 @@ fn stamped_commit(version: &str) -> Option<&str> {
 /// O texto que `<programa> --version` imprime, ou `None` quando o programa não
 /// abre, não termina no prazo ou não imprime nada. Roda com a guarda de um
 /// salto ligada: sem ela, a passagem da chamada a um plugin mais novo
-/// responderia no lugar do programa, e a versão lida seria a dele.
+/// responderia no lugar do programa, e a versão lida seria a dele. E roda na
+/// pasta temporária, fora de qualquer projeto, para que a pasta de quem
+/// pergunta não pese na resposta.
 pub(crate) fn version_of(program: &Path) -> Option<String> {
     let mut child = std::process::Command::new(program)
         .arg("--version")
         .env("MUSTARD_RT_DELEGATED", "1")
+        .current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

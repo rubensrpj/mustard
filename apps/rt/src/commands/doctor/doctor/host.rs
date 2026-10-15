@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::io::fs;
+use mustard_core::io::sha256::Sha256;
 use mustard_core::platform::code_tools::{
     code_tool_for_language, read_pinned_version, CodeTool, MachineRunner, PinState, ToolRunner,
 };
@@ -146,31 +147,60 @@ fn rtk_version_output(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// O veredito puro do que [`check_rtk`] observou. Separado da leitura do
-/// `PATH` e do `current_exe()` para que o teste possa afirmar as regras sem
-/// depender do que esta máquina tem instalado — o mesmo motivo de
-/// `append_missing` em `apps/rt/src/shared/proc.rs`.
+/// A soma SHA-256 do conteúdo de `path`, ou `None` quando ele não se lê.
+fn content_sum(path: &Path) -> Option<String> {
+    let mut sum = Sha256::new();
+    sum.update(&std::fs::read(path).ok()?);
+    Some(sum.hex_digest())
+}
+
+/// Uma cópia de `rtk` como o aviso a mostra: o caminho, a linha de
+/// `--version` e o começo da soma do conteúdo.
+fn rtk_copy(path: &Path, version: Option<&str>, sum: Option<&str>) -> String {
+    format!(
+        "{} ({}, sha256 {})",
+        path.display(),
+        version.unwrap_or("no --version reply"),
+        sum.map_or("unreadable", |sum| &sum[..sum.len().min(12)])
+    )
+}
+
+/// O veredito do que [`check_rtk`] observou. Separado da leitura do `PATH` e
+/// do `current_exe()` para que o teste possa afirmar as regras sem depender do
+/// que esta máquina tem instalado — o mesmo motivo de `append_missing` em
+/// `apps/rt/src/shared/proc.rs`. `version_of` dá a linha de `--version` de
+/// uma cópia.
 ///
-/// `bundled` e `first_on_path` já chegam canonizados: a comparação é só
-/// igualdade de caminho.
-fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_output: Option<&str>) -> CheckResult {
+/// `bundled` e `first_on_path` já chegam canonizados. O `rtk` do PATH é a
+/// cópia do Mustard quando é o mesmo caminho, o mesmo conteúdo byte a byte ou
+/// responde a mesma versão: o do pacote instalado e o do plugin são o mesmo
+/// programa em pastas diferentes. Só uma cópia de outro conteúdo e de outra
+/// versão vira aviso, com as duas.
+fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_of: &dyn Fn(&Path) -> Option<String>) -> CheckResult {
     let Some(first_on_path) = first_on_path else {
         return CheckResult::warn("rtk", vec!["rtk not found on PATH".to_string()]);
     };
+    let version_output = version_of(first_on_path);
 
     let mut warnings = Vec::new();
 
     if let Some(bundled) = bundled
         && bundled != first_on_path {
-            warnings.push(format!(
-                "the rtk PATH finds first is not Mustard's own copy: {} (Mustard's copy: {}) — \
-                 put Mustard's copy ahead on PATH",
-                first_on_path.display(),
-                bundled.display()
-            ));
+            let (first_sum, bundled_sum) = (content_sum(first_on_path), content_sum(bundled));
+            let same_content = first_sum.is_some() && first_sum == bundled_sum;
+            let bundled_version = if same_content { None } else { version_of(bundled) };
+            let same_version = bundled_version.is_some() && bundled_version == version_output;
+            if !same_content && !same_version {
+                warnings.push(format!(
+                    "the rtk PATH finds first is not Mustard's own copy: {} — Mustard's copy: {} — \
+                     put Mustard's copy ahead on PATH",
+                    rtk_copy(first_on_path, version_output.as_deref(), first_sum.as_deref()),
+                    rtk_copy(bundled, bundled_version.as_deref(), bundled_sum.as_deref())
+                ));
+            }
         }
 
-    match version_output {
+    match version_output.as_deref() {
         Some(out) if out.starts_with("rtk ") => {}
         Some(out) => warnings.push(format!(
             "`rtk --version` did not start with \"rtk \": {out:?} — another program named rtk is \
@@ -199,8 +229,7 @@ pub(super) fn check_rtk() -> CheckResult {
     let path_var = std::env::var("PATH").unwrap_or_default();
     let first = first_rtk_on_path(&path_var)
         .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
-    let version = first.as_deref().and_then(rtk_version_output);
-    rtk_verdict(bundled.as_deref(), first.as_deref(), version.as_deref())
+    rtk_verdict(bundled.as_deref(), first.as_deref(), &rtk_version_output)
 }
 
 /// Probe OS font directories for *any* Nerd Font (filename containing both a
@@ -403,32 +432,57 @@ mod tests {
         assert!(without_dotnet.listed.borrow().is_empty(), "sem dotnet, nada é listado");
     }
 
+    /// A linha de `--version` que toda cópia responde nos testes.
+    fn answers(version: &'static str) -> impl Fn(&Path) -> Option<String> {
+        move |_| Some(version.to_string())
+    }
+
     #[test]
     fn rtk_verdict_ok_when_the_first_on_path_is_mustards_own_copy() {
         let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
-        let result = rtk_verdict(Some(&bundled), Some(&bundled), Some("rtk 0.49.0"));
+        let result = rtk_verdict(Some(&bundled), Some(&bundled), &answers("rtk 0.49.0"));
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }
 
-    /// O caso de 19/09: um pacote de outro catálogo com o mesmo nome `rtk`
-    /// ficou à frente do PATH e desligou o filtro sem aviso.
+    /// O caso de 14/10: o PATH acha o rtk do pacote instalado e o Mustard que
+    /// roda traz o dele em outra pasta, byte a byte igual. É a mesma cópia, e
+    /// a do Mustard nem precisa responder.
     #[test]
-    fn rtk_verdict_warns_when_another_copy_is_ahead_on_path() {
-        let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
-        let other = PathBuf::from("/home/dev/.npm-global/bin/rtk");
-        let result = rtk_verdict(Some(&bundled), Some(&other), Some("rtk 0.49.0"));
+    fn rtk_verdict_accepts_another_path_with_the_same_content() {
+        let dir = tempdir().unwrap();
+        let (bundled, packaged) = (dir.path().join("plugin-rtk"), dir.path().join("package-rtk"));
+        std::fs::write(&bundled, "rtk 0.49.0 binary").unwrap();
+        std::fs::write(&packaged, "rtk 0.49.0 binary").unwrap();
+        let only_the_path_one = |path: &Path| (path == packaged).then(|| "rtk 0.49.0".to_string());
+        let result = rtk_verdict(Some(&bundled), Some(&packaged), &only_the_path_one);
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+    }
+
+    /// Conteúdos diferentes: a mesma versão ainda é a cópia do Mustard; outra
+    /// versão — o caso de 19/09, um pacote de outro catálogo com o mesmo nome
+    /// `rtk` à frente do PATH — vira aviso que diz as duas cópias.
+    #[test]
+    fn rtk_verdict_with_different_contents_warns_only_for_another_version() {
+        let dir = tempdir().unwrap();
+        let (bundled, other) = (dir.path().join("plugin-rtk"), dir.path().join("npm-rtk"));
+        std::fs::write(&bundled, "rtk 0.49.0 binary").unwrap();
+        std::fs::write(&other, "rtk 0.49.0 another build").unwrap();
+        let same = rtk_verdict(Some(&bundled), Some(&other), &answers("rtk 0.49.0"));
+        assert_eq!(same.status, Status::Ok, "{:?}", same.details);
+
+        let versions = |path: &Path| Some(if path == bundled { "rtk 0.49.0" } else { "rtk 0.31.0" }.to_string());
+        let result = rtk_verdict(Some(&bundled), Some(&other), &versions);
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        assert!(
-            result.details.iter().any(|d| d.contains("/usr/lib/mustard/bin/rtk")),
-            "{:?}",
-            result.details
-        );
+        let warning = &result.details[0];
+        for said in [other.display().to_string(), bundled.display().to_string(), "rtk 0.31.0".into(), "rtk 0.49.0".into()] {
+            assert!(warning.contains(&said), "the warning does not say {said}: {warning}");
+        }
     }
 
     #[test]
     fn rtk_verdict_warns_when_the_version_reply_does_not_start_with_rtk_space() {
         let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
-        let result = rtk_verdict(Some(&bundled), Some(&bundled), Some("Rust Type Kit 1.0.0"));
+        let result = rtk_verdict(Some(&bundled), Some(&bundled), &answers("Rust Type Kit 1.0.0"));
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
     }
 
@@ -438,17 +492,17 @@ mod tests {
     #[test]
     fn rtk_verdict_without_a_bundled_copy_checks_only_the_response() {
         let path = PathBuf::from("/usr/bin/rtk");
-        let ok = rtk_verdict(None, Some(&path), Some("rtk 0.49.0"));
+        let ok = rtk_verdict(None, Some(&path), &answers("rtk 0.49.0"));
         assert_eq!(ok.status, Status::Ok, "{:?}", ok.details);
 
-        let warn = rtk_verdict(None, Some(&path), Some("not rtk at all"));
+        let warn = rtk_verdict(None, Some(&path), &answers("not rtk at all"));
         assert_eq!(warn.status, Status::Warn);
     }
 
     #[test]
     fn rtk_verdict_warns_when_rtk_is_not_on_path_at_all() {
         let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
-        let result = rtk_verdict(Some(&bundled), None, None);
+        let result = rtk_verdict(Some(&bundled), None, &|_| None);
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
     }
 }
