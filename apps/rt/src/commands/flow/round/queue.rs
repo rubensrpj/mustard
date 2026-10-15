@@ -3930,13 +3930,8 @@ mod tests {
         assert_eq!(task_now(root, &c).wave(), None, "C ainda depende de B");
         std::fs::write(root.join("src/d.rs"), "fn one() {}\n// D terminou.\n").unwrap();
         returned(root, json!({"wave":2,"text":"D saiu.","files":["src/d.rs"],"commit":"mostrar soma"}));
-        let held = round(root, "x", None);
-        assert!(waves_in(&held, "dispatch").is_empty(), "the same blocked plan cannot be retried: {held}");
-        assert!(task_now(root, &b).str_field("blocked_by").is_some());
-        let mut revised = super::super::report::backlog_return(&task_now(root, &b));
-        revised.remove("blocked_by");
-        crate::commands::spec_events::write::record(root, "x", "task", revised, mustard_core::domain::spec_state::PhaseWriter::Binary).unwrap();
         let next = round(root, "x", None);
+        assert_eq!(task_now(root, &b).str_field("blocked_by"), None, "a rodada seguinte ao aceite solta B: {next}");
         assert_eq!(waves_in(&next, "dispatch"), vec![3], "sai B, nunca a onda entregue: {next}");
         assert_eq!(task_now(root, &b).wave(), Some(3));
         assert_eq!(task_now(root, &a).wave(), Some(1));

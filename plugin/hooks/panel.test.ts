@@ -199,7 +199,7 @@ test('usage shows incomplete wave subtotals and explains disabled Jev without ma
 
 test('usage separates measured RTK output and Jev cost from unproven total savings',async ($,on)=>{
   const {pane,clock,counts,snapshot}=await clarityFixture($,on,'desktop',72,20);
-  snapshot.rtk={status:'measured',configured:true,hook_configured:true,scope:'project-directory',
+  snapshot.rtk={status:'measured',configured:true,own_hook_left:false,scope:'project-directory',
     commands:8635,input_tokens:7456308,output_tokens:4576286,saved_tokens:2880729,percent:38.6,
     measured_at:'2026-10-11T00:01:06Z'};
   snapshot.jev={physical_requests:1,cost_micro_usd:1044,
@@ -214,7 +214,7 @@ test('usage separates measured RTK output and Jev cost from unproven total savin
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeUndefined();
   await pane.select({key:'usage-section',value:'RTK'});
   expect(await pane.find({type:'Text',text:'Comandos registrados: 8.635'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'Hook configurado para comandos compatíveis.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'O gancho do Mustard faz a troca do RTK nos comandos compatíveis.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:/não é redução da fatura/})).toBeDefined();
   await pane.select({key:'usage-section',value:'Jev'});
   expect(await pane.find({type:'Text',text:/Última chamada: search · sucesso/})).toBeDefined();
@@ -394,7 +394,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
     specs:[{name:'demo',phase:'running',goal:'Demo',waves:[],stages:[],
       final_validation_valid:false,review_approved:false,undeclared_commands:[],
       scheduling:{backlog:2,ready:1,capacity:4,occupied_wave_slots:1,free_wave_slots:3,omitted_tasks:0,
-        tasks:[{task:"T-2",title:"Consumer",reason:"file-reservation",dependencies:[],holding_waves:[1]},{task:"T-3",title:"Docs",reason:"ready",dependencies:[],holding_waves:[]}]},
+        tasks:[{task:"T-2",title:"Consumer",reason:"capacity",dependencies:[]},{task:"T-3",title:"Docs",reason:"ready",dependencies:[]}]},
       usage:{wave_tokens:null,conductor_tokens:null}}],
     jev:{physical_requests:0,known_input_tokens:0,requests_with_unknown_usage:0,cost_micro_usd:null},
   };
@@ -419,7 +419,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   await pane.press({key:'tab-Execução'});
   expect(await pane.find({type:'Text',text:'2 tarefas no backlog · 1 prontas'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'T-2 · Consumer'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'Arquivo reservado: 1'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Aguarda vaga'})).toBeDefined();
   await pane.press({key:'tab-Consumo'});
   await pane.select({key:'usage-section',value:'Ondas'});
   expect(await pane.find({type:'Text',text:'Consumo das ondas ainda não medido.'})).toBeDefined();

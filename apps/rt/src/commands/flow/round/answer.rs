@@ -571,6 +571,10 @@ pub(super) fn run_entered_round(
 ) -> Result<Value, RoundRefusal> {
     let session = caller.session;
     let Entry { spec, path, log, phase } = entry;
+    // A tarefa travada por uma mudança de plano que o usuário já aceitou sai
+    // da trava antes de tudo: a leitura de entrada já a vê solta, e ela pode
+    // sair nesta mesma rodada.
+    let (log, released) = super::stops::release_accepted_holds(root, &spec, &path, log)?;
 
     // O backlog é lido também como estava ao entrar na rodada, antes de o
     // relatório dela mexer em onda ou tarefa: a tarefa que o corte de uma
@@ -587,6 +591,7 @@ pub(super) fn run_entered_round(
     let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held, program_rebuilt } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)
             .map_err(|refused| new_agents_named(refused, root, &spec, &log, lang))?;
+    recorded.splice(0..0, released);
     // O commit refez o programa que roda esta rodada: o despacho passa ao
     // programa novo, e esta rodada não solta onda nenhuma.
     let rebuilt_program = if program_rebuilt { super::handoff::running_build(root) } else { None };

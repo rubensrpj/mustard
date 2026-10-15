@@ -6,17 +6,23 @@
 //! aprovado espera o clique do usuário e segura só a onda dela. As tarefas
 //! que a onda não fez voltam ao backlog quando a rodada assume a volta, menos
 //! a que outra onda já levou, que fica com ela. Uma tarefa devolvida por
-//! impedimento permanece bloqueada até ser revisada.
+//! impedimento permanece bloqueada até ser revisada. A mudança de plano trava
+//! só a tarefa que ela cita, e a rodada seguinte ao aceite a solta.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
+use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::answer::RoundRefusal;
+use super::commit::git_lock;
 use super::report::{PlanChange, WaveReport, backlog_return};
 use super::sent_tasks::sent_tasks;
+use crate::commands::spec_events::write::record;
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
 /// última delas para a onda e as que dependem dela: o problema é de desenho,
@@ -100,12 +106,18 @@ fn is_change_code(word: &str) -> bool {
 /// toda mensagem com a testemunha, de qualquer autor, e recusa rever ou tirar
 /// uma delas: só a testemunha grava o clique.
 pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
-    let langs = [Locale::PtBr, Locale::EnUs];
     let sent = log.last_dispatch_by_wave().get(&wave).copied().unwrap_or(0);
+    accepted_after(log, code, sent)
+}
+
+/// O clique mais novo do usuário na mudança de código `code`, gravado pela
+/// testemunha depois do evento `after`, é o "Aceitar".
+fn accepted_after(log: &SpecLog, code: &str, after: u64) -> bool {
+    let langs = [Locale::PtBr, Locale::EnUs];
     let last_click = log
         .block(BlockQuery::Block(Block::Conversation))
         .into_iter()
-        .filter(|e| e.event_type == "message" && e.id > sent && e.str_field("author") == Some("user"))
+        .filter(|e| e.event_type == "message" && e.id > after && e.str_field("author") == Some("user"))
         .filter_map(|e| e.fields.get("witness"))
         .filter(|w| w.get("change").and_then(Value::as_str).is_some_and(|clicked| clicked.trim() == code))
         .filter_map(|w| w.get("answer").and_then(Value::as_str))
@@ -154,9 +166,9 @@ impl HeldReturn {
     }
 }
 
-/// Holds proposed changes to the approved plan until the user's acceptance.
-/// Omitting a decision field does not grant authorization. Accepting the
-/// proposal does not clear the blocked condition on its unfinished tasks.
+/// Segura a mudança do plano aprovado até o aceite do usuário. Sem o campo
+/// da decisão, a mudança espera do mesmo jeito. A pergunta lista só as
+/// tarefas que a mudança vai travar ([`held_by_change`]).
 pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -> Vec<HeldReturn> {
     hold_refused(waves, |wave| {
         let Some(PlanChange { change, .. }) = &wave.replan else {
@@ -166,9 +178,82 @@ pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -
         if change_accepted(log, wave.wave, &code) {
             return Ok(());
         }
-        let tasks = wave.undone.iter().map(|(_, code)| code.clone()).collect();
+        let tasks = held_by_change(change, &wave.undone).into_iter().map(str::to_string).collect();
         Err(RoundRefusal::Replan { wave: wave.wave, code, tasks })
     })
+}
+
+/// Os códigos das tarefas de `undone` que a mudança de plano `change` trava:
+/// as que ela cita pelo código; sem nenhuma citada, todas.
+fn held_by_change<'a>(change: &str, undone: &'a [(u64, String)]) -> Vec<&'a str> {
+    let all = undone.iter().map(|(_, code)| code.as_str());
+    let cited: Vec<&str> = all.clone().filter(|code| cites(change, code)).collect();
+    if cited.is_empty() { all.collect() } else { cited }
+}
+
+/// `text` traz `code` como palavra inteira: sem letra, algarismo, hífen ou
+/// sublinhado colado antes ou depois dele.
+fn cites(text: &str, code: &str) -> bool {
+    let glued = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_');
+    !code.is_empty() && text.match_indices(code).any(|(at, _)| !glued(text[..at].chars().next_back()) && !glued(text[at + code.len()..].chars().next()))
+}
+
+/// Solta, no começo da rodada, cada tarefa travada por uma mudança de plano
+/// que o usuário já aceitou ([`accepted_holds`]): grava a versão nova dela,
+/// sem a trava, com a trava do passo do git presa e a spec `spec`, em
+/// `path`, relida sob ela. A trava que a rodada grava ao assumir a volta
+/// aceita só sai na rodada seguinte: quem conduz tem esse intervalo para
+/// reescrever a tarefa. Devolve a leitura da spec depois da soltura — a de
+/// entrada (`log`), quando nada foi solto — e o que foi gravado.
+pub(super) fn release_accepted_holds(root: &Path, spec: &str, path: &Path, log: SpecLog) -> Result<(SpecLog, Vec<Value>), RoundRefusal> {
+    if accepted_holds(&log).is_empty() {
+        return Ok((log, Vec::new()));
+    }
+    let _lock = git_lock(root)?;
+    let read = || store::read(path).map_err(RoundRefusal::Refused).map(|fresh| fresh.unwrap_or_else(|| log.clone()));
+    let fresh = read()?;
+    let mut recorded = Vec::new();
+    for task in accepted_holds(&fresh) {
+        let mut draft = backlog_return(task);
+        draft.remove("blocked_by");
+        if let Some(wave) = task.fields.get("wave") {
+            draft.insert("wave".into(), wave.clone());
+        }
+        let written = record(root, spec, "task", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
+        recorded.push(json!({ "type": "task", "id": written.written.id, "released": task.id }));
+    }
+    if recorded.is_empty() {
+        return Ok((log, recorded));
+    }
+    Ok((read()?, recorded))
+}
+
+/// As tarefas por entregar travadas por uma mudança de plano aceita: a trava
+/// (`blocked_by`) é o texto da mudança (`replan`) de uma entrega da onda, e o
+/// clique mais novo do usuário no código dela ([`replan_code`]) é o
+/// "Aceitar". Vale também para a tarefa travada antes de a trava pegar só a
+/// tarefa citada. A trava por impedimento, ou pela tarefa devolvida de novo
+/// sem mudança, não é texto de mudança nenhuma e fica.
+fn accepted_holds(log: &SpecLog) -> Vec<&SpecEvent> {
+    let visible = log.visible();
+    let done = log.delivered_waves();
+    let mut held: Vec<&SpecEvent> = visible
+        .iter()
+        .copied()
+        .filter(|e| e.event_type == "task" && e.str_field("blocked_by").is_some() && e.wave().is_none_or(|n| !done.contains(&n)))
+        .collect();
+    if held.is_empty() {
+        return held;
+    }
+    let accepted: BTreeSet<&str> = visible
+        .iter()
+        .filter(|e| e.event_type == "delivered")
+        .filter_map(|e| Some((e.wave()?, e.str_field("replan")?)))
+        .filter(|(wave, change)| accepted_after(log, &replan_code(*wave, change), 0))
+        .map(|(_, change)| change.trim())
+        .collect();
+    held.retain(|task| task.str_field("blocked_by").is_some_and(|hold| accepted.contains(hold.trim())));
+    held
 }
 
 /// Tira das voltas `waves` cada uma que a conferência `check` recusa, e
@@ -304,8 +389,9 @@ pub(super) fn undone_of(log: &SpecLog, wave: u64, fields: &Map<String, Value>, r
 fn undone_return(task: &SpecEvent, wave: u64, change: Option<&str>, lang: Locale) -> Map<String, Value> {
     let mut draft = backlog_return(task);
     if let Some(change) = change {
-        // A different wave cannot resolve the same plan merely by retrying.
-        // Keep it visible in the backlog until a revised task clears the hold.
+        // Outra onda não resolve o mesmo plano só tentando de novo: a tarefa
+        // fica no backlog, travada, até a versão revista ou, na mudança de
+        // plano aceita, até a rodada seguinte ([`release_accepted_holds`]).
         draft.insert("blocked_by".into(), json!(change));
         let line = translate("round.returned_change", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim());
         append_agent_line(&mut draft, &line);
@@ -331,15 +417,20 @@ pub(super) fn append_agent_line(draft: &mut Map<String, Value>, line: &str) {
 
 /// A versão nova de cada tarefa que as voltas `waves` não fizeram, com a
 /// onda que a devolveu, lida em `log`: a volta ao backlog de
-/// [`undone_return`].
+/// [`undone_return`]. O impedimento da volta trava todas; a mudança de plano,
+/// só as que ela trava ([`held_by_change`]).
 pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<(u64, Map<String, Value>)> {
     let mut out = Vec::new();
     for wave in waves {
-        for task in wave.undone.iter().filter_map(|(id, _)| log.get(*id)) {
-            let change = wave.returns.last().and_then(|id| log.get(*id)).and_then(|event| event.str_field("blocked_by"))
-                .or_else(|| wave.replan.as_ref().map(|plan| plan.change.as_str()));
-            let draft=guarded_return(task,wave.wave,!wave.files.is_empty(),change,lang);
-            out.push((wave.wave,draft));
+        let impediment = wave.returns.last().and_then(|id| log.get(*id)).and_then(|event| event.str_field("blocked_by"));
+        let change = wave.replan.as_ref().map(|plan| plan.change.as_str());
+        let held = change.map(|change| held_by_change(change, &wave.undone)).unwrap_or_default();
+        for (id, code) in &wave.undone {
+            let Some(task) = log.get(*id) else {
+                continue;
+            };
+            let hold = impediment.or_else(|| change.filter(|_| held.contains(&code.as_str())));
+            out.push((wave.wave, guarded_return(task, wave.wave, !wave.files.is_empty(), hold, lang)));
         }
     }
     out
@@ -652,6 +743,59 @@ mod tests {
         assert!(!shown.contains("Pergunta pronta") && stopped.get("question").is_none(), "{shown}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("Aceitar") && hint.contains("Recusar") && hint.contains("efeito da mudança"), "a regra da pergunta: {hint}");
+    }
+
+    /// A mudança de plano que cita uma das três tarefas que a onda não fez
+    /// trava só ela, e a pergunta lista só ela; as outras duas voltam ao
+    /// backlog soltas. A tarefa já travada pelo texto da mudança, como antes
+    /// de a trava pegar só a citada, segue travada enquanto o usuário não
+    /// aceita. A rodada seguinte à que assumiu a volta aceita solta as duas.
+    #[test]
+    fn a_plan_change_holds_only_the_task_it_cites_and_the_round_after_the_yes_releases_it() {
+        use crate::commands::flow::round::queue::task_now;
+
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            for text in ["Segunda tarefa da onda 1.", "Terceira tarefa da onda 1."] {
+                write(root, "x", "task", json!({"wave": 1, "text": text, "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said}));
+            }
+        });
+        round(root, "x", None);
+        let session = "s-trava-so-a-citada";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let tasks: Vec<String> = sent_tasks(&log, 1).iter().map(|task| codes[&task.id].clone()).collect();
+        assert_eq!(tasks.len(), 3, "{tasks:?}");
+        let change = format!("A {} precisa de outra forma antes.", tasks[1]);
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("o critério");
+        let old = id_of(&write(root, "x", "task", json!({"text": "Tarefa travada antes do conserto.", "files": [{"path": "src/b.rs"}],
+            "depends_on": [], "covers": [crit], "blocked_by": change})));
+        let old = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap().codes()[&old].clone();
+        let back = json!({"wave": 1, "text": "Parei.", "replan": change, "undone": tasks});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+
+        let waiting = round(root, "x", None);
+        let hint = change_asked(&waiting)["hint"].as_str().unwrap_or_default().to_string();
+        assert!(hint.contains(&tasks[1]) && !hint.contains(&tasks[0]) && !hint.contains(&tasks[2]), "a pergunta lista só a citada: {hint}");
+        assert!(task_now(root, &old).str_field("blocked_by").is_some(), "sem o aceite, a trava fica: {waiting}");
+
+        click(root, session, QUESTION, &replan_code(1, &change), "Aceitar");
+        let accepted = round(root, "x", None);
+        assert_eq!(accepted["ok"], json!(true), "{accepted}");
+        let held: Vec<bool> = tasks.iter().map(|code| task_now(root, code).str_field("blocked_by").is_some()).collect();
+        assert_eq!(held, vec![false, true, false], "só a citada fica travada: {accepted}");
+
+        let blocked = task_now(root, &tasks[1]).id;
+        let next = round(root, "x", None);
+        let released = task_now(root, &tasks[1]);
+        assert_eq!(released.str_field("blocked_by"), None, "a rodada seguinte solta a citada: {next}");
+        assert_eq!(released.int("replaces"), Some(blocked), "{:?}", released.fields);
+        assert_eq!(task_now(root, &old).str_field("blocked_by"), None, "a trava gravada antes também sai: {next}");
     }
 
     /// A cópia gravada no último envio da onda `n` da spec `x`.
