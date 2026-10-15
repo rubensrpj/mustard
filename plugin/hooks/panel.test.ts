@@ -657,3 +657,38 @@ test('installation details do not present an old receipt as verification of this
   expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);
   await pane.press({key:'close'});
 });
+
+test('panel and usage failures reach the diagnostics with their cause, once', async ($, on) => {
+  const clock = mock.clock(on);
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  mock.env(on, {});
+  let reads = 0;
+  const diagnostics:any[] = [];
+  const replies = [
+    {ok:false,reason:'usage-cost-unknown',live:{ok:false,reason:'live-usage-unreadable',detail:'EOF while parsing a string',diagnosed:true}},
+    {ok:false,reason:'io error: No space left on device (os error 28)'},
+  ];
+  const snapshot = {ok:true,schema_version:1,at:'2026-10-08T12:00:00Z',project:{name:'fixture'},specs:[],jev:{}};
+  on('session.start', ($, e) => ({cwd:e.cwd}));on('session.measure',($,e)=>({changed:e.changed}));
+  on('command.register', () => ({value:null}));
+  on('session.cwd', () => ({value:'/fixture'}));on('session.id',()=>({value:'actual-session'}));on('session.model',()=>({value:'test-model'}));
+  on('session.usage', () => ({value:{rateLimits:[]}}));
+  on('ui.open', () => ({value:null}));
+  on('ui.close', () => ({value:null}));
+  on('process.run', ($, e) => {
+    if(e.argv[2]==='panel-diagnostics') {diagnostics.push(JSON.parse(e.init.stdin));return {value:{exitCode:0,stdout:'{"ok":true}',stderr:''}};}
+    if(e.argv[2]==='usage-record')return {value:{exitCode:0,stdout:JSON.stringify(replies.shift()),stderr:''}};
+    reads++;
+    return {value:reads===1 ? {exitCode:0,stdout:JSON.stringify(snapshot),stderr:''} : {exitCode:1,stdout:'',stderr:'database is locked\n'}};
+  });
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  for(const _ of [0,1])await $.session.measure({context:{percent:1,tokens:10,window:200000},cost:{usd:0.1},rateLimits:[],changed:['cost']});
+  await $.command.run({command:'mustard-panel',args:''});
+  await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await clock.advance(10000);
+  await clock.advance(10);
+  expect(diagnostics).toEqual([
+    {component:'usage',operation:'record',reason:'usage-record-failed',detail:'io error: No space left on device (os error 28)',session:'actual-session'},
+    {component:'panel',operation:'refresh',reason:'panel-query-failed',detail:'exit 1: database is locked',session:'actual-session'},
+  ]);
+});

@@ -113,17 +113,29 @@ impl LockedFile {
 
     /// Troca o conteúdo inteiro por `contents`, pelo mesmo manipulador. Não é
     /// uma troca atômica por arquivo novo: trocar o arquivo de lugar deixaria
-    /// quem espera a trava preso ao arquivo velho.
+    /// quem espera a trava preso ao arquivo velho. Se a escrita, o corte ou a
+    /// confirmação falha, o conteúdo de antes volta: o disco cheio no meio da
+    /// troca não deixa um arquivo pela metade, que nenhuma leitura entende.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] quando a escrita falha.
+    /// [`Error::Io`] quando a escrita falha; o erro é o da escrita, mesmo
+    /// quando a volta do conteúdo de antes também falha.
     pub fn replace(&mut self, contents: &[u8]) -> Result<()> {
         self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(contents)?;
-        self.file.set_len(contents.len() as u64)?;
-        if super::disk_sync() {
-            self.file.sync_all()?;
+        let mut before = Vec::new();
+        self.file.read_to_end(&mut before)?;
+        let file = &mut self.file;
+        let written = file
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| file.write_all(contents))
+            .and_then(|()| file.set_len(contents.len() as u64))
+            .and_then(|()| if super::disk_sync() { file.sync_all() } else { Ok(()) });
+        if let Err(err) = written {
+            // As páginas do conteúdo de antes já estavam no disco: regravá-las
+            // não pede espaço novo.
+            let _ = file.seek(SeekFrom::Start(0)).and_then(|_| file.write_all(&before)).and_then(|()| file.set_len(before.len() as u64));
+            return Err(err.into());
         }
         Ok(())
     }
@@ -379,6 +391,35 @@ mod tests {
             Err(Error::Io(e)) => assert_eq!(e.kind(), ErrorKind::StorageFull),
             other => panic!("expected the disk error, got {other:?}"),
         }
+    }
+
+    /// Uma troca de conteúdo que esbarra no limite de tamanho de arquivo do
+    /// processo (o `ulimit -f`, o mesmo efeito do disco cheio) falha e deixa o
+    /// arquivo com o conteúdo de antes, que continua se lendo inteiro.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_locked_replace_cut_by_the_size_limit_keeps_the_previous_content() {
+        const FILE: &str = "MUSTARD_REPLACE_LIMIT_FILE";
+        if let Ok(path) = std::env::var(FILE) {
+            let mut file = LockedFile::exclusive(Path::new(&path)).unwrap();
+            let err = file.replace(format!("{{\"events\":\"{}\"}}", "b".repeat(80 * 1024)).as_bytes()).unwrap_err();
+            assert!(matches!(err, Error::Io(_)), "{err:?}");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diagnostics.json");
+        let before = format!("{{\"events\":\"{}\"}}", "a".repeat(40 * 1024));
+        std::fs::write(&path, &before).unwrap();
+        let test = "a_locked_replace_cut_by_the_size_limit_keeps_the_previous_content";
+        let out = std::process::Command::new("bash")
+            .args(["-c", "trap '' XFSZ; ulimit -f 64 && exec \"$0\" \"$@\""])
+            .arg(std::env::current_exe().unwrap())
+            .args([test, "--test-threads=1"])
+            .env(FILE, &path)
+            .output()
+            .expect("bash runs the test binary under the size limit");
+        assert!(out.status.success(), "the child failed: {}", String::from_utf8_lossy(&out.stdout));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "same content as before");
     }
 
     /// Uma gravação pela trava que esbarra no limite de tamanho de arquivo do

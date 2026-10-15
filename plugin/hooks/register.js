@@ -35,9 +35,11 @@ async function localOperation($,command,request) {
   const result=await $.process.run([await runtime($),'run',command,'--root',cwd,...(request?['--json',JSON.stringify(request)]:[])],{cwd,timeoutMs:10000});
   const value=JSON.parse(result.stdout);if(result.exitCode!==0 || value.ok!==true)throw new Error(value.reason || 'operation-failed');return value;
 }
-async function diagnostic($,component,operation,reason) {
+// The cause of a failure on one line, short enough for the diagnostics record.
+function cause(error) {return String(error?.message ?? error ?? '').replace(/\s+/g,' ').trim().slice(0,300) || undefined;}
+async function diagnostic($,component,operation,reason,detail) {
   try {const cwd=await $.session.cwd();await $.process.run([await runtime($),'run','panel-diagnostics','--root',cwd,'--record'],
-    {cwd,timeoutMs:3000,stdin:JSON.stringify({component,operation,reason,session:await $.session.id()})});}catch{/* Diagnostics never blocks work. */}
+    {cwd,timeoutMs:3000,stdin:JSON.stringify({component,operation,reason,...(detail?{detail}:{}),session:await $.session.id()})});}catch{/* Diagnostics never blocks work. */}
 }
 async function previewImpact($,request,action) {
   try {impact=await localOperation($,'impact',request);impact.canExecute=typeof action==='function';impactAction=action?{run:action,request}:undefined;}
@@ -150,9 +152,9 @@ async function refresh($) {
           '--section',section,...(sourceRevision && queryIdentity===identity && !measure?['--if-revision',sourceRevision]:[]),
           ...(view.tab==='Ondas' && view.selectedWave!==undefined ? ['--wave',String(view.selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
         { cwd, timeoutMs: measure ? 30000 : 10000 });
-      if (result.exitCode !== 0) throw new Error(result.stderr || 'Consulta local falhou');
+      if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}: ${(result.stderr || '').trim() || 'no error output'}`);
       const next = JSON.parse(result.stdout);
-      if (next.ok !== true || next.schema_version !== 1) throw new Error('Versão do painel incompatível');
+      if (next.ok !== true || next.schema_version !== 1) throw new Error(`incompatible panel answer: ok ${next.ok}, schema_version ${next.schema_version}${typeof next.reason==='string'?', reason '+next.reason:''}`);
       if (!opened || ticket !== revision) return;
       if(!next.unchanged)data=next;
       if(data)data.checked_at=new Date().toISOString();
@@ -163,7 +165,7 @@ async function refresh($) {
       problem = undefined;
     } catch (error) {
       if (opened && ticket === revision) {problem=t('Não foi possível atualizar. Tente novamente ou abra Diagnóstico.','Could not update. Retry or open Diagnostics.');
-        void diagnostic($,'panel','refresh','panel-query-failed');}
+        void diagnostic($,'panel','refresh','panel-query-failed',cause(error));}
     } finally {
       busy = false;
       if (opened && ticket === revision) $.ui.invalidate('ui.render');
@@ -174,7 +176,7 @@ function recordMeasurement($, measurement) {
   // Preserve arrival order. A repeated cumulative reading replaces no spend,
   // and the runtime resolves attribution from the checkout, not the pane tab.
   measurementQueue = measurementQueue.catch(() => {}).then(async () => {
-    let failure='usage-record-failed';
+    let failure='usage-record-failed',detail;
     try {
       const cwd = await $.session.cwd();
       const session = await $.session.id();
@@ -182,12 +184,14 @@ function recordMeasurement($, measurement) {
       const result=await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
         {cwd, timeoutMs:5000, stdin:JSON.stringify({...measurement,model:measurement.model || model})});
       const reply=JSON.parse(result.stdout);
-      if(result.exitCode!==0 || reply.ok!==true) {
+      // The runtime already recorded a live-usage failure, with its cause.
+      if(result.exitCode!==0 || (reply.ok!==true && reply.live?.diagnosed!==true)) {
         const reason=reply.live?.reason || reply.reason;
         if(typeof reason==='string' && /^(usage|live-usage)-[a-z-]{1,80}$/.test(reason))failure=reason;
+        detail=reply.live?.detail || reply.detail || (typeof reason==='string' && reason!==failure?reason:`exit ${result.exitCode}`);
         throw new Error('usage-record-failed');
       }
-    } catch {void diagnostic($,'usage','record',failure);}
+    } catch(error) {void diagnostic($,'usage','record',failure,detail ?? cause(error));}
   });
   return measurementQueue;
 }
