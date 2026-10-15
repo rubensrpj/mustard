@@ -2,7 +2,7 @@
 
 Binary searches and computes; LLM decides and implements.
 
-- Resume with `mustard-rt run resume`. Queries open no spec. Changes: `mustard-rt run open`, goal in `context`; confirm a suggested goal through `goal_approval` from `run resume`/`run grill`. Then suggest `/clear`; the resume line retains state.
+- Resume with `mustard-rt run resume`. Queries open no spec. Changes: open with `mustard-rt run open`; then record the goal with `mustard-rt run write context`, `origin` on the user's message; confirm a suggested goal through `goal_approval` from `run resume`/`run grill`. Then suggest `/clear`; the resume line retains state.
 - Code: `mcp__mustard__search`, with local intent and investigation purpose; preserve arguments and scope. CLI: `mustard-rt run search --shell-output` with the original search. Bash description: `mustard:spec: <question>`.
 - Reuse current excerpts; Read with offset/limit is crossed by the hook without another model. No range: `run map summary --file <file>`. Reread changed sources. References and comments are not runtime proof.
 - Dossier: `mustard-rt run knowledge`, reuse current; else `run knowledge --prepare-session claude --query "<question>"`. Delegate only useful bounded investigation; wave agent: `write delivered`, errors in `leftovers`, two lines back; the hook refuses it `write request`/`task`: the conductor records.

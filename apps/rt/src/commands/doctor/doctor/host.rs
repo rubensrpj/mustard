@@ -111,19 +111,6 @@ fn lsp_verdict(project_dir: &Path, runner: &impl ToolRunner) -> CheckResult {
     }
 }
 
-/// A cópia de `rtk` que o Mustard instala ao lado do binário que está
-/// rodando — `<pasta-do-binário>/rtk` (`<...>/rtk.exe` no Windows). `exe` já
-/// deve chegar canonizado (o pacote `.deb` põe o binário em
-/// `/usr/lib/mustard/bin`, e `/usr/bin/mustard-rt` é um atalho para lá).
-/// `None` quando não há cópia ao lado — uma compilação de desenvolvimento,
-/// por exemplo.
-fn bundled_rtk_path(exe: &Path) -> Option<PathBuf> {
-    let dir = exe.parent()?;
-    let name = if cfg!(windows) { "rtk.exe" } else { "rtk" };
-    let candidate = dir.join(name);
-    candidate.is_file().then_some(candidate)
-}
-
 /// A primeira cópia de `rtk` (ou `rtk.exe` no Windows) achada em `path_var`,
 /// na ordem do `PATH` — a que o terminal do usuário roda. O agente não a usa:
 /// o gancho chama a cópia do Mustard pelo caminho inteiro.
@@ -236,17 +223,34 @@ fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_of:
 /// `rtk --version` responde como o rtk de verdade — em 19/09, um pacote do
 /// npm chamado `rtk` ficou na frente e desligou o filtro sem aviso. Hoje o
 /// agente roda a cópia do Mustard pelo caminho inteiro, e o aviso só vale
-/// para o terminal do usuário. Sem cópia ao lado do binário (compilação de
-/// desenvolvimento), confere só a resposta.
+/// para o terminal do usuário. A cópia é a que o gancho roda: ao lado do
+/// binário ou, sem ela, a da pasta `bin` do plugin instalado; sem nenhuma das
+/// duas, confere só a resposta.
 pub(super) fn check_rtk() -> CheckResult {
-    let bundled = std::env::current_exe().ok().and_then(|exe| {
-        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
-        bundled_rtk_path(&real)
-    });
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    let first = first_rtk_on_path(&path_var)
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
-    rtk_verdict(bundled.as_deref(), first.as_deref(), &rtk_version_output)
+    let exe = std::env::current_exe().ok();
+    let plugin_dir = || mustard_core::platform::harness::installed_plugin().map(|plugin| plugin.dir);
+    rtk_check(exe.as_deref(), plugin_dir, &std::env::var("PATH").unwrap_or_default(), &rtk_version_output)
+}
+
+/// O que [`check_rtk`] observa, com o binário em execução (`exe`), a pasta do
+/// plugin instalado (`plugin_dir`), o `PATH` (`path_var`) e a resposta de
+/// `--version` (`version_of`) dados por quem chama, para que o teste os
+/// injete. A cópia do Mustard sai da mesma regra do gancho
+/// ([`rtk_swap::bundled_at`](crate::hooks::bash::rtk_swap::bundled_at)); o
+/// binário, a cópia e o `rtk` do PATH vão pelo caminho real (o pacote `.deb`
+/// põe o binário em `/usr/lib/mustard/bin`, e `/usr/bin/mustard-rt` é um
+/// atalho para lá).
+fn rtk_check(
+    exe: Option<&Path>,
+    plugin_dir: impl FnOnce() -> Option<PathBuf>,
+    path_var: &str,
+    version_of: &dyn Fn(&Path) -> Option<String>,
+) -> CheckResult {
+    let real = |path: PathBuf| std::fs::canonicalize(&path).unwrap_or(path);
+    let exe = exe.map(|exe| real(exe.to_path_buf()));
+    let bundled = crate::hooks::bash::rtk_swap::bundled_at(exe.as_deref(), plugin_dir).map(real);
+    let first = first_rtk_on_path(path_var).map(real);
+    rtk_verdict(bundled.as_deref(), first.as_deref(), version_of)
 }
 
 /// Probe OS font directories for *any* Nerd Font (filename containing both a
@@ -517,9 +521,9 @@ mod tests {
         assert!(!warning.contains("ahead of Mustard's own copy"), "{warning}");
     }
 
-    /// Compilação de desenvolvimento: sem cópia ao lado do binário, o veredito
-    /// confere só a resposta de `rtk --version` — não há caminho de cópia para
-    /// comparar.
+    /// Sem cópia do Mustard, nem ao lado do binário nem no plugin instalado,
+    /// o veredito confere só a resposta de `rtk --version` — não há caminho de
+    /// cópia para comparar.
     #[test]
     fn rtk_verdict_without_a_bundled_copy_checks_only_the_response() {
         let path = PathBuf::from("/usr/bin/rtk");
@@ -531,6 +535,42 @@ mod tests {
         let warning = &warn.details[0];
         assert!(warning.contains("the agent's commands never run the rtk on PATH, so this only matters for rtk typed in your terminal"), "{warning}");
         assert!(!warning.contains("Mustard's copy"), "without a copy the warning names none: {warning}");
+    }
+
+    /// Sem cópia ao lado do binário — a compilação de desenvolvimento —, o
+    /// diagnóstico acha a cópia na pasta `bin` do plugin instalado, a mesma
+    /// que o gancho roda, e compara o `rtk` do PATH com ela: outra versão vira
+    /// aviso com as duas. Sem a do plugin, só confere a resposta. A cópia ao
+    /// lado do binário vence, e então o plugin nem é procurado.
+    #[test]
+    fn rtk_verdict_compares_the_path_rtk_with_the_plugin_copy_when_none_sits_beside_the_binary() {
+        let dir = tempdir().unwrap();
+        let name = if cfg!(windows) { "rtk.exe" } else { "rtk" };
+        let (build, plugin, path_dir) = (dir.path().join("target/debug"), dir.path().join("plugin"), dir.path().join("path"));
+        for folder in [&build, &plugin.join("bin"), &path_dir] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let exe = build.join("mustard-rt");
+        std::fs::write(&exe, "mustard-rt").unwrap();
+        std::fs::write(plugin.join("bin").join(name), "rtk 0.49.0 binary").unwrap();
+        std::fs::write(path_dir.join(name), "rtk 0.31.0 npm build").unwrap();
+        let path_var = path_dir.to_string_lossy().into_owned();
+        let versions = |path: &Path| Some(if path.starts_with(dir.path().canonicalize().unwrap().join("path")) { "rtk 0.31.0" } else { "rtk 0.49.0" }.to_string());
+
+        let result = rtk_check(Some(&exe), || Some(plugin.clone()), &path_var, &versions);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let warning = &result.details[0];
+        let plugin_copy = plugin.join("bin").join(name).canonicalize().unwrap();
+        for said in [plugin_copy.display().to_string(), "rtk 0.31.0".into(), "rtk 0.49.0".into()] {
+            assert!(warning.contains(&said), "the warning does not say {said}: {warning}");
+        }
+
+        let without_plugin = rtk_check(Some(&exe), || None, &path_var, &versions);
+        assert_eq!(without_plugin.status, Status::Ok, "{:?}", without_plugin.details);
+
+        std::fs::write(build.join(name), "rtk 0.31.0 npm build").unwrap();
+        let beside = rtk_check(Some(&exe), || unreachable!("the plugin is looked up only without a copy beside the binary"), &path_var, &versions);
+        assert_eq!(beside.status, Status::Ok, "{:?}", beside.details);
     }
 
     #[test]

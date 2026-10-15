@@ -34,16 +34,18 @@ pub(crate) fn bundled() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.canonicalize().ok())
-        .and_then(|exe| exe.parent().map(|dir| dir.join(RTK_FILE)))
-        .filter(|path| path.is_file());
-    beside.or_else(|| {
-        mustard_core::platform::harness::installed_plugin()
-            .map(|plugin| plugin.dir.join("bin").join(RTK_FILE))
-            .filter(|path| path.is_file())
-    })
+    let exe = std::env::current_exe().ok().and_then(|exe| exe.canonicalize().ok());
+    bundled_at(exe.as_deref(), || mustard_core::platform::harness::installed_plugin().map(|plugin| plugin.dir))
+}
+
+/// A regra de [`bundled`] com o binário (`exe`, já pelo caminho real) e a
+/// pasta do plugin instalado (`plugin_dir`) dados por quem chama: a cópia ao
+/// lado do binário e, sem ela, a de `<plugin>/bin`. A pasta do plugin só é
+/// procurada quando não há cópia ao lado. O diagnóstico acha a cópia por
+/// aqui, e o teste dele injeta as duas pastas.
+pub(crate) fn bundled_at(exe: Option<&Path>, plugin_dir: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
+    let beside = exe.and_then(Path::parent).map(|dir| dir.join(RTK_FILE)).filter(|path| path.is_file());
+    beside.or_else(|| plugin_dir().map(|dir| dir.join("bin").join(RTK_FILE)).filter(|path| path.is_file()))
 }
 
 /// `path` entre aspas simples, do jeito que o shell lê um caminho com espaço.

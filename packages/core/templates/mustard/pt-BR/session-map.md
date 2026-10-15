@@ -2,7 +2,7 @@
 
 Binário busca e calcula; LLM decide e implementa.
 
-- Retome por `mustard-rt run resume`. Consulta não abre spec. Mudança: `mustard-rt run open`, objetivo em `context`; se sugerido, confirme por `goal_approval` de `run resume`/`run grill`. Só então sugira `/clear`; a linha de retomada guarda o estado.
+- Retome por `mustard-rt run resume`. Consulta não abre spec. Mudança: abra com `mustard-rt run open`; depois grave o objetivo por `mustard-rt run write context`, `origin` na mensagem do usuário; se sugerido, confirme por `goal_approval` de `run resume`/`run grill`. Só então sugira `/clear`; a linha de retomada guarda o estado.
 - Código: `mcp__mustard__search`, com intenção local e finalidade da pesquisa; preserve argumentos e escopo. CLI: `mustard-rt run search --shell-output` com a busca original. Bash: descrição `mustard:spec: <pergunta>`.
 - Reuse trechos atuais; Read com offset/limit é cruzado pelo hook sem outra IA. Sem faixa: `run map summary --file <arquivo>`. Fonte alterada: releia. Referência ou comentário não prova comportamento.
 - Dossiê: `mustard-rt run knowledge`, reuse o atual; senão, `run knowledge --prepare-session claude --query "<dúvida>"`. Delegue só se compensar; agente de onda: `write delivered`, erro/sobra em `leftovers`, volta em duas linhas; o gancho lhe recusa `write request`/`task`: o condutor grava.
