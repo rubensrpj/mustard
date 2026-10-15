@@ -268,26 +268,82 @@ fn cited_among(output: &str, work: &Work, listed: &[String]) -> Cited {
 /// `known` que é o trecho inteiro ou o fim dele depois de uma `/`: o caminho
 /// absoluto, o `./` na frente e o caminho dentro da cópia de uma onda citam o
 /// arquivo relativo à raiz, e `lib/src/b.rs` não cita `src/b.rs`. O ponto
-/// colado ao fim do caminho, o da frase, fica de fora.
+/// colado ao fim do caminho, o da frase, fica de fora. O caminho relativo que
+/// uma ferramenta escreveu dentro de um pacote ([`tool_lines`]) se lê a partir
+/// da pasta do pacote, e só dali: o `src/a.ts` de `packages/web` não cita o
+/// `src/a.ts` da raiz nem o de outro pacote.
 fn paths_in<'a>(output: &str, known: &HashSet<&'a str>) -> Vec<&'a str> {
     let mut found: Vec<&'a str> = Vec::new();
-    for word in output.split(|c: char| !(c.is_alphanumeric() || "_-./\\@+~".contains(c))) {
-        let word = word.replace('\\', "/");
-        let mut rest = word.trim_end_matches('.');
-        while !rest.is_empty() {
-            if let Some(file) = known.get(rest) {
-                if !found.contains(file) {
-                    found.push(*file);
-                }
-                break;
-            }
-            let Some((_, tail)) = rest.split_once('/') else {
-                break;
+    for (dir, text) in tool_lines(output) {
+        for word in text.split(|c: char| !(c.is_alphanumeric() || "_-./\\@+~".contains(c))) {
+            let word = word.replace('\\', "/");
+            let word = word.trim_end_matches('.');
+            let file = if dir.is_empty() || word.starts_with('/') {
+                longest_known_tail(word, known)
+            } else {
+                from_dir(dir, word).and_then(|path| known.get(path.as_str()).copied())
             };
-            rest = tail;
+            if let Some(file) = file.filter(|file| !found.contains(file)) {
+                found.push(file);
+            }
         }
     }
     found
+}
+
+/// O arquivo mais longo de `known` que é o caminho `word` inteiro ou o fim
+/// dele depois de uma `/`.
+fn longest_known_tail<'a>(word: &str, known: &HashSet<&'a str>) -> Option<&'a str> {
+    let mut rest = word;
+    while !rest.is_empty() {
+        if let Some(file) = known.get(rest) {
+            return Some(*file);
+        }
+        rest = rest.split_once('/')?.1;
+    }
+    None
+}
+
+/// O caminho relativo `word`, escrito por uma ferramenta que rodou na pasta
+/// `dir`, relativo à raiz e com `/`; `None` quando ele sai da raiz.
+fn from_dir(dir: &str, word: &str) -> Option<String> {
+    let dir = dir.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for part in dir.split('/').chain(word.split('/')) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Cada linha da saída `output`, com a pasta, relativa à raiz, de onde rodou a
+/// ferramenta que a escreveu (vazia para a raiz) e o texto que ela escreveu.
+/// O `pnpm -r` anuncia o script de cada pacote com a pasta dele e o nome do
+/// script (`packages/web lint$ tsc --noEmit`) e põe a mesma frente em cada
+/// linha que o script escreve (`packages/web lint: src/a.ts(1,10): …`); o
+/// script roda dentro do pacote, e o caminho relativo da linha é de lá. Só a
+/// frente anunciada conta, e a linha sem ela é da raiz. A pasta longa que o
+/// pnpm encurta (`...nome-do-pacote`) não leva a arquivo nenhum.
+pub(super) fn tool_lines(output: &str) -> Vec<(&str, &str)> {
+    let announced: Vec<(&str, &str)> = output
+        .lines()
+        .filter_map(|line| line.split_once("$ "))
+        .filter_map(|(head, _)| head.rsplit_once(' ').filter(|(dir, stage)| !dir.trim().is_empty() && !stage.is_empty()).map(|(dir, _)| (head, dir)))
+        .collect();
+    output
+        .lines()
+        .map(|line| {
+            announced
+                .iter()
+                .find_map(|(head, dir)| line.strip_prefix(head).and_then(|rest| rest.strip_prefix(": ")).map(|text| (*dir, text)))
+                .unwrap_or(("", line))
+        })
+        .collect()
 }
 
 pub(crate) fn reusable(root: &Path, log: &mustard_core::domain::spec_events::SpecLog) -> bool {
@@ -364,11 +420,39 @@ pub(super) fn review_elapsed(root: &Path, spec: &str, log: &mustard_core::domain
     record(root, spec, "stage_run", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary).map(|_| ())
 }
 
+/// A saída de `pnpm -r lint` (pnpm 10.18, tsc 7.0 com `noUnusedLocals`) num
+/// monorepo de dois pacotes, `packages/web` e `packages/api`, com o mesmo
+/// `src/a.ts`: o tsc do `packages/web` caiu primeiro e o pnpm parou o do
+/// `packages/api` antes de ele escrever o aviso. `{root}` é a raiz.
+#[cfg(test)]
+pub(super) const PNPM_RECURSIVE_LINT: &str = "Scope: 2 of 3 workspace projects
+packages/api lint$ tsc --noEmit -p .
+packages/web lint$ tsc --noEmit -p .
+packages/web lint: src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never read.
+packages/web lint: Failed
+{root}/packages/web:
+\u{2009}ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL\u{2009} @mono/web@1.0.0 lint: `tsc --noEmit -p .`
+Exit status 1
+\u{2009}WARN\u{2009}  Local package.json exists, but node_modules missing, did you mean to install?
+";
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
 
-    use super::paths_in;
+    use super::{Cited, PNPM_RECURSIVE_LINT, Work, cited_among, paths_in};
+
+    /// Com o mesmo `src/a.ts` na raiz, fora da obra, e nos dois pacotes, cada
+    /// um mudado por uma onda, a saída do tsc rodado dentro de `packages/web`
+    /// cita só o arquivo dele: só a onda desse pacote reabre, e nada de fora.
+    #[test]
+    fn a_path_written_inside_a_workspace_package_cites_the_file_of_that_package() {
+        let (web, api) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string());
+        let work = Work { changed: BTreeSet::from([web.clone(), api.clone()]), waves: vec![(1, vec![api.clone()]), (2, vec![web.clone()])] };
+        let listed = ["src/a.ts".to_string(), web, api];
+        let output = PNPM_RECURSIVE_LINT.replace("{root}", "/repo");
+        assert_eq!(cited_among(&output, &work, &listed), Cited { waves: vec![2], outside: vec![], none: false });
+    }
 
     /// Cada caminho da saída cita o arquivo do projeto que ele nomeia também
     /// com `./` na frente, com a `\` do Windows, com a posição entre

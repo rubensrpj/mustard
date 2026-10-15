@@ -11,10 +11,12 @@
 //! do compilador do C#. Nenhuma leitura depende da linguagem do arquivo: o
 //! aviso só conta quando cita o nome da declaração, no arquivo dela, numa
 //! linha dela, e a linha de agora ainda traz o nome onde a ferramenta disse.
-//! O caminho relativo do aviso se lê a partir da raiz do projeto, de onde os
-//! comandos rodam. Outro formato não acrescenta nada.
+//! O caminho relativo do aviso se lê a partir da pasta de onde a ferramenta
+//! rodou: a raiz do projeto, de onde os comandos rodam, ou a pasta do pacote
+//! que o `pnpm -r` põe na frente de cada linha do script dele. Outro formato
+//! não acrescenta nada.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use mustard_core::domain::project_map::{MapDecl, MapModule};
@@ -25,7 +27,7 @@ use serde_json::Value;
 /// a linha, os nomes que ele cita e por onde se confere que ele fala da
 /// linha de agora.
 struct Citation {
-    file: String,
+    file: PathBuf,
     line: u64,
     names: Vec<String>,
     anchor: Anchor,
@@ -113,13 +115,35 @@ pub(super) fn proves(root: &Path, module: &MapModule, decl: &MapDecl, outputs: &
     outputs.iter().flat_map(|output| citations(patterns, output)).any(|citation| lands(root, &current, &source, decl, &citation))
 }
 
-/// Os avisos de declaração sem uso de `output`, em cada formato que se lê.
+/// Os avisos de declaração sem uso de `output`, em cada formato que se lê,
+/// com o arquivo a partir da raiz. O que uma ferramenta escreveu dentro de um
+/// pacote se lê junto, sem as linhas de outro pacote no meio, e o arquivo do
+/// aviso é o da pasta dele.
 fn citations(patterns: &Patterns, output: &str) -> Vec<Citation> {
     let plain = patterns.color.replace_all(output, "");
-    let mut out = rustc_json(patterns, output);
-    out.extend(rustc_text(patterns, &plain));
-    out.extend(located(patterns, &plain));
-    out.extend(eslint_stylish(patterns, &plain));
+    let mut out = Vec::new();
+    for (dir, text) in by_dir(&plain) {
+        let mut found = rustc_json(patterns, &text);
+        found.extend(rustc_text(patterns, &text));
+        found.extend(located(patterns, &text));
+        found.extend(eslint_stylish(patterns, &text));
+        out.extend(found.into_iter().map(|citation| Citation { file: Path::new(dir).join(&citation.file), ..citation }));
+    }
+    out
+}
+
+/// O texto de `output` junto pela pasta de onde rodou a ferramenta que o
+/// escreveu, na ordem em que cada pasta aparece.
+fn by_dir(output: &str) -> Vec<(&str, String)> {
+    let mut out: Vec<(&str, String)> = Vec::new();
+    for (dir, text) in crate::commands::flow::validation::tool_lines(output) {
+        let at = out.iter().position(|(seen, _)| *seen == dir).unwrap_or_else(|| {
+            out.push((dir, String::new()));
+            out.len() - 1
+        });
+        out[at].1.push_str(text);
+        out[at].1.push('\n');
+    }
     out
 }
 
@@ -172,7 +196,7 @@ fn rustc_json(patterns: &Patterns, output: &str) -> Vec<Citation> {
                 continue;
             };
             let shown = span["text"].as_array().into_iter().flatten().filter_map(|text| text["text"].as_str()).map(str::to_string).collect();
-            out.push(Citation { file: file.to_string(), line, names: names.clone(), anchor: Anchor::Shown(shown) });
+            out.push(Citation { file: file.into(), line, names: names.clone(), anchor: Anchor::Shown(shown) });
         }
     }
     out
@@ -206,7 +230,7 @@ fn rustc_text(patterns: &Patterns, output: &str) -> Vec<Citation> {
             && let (Some(file), Some((n, text))) = (file, shown.take())
             && marks["marks"].contains('^')
         {
-            out.push(Citation { file: file.to_string(), line: n, names: names.clone(), anchor: Anchor::Shown(vec![text.to_string()]) });
+            out.push(Citation { file: file.into(), line: n, names: names.clone(), anchor: Anchor::Shown(vec![text.to_string()]) });
         }
     }
     out
@@ -222,7 +246,7 @@ fn located(patterns: &Patterns, output: &str) -> Vec<Citation> {
             let found = patterns.located.captures(line).or_else(|| patterns.pretty.captures(line))?;
             let names = captured(&patterns.quoted, &found["message"]).into_iter().map(|name| last_segment(&name).to_string()).collect();
             Some(Citation {
-                file: found["file"].to_string(),
+                file: PathBuf::from(&found["file"]),
                 line: found["line"].parse().ok()?,
                 names,
                 anchor: Anchor::Column(found["column"].parse().ok()?),
@@ -248,7 +272,7 @@ fn eslint_stylish(patterns: &Patterns, output: &str) -> Vec<Citation> {
         let (Ok(at), Ok(column)) = (found["line"].parse(), found["column"].parse()) else {
             continue;
         };
-        out.push(Citation { file: file.to_string(), line: at, names: captured(&patterns.quoted, &found["message"]), anchor: Anchor::Column(column) });
+        out.push(Citation { file: file.into(), line: at, names: captured(&patterns.quoted, &found["message"]), anchor: Anchor::Column(column) });
     }
     out
 }
@@ -553,5 +577,52 @@ Time Elapsed 00:00:04.57
             assert!(!refuses(&[]), "{file}: sem a ferramenta, só avisa");
             assert!(refuses(&[output.replace("{root}", &root.to_string_lossy())]), "{file}: com a ferramenta, recusa");
         }
+    }
+
+    /// O `src/a.ts` dos dois pacotes do monorepo de onde saiu a saída do
+    /// `pnpm -r lint`.
+    const WORKSPACE_SOURCE: &str = "function lonelyTotal(): number {\n  return 2;\n}\n\nexport function runSum(): number {\n  return 1;\n}\n";
+
+    /// Num monorepo do pnpm de dois pacotes com o mesmo `src/a.ts`, com o mapa
+    /// do scan de verdade e uma nota que cita `lonelyTotal`: o tsc que o
+    /// `pnpm -r lint` rodou dentro de `packages/web` diz que ela sobra, com o
+    /// caminho a partir do pacote. Só a declaração desse pacote recusa; a do
+    /// outro, de mesmo nome na mesma linha, só avisa.
+    #[test]
+    fn a_warning_from_a_tool_run_inside_a_workspace_package_lands_only_on_that_package() {
+        let scan = mustard_core::Scan::locate();
+        assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let files = ["packages/web/src/a.ts", "packages/api/src/a.ts"];
+        std::fs::write(root.join("pnpm-workspace.yaml"), "packages:\n  - \"packages/*\"\n").unwrap();
+        for (package, file) in ["web", "api"].into_iter().zip(files) {
+            std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(file), WORKSPACE_SOURCE).unwrap();
+            let manifest = json!({"name": format!("@mono/{package}"), "version": "1.0.0", "private": true, "scripts": {"lint": "tsc --noEmit -p ."}});
+            std::fs::write(root.join(format!("packages/{package}/package.json")), manifest.to_string()).unwrap();
+        }
+        std::fs::write(root.join("notes.txt"), "lonelyTotal fica para a próxima versão\n").unwrap();
+        super::super::tests::git_at(root, &["init", "-q"]);
+        super::super::tests::git_at(root, &["add", "-A"]);
+        let maps = tempfile::tempdir().unwrap();
+        let out = maps.path().join("after.db");
+        scan.scan(root, &out).expect("the scan writes the map");
+        let after = mustard_core::io::project_map::read_at(&out).expect("the map reads back");
+        let maps = super::super::commit::AfterWave { base: Default::default(), after, changed: vec![(1, files.map(str::to_string).to_vec())] };
+        let refuses = |outputs: &[String]| -> Vec<bool> {
+            let findings = super::super::removed_check::final_findings(root, &maps, mustard_core::platform::i18n::Locale::PtBr, outputs);
+            files
+                .iter()
+                .map(|file| {
+                    let cited: Vec<bool> = findings.iter().filter(|finding| finding.text.contains(&format!("`lonelyTotal` em `{file}`"))).map(|finding| finding.refuses).collect();
+                    assert_eq!(cited.len(), 1, "{file}: {:?}", findings.iter().map(|finding| &finding.text).collect::<Vec<_>>());
+                    cited[0]
+                })
+                .collect()
+        };
+        assert_eq!(refuses(&[]), [false, false], "sem a ferramenta, as duas só avisam");
+        let output = crate::commands::flow::validation::PNPM_RECURSIVE_LINT.replace("{root}", &root.to_string_lossy());
+        assert_eq!(refuses(&[output]), [true, false], "o aviso do tsc de `packages/web` recusa só a de lá");
     }
 }
