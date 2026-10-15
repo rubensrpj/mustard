@@ -278,17 +278,18 @@ pub const FILES: MapBlock = block!("files", version 3, {
 /// assinatura, a documentação — e a inteira, quando o teto a cortou —, os
 /// comentários e os nomes escritos nas linhas dela, e quem usa cada uma —
 /// cada uso provado ou suspeito, com as candidatas, e quantas chamadas do
-/// nome ficaram sem ligação por ele ser comum demais; o dono e o contrato
-/// escritos com ela; os membros de cada tipo e as implementações de cada
-/// método, que a passada refaz do projeto inteiro como refaz os usos. Ao
-/// lado, os textos fixos de cada arquivo — as mensagens de log, as de erro e
-/// os outros textos escritos no código —, cada um com a linha, a marca e a
-/// declaração que o contém, e os comentários do arquivo: os do começo e os
-/// outros que caem fora das linhas de toda declaração — os de dentro moram
-/// uma vez só, nos da declaração —, com quantos bytes do começo dos
-/// comentários da primeira declaração de fora são também do começo do
-/// arquivo; e as medidas de qualidade de cada arquivo, que a passada refaz
-/// do projeto inteiro, porque a repetição e o ciclo dependem dos outros.
+/// nome ficaram sem ligação por ele ser comum demais, com o arquivo de onde
+/// veio cada uma; o dono e o contrato escritos com ela; os membros de cada
+/// tipo e as implementações de cada método, que a passada refaz do projeto
+/// inteiro como refaz os usos. Ao lado, os textos fixos de cada arquivo — as
+/// mensagens de log, as de erro e os outros textos escritos no código —, cada
+/// um com a linha, a marca e a declaração que o contém, e os comentários do
+/// arquivo: os do começo e os outros que caem fora das linhas de toda
+/// declaração — os de dentro moram uma vez só, nos da declaração —, com
+/// quantos bytes do começo dos comentários da primeira declaração de fora são
+/// também do começo do arquivo; e as medidas de qualidade de cada arquivo, que
+/// a passada refaz do projeto inteiro, porque a repetição e o ciclo dependem
+/// dos outros.
 ///
 /// Junto delas mora o índice da busca do mapa ([`crate::io::map_search`]):
 /// uma tabela FTS5 por nível — a declaração e o arquivo —, uma coluna por
@@ -302,11 +303,11 @@ pub const FILES: MapBlock = block!("files", version 3, {
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 16, {
+pub const DECLS: MapBlock = block!("decls", version 17, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text, "annotations" Json,
-        "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
+        "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int, "common_from" Json,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json, "syntax" Json
     ],
     "texts" at Place::Files => [
@@ -544,6 +545,9 @@ const DECLARED: [&MapBlock; 15] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HI
 pub(crate) const DB_BLOCKS: [Block; 18] =
     [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
     crate::io::knowledge::precise::BLOCK, EXPERTISE.block, PROJECT_PROFILE.block];
+
+#[cfg(test)]
+mod block_formats;
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];

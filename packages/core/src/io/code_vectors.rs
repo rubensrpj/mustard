@@ -30,7 +30,7 @@ pub fn status(root:&Path)->Value {
         "source_validity":"checked during search","model_calls":0})
 }
 // `document` é o hash do texto que o modelo lê: o mesmo texto guarda o vetor.
-const BLOCK: Block = Block {name:"code-meaning",version:2,tables:&["code_vectors","code_vector_files"],
+pub(crate) const BLOCK: Block = Block {name:"code-meaning",version:2,tables:&["code_vectors","code_vector_files"],
     schema:"CREATE TABLE code_vectors(id TEXT NOT NULL,chunk INTEGER NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,document TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(id,chunk)) WITHOUT ROWID; CREATE INDEX code_vectors_path ON code_vectors(path); CREATE TABLE code_vector_files(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,model TEXT NOT NULL) WITHOUT ROWID;",kind:Kind::Rebuilt(empty)};
 #[allow(clippy::unnecessary_wraps)]
 fn empty(_: &Connection, _: &Path) -> Result<()> {Ok(())}

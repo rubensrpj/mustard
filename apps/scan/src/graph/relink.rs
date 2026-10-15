@@ -9,15 +9,13 @@
 //!   importações resolvidas ou cujos trechos de teste mudaram, e de um arquivo
 //!   que escreve um nome cujas declarações mudaram de tipo ou de dono em algum
 //!   arquivo lido (o nome que passou a ser declarado ou deixou de ser conta);
-//! - em todo arquivo, a chamada e a citação que procuram um desses nomes;
-//! - em todo arquivo, a chamada que procura um nome que tinha chamada comum
-//!   demais contada no mapa anterior, quando um arquivo que se resolve de novo
-//!   podia procurá-lo: a contagem não diz de onde veio cada chamada, e se
-//!   refaz inteira.
+//! - em todo arquivo, a chamada e a citação que procuram um desses nomes.
 //!
 //! O resto vem do mapa anterior: o uso de cada declaração escrito por um
 //! arquivo que não se resolve de novo, com a linha de agora da declaração do
-//! arquivo lido que só mudou de lugar, e o nome que cada declaração chama.
+//! arquivo lido que só mudou de lugar, a chamada comum demais que um desses
+//! arquivos fez, que a contagem guarda com o arquivo de onde veio, e o nome
+//! que cada declaração chama.
 //!
 //! A passada liga o projeto inteiro, como sem mapa anterior, quando o que um
 //! arquivo lido muda alcança a resolução dos outros por um caminho que não é
@@ -26,7 +24,7 @@
 //! os imports globais, os tipos e os campos que dão o tipo de um receptor, ou
 //! o nome que um repasse troca.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::reach::FIELD_KINDS;
 use super::TYPE_KINDS;
@@ -49,9 +47,6 @@ pub(super) struct Plan<'p> {
     /// Os nomes cujas declarações recebem de novo todos os usos e cujas
     /// chamadas e citações se resolvem de novo em todo arquivo.
     renewed: HashSet<String>,
-    /// Algum nome que um repasse troca está em `renewed`: o nome trazido
-    /// escrito sozinho pode procurá-lo.
-    renamed_renewed: bool,
     /// Cada declaração de um arquivo lido, pela posição, com a mesma
     /// declaração no mapa anterior, que guarda os usos que ela recebeu.
     carried: HashMap<(usize, usize), &'p Decl>,
@@ -73,9 +68,7 @@ impl Plan<'_> {
             || sites(m).any(|site| {
                 self.renewed.contains(&site.name)
                     || (site.qualifier.is_empty()
-                        && m.brought.values().filter_map(|names| names.get(&site.name)).any(|original| {
-                            self.renamed_renewed || self.renewed.contains(original)
-                        }))
+                        && m.brought.values().filter_map(|names| names.get(&site.name)).any(|original| self.renewed.contains(original)))
             })
     }
 
@@ -96,9 +89,9 @@ impl Plan<'_> {
     /// O que a declaração `decl`, na posição `(mi, di)`, guarda do mapa
     /// anterior: os usos escritos por um arquivo cujas chamadas não se
     /// resolvem de novo, com a linha de agora de cada candidata, e as
-    /// chamadas comuns demais contadas. `None` quando ela recebe de novo
-    /// todos os usos.
-    pub(super) fn kept(&self, (mi, di): (usize, usize), decl: &Decl) -> Option<(Vec<UseSite>, usize)> {
+    /// chamadas comuns demais contadas que vieram de um desses arquivos,
+    /// pelo arquivo. `None` quando ela recebe de novo todos os usos.
+    pub(super) fn kept(&self, (mi, di): (usize, usize), decl: &Decl) -> Option<(Vec<UseSite>, BTreeMap<String, usize>)> {
         if self.renewed.contains(&decl.name) {
             return None;
         }
@@ -118,7 +111,13 @@ impl Plan<'_> {
                 site
             })
             .collect();
-        Some((uses, before.common_calls))
+        let counted = before
+            .common_from
+            .iter()
+            .filter(|(file, _)| !self.source_paths.contains(*file))
+            .map(|(file, calls)| (file.clone(), *calls))
+            .collect();
+        Some((uses, counted))
     }
 }
 
@@ -191,29 +190,8 @@ pub(super) fn plan<'p>(
                 || (!reshaped.is_empty() && mentions(now, &reshaped))
         })
         .collect();
-    // A chamada comum demais que um arquivo que se resolve de novo fazia, e
-    // que a contagem do mapa anterior guarda sem dizer de onde veio: o nome
-    // que ela procurava se refaz em todo arquivo. A que ele faz agora só soma.
-    // Sem contagem nenhuma do nome no mapa anterior, nenhuma veio dele.
-    let counted: HashSet<&str> = prev
-        .modules
-        .iter()
-        .flat_map(|m| &m.declarations)
-        .filter(|d| d.common_calls > 0)
-        .map(|d| d.name.as_str())
-        .collect();
-    let mut renewed = reshaped;
-    for (was, _) in old.iter().zip(&sources).filter(|(_, whole)| **whole) {
-        let mut asked: Vec<&str> = sites(was).map(|site| site.name.as_str()).collect();
-        asked.extend(was.brought.values().flatten().flat_map(|(name, original)| [name.as_str(), original.as_str()]));
-        if !was.brought.is_empty() {
-            asked.extend(renamed_originals.iter().copied());
-        }
-        renewed.extend(asked.into_iter().filter(|name| counted.contains(name)).map(str::to_string));
-    }
-    let renamed_renewed = renamed_originals.iter().any(|name| renewed.contains(*name));
     let source_paths = modules.iter().zip(&sources).filter(|(_, whole)| **whole).map(|(m, _)| m.path.clone()).collect();
-    Some(Plan { sources, source_paths, renewed, renamed_renewed, carried, moved })
+    Some(Plan { sources, source_paths, renewed: reshaped, carried, moved })
 }
 
 /// As declarações de um arquivo lido que seguem as mesmas do mapa anterior,

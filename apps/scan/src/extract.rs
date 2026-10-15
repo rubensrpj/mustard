@@ -1063,6 +1063,7 @@ impl Analyzer {
                     calls: Vec::new(),
                     used_by: Vec::new(),
                     common_calls: 0,
+                    common_from: Default::default(),
                     owner: h.owner,
                     contract: h.contract,
                     members: Vec::new(),

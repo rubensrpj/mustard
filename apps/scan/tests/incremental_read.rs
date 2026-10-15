@@ -1051,7 +1051,7 @@ fn a_field_that_changes_type_in_the_reread_file_takes_the_call_read_through_it_t
     let dir = temp.path();
     assert_eq!(scan(dir, &[])["full"], json!(true));
     let call = json!("src/Leitor.cs:9:Ler");
-    assert_eq!(uses_in_the_map(dir, "src/Config.cs", "Lingua"), [call.clone()]);
+    assert_eq!(uses_in_the_map(dir, "src/Config.cs", "Lingua"), std::slice::from_ref(&call));
 
     write(dir, "src/Ctx.cs", &csharp_context("Outra"));
     let second = scan(dir, &[]);
@@ -1061,31 +1061,94 @@ fn a_field_that_changes_type_in_the_reread_file_takes_the_call_read_through_it_t
     same_as_a_full_pass(dir);
 }
 
+/// O arquivo da função `name`, que chama a função `comum` `calls` vezes sem
+/// importar nenhuma.
+fn common_caller(name: &str, calls: usize) -> String {
+    format!("export function {name}(): number {{\n  return {};\n}}\n", vec!["comum()"; calls].join("\n    + "))
+}
+
+/// Nove funções `comum`, de `src/m1.ts` a `src/m9.ts`, e os chamadores
+/// `src/a.ts` e `src/b.ts`, que a chamam uma vez cada sem importar nenhuma:
+/// cada chamada alcança as nove, acima do teto do nome comum, e só se conta.
+/// Em TypeScript.
+fn common_name_project(prefix: &str) -> tempfile::TempDir {
+    let mut files: Vec<(String, String)> =
+        (1..=9).map(|n| (format!("src/m{n}.ts"), format!("export function comum(): number {{\n  return {n};\n}}\n"))).collect();
+    files.push(("src/a.ts".to_string(), common_caller("a", 1)));
+    files.push(("src/b.ts".to_string(), common_caller("b", 1)));
+    let files: Vec<(&str, &str)> = files.iter().map(|(rel, body)| (rel.as_str(), body.as_str())).collect();
+    project(prefix, &files)
+}
+
+/// A função `comum` de `src/m1.ts`, como o mapa gravado a guarda.
+fn common_decl(dir: &Path) -> Value {
+    let map = model::read(&map_folder(dir));
+    let m1 = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/m1.ts")).unwrap();
+    m1["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("comum")).unwrap().clone()
+}
+
 /// Nove funções `comum` e dois arquivos que a chamam sem importar nenhuma:
 /// cada chamada alcança as nove, acima do teto do nome comum, e só se conta.
 /// Reler um dos chamadores conta a chamada dele uma vez só, como na leitura
 /// inteira. Num projeto em TypeScript.
 #[test]
 fn rereading_one_caller_counts_its_common_call_once() {
-    let caller = |name: &str| format!("export function {name}(): number {{\n  return comum();\n}}\n");
-    let mut files: Vec<(String, String)> =
-        (1..=9).map(|n| (format!("src/m{n}.ts"), format!("export function comum(): number {{\n  return {n};\n}}\n"))).collect();
-    files.push(("src/a.ts".to_string(), caller("a")));
-    files.push(("src/b.ts".to_string(), caller("b")));
-    let files: Vec<(&str, &str)> = files.iter().map(|(rel, body)| (rel.as_str(), body.as_str())).collect();
-    let temp = project("scan-common-calls-", &files);
+    let temp = common_name_project("scan-common-calls-");
     let dir = temp.path();
     assert_eq!(scan(dir, &[])["full"], json!(true));
-    let common_calls = || -> Value {
-        let map = model::read(&map_folder(dir));
-        let m1 = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/m1.ts")).unwrap();
-        m1["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("comum")).unwrap()["common_calls"].clone()
-    };
-    assert_eq!(common_calls(), json!(2));
+    assert_eq!(common_decl(dir)["common_calls"], json!(2));
 
-    write(dir, "src/a.ts", &format!("// o primeiro chamador\n{}", caller("a")));
+    write(dir, "src/a.ts", &format!("// o primeiro chamador\n{}", common_caller("a", 1)));
     let second = scan(dir, &[]);
     assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/a.ts"])), "{second}");
-    assert_eq!(common_calls(), json!(2), "the reread caller's call is counted once");
+    assert_eq!(common_decl(dir)["common_calls"], json!(2), "the reread caller's call is counted once");
     same_as_a_full_pass(dir);
+}
+
+/// Reler um dos chamadores de um nome comum demais não refaz o nome nos
+/// outros arquivos: a contagem guarda de que arquivo veio cada chamada, a
+/// passada fica com as dos arquivos que não releu e troca só as do arquivo
+/// relido. O uso plantado na declaração chamada fica, porque nenhuma chamada
+/// dos outros arquivos se resolveu de novo. Num projeto em TypeScript.
+#[test]
+fn rereading_a_caller_of_a_common_name_keeps_what_the_other_callers_counted() {
+    let temp = common_name_project("scan-common-origin-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let counted = || -> (Value, Value) {
+        let common = common_decl(dir);
+        (common["common_calls"].clone(), common["common_from"].clone())
+    };
+    assert_eq!(counted(), (json!(2), json!({"src/a.ts": 1, "src/b.ts": 1})));
+
+    write(dir, "src/a.ts", &common_caller("a", 2));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/a.ts"])), "{second}");
+    assert_eq!(counted(), (json!(3), json!({"src/a.ts": 2, "src/b.ts": 1})), "the reread caller's calls replace its own");
+    same_as_a_full_pass(dir);
+
+    ghost_use(dir, "src/m1.ts", "comum", true);
+    write(dir, "src/a.ts", &common_caller("a", 1));
+    assert_eq!(scan(dir, &[])["read"], json!(["src/a.ts"]));
+    assert_eq!(uses_in_the_map(dir, "src/m1.ts", "comum"), [json!(GHOST_USE)], "the common name was not linked again in every file");
+    assert_eq!(counted(), (json!(2), json!({"src/a.ts": 1, "src/b.ts": 1})));
+}
+
+/// O mapa gravado antes de a contagem do nome comum guardar a origem de cada
+/// chamada traz o bloco das declarações na versão 16, sem a coluna da origem.
+/// Pela versão, a passada seguinte refaz o bloco, lê o projeto inteiro e
+/// grava a origem de novo, em vez de ler e gravar uma coluna que o banco não
+/// tem. Num projeto em TypeScript.
+#[test]
+fn a_map_written_before_the_common_call_origin_is_read_again_whole() {
+    let temp = common_name_project("scan-common-origin-format-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let db = rusqlite::Connection::open(model::path_in(&map_folder(dir))).unwrap();
+    db.execute_batch("ALTER TABLE decls DROP COLUMN common_from; UPDATE blocks SET version = 16 WHERE name = 'decls';").unwrap();
+    drop(db);
+
+    let report = scan(dir, &[]);
+    assert_eq!(report["full"], json!(true), "{report}");
+    assert_eq!(common_decl(dir)["common_from"], json!({"src/a.ts": 1, "src/b.ts": 1}));
 }

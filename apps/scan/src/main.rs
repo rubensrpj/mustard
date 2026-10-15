@@ -610,13 +610,16 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     graph::test_module::mark_declared(&mut modules);
     let projects = graph::Projects::of(&ing.manifests);
     let aliases = path_aliases::PathAliases::load(&ing.root, &ing.walk_paths);
-    let graph = graph::build(&modules, &projects, &aliases);
+    // As importações do projeto se resolvem uma vez: o grafo conta as arestas
+    // e as dependências de cada arquivo as leem.
+    let edges = graph::resolve_edges(&modules, &projects, &aliases);
+    let graph = graph::build(&modules, &edges);
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
     // A importação de namespace chega aqui já estreitada aos arquivos que
     // declaram um nome que o módulo usa.
     let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
-    for (from, to, _) in graph::resolve_edges(&modules, &projects, &aliases) {
+    for (from, to, _) in edges {
         deps[from].insert(to);
     }
     let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();

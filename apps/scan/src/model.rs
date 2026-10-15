@@ -952,6 +952,12 @@ pub struct Decl {
     /// por [`crate::graph::link_declarations`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub common_calls: usize,
+    /// De que arquivo veio cada chamada de [`Decl::common_calls`], pelo
+    /// caminho, com quantas vieram dele. A passada que relê só alguns
+    /// arquivos fica com as dos outros, como fica com os usos que eles
+    /// escrevem. Preenchido por [`crate::graph::link_declarations`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub common_from: BTreeMap<String, usize>,
     /// Os donos da declaração, do mais interno para o mais externo: as
     /// declarações do mesmo arquivo cuja faixa contém a dela e, depois, o
     /// tipo escrito fora dela (`@owner`). Só os nomes, lidos com o arquivo:
