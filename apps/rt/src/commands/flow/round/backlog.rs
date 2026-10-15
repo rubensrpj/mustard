@@ -235,7 +235,6 @@ pub(crate) fn dispatch_backlog(
         .filter(|id| left_on_entry.contains(id) && cleanup(id) && !bare(id)).collect();
     let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).chain(&tidy).copied().collect();
     let mut affinity_board = board_of(log, &by_id, &population, &candidates, &open_waves);
-    affinity_board.with_expertise(start);
     if free > 0 && (!order.is_empty() || !claimed.is_empty()) {super::evidence::augment(start, &mut affinity_board);}
     // Only uncached typed decisions are delegated when a slot is available.
     // Native source relationships are reused in the paid board.
@@ -260,7 +259,6 @@ pub(crate) fn dispatch_backlog(
                 }
             }
             let mut board = board_of(log, &by_id, &population, &candidates.into_iter().collect::<Vec<_>>(), &open_waves);
-            board.with_expertise(start);
             for task in &mut board.backlog {
                 if let Some(known) = affinity_board.backlog.iter().find(|known| known.id == task.id) {task.reads.clone_from(&known.reads);}
             }

@@ -89,6 +89,15 @@ pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
         transcript.as_deref().and_then(opening)
     };
     let text=prompt.or_else(||initial.as_ref().map(|p|p.0.as_str()));
+    // A sessão do agente trocou no meio da onda: o registro desta sessão nasce
+    // sem despacho. Quando o mesmo agente relê o pedido da onda, ele volta ao
+    // despacho que já tinha noutra sessão, se esse despacho é o atual.
+    if record["dispatch"].as_u64().is_none() {
+        let reread=input.tool_input.get("command").and_then(Value::as_str).and_then(ReadDispatch::of);
+        if let Some((identity,dispatch))=reread.and_then(|identity|rebound(root,&folder,host,agent,&path,&identity).map(|dispatch|(identity,dispatch))) {
+            record["spec"]=json!(identity.spec); record["wave"]=json!(identity.wave); record["dispatch"]=json!(dispatch);
+        }
+    }
     if let Some(identity)=text.and_then(|text| {
         ReadDispatch::of(text).or_else(||heading(text).map(|(spec,wave)|ReadDispatch {spec,wave,root:mustard_core::io::wave_prompt::shown(root)}))
     }) {
@@ -115,6 +124,22 @@ pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
     if let Some(model)=input.raw.get("model").and_then(Value::as_str).filter(|s|token(s)) {record["model"]=json!(model);}
     record["at"]=json!(chrono::Utc::now().to_rfc3339());
     let _=lock.replace(record.to_string().as_bytes());
+}
+
+/// O despacho atual da onda que `identity` relê, quando outro registro do
+/// mesmo `agent` no mesmo `host`, de outra sessão, já está preso a ele.
+fn rebound(root:&Path,folder:&Path,host:&str,agent:&str,own:&Path,identity:&ReadDispatch)->Option<u64> {
+    if identity.root!=mustard_core::io::wave_prompt::shown(root) {return None;}
+    let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,&identity.spec).ok()?).ok()??;
+    let current=log.dispatch_position(log.last_by_wave("send").get(&identity.wave).copied()?);
+    let (prefix,suffix)=(format!("{host}-"),format!("-{}.json",digest(agent)));
+    let entries=std::fs::read_dir(folder).ok()?.collect::<Result<Vec<_>,_>>().ok()?;
+    if entries.len()>4096 {return None;}
+    entries.iter().map(std::fs::DirEntry::path).filter(|path| path!=own && path.file_name().and_then(|name|name.to_str())
+        .is_some_and(|name|name.starts_with(&prefix) && name.ends_with(&suffix)))
+        .filter_map(|path|read(&path))
+        .any(|record|record["spec"]==json!(identity.spec) && record["wave"]==json!(identity.wave) && record["dispatch"].as_u64()==Some(current))
+        .then_some(current)
 }
 
 /// Só os registros do gancho de cada despacho da onda; formato desconhecido

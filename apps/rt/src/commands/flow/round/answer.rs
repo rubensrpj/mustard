@@ -725,7 +725,7 @@ pub(super) fn run_entered_round(
     // já ter sido juntado, comitado e gravado: a recusa sai com o que a
     // rodada fez até agora, e a página, que o relatório mudou, é copiada do
     // mesmo jeito que numa rodada que despacha.
-    let mut ready = match next_waves(&log, max_parallel(root), &occupied, &stuck) {
+    let ready = match next_waves(&log, max_parallel(root), &occupied, &stuck) {
         Ok(ready) => ready,
         Err(cycle) => {
             drop(held_lock);
@@ -743,18 +743,6 @@ pub(super) fn run_entered_round(
             return Err(RoundRefusal::WaveLoop { cycle, answered });
         }
     };
-    let mut specialization_preparation=Vec::new();
-    for wave in &ready {
-        let files=wave_files(&log,*wave);
-        let query=mustard_core::io::expertise::workflow::wave_task(&log,*wave);
-        if let Some(mut preparation)=mustard_core::io::expertise::workflow::dispatch_preparation(root,&files,&query) {
-            preparation["wave"]=json!(wave);specialization_preparation.push(preparation);
-        }
-    }
-    // Held preparations consume no copy, send or paid context selection.
-    let preparation_held:BTreeSet<_>=specialization_preparation.iter().filter(|p|p["required"]==true)
-        .filter_map(|p|p["wave"].as_u64()).collect();
-    ready.retain(|wave|!preparation_held.contains(wave));
     // A escolha dos itens do pedido, antes da cópia: o Jev julga, uma chamada
     // por onda, o item do projeto todo, o dos arquivos dela e o sem ligação
     // com ela, e a onda sai nesta mesma rodada, sem esperar quem conduz. Sem
@@ -858,9 +846,7 @@ pub(super) fn run_entered_round(
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent,
-            "expertise":prompt.expertise,"preferred_agent":prompt.expertise.preferred_agent,
-            "agent_selection":"Use preferred_agent only if available in the current host. Otherwise use mustard-wave; the same selected skills are in the request." }));
+        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -1088,11 +1074,6 @@ pub(super) fn run_entered_round(
         "dispatch": dispatched,
         "running": running,
     });
-    if !specialization_preparation.is_empty() {out["specialization_preparation"]=json!(specialization_preparation);}
-    if !preparation_held.is_empty() {
-        out["preparation_held"]=json!(preparation_held);
-        out["preparation_next"]=json!("Inspect/update/review the pending procedure, or explicitly choose current native guidance using expertise --native with the supplied query/files. Independent waves may continue.");
-    }
     if entering {
         out["phase"] = json!("running");
     }
@@ -1109,10 +1090,6 @@ pub(super) fn run_entered_round(
         out["warnings"] = json!(warnings);
     }
     end_answer(root, &spec, &mut out, &then, lang);
-    if !preparation_held.is_empty() {
-        out["next"]=out["preparation_next"].clone();
-        command=None;
-    }
     if let Some(command) = command {
         out["command"] = json!(command);
     }

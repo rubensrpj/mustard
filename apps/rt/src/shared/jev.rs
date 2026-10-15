@@ -954,7 +954,6 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
             "agent": without_secrets(&task.agent),
             "files": task.files,
             "reads": task.reads,
-            "expertise": task.expertise,
         })
     };
     let mut kinds = Map::new();
@@ -2323,7 +2322,6 @@ mod tests {
             depends_on: Vec::new(),
             reads: Vec::new(),
             criteria: std::collections::BTreeSet::new(),
-            expertise: Vec::new(),
         }
     }
 
@@ -2383,11 +2381,12 @@ mod tests {
         assert_eq!(state["running"]["w7"]["t5"]["files"], json!(["module/open.rs"]));
         assert_eq!(state["backlog"]["t12"]["depends_on"], json!(["Task 5"]));
         assert_eq!(state["backlog"]["t11"]["text"], json!("Text of task 11."));
+        assert!(state["backlog"]["t11"].get("expertise").is_none(), "the assembly request carries no area profile");
         assert_eq!(body["questions"]["tipo_t11"]["criteria"].as_object().unwrap().len(), 5);
 
-        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1, size: 2.4 });
-        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68, size: 0.6 });
-        assert_eq!((judged.tasks[&11].growth_tokens(), judged.tasks[&12].growth_tokens()), (107_000, 53_000));
+        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1, size: 3.0 });
+        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68, size: 1.0 });
+        assert_eq!((judged.tasks[&11].growth_tokens(), judged.tasks[&12].growth_tokens()), (125_000, 65_000));
         assert_eq!((judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()), (6000, 252, 3, "jev-1.13.0"));
     }
 

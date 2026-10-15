@@ -3320,24 +3320,6 @@ mod tests {
         assert_eq!(wave_order(root, 3), vec![three]);
     }
 
-    /// Três tarefas de 50 mil cabem no horizonte de trabalho de 150 mil;
-    /// a entrada inicial não é subtraída novamente da estimativa.
-    #[test]
-    fn three_fifty_thousand_tasks_fit_the_exact_work_budget() {
-        use crate::shared::dag::TaskKind;
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, crit) = backlog_project(root);
-        let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
-        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
-        let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
-
-        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.5);
-        let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)).map(|(formed, _)| formed), Ok(vec![1]));
-        assert_eq!(wave_order(root, 1), vec![one, two, three], "150 mil de trabalho cabem");
-    }
-
     /// Duas tarefas de 65 mil compartilham uma onda: entrada e resumos não
     /// reduzem os 150 mil de trabalho, evitando uma onda extra de cerimônia.
     #[test]

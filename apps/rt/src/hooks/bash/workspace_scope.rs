@@ -45,8 +45,10 @@ pub(crate) fn isolate<R: ToolRunner>(input: &HookInput, ctx: &Ctx, verdict: Verd
     let stranded = is_copy(cwd);
     let enters = lex::segments(command).iter().filter(|seg| seg.name() == "cd").any(|seg| {
         seg.args.iter().find(|arg| !arg.text.starts_with('-')).is_some_and(|arg| {
+            // O caminho sai sem `.` e `..` antes de ser comparado com a pasta
+            // das cópias: `<checkout>/../<cópias>/…` também entra numa cópia.
             let path = Path::new(&arg.text);
-            is_copy(&if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) })
+            is_copy(&crate::hooks::write::wave_copy::lexical(&if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }))
         })
     });
     if !stranded && !enters {
@@ -144,13 +146,9 @@ mod tests {
         assert_eq!(tool_input["run_in_background"], true);
         assert!(matches!(bind_identity(&input, Verdict::Deny { reason: "protected".into() }), Verdict::Deny { .. }));
     }
-    #[test]
-    fn copy_commands_preserve_conductor_cwd_exit_status_and_worker_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        // macOS resolves /var to /private/var when sh starts in the temp tree.
-        // Compare actual cwd paths, rather than two spellings of that tree.
-        let canonical = dir.path().canonicalize().unwrap();
-        let root = canonical.as_path();
+    /// The project at `root` as a git repository with `mustard.json` and the
+    /// copy of the `scope-test` spec as a linked worktree.
+    fn project_with_copy(root: &Path) -> std::path::PathBuf {
         let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
         git(&["init", "-q"]);
         git(&[
@@ -169,6 +167,18 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         let copy = wave_prompt::slot_path(root, "scope-test", 0);
         git(&["worktree", "add", "--detach", copy.to_str().unwrap(), "HEAD"]);
+        copy
+    }
+
+    #[test]
+    fn copy_commands_preserve_conductor_cwd_exit_status_and_worker_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        // macOS resolves /var to /private/var when sh starts in the temp tree.
+        // Compare actual cwd paths, rather than two spellings of that tree.
+        let canonical = dir.path().canonicalize().unwrap();
+        let root = canonical.as_path();
+        let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
+        let copy = project_with_copy(root);
         let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(mustard_core::domain::model::contract::Trigger::PreToolUse));
         let jest: HookInput =
             serde_json::from_value(json!({"cwd":root,"tool_name":"Bash","tool_input":{"command":"jest --roots src src/example.spec.ts"}})).unwrap();
@@ -210,6 +220,35 @@ mod tests {
         input.agent_id = Some("worker".into());
         assert!(matches!(isolate(&input, &ctx, Verdict::Allow, true, NO_RTK), Verdict::Allow));
         git(&["worktree", "remove", "--force", copy.to_str().unwrap()]);
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// The conductor's `cd` into the session temp folder, whose name carries
+    /// the project path in hyphens, stays as written; a `cd` that reaches the
+    /// copy through `..` from the main checkout runs in a subshell.
+    #[test]
+    fn the_conductor_cd_into_the_session_temp_folder_stays_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let root = canonical.as_path();
+        let copy = project_with_copy(root);
+        let temp = tempfile::tempdir().unwrap();
+        let scratch = temp.path().join("claude-1000").join(root.to_string_lossy().replace(['/', '\\', ':'], "-")).join("session/scratchpad");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(mustard_core::domain::model::contract::Trigger::PreToolUse));
+        let mut input: HookInput =
+            serde_json::from_value(json!({"cwd":root,"tool_name":"Bash","tool_input":{"command":format!("cd '{}' && ls", scratch.display())}})).unwrap();
+        assert!(matches!(isolate(&input, &ctx, Verdict::Allow, true, NO_RTK), Verdict::Allow));
+        // `<checkout>/../../<copy without the leading folder>`: the text starts
+        // in the main checkout and the folder is the copy.
+        let normal = |path: &Path| path.components().filter(|part| matches!(part, std::path::Component::Normal(_))).count();
+        let up: std::path::PathBuf = (0..normal(root)).map(|_| "..").collect();
+        let below: std::path::PathBuf = copy.components().filter(|part| matches!(part, std::path::Component::Normal(_))).collect();
+        let through_root = root.join(up).join(below);
+        input.tool_input["command"] = json!(format!("cd '{}' && pwd", through_root.display()));
+        let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow, true, NO_RTK) else { panic!("copy through ..") };
+        assert!(tool_input["command"].as_str().unwrap().starts_with("(\n"), "{}", tool_input["command"]);
+        assert!(mustard_core::platform::git::run(root, &["worktree", "remove", "--force", copy.to_str().unwrap()]).ok);
         std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
 }

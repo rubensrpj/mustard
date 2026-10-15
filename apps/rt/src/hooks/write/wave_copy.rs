@@ -44,7 +44,7 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
 
 /// `path` sem os `.` e com cada `..` tirando a pasta de antes, sem consultar o
 /// disco.
-fn lexical(path: &Path) -> std::path::PathBuf {
+pub(crate) fn lexical(path: &Path) -> std::path::PathBuf {
     let mut absolute = std::path::PathBuf::new();
     for part in path.components() {
         match part {
@@ -68,7 +68,7 @@ pub(crate) fn guard_bash(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verd
         }
         _ => return verdict,
     };
-    match bash(&adjusted, ctx) {
+    match bash(&adjusted, ctx, mustard_core::platform::harness::home_dir().as_deref()) {
         Some(Verdict::Rewrite { tool_input, note }) => Verdict::Rewrite {
             tool_input,
             note: match (previous_note, note) {
@@ -81,7 +81,8 @@ pub(crate) fn guard_bash(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verd
     }
 }
 
-fn bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
+/// `home` é a pasta pessoal, destino de `cd` sem pasta e de `cd ~/<caminho>`.
+fn bash(input: &HookInput, ctx: &Ctx, home: Option<&Path>) -> Option<Verdict> {
     if !input.is_subagent() {
         return None;
     }
@@ -103,39 +104,49 @@ fn bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     // comando é levado a ela (a troca no fim), e depois da pasta do `cd`
     // anterior, como no terminal.
     let mut here = if in_copy { cwd.to_path_buf() } else { expected.to_path_buf() };
+    // A pasta de antes, destino de `cd -`: a de onde o comando parte, que o
+    // `cd` da troca para a cópia deixa como anterior.
+    let mut previous = cwd.to_path_buf();
     for segment in crate::hooks::bash::lex::segments(command).iter().filter(|segment| segment.name() == "cd") {
-        if let Some(arg) = segment.args.iter().find(|arg| !arg.text.starts_with('-')) {
-            let given = Path::new(&arg.text);
-            let path = lexical(&if given.is_absolute() { given.to_path_buf() } else { here.join(given) });
-            here.clone_from(&path);
-            let Some(entered) = path.canonicalize().ok().filter(|entered| !entered.starts_with(&real)) else { continue };
-            if entered.starts_with(&copies) || entered.starts_with(&checkout) {
-                // A pasta de cópias pode morar dentro do projeto: ela decide
-                // primeiro. A pasta dela acima da cópia desta onda só guarda
-                // cópias: não é a cópia de onda nenhuma.
-                let another_copy = entered.starts_with(&copies);
-                let base = (another_copy && real.starts_with(&entered)).then(|| wave_prompt::shown(&path));
-                let shown = wave_prompt::shown(expected);
-                let reason = match ctx.config.language().text_or_default() {
-                    mustard_core::SupportedLocale::PtBr => format!(
-                        "Mustard: a onda {wave} usa somente {shown}. O comando tenta entrar {}; rode-o de dentro da cópia, sem `cd` para fora dela.",
-                        match &base {
-                            Some(base) => format!("em {base}, a pasta-base das cópias, que não é a cópia de nenhuma onda"),
-                            None if another_copy => "na cópia de outra onda".into(),
-                            None => "no checkout principal".into(),
-                        }
-                    ),
-                    mustard_core::SupportedLocale::EnUs => format!(
-                        "Mustard: wave {wave} uses only {shown}. The command tries to enter {}; run it inside the copy, without a `cd` out of it.",
-                        match &base {
-                            Some(base) => format!("{base}, the base folder of the copies, which is no wave's copy"),
-                            None if another_copy => "another wave's copy".into(),
-                            None => "the main checkout".into(),
-                        }
-                    ),
-                };
-                return Some(Verdict::Deny { reason });
-            }
+        let arg = segment.args.iter().map(|arg| arg.text.as_str()).find(|text| *text == "-" || !text.starts_with('-'));
+        let target = match arg {
+            Some("-") => Some(previous.clone()),
+            None | Some("~") => home.map(Path::to_path_buf),
+            Some(text) => match text.strip_prefix("~/") {
+                Some(rest) => home.map(|home| home.join(rest)),
+                None => Some(Path::new(text).to_path_buf()),
+            },
+        };
+        let Some(given) = target else { continue };
+        let path = lexical(&if given.is_absolute() { given } else { here.join(given) });
+        previous = std::mem::replace(&mut here, path.clone());
+        let Some(entered) = path.canonicalize().ok().filter(|entered| !entered.starts_with(&real)) else { continue };
+        if entered.starts_with(&copies) || entered.starts_with(&checkout) {
+            // A pasta de cópias pode morar dentro do projeto: ela decide
+            // primeiro. A pasta dela acima da cópia desta onda só guarda
+            // cópias: não é a cópia de onda nenhuma.
+            let another_copy = entered.starts_with(&copies);
+            let base = (another_copy && real.starts_with(&entered)).then(|| wave_prompt::shown(&path));
+            let shown = wave_prompt::shown(expected);
+            let reason = match ctx.config.language().text_or_default() {
+                mustard_core::SupportedLocale::PtBr => format!(
+                    "Mustard: a onda {wave} usa somente {shown}. O comando tenta entrar {}; rode-o de dentro da cópia, sem `cd` para fora dela.",
+                    match &base {
+                        Some(base) => format!("em {base}, a pasta-base das cópias, que não é a cópia de nenhuma onda"),
+                        None if another_copy => "na cópia de outra onda".into(),
+                        None => "no checkout principal".into(),
+                    }
+                ),
+                mustard_core::SupportedLocale::EnUs => format!(
+                    "Mustard: wave {wave} uses only {shown}. The command tries to enter {}; run it inside the copy, without a `cd` out of it.",
+                    match &base {
+                        Some(base) => format!("{base}, the base folder of the copies, which is no wave's copy"),
+                        None if another_copy => "another wave's copy".into(),
+                        None => "the main checkout".into(),
+                    }
+                ),
+            };
+            return Some(Verdict::Deny { reason });
         }
     }
     if in_copy {
@@ -283,6 +294,62 @@ mod tests {
         }
         input.tool_input = json!({ "command": format!("cd '{}' && cd '{}'", scratch.display(), root.display()) });
         assert!(matches!(guard_bash(&input, &ctx, Verdict::Allow), Verdict::Deny { .. }), "the main checkout is still refused");
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// A sessão do agente troca no meio da onda: a escrita na cópia certa é
+    /// recusada até ele reler o pedido da onda, e relido volta a valer. Outro
+    /// agente que lê o mesmo pedido não ganha a cópia.
+    #[test]
+    fn a_new_session_rebinds_the_copy_when_the_agent_rereads_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (a, _, ctx, mut input) = dispatched_worker(root);
+        input.session_id = Some("session-2".into());
+        input.tool_input = json!({ "file_path": a.join("file.rs") });
+        assert!(matches!(check(root, &input, &ctx), Some(Verdict::Deny { .. })), "the new session starts unbound");
+        let as_agent = |agent: &str| {
+            let mut other = input.clone();
+            other.agent_id = Some(agent.into());
+            other
+        };
+        let reread = |agent: &str| {
+            let mut bash = as_agent(agent);
+            bash.tool_name = Some("Bash".into());
+            bash.tool_input = json!({ "command": format!("mustard-rt run read request-1 --root {} --spec work", wave_prompt::shown(root)) });
+            crate::shared::host_observation::observe(root, "claude", "PreToolUse", &bash);
+        };
+        reread("stranger");
+        assert!(matches!(check(root, &as_agent("stranger"), &ctx), Some(Verdict::Deny { .. })), "another agent gains no copy");
+        reread("worker");
+        assert!(check(root, &input, &ctx).is_none(), "the reread request binds the copy again");
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// `cd ~/<caminho>`, `cd ~` e `cd` sem pasta seguem a pasta pessoal, e
+    /// `cd -` volta à pasta de antes: o agente que entra assim no checkout
+    /// principal é recusado como no `cd` escrito por inteiro. O `cd -` que
+    /// volta à cópia passa.
+    #[test]
+    fn home_and_previous_folder_cds_are_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (a, _, ctx, mut input) = dispatched_worker(root);
+        std::fs::create_dir_all(a.join("apps")).unwrap();
+        input.tool_name = Some("Bash".into());
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        let mut verdict = |cwd: &Path, command: String, home: &Path| {
+            input.cwd = Some(cwd.to_string_lossy().into_owned());
+            input.tool_input = json!({ "command": command });
+            bash(&input, &ctx, Some(home))
+        };
+        for (command, home) in [(format!("cd ~/{name} && ls"), root.parent().unwrap()), ("cd ~ && ls".into(), root), ("cd && ls".into(), root)] {
+            let Some(Verdict::Deny { reason }) = verdict(&a, command.clone(), home) else { panic!("{command}: not refused") };
+            assert!(reason.contains("no checkout principal"), "{command}: {reason}");
+        }
+        assert!(verdict(&a, "cd apps && cd - && ls".into(), root).is_none(), "back to the copy");
+        let Some(Verdict::Deny { reason }) = verdict(root, "cd - && ls".into(), root.parent().unwrap()) else { panic!("cd - back to the checkout") };
+        assert!(reason.contains("no checkout principal"), "{reason}");
         std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
 
