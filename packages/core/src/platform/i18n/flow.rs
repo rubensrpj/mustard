@@ -571,6 +571,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.window_known", Locale::EnUs) => {
             "Window of model {model}: {window}; the signal comes at {share}% of it."
         }
+        // A janela que o registro da conversa declara, sem o nome do modelo,
+        // que a amostra de uso do Codex não traz.
+        ("conversation_size.window_declared", Locale::PtBr) => "Janela do modelo declarada pela conversa: {window}; o sinal chega aos {share}% dela.",
+        ("conversation_size.window_declared", Locale::EnUs) => "Model window declared by the conversation: {window}; the signal comes at {share}% of it.",
         ("conversation_size.window_million", Locale::PtBr) => "1 milhão de tokens",
         ("conversation_size.window_million", Locale::EnUs) => "1 million tokens",
         ("conversation_size.window_thousands", Locale::PtBr) => "{n} mil tokens",
@@ -1942,7 +1946,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 270, 0xeeb3_030b_aa1e_c50c);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 271, 0xfdf2_db8a_e124_ee71);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2106,6 +2110,7 @@ mod tests {
             ("conversation_size.notice", &["{tokens}", "{line}"][..]),
             ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{basis}", "{limit}", "{total_limit}"][..]),
             ("conversation_size.window_known", &["{model}", "{window}", "{share}"][..]),
+            ("conversation_size.window_declared", &["{window}", "{share}"][..]),
             ("conversation_size.window_million", &[][..]),
             ("conversation_size.window_thousands", &["{n}"][..]),
             ("conversation_size.window_unknown", &[][..]),
