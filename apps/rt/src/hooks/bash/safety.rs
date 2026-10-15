@@ -56,10 +56,10 @@ impl Danger {
     }
 
     /// The catalogue key of the allowed way to do the same job, when there is
-    /// one. Only a folder deleted by force has it: the project copy or the
-    /// build folder in the temp directory, and any folder inside the session
-    /// scratchpad, go through the command that checks the folder before
-    /// deleting it.
+    /// one. Only a folder deleted by force has it: a folder of the system temp
+    /// directory that the user owns and that lies outside any git checkout,
+    /// the session scratchpad included, goes through the command that checks
+    /// the folder before deleting it.
     fn instead(&self) -> Option<&'static str> {
         match self {
             Self::RecursiveForceDelete => Some("command_guard.rm_recursive_force_instead"),
@@ -573,10 +573,10 @@ mod tests {
         assert_eq!(
             reason,
             "Comando barrado: apagar pasta à força (`rm` com `-r` e `-f`). Isso apaga trabalho sem \
-             volta.\nComando: rm -rf pasta\nPara apagar a cópia do projeto ou a pasta de compilação no \
-             temporário, rode `mustard-rt run clean --path <pasta>`: ele confere a pasta antes de \
-             apagar. Vale também para uma pasta dentro do scratchpad da sessão.\nSe for isso mesmo, \
-             peça ao usuário para rodar o comando no terminal dele."
+             volta.\nComando: rm -rf pasta\nPara apagar uma pasta do temporário do sistema que é sua e \
+             fica fora de qualquer checkout do git, rode `mustard-rt run clean --path <pasta>`: ele \
+             confere a pasta antes de apagar. Vale também para uma pasta dentro do scratchpad da \
+             sessão.\nSe for isso mesmo, peça ao usuário para rodar o comando no terminal dele."
         );
 
         ctx.config.language.text = Some("en-US".to_string());
@@ -586,10 +586,11 @@ mod tests {
         assert_eq!(
             reason,
             "Command blocked: deleting a folder by force (`rm` with `-r` and `-f`). This destroys \
-             work with no way back.\nCommand: rm -rf pasta\nTo delete the project copy or the build \
-             folder in the temp directory, run `mustard-rt run clean --path <folder>`: it checks the \
-             folder before deleting it. It also takes a folder inside the session scratchpad.\nIf \
-             this is really what you want, ask the user to run the command in their own terminal."
+             work with no way back.\nCommand: rm -rf pasta\nTo delete a folder of the system temp \
+             directory that is yours and lies outside any git checkout, run `mustard-rt run clean \
+             --path <folder>`: it checks the folder before deleting it. It also takes a folder inside \
+             the session scratchpad.\nIf this is really what you want, ask the user to run the \
+             command in their own terminal."
         );
 
         ctx.config.git.flow.insert("*".to_string(), "develop".to_string());
@@ -602,8 +603,8 @@ mod tests {
     }
 
     /// The refusal of a folder deleted by force, in any spelling, names the
-    /// command that deletes the project copy or the build folder after
-    /// checking it, in both languages. Every other danger is refused without
+    /// command that deletes a folder of the temp directory after checking it,
+    /// in both languages. Every other danger is refused without
     /// that line: the allowed way does not do their job.
     #[test]
     fn only_the_forced_folder_delete_points_to_the_allowed_way() {

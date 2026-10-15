@@ -34,10 +34,10 @@
 //!
 //! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas no
 //! git, e apagá-las por aqui deixaria o registro apontando para o nada. Pelo
-//! mesmo
-//! motivo, QUALQUER worktree registrada — pasta cujo `.git` é um arquivo, nela
-//! ou numa filha direta — fica de fora e o `--path` a recusa: ela pode ter
-//! trabalho não commitado, e quem a remove é o `git worktree remove`.
+//! mesmo motivo, QUALQUER worktree registrada — pasta cujo `.git` é um
+//! arquivo, nela ou numa filha direta; no `--path`, em qualquer profundidade —
+//! fica de fora e o `--path` a recusa: ela pode ter trabalho não commitado, e
+//! quem a remove é o `git worktree remove`.
 //!
 //! ## Modos
 //!
@@ -45,16 +45,18 @@
 //!   apagado;
 //! - `--apply`: apaga exatamente as listadas, e esvazia a compilação
 //!   compartilhada quando ela passa do teto;
-//! - `--path <dir>`: apaga UMA pasta, sem o filtro de idade (o revisor apaga a
-//!   própria pasta recém-criada ao terminar), mas só depois de conferir os
-//!   filtros 1 e 2. A pasta dentro do `scratchpad/` de uma sessão dispensa o
-//!   filtro 2: é a pasta de trabalho da sessão, e o agente cria ali o que a
-//!   prova pede (um repositório git, um projeto de outra linguagem); a lista e
-//!   o `--apply` continuam exigindo o filtro 2 nela. Fora do diretório
-//!   temporário — o repositório, a home — é
-//!   recusado com erro (exit 1) e nada é tocado; um `mustard-removal-*` também
-//!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
-//!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
+//! - `--path <dir>`: apaga UMA pasta do temp que é do usuário e fica fora de
+//!   qualquer checkout do git, sem o filtro de idade (o agente apaga a própria
+//!   pasta recém-criada ao terminar) nem o 2: a pasta que ele cria com
+//!   `mktemp -d` ou no `scratchpad/` da sessão guarda o que a prova pede (um
+//!   repositório de teste, um projeto de outra linguagem). Fora de checkout
+//!   quer dizer: nenhuma pasta acima dela tem `.git`, e nada abaixo dela é
+//!   worktree registrada nem repositório com worktree registrada. A lista e o
+//!   `--apply` continuam exigindo o filtro 2. Fora do diretório temporário — o
+//!   repositório, a home — é recusado com erro (exit 1) e nada é tocado; um
+//!   `mustard-removal-*` também (é worktree registrada). Toda recusa do
+//!   `--path` diz o que ele aceita. `--dry-run` não combina com `--apply` nem
+//!   com `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
 //! ## Cópias de obra
 //!
@@ -113,6 +115,9 @@ const SCRATCHPAD_DIR: &str = "scratchpad";
 
 /// Prefixo das worktrees de prova de remoção, registradas no git.
 const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
+
+/// O que o `--path` aceita, dito depois do motivo de toda recusa dele.
+const PATH_RULE: &str = "--path deletes only a folder of the system temp directory that the current user owns and that lies outside any git checkout";
 
 // ---------------------------------------------------------------------------
 // Opções + relatório
@@ -677,37 +682,84 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
     (report, false)
 }
 
-/// `--path`: confere os filtros 1 e 2 e apaga UMA pasta, sem o filtro de
-/// idade. Devolve o caminho apagado, ou o motivo da recusa — e recusa não toca
-/// em nada.
+/// `--path`: apaga UMA pasta do diretório temporário do sistema, sem o filtro
+/// de idade nem o 2. Devolve o caminho apagado, ou o motivo da recusa seguido
+/// da regra do `--path` ([`PATH_RULE`]) — e recusa não toca em nada.
 ///
-/// O filtro 2 não vale para a pasta dentro do `scratchpad/` de uma sessão
-/// ([`in_session_scratchpad`]): é a pasta de trabalho que o Claude Code dá à
-/// sessão, e o agente cria ali o que quiser — um repositório de prova, um
-/// projeto em outra linguagem —, sem cópia deste projeto nem `target/`. Fora
-/// do `scratchpad/`, o filtro 2 continua valendo.
+/// O filtro 2 não vale aqui: a pasta que o agente cria com `mktemp -d` ou no
+/// `scratchpad/` da sessão guarda o que a prova pede — um repositório de
+/// teste, um projeto em outra linguagem, a cópia `.bak` de um arquivo —, sem
+/// cópia deste projeto nem `target/`, e quem a criou precisa apagá-la. No lugar
+/// dele, a pasta fica fora de qualquer checkout ([`outside_checkouts`]). A lista
+/// e o `--apply`, que apagam sem ninguém apontar a pasta, continuam com ele.
 ///
 /// O caminho é resolvido (`canonicalize`) ANTES de qualquer conferência: um
 /// link no temp apontando para o repositório vira o repositório, e é recusado
-/// como tal; um link no `scratchpad/` apontando para outra pasta do temp vira
-/// essa pasta, e o filtro 2 vale para ela. O próprio temp também é conferido
-/// ([`checked_temp_root`]): com `TMPDIR=$HOME`, "dentro do temp" deixaria de
-/// proteger alguma coisa.
+/// como tal. O próprio temp também é conferido ([`checked_temp_root`]): com
+/// `TMPDIR=$HOME`, "dentro do temp" deixaria de proteger alguma coisa.
 pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf, String> {
+    let dir = removable(target, roots).map_err(|refusal| format!("{refusal}; {PATH_RULE}"))?;
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("remove_dir_all failed: {e}"))?;
+    Ok(dir)
+}
+
+/// As conferências do `--path`, na ordem: o temp seguro, a fronteira de toda
+/// exclusão ([`confine`]), uma pasta, e fora de qualquer checkout.
+fn removable(target: &Path, roots: &ScratchRoots) -> Result<PathBuf, String> {
     let temp = checked_temp_root(roots)?;
     let dir = confine(target, &temp, roots.owner_uid)?;
     if !dir.is_dir() {
         return Err(format!("refused: {} is not a directory", dir.display()));
     }
-    let scratchpad = parts_below(&dir, &temp).is_some_and(|parts| in_session_scratchpad(&parts));
-    if !scratchpad && !holds_scratch_build(&dir) {
+    outside_checkouts(&dir)?;
+    Ok(dir)
+}
+
+/// A pasta resolvida `dir` fica fora de qualquer checkout do git:
+///
+/// - nenhuma pasta acima dela, até a raiz do disco, tem `.git`: apagar parte
+///   de uma árvore de trabalho descarta arquivos dela, e um temp montado
+///   dentro de um repositório (`TMPDIR=<repo>/tmp`) não vira licença;
+/// - nada abaixo dela, em qualquer profundidade, é uma worktree registrada
+///   (`.git` que não é pasta) — a [`confine`] só olha a pasta e as filhas
+///   diretas, a profundidade do filtro 2;
+/// - nenhum repositório abaixo dela tem worktree registrada (`.git/worktrees/`
+///   com entrada): apagá-lo levaria o histórico de cada uma, onde quer que more.
+///
+/// O repositório próprio da pasta (`.git/` pasta, sem worktree) passa: é o de
+/// teste que a prova criou, e apagá-lo leva só o que é dele. Nenhum link é
+/// seguido, e o interior de um `.git/` não é percorrido.
+fn outside_checkouts(dir: &Path) -> Result<(), String> {
+    let git_of = |d: &Path| std::fs::symlink_metadata(d.join(".git")).ok();
+    if let Some(root) = dir.ancestors().skip(1).find(|a| git_of(a).is_some()) {
         return Err(format!(
-            "refused: {} holds neither a copy of this project nor a build target/",
-            dir.display()
+            "refused: {} lies inside the git checkout {}",
+            dir.display(),
+            root.display()
         ));
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("remove_dir_all failed: {e}"))?;
-    Ok(dir)
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if let Some(meta) = git_of(&current) {
+            if !meta.file_type().is_dir() {
+                return Err(format!(
+                    "refused: {} holds the registered git worktree {} — use git worktree remove",
+                    dir.display(),
+                    current.display()
+                ));
+            }
+            let worktrees = current.join(".git").join("worktrees");
+            if std::fs::read_dir(&worktrees).is_ok_and(|mut entries| entries.next().is_some()) {
+                return Err(format!(
+                    "refused: {} holds the git repository {}, which has registered worktrees — remove them with git worktree remove first",
+                    dir.display(),
+                    current.display()
+                ));
+            }
+        }
+        stack.extend(child_dirs(&current).into_iter().filter(|child| file_name(child).as_deref() != Some(".git")));
+    }
+    Ok(())
 }
 
 /// A fronteira de TODA exclusão — a mesma para `--path`, para o `--apply` e
@@ -1084,7 +1136,8 @@ mod tests {
     }
 
     /// O `--path` fora do temp (o repositório, a home) é recusado e nada
-    /// é apagado; dentro do temp, os filtros 1 e 2 continuam valendo.
+    /// é apagado; dentro do temp, o próprio temp, a estrutura da sessão e a
+    /// worktree de prova de remoção também.
     #[test]
     fn scratch_gc_path_refuses_outside_temp() {
         let base = tempdir().unwrap();
@@ -1112,17 +1165,12 @@ mod tests {
             assert!(repo.join("Cargo.toml").exists(), "a symlink never reaches the repository");
         }
 
-        // O próprio temp, a estrutura da sessão e uma pasta alheia: recusados.
+        // O próprio temp e a estrutura da sessão: recusados.
         assert!(remove_path(&roots.temp_root, &roots).is_err());
         let session_layout = roots.temp_root.join("claude-1000").join("proj");
         target_only(&session_layout);
         assert!(remove_path(&session_layout, &roots).is_err());
         assert!(session_layout.exists());
-        let foreign = roots.temp_root.join("outra-coisa");
-        fs::create_dir_all(&foreign).unwrap();
-        fs::write(foreign.join("notas.txt"), "x").unwrap();
-        assert!(remove_path(&foreign, &roots).is_err());
-        assert!(foreign.join("notas.txt").exists());
 
         // Worktree de prova de remoção: registrada no git, mesmo sendo cópia.
         let removal = roots.temp_root.join("mustard-removal-abc");
@@ -1132,52 +1180,97 @@ mod tests {
         assert!(removal.join("Cargo.toml").exists(), "a registered worktree is never removed here");
     }
 
-    /// Uma pasta de prova no `scratchpad/` de uma sessão — um projeto em
-    /// TypeScript com repositório git, sem cópia deste projeto nem `target/` —
-    /// sai pelo `--path`. A mesma pasta no topo do temp segue recusada pelo
-    /// filtro 2, com a mesma mensagem; fora do temp, também; o próprio
-    /// `scratchpad/` fica; e um link no `scratchpad/` para outra pasta do temp
-    /// é julgado pelo destino.
+    /// Um projeto em TypeScript com repositório git próprio, sem cópia deste
+    /// projeto nem `target/`.
+    fn typescript_repo(dir: &Path) {
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::write(dir.join("package.json"), "{\"name\":\"prova\"}\n").unwrap();
+        fs::write(dir.join("src").join("index.ts"), "export const answer: number = 42;\n").unwrap();
+        fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    /// A pasta que o agente criou no temp sai pelo `--path`, tenha o que
+    /// tiver: a do `mktemp -d` no topo do temp, com cópias `.bak` e um
+    /// repositório de teste em TypeScript (a forma da pasta que um agente não
+    /// conseguiu limpar), e a do `scratchpad/` de uma sessão. O próprio
+    /// `scratchpad/` fica, a pasta fora do temp é recusada com a regra do
+    /// `--path`, e um link no `scratchpad/` é julgado pelo destino.
     #[test]
-    fn path_removes_any_folder_inside_a_session_scratchpad() {
+    fn path_removes_any_folder_the_agent_made_in_the_temp_directory() {
         let base = tempdir().unwrap();
         let roots = fake_roots(base.path());
-        let typescript_repo = |dir: &Path| {
-            fs::create_dir_all(dir.join("src")).unwrap();
-            fs::create_dir_all(dir.join(".git")).unwrap();
-            fs::write(dir.join("package.json"), "{\"name\":\"prova\"}\n").unwrap();
-            fs::write(dir.join("src").join("index.ts"), "export const answer: number = 42;\n").unwrap();
-            fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        };
+        let made = roots.temp_root.join("tmp.Xa9fQ2");
+        fs::create_dir_all(&made).unwrap();
+        fs::write(made.join("build-deb.sh.bak"), "#!/bin/sh\n").unwrap();
+        typescript_repo(&made.join("repo"));
         let pad = roots.temp_root.join("claude-1000").join("-home-x-proj").join("sess-x").join(SCRATCHPAD_DIR);
         let proof = pad.join("prova");
         typescript_repo(&proof);
-        let top = roots.temp_root.join("tmp.prova");
-        typescript_repo(&top);
         let outside = base.path().join("prova");
         typescript_repo(&outside);
 
+        let removed = remove_path(&made, &roots).unwrap();
+        assert_eq!(removed, fs::canonicalize(&roots.temp_root).unwrap().join("tmp.Xa9fQ2"));
+        assert!(!made.exists(), "the folder made with mktemp at the top of the temp goes");
         let removed = remove_path(&proof, &roots).unwrap();
         assert_eq!(removed, fs::canonicalize(&pad).unwrap().join("prova"));
         assert!(!proof.exists(), "the folder made in the scratchpad goes");
         assert!(pad.is_dir(), "the scratchpad itself stays");
 
-        let err = remove_path(&top, &roots).unwrap_err();
-        assert!(err.contains("holds neither a copy of this project nor a build target/"), "{err}");
         let err = remove_path(&outside, &roots).unwrap_err();
         assert!(err.contains("outside the temp directory"), "{err}");
+        assert!(err.contains(PATH_RULE), "the refusal says what --path takes: {err}");
         let err = remove_path(&pad, &roots).unwrap_err();
         assert!(err.contains("not a folder inside its scratchpad/"), "{err}");
         #[cfg(unix)]
         {
             let link = pad.join("atalho");
-            std::os::unix::fs::symlink(&top, &link).unwrap();
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
             let err = remove_path(&link, &roots).unwrap_err();
-            assert!(err.contains("holds neither a copy of this project nor a build target/"), "{err}");
+            assert!(err.contains("outside the temp directory"), "{err}");
         }
-        for dir in [&top, &outside] {
-            assert!(dir.join("src").join("index.ts").is_file(), "{} is untouched", dir.display());
-        }
+        assert!(outside.join("src").join("index.ts").is_file(), "the folder outside the temp is untouched");
+    }
+
+    /// No temp, a pasta dentro de um checkout do git é recusada, e também a
+    /// que guarda, em qualquer profundidade, uma worktree registrada ou o
+    /// repositório de uma: apagá-las descartaria trabalho do checkout. A
+    /// recusa diz a regra do `--path`, e nada é tocado. O repositório próprio
+    /// da pasta, sem worktree, sai.
+    #[test]
+    fn path_refuses_a_folder_inside_a_checkout_or_holding_one() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let tmp = roots.temp_root.clone();
+
+        let clone = tmp.join("tmp.clone");
+        typescript_repo(&clone);
+        let err = remove_path(&clone.join("src"), &roots).unwrap_err();
+        assert!(err.contains("lies inside the git checkout"), "{err}");
+        assert!(err.contains(PATH_RULE), "the refusal says what --path takes: {err}");
+        assert!(clone.join("src").join("index.ts").is_file(), "the checkout is untouched");
+
+        // Uma cópia de obra três níveis abaixo: a `.git` dela é um arquivo.
+        let copies = tmp.join("tmp.copias");
+        let slot = copies.join("proj-1a2b").join("spec").join("c");
+        typescript_repo(&slot);
+        fs::remove_dir_all(slot.join(".git")).unwrap();
+        fs::write(slot.join(".git"), "gitdir: /repo/.git/worktrees/c\n").unwrap();
+        let err = remove_path(&copies, &roots).unwrap_err();
+        assert!(err.contains("holds the registered git worktree"), "{err}");
+        assert!(slot.join(".git").is_file() && slot.join("src").join("index.ts").is_file());
+
+        // O repositório de uma worktree que mora em outro lugar.
+        let main = tmp.join("tmp.main");
+        typescript_repo(&main.join("repo"));
+        fs::create_dir_all(main.join("repo").join(".git").join("worktrees").join("c")).unwrap();
+        let err = remove_path(&main, &roots).unwrap_err();
+        assert!(err.contains("has registered worktrees"), "{err}");
+        assert!(main.join("repo").join(".git").join("HEAD").is_file());
+
+        remove_path(&clone, &roots).unwrap();
+        assert!(!clone.exists(), "a repository of its own, with no worktree, goes");
     }
 
     /// `--path` apaga a pasta recém-criada do revisor: sem filtro de idade.

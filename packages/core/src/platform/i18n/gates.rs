@@ -422,18 +422,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.rm_recursive_force", Locale::EnUs) => {
             "deleting a folder by force (`rm` with `-r` and `-f`)"
         }
-        // O caminho permitido, na linha seguinte à do comando: só a pasta no
-        // temporário ou no scratchpad da sessão, que o `clean --path` confere
-        // antes de apagar.
+        // O caminho permitido, na linha seguinte à do comando: só a pasta do
+        // temporário do sistema que é do usuário e fica fora de qualquer
+        // checkout, que o `clean --path` confere antes de apagar.
         ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
-            "Para apagar a cópia do projeto ou a pasta de compilação no temporário, rode \
-             `mustard-rt run clean --path <pasta>`: ele confere a pasta antes de apagar. Vale também \
-             para uma pasta dentro do scratchpad da sessão."
+            "Para apagar uma pasta do temporário do sistema que é sua e fica fora de qualquer \
+             checkout do git, rode `mustard-rt run clean --path <pasta>`: ele confere a pasta antes \
+             de apagar. Vale também para uma pasta dentro do scratchpad da sessão."
         }
         ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
-            "To delete the project copy or the build folder in the temp directory, run \
-             `mustard-rt run clean --path <folder>`: it checks the folder before deleting it. It also \
-             takes a folder inside the session scratchpad."
+            "To delete a folder of the system temp directory that is yours and lies outside any git \
+             checkout, run `mustard-rt run clean --path <folder>`: it checks the folder before \
+             deleting it. It also takes a folder inside the session scratchpad."
         }
         ("command_guard.force_push", Locale::PtBr) => {
             "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"

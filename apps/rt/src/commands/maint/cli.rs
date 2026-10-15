@@ -49,8 +49,9 @@ pub enum MaintCmd {
     /// Só lista por padrão; `--apply` apaga as listadas e esvazia a
     /// compilação compartilhada `~/.cache/mustard/scratch-target` acima de
     /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
-    /// de conferir que ela está no temp e é uma cópia — fora do temp é
-    /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
+    /// de conferir que ela está no temp do sistema, é do usuário e fica fora
+    /// de qualquer checkout do git — senão é recusado (exit 1), e a recusa diz
+    /// isso. A exclusão é do próprio binário, nunca de shell.
     ///
     /// Sem `--path`, lista também as cópias de obra do projeto da pasta
     /// atual: saem as de obra fechada, descartada ou que não existe mais, sem
