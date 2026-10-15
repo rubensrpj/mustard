@@ -3564,6 +3564,39 @@ mod tests {
         assert!(calls[0].get("tokens").is_none(), "{calls:?}");
     }
 
+    /// A busca com filtro e o registro da chamada da rodada ao Jev gravam a
+    /// mesma medida para a mesma resposta: o filtro, o tempo dele, os tokens,
+    /// o custo, os pedidos e o modelo; e, na falha, o nome com o motivo e o
+    /// tempo até ela, sem tokens, custo, pedidos nem modelo.
+    #[test]
+    fn the_search_and_the_jev_call_record_write_the_same_measure() {
+        use crate::shared::jev::{ITEMS_CALL, record_jev_call};
+        use mustard_core::domain::map_filter::FilterUsage;
+        let measure = |call: &serde_json::Map<String, Value>| -> Vec<Value> {
+            ["filter", "tokens", "cost_micro_usd", "requests", "model"].iter().map(|field| call.get(*field).cloned().unwrap_or(Value::Null)).collect()
+        };
+
+        let dir = search_project_on("medida");
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble());
+        let usage = FilterUsage { incomplete: false, input_tokens: 21_000, millis: 40, cost_micro_usd: 882, requests: 3, model: "jev-1.13.0".to_string() };
+        record_jev_call(dir.path(), "medida", ITEMS_CALL, Instant::now(), None, Ok(&usage));
+        let calls = calls_of(dir.path(), "medida");
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let expected = vec![json!("jev"), json!(21_000), json!(882), json!(3), json!("jev-1.13.0")];
+        assert_eq!((measure(&calls[0]), measure(&calls[1])), (expected.clone(), expected), "{calls:?}");
+        assert_eq!((&calls[0]["filter_ms"], &calls[1]["filter_ms"]), (&json!(40), &json!(40)), "{calls:?}");
+
+        let failing = search_project_on("falha-medida");
+        let refused = FilterError::Refused { status: 429 };
+        searched(&search_opts(failing.path(), "pedido", None, None), &FakeFilter::failing(refused.clone()).assemble());
+        record_jev_call(failing.path(), "falha-medida", ITEMS_CALL, Instant::now(), None, Err(&refused));
+        let failed = calls_of(failing.path(), "falha-medida");
+        assert_eq!(failed.len(), 2, "{failed:?}");
+        let expected = vec![json!("jev:busy"), Value::Null, Value::Null, Value::Null, Value::Null];
+        assert_eq!((measure(&failed[0]), measure(&failed[1])), (expected.clone(), expected), "{failed:?}");
+        assert!(failed.iter().all(|call| call["filter_ms"].is_u64()), "{failed:?}");
+    }
+
     /// O mapa `map` gravado como a passada do scan o grava: com a marca dela
     /// em cada bloco e o índice nas línguas do projeto.
     fn written_by_the_scan(root: &Path, map: &Value) {

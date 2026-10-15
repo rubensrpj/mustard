@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use mustard_core::domain::map_filter::{FilterError, FilterUsage};
-use serde_json::{Map, json};
+use serde_json::{Map, Value, json};
 
 use crate::commands::spec_events::conversation::record_measured_call;
 
@@ -43,9 +43,20 @@ pub(crate) fn record_jev_call(
         measured.insert("candidates".to_string(), json!(asked));
         measured.insert("returned".to_string(), json!(returned));
     }
+    measure_filter_call(&mut measured, "jev", called, answer);
+    let report = json!({ "ok": true, "spec": spec });
+    let _ = record_measured_call(start, command, Some(spec), None, called, &report, measured);
+}
+
+/// Põe em `measured` a medida da chamada ao filtro `name`, feita em `called`:
+/// na resposta, o nome, o tempo, os tokens e o custo (só da resposta
+/// inteira), os pedidos e o modelo, quando ele veio; na falha, o nome com o
+/// motivo (`<nome>:<motivo>`) e o tempo até ela. O registro da chamada ao Jev
+/// e a porta da busca medem por aqui.
+pub(crate) fn measure_filter_call(measured: &mut Map<String, Value>, name: &str, called: Instant, answer: Result<&FilterUsage, &FilterError>) {
     match answer {
         Ok(usage) => {
-            measured.insert("filter".to_string(), json!("jev"));
+            measured.insert("filter".to_string(), json!(name));
             measured.insert("filter_ms".to_string(), json!(usage.millis));
             if !usage.incomplete {
                 measured.insert("tokens".to_string(), json!(usage.input_tokens));
@@ -57,10 +68,8 @@ pub(crate) fn record_jev_call(
             }
         }
         Err(error) => {
-            measured.insert("filter".to_string(), json!(format!("jev:{}", error.reason())));
+            measured.insert("filter".to_string(), json!(format!("{name}:{}", error.reason())));
             measured.insert("filter_ms".to_string(), json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)));
         }
     }
-    let report = json!({ "ok": true, "spec": spec });
-    let _ = record_measured_call(start, command, Some(spec), None, called, &report, measured);
 }

@@ -413,6 +413,66 @@ fn a_pass_that_rereads_a_file_computes_code_vectors_only_for_the_declarations_wh
     assert_eq!(kept, 3, "every declaration still has a current vector");
 }
 
+/// As linhas das tabelas de vetores de sentido do mapa em `out`, em texto, na
+/// ordem da chave: as das declarações e as das palavras.
+fn meaning_vectors(out: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(out).unwrap();
+    ["SELECT file, name, nth, hash, hex(vector) FROM decl_vectors ORDER BY 1, 2, 3", "SELECT word, forms, hex(vector) FROM word_vectors ORDER BY 1"]
+        .iter()
+        .flat_map(|query| {
+            let mut stmt = conn.prepare(query).unwrap();
+            let width = stmt.column_count();
+            stmt.query_map([], |row| Ok((0..width).map(|at| format!("{:?}", row.get::<_, rusqlite::types::Value>(at).unwrap())).collect::<Vec<_>>().join("|")))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Duas passadas ao mesmo tempo no mesmo projeto terminam sem erro ao gravar
+/// os vetores de sentido, e os vetores ficam os de uma passada só. O mapa vem
+/// do scan; cada rodada esvazia o bloco de sentido e larga juntas duas
+/// gravações dele, a mesma que o scan faz depois de gravar o mapa: as duas
+/// leem o mapa antes de qualquer uma gravar e têm as mesmas palavras novas a
+/// gravar. Num projeto em TypeScript.
+#[test]
+fn two_passes_at_the_same_time_write_the_meaning_vectors_of_a_single_pass() {
+    let temp = project(
+        "scan-two-passes-",
+        &[
+            ("src/orders.ts", "/** Places the customer order and charges the invoice. */\nexport function placeOrder(total: number): number {\n  return total * 2;\n}\n"),
+            ("src/shipping.ts", "import { placeOrder } from './orders';\n/** Ships the parcel to the warehouse address. */\nexport class ParcelShipper {\n  ship(weight: number): number {\n    return placeOrder(weight) + 1;\n  }\n}\n"),
+            ("src/refunds.ts", "/** Refunds the payment when the delivery fails. */\nexport interface RefundPolicy {\n  refundDays: number;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let map = model::path_in(&map_folder(dir));
+    scan(dir, &[]);
+    let expected = meaning_vectors(&map);
+    assert!(expected.iter().any(|row| row.starts_with("Text(\"parcel\")")), "a single pass writes the word vectors: {} rows", expected.len());
+    for round in 0..3 {
+        rusqlite::Connection::open(&map)
+            .unwrap()
+            .execute_batch("DELETE FROM decl_vectors; DELETE FROM word_vectors; DELETE FROM meaning_meta;")
+            .unwrap();
+        let together = std::sync::Barrier::new(2);
+        let failures: Vec<String> = std::thread::scope(|scope| {
+            let passes: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        together.wait();
+                        mustard_core::io::map_meaning::fill_at(&map, dir).map(|_| ()).map_err(|err| err.to_string())
+                    })
+                })
+                .collect();
+            passes.into_iter().filter_map(|pass| pass.join().unwrap().err()).collect()
+        });
+        assert!(failures.is_empty(), "round {round}: both passes write the vectors: {failures:?}");
+        assert!(meaning_vectors(&map) == expected, "round {round}: the vectors of two passes are those of one");
+    }
+}
+
 /// O índice de busca do mapa em `out`, tabela por tabela, como o banco o
 /// guarda: cada forma de cada campo de cada documento, o tamanho dos campos,
 /// os números de cada nível, os nomes da tabela trigram, as declarações com o
