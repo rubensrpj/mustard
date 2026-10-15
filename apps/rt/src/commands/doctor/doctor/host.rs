@@ -125,7 +125,8 @@ fn bundled_rtk_path(exe: &Path) -> Option<PathBuf> {
 }
 
 /// A primeira cópia de `rtk` (ou `rtk.exe` no Windows) achada em `path_var`,
-/// na ordem do `PATH` — a que o gancho de fato roda.
+/// na ordem do `PATH` — a que o terminal do usuário roda. O agente não a usa:
+/// o gancho chama a cópia do Mustard pelo caminho inteiro.
 fn first_rtk_on_path(path_var: &str) -> Option<PathBuf> {
     let sep = if cfg!(windows) { ';' } else { ':' };
     let name = if cfg!(windows) { "rtk.exe" } else { "rtk" };
@@ -165,6 +166,18 @@ fn rtk_copy(path: &Path, version: Option<&str>, sum: Option<&str>) -> String {
     )
 }
 
+/// O fim dos avisos sobre o `rtk` do `PATH`: o gancho troca o comando do
+/// agente pela cópia do Mustard, chamada pelo caminho inteiro, e sem cópia não
+/// troca nada; o `rtk` do `PATH` só roda no terminal do usuário.
+fn terminal_only(bundled: Option<&Path>) -> &'static str {
+    match bundled {
+        Some(_) => "the agent's commands run Mustard's copy by its full path, never the rtk on PATH, \
+                    so this only matters for rtk typed in your terminal",
+        None => "the agent's commands never run the rtk on PATH, so this only matters for rtk typed \
+                 in your terminal",
+    }
+}
+
 /// O veredito do que [`check_rtk`] observou. Separado da leitura do `PATH` e
 /// do `current_exe()` para que o teste possa afirmar as regras sem depender do
 /// que esta máquina tem instalado — o mesmo motivo de `append_missing` em
@@ -175,7 +188,8 @@ fn rtk_copy(path: &Path, version: Option<&str>, sum: Option<&str>) -> String {
 /// cópia do Mustard quando é o mesmo caminho, o mesmo conteúdo byte a byte ou
 /// responde a mesma versão: o do pacote instalado e o do plugin são o mesmo
 /// programa em pastas diferentes. Só uma cópia de outro conteúdo e de outra
-/// versão vira aviso, com as duas.
+/// versão vira aviso, com as duas. Todo aviso sobre o `rtk` do PATH diz que
+/// ele só vale para o terminal do usuário.
 fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_of: &dyn Fn(&Path) -> Option<String>) -> CheckResult {
     let Some(first_on_path) = first_on_path else {
         return CheckResult::warn("rtk", vec!["rtk not found on PATH".to_string()]);
@@ -193,9 +207,10 @@ fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_of:
             if !same_content && !same_version {
                 warnings.push(format!(
                     "the rtk PATH finds first is not Mustard's own copy: {} — Mustard's copy: {} — \
-                     put Mustard's copy ahead on PATH",
+                     {}; put Mustard's copy ahead on PATH to use it there too",
                     rtk_copy(first_on_path, version_output.as_deref(), first_sum.as_deref()),
-                    rtk_copy(bundled, bundled_version.as_deref(), bundled_sum.as_deref())
+                    rtk_copy(bundled, bundled_version.as_deref(), bundled_sum.as_deref()),
+                    terminal_only(Some(bundled))
                 ));
             }
         }
@@ -204,7 +219,8 @@ fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_of:
         Some(out) if out.starts_with("rtk ") => {}
         Some(out) => warnings.push(format!(
             "`rtk --version` did not start with \"rtk \": {out:?} — another program named rtk is \
-             on PATH ahead of Mustard's own copy"
+             first on PATH; {}",
+            terminal_only(bundled)
         )),
         None => warnings.push("could not run `rtk --version`".to_string()),
     }
@@ -218,9 +234,10 @@ fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_of:
 
 /// Confere que o `rtk` que o PATH acha primeiro é a cópia do Mustard, e que
 /// `rtk --version` responde como o rtk de verdade — em 19/09, um pacote do
-/// npm chamado `rtk` ficou na frente e desligou o filtro sem aviso. Sem cópia
-/// ao lado do binário (compilação de desenvolvimento), confere só a
-/// resposta.
+/// npm chamado `rtk` ficou na frente e desligou o filtro sem aviso. Hoje o
+/// agente roda a cópia do Mustard pelo caminho inteiro, e o aviso só vale
+/// para o terminal do usuário. Sem cópia ao lado do binário (compilação de
+/// desenvolvimento), confere só a resposta.
 pub(super) fn check_rtk() -> CheckResult {
     let bundled = std::env::current_exe().ok().and_then(|exe| {
         let real = std::fs::canonicalize(&exe).unwrap_or(exe);
@@ -474,16 +491,30 @@ mod tests {
         let result = rtk_verdict(Some(&bundled), Some(&other), &versions);
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
         let warning = &result.details[0];
-        for said in [other.display().to_string(), bundled.display().to_string(), "rtk 0.31.0".into(), "rtk 0.49.0".into()] {
+        for said in [
+            other.display().to_string(),
+            bundled.display().to_string(),
+            "rtk 0.31.0".into(),
+            "rtk 0.49.0".into(),
+            "the agent's commands run Mustard's copy by its full path, never the rtk on PATH".into(),
+            "only matters for rtk typed in your terminal".into(),
+        ] {
             assert!(warning.contains(&said), "the warning does not say {said}: {warning}");
         }
     }
 
+    /// Outro programa chamado `rtk` na frente do PATH não muda o que o agente
+    /// roda: o aviso diz que só o terminal do usuário o acha.
     #[test]
     fn rtk_verdict_warns_when_the_version_reply_does_not_start_with_rtk_space() {
         let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
         let result = rtk_verdict(Some(&bundled), Some(&bundled), &answers("Rust Type Kit 1.0.0"));
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let warning = &result.details[0];
+        assert!(warning.contains("\"Rust Type Kit 1.0.0\""), "{warning}");
+        assert!(warning.contains("the agent's commands run Mustard's copy by its full path, never the rtk on PATH"), "{warning}");
+        assert!(warning.contains("only matters for rtk typed in your terminal"), "{warning}");
+        assert!(!warning.contains("ahead of Mustard's own copy"), "{warning}");
     }
 
     /// Compilação de desenvolvimento: sem cópia ao lado do binário, o veredito
@@ -497,6 +528,9 @@ mod tests {
 
         let warn = rtk_verdict(None, Some(&path), &answers("not rtk at all"));
         assert_eq!(warn.status, Status::Warn);
+        let warning = &warn.details[0];
+        assert!(warning.contains("the agent's commands never run the rtk on PATH, so this only matters for rtk typed in your terminal"), "{warning}");
+        assert!(!warning.contains("Mustard's copy"), "without a copy the warning names none: {warning}");
     }
 
     #[test]
