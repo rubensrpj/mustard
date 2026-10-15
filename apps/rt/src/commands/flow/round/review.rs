@@ -243,7 +243,7 @@ pub(crate) fn test_conductor_review(root: &Path, spec: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{approved, git_at, returned, round, write};
+    use super::super::tests::{approved, git_at, returned, round, waves_in, write};
     use super::super::{RoundOpts, round_for};
     use super::*;
     use tempfile::tempdir;
@@ -290,6 +290,27 @@ mod tests {
         assert!(accepted["commit"].is_object(), "{accepted}");
         assert!(std::fs::read_to_string(root.join("src/a.rs")).unwrap().contains("changed_again"));
     }
+    /// A onda que recebe a tarefa que a rodada criou para refazer um item
+    /// não cumprido tem como planejados os arquivos do item: na revisão, só
+    /// o arquivo fora deles fica fora do escopo.
+    #[test]
+    fn the_wave_with_a_redone_task_plans_the_files_of_the_item_it_redoes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        super::super::agreed::tests::returned_with_its_task_unmet(root);
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![2], "the redone task leaves in wave 2: {sent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = copy_of(&log, 2).unwrap();
+        std::fs::write(copy.join("src/app.ts"), "export const changed = 1;\n").unwrap();
+        std::fs::write(copy.join("src/extra.ts"), "export const extra = 1;\n").unwrap();
+        let out = returned(root, json!({"wave":2,"text":"Concluída.","files":["src/app.ts","src/extra.ts"],"commit":"Refaz a metade"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let view = view_at(root, Some("x"), 2);
+        assert_eq!(view["planned_files"], json!(["src/app.ts", "src/Api.cs"]), "{view}");
+        assert_eq!(view["outside_scope"], json!(["src/extra.ts"]), "{view}");
+    }
+
     #[test]
     fn an_unreviewed_wave_does_not_stop_an_independent_approved_delivery() {
         let dir = tempdir().unwrap();

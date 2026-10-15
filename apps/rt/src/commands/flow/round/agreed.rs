@@ -88,7 +88,9 @@ fn removed_by_analysis(log: &SpecLog, wave: u64) -> BTreeSet<String> {
 
 /// Um item combinado que a resposta não cumpriu e que ainda pede trabalho: o
 /// número vigente dele, o que a resposta diz que falta — sem isso, o texto do
-/// próprio item — e os arquivos que ela cita, cada um como `{"path": …}`.
+/// próprio item — e os arquivos da tarefa que vai refazê-lo, cada um como
+/// `{"path": …}`: os que o próprio item declara, como a tarefa não cumprida
+/// declara os dela, e depois os que a resposta cita a mais.
 struct Unmet {
     id: u64,
     text: String,
@@ -123,19 +125,33 @@ fn answered_items(
         }
         let said = item.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
         let text = said.or_else(|| log.get(id).and_then(|e| e.str_field("text"))).unwrap_or_default().to_string();
-        let files = item.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
-        let files = files.map(|f| json!({ "path": f })).collect();
+        let cited = item.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+        let mut paths: Vec<&str> = Vec::new();
+        for path in log.get(id).map(declared_paths).into_iter().flatten().chain(cited) {
+            if !path.is_empty() && !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        let files = paths.into_iter().map(|f| json!({ "path": f })).collect();
         unmet.push(Unmet { id, text, files });
     }
     Ok((answered, unmet))
+}
+
+/// Os caminhos que o item `event` declara em `files`, na ordem gravada: o
+/// `path` de cada um, como a tarefa grava, ou o texto dele, como a entrega
+/// grava.
+fn declared_paths(event: &SpecEvent) -> impl Iterator<Item = &str> {
+    let files = event.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    files.iter().filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
 }
 
 /// A resposta `agreed` de uma volta — a entrega de uma onda ou o veredito
 /// final — resolvida contra os itens combinados que ela precisa responder
 /// (`expected`) por [`answered_items`]: cada item que não vem `met:true` e
 /// ainda pede trabalho vira uma tarefa nova no backlog, de autor `author`,
-/// cobrindo o item, com o que a resposta diz que falta e os arquivos que ela
-/// cita. O item já em `covered` ou em `removed` fica na resposta como veio,
+/// cobrindo o item, com o que a resposta diz que falta e os arquivos do item
+/// e os que ela cita. O item já em `covered` ou em `removed` fica na resposta como veio,
 /// sem tarefa nova; cada tarefa que nasce entra em `covered`. Na volta que
 /// deixou tarefas por fazer, o item não cumprido já entrou numa delas
 /// ([`join_unmet`]), que o cobre, e chega aqui em `covered`. Devolve as
@@ -200,8 +216,9 @@ pub(super) fn settle_wave_agreed(
 /// a versão que volta ao backlog de cada tarefa não feita, com a onda que a
 /// devolveu, na ordem de `undone`. O item vai à tarefa que nasceu dele
 /// (`origin`), a ligação que o pedido da onda mostra; sem ela, à primeira da
-/// lista. A versão passa a cobrir o item, ganha os arquivos que a resposta
-/// cita e, na parte do agente, uma linha com o que falta, no idioma `lang`.
+/// lista. A versão passa a cobrir o item, ganha os arquivos do item e os que
+/// a resposta cita e, na parte do agente, uma linha com o que falta, no
+/// idioma `lang`.
 /// Fica de fora, como em [`settle_agreed`], o item que outra tarefa ainda por
 /// entregar ou a própria tarefa devolvida já cobre e o que a análise da onda
 /// tirou do pedido; o item que uma volta já juntou não entra de novo pela
@@ -265,7 +282,7 @@ pub(super) mod tests {
     use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use super::super::tests::{approved_with, returned, round, waves_in, write};
+    use super::super::tests::{approved, approved_with, returned, round, waves_in, write};
     use super::{agreed_prompt, request_agreed};
     use crate::commands::spec_events::read::read_by_command;
 
@@ -288,6 +305,47 @@ pub(super) mod tests {
         let sent = round(root, "x", None);
         assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
         sent
+    }
+
+    /// A spec `x` com a onda 1 sobre um arquivo em TypeScript e outro em C#;
+    /// a onda volta sem cumprir a própria tarefa, sem citar arquivo na
+    /// resposta, e a rodada assume a volta. Devolve o código da tarefa da
+    /// onda 1.
+    pub(in crate::commands::flow::round) fn returned_with_its_task_unmet(root: &Path) -> String {
+        approved(root, "x", &[(1, &["src/app.ts", "src/Api.cs"], &[])]);
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).cloned().unwrap();
+        let code = log.codes()[&task.id].clone();
+        let unmet = json!([{"item": code, "met": false, "text": "Falta a segunda metade."}]);
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu pela metade.", "agreed": unmet}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        code
+    }
+
+    /// A tarefa que a rodada cria para refazer um item não cumprido nasce com
+    /// os arquivos que o item declara, mesmo quando a resposta não cita
+    /// nenhum: a onda que a recebe sai com o escopo do item.
+    #[test]
+    fn the_task_that_redoes_an_unmet_item_inherits_the_item_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let code = returned_with_its_task_unmet(root);
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let redoing: Vec<_> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && e.ints("covers").iter().any(|id| codes.get(id) == Some(&code)))
+            .collect();
+        assert_eq!(redoing.len(), 1, "{redoing:?}");
+        assert_eq!(redoing[0].str_field("text"), Some("Falta a segunda metade."), "{redoing:?}");
+        let expected = json!([{"path": "src/app.ts"}, {"path": "src/Api.cs"}]);
+        assert_eq!(redoing[0].fields["files"], expected, "{redoing:?}");
     }
 
     /// O comando que lê o bloco `block` da spec `x` do projeto em `root`.
