@@ -1023,7 +1023,7 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
     // verdade troca cada um pelo dela.
     let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
-    let leftovers = leftover_events(root, check.log(), &found, &returning, &reported, lang);
+    let leftovers = leftover_events(root, spec, check.log(), &found, &returning, &reported, lang);
     let mut wave_tasks = wave_tasks
         .into_iter()
         .map(|(wave, kind, draft)| Ok((wave, kind, rehearse(&mut check, kind, draft)?)))

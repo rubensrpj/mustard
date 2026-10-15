@@ -18,6 +18,10 @@ mod orchestration;
 pub(crate) use call_record::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
 
+/// O nome que a pergunta da rodada grava quando quer saber se uma sobra da
+/// volta repete uma tarefa aberta com outra redação.
+pub(crate) const LEFTOVER_CALL: &str = "leftover repeats";
+
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
 use crate::shared::judgement::{Board, BoardTask, ItemsBoard, ItemsJudged, Judged, WaveJudge};
 use std::collections::{BTreeMap, HashMap};
