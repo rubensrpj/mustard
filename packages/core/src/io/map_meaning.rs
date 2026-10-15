@@ -320,7 +320,7 @@ enum Read {
     /// Nada a gravar: os números do bloco como está.
     Done(Report),
     /// A gravação a fazer.
-    Write(Pass),
+    Write(Box<Pass>),
 }
 
 /// Lê o mapa e calcula os vetores de uma passada, sem a trava de gravação:
@@ -357,7 +357,7 @@ fn read_pass(conn: &Connection, root: &Path) -> Result<Read> {
         encode(model, changed.iter().map(|at| declarations[*at].text.as_str()))
     };
     let words = if words_stale { Some(plan_words(conn, &declarations, &languages)?) } else { None };
-    Ok(Read::Write(Pass { declarations, changed, vectors, gone, words, language_mark, stamp }))
+    Ok(Read::Write(Box::new(Pass { declarations, changed, vectors, gone, words, language_mark, stamp })))
 }
 
 /// Grava a passada que [`read_pass`] leu, numa transação só, sob a trava de

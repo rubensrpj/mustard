@@ -224,7 +224,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub enum ShellOutcome {
     /// The child exited on its own. `stdout` / `stderr` are the FULL drained
     /// streams, lossily decoded and NOT trimmed — each caller applies its own
-    /// trimming and excerpt policy.
+    /// trimming and excerpt policy. Por
+    /// [`run_shell_interleaved_with_deadline`], `stdout` traz as duas saídas
+    /// na ordem em que o comando as escreveu, e `stderr` vem vazio.
     Exited { status: ExitStatus, stdout: String, stderr: String },
     /// The deadline elapsed first and the child was killed. Its partial output
     /// is dropped: a command that never finished proved nothing.
@@ -251,8 +253,38 @@ pub enum ShellOutcome {
 /// on Windows) is killed and reaped before returning — see [`reap`].
 #[must_use]
 pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> ShellOutcome {
+    run_under_deadline(command, cwd, timeout, false)
+}
+
+/// [`run_shell_with_deadline`] com stdout e stderr escritos num cano só: a
+/// saída se lê na ordem em que o comando a escreveu, linha após linha, como o
+/// terminal a mostra.
+///
+/// Dois canos lidos à parte perdem essa ordem: quem os junta escolhe uma saída
+/// primeiro, e a última linha da primeira cola na primeira da segunda. Um
+/// `npm run lint --workspaces` escreve o anúncio e os erros de cada pacote no
+/// stdout e o rodapé `npm error path` no stderr; juntado com o stderr antes, o
+/// rodapé vinha antes do bloco do pacote, o primeiro anúncio virava fim de
+/// outra linha, e quem lia a falha não ligava o arquivo ao pacote.
+#[must_use]
+pub fn run_shell_interleaved_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> ShellOutcome {
+    run_under_deadline(command, cwd, timeout, true)
+}
+
+/// O corpo único dos dois executores acima; `interleaved` escolhe um cano só
+/// para as duas saídas em vez de um para cada.
+fn run_under_deadline(command: &str, cwd: &Path, timeout: Duration, interleaved: bool) -> ShellOutcome {
     let mut cmd = crate::util::platform::build_shell_command(command);
-    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.current_dir(cwd).stdin(Stdio::null());
+    let shared = if interleaved {
+        match one_pipe_for_both(&mut cmd) {
+            Ok(reader) => Some(reader),
+            Err(e) => return ShellOutcome::SpawnFailed { error: e.to_string() },
+        }
+    } else {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        None
+    };
     if let Some(path) = augmented_path() {
         cmd.env("PATH", path);
     }
@@ -270,31 +302,34 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = match cmd.spawn() {
+    let spawned = cmd.spawn();
+    // O comando guarda as cópias da ponta de escrita do cano até ser
+    // descartado, e com ela aberta aqui o leitor nunca vê o fim da saída.
+    drop(cmd);
+    let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
             return ShellOutcome::SpawnFailed { error: e.to_string() };
         }
     };
 
-    let out_reader = drain(child.stdout.take());
-    let err_reader = drain(child.stderr.take());
+    let readers = match shared {
+        Some(reader) => vec![drain(Some(reader))],
+        None => vec![drain(child.stdout.take()), drain(child.stderr.take())],
+    };
 
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = out_reader.join().unwrap_or_default();
-                let stderr = err_reader.join().unwrap_or_default();
-                return ShellOutcome::Exited {
-                    status,
-                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
-                };
+                let mut texts = readers.into_iter().map(|reader| String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned());
+                let stdout = texts.next().unwrap_or_default();
+                let stderr = texts.next().unwrap_or_default();
+                return ShellOutcome::Exited { status, stdout, stderr };
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    reap(&mut child, out_reader, err_reader);
+                    reap(&mut child, readers);
                     return ShellOutcome::TimedOut { after: timeout };
                 }
                 std::thread::sleep(POLL_INTERVAL);
@@ -302,11 +337,20 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
             // The wait itself failed (the OS lost the child): no exit status
             // will ever arrive, so this is as un-attemptable as a failed spawn.
             Err(e) => {
-                reap(&mut child, out_reader, err_reader);
+                reap(&mut child, readers);
                 return ShellOutcome::SpawnFailed { error: e.to_string() };
             }
         }
     }
+}
+
+/// Liga o stdout e o stderr do comando à ponta de escrita de um cano novo e
+/// devolve a ponta de leitura. O que as duas saídas escrevem chega nele na
+/// ordem em que o comando escreveu.
+fn one_pipe_for_both(cmd: &mut Command) -> std::io::Result<std::io::PipeReader> {
+    let (reader, writer) = std::io::pipe()?;
+    cmd.stdout(writer.try_clone()?).stderr(writer);
+    Ok(reader)
 }
 
 /// Start `command` through the platform shell in `cwd` and leave it running
@@ -370,15 +414,15 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
 /// group (see [`kill_tree`]) can still hold the pipes open, and waiting for it
 /// would hold this call past the deadline. A reader still running then is let
 /// go; its thread ends on its own when that process closes the pipe.
-fn reap(child: &mut std::process::Child, out_reader: std::thread::JoinHandle<Vec<u8>>, err_reader: std::thread::JoinHandle<Vec<u8>>) {
+fn reap(child: &mut std::process::Child, readers: Vec<std::thread::JoinHandle<Vec<u8>>>) {
     kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
     let grace = Instant::now() + READER_GRACE;
-    while !(out_reader.is_finished() && err_reader.is_finished()) && Instant::now() < grace {
+    while !readers.iter().all(std::thread::JoinHandle::is_finished) && Instant::now() < grace {
         std::thread::sleep(POLL_INTERVAL);
     }
-    for reader in [out_reader, err_reader] {
+    for reader in readers {
         if reader.is_finished() {
             let _ = reader.join();
         }

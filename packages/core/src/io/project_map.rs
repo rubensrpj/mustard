@@ -2122,6 +2122,13 @@ struct Planned<'b> {
     since: Option<&'b str>,
 }
 
+/// Cada bloco que o plano confere, com as linhas dele quando já vêm prontas.
+type PlannedBlocks<'b> = Vec<(&'b MapBlock, Option<BlockRows>)>;
+
+/// Na gravação que parte de um mapa anterior: o mapa novo, as linhas novas
+/// das tabelas por arquivo e o carimbo do banco de que o plano partiu.
+type Since<'b> = (&'b Value, Lines<'b>, &'b str);
+
 /// O que a gravação de `fresh` com a marca `mark` muda no banco aberto `db`.
 /// O bloco que ficou igual, com a mesma marca, não se regrava. No bloco que
 /// já tem a marca, só a tabela que mudou se grava, e a tabela de linhas por
@@ -2131,7 +2138,7 @@ struct Planned<'b> {
 /// banco guarda, ou quando um bloco sem a marca regravaria inteiras as
 /// linhas por arquivo, com o que a leitura dele deixou no banco.
 fn plan<'b>(db: &MapDb, fresh: Fresh<'b>, mark: &str) -> Result<Option<Planned<'b>>> {
-    let (blocks, since): (Vec<(&MapBlock, Option<BlockRows>)>, Option<(&'b Value, Lines<'b>, &'b str)>) = match fresh {
+    let (blocks, since): (PlannedBlocks<'b>, Option<Since<'b>>) = match fresh {
         Fresh::Rows(blocks) => (blocks.into_iter().map(|(block, rows)| (block, Some(rows))).collect(), None),
         Fresh::Since { map, previous, stamp } => {
             if map_revision::stamp(db.conn())? != stamp {
