@@ -484,3 +484,51 @@ fn the_package_build_hands_the_four_variables_to_cargo() {
         assert!(seen.lines().any(|line| line == expected), "falta `{expected}` no que o cargo recebeu:\n{seen}");
     }
 }
+
+/// O teste de instalação da esteira (`packaging/smoke-install.py`) confere o
+/// commit nos três programas compilados: o programa cuja linha de versão não
+/// traz `g<commit>` para o teste, com o nome dele e o que respondeu; com o
+/// commit nos três, o teste segue adiante. Os programas de mentira só
+/// respondem `--version`, e o teste para no passo seguinte, a instalação.
+#[cfg(unix)]
+#[test]
+fn the_install_smoke_requires_the_commit_in_the_three_compiled_programs() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    for name in ["COPYING", "LICENSE-MIT", "UNLICENSE"] {
+        std::fs::write(bin.join(format!("ripgrep-{name}")), "licença\n").expect("write");
+    }
+    let program = |name: &str, line: &str| {
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo '{line}' && exit 0\nexit 3\n")).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    let smoke = || {
+        let out = Command::new("python3")
+            .arg(repo_root().join("packaging/smoke-install.py"))
+            .arg("--bin-dir")
+            .arg(&bin)
+            .args(["--version", "0.2.21", "--commit", "0123456789ab"])
+            .output()
+            .expect("python3 runs");
+        assert!(!out.status.success(), "os programas de mentira nunca passam o teste inteiro");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    program("rtk", "rtk 0.49.0");
+    program("rg", "ripgrep 15.2.0");
+    for name in ["mustard", "mustard-rt", "scan"] {
+        program(name, &format!("{name} 0.2.21"));
+    }
+    let bare = smoke();
+    assert!(bare.contains("installed commit differs: mustard answered 'mustard 0.2.21'"), "{bare}");
+    let stamped = "0.2.21 (build 7, g0123456789ab 2026-10-14)";
+    program("mustard", &format!("mustard {stamped}"));
+    program("mustard-rt", &format!("mustard-rt {stamped}"));
+    let without_scan = smoke();
+    assert!(without_scan.contains("installed commit differs: scan answered 'scan 0.2.21'"), "{without_scan}");
+    program("scan", &format!("grain {stamped}"));
+    let all_stamped = smoke();
+    assert!(!all_stamped.contains("installed commit differs") && all_stamped.contains("'run', 'upsert'] failed"), "{all_stamped}");
+}

@@ -14,15 +14,7 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
     let supplied = input.file_path()?;
     let cwd = Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir));
     let path = Path::new(&supplied);
-    let path = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
-    let mut absolute = std::path::PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::ParentDir => { absolute.pop(); }
-            std::path::Component::CurDir => {}
-            other => absolute.push(other.as_os_str()),
-        }
-    }
+    let absolute = lexical(&if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) });
     let copies = wave_prompt::copies_dir(root);
     if !absolute.starts_with(root) && !absolute.starts_with(&copies) {
         return None;
@@ -48,6 +40,22 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
             wave_prompt::shown(copy)
         ),
     })
+}
+
+/// `path` sem os `.` e com cada `..` tirando a pasta de antes, sem consultar o
+/// disco.
+fn lexical(path: &Path) -> std::path::PathBuf {
+    let mut absolute = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                absolute.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => absolute.push(other.as_os_str()),
+        }
+    }
+    absolute
 }
 
 pub(crate) fn guard_bash(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verdict {
@@ -86,17 +94,26 @@ fn bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let real = expected.canonicalize().ok()?;
     let cwd = Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir));
     let command = input.tool_input["command"].as_str()?;
-    let copies = wave_prompt::copies_dir(root);
+    // O destino de cada `cd` é comparado pelo caminho real no disco, nunca
+    // pelo texto: `<checkout>/..` traz o checkout no texto e fica fora dele.
+    let on_disk = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let (copies, checkout) = (on_disk(&wave_prompt::copies_dir(root)), on_disk(root));
+    let in_copy = cwd.canonicalize().is_ok_and(|cwd| cwd.starts_with(&real));
+    // O `cd` relativo parte de onde o terminal vai estar: da cópia, quando o
+    // comando é levado a ela (a troca no fim), e depois da pasta do `cd`
+    // anterior, como no terminal.
+    let mut here = if in_copy { cwd.to_path_buf() } else { expected.to_path_buf() };
     for segment in crate::hooks::bash::lex::segments(command).iter().filter(|segment| segment.name() == "cd") {
         if let Some(arg) = segment.args.iter().find(|arg| !arg.text.starts_with('-')) {
             let given = Path::new(&arg.text);
-            let path = if given.is_absolute() { given.to_path_buf() } else { cwd.join(given) };
+            let path = lexical(&if given.is_absolute() { given.to_path_buf() } else { here.join(given) });
+            here.clone_from(&path);
             let Some(entered) = path.canonicalize().ok().filter(|entered| !entered.starts_with(&real)) else { continue };
-            if path.starts_with(&copies) || path.starts_with(root) {
+            if entered.starts_with(&copies) || entered.starts_with(&checkout) {
                 // A pasta de cópias pode morar dentro do projeto: ela decide
                 // primeiro. A pasta dela acima da cópia desta onda só guarda
                 // cópias: não é a cópia de onda nenhuma.
-                let another_copy = path.starts_with(&copies);
+                let another_copy = entered.starts_with(&copies);
                 let base = (another_copy && real.starts_with(&entered)).then(|| wave_prompt::shown(&path));
                 let shown = wave_prompt::shown(expected);
                 let reason = match ctx.config.language().text_or_default() {
@@ -121,7 +138,7 @@ fn bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
             }
         }
     }
-    if cwd.canonicalize().is_ok_and(|cwd| cwd.starts_with(&real)) {
+    if in_copy {
         return None;
     }
     let mut tool_input = input.tool_input.clone();
@@ -227,6 +244,71 @@ mod tests {
             assert!(reason.contains(&format!("em {}, a pasta-base das cópias", wave_prompt::shown(&base))), "{reason}");
             assert!(!reason.contains("outra onda") && !reason.contains("checkout principal"), "{reason}");
         }
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// A pasta temporária que a sessão do agente recebe traz no nome o
+    /// caminho do projeto em hífens. O agente entra nela, cria uma pasta, entra
+    /// e volta com `cd ..`, e entra nela por um caminho escrito a partir do
+    /// checkout principal: o comando segue para a cópia, sem recusa. Entrar no
+    /// checkout principal continua recusado.
+    #[test]
+    fn a_wave_agent_may_enter_the_session_temp_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (_, _, ctx, mut input) = dispatched_worker(root);
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("claude-1000").join(root.to_string_lossy().replace(['/', '\\', ':'], "-")).join("session");
+        let scratch = session.join("scratchpad");
+        std::fs::create_dir_all(scratch.join("dockrepo")).unwrap();
+        let through_root = root.join("..").join(scratch.strip_prefix(root.parent().unwrap()).unwrap_or(&scratch));
+        input.cwd = Some(root.to_string_lossy().into_owned());
+        input.tool_name = Some("Bash".into());
+        // O atalho dentro do checkout que leva à pasta da sessão: o texto está
+        // no checkout, o caminho real não.
+        #[cfg(unix)]
+        let link = {
+            std::os::unix::fs::symlink(&scratch, root.join("scratch-link")).unwrap();
+            Some(format!("cd '{}' && ls", root.join("scratch-link").display()))
+        };
+        #[cfg(not(unix))]
+        let link = None;
+        let commands = [
+            format!("cd '{}' && mkdir -p dockrepo && cd dockrepo && git init -q && cd .. && ls", scratch.display()),
+            format!("cd '{}' && cd .. && ls", through_root.display()),
+        ];
+        for command in commands.into_iter().chain(link) {
+            input.tool_input = json!({ "command": command });
+            assert!(matches!(guard_bash(&input, &ctx, Verdict::Allow), Verdict::Rewrite { .. }), "{command}");
+        }
+        input.tool_input = json!({ "command": format!("cd '{}' && cd '{}'", scratch.display(), root.display()) });
+        assert!(matches!(guard_bash(&input, &ctx, Verdict::Allow), Verdict::Deny { .. }), "the main checkout is still refused");
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// O `cd` relativo parte de onde o terminal vai estar: da cópia, quando o
+    /// comando é levado a ela, e da pasta do `cd` anterior. A pasta que existe
+    /// também no checkout principal não é tomada por ele; o `cd ..` que sai
+    /// da cópia é recusado nomeando a pasta-base das cópias.
+    #[test]
+    fn a_relative_cd_starts_where_the_shell_will_be() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (a, _, ctx, mut input) = dispatched_worker(root);
+        for checkout in [root, a.as_path()] {
+            std::fs::create_dir_all(checkout.join("apps")).unwrap();
+        }
+        input.tool_name = Some("Bash".into());
+        input.cwd = Some(root.to_string_lossy().into_owned());
+        input.tool_input = json!({ "command": "cd apps && ls" });
+        assert!(matches!(guard_bash(&input, &ctx, Verdict::Allow), Verdict::Rewrite { .. }), "runs in the copy's apps");
+        input.cwd = Some(a.to_string_lossy().into_owned());
+        input.tool_input = json!({ "command": format!("cd '{}' && cd apps && ls", a.display()) });
+        assert!(matches!(guard_bash(&input, &ctx, Verdict::Allow), Verdict::Allow), "the copy's apps");
+        input.tool_input = json!({ "command": "cd apps && cd ../.. && ls" });
+        let Verdict::Deny { reason } = guard_bash(&input, &ctx, Verdict::Allow) else { panic!("leaving the copy is refused") };
+        let base = wave_prompt::spec_copies_dir(root, "work");
+        assert!(reason.contains(&format!("em {}, a pasta-base das cópias", wave_prompt::shown(&base))), "{reason}");
         std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
 }

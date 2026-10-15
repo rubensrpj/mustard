@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 
 
-def smoke(bin_dir, version, bootstrap_archive=None):
+def smoke(bin_dir, version, commit, bootstrap_archive=None):
     bin_dir = Path(bin_dir).resolve()
     suffix = ".exe" if os.name == "nt" else ""
     binary = lambda name: str(bin_dir / (name + suffix))
@@ -64,8 +64,12 @@ def smoke(bin_dir, version, bootstrap_archive=None):
             return result.stdout
 
         run(["git", "init", "-q"])
-        for name in ("mustard", "mustard-rt"):
-            assert version in run([binary(name), "--version"]), "installed version differs"
+        # Sem o commit, a linha de versão não prova de que código veio o
+        # programa instalado: os três programas compilados respondem os dois.
+        for name in ("mustard", "mustard-rt", "scan"):
+            line = run([binary(name), "--version"]).strip()
+            assert version in line, "installed version differs: " + name + " answered " + repr(line)
+            assert "g" + commit in line, "installed commit differs: " + name + " answered " + repr(line) + ", expected g" + commit
         run([binary("rtk"), "--version"])
         run([binary("rg"), "--version"])
         installed = json.loads(run([binary("mustard-rt"), "run", "upsert"]))
@@ -147,6 +151,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--commit", required=True)
     parser.add_argument("--bootstrap-archive")
     args = parser.parse_args()
-    smoke(args.bin_dir, args.version, args.bootstrap_archive)
+    smoke(args.bin_dir, args.version, args.commit, args.bootstrap_archive)
