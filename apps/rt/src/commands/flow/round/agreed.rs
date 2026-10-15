@@ -21,23 +21,28 @@ use super::stops::append_agent_line;
 /// código de cada item esperado que ficou sem resposta.
 pub(super) type SettledAgreed = (Vec<Map<String, Value>>, Vec<String>);
 
-/// Os itens combinados que o pedido da onda `wave` levou: o que ele lê
-/// ([`agreed_prompt::dispatch_items`]), só com os tipos do bloco do
-/// combinado que o veredito final também responde — regra, limite, contrato,
-/// erro, caso de borda, fora do escopo e decisão. A entrega da onda responde
-/// por cada um deles.
+/// Os itens combinados que o pedido da onda `wave` levou: a lista que o envio
+/// que a despachou ([`dispatched_at`]) gravou do que o pedido lia, pela mesma
+/// conta que montou "O que obedecer" ([`agreed_prompt::sent_agreed`]) — os
+/// tipos do bloco do combinado que o veredito final também responde: regra,
+/// limite, contrato, erro, caso de borda, fora do escopo e decisão. A entrega
+/// da onda responde por cada um deles. O item que a escolha da onda tirou do
+/// pedido não está na lista e não é cobrado, também depois de um reenvio. O
+/// envio gravado antes da lista fica com a conta da montagem
+/// ([`agreed_prompt::dispatch_items`]), com a escolha que ele gravou.
 ///
-/// A lista é a do envio que despachou a onda ([`dispatched_at`]), não a de
-/// agora: a leitura é feita sobre a spec como estava nele, só com os eventos
-/// de número até o dele — os números da spec só crescem. O item combinado
-/// gravado entre o envio e a volta não é cobrado, porque o pedido não o
-/// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
-/// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
+/// A lista é a do envio, não a de agora: a leitura é feita sobre a spec como
+/// estava nele, só com os eventos de número até o dele — os números da spec
+/// só crescem. O item combinado gravado entre o envio e a volta não é
+/// cobrado, porque o pedido não o levou. O que o pedido levou e ganhou versão
+/// nova depois é cobrado pela versão de agora, pelo mesmo código; o que saiu
+/// da spec depois, não.
 pub(super) fn request_agreed(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let then = as_dispatched(log, wave);
     let then_codes = then.codes();
-    let carried: Vec<&String> =
-        agreed_prompt::dispatch_items(&then, wave, None).iter().filter_map(|item| then_codes.get(&item.id)).collect();
+    let sent = dispatched_at(log, wave).and_then(|id| then.get(id)).and_then(|send| agreed_prompt::sent_agreed(&then, send));
+    let carried = sent.unwrap_or_else(|| agreed_prompt::carried_agreed(agreed_prompt::dispatch_items(&then, wave, None)));
+    let carried: Vec<&String> = carried.iter().filter_map(|item| then_codes.get(&item.id)).collect();
     let codes = log.codes();
     let agreed = agreed_prompt::all_agreed(log);
     carried
@@ -249,4 +254,80 @@ pub(super) fn join_unmet(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::path::Path;
+
+    use mustard_core::io::spec_events as store;
+    use mustard_core::io::wave_prompt::shown;
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    use super::super::tests::{approved_with, returned, round, waves_in, write};
+    use super::{agreed_prompt, request_agreed};
+    use crate::commands::spec_events::read::read_by_command;
+
+    /// A spec `x` com a onda 1 sobre `src/app.ts` e duas regras do projeto
+    /// todo; o Jev tira a segunda do pedido, e a onda sai. Devolve a resposta
+    /// da rodada que a despachou.
+    pub(in crate::commands::flow::round) fn sent_without_the_second_rule(root: &Path) -> Value {
+        approved_with(root, "x", &[(1, &["src/app.ts"], &[])], |said| {
+            for text in ["Vale sempre: a tabela nova tem chave.", "Vale sempre: a spec vira um PR só."] {
+                let rule = json!({"title": text, "text": text, "example": "e", "keys": ["k"],
+                    "applies_to": {"files": ["**"]}, "origin": said});
+                assert_eq!(write(root, "x", "rule", rule)["ok"], json!(true));
+            }
+        });
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let second = log.codes().into_iter().find(|(_, code)| code == "MSTD-RULE-0002").map(|(id, _)| id).expect("the second rule");
+        let _jev = super::super::item_choice::fake::answering(move |board| {
+            board.items.iter().map(|item| (item.id, if item.id == second { 0.0 } else { 1.0 })).collect()
+        });
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        sent
+    }
+
+    /// O comando que lê o bloco `block` da spec `x` do projeto em `root`.
+    pub(in crate::commands::flow::round) fn read_block(root: &Path, block: &str) -> String {
+        read_by_command(&format!("mustard-rt run read {block} --root {} --spec x", shown(root)))
+    }
+
+    /// O pedido mostra e a entrega cobra os mesmos itens combinados: os da
+    /// lista que o envio da onda gravou. Depois de um reenvio gravado com a
+    /// lista e o pedido do envio anterior, mas sem a escolha que tirou a
+    /// segunda regra — como os reenvios ficaram gravados —, o pedido não a
+    /// mostra, a entrega não é cobrada por ela e grava sem ela.
+    #[test]
+    fn the_request_and_its_delivery_carry_the_agreed_items_its_send_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_without_the_second_rule(root);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let prior = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).cloned().unwrap();
+        assert!(prior.fields.get("analysis").is_some(), "{prior:?}");
+        let mut resent = serde_json::Map::new();
+        for field in ["wave", "role", "text", "lines", "chars", "items", "read_items", "mustard", "copy", "author"] {
+            if let Some(value) = prior.fields.get(field) {
+                resent.insert(field.into(), value.clone());
+            }
+        }
+        resent.insert("resends".into(), json!(prior.id));
+        store::write(&path, "send", resent, &[]).unwrap();
+
+        let log = store::read(&path).unwrap().unwrap();
+        let codes = log.codes();
+        let charged: Vec<String> = request_agreed(&log, 1).iter().map(|item| codes[&item.id].clone()).collect();
+        assert_eq!(charged, ["MSTD-RULE-0001"], "only what the request carried");
+        let request = read_block(root, "request-1");
+        for item in agreed_prompt::all_agreed(&log) {
+            let code = &codes[&item.id];
+            assert_eq!(request.contains(code.as_str()), charged.contains(code), "{code}, side by side: {request}");
+        }
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": [{"item": "MSTD-RULE-0001", "met": true}]}));
+        assert_eq!(wrote["ok"], json!(true), "the removed rule is not charged: {wrote}");
+    }
 }

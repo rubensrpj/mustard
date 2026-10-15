@@ -937,7 +937,9 @@ pub(super) fn run_entered_round(
         if let Some(read_items) = prior.fields.get("read_items") {
             draft.insert("read_items".into(), read_items.clone());
         }
-        for field in ["skills","expertise"] {if let Some(value)=prior.fields.get(field) {draft.insert(field.into(),value.clone());}}
+        // A escolha dos itens do pedido (`analysis`) também: o pedido que
+        // volta é o que ela montou, e a entrega e a releitura dele a leem.
+        for field in ["skills","expertise","analysis"] {if let Some(value)=prior.fields.get(field) {draft.insert(field.into(),value.clone());}}
         draft.insert("host".into(), json!(host));
         if migrated && let Some(prompt) = current {
             draft.insert("model".into(), json!(prompt.model));
@@ -1208,6 +1210,33 @@ mod tests {
         let text = send.str_field("text").unwrap();
         assert!(text.starts_with(&original),"the approved task is retained verbatim");
         assert!(text.contains("Host atual: codex"),"{text}");
+    }
+
+    /// A onda cuja escolha tirou uma regra do pedido sai de novo com a
+    /// escolha: o reenvio a grava, a releitura do pedido pela montagem não
+    /// volta a pôr a regra, a entrega sem ela grava, e a regra continua no
+    /// pedido da revisão final.
+    #[test]
+    fn a_resent_wave_keeps_the_choice_that_took_an_item_out_of_its_request() {
+        use crate::commands::flow::round::agreed::tests::{read_block, sent_without_the_second_rule};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_without_the_second_rule(root);
+        let prior = sends_of(root).pop().unwrap();
+        assert!(prior.fields.get("analysis").is_some(), "{prior:?}");
+
+        let out = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let resent = sends_of(root).pop().unwrap();
+        assert_eq!(resent.int("resends"), Some(prior.id), "{out}");
+        assert_eq!(resent.fields.get("analysis"), prior.fields.get("analysis"), "{resent:?}");
+        let reread = read_block(root, "dispatch-1");
+        assert!(reread.contains("MSTD-RULE-0001") && !reread.contains("MSTD-RULE-0002"), "{reread}");
+
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": [{"item": "MSTD-RULE-0001", "met": true}]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let review = read_block(root, "request-review-preview");
+        assert!(review.contains("MSTD-RULE-0002"), "the final review still answers for it: {review}");
     }
 
     /// A rodada é quem despacha a onda de conserto que a porta do pull

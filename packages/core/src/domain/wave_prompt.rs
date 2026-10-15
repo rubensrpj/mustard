@@ -995,6 +995,33 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
     out
 }
 
+/// Os itens combinados que um pedido de onda leva, entre os itens que ele lê
+/// (`read`), na ordem dada e sem repetir: os do bloco do combinado que têm
+/// texto. É a conta única do que o pedido manda obedecer — "O que obedecer",
+/// com o que as tarefas atendem, que ele mostra sob a tarefa — e do que a
+/// entrega da onda responde em `agreed`: a montagem a faz sobre o que o
+/// pedido lê, e a conferência da entrega, sobre a lista que o envio gravou
+/// disso ([`sent_agreed`]). Por ela, o pedido e a entrega nunca discordam.
+#[must_use]
+pub fn carried_agreed<'a>(read: impl IntoIterator<Item = &'a SpecEvent>) -> Vec<&'a SpecEvent> {
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
+    read.into_iter()
+        .filter(|item| item.block() == Some(Block::Agreed) && item.str_field("text").is_some_and(|text| !text.trim().is_empty()))
+        .filter(|item| seen.insert(item.id))
+        .collect()
+}
+
+/// Os itens combinados que o envio `send` de uma onda levou: a lista do que o
+/// pedido dele lia, como ele a gravou (`items`), cada número lido em `log`
+/// e passado por [`carried_agreed`]. Vale também para o reenvio, que grava a
+/// lista do envio anterior com o pedido dele, palavra por palavra. `None` no
+/// envio gravado antes de a lista existir.
+#[must_use]
+pub fn sent_agreed<'a>(log: &'a SpecLog, send: &SpecEvent) -> Option<Vec<&'a SpecEvent>> {
+    let items = send.fields.get("items")?.as_array()?;
+    Some(carried_agreed(items.iter().filter_map(Value::as_u64).filter_map(|id| log.get(id))))
+}
+
 /// Os campos que o registro de um lote deriva das tarefas que o compõem
 /// agora: os itens que elas cobrem (`covers`, sem repetir), os títulos
 /// delas juntados por ponto e vírgula e o pronto-quando — a prova de cada
@@ -1173,7 +1200,7 @@ pub fn owner_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
 /// O tipo de trabalho e os pontos do levantamento não têm, e não são itens a
 /// implementar.
 fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
-    log.block(BlockQuery::Block(Block::Agreed)).into_iter().filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty())).collect()
+    carried_agreed(log.block(BlockQuery::Block(Block::Agreed)))
 }
 
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
