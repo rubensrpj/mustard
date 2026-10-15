@@ -185,10 +185,11 @@ fn usage_of_line(line: &str) -> Option<(Value, Value)> {
 }
 
 /// A janela do modelo que a linha de uso `row` do Codex declara, em
-/// `payload.info.model_context_window`. `None` numa linha do Claude e na
-/// amostra sem o campo.
+/// `payload.info.model_context_window`. `None` numa linha do Claude, na
+/// amostra sem o campo e com o valor zero, que não é janela: tomado como
+/// janela, ele zeraria o teto e mandaria o sinal na primeira amostra.
 fn declared_window(row: &Value) -> Option<u64> {
-    row["payload"]["info"]["model_context_window"].as_u64()
+    row["payload"]["info"]["model_context_window"].as_u64().filter(|window| *window > 0)
 }
 
 /// O teto do sinal dentro da janela `window`: [`WINDOW_SHARE`] dela.
@@ -306,8 +307,11 @@ struct WaveContext {
     now: u64,
     /// Quanto do tamanho é o resumo da onda anterior que o agente leu.
     summary: u64,
-    /// O modelo da última resposta que o nomeia: o mesmo que a volta da onda
-    /// grava no envio como `model_used`.
+    /// O modelo da última resposta que traz `message.model`, como a conversa
+    /// o grava. Diferente do `model_used` que a volta da onda grava no envio,
+    /// o gancho não pula o `<synthetic>` das respostas que a própria
+    /// plataforma escreve: a tabela não conhece esse nome, e a janela fica
+    /// desconhecida até a resposta seguinte de um modelo.
     model: Option<String>,
     /// A janela que a última amostra de uso do Codex declara
     /// ([`declared_window`]).
@@ -502,10 +506,16 @@ fn wave_mark(root: &Path, input: &HookInput, kind: &str) -> Option<PathBuf> {
     Some(state_dir(root)?.join(is_plain(&name).then_some(name)?))
 }
 
-/// An early signal leaves the task executable. Only an accepted task-end
-/// step closes the existing finish-only gate. The tail fast path avoids
-/// rereading a growing transcript below the last measured signal point, or
-/// below the fixed horizon before any measurement, and after a signal.
+/// O que o agente de onda de `input` recebe depois da ferramenta: a medida
+/// do fim de tarefa quando a chamada grava o passo de término
+/// ([`task_end_text`]) e, nas outras chamadas, o sinal de conclusão. O sinal
+/// deixa a tarefa atual seguir; só o passo de término aceito fecha a trava.
+/// Para não reler a conversa inteira a cada chamada, o gancho cala depois do
+/// sinal ou da ordem de entregar e, olhando só o último uso, abaixo do ponto
+/// do sinal medido da última vez — ou, antes de qualquer medida, abaixo do
+/// horizonte fixo ([`WAVE_LIMIT`]). Quando a última amostra declara a janela
+/// do modelo ([`declared_window`]), o teto dela ([`WINDOW_SHARE`]) baixa esse
+/// ponto se vier antes dele.
 fn wave_notice_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
     if finishes_a_task(input) { return task_end_text(input, root, lang); }
     let signal = wave_mark(root, input, "signal")?;
@@ -637,8 +647,9 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
         .max()
         .unwrap_or(0);
     write_mark(&wave_mark(root, input, "threshold")?, context.signal_at());
-    // Initial input and inherited summaries precede the work horizon.
-    // A task-size forecast is informative, never an earlier cutoff.
+    // A entrada inicial e os resumos herdados vêm antes do horizonte de
+    // trabalho. A previsão do tamanho da tarefa só informa; nunca adianta o
+    // corte.
     let deliver = order.exists() || wave_mark(root,input,"signal")?.exists() || context.growth() >= context.limit();
     if deliver {
         write_mark(&order, context.now);
@@ -1384,7 +1395,12 @@ mod tests {
     /// teto. O teto vira o sinal quando 75% da janela vem antes de entrada +
     /// 150 mil: com 650 mil de entrada e 1 milhão, aos 750 mil; com 50 mil e a
     /// janela de 200 mil, aos 150 mil. O modelo que a tabela não conhece fica
-    /// em entrada + 150 mil, e o sinal diz que não há teto. Nos dois idiomas.
+    /// em entrada + 150 mil, e o sinal diz que não há teto. Quando a conversa
+    /// troca de modelo no meio, vale a janela do que respondeu por último: de
+    /// um de 200 mil para um de 1 milhão, com 50 mil de entrada, os 199.999
+    /// não avisam e os 200 mil avisam com a janela de 1 milhão; do de 1
+    /// milhão para o de 200 mil, os 149.999 não avisam e os 150 mil avisam
+    /// com a de 200 mil. Nos dois idiomas.
     #[test]
     fn the_wave_signal_is_input_plus_the_work_horizon_capped_by_the_model_window() {
         let named = |model: &str, tokens: u64, action: &str| {
@@ -1423,6 +1439,21 @@ mod tests {
                 assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: {model} from {input} is quiet just below {at}");
                 write_agent(root, &wave_request(lang), &[named(model, input, "read"), named(model, at, "edit")]);
                 let signal = injected(&agent_after_tool(root)).unwrap_or_else(|| panic!("{lang:?}: {model} from {input} signals at {at}"));
+                let said = if pt { said_pt } else { said_en };
+                assert!(said.iter().all(|said| signal.contains(said)), "{lang:?}: {signal}");
+            }
+
+            let switches = [
+                ("claude-sonnet-4-5-20250929", "claude-opus-5-5", 200_000, ["Janela do modelo claude-opus-5-5: 1 milhão de tokens;", "O sinal é entrada + 150 mil = 200 mil."], ["Window of model claude-opus-5-5: 1 million tokens;", "The signal is initial input + 150 thousand = 200 thousand."]),
+                ("claude-opus-5-5", "claude-sonnet-4-5-20250929", 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O sinal é entrada + 100 mil = 150 mil."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The signal is initial input + 100 thousand = 150 thousand."]),
+            ];
+            for (before, after, at, said_pt, said_en) in switches {
+                let dir = open_project_in("x", lang);
+                let root = dir.path();
+                write_agent(root, &wave_request(lang), &[named(before, 50_000, "read"), named(after, at - 1, "edit")]);
+                assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: from {before} to {after}, quiet just below {at}");
+                write_agent(root, &wave_request(lang), &[named(before, 50_000, "read"), named(after, at, "edit")]);
+                let signal = injected(&agent_after_tool(root)).unwrap_or_else(|| panic!("{lang:?}: from {before} to {after}, the last model signals at {at}"));
                 let said = if pt { said_pt } else { said_en };
                 assert!(said.iter().all(|said| signal.contains(said)), "{lang:?}: {signal}");
             }
@@ -1505,6 +1536,24 @@ mod tests {
         rows.push(declared_sample(96_000, 128_000));
         let signal = codex_wave_notice(root, &rows).expect("75% of the declared 128 thousand is 96 thousand");
         let said = ["Janela do modelo declarada pela conversa: 128 mil tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 66 mil = 96 mil."];
+        assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
+    }
+
+    /// A janela declarada como zero não é janela: com 50 mil de entrada, a
+    /// conversa do Codex que a traz não avisa na primeira amostra nem nos
+    /// 199.999, e avisa nos 200 mil como a que não declara nenhuma, com a
+    /// janela desconhecida.
+    #[test]
+    fn codex_zero_declared_window_counts_as_no_window() {
+        let dir = open_project("x");
+        let root = dir.path();
+        let mut rows = vec![declared_sample(50_000, 0)];
+        assert_eq!(codex_wave_notice(root, &rows), None, "a zero window does not signal on the first sample");
+        rows.push(declared_sample(199_999, 0));
+        assert_eq!(codex_wave_notice(root, &rows), None, "a zero window is no cap");
+        rows.push(declared_sample(200_000, 0));
+        let signal = codex_wave_notice(root, &rows).expect("a zero window leaves the signal at input + 150 thousand");
+        let said = ["Janela do modelo desconhecida: o sinal fica sem teto.", "O sinal é entrada + 150 mil = 200 mil."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
     }
 
