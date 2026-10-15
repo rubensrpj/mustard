@@ -214,3 +214,82 @@ fn a_wave_agent_search_in_another_waves_copy_is_refused() {
     assert_eq!(code, Some(2), "{detail}");
     assert!(!stdout.contains("def quartz"), "{detail}");
 }
+
+/// Uma busca que acha uma linha de mais de um megabyte, num JSON de uma linha
+/// só, responde abaixo do teto da conversa, de 25.000 bytes. Cada linha de
+/// mais de 1.000 bytes mostra só o começo e diz quantos bytes dela ficaram de
+/// fora, e as linhas do TypeScript que vêm depois dela aparecem. As que não
+/// cabem saem do fim, e a nota final diz o tamanho da resposta inteira, de
+/// que linha em diante cortou e o comando que grava o resultado inteiro num
+/// arquivo; esse comando entrega a busca nativa byte a byte.
+#[cfg(unix)]
+#[test]
+fn a_search_hitting_a_line_over_a_megabyte_answers_under_the_conversation_cap() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("assets")).unwrap();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("mustard.json"), r#"{"ai":{"fallback":false,"vectors":false}}"#).unwrap();
+    let vocab: Vec<String> = (0..80_000).map(|n| format!("\"tok{n}\":{n}")).collect();
+    let tokenizer = format!("{{\"note\":\"needle\",\"vocab\":{{{}}}}}", vocab.join(","));
+    assert!(tokenizer.len() > 1_000_000, "the JSON line must pass a megabyte: {}", tokenizer.len());
+    std::fs::write(root.join("assets/tokenizer.json"), &tokenizer).unwrap();
+    let hits: Vec<String> = (0..30)
+        .map(|n| {
+            let line = format!("export const needle{n:02} = \"{}\";", "a".repeat(1_500));
+            std::fs::write(root.join(format!("src/hit{n:02}.ts")), format!("{line}\n")).unwrap();
+            format!("src/hit{n:02}.ts:1:{line}\n")
+        })
+        .collect();
+    let native = format!("assets/tokenizer.json:1:{tokenizer}\n{}", hits.concat());
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let search = ["rg", "-n", "--sort", "path", "needle", "assets", "src"];
+    let out = Command::new(binary)
+        .args(["run", "search", "--root"])
+        .arg(&root)
+        .arg("--shell-output")
+        .arg("--")
+        .args(search)
+        .env("MUSTARD_RT_DELEGATED", "1")
+        .env_remove("MUSTARD_SESSION_ID")
+        .env_remove("MUSTARD_AGENT_ID")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let detail = format!("{} bytes\n{}\n{}", stdout.len(), &stdout[..stdout.len().min(4_000)], String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "{detail}");
+    assert!(stdout.len() <= 25_000, "{detail}");
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    let kept = lines.iter().position(|line| line.starts_with("# Answer cut")).unwrap_or_else(|| panic!("no cut note: {detail}"));
+    let whole: Vec<&str> = native.lines().collect();
+    assert!(kept > 1 && kept < whole.len(), "the TypeScript hits after the long line show, and the tail is left out: {detail}");
+    for (shown, line) in lines[..kept].iter().zip(&whole) {
+        assert_eq!(*shown, format!("{} [line cut: {} more bytes]", &line[..1_000], line.len() - 1_000), "{detail}");
+    }
+    assert_eq!(
+        lines[kept],
+        format!(
+            "# Answer cut to fit the conversation cap of 25000 bytes; the whole answer has {} bytes in {} lines. \
+             Lines over 1000 bytes showing only their start: {kept}. Lines {} to {} are left out.",
+            native.len(),
+            whole.len(),
+            kept + 1,
+            whole.len()
+        ),
+        "{detail}"
+    );
+    let quoted = search.iter().map(|arg| format!("'{arg}'")).collect::<Vec<_>>().join(" ");
+    let rest = format!("# Whole native result: mustard-rt run search --root '{}' --raw -- {quoted} > <file>", root.display());
+    assert_eq!(lines[kept + 1..], [rest.as_str()], "{detail}");
+
+    let saved = tempfile::tempdir().unwrap();
+    let file = saved.path().join("whole.txt");
+    let command = rest.strip_prefix("# Whole native result: ").unwrap().replace("<file>", &file.display().to_string());
+    let path = format!("{}:{}", binary.parent().unwrap().display(), std::env::var("PATH").unwrap_or_default());
+    let rerun = Command::new("sh").args(["-c", &command]).env("PATH", path).env("MUSTARD_RT_DELEGATED", "1")
+        .env_remove("MUSTARD_SESSION_ID").env_remove("MUSTARD_AGENT_ID").output().unwrap();
+    assert_eq!(rerun.status.code(), Some(0), "{command}: {}", String::from_utf8_lossy(&rerun.stderr));
+    assert!(std::fs::read(&file).unwrap() == native.as_bytes(), "{command}: the saved result is not the native search");
+}

@@ -40,8 +40,12 @@ fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Valu
             match result {
                 Ok((answer, request)) => {
                     let view = mustard_core::io::code_search::presentation::agent(&answer, &request, root);
+                    // O texto vira UTF-8 válido antes do corte, que não parte um
+                    // caractere: a troca de um byte inválido cresceria a resposta
+                    // depois de ela caber no teto da conversa.
                     let mut text = String::from_utf8_lossy(&view.stdout).into_owned();
                     if !answer.stderr.is_empty() { text.push_str(&String::from_utf8_lossy(&answer.stderr)); }
+                    let text = String::from_utf8_lossy(&crate::commands::search::conversation_answer(root, &request, text.into_bytes(), None)).into_owned();
                     let _ = crate::commands::spec_events::conversation::record_output_call(root, "search", None, started, &answer.report, &text);
                     json!({"content":[{"type":"text","text":text}],"isError":answer.report["ok"] != true})
                 }
@@ -97,5 +101,33 @@ mod tests {
         assert_eq!(empty["result"]["isError"],false,"no matches is a successful native search");
         assert!(response(root, &json!({"jsonrpc":"2.0","method":"notifications/initialized"}), &mut initialized).is_none());
         assert_eq!(response(root, &json!({"unexpected":true}), &mut initialized).unwrap()["error"]["code"], -32600);
+    }
+
+    /// Uma busca pelo MCP que acha um JSON de uma linha só, de mais de um
+    /// megabyte, responde abaixo do teto da conversa, de 25.000 bytes: a linha
+    /// mostra só o começo, e a nota do fim traz o comando que pede o resto.
+    #[test]
+    fn a_search_hitting_a_line_over_a_megabyte_answers_under_the_cap_through_the_mcp() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let line = format!("{{\"note\":\"needle\",\"vocab\":\"{}\"}}", "ç".repeat(600_000));
+        std::fs::write(root.join("tokenizer.json"), format!("{line}\n")).unwrap();
+        let mut initialized = false;
+        let msg = |method: &str, params: Value| json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
+        response(&root, &msg("initialize", json!({"protocolVersion":"2025-11-25"})), &mut initialized).unwrap();
+        let request = json!({"tool":"Grep","input":{"pattern":"needle","path":root,"output_mode":"content"},"intent":"Find the tokenizer note","purpose":"locate"});
+        let result = response(&root, &msg("tools/call", json!({"name":"search","arguments":{"request":request}})), &mut initialized).unwrap();
+        assert_eq!(result["result"]["isError"], false, "{result}");
+        let text = result["result"]["content"][0]["text"].as_str().unwrap();
+        let start: String = text.chars().take(300).collect();
+        assert!(text.len() <= 25_000, "{} bytes: {start}", text.len());
+        assert!(text.contains(&format!("\n1:{} [line cut: 1199030 more bytes]\n", &line[..998])), "{text}");
+        assert!(text.contains("# Answer cut to fit the conversation cap of 25000 bytes;"), "{text}");
+        let target = root.display();
+        let rest = format!(
+            "# Whole native result: mustard-rt run search --root '{target}' --raw -- 'rg' '--color=never' '--no-heading' \
+             '--with-filename' '-n' '-e' 'needle' '--' '{target}' > <file>\n"
+        );
+        assert!(text.ends_with(&rest), "{text}");
     }
 }

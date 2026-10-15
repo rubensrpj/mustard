@@ -10,12 +10,12 @@ pub struct Modes<'a> { pub profile:bool, pub import_scip: Option<&'a Path>,
     pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
 
-/// O teto, em bytes, da resposta de uma consulta que vai para a conversa. O
-/// terminal do Claude Code guarda fora da conversa a saída acima de 30.000
-/// caracteres, e o agente vê só o começo dela. Um caractere ocupa ao menos um
-/// byte, então a resposta dentro do teto cabe nesse limite, com folga para o
-/// que o terminal junta a ela.
-const CONVERSATION_BYTES: usize = 25_000;
+/// O teto, em bytes, da resposta de uma consulta ou de uma busca que vai para
+/// a conversa. O terminal do Claude Code guarda fora da conversa a saída
+/// acima de 30.000 caracteres, e o agente vê só o começo dela. Um caractere
+/// ocupa ao menos um byte, então a resposta dentro do teto cabe nesse limite,
+/// com folga para o que o terminal junta a ela.
+pub(crate) const CONVERSATION_BYTES: usize = 25_000;
 
 /// Os campos que o cartão encolhido guarda: quem ele é, como foi achado e
 /// onde está a fonte, para ler as linhas dela ou expandi-lo com `--symbol`.
