@@ -85,7 +85,6 @@ mod tests {
     use super::*;
     use crate::domain::normalize::Languages;
     use crate::domain::project_map::MapRefusal;
-    use crate::io::map_db::{Block, Kind};
     use crate::io::{map_search, map_triage};
     use crate::io::project_map::{self, model_path, open_existing, DECLS, SEARCHED};
 
@@ -103,18 +102,18 @@ mod tests {
         })
     }
 
-    /// O scan de uma compilação mais velha abre o mapa: ele declara o bloco
-    /// das declarações noutra versão, e o bloco perde a marca da passada. A
-    /// abertura seguinte, na versão deste programa, o refaz vazio.
+    /// O bloco das declarações ficou no formato de um scan mais velho: a
+    /// abertura seguinte, na versão deste programa, o refaz vazio e sem a
+    /// marca da passada.
     fn opened_by_an_older_scan(root: &Path) {
         emptied_by_an_older_scan(root, &DECLS);
     }
 
-    /// O mesmo com o bloco `block`: o scan mais velho o declara noutra
-    /// versão, e a abertura seguinte o refaz vazio e sem marca.
+    /// O mesmo com o bloco `block`: a versão gravada dele é a de antes da
+    /// deste programa, e a abertura seguinte o refaz vazio e sem marca.
     fn emptied_by_an_older_scan(root: &Path, block: &MapBlock) {
-        let older = Block { name: block.name(), version: 1, tables: &[], schema: "", kind: Kind::Rebuilt(|_, _| Ok(())) };
-        MapDb::open(&model_path(root), root, &[older]).unwrap();
+        let mut db = MapDb::open(&model_path(root), root, &[]).unwrap();
+        db.write(|tx| Ok(tx.execute("UPDATE blocks SET version = version - 1 WHERE name = ?1", [block.name()])?)).unwrap();
     }
 
     /// Um mapa com o que cada pergunta lê de cada bloco que o scan grava: as

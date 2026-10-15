@@ -1,8 +1,9 @@
 //! `map_notes_fresh` — a leitura das notas de sentido em dia, o que a busca
 //! por palavras e o sentido pelos vetores usam.
 //!
-//! A nota vale enquanto o blob do arquivo no mapa for o que ela guardou
-//! (`io::map_notes`). Quem lê as notas para a busca fica aqui, num módulo que
+//! A nota do arquivo inteiro vale enquanto o conteúdo do arquivo no mapa for
+//! o que ela guardou; a de uma declaração, enquanto o texto dela for o que ela
+//! guardou (`io::map_notes`). Quem lê as notas para a busca fica aqui, num módulo que
 //! só conhece o banco: a busca ([`crate::io::map_search`]) e o sentido
 //! ([`crate::io::map_meaning`]) o usam, e `io::map_notes`, que grava a nota e
 //! refaz o índice e os vetores, fica em cima dos dois.
@@ -28,14 +29,20 @@ use crate::platform::error::Result;
 
 /// A regra de a nota `n` (a linha de `notes` com esse apelido) estar em dia,
 /// para embutir num `WHERE`: ela guardou um SHA-256, o arquivo segue no mapa,
-/// o texto analisado dele é JSON e traz esse mesmo SHA-256 e, quando ela
-/// nomeia uma declaração, o arquivo ainda a tem. O texto analisado que não é
-/// JSON deixa a nota velha, sem derrubar quem a lê. Cada nota olha só o texto
-/// do próprio arquivo.
+/// o texto analisado dele é JSON e, quando ela nomeia uma declaração, o
+/// arquivo ainda a tem. Além disso, o texto analisado traz o mesmo SHA-256 do
+/// conteúdo que ela guardou ou, na nota de uma declaração, o mesmo SHA-256 do
+/// texto dela (`declaration_sha256`, por nome): a outra linha mudada no
+/// arquivo não envelhece a nota da declaração que não mudou. O texto
+/// analisado que não é JSON deixa a nota velha, sem derrubar quem a lê. Cada
+/// nota olha só o texto do próprio arquivo.
 pub(crate) const FRESH: &str = "n.sha256 IS NOT NULL \
     AND EXISTS (SELECT 1 FROM files fresh_file WHERE fresh_file.path = n.file) \
     AND EXISTS (SELECT 1 FROM texts fresh_text WHERE fresh_text.path = n.file \
-        AND CASE WHEN json_valid(fresh_text.analysis) THEN json_extract(fresh_text.analysis, '$.content_sha256') END = n.sha256) \
+        AND (CASE WHEN json_valid(fresh_text.analysis) THEN json_extract(fresh_text.analysis, '$.content_sha256') END = n.sha256 \
+            OR (n.name <> '' AND n.declaration_sha256 IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(\
+                CASE WHEN json_valid(fresh_text.analysis) THEN fresh_text.analysis ELSE '{}' END, '$.declaration_sha256') fresh_stamp \
+                WHERE fresh_stamp.key = n.name AND fresh_stamp.value = n.declaration_sha256)))) \
     AND (n.name = '' OR EXISTS (SELECT 1 FROM decls fresh_decl WHERE fresh_decl.file = n.file AND fresh_decl.name = n.name))";
 
 /// Uma nota em dia como o índice a lê: o arquivo, a declaração, o texto e a

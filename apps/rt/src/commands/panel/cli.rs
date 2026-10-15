@@ -154,7 +154,8 @@ pub fn dispatch(cmd: PanelCmd) {
             let refresh=refresh_consumption.then(||{
                 crate::shared::rtk_gain::refresh(&root);
                 let machine=crate::commands::spec::spend::Machine::here();
-                // A conta do gasto também fecha o histórico do projeto e o devolve em `project`.
+                // A conta do gasto também fecha o histórico do projeto e o devolve em `project`,
+                // mesmo quando a conta da máquina é recusada.
                 let mut refresh=crate::commands::spec::spend::spend_at(
                     &crate::commands::spec::spend::SpendOpts{root:root.clone(),publish:false,republish:false,url:None},&machine);
                 refresh["waves"]=super::wave_usage::refresh(&root,spec.as_deref(),session.as_deref(),machine.config.as_deref());

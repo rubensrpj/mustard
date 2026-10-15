@@ -823,13 +823,12 @@ Failed with errors in 0s 448ms
 /// script de um pacote não vale até o fim da saída, e as pastas dos pacotes
 /// cujo `src/a.ts` ela cita. O `package.json` de `packages/web` sem versão
 /// faz o npm anunciar o script só com `> lint`; o rodapé do npm, no stderr,
-/// fecha o bloco quando o stderr sai na ordem (`2>&1`), e chega antes do
-/// bloco do jeito que o executor dos comandos junta as duas saídas: o stderr
-/// inteiro e, na mesma linha do fim dele, o stdout. Quando o pacote passa e
-/// a ferramenta da raiz cai depois dele, não há rodapé de pacote nenhum.
+/// fecha o bloco e chega depois dele, com o `2>&1` e pelo executor dos
+/// comandos, que lê as duas saídas num cano só. Quando o pacote passa e a
+/// ferramenta da raiz cai depois dele, não há rodapé de pacote nenhum.
 /// `{root}` é a raiz.
 #[cfg(test)]
-pub(super) const PACKAGE_BLOCKS: [(&str, &str, &[&str]); 5] = [
+pub(super) const PACKAGE_BLOCKS: [(&str, &str, &[&str]); 4] = [
     (
         "npm run lint --workspaces 2>&1, sem versão em packages/web",
         "
@@ -850,24 +849,6 @@ npm error command failed
 npm error command sh -c tsc --noEmit -p .
 ",
         &["packages/web"],
-    ),
-    (
-        "npm run lint --workspaces, sem versão em packages/web, como o executor junta",
-        "npm error Lifecycle script `lint` failed with error:
-npm error code 1
-npm error path {root}/packages/web
-npm error workspace @mono/web
-npm error location {root}/packages/web
-npm error command failed
-npm error command sh -c tsc --noEmit -p . > @mono/api@1.0.0 lint
-> tsc --noEmit -p .
-
-
-> lint
-> tsc --noEmit -p .
-
-src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never read.",
-        &[],
     ),
     (
         "npm run lint --workspaces && tsc --noEmit -p .",
@@ -1067,8 +1048,8 @@ Exit status 1
     /// `> lint` do npm sem versão fecha o bloco do pacote anterior, e o
     /// `src/a.ts` de `packages/web` cita o arquivo de lá, e não o de
     /// `packages/api`. O bloco sem esse rodapé, como o do pacote que passou
-    /// antes de a ferramenta da raiz cair ou o que o executor junta com o
-    /// rodapé antes, não cita o arquivo do pacote nem o da raiz.
+    /// antes de a ferramenta da raiz cair, não cita o arquivo do pacote nem o
+    /// da raiz.
     #[test]
     fn a_package_block_holds_only_until_the_failure_footer_of_that_package() {
         let known: HashSet<&str> = ["src/a.ts", "packages/web/src/a.ts", "packages/api/src/a.ts"].into_iter().collect();
@@ -1213,6 +1194,46 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
     fn the_failure_reading_finds_the_packages_by_their_package_json() {
         let dir = tempfile::tempdir().unwrap();
         let root = &dir.path().join("repo");
+        let work = npm_monorepo(root);
+        #[cfg(unix)]
+        let link = dir.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root, &link).unwrap();
+        for ((tool, output, _), waves) in [(PACKAGE_BLOCKS[0], vec![2]), (MONOREPO_LINT[3], vec![1, 2])] {
+            let written = |place: &std::path::Path| output.replace("{root}", &place.to_string_lossy());
+            let expected = Cited { waves, outside: vec![], none: false };
+            assert_eq!(cited(root, &written(root), &work), expected, "{tool}");
+            #[cfg(unix)]
+            assert_eq!(cited(&link, &written(&root.canonicalize().unwrap()), &work), expected, "{tool}, pela pasta de verdade");
+        }
+    }
+
+    /// O `npm run lint --workspaces` declarado sem `2>&1` escreve o anúncio e
+    /// o erro do tsc de cada pacote no stdout e o rodapé `npm error path` no
+    /// stderr. Rodado pelo executor dos comandos, como a rodada e o fechamento
+    /// rodam o lint, o rodapé chega depois do bloco do pacote, e o `src/a.ts`
+    /// cita o arquivo de `packages/web`: só a onda que o mudou reabre.
+    #[test]
+    fn a_package_failure_split_across_both_streams_cites_the_package_file_through_the_executor() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().join("repo");
+        let work = npm_monorepo(root);
+        let output = PACKAGE_BLOCKS[0].1.replace("{root}", &root.to_string_lossy());
+        let footer = output.find("npm error ").expect("o rodapé do npm");
+        let streams = dir.path().join("streams");
+        std::fs::create_dir_all(&streams).unwrap();
+        std::fs::write(streams.join("stdout"), &output[..footer]).unwrap();
+        std::fs::write(streams.join("stderr"), &output[footer..]).unwrap();
+        let run = crate::commands::review::qa_run::run_server_command("cat stdout; cat stderr >&2; exit 1", &streams);
+        assert_eq!(run.result, "fail", "{}", run.output);
+        assert_eq!(cited(root, &run.output, &work), Cited { waves: vec![2], outside: vec![], none: false }, "{}", run.output);
+    }
+
+    /// O monorepo do npm em `root`, sob git, com o mesmo `src/a.ts` na raiz e
+    /// nos pacotes `packages/web`, sem versão, e `packages/api`, e a obra em
+    /// que a onda 1 mudou o `src/a.ts` de `packages/api` e a onda 2 o de
+    /// `packages/web` e o `package.json` dele.
+    fn npm_monorepo(root: &std::path::Path) -> Work {
         let manifests = [
             ("", json!({"name": "mono", "version": "1.0.0", "private": true, "workspaces": ["packages/*"]})),
             ("packages/web", json!({"name": "@mono/web", "private": true})),
@@ -1225,17 +1246,6 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         }
         assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
         let (web, api, manifest) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string(), "packages/web/package.json".to_string());
-        let work = Work { changed: BTreeSet::from([web.clone(), api.clone(), manifest.clone()]), waves: vec![(1, vec![api]), (2, vec![web, manifest])] };
-        #[cfg(unix)]
-        let link = dir.path().join("link");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(root, &link).unwrap();
-        for ((tool, output, _), waves) in [(PACKAGE_BLOCKS[0], vec![2]), (MONOREPO_LINT[3], vec![1, 2])] {
-            let written = |place: &std::path::Path| output.replace("{root}", &place.to_string_lossy());
-            let expected = Cited { waves, outside: vec![], none: false };
-            assert_eq!(cited(root, &written(root), &work), expected, "{tool}");
-            #[cfg(unix)]
-            assert_eq!(cited(&link, &written(&root.canonicalize().unwrap()), &work), expected, "{tool}, pela pasta de verdade");
-        }
+        Work { changed: BTreeSet::from([web.clone(), api.clone(), manifest.clone()]), waves: vec![(1, vec![api]), (2, vec![web, manifest])] }
     }
 }

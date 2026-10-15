@@ -731,9 +731,10 @@ mod tests {
     /// Duas ondas voltam na mesma rodada, e uma pede novo plano: a outra é
     /// conferida, comitada e gravada, e o despacho segue com a onda que só
     /// dependia dela. A que pede novo plano fica fora do commit, com a cópia
-    /// como está e o aviso que manda perguntar; a onda que divide arquivo com
-    /// ela e a que depende dela não saem. Depois do clique em "Aceitar", a
-    /// rodada seguinte a comita, e as duas que ela segurava saem.
+    /// como está e o aviso que manda perguntar; a onda que depende dela não
+    /// sai, e a que divide arquivo com ela já tinha saído ao lado dela. Depois
+    /// do clique em "Aceitar", a rodada seguinte a comita, e a que ela
+    /// segurava sai.
     #[test]
     fn a_wave_asking_for_a_new_plan_holds_only_itself_and_the_next_round_commits_it_after_the_click() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
@@ -744,7 +745,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/a.rs"], &[]), (4, &["src/c.rs"], &[2]), (5, &["src/d.rs"], &[1])]);
         let mut first = waves_in(&round(root, "x", None), "dispatch");
         first.sort_unstable();
-        assert_eq!(first, vec![1, 2], "a onda 3 divide o arquivo da 1");
+        assert_eq!(first, vec![1, 2, 3], "a onda 3 sai ao lado da 1, mesmo dividindo o arquivo dela");
         let (one, two) = (copy_of(root, 1), copy_of(root, 2));
         std::fs::write(one.join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
         std::fs::write(two.join("src/b.rs"), "fn one() {}\n// a onda 2 mudou\n").unwrap();
@@ -769,8 +770,8 @@ mod tests {
         let hint = asked["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(&code), "o cabeçalho da pergunta vai no aviso: {hint}");
         assert!(held["next"].as_str().unwrap_or_default().contains(hint), "{held}");
-        assert_eq!(waves_in(&held, "dispatch"), vec![4], "a 3 divide arquivo com a 1, e a 5 depende dela: {held}");
-        assert_eq!(waves_in(&held, "running"), vec![4], "a onda que espera o clique não está em andamento: {held}");
+        assert_eq!(waves_in(&held, "dispatch"), vec![4], "a 5 depende da 1: {held}");
+        assert_eq!(waves_in(&held, "running"), vec![3, 4], "a onda que espera o clique não está em andamento: {held}");
 
         let session = "s-segura-so-ela";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
@@ -783,13 +784,13 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
         let mut sent = waves_in(&went, "dispatch");
         sent.sort_unstable();
-        assert_eq!(sent, vec![3, 5], "as ondas que ela segurava saem: {went}");
+        assert_eq!(sent, vec![5], "a onda que ela segurava sai: {went}");
     }
 
     /// A onda que pede novo plano já voltou e não é órfã, mesmo com o Claude
     /// Code que a mandou fechado: a cópia dela fica com o que ela entregou, a
-    /// rodada não a manda de novo, e ela segue segurando o arquivo dela. Com o
-    /// clique, a rodada comita o que ficou na cópia.
+    /// rodada não a manda de novo, e ela segue segurando a onda que depende
+    /// dela. Com o clique, a rodada comita o que ficou na cópia.
     #[test]
     fn a_wave_waiting_for_the_click_keeps_its_copy_when_its_sender_is_gone() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
@@ -797,7 +798,7 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[1])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
 
         // O Claude Code que mandou a onda 1 fechou.
@@ -813,7 +814,7 @@ mod tests {
         let held = round(root, "x", None);
         assert_eq!(held["ok"], json!(true), "{held}");
         assert_eq!(change_asked(&held)["wave"], json!(1), "{held}");
-        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "nem reenvio, nem a onda do mesmo arquivo: {held}");
+        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "nem reenvio, nem a onda que depende dela: {held}");
         assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
 
         let session = "s-copia-fica";

@@ -17,12 +17,12 @@ use super::leftovers::is_cleanup;
 use super::stops::waves_replanned;
 use crate::commands::wave::wave_overlap_check::{WaveGraph, wave_graph};
 use crate::commands::spec_events::write::record;
-use crate::shared::dag::{sets_cross, touches_whole_tree};
+use crate::shared::dag::touches_whole_tree;
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
 /// é quanto a máquina aguenta compilando ao mesmo tempo. Cada onda compila
-/// dentro da própria vaga, e é o arquivo declarado que segura na fila a onda
-/// pronta que cruzaria com outra.
+/// dentro da própria vaga e trabalha na própria cópia: duas ondas com o mesmo
+/// arquivo saem juntas, e a rodada junta as duas no commit.
 const DEFAULT_PARALLEL: usize = 4;
 
 /// Quantas ondas o projeto deixa compilar ao mesmo tempo.
@@ -32,12 +32,10 @@ pub(crate) fn max_parallel(root: &Path) -> usize {
 
 /// As ondas que saem nesta rodada: as que ainda não saíram nem entregaram,
 /// cujas dependências já foram entregues, no máximo `limit` junto com as que
-/// estão em andamento (`running`). Duas ondas cujos arquivos se cruzam — o
-/// mesmo caminho, ou um padrão que casa o outro
-/// ([`crate::shared::dag::files_cross`]) — nunca saem juntas, nem uma delas
-/// sai por cima de uma onda em andamento que já declarou aquele arquivo: a
-/// que perde a vez volta para a fila e espera quem está com o arquivo
-/// entregar. A onda com o curinga da árvore inteira (`**`) nunca sai ao lado
+/// estão em andamento (`running`). Duas ondas cujos arquivos se cruzam saem
+/// juntas, e a que divide arquivo com uma onda em andamento também sai: cada
+/// onda trabalha na própria cópia, e a rodada junta no commit; o trecho que
+/// conflitar segura só a volta dele. A onda com o curinga da árvore inteira (`**`) nunca sai ao lado
 /// de outra: nem com outra em andamento, nem com ela em andamento. A onda órfã — em andamento sem o
 /// processo que a mandou — não conta como vaga ocupada para as outras
 /// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
@@ -139,11 +137,6 @@ pub(super) fn outgoing(
     // esperava, mesmo que ela não saia nesta rodada.
     let holding: BTreeSet<u64> = unanswered_sends(log).into_keys().filter(|n| replanned.contains(n)).collect();
     let slots = limit.saturating_sub(effective_running + holding.len());
-    // O arquivo que cada onda em andamento já declarou trava a vaga dela: uma
-    // onda pronta cujo arquivo cruza com ele — o mesmo caminho, ou um padrão
-    // que o casa — espera, mesmo com vaga livre, e a que sai primeiro nesta
-    // rodada tranca o arquivo para a próxima da mesma leva.
-    let mut taken: Vec<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
     // A onda com o curinga da árvore inteira cruza com todas, até com a que
     // não declara arquivo: com ela em andamento nada mais sai, e ela só sai
     // sem nenhuma outra em andamento nem saindo junto.
@@ -160,12 +153,10 @@ pub(super) fn outgoing(
             || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d) || blocked.contains(d)) {
             continue;
         }
-        let files: Vec<&String> = graph.files.get(&n).into_iter().flatten().collect();
-        let whole_tree = touches_whole_tree(files.iter().copied());
-        if (whole_tree && busy) || sets_cross(files.iter().copied(), taken.iter().copied()) {
+        let whole_tree = touches_whole_tree(graph.files.get(&n).into_iter().flatten());
+        if whole_tree && busy {
             continue;
         }
-        taken.extend(files);
         busy = true;
         whole_tree_out = whole_tree;
         fresh += usize::from(!holding.contains(&n));
@@ -1052,23 +1043,17 @@ mod tests {
         assert_eq!(back.fields.get("files"), Some(&json!(["src/a.rs"])), "{wrote}");
     }
 
-    /// Duas ondas sem dependência entre si, mas com o mesmo arquivo
-    /// declarado, não saem juntas mesmo com vaga livre: quem chegou depois
-    /// espera a que já está em andamento entregar, e só então sai sozinha.
-    /// Quatro ondas sem arquivo em comum saem juntas, até o novo teto de
-    /// quatro; a quinta espera a vaga.
+    /// Duas ondas sem dependência entre si, com o mesmo arquivo declarado,
+    /// saem juntas com a terceira: cada uma trabalha na própria cópia. Cinco
+    /// ondas sem arquivo em comum saem até o teto de quatro; a quinta espera a
+    /// vaga.
     #[test]
-    fn file_lock_blocks_waves_with_a_shared_file_and_releases_up_to_four_without_crossing() {
-        // Duas ondas com o mesmo arquivo: só a que já está em andamento sai,
-        // mesmo com vaga livre para a outra.
+    fn waves_with_a_shared_file_leave_together_up_to_the_cap_of_four() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
         let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 3], "a onda 2 divide arquivo com a 1 e espera: {out}");
-
-        let again = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
-        assert_eq!(waves_in(&again, "dispatch"), vec![2], "livre o arquivo, a onda 2 sai sozinha: {again}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3], "o arquivo em comum não segura a onda 2: {out}");
 
         // Quatro ondas sem arquivo em comum saem juntas, até o teto de
         // quatro; a quinta espera.
@@ -3468,9 +3453,10 @@ mod tests {
         assert_eq!(wave_order(root, 4), vec![log.current(one).unwrap().id, log.current(two).unwrap().id], "as duas, do mesmo tipo, numa onda só");
     }
 
-    /// Small work leaves and keeps later conflicting work reserved.
+    /// Duas ondas de tipos diferentes que dividem `src/a.rs` saem juntas, ao
+    /// lado da onda em andamento: a de depois não espera a de antes.
     #[test]
-    fn a_small_group_leaves_and_keeps_a_later_conflicting_group_reserved() {
+    fn a_later_group_sharing_a_file_with_an_earlier_one_leaves_beside_it() {
         use crate::shared::dag::TaskKind;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3484,8 +3470,9 @@ mod tests {
 
         let judge = judging(|id| if id == small { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)).map(|(formed, _)| formed), Ok(vec![2]));
-        assert_eq!(spec_now(root).current(later).and_then(SpecEvent::wave), None, "o de seis espera atrás do reservado");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)).map(|(formed, _)| formed), Ok(vec![2, 3]));
+        assert_eq!(spec_now(root).current(small).and_then(SpecEvent::wave), Some(2), "o defeito sai primeiro");
+        assert_eq!(spec_now(root).current(later).and_then(SpecEvent::wave), Some(3), "o de seis sai ao lado dele");
     }
 
     /// A tarefa com o curinga da árvore inteira cruza com todas: sai sozinha,

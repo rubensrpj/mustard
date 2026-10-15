@@ -244,6 +244,28 @@ fn audit_counts_fresh_and_stale_notes_and_functions_without_a_fresh_note() {
     assert!(audit["issues"].as_array().unwrap().iter().any(|i| i["check"] == "invalid_analysis_json"), "{audit}");
 }
 
+/// Num arquivo em TypeScript lido pelo scan, com duas funções e a frase de
+/// cada uma, mudar o corpo da segunda envelhece só a frase dela: a da
+/// primeira segue em dia, e a do arquivo inteiro envelhece com ele.
+#[test]
+fn a_changed_function_ages_only_its_own_note_in_a_scanned_typescript_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
+    let body = |refund: &str| format!("export function charge(amount: number): number {{\n  return amount;\n}}\n\nexport function refund(amount: number): number {{\n  return {refund};\n}}\n");
+    std::fs::write(root.join("src/pay.ts"), body("amount")).unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let model = store::model_path(root);
+    for (name, text) in [("charge", "Cobra o cliente."), ("refund", "Devolve o dinheiro do cliente."), ("", "Pagamentos da loja.")] {
+        map_notes::write(&model, root, &map_notes::NewNote { file: "src/pay.ts", name, text, spec: "loja" }).unwrap();
+    }
+    std::fs::write(root.join("src/pay.ts"), body("-amount")).unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let stale = |name: &str| map_notes::of_at(&model, "src/pay.ts", name).unwrap().unwrap().stale;
+    assert_eq!((stale("charge"), stale("refund"), stale("")), (false, true, true));
+}
+
 #[test]
 fn same_line_members_have_distinct_stable_identities_and_old_pack_versions_request_refresh() {
     let dir = fixture();

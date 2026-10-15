@@ -431,20 +431,32 @@ pub const GLOSSARY: MapBlock = written(block!("glossary", version 1, {
 /// As notas de sentido: de cada arquivo ou declaração, uma frase curta em
 /// palavras de negócio, escrita pelo agente que leu o trecho — o arquivo, o
 /// nome da declaração (vazio na nota do arquivo inteiro), o texto, a spec que
-/// a escreveu e o blob do arquivo no momento em que foi escrita. A nota vale
-/// enquanto o blob do arquivo no mapa for o dela; arquivo mudado a deixa
-/// velha, e quem lê o trecho a reescreve. Quem grava e lê é `io::map_notes`.
-/// Não se refaz do código: fica fora de [`BLOCKS`] e, na troca de versão, é
-/// convertido, nunca apagado.
-pub const NOTES: MapBlock = notes_with_hash(block!("notes", version 2, {
-    "notes" at list(&["notes"]) => ["file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text, "sha256" Text]
+/// a escreveu, o blob e o SHA-256 do arquivo no momento em que foi escrita e,
+/// na nota de uma declaração, o SHA-256 do texto dela. A nota do arquivo
+/// inteiro vale enquanto o conteúdo do arquivo no mapa for o dela; a de uma
+/// declaração, também enquanto o texto da declaração for o dela. O que mudou
+/// a deixa velha, e quem lê o trecho a reescreve. Quem grava e lê é
+/// `io::map_notes`. Não se refaz do código: fica fora de [`BLOCKS`] e, na
+/// troca de versão, é convertido, nunca apagado.
+pub const NOTES: MapBlock = notes_with_hash(block!("notes", version 3, {
+    "notes" at list(&["notes"]) => [
+        "file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text, "sha256" Text, "declaration_sha256" Text
+    ]
 }));
 const fn notes_with_hash(mut block: MapBlock) -> MapBlock {
     block.block.kind = Kind::Written(convert_notes);
     block
 }
-fn convert_notes(conn: &Connection, version: u32) -> Result<()> {
-    if version < 2 { conn.execute_batch("ALTER TABLE notes ADD COLUMN sha256 TEXT;")?; }
+/// A conversão das notas: cada coluna que a versão gravada não tinha entra
+/// vazia, e a nota sem o SHA-256 fica velha até ser escrita de novo.
+fn convert_notes(conn: &Connection, _: u32) -> Result<()> {
+    let present: Vec<String> =
+        conn.prepare("SELECT name FROM pragma_table_info('notes')")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for column in ["sha256", "declaration_sha256"] {
+        if !present.iter().any(|name| name == column) {
+            conn.execute_batch(&format!("ALTER TABLE notes ADD COLUMN {column} TEXT;"))?;
+        }
+    }
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 //! dividem arquivo com elas. O resumo acompanha cada tarefa que deixou até
 //! ela ser entregue, em quantas ondas ela sair. Uma onda leva no máximo um
 //! resumo, e as tarefas dela não entram em outra onda da mesma montagem,
-//! saia ela agora ou espere a vez pela regra de conflito.
+//! saia ela agora ou espere uma vaga.
 
 use std::collections::BTreeSet;
 
@@ -134,7 +134,7 @@ mod tests {
 
     /// A tarefa pronta que divide arquivo, direto, com uma das que o resumo
     /// deixou vai na onda dele; a que só divide arquivo com essa, por
-    /// corrente, não vai, e espera a vez.
+    /// corrente, não vai, e sai na sua onda, como a sem relação.
     #[test]
     fn a_ready_task_sharing_a_file_with_the_left_ones_rides_along_but_a_chain_does_not() {
         let dir = tempdir().unwrap();
@@ -147,18 +147,18 @@ mod tests {
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
-        assert_eq!(wave_order(root, 1), vec![left, along], "a que divide arquivo vai de carona");
-        assert_eq!(wave_order(root, 2), vec![apart], "a da corrente espera, e a sem relação sai à parte");
-        assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a da corrente segue no backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2, 3]));
+        let id = |task: u64| log.current(task).unwrap().id;
+        assert_eq!(wave_order(root, 1), vec![id(left), id(along)], "a que divide arquivo vai de carona");
+        assert_eq!(wave_order(root, 2), vec![id(chained)], "a da corrente sai na sua onda");
+        assert_eq!(wave_order(root, 3), vec![id(apart)], "a sem relação sai à parte");
     }
 
-    /// O resumo preso por uma onda em andamento reserva os arquivos dele: a
-    /// tarefa que divide arquivo com a onda dele, mesmo só por corrente, não
-    /// toma a vaga que ele deixa livre, e a que não divide, com o tamanho com
-    /// que um lote sai ao lado da onda em andamento, sai.
+    /// O resumo que divide arquivo com uma onda em andamento sai ao lado
+    /// dela, com a tarefa que divide arquivo direto com a dele; a que só
+    /// divide por corrente e a que não divide nada saem cada uma na sua vaga.
     #[test]
-    fn a_summary_held_by_a_running_wave_keeps_its_files_from_a_later_task() {
+    fn a_summary_sharing_a_file_with_a_running_wave_leaves_beside_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -168,16 +168,17 @@ mod tests {
         seed_running(root, 1);
 
         let left = backlog_task_on(root, said, crit, "Mexer nos dois.", &["src/b.rs", "src/a.rs"]);
-        backlog_task_on(root, said, crit, "Mexer no um.", &["src/a.rs", "src/d.rs"]);
+        let along = backlog_task_on(root, said, crit, "Mexer no um.", &["src/a.rs", "src/d.rs"]);
         let chained = backlog_task_on(root, said, crit, "Mexer no quatro.", &["src/d.rs"]);
         let apart = backlog_task_on(root, said, crit, "Mexer no cinco.", &SIX_FILES);
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2]));
-        assert_eq!(wave_order(root, 2), vec![apart], "só a que não divide arquivo sai");
-        assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a que divide espera a vez");
-        assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2, 3, 4]));
+        let id = |task: u64| log.current(task).unwrap().id;
+        assert_eq!(wave_order(root, 2), vec![id(left), id(along)], "o resumo sai ao lado da onda em andamento");
+        assert_eq!(wave_order(root, 3), vec![id(chained)], "a da corrente sai na sua vaga");
+        assert_eq!(wave_order(root, 4), vec![id(apart)], "a que não divide nada também");
     }
 
     /// Summary continuation keeps its own wave; independent small work can
@@ -279,8 +280,8 @@ mod tests {
     }
 
     /// A tarefa que outro resumo acompanha não vai de carona na onda de um
-    /// resumo, mesmo dividindo arquivo com ela: espera a vez de sair na onda
-    /// do resumo dela.
+    /// resumo, mesmo dividindo arquivo com ela: sai na onda do resumo dela,
+    /// na mesma rodada.
     #[test]
     fn a_task_another_summary_carries_does_not_ride_along() {
         let dir = tempdir().unwrap();
@@ -292,8 +293,8 @@ mod tests {
         stopped_in(root, 8, &[two]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![one], "only the task of its own summary");
-        assert_eq!(spec_now(root).current(two).and_then(|task| task.wave()), None, "it waits for its own summary");
+        assert_eq!(wave_order(root, 2), vec![two], "it leaves with its own summary");
     }
 }

@@ -3604,13 +3604,12 @@ mod tests {
         store::save_at(&store::model_path(root), map, "scan 1", &languages).unwrap();
     }
 
-    /// O scan de uma compilação mais velha abre o mapa: ele declara o bloco
-    /// das declarações noutra versão, e o bloco perde a marca da passada. A
-    /// abertura seguinte, na versão deste programa, o refaz vazio.
+    /// O bloco das declarações ficou no formato de um scan mais velho: a
+    /// abertura seguinte, na versão deste programa, o refaz vazio e sem a
+    /// marca da passada.
     fn opened_by_an_older_scan(root: &Path) {
-        use mustard_core::io::map_db::{Block, Kind, MapDb};
-        let older = Block { name: store::DECLS.name(), version: 1, tables: &[], schema: "", kind: Kind::Rebuilt(|_, _| Ok(())) };
-        MapDb::open(&store::model_path(root), root, &[older]).unwrap();
+        let mut db = mustard_core::io::map_db::MapDb::open(&store::model_path(root), root, &[]).unwrap();
+        db.write(|tx| Ok(tx.execute("UPDATE blocks SET version = version - 1 WHERE name = ?1", [store::DECLS.name()])?)).unwrap();
     }
 
     /// Um repositório git de verdade, com o texto e o código em português e

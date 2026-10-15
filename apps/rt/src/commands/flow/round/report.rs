@@ -2101,9 +2101,9 @@ mod tests {
         );
     }
 
-    /// A rodada despacha a onda 1; a 2, que declara o mesmo arquivo, espera a
-    /// vaga do arquivo. A cópia da 2 já existia, de um pedido anterior à
-    /// trava por arquivo — outra vaga, ainda em andamento —, e a entrega dela
+    /// A rodada despacha a onda 1 na vaga única; a 2, que declara o mesmo
+    /// arquivo, espera a vaga. A cópia da 2 já existia, de um pedido anterior
+    /// — outra vaga, ainda em andamento —, e a entrega dela
     /// segue passando pela mesma fusão. A entrega da primeira é juntada ao
     /// repositório principal — o arquivo novo inclusive — e comitada, e a
     /// cópia dela fica para a próxima onda; a cópia da segunda, que a trava
@@ -2116,11 +2116,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
-        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         // Um projeto Rust: nem nele o pedido cita pasta de compilação.
         mapped(root, "cargo");
         let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a onda 2 divide arquivo com a 1 e espera: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a onda 2 espera a vaga única: {out}");
         let copy = |wave: u64| slot_of(root, wave);
         let shown = |wave: u64| mustard_core::io::wave_prompt::shown(&copy(wave));
         let prompt = &request_at(&out, 0);
@@ -2131,8 +2131,8 @@ mod tests {
             let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
-        // A cópia da onda 2 já existia, de um pedido anterior à trava por
-        // arquivo, ainda em aberto — sobre o mesmo commit que a da 1.
+        // A cópia da onda 2 já existia, de um pedido anterior ainda em
+        // aberto — sobre o mesmo commit que a da 1.
         git_at(root, &["worktree", "add", "--detach", &copy(2).to_string_lossy(), &head()]);
         seed_send_with_copy(root, 2, &copy(2).to_string_lossy());
 
@@ -2234,8 +2234,7 @@ mod tests {
 
     /// Duas rodadas ao mesmo tempo, com as voltas de duas ondas que mexeram
     /// no mesmo arquivo, em trechos diferentes, já gravadas na spec — a cópia
-    /// da 2 já existia, de um pedido anterior à trava por arquivo, na mesma
-    /// base da 1.
+    /// da 2 já existia, de um pedido anterior, na mesma base da 1.
     ///
     /// Com o gancho do commit recusando, as duas leem as voltas, juntam, veem
     /// o git recusar e desfazem, uma depois da outra: nada é comitado nem
@@ -2250,8 +2249,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
-        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a vaga do arquivo");
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a vaga única");
         let copy = |wave: u64| slot_of(root, wave);
         let seed = git_text(root, &["rev-parse", "HEAD"]);
         git_at(root, &["worktree", "add", "--detach", &copy(2).to_string_lossy(), &seed]);
@@ -2298,8 +2297,8 @@ mod tests {
 
     /// Duas rodadas ao mesmo tempo, com as voltas de duas ondas que mexeram
     /// no mesmo arquivo de um submódulo, em trechos diferentes, já gravadas
-    /// na spec — a cópia da 2 já existia, de um pedido anterior à trava por
-    /// arquivo, na mesma base da 1, com o submódulo dela já na branch da
+    /// na spec — a cópia da 2 já existia, de um pedido anterior, na mesma
+    /// base da 1, com o submódulo dela já na branch da
     /// unidade. As duas leem a spec antes de qualquer uma pegar a trava; uma
     /// junta as duas, comita no submódulo e comita o ponteiro no principal,
     /// e a outra não acha volta a assumir. O arquivo
@@ -2311,8 +2310,8 @@ mod tests {
         let root = &dir.path().join("principal");
         with_submodule(root, dir.path());
         approved(root, "x", &[(1, &["libs/sub/lib.txt"], &[]), (2, &["libs/sub/lib.txt"], &[])]);
-        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a vaga do arquivo");
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a vaga única");
         let copy = |wave: u64| slot_of(root, wave);
         git_at(root, &["worktree", "add", "--detach", &copy(2).to_string_lossy(), &git_text(root, &["rev-parse", "HEAD"])]);
         let unit = {
@@ -5213,17 +5212,22 @@ fn main() { sum_by_the_new_name(); }
         let work = "fn one() {}\n// o trabalho da onda 1 na cópia\n";
         std::fs::write(slot_of(root, 1).join("src/a.rs"), work).unwrap();
 
-        // A tarefa da onda 1 ganha um arquivo que a onda 2, em andamento,
-        // também toca: a onda 1 espera por ele, e a onda 3 fica pronta.
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap();
-        let mut body = task.fields.clone();
-        for key in ["v", "id", "code", "at", "search", "type", "author"] {
-            body.remove(key);
-        }
-        body.insert("replaces".into(), json!(task.id));
-        body.insert("files".into(), json!([{"path": "src/a.rs"}, {"path": "src/b.rs"}]));
-        id_of(&write(root, "x", "task", Value::Object(body)));
+        // A tarefa da onda 1 ganha versão nova, impedida: a onda 1 espera, e
+        // a onda 3 fica pronta.
+        let revise = |blocked: Option<&str>| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap();
+            let mut body = task.fields.clone();
+            for key in ["v", "id", "code", "at", "search", "type", "author", "blocked_by"] {
+                body.remove(key);
+            }
+            body.insert("replaces".into(), json!(task.id));
+            if let Some(blocked) = blocked {
+                body.insert("blocked_by".into(), json!(blocked));
+            }
+            crate::commands::spec_events::write::record(root, "x", "task", body, mustard_core::domain::spec_state::PhaseWriter::Binary).unwrap();
+        };
+        revise(Some("Aguardar o acesso à fonte."));
 
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -5231,11 +5235,13 @@ fn main() { sum_by_the_new_name(); }
         assert_eq!(std::fs::read_to_string(slot_of(root, 1).join("src/a.rs")).unwrap(), work, "{out}");
         assert!(kept_refs(root).is_empty(), "nada foi limpo: {out}");
 
-        // A onda 2 entrega, o arquivo fica livre, e a onda 1 sai de novo na
-        // cópia que era dela, com o trabalho lá; a onda 3 fica com a outra vaga.
+        // A onda 2 entrega, a tarefa da 1 fica livre, e a onda 1 sai de novo
+        // na cópia que era dela, com o trabalho lá; a onda 3 fica com a outra
+        // vaga.
         std::fs::write(slot_of(root, 2).join("src/b.rs"), "fn one() {}\n// onda 2\n").unwrap();
         let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
+        revise(None);
         let again = round(root, "x", None);
         assert_eq!(again["ok"], json!(true), "{again}");
         let mut sent = waves_in(&again, "dispatch");

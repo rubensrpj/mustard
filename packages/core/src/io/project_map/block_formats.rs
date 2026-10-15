@@ -25,6 +25,7 @@ const FORMATS: &[(&str, u32, &str)] = &[
     ("specs", 2, "186054aebda60aea"),
     ("glossary", 1, "b1b6441fa111fe64"),
     ("notes", 2, "a7d9d32bf5ca50e1"),
+    ("notes", 3, "49795b2dab494b2a"),
     ("knowledge_notes", 1, "75ccf73cc654be5b"),
     ("knowledge_index", 3, "26a72894d27e271c"),
     ("search_facts", 1, "4efc3fabb45e666a"),

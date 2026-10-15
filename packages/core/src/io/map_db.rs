@@ -6,13 +6,18 @@
 //! nome, a versão do formato, as tabelas, o esquema e o tipo ([`Block`]). A
 //! tabela `blocks` guarda, de cada bloco, o nome e a versão com que ele foi
 //! gravado. Ao abrir ([`MapDb::open`]), cada bloco declarado cuja versão falta
-//! ou difere da do programa é posto em dia sozinho, só ele, numa transação
-//! própria:
+//! ou é mais velha que a do programa é posto em dia sozinho, só ele, numa
+//! transação própria:
 //!
 //! - o bloco refeito ([`Kind::Rebuilt`]) perde as tabelas dele e é refeito a
 //!   partir do código, do git ou das specs, pela função que o dono passa;
 //! - o bloco escrito por agente ([`Kind::Written`]) nunca é apagado: a função
 //!   de conversão do dono leva as linhas da versão encontrada para a nova.
+//!
+//! O bloco gravado numa versão mais nova que a do programa fica como está, e
+//! a abertura recusa: o programa mais velho não sabe ler nem gravar o formato
+//! dele, e refazê-lo apagaria o que o mais novo gravou — com duas compilações
+//! no mesmo mapa, cada abertura de uma esvaziaria o bloco da outra.
 //!
 //! A tabela de blocos guarda também a marca de quem encheu cada bloco: quem
 //! grava a põe junto das linhas ([`set_mark`]), e o bloco refeito volta sem
@@ -125,9 +130,11 @@ impl MapDb {
         Ok(Self {conn})
     }
     /// Abre o mapa gravado em `path`, criando o arquivo se faltar, e põe em
-    /// dia cada bloco de `blocks` cuja versão falta ou difere: só aquele
+    /// dia cada bloco de `blocks` cuja versão falta ou é mais velha: só aquele
     /// bloco, numa transação própria, com `root` — a raiz do projeto — para o
-    /// bloco refeito. O bloco que não está em `blocks` fica como está.
+    /// bloco refeito. O bloco que não está em `blocks` fica como está. O
+    /// bloco gravado numa versão mais nova que a de `blocks` também fica como
+    /// está, e a abertura recusa.
     pub fn open(path: &Path, root: &Path, blocks: &[Block]) -> Result<Self> {
         Self::open_waiting(path, root, blocks, BUSY_WAIT)
     }
@@ -232,13 +239,17 @@ pub(crate) fn journal_to_wal(conn: &Connection, wait: Duration) -> Result<String
     }
 }
 
-/// Põe `block` em dia, quando a versão gravada falta ou difere da do
-/// programa. A versão é conferida de novo depois de pegar a trava: outro
-/// processo pode ter feito o mesmo enquanto este esperava.
+/// Põe `block` em dia, quando a versão gravada falta ou é mais velha que a
+/// do programa, e recusa sem tocar em nada quando ela é mais nova
+/// ([`newer_than_the_program`]). A versão é conferida de novo depois de
+/// pegar a trava: outro processo pode ter feito o mesmo enquanto este
+/// esperava.
 fn keep_up(conn: &mut Connection, block: &Block, root: &Path) -> Result<()> {
-    if stored_version(conn, block.name)? == Some(block.version) {
+    let stored = stored_version(conn, block.name)?;
+    if stored == Some(block.version) {
         return Ok(());
     }
+    newer_than_the_program(block, stored)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS {BLOCKS_TABLE}(name TEXT PRIMARY KEY, version INTEGER NOT NULL, mark TEXT NOT NULL DEFAULT '')"
@@ -247,6 +258,7 @@ fn keep_up(conn: &mut Connection, block: &Block, root: &Path) -> Result<()> {
     if found == Some(block.version) {
         return Ok(());
     }
+    newer_than_the_program(block, found)?;
     // O bloco refeito perde a marca de quem o encheu; o convertido guarda as
     // linhas e a marca delas.
     let keep_mark = match block.kind {
@@ -276,6 +288,19 @@ fn keep_up(conn: &mut Connection, block: &Block, root: &Path) -> Result<()> {
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// A recusa do bloco `block` gravado na versão `found`, quando ela é mais
+/// nova que a deste programa: um programa mais novo gravou o bloco, e este
+/// não o refaz nem o converte para trás.
+fn newer_than_the_program(block: &Block, found: Option<u32>) -> Result<()> {
+    match found {
+        Some(found) if found > block.version => Err(Error::config(format!(
+            "map block `{}` is in format {found}, written by a newer program; this program writes format {} and leaves the block as it is",
+            block.name, block.version
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// A versão gravada do bloco `name`; `None` quando a tabela de blocos ou a
@@ -469,6 +494,23 @@ mod tests {
             vec!["a.rs|reads the git log|0", "b.rs|writes the map|0"]
         );
         assert_eq!(db.version("notes").unwrap(), Some(2));
+    }
+
+    /// O programa mais velho que abre o bloco escrito de um mais novo recusa
+    /// e não o converte para trás: as linhas, a versão e a marca ficam, e o
+    /// mais novo o abre como deixou.
+    #[test]
+    fn an_agent_written_block_of_a_newer_version_is_refused_and_stays() {
+        let dir = tempdir().unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V2]).unwrap();
+        put(&mut db, "INSERT INTO notes VALUES ('a.rs', 'reads the git log', 1);");
+        db.write(|tx| set_mark(tx, "notes", "scan 2")).unwrap();
+        drop(db);
+
+        assert!(MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V1]).is_err());
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V2]).unwrap();
+        assert_eq!(rows(&db, "SELECT path || '|' || note || '|' || stale FROM notes"), vec!["a.rs|reads the git log|1"]);
+        assert_eq!((db.version("notes").unwrap(), db.mark("notes").unwrap().as_deref()), (Some(2), Some("scan 2")));
     }
 
     #[test]

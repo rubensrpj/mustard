@@ -547,9 +547,9 @@ fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
 }
 
 /// Um padrão cruza com todo arquivo que ele casa: `src/**` e `src/a.rs`
-/// caem na mesma onda, e com `src/**` em andamento a tarefa de `src/b.rs`
-/// espera no backlog, sem onda, enquanto a de `docs/`, que não cruza com ele,
-/// sai na sua.
+/// caem na mesma onda. Com `src/**` em andamento, a tarefa de `src/b.rs`, que
+/// ele casa, sai ao lado dele, como a de `docs/`: o padrão de uma onda em
+/// andamento não segura arquivo, só o curinga da árvore inteira sai sozinho.
 #[test]
 fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
@@ -563,9 +563,9 @@ fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches
     let docs = ["docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md", "docs/6.md"];
     let outside = seed_backlog_task(&project, crit, said, &docs);
     let (_, out) = dispatch_ready(&project);
+    let inside_wave = wave_of(&project, inside).expect("src/b.rs sai ao lado de src/** em andamento");
     let outside_wave = wave_of(&project, outside).expect("docs vira onda");
-    assert_eq!(wave_of(&project, inside), None, "src/b.rs, presa a src/** em andamento, espera no backlog");
-    assert_eq!(out, vec![outside_wave], "docs, que src/** não casa, sai");
+    assert_eq!(out, vec![inside_wave, outside_wave], "as duas saem, cada uma na sua onda");
 }
 
 /// Uma spec com duas tarefas de `a.rs` cuja onda 1 saiu e foi removida pelo
@@ -864,26 +864,6 @@ fn without_a_key_the_wave_goes_out_on_the_project_model() {
     assert!(out["dispatch"][0].get("model").is_none(), "{out}");
 }
 
-/// Duas tarefas de tipos diferentes que dividem um arquivo nunca saem juntas,
-/// em ondas separadas ou na mesma: sai a do tipo que vem primeiro, e a outra
-/// espera no backlog, sem onda, ainda que haja vaga para as duas.
-#[test]
-fn kinds_with_a_file_in_common_never_run_together() {
-    let jev = FakeJev::judging(
-        |at| {
-            if at == 0 { ("feature", 0.9) } else { ("defect", 0.9) }
-        },
-        |_, _| 0.0,
-    );
-    let (project, _, _, tasks) = judged_project(&[&["shared.rs"], &["shared.rs"]], &jev);
-    let (feature, defect) = (tasks[0].min(tasks[1]), tasks[0].max(tasks[1]));
-
-    project.run(&["round", "--dispatch", "--spec", SPEC]);
-
-    assert_eq!(batch_orders(&project), vec![vec![defect]], "só o defeito sai");
-    assert_eq!(wave_of(&project, feature), None, "o recurso espera no backlog, sem onda");
-}
-
 /// O defeito sai antes da limpeza, ainda que a limpeza tenha o número mais
 /// baixo: com uma vaga só, é o defeito que a ocupa.
 #[test]
@@ -971,8 +951,8 @@ fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
 
 /// Sem chave, ou com a chamada recusada, o tamanho não entra: três tarefas do
 /// mesmo arquivo saem numa onda só, como sempre. Com o Jev dizendo nível 3 para
-/// elas, a montagem as separa, e só a primeira sai, porque as outras dividem o
-/// arquivo com ela.
+/// elas, a montagem as separa, e as três saem, cada uma na sua onda, ainda que
+/// dividam o arquivo.
 #[test]
 fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
     let same: [&[&str]; 3] = [&["a.rs"], &["a.rs"], &["a.rs"]];
@@ -988,7 +968,7 @@ fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
     let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
     let (judged, _, _, tasks) = judged_project(&same, &biggest);
     judged.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&judged), vec![vec![tasks[0]]], "com o Jev, o nível 3 separa as três");
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[0]], vec![tasks[1]], vec![tasks[2]]], "com o Jev, o nível 3 separa as três");
 }
 
 /// Sem chave a montagem é a de hoje — por arquivo, nenhuma chamada —, e com
@@ -1088,23 +1068,10 @@ fn a_marked_task_with_an_open_dependency_waits() {
     assert_eq!(wave_of(&project, marked), None);
 }
 
-/// A marcada que divide arquivo com uma onda em andamento espera no backlog:
-/// a marca não passa por cima dos arquivos de quem está no ar.
-#[test]
-fn a_marked_task_sharing_a_file_with_the_wave_in_progress_waits() {
-    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
-    let (_, out) = dispatch_ready(&project);
-    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")]);
-    let marked = seed_task_with(&project, crit, said, &["a.rs"], &json!({"priority": PRIORITY}));
-
-    let (_, out) = dispatch_ready(&project);
-    assert!(out.is_empty(), "nada sai por cima de a.rs em andamento: {out:?}");
-    assert_eq!(wave_of(&project, marked), None, "a marcada espera a onda de a.rs");
-}
-
 /// A não marcada de número menor que divide `a.rs` com a marcada sai depois
 /// dela: sem o Jev, as duas vão na mesma onda, com a marcada à frente; com o
-/// Jev, de tipos diferentes, a marcada sai, e a outra espera no backlog.
+/// Jev, de tipos diferentes, a marcada sai na primeira onda e a outra na
+/// seguinte, na mesma rodada.
 #[test]
 fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_one() {
     let files: [&[&str]; 2] = [&["a.rs"], &["a.rs"]];
@@ -1124,8 +1091,7 @@ fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_o
         (project, crit, said, tasks)
     };
     judged.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&judged), vec![vec![tasks[1]]], "a marcada sai");
-    assert_eq!(wave_of(&judged, tasks[0]), None, "o defeito de número menor espera atrás dela");
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[1]], vec![tasks[0]]], "a marcada sai na frente, e o defeito de número menor logo atrás");
 }
 
 // ---------------------------------------------------------------------------

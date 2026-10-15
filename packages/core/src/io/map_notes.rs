@@ -10,16 +10,20 @@
 //!
 //! O bloco `notes` do mapa ([`crate::io::project_map::NOTES`]) guarda, de cada
 //! nota, o arquivo, o nome da declaração (vazio na nota do arquivo inteiro), o
-//! texto, a spec que a escreveu e o blob do arquivo no mapa no momento da
-//! escrita. Ninguém refaz a nota a partir do código: quem a escreve é o
-//! agente, e a busca nunca chama modelo nenhum para escrevê-la.
+//! texto, a spec que a escreveu, o blob e o SHA-256 do arquivo no mapa no
+//! momento da escrita e, na nota de uma declaração, o SHA-256 do texto dela
+//! ([`declaration_digests`]). Ninguém refaz a nota a partir do código: quem a
+//! escreve é o agente, e a busca nunca chama modelo nenhum para escrevê-la.
 //!
-//! **A nota envelhece com o arquivo.** Ela vale enquanto o SHA-256 do arquivo
-//! no mapa for o do conteúdo que ela guardou. O arquivo que mudou, ou que saiu do mapa, deixa
-//! a nota velha: ela fica gravada e visível para quem lê o trecho, que a
-//! reescreve, mas não entra mais na busca, porque uma nota que já não descreve
-//! o código acharia o arquivo pelo motivo errado. Fora do git o mapa não tem
-//! blob; o hash SHA-256 do conteúdo mantém a mesma invalidação fora do git.
+//! **A nota envelhece com o que ela descreve.** A do arquivo inteiro vale
+//! enquanto o SHA-256 do arquivo no mapa for o do conteúdo que ela guardou; a
+//! de uma declaração vale também enquanto o texto da própria declaração for o
+//! que ela guardou, mesmo com outra linha do arquivo mudada. O arquivo que
+//! saiu do mapa, a declaração que sumiu ou mudou e o arquivo inteiro mudado na
+//! nota dele deixam a nota velha: ela fica gravada e visível para quem lê o
+//! trecho, que a reescreve, mas não entra mais na busca, porque uma nota que
+//! já não descreve o código acharia o arquivo pelo motivo errado. Fora do git
+//! o mapa não tem blob; o SHA-256 do conteúdo mantém a mesma invalidação.
 //!
 //! Onde a nota entra na busca — no índice de palavras e no texto compilado de
 //! cada declaração, de onde saem os vetores de sentido — quem lê é
@@ -29,9 +33,11 @@
 //!
 //! Mapa sem nenhuma nota, ou sem a tabela, responde como sempre.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use rusqlite::{OptionalExtension,params};
+use serde_json::{Map, Value};
 
 use crate::domain::project_map::{MapRefusal,clean_path};
 use crate::io::map_db::table_exists;
@@ -50,6 +56,33 @@ pub struct NewNote<'a> {
     pub spec: &'a str,
 }
 
+/// O SHA-256 do texto de cada nome declarado em `content`, como o scan o
+/// guarda no texto analisado do arquivo (`declaration_sha256`) e a nota de
+/// uma declaração o confere: as linhas `line..=end_line` de toda declaração
+/// com aquele nome, na ordem das linhas. O fim desconhecido (`0`) vale a
+/// linha do começo, e a linha além do arquivo não entra.
+#[must_use]
+pub fn declaration_digests<'a>(content: &str, declarations: impl IntoIterator<Item = (&'a str, usize, usize)>) -> Map<String, Value> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut spans: BTreeMap<&str, Vec<(usize, usize)>> = BTreeMap::new();
+    for (name, line, end_line) in declarations {
+        spans.entry(name).or_default().push((line, end_line.max(line)));
+    }
+    spans
+        .into_iter()
+        .map(|(name, mut spans)| {
+            spans.sort_unstable();
+            let mut hash = crate::io::sha256::Sha256::new();
+            for (line, end_line) in spans {
+                let text = lines.get(line.saturating_sub(1)..end_line.min(lines.len())).unwrap_or_default();
+                hash.update(text.join("\n").as_bytes());
+                hash.update(b"\0");
+            }
+            (name.to_string(), Value::String(hash.hex_digest()))
+        })
+        .collect()
+}
+
 /// Uma nota como o mapa a guarda, com o dizer se ela já envelheceu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
@@ -58,19 +91,22 @@ pub struct Note {
     pub text: String,
     pub spec: String,
     /// A nota não está em dia pela regra que a busca lê
-    /// (`io::map_notes_fresh`): o arquivo mudou, saiu do mapa ou perdeu a
+    /// (`io::map_notes_fresh`): o que ela descreve — o arquivo inteiro ou o
+    /// texto da declaração — mudou, o arquivo saiu do mapa ou perdeu a
     /// declaração depois que ela foi escrita.
     pub stale: bool,
 }
 
 /// Grava a nota `new` no mapa em `model`, de projeto em `root`, no lugar da
 /// que o mesmo arquivo e a mesma declaração já tinham, e devolve o que ficou
-/// gravado. O blob que ela guarda é o do arquivo no mapa; a nota entra no
-/// índice de busca na mesma transação, só nos documentos do arquivo, e os
-/// vetores de sentido se refazem em seguida.
+/// gravado. O blob e o SHA-256 que ela guarda são os do arquivo no mapa e, na
+/// nota de uma declaração, também o SHA-256 do texto dela que o scan leu; a
+/// nota entra no índice de busca na mesma transação, só nos documentos do
+/// arquivo, e os vetores de sentido se refazem em seguida.
 ///
-/// Recusa o texto vazio, o arquivo que o mapa não tem e a declaração que o
-/// arquivo não tem.
+/// Recusa o texto vazio, o arquivo que o mapa não tem, o arquivo cujo texto
+/// analisado não traz o SHA-256 do conteúdo — também quando ele não é JSON —
+/// e a declaração que o arquivo não tem.
 ///
 /// # Errors
 ///
@@ -91,8 +127,22 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
     let Some(blob) = blob else {
         return Err(MapRefusal::UnknownFile { file });
     };
-    let indexed: Option<String> = db.conn().query_row("SELECT json_extract(analysis, '$.content_sha256') FROM texts WHERE path=?1", [&file], |row| row.get(0)).optional().map_err(|err| unreadable(err.into()))?.flatten();
+    // O texto analisado que não é JSON não derruba a leitura: ele fica sem
+    // SHA-256, e a nota é recusada como a do arquivo que o scan não leu.
+    let indexed: Option<(Option<String>, Option<String>)> = db
+        .conn()
+        .query_row(
+            "SELECT CASE WHEN json_valid(t.analysis) THEN json_extract(t.analysis, '$.content_sha256') END, \
+             (SELECT d.value FROM json_each(CASE WHEN json_valid(t.analysis) THEN t.analysis ELSE '{}' END, '$.declaration_sha256') d \
+              WHERE d.key = ?2) FROM texts t WHERE t.path = ?1",
+            [&file, &name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|err| unreadable(err.into()))?;
+    let (indexed, declared_sha256) = indexed.unwrap_or_default();
     let sha256 = indexed.filter(|sha| sha.len() == 64).ok_or_else(|| MapRefusal::MapUnreadable { detail: "note-needs-current-scan".into() })?;
+    let declared_sha256 = declared_sha256.filter(|sha| !name.is_empty() && sha.len() == 64);
     let source = crate::domain::knowledge::Source { file: file.clone(), line: 1, end_line: 1, sha256: sha256.clone() };
     if !crate::io::knowledge::current(root, &source, &mut Default::default()) {
         return Err(MapRefusal::MapUnreadable { detail: "note-source-changed; scan before recording".into() });
@@ -110,7 +160,10 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
     let note = Note { file, name, text, spec: new.spec.trim().to_string(), stale: false };
     db.write(|tx| {
         tx.execute("DELETE FROM notes WHERE file = ?1 AND name = ?2", params![note.file, note.name])?;
-        tx.execute("INSERT INTO notes(file, name, text, spec, blob, sha256) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![note.file, note.name, note.text, note.spec, blob, sha256])?;
+        tx.execute(
+            "INSERT INTO notes(file, name, text, spec, blob, sha256, declaration_sha256) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![note.file, note.name, note.text, note.spec, blob, sha256, declared_sha256],
+        )?;
         refresh_files(tx, &[note.file.as_str()])?;
         map_revision::bump(tx)?;
         Ok(())
@@ -193,11 +246,20 @@ mod tests {
                 function("parse_config", 1, "Parse the configuration file.")]}
         ]});
         for module in raw["modules"].as_array_mut().unwrap() {
-            module["analysis"] = json!({"content_sha256":digest(code(module["blob"].as_str().unwrap()).as_bytes())});
+            module["analysis"] = analysis_of(&code(module["blob"].as_str().unwrap()), &module["declarations"]);
         }
         raw
     }
     fn code(blob: &str) -> String { format!("// {blob}\nfn sample() {{}}\n") }
+    /// O texto analisado que o scan grava para o conteúdo `content` com estas
+    /// declarações: o SHA-256 dele e o do texto de cada declaração.
+    fn analysis_of(content: &str, declarations: &Value) -> Value {
+        let spans = declarations.as_array().into_iter().flatten().map(|d| {
+            let line = |key: &str| usize::try_from(d[key].as_u64().unwrap_or(0)).unwrap();
+            (d["name"].as_str().unwrap_or_default(), line("line"), line("end_line"))
+        });
+        json!({"content_sha256": digest(content.as_bytes()), "declaration_sha256": declaration_digests(content, spans)})
+    }
     fn digest(bytes: &[u8]) -> String { let mut hash=crate::io::sha256::Sha256::new(); hash.update(bytes); hash.hex_digest() }
     fn source_files(root: &Path, raw: &Value) {
         for module in raw["modules"].as_array().unwrap() {
@@ -570,6 +632,55 @@ mod tests {
         };
         let first_two: Vec<i64> = ranked.iter().take(2).map(|s| s.id).collect();
         assert!(ids_of_file.iter().all(|id| first_two.contains(id)), "{first_two:?} against {ids_of_file:?}");
+    }
+
+    /// O arquivo de pagamentos com duas funções, a segunda devolvendo `second`,
+    /// gravado no disco e no mapa como o scan grava.
+    fn save_payments(dir: &TempDir, second: &str, mark: &str) {
+        let content = format!("fn charge() {{\n    1\n}}\nfn refund() {{\n    {second}\n}}\n");
+        std::fs::write(dir.path().join("src/pay.rs"), &content).unwrap();
+        let declarations = json!([
+            {"kind": "function", "name": "charge", "line": 1, "end_line": 3, "signature": "fn charge()"},
+            {"kind": "function", "name": "refund", "line": 4, "end_line": 6, "signature": "fn refund()"}
+        ]);
+        let mut raw = modules("ids-1");
+        raw["modules"].as_array_mut().unwrap().push(json!({
+            "path": "src/pay.rs", "blob": format!("pay-{second}"), "declarations": declarations,
+            "analysis": analysis_of(&content, &declarations)
+        }));
+        save_at(&model_path(dir.path()), &raw, mark, &languages()).unwrap();
+    }
+
+    /// Num arquivo com duas funções e a nota de cada uma, mudar o texto da
+    /// segunda envelhece só a nota dela: a da primeira segue em dia, no dizer
+    /// de nota velha e na busca. A nota do arquivo inteiro envelhece com ele.
+    #[test]
+    fn a_changed_function_ages_only_its_own_note() {
+        let dir = saved("ids-1");
+        save_payments(&dir, "2", "scan 1");
+        let model = model_path(dir.path());
+        write_note(&dir, "src/pay.rs", "charge", "Cobra o cliente.");
+        write_note(&dir, "src/pay.rs", "refund", "Devolve o dinheiro do cliente.");
+        write_note(&dir, "src/pay.rs", "", "Pagamentos do cliente.");
+        let stale = |name: &str| of_at(&model, "src/pay.rs", name).unwrap().unwrap().stale;
+        assert_eq!((stale("charge"), stale("refund"), stale("")), (false, false, false));
+
+        save_payments(&dir, "3", "scan 2");
+        assert_eq!((stale("charge"), stale("refund"), stale("")), (false, true, true));
+        let in_search: Vec<String> =
+            fresh(opened(&dir).conn(), Some(&["src/pay.rs"])).unwrap().into_iter().map(|note| note.name).collect();
+        assert_eq!(in_search, ["charge"]);
+    }
+
+    /// O arquivo cujo texto analisado não é JSON recusa a nota como o que o
+    /// scan não leu, sem cair na leitura, e nada fica gravado.
+    #[test]
+    fn a_file_whose_analysis_is_not_json_refuses_the_note() {
+        let dir = saved("ids-1");
+        opened(&dir).conn().execute("UPDATE texts SET analysis = 'not-json' WHERE path = 'src/ids.rs'", []).unwrap();
+        let refused = write(&model_path(dir.path()), dir.path(), &note_of("src/ids.rs", "check_digits", NOTE)).unwrap_err();
+        assert!(matches!(&refused, MapRefusal::MapUnreadable { detail } if detail == "note-needs-current-scan"), "{refused:?}");
+        assert_eq!(count(&dir, "SELECT count(*) FROM notes"), 0);
     }
 
     /// A nota velha sai do vetor: depois que o arquivo muda, o texto compilado

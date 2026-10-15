@@ -824,6 +824,40 @@ fn a_map_of_another_scan_build_is_behind_until_a_pass_of_this_one_writes_it() {
     assert!(!model::is_behind(dir), "written by this build, the map is up to date again");
 }
 
+/// Um programa mais velho, que declara o bloco das declarações no formato de
+/// antes, abre o mapa que a passada de agora gravou de um projeto em
+/// TypeScript: a abertura recusa e o mapa segue com as declarações e os
+/// textos de cada arquivo ao lado dos arquivos, e em dia. Antes, essa abertura
+/// refazia o bloco no formato dela e deixava as declarações e os textos
+/// vazios com os arquivos inteiros.
+#[test]
+fn an_older_program_opening_the_map_leaves_its_declarations_and_texts() {
+    use mustard_core::io::map_db::{Block, Kind, MapDb};
+    let temp = project("scan-older-program-", &[("web/tela.ts", "/** Carrega a tela. */\nexport function carregar(): string {\n  return \"tela pronta\";\n}\n")]);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let model = mustard_core::io::project_map::model_path(dir);
+    let counted = || -> (u32, [i64; 3]) {
+        let db = MapDb::open(&model, dir, &[]).unwrap();
+        let version = db.conn().query_row("SELECT version FROM blocks WHERE name = 'decls'", [], |row| row.get(0)).unwrap();
+        let count = |table: &str| db.conn().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+        (version, [count("files"), count("decls"), count("texts")])
+    };
+    let before = counted();
+    assert!(before.1.iter().all(|&rows| rows > 0), "the pass wrote the files, the declarations and the texts: {before:?}");
+
+    let older = Block {
+        name: mustard_core::io::project_map::DECLS.name(),
+        version: before.0 - 1,
+        tables: &["decls", "texts"],
+        schema: "CREATE TABLE decls(file TEXT, name TEXT); CREATE TABLE texts(path TEXT);",
+        kind: Kind::Rebuilt(|_, _| Ok(())),
+    };
+    assert!(MapDb::open(&model, dir, &[older]).is_err(), "the older program refuses the newer block");
+    assert_eq!(counted(), before, "the declarations and the texts stay beside the files");
+    assert!(!model::is_behind(dir), "the map stays up to date for this build");
+}
+
 /// Um arquivo que não é código entra, muda e sai, e um deles marca o
 /// Laravel pelo caminho: a passada não relê nada, refaz as pilhas do projeto
 /// e do subprojeto, e o mapa é o de uma passada que lê tudo.
