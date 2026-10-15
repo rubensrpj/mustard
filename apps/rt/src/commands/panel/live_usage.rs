@@ -1,8 +1,32 @@
 //! Native per-request receipts. These are a separate live view, never added to
 //! transcript totals. Turn/index keys deduplicate replayed events after reload.
-use serde_json::{Value,json};
+use serde_json::{Map,Value,json};
 use std::path::{Path,PathBuf};
+/// Os passos só lembram quais pedidos já entraram, para a repetição não somar
+/// de novo; o total de cada agente mora na linha dele. A memória guarda os
+/// passos mais novos, na ordem em que entraram (o mapa lido guarda a ordem do
+/// texto): cheia, pela conta ou pelo tamanho do arquivo, os mais velhos saem
+/// para os novos entrarem.
+const STEP_LIMIT:usize=8192;
+const BYTE_LIMIT:usize=2_000_000;
 pub(super) fn file(root:&Path,session:&str)->PathBuf {root.join(".claude/mustard/usage/live").join(format!("{}.json",blake3::hash(session.as_bytes())))}
+fn forget_oldest(steps:&mut Map<String,Value>,count:usize) {*steps=std::mem::take(steps).into_iter().skip(count).collect();}
+/// O texto a gravar, dentro do limite: os passos mais velhos saem até caber.
+/// O que não cabe nem sem passo nenhum (as linhas dos agentes, que são a
+/// própria visão) recusa esta medição, e o arquivo fica como estava.
+fn fitted(data:&mut Value)->Result<String,String> {
+    let text=data.to_string();
+    let excess=text.len().saturating_sub(BYTE_LIMIT);
+    if excess==0 {return Ok(text);}
+    let Some(steps)=data["steps"].as_object_mut() else {return Err(format!("{} bytes, limit {BYTE_LIMIT}",text.len()));};
+    let mut freed=0;
+    // Cada passo ocupa a chave entre aspas, os dois-pontos, o valor e a vírgula.
+    let count=steps.iter().take_while(|(key,value)|{let more=freed<excess;freed+=key.len()+value.to_string().len()+4;more}).count();
+    forget_oldest(steps,count);
+    let text=data.to_string();
+    if text.len()>BYTE_LIMIT {return Err(format!("{} bytes after forgetting the {count} oldest steps, limit {BYTE_LIMIT}",text.len()));}
+    Ok(text)
+}
 pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
     let root=mustard_core::io::spec_events::spec_root(start);
     if !mustard_core::ProjectConfig::exists(&root) {return json!({"ok":true,"recorded":false});}
@@ -13,7 +37,8 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
         let mut held=mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&path).map_err(|e|fail("live-usage-busy",e.to_string()))?
             .ok_or_else(||fail("live-usage-busy","another recording holds the live usage file".into()))?;
         let raw=held.read_to_string().map_err(|e|fail("live-usage-unreadable",e.to_string()))?;
-        if raw.len()>2_000_000 {return Err(fail("live-usage-capacity",format!("{} bytes, limit 2000000",raw.len())));}
+        // O arquivo maior que o limite, que uma versão anterior deixava ao
+        // gravar além dele, é lido e volta ao limite na gravação desta medição.
         let fresh=||json!({"schema_version":1,"agents":{},"steps":{},"main":{}});
         let parsed=if raw.is_empty(){Ok(fresh())}else{serde_json::from_str::<Value>(&raw).map_err(|e|e.to_string()).and_then(|data|{
             if data["schema_version"]==1 && data["agents"].is_object() && data["steps"].is_object() {Ok(data)}
@@ -64,7 +89,7 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
             if tokens.as_object().is_none_or(|fields|fields.is_empty()) {return Ok(restarted);}
             let previous=&data["steps"][&step];
             if previous.is_null() {
-                if data["steps"].as_object().is_some_and(|steps|steps.len()>=8192) {return Err(fail("live-usage-capacity","8192 steps already recorded".into()));}
+                if let Some(steps)=data["steps"].as_object_mut() && steps.len()>=STEP_LIMIT {let over=steps.len()+1-STEP_LIMIT;forget_oldest(steps,over);}
                 for field in fields {if let Some(n)=tokens[field].as_u64(){row[field]=json!(row[field].as_u64().unwrap_or(0).saturating_add(n));}}
                 row["requests"]=json!(row["requests"].as_u64().unwrap_or(0)+1);
                 let context=["input_tokens","cache_read_input_tokens","cache_creation_input_tokens"];
@@ -75,7 +100,8 @@ pub(super) fn record(start:&Path,session:&str,input:&Value)->Value {
         }
         if actor=="main" {data["main"]=row;}else{data["agents"][key]=row;}
         data["measured_at"]=json!(now);data["origin"]=json!("native-host-events");
-        held.replace(data.to_string().as_bytes()).map_err(|e|fail("live-usage-write-failed",e.to_string()))?;Ok(restarted)
+        let text=fitted(&mut data).map_err(|detail|fail("live-usage-capacity",detail))?;
+        held.replace(text.as_bytes()).map_err(|e|fail("live-usage-write-failed",e.to_string()))?;Ok(restarted)
     })();
     let diagnose=|reason:&str,detail:&str|{
         let event=json!({"component":"usage","operation":"record","reason":reason,"detail":detail,"session":session});
@@ -163,5 +189,67 @@ mod tests {
             let name=kept[0].file_name().unwrap().to_string_lossy().into_owned();
             assert!(events[0]["detail"].as_str().unwrap().ends_with(&format!("; previous text kept in {name}")),"{}",events[0]);
         }
+    }
+    fn step_key(index:u64)->String {blake3::hash(format!("a:t:{index}").as_bytes()).to_hex().to_string()}
+    fn step(index:u64)->Value {json!({"kind":"step","agent_id":"a","turn_id":"t","index":index,"model":"fixture","usage":{"input_tokens":1}})}
+    fn stored(live:&Path)->Value {serde_json::from_str(&std::fs::read_to_string(live).unwrap()).unwrap()}
+    fn kept_steps(live:&Path)->Vec<String> {stored(live)["steps"].as_object().unwrap().keys().cloned().collect()}
+    /// A linha do agente `n`, com o modelo dado, sob a chave que a gravação usa.
+    fn agent_row(n:usize,model:String)->(String,Value) {let id=format!("agent-{n}");(blake3::hash(id.as_bytes()).to_hex().to_string(),json!({"id":id,"model":model}))}
+    /// O arquivo ao vivo da sessão `s` com os passos `0..count` do agente `a`,
+    /// do mais velho ao mais novo, um token de entrada cada, e as linhas dadas.
+    fn live_with_steps(root:&Path,count:u64,mut agents:Map<String,Value>)->PathBuf {
+        std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let steps:Map<String,Value>=(0..count).map(|index|(step_key(index),json!({"input_tokens":1}))).collect();
+        agents.insert(blake3::hash(b"a").to_hex().to_string(),json!({"id":"a","input_tokens":count,"requests":count}));
+        let live=file(root,"s");std::fs::create_dir_all(live.parent().unwrap()).unwrap();
+        std::fs::write(&live,json!({"schema_version":1,"agents":agents,"steps":steps,"main":{}}).to_string()).unwrap();live
+    }
+    /// Com 8192 passos lembrados, a medição nova não é mais recusada até a
+    /// sessão acabar: o passo mais velho sai para cada novo entrar, a soma do
+    /// agente segue inteira, e a repetição de um passo ainda lembrado não soma.
+    #[test]
+    fn a_full_live_file_forgets_its_oldest_steps_and_keeps_recording() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let live=live_with_steps(root,8192,Map::new());
+        for index in [8192,8193,8193,2] {assert_eq!(record(root,"s",&step(index)),json!({"ok":true,"recorded":true}),"{index}");}
+        let kept=kept_steps(&live);
+        assert!(kept==(2..8194).map(step_key).collect::<Vec<_>>(),"{} steps kept, the first {:?}",kept.len(),kept.first());
+        let row=&stored(&live)["agents"][blake3::hash(b"a").to_hex().to_string()];
+        assert_eq!((row["input_tokens"].clone(),row["requests"].clone()),(json!(8194),json!(8194)));
+    }
+    /// O arquivo maior que 2 MB, que uma versão anterior deixava ao gravar além
+    /// do limite, não recusa mais toda medição: cada gravação esquece só os
+    /// passos mais velhos que não cabem, e as linhas dos agentes ficam todas.
+    #[test]
+    fn an_oversized_live_file_comes_back_under_the_limit_by_forgetting_its_oldest_steps() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let live=live_with_steps(root,8000,(0..6000).map(|n|agent_row(n,"m".repeat(150))).collect());
+        let before=std::fs::metadata(&live).unwrap().len() as usize;
+        assert!(before>BYTE_LIMIT,"{before}");
+        for index in [8000,8001] {assert_eq!(record(root,"s",&step(index)),json!({"ok":true,"recorded":true}),"{index}");}
+        let after=std::fs::metadata(&live).unwrap().len() as usize;
+        // Um passo destes ocupa 86 bytes no arquivo: esquecer um a mais
+        // deixaria a folga maior que ele.
+        assert!((BYTE_LIMIT-86..=BYTE_LIMIT).contains(&after),"{after} bytes");
+        let kept=kept_steps(&live);let first=8002-kept.len() as u64;
+        assert!(kept==(first..8002).map(step_key).collect::<Vec<_>>(),"{} steps kept, the first {:?}",kept.len(),kept.first());
+        let data=stored(&live);
+        assert_eq!((data["agents"].as_object().unwrap().len(),data["agents"][blake3::hash(b"a").to_hex().to_string()]["requests"].clone()),(6001,json!(8002)));
+    }
+    /// Sem passo para esquecer, a medição que levaria o arquivo além de 2 MB é
+    /// recusada pela capacidade, e o arquivo fica como estava, dentro do limite.
+    #[test]
+    fn a_measurement_past_the_limit_with_no_step_to_forget_leaves_the_file_as_it_was() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let mut agents:Map<String,Value>=(0..7800).map(|n|agent_row(n,"m".repeat(150))).collect();
+        let gap=BYTE_LIMIT-std::fs::metadata(live_with_steps(root,0,agents.clone())).unwrap().len() as usize;
+        let (key,row)=agent_row(0,"m".repeat(150+gap-10));agents.insert(key,row);
+        let live=live_with_steps(root,0,agents);
+        let before=std::fs::read_to_string(&live).unwrap();assert_eq!(before.len(),BYTE_LIMIT-10);
+        let answer=record(root,"s",&json!({"kind":"spawn","agent_id":"b","model":"fixture"}));
+        assert_eq!((answer["ok"].clone(),answer["reason"].clone()),(json!(false),json!("live-usage-capacity")),"{answer}");
+        assert!(answer["detail"].as_str().unwrap().ends_with("after forgetting the 0 oldest steps, limit 2000000"),"{answer}");
+        assert_eq!(std::fs::read_to_string(&live).unwrap(),before);
     }
 }
