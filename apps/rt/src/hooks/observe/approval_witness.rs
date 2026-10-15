@@ -10,7 +10,7 @@
 //!
 //! Cada gesto é um item de [`GESTURES`]: como a pergunta é reconhecida, a
 //! opção que dá o "sim" e o que fazer com a resposta. Acrescentar um gesto é
-//! somar um item. Hoje são dois:
+//! somar um item. Hoje são três:
 //!
 //! - **"Aprovar esta spec?"**, com "Aprovar" e "Ajustar". Com a spec em plano,
 //!   o "Aprovar" grava no `spec.ndjson` um `state` com a fase `approved`, o
@@ -24,6 +24,10 @@
 //!   palavras que o usuário entender e nunca é comparado: quem diz qual
 //!   mudança o clique decide é o código no cabeçalho da pergunta, que a
 //!   testemunha guarda ao lado da resposta.
+//! - **a confirmação do objetivo sugerido**, com o cabeçalho `MustardGoal` e
+//!   "Confirmar objetivo" e "Ajustar objetivo". O clique conta na pergunta
+//!   com o objetivo inteiro, ou na pergunta curta quando a última resposta
+//!   do assistente gravada antes do clique mostrou o objetivo inteiro.
 //!
 //! ## A resposta de cada pergunta
 //!
@@ -161,8 +165,9 @@ struct Answered<'a> {
     /// Os rótulos que a pergunta ofereceu.
     offered: Vec<String>,
     choice: Choice,
-    /// A resposta foi gravada na conversa da spec atual.
-    recorded: bool,
+    /// O número da resposta gravada na conversa da spec atual; `None` quando
+    /// nada foi gravado.
+    recorded: Option<u64>,
 }
 
 /// O que a vaga de `template` traz em `question`, quando o texto do catálogo
@@ -219,13 +224,22 @@ fn is_yes(gesture: &Gesture, label: &str) -> bool {
     [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| translate(gesture.yes, lang).trim() == label.trim())
 }
 
-fn decide_goal(answer:&Answered<'_>)->Option<String> {
-    if !matches!(answer.choice,Choice::Yes(_)) || !answer.recorded {return None;}
-    let root=Path::new(answer.root);
-    let disk=crate::shared::spec_state::DiskSpecState::new(root);
-    let log=disk.log(&disk.active(answer.session)?)?;
-    if ![Locale::PtBr,Locale::EnUs].into_iter().any(|lang|crate::commands::flow::goal::question(&log,lang).as_deref()==Some(answer.question)) {return None;}
-    Some(match answer.lang {Locale::PtBr=>"Objetivo confirmado e gravado na spec. A retomada preserva esta escolha após /clear.".into(),Locale::EnUs=>"Goal confirmed and recorded in the spec. Resume preserves this choice after /clear.".into()})
+/// A confirmação do objetivo: o clique gravado conta pela mesma regra que a
+/// retomada lê, e só então a testemunha diz que o objetivo ficou confirmado.
+fn decide_goal(answer: &Answered<'_>) -> Option<String> {
+    let message = answer.recorded?;
+    if !matches!(answer.choice, Choice::Yes(_)) {
+        return None;
+    }
+    let disk = DiskSpecState::new(Path::new(answer.root));
+    let log = disk.log(&disk.active(answer.session)?)?;
+    if !log.get(message).is_some_and(|event| crate::commands::flow::goal::confirms(&log, event)) {
+        return None;
+    }
+    Some(match answer.lang {
+        Locale::PtBr => "Objetivo confirmado e gravado na spec. A retomada preserva esta escolha após /clear.".into(),
+        Locale::EnUs => "Goal confirmed and recorded in the spec. Resume preserves this choice after /clear.".into(),
+    })
 }
 
 /// Os rótulos que a pergunta `question` ofereceu, lidos do `tool_input`, que
@@ -411,7 +425,7 @@ fn decide_change(answer: &Answered<'_>) -> Option<String> {
             lang,
             &[("{code}", code), ("{selected}", &quote(answer.labels)), ("{offered}", &menu(&answer.offered))],
         )),
-        _ if !answer.recorded => Some(say("change.witness.no_spec", lang, &[("{code}", code)])),
+        _ if answer.recorded.is_none() => Some(say("change.witness.no_spec", lang, &[("{code}", code)])),
         Choice::Yes(_) => Some(say("change.witness.accepted", lang, &[("{code}", code)])),
         Choice::Other => Some(say("change.witness.declined", lang, &[("{code}", code)])),
     }
@@ -448,19 +462,19 @@ fn truncate(s: &str) -> String {
 /// Grava a pergunta respondida como mensagem do usuário, na spec atual: a
 /// pergunta, a resposta (várias escolhas separadas por vírgula) e a nota,
 /// cada uma numa linha. Com `witness`, a mensagem leva a testemunha: a
-/// pergunta e a opção clicada. Pergunta sem resposta não grava nada; `true`
-/// quando gravou.
+/// pergunta e a opção clicada. Pergunta sem resposta não grava nada; o
+/// número da mensagem quando gravou.
 fn record_answer(
     root: &Path,
     session: Option<&str>,
     item: &AskAnswer,
     witness: Option<&str>,
     change: Option<&str>,
-) -> bool {
+) -> Option<u64> {
     let question = item.question.trim();
     let answer = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
     if question.is_empty() || answer.is_empty() {
-        return false;
+        return None;
     }
     let mut text = format!("{question}\n{answer}");
     if let Some(notes) = item.notes.as_deref().map(str::trim).filter(|notes| !notes.is_empty()) {
@@ -468,8 +482,8 @@ fn record_answer(
         text.push_str(notes);
     }
     match witness {
-        Some(clicked) => record_witnessed_message(root, session, &text, question, clicked, change).is_some(),
-        None => record_message(root, session, &text).is_some(),
+        Some(clicked) => record_witnessed_message(root, session, &text, question, clicked, change),
+        None => record_message(root, session, &text),
     }
 }
 
@@ -533,22 +547,97 @@ mod tests {
     const SESSION: &str = "s-witness";
     const QUESTION: &str = "Aprovar esta spec?";
 
+    /// O objetivo sugerido de uma spec `x` ligada à sessão: a mensagem do
+    /// usuário que o originou não começa por ele, então só a confirmação
+    /// conta. Devolve a pasta e o número dessa mensagem.
+    fn suggested_goal() -> (TempDir, u64) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::commands::spec_events::write::record_open(root, "x", "fix/x", "dev").unwrap();
+        bind_session_spec(&root.to_string_lossy(), SESSION, "x");
+        let said = crate::shared::spec_state::seed_event(root, "x", "message", json!({"author": "user", "text": "sim"}));
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "context",
+            json!({"text": GOAL, "title": "Leitura", "agent": "Conferir a leitura.", "origin": said}),
+        );
+        (dir, said)
+    }
+
+    const GOAL: &str = "Reduzir o custo da leitura.";
+    const SHORT_GOAL_QUESTION: &str = "Confirma o objetivo gravado na spec?";
+
+    /// A pergunta curta do objetivo, com o cabeçalho e as duas opções.
+    fn short_goal_question(answer: &str) -> HookInput {
+        ask_with(SHORT_GOAL_QUESTION, "MustardGoal", &["Confirmar objetivo", "Ajustar objetivo"], json!(answer))
+    }
+
+    fn assistant_said(root: &Path, text: &str, reply_to: u64) -> u64 {
+        crate::shared::spec_state::seed_event(root, "x", "response", json!({"author": "assistant", "text": text, "reply_to": reply_to}))
+    }
+
+    fn goal_status(root: &Path, lang: Locale) -> Value {
+        crate::commands::flow::goal::status(&DiskSpecState::new(root).log("x").unwrap(), lang)
+    }
+
     #[test]
-    fn a_goal_click_survives_a_new_session_without_approving_the_spec() {
-        let dir=tempdir().unwrap();let root=dir.path();
-        crate::commands::spec_events::write::record_open(root,"x","fix/x","dev").unwrap();
-        bind_session_spec(&root.to_string_lossy(),SESSION,"x");
-        let said=crate::shared::spec_state::seed_event(root,"x","message",json!({"author":"user","text":"sim"}));
-        crate::shared::spec_state::seed_event(root,"x","context",json!({"text":"Reduzir o custo da leitura.","title":"Leitura","agent":"Conferir a leitura.","origin":said}));
-        let disk=crate::shared::spec_state::DiskSpecState::new(root);
-        let log=disk.log("x").unwrap();
-        let question=crate::commands::flow::goal::question(&log,Locale::PtBr).unwrap();
-        let input=ask_with(&question,"MustardGoal",&["Confirmar objetivo","Ajustar objetivo"],json!("Confirmar objetivo"));
-        assert!(matches!(witness(root,&input),Verdict::Inject{..}));
-        bind_session_spec(&root.to_string_lossy(),"after-clear","x");
-        let log=disk.log("x").unwrap();
-        assert_eq!(crate::commands::flow::goal::status(&log,Locale::PtBr)["confirmed"],true);
-        assert_ne!(State::from_log(&log).phase,Some("approved"));
+    fn goal_approval_by_the_full_question_survives_a_new_session_without_approving_the_spec() {
+        if ambient_override() {
+            return;
+        }
+        let (dir, _) = suggested_goal();
+        let root = dir.path();
+        let disk = DiskSpecState::new(root);
+        let question = crate::commands::flow::goal::question(&disk.log("x").unwrap(), Locale::PtBr).unwrap();
+        let input = ask_with(&question, "MustardGoal", &["Confirmar objetivo", "Ajustar objetivo"], json!("Confirmar objetivo"));
+        assert!(matches!(witness(root, &input), Verdict::Inject { .. }));
+        bind_session_spec(&root.to_string_lossy(), "after-clear", "x");
+        assert_eq!(goal_status(root, Locale::PtBr)["confirmed"], true);
+        assert_ne!(State::from_log(&disk.log("x").unwrap()).phase, Some("approved"));
+    }
+
+    /// A pergunta curta conta quando a última resposta do assistente antes
+    /// dela mostrou o objetivo inteiro, ainda que com outros espaços e
+    /// quebras de linha.
+    #[test]
+    fn goal_approval_counts_a_short_question_after_the_last_response_shows_the_goal() {
+        if ambient_override() {
+            return;
+        }
+        let (dir, said) = suggested_goal();
+        let root = dir.path();
+        assistant_said(root, "O objetivo é:\n\n  Reduzir o custo\n   da leitura.\n\nConfirma?", said);
+        assert!(matches!(witness(root, &short_goal_question("Confirmar objetivo")), Verdict::Inject { .. }));
+        let status = goal_status(root, Locale::PtBr);
+        assert_eq!(status["confirmed"], true, "{status}");
+        assert_eq!(status["source"], "native-question-witness", "{status}");
+        assert!(status.get("hint").is_none(), "{status}");
+    }
+
+    /// Sem o objetivo na última resposta antes da pergunta curta, o clique não
+    /// confirma nada, mesmo com o objetivo numa resposta mais antiga; a dica,
+    /// nas duas línguas, diz como perguntar curto.
+    #[test]
+    fn goal_approval_does_not_count_a_short_question_when_the_last_response_lacks_the_goal() {
+        if ambient_override() {
+            return;
+        }
+        let (dir, said) = suggested_goal();
+        let root = dir.path();
+        assistant_said(root, &format!("O objetivo é: {GOAL}"), said);
+        assistant_said(root, "Vou confirmar com você.", said);
+        assert_eq!(witness(root, &short_goal_question("Confirmar objetivo")), Verdict::Allow);
+        let status = goal_status(root, Locale::PtBr);
+        assert_eq!(status["confirmed"], false, "{status}");
+        assert_eq!(status["question"], format!("O objetivo é: {GOAL}\nConfirma este objetivo?"), "{status}");
+        let english = goal_status(root, Locale::EnUs);
+        for hint in [&status["hint"], &english["hint"]] {
+            let hint = hint.as_str().expect("the hint is text");
+            assert!(hint.contains("MustardGoal"), "{hint}");
+        }
+        assert!(status["hint"].as_str().unwrap().contains("objetivo inteiro"), "{status}");
+        assert!(english["hint"].as_str().unwrap().contains("whole goal"), "{english}");
     }
 
     /// Uma variável `MUSTARD_ACTIVE_SPEC` herdada responde antes da sessão.
