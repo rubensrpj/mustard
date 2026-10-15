@@ -1,15 +1,15 @@
 ---
-description: Use when the user runs /mustard:pr or asks to open a pull request, review a colleague's, or merge one. The pull request door — open, review, merge.
+description: Use when the user runs /mustard:pr or asks to open a pull request, review a colleague's, or merge one.
 argument-hint: <open|review|merge> [<pr-number>] [--confirm]
 disable-model-invocation: true
 ---
 # /mustard:pr — the pull request door
 
-Relay each answer to the user in plain words, in the response style. The PR body is not yours to write. The binary builds it, and the title, from the spec.
+Relay each answer in the response style. The PR body is not yours to write. The binary builds it, and the title, from the spec.
 
 ## open
 
-1. The spec closes first: `mustard-rt run close --spec {spec}`. Run it in the background and wait for the notice that it ended: it runs the lint and the whole suite the server runs, which can take longer than the 10 minutes the terminal waits for a command. A refusal says what is missing.
+1. The spec closes first: `mustard-rt run close --spec {spec}`. Run it in the background and wait for its end notice: it runs the lint and the whole suite the server runs, which can pass the 10 minutes the terminal waits for a command.
 2. Record the summary for whoever reviews, in two or three sentences: `mustard-rt run write pr_summary --spec {spec} --json '{"text":"…"}'`. Every number in it is measured, and what is still open is named.
 3. Run `mustard-rt run pr-open --base <base> --head <branch> --spec {spec}`. An existing pull request only gets its body rewritten.
 4. It publishes: it does not judge and does not gate. A red suite is reported, never investigated here. A push refused by the repository's own tooling is reported, not routed around.

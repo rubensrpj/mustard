@@ -11,18 +11,18 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 
 ## How to check
 
-- Read/test; undo cuts. Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or edit `.claude/`/`mustard.json`. Do not close `.claude/pending/`.
+- Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or edit `.claude/`/`mustard.json`. Do not close `.claude/pending/`.
 - Current summaries map files/commits/criteria. Confirm in diff/code, including consumers/contracts/omissions; faulty summaries exclude no areas.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run search --shell-output --intent "<specific question to verify>" --purpose validate -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: literal lookup. Preserve arguments and scope; do not repeat the whole spec in intent. For native Bash, description `mustard:validate: <question>` carries purpose through the hook.
-  - `mustard-rt run map summary --file <file>`: before opening a file.
-  - `mustard-rt run map slice --file <file> --name <name>`: read only the declaration.
-  - `mustard-rt run map users --name <name>`: before changing a declaration.
-  - `mustard-rt run map tests --file <file>`: test candidates, without proving coverage.
-  - `mustard-rt run map history --name <name>`: to understand its history.
-- Search/read code through `mustard-rt run search`; preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Reuse complete bodies. Read the relevant range and expand when context is missing. Without coordinates: `map summary --file`, then `Read` with `offset`/`limit`. Reread when content changed or a proof requires it.
+  - `mustard-rt run search --shell-output --intent "<specific question to verify>" --purpose validate -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: literal lookup. Do not repeat the spec in intent. For native Bash, the description `mustard:validate: <question>` carries purpose to the hook.
+  - `run map summary --file <file>`: before opening a file.
+  - `run map slice --file <file> --name <name>`: read only the declaration.
+  - `run map users --name <name>`: who uses the declaration.
+  - `run map tests --file <file>`: test candidates, without proving coverage.
+  - `run map history --name <name>`: to understand its history.
+- In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Reuse complete bodies. Read the relevant range and expand when context is missing; without coordinates, `Read` with `offset`/`limit` after the summary. Reread when content changed or a proof requires it.
 - Run every command from inside the copy.
-- Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun checks affected by findings or cuts and whenever content, commands or execution become uncertain. Commands run in the foreground through `rtk`, which shows only the failures.
+- Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun checks affected by findings or cuts and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
 - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Beyond the tests, prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder when needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
 - Criterion: check the current receipt and read test/rule/numbers. Green skips an unchanged run before a cut, not independent reading, red result or manual proof. Read the red verification the delivery reports; cut where the wave did not cut, without repeating its own. Combine cuts: build/run, watch failure, undo/rebuild before manual proof; a cut that touches the same spot as another goes alone.
