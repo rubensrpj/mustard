@@ -27,10 +27,10 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 - Comentário ou nome de teste novo que cite código de item, onda, spec, pendência ou Mustard é achado.
 - Numa rodada de conserto, confira o delta do conserto e seus impactos nos critérios, consumidores e integrações afetados.
 - Revisão final da obra, completa:
-  - Leia os testes pertinentes e os recibos da validação final (`testCommand`, lint e critérios). Reexecute as verificações afetadas por achados ou cortes e quando conteúdo, comando ou execução ficarem incertos. O `rtk` mostra só as falhas.
+  - Leia os testes pertinentes e os recibos da validação final (`testCommand`, lint e critérios). Reexecute as verificações afetadas por achados e quando conteúdo, comando ou execução ficarem incertos. O `rtk` mostra só as falhas.
   - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
   - Além dos testes, prove de ponta a ponta: rode o que o usuário rodaria, pelo caminho que ele usa (o comando, a tela, a chamada), numa pasta temporária vazia quando precisar de uma (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-  - Critério: confira o recibo vigente, leia teste/regra/números e prove o vermelho cortando o caminho do usuário. Combine cortes: compile/rode, veja falhar, desfaça/recompile antes da prova manual; o corte que mexe no mesmo trecho de outro vai sozinho.
+  - Critério: leia teste/regra/números e confira se o teste da regra cai sem a mudança, lendo o diff e o recibo vigente, sem cortar nem rodar.
   - Alguma onda tirou uma proteção? Rode o caso que ela barrava, com duas voltas ao mesmo tempo, antes de aprovar.
   - Ao fim, restaure o `git status` inicial.
 

@@ -309,11 +309,11 @@ pub(crate) fn before_bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         if mustard_core::io::code_search::arguments(&request).is_err() {continue;}
         request.describe(input.tool_description().unwrap_or_default());
         let Ok(envelope) = serde_json::to_string(&Invocation::new(request)) else {continue};
-        // `.` is evaluated when this segment runs, after any preceding cd.
+        // `.` is evaluated when this segment runs, after any preceding cd and
+        // after the hook leads a wave agent's command into its copy.
         // Pipeline consumers receive exactly native bytes, without cards.
-        let cwd = if compound {"."} else {input.cwd.as_deref().unwrap_or(&ctx.project_dir)};
-        let routed = format!("mustard-rt run search --root {} --request {} {}",
-            quote(cwd), quote(&envelope), if compound {"--raw"} else {"--shell-output"});
+        let routed = format!("mustard-rt run search --root '.' --request {} {}",
+            quote(&envelope), if compound {"--raw"} else {"--shell-output"});
         let begin = range.start + part.len() - part.trim_start().len();
         replacement.replace_range(begin..begin + trimmed.len(), &routed);
         changed = true;

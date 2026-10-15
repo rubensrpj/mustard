@@ -274,11 +274,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // o arquivo inteiro, já sem o valor da chave.
         ("config_key.hidden", Locale::PtBr) => {
             "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
-             arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original."
+             arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original. Os comandos de lint, teste e compilação mudam por `mustard-rt run settings`, sem abrir o arquivo."
         }
         ("config_key.hidden", Locale::EnUs) => {
             "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
-             the file, with the key replaced by ***:\n{text}\nReading {file} was blocked. The requested command was not executed, including chained test steps. Run the test separately; the hook preserves the original command's order and conditions."
+             the file, with the key replaced by ***:\n{text}\nReading {file} was blocked. The requested command was not executed, including chained test steps. Run the test separately; the hook preserves the original command's order and conditions. The lint, test and build commands change through `mustard-rt run settings`, without opening the file."
         }
         // A busca do terminal em pastas que passaria pelo arquivo com a
         // chave volta com a opção que o deixa de fora. `{fix}` vem do
@@ -583,7 +583,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             75,
-            0x1391_f9f7_1ef8_ab51,
+            0x6619_c0db_87fa_0f10,
         );
     }
 

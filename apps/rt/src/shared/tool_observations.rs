@@ -125,10 +125,7 @@ pub(crate) fn capture(
         ),
         call: observations::digest(call.as_bytes()),
         tool: "Bash".into(),
-        source: super::secret::without_secrets(command)
-            .chars()
-            .take(300)
-            .collect(),
+        source: kept_source(&super::secret::without_secrets(command)),
         input_sha256: observations::digest(command.as_bytes()),
         output_sha256: observations::digest(&output),
         exit_code: response
@@ -167,6 +164,14 @@ pub(crate) fn capture(
                 }
             }),
     )
+}
+
+/// The text a receipt keeps of `command`: what the hooks put ahead of it, up
+/// to 1,000 characters, and then 300 characters of the agent's own command,
+/// so the prefix of a wave copy never takes the room of the command.
+fn kept_source(command: &str) -> String {
+    let (prefix, written) = command.split_at(observations::command_start(command));
+    prefix.chars().take(1_000).chain(written.chars().take(300)).collect()
 }
 
 /// `true` when one of the commands of the line is the runtime calling a flow
@@ -300,6 +305,26 @@ pub(crate) fn list(root: &Path, spec: &str, dispatch: Option<u64>) -> Vec<Value>
         }
         assert_eq!(routed, 1, "the plain grep goes through the search");
         assert_eq!(list(root, "x", Some(0)).len(), written.len());
+    }
+
+    /// A command led to the wave copy and named with the session and the
+    /// agent keeps on the page 80 characters of what the agent wrote.
+    #[test]
+    fn a_receipt_keeps_the_agent_command_after_the_hook_prefix() {
+        let dir = bound_project();
+        let root = dir.path();
+        let copy = mustard_core::io::wave_prompt::copies_dir(root).join("x").join("a-long-copy-folder-name-for-the-wave-".repeat(3));
+        let written = format!("grep -rn \"export function quote\" web/src/{}.ts packages/ui/src 2>&1 | head -40", "quote-".repeat(20));
+        let written: String = written.chars().take(150).collect();
+        let command = format!(
+            "cd -- '{}' && (\nexport MUSTARD_SESSION_ID='{}'\nexport MUSTARD_AGENT_ID='{}'\n{written}\n)",
+            copy.display(), "s".repeat(36), "a".repeat(17)
+        );
+        assert!(command.len() - written.len() > 230, "the prefix leaves less than 80 of the old 300 characters");
+        assert_eq!(capture(root, "claude", "PostToolUse", &ran(&command, "agent-long", root)), Some(Ok(())));
+        let page = list(root, "x", Some(0));
+        let shown = page[0]["source"].as_str().unwrap();
+        assert_eq!(shown, format!("{}…", written.chars().take(80).collect::<String>()), "{shown}");
     }
 
     #[test]

@@ -27,10 +27,10 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
 - In a fix round, check the fix delta and its impact on affected criteria, consumers and integrations.
 - The work's final review, in full:
-  - Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun checks affected by findings or cuts and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
+  - Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun checks affected by findings and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
   - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
   - Beyond the tests, prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder when needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-  - Criterion: check the current receipt, read test/rule/numbers and prove the red by cutting the user path. Combine cuts: build/run, watch failure, undo/rebuild before manual proof; a cut that touches the same spot as another goes alone.
+  - Criterion: read test/rule/numbers and check whether the rule's test fails without the change, by reading the diff and the current receipt; cut nothing and run nothing.
   - Did a wave remove a protection? Run the case it used to stop, also with two runs at once, before approving.
   - At the end, the project's `git status` must match what you found.
 

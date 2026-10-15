@@ -130,12 +130,18 @@ fn wave_copies() -> WaveCopies {
 /// escreveu.
 #[cfg(unix)]
 fn in_own_copy(copies: &WaveCopies, agent: Option<&str>, command: &str) -> (Option<i32>, String, String) {
+    ran_from(copies, &copies.own, agent, command)
+}
+
+/// O mesmo que [`in_own_copy`], com o terminal da chamada em `cwd`.
+#[cfg(unix)]
+fn ran_from(copies: &WaveCopies, cwd: &std::path::Path, agent: Option<&str>, command: &str) -> (Option<i32>, String, String) {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
-    let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":copies.own,
+    let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":cwd,
         "session_id":"wave-session","agent_id":agent,"tool_input":{"command":command}});
-    let mut hook = Command::new(binary).args(["on", "PreToolUse"]).current_dir(&copies.own).env("CLAUDE_PROJECT_DIR", &copies.root)
+    let mut hook = Command::new(binary).args(["on", "PreToolUse"]).current_dir(cwd).env("CLAUDE_PROJECT_DIR", &copies.root)
         .env("MUSTARD_RT_DELEGATED", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     hook.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
     let output = hook.wait_with_output().unwrap();
@@ -147,7 +153,7 @@ fn in_own_copy(copies: &WaveCopies, agent: Option<&str>, command: &str) -> (Opti
     // Só o comando que o gancho devolveu diz quem busca: nada vem do
     // ambiente de quem roda o teste.
     let path = format!("{}:{}", binary.parent().unwrap().display(), std::env::var("PATH").unwrap_or_default());
-    let out = Command::new("sh").args(["-c", &rewritten]).current_dir(&copies.own).env("PATH", path)
+    let out = Command::new("sh").args(["-c", &rewritten]).current_dir(cwd).env("PATH", path)
         .env("MUSTARD_RT_DELEGATED", "1").env_remove("MUSTARD_SESSION_ID").env_remove("MUSTARD_AGENT_ID").output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let detail = format!("{rewritten}\n{stdout}{}", String::from_utf8_lossy(&out.stderr));
@@ -169,6 +175,18 @@ fn a_wave_agent_search_inside_its_copy_runs() {
         assert_eq!(code, Some(0), "{detail}");
         assert!(stdout.contains("def quartz"), "{detail}");
     }
+}
+
+/// O agente de onda com o terminal no checkout principal busca e recebe a
+/// saída da própria cópia: a busca que o gancho põe no lugar do grep vai junto
+/// para a cópia, sem a recusa que mandava repetir o comando.
+#[cfg(unix)]
+#[test]
+fn a_wave_agent_grep_from_the_main_checkout_runs_in_its_copy() {
+    let copies = wave_copies();
+    let (code, stdout, detail) = ran_from(&copies, &copies.root, Some("wave-agent"), "grep -n quartz src/a.py");
+    assert_eq!(code, Some(0), "{detail}");
+    assert!(stdout.contains("def quartz") && !detail.contains("Retry with input"), "{detail}");
 }
 
 /// Quem a busca não sabe nomear também busca numa cópia de onda: a ferramenta

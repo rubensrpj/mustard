@@ -4,7 +4,11 @@ use std::path::Path;
 use mustard_core::{ProjectConfig,domain::config::{AGENT_EFFORTS,FilterSetting}};
 use serde_json::{Value,json};
 
-const FIELDS:[&str;12]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer","session_claude_model","session_codex_model"];
+const FIELDS:[&str;16]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer","session_claude_model","session_codex_model",
+    "build_command","test_command","lint_command","max_compiling_waves"];
+/// Os comandos do projeto, gravados na raiz do `mustard.json` com o nome em
+/// camelCase; o nome antigo, em snake_case, é o próprio campo.
+const COMMANDS:[(&str,&str);3]=[("build_command","buildCommand"),("test_command","testCommand"),("lint_command","lintCommand")];
 const PURPOSES:[(&str,&str);3]=[("jev_search","search"),("jev_wave_planning","wave-planning"),("jev_context","context")];
 
 pub(super) fn run(start:&Path,patch:Option<&str>)->Value {
@@ -33,6 +37,8 @@ fn read(root:&Path)->Value {
     values["session_claude_model"]=json!(config.ai.session_models.get("claude").map_or("haiku",String::as_str));
     values["session_codex_model"]=json!(config.ai.session_models.get("codex").map_or("gpt-6-luna",String::as_str));
     for (field,purpose) in PURPOSES {values[field]=json!(config.judgement_filter(purpose)==FilterSetting::Jev);}
+    values["build_command"]=json!(config.build_command);values["test_command"]=json!(config.test_command);values["lint_command"]=json!(config.lint_command);
+    values["max_compiling_waves"]=json!(crate::commands::flow::round::queue::max_parallel(root));
     let switches=mustard_core::Switches::read(root);
     json!({"ok":true,"schema_version":1,"revision":revision(root,&text),"values":values,
         "jev":super::jev_usage::configuration(root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok()),
@@ -45,6 +51,9 @@ fn valid(field:&str,value:&Value)->bool {
     match field {
         "agent_model" | "session_claude_model" | "session_codex_model"=>value.as_str().is_some_and(|name|name.len()<=160 && !name.is_empty() && name.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'.'|'_'|':'|'/'|'-'|'['|']'))),
         "agent_effort"=>value.as_str().is_some_and(|effort|AGENT_EFFORTS.contains(&effort)),
+        "build_command" | "test_command" | "lint_command"=>value.is_null() || value.as_str().is_some_and(|command|
+            !command.trim().is_empty() && command.chars().count()<=1_000 && !command.contains(['\n','\r','\0'])),
+        "max_compiling_waves"=>value.as_u64().is_some_and(|waves|(1..=16).contains(&waves)),
         _=>FIELDS.contains(&field) && value.is_boolean(),
     }
 }
@@ -76,10 +85,17 @@ fn apply(root:&Path,text:&str)->Value {
             "agent_model"=>vec!["agents","model"],
             "session_claude_model"=>vec!["ai","sessionModels","claude"],
             "session_codex_model"=>vec!["ai","sessionModels","codex"],"agent_effort"=>vec!["agents","effort"],
-            "search_answer"=>vec!["search","answer"],
+            "search_answer"=>vec!["search","answer"],"max_compiling_waves"=>vec!["maxCompilingWaves"],
             _=>vec![field.as_str()],
         };
-        let ok=if let Some((_,purpose))=PURPOSES.iter().find(|(name,_)|name==field) {
+        let ok=if let Some((old,key))=COMMANDS.iter().find(|(name,_)|name==field) {
+            // O nome antigo sai junto, e `null` tira a chave em vez de gravar `null`.
+            next.as_object_mut().is_some_and(|object|{
+                object.shift_remove(*old);object.shift_remove(*key);
+                if !value.is_null() {object.insert((*key).into(),value.clone());}
+                true
+            })
+        }else if let Some((_,purpose))=PURPOSES.iter().find(|(name,_)|name==field) {
             put(&mut next,&["judgement",purpose,"filter"],json!(if value==true {"jev"}else{"none"}))
         }else {put(&mut next,&path,value.clone())};
         if !ok {return refused("settings-invalid-section");}
@@ -217,6 +233,40 @@ mod tests {
         assert_eq!(std::fs::read(root.join("mustard.json")).unwrap(),before);
         std::fs::write(root.join("mustard.json"),"{broken").unwrap();
         assert_eq!(read(root)["reason"],"settings-unreadable");
+    }
+    /// Os três comandos mudam sem tocar na chave nem nos outros campos;
+    /// `null` tira a chave, e um comando com quebra de linha não muda nada.
+    #[test]
+    fn a_command_patch_keeps_the_key_and_every_other_field() {
+        let dir=fixture();let root=dir.path();
+        let saved=patch(root,json!({"build_command":"pnpm build","test_command":"dotnet test","lint_command":"npx eslint ."}));
+        assert_eq!(saved["ok"],true,"{saved}");
+        assert_eq!(saved["values"]["test_command"],"dotnet test");assert!(!saved.to_string().contains(SECRET));
+        let (_,value)=document(root).unwrap();
+        assert_eq!(value["buildCommand"],"pnpm build");assert_eq!(value["lintCommand"],"npx eslint .");
+        assert_eq!(value["jev"]["key"],SECRET);assert_eq!(value["future"]["keep"],17);
+        assert_eq!(value["agents"]["model"],"custom-model-1");assert_eq!(value["agents"]["extra"],"keep");
+        assert_eq!(patch(root,json!({"lint_command":null}))["ok"],true);
+        let (before,value)=document(root).unwrap();
+        assert!(value.get("lintCommand").is_none() && value["buildCommand"]=="pnpm build","{value}");
+        let refused=patch(root,json!({"test_command":"dotnet test\nrm -rf ."}));
+        assert_eq!(refused["reason"],"settings-invalid-fields");assert_eq!(refused["fields"],json!(["test_command"]));
+        assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),before);
+    }
+    /// O teto de ondas em paralelo gravado aparece na leitura seguinte, com a
+    /// chave intacta; fora de 1 a 16 ele é recusado sem mudar o arquivo.
+    #[test]
+    fn a_wave_cap_patch_changes_the_value_read_next() {
+        let dir=fixture();let root=dir.path();
+        assert_eq!(read(root)["values"]["max_compiling_waves"],4);
+        assert_eq!(patch(root,json!({"max_compiling_waves":7}))["ok"],true);
+        assert_eq!(read(root)["values"]["max_compiling_waves"],7);
+        assert_eq!(document(root).unwrap().1["jev"]["key"],SECRET);
+        let before=std::fs::read_to_string(root.join("mustard.json")).unwrap();
+        for waves in [json!(0),json!(17),json!("7")] {
+            assert_eq!(patch(root,json!({"max_compiling_waves":waves}))["reason"],"settings-invalid-fields","{waves}");
+        }
+        assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),before);
     }
     #[test]
     fn a_busy_writer_and_wrong_versions_are_refused_without_app_commands() {

@@ -20,7 +20,7 @@ pub enum PanelCmd {
     Settings {
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// {schema_version:1,revision,changes:{vectors,jev,rtk,...}}; never credentials.
+        /// {schema_version:1,revision,changes:{vectors,jev,rtk,build_command,test_command,lint_command,max_compiling_waves,...}}; never credentials.
         #[arg(long)]
         json: Option<String>,
     },

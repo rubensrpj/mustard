@@ -26,7 +26,7 @@ use crate::shared::dag::{sets_cross, touches_whole_tree};
 const DEFAULT_PARALLEL: usize = 4;
 
 /// Quantas ondas o projeto deixa compilar ao mesmo tempo.
-pub(super) fn max_parallel(root: &Path) -> usize {
+pub(crate) fn max_parallel(root: &Path) -> usize {
     mustard_core::ProjectConfig::load(root).max_compiling_waves().unwrap_or(DEFAULT_PARALLEL)
 }
 

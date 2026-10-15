@@ -1051,8 +1051,8 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 /// A revisão de onda lê o diff, o código e os recibos da prova da onda, e não
 /// compila, não roda teste nem binário e não corta. Tudo o que roda — reler os
 /// recibos do fechamento e reexecutar o que ficou incerto, a prova de ponta a
-/// ponta pelo caminho do usuário, os cortes e o caso da proteção tirada com
-/// duas voltas ao mesmo tempo — mora só no bloco da revisão final da obra,
+/// ponta pelo caminho do usuário e o caso da proteção tirada com duas voltas
+/// ao mesmo tempo — mora só no bloco da revisão final da obra,
 /// que continua completa, e nenhuma dessas frases aparece fora dele. O
 /// crítico, o único que reprova, inclui o conserto sem teste. O molde vai a
 /// todo projeto: instalar o Mustard é a prova deste repositório, e mora no
@@ -1076,8 +1076,6 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
                 "prove de ponta a ponta",
                 "pelo caminho que ele usa (o comando, a tela, a chamada)",
                 "mktemp -d",
-                "Combine cortes",
-                "o corte que mexe no mesmo trecho de outro vai sozinho",
                 "duas voltas ao mesmo tempo",
                 "segundo plano",
             ],
@@ -1099,8 +1097,6 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
                 "prove it end to end",
                 "on the path they take (the command, the screen, the call)",
                 "mktemp -d",
-                "Combine cuts",
-                "a cut that touches the same spot as another goes alone",
                 "two runs at once",
                 "background",
             ],
@@ -1124,6 +1120,35 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
         }
         assert!(!review.contains("mustard init"), "the {lang} reviewer carries this repository's own proof");
         assert!(section(&review, severity).contains(critical), "the {lang} critical finding does not cover a fix without a test");
+    }
+}
+
+/// No critério, o revisor confere se o teste da regra cai sem a mudança lendo
+/// o diff e o recibo vigente, sem cortar o caminho do usuário nem rodar nada
+/// para ver o vermelho. O molde não manda mais cortar em parte alguma, nos
+/// dois idiomas.
+#[test]
+fn the_reviewer_checks_the_rule_test_fails_without_the_change_by_reading_the_diff_and_receipt() {
+    for (lang, criterion, said, banned) in [
+        (
+            "pt-BR",
+            "  - Critério:",
+            ["confira se o teste da regra cai sem a mudança", "lendo o diff e o recibo vigente", "sem cortar nem rodar"],
+            "cortando",
+        ),
+        (
+            "en-US",
+            "  - Criterion:",
+            ["check whether the rule's test fails without the change", "reading the diff and the current receipt", "cut nothing and run nothing"],
+            "cutting",
+        ),
+    ] {
+        let review = template(lang, "review");
+        let line = review.lines().find(|l| l.starts_with(criterion)).unwrap_or_else(|| panic!("the {lang} reviewer has no `{criterion}` line:{review}"));
+        for phrase in said {
+            assert!(line.contains(phrase), "the {lang} reviewer's criterion check does not say `{phrase}`: {line}");
+        }
+        assert!(!review.to_lowercase().contains(banned), "the {lang} reviewer still says `{banned}`:{review}");
     }
 }
 

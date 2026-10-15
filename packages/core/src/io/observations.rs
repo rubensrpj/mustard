@@ -156,10 +156,7 @@ const COMMAND_LINE_CHARS: usize = 80;
 /// dropped prefix ends in `…`; the whole command is in the receipt.
 fn command_line(source: &str) -> String {
     let whole = source.trim();
-    let mut rest = whole;
-    while let Some(next) = after_leading_cd(rest).or_else(|| opened_group(rest)).or_else(|| after_identity(rest)) {
-        rest = next;
-    }
+    let rest = &whole[command_start(whole)..];
     let mut lines = rest.lines().map(str::trim).filter(|line| !line.is_empty());
     let first = lines.next().unwrap_or_default();
     let mut chars = first.chars();
@@ -168,6 +165,18 @@ fn command_line(source: &str) -> String {
         shown.push('…');
     }
     shown
+}
+
+/// Where the command the agent wrote starts in `source`, in bytes: past the
+/// leading changes of directory, the groups a hook opens after them and the
+/// identity a hook puts ahead of a native command.
+#[must_use]
+pub fn command_start(source: &str) -> usize {
+    let mut rest = source.trim_start();
+    while let Some(next) = after_leading_cd(rest).or_else(|| opened_group(rest)).or_else(|| after_identity(rest)) {
+        rest = next;
+    }
+    source.len() - rest.len()
 }
 
 /// What follows a leading `cd <dir>` ended by `&&`, `;` or a line break, with
