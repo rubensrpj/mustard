@@ -34,9 +34,9 @@
 //! Bloco novo se declara no módulo dono, e este módulo não muda.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::platform::error::{Error, Result};
 
@@ -154,7 +154,7 @@ impl MapDb {
         // as aberturas seguintes não pedem trava nenhuma. O disco que não
         // guarda o `WAL` (memória compartilhada que ele não dá) deixa o mapa
         // no `DELETE`, que também vale; qualquer outro diário é recusado.
-        let mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+        let mode = journal_to_wal(&conn, wait)?;
         if !mode.eq_ignore_ascii_case("wal") && !mode.eq_ignore_ascii_case("delete") {
             return Err(Error::Io(std::io::Error::other(format!("map journal stayed `{mode}`"))));
         }
@@ -206,6 +206,27 @@ impl MapDb {
 pub fn set_mark(conn: &Connection, name: &str, mark: &str) -> Result<()> {
     conn.execute(&format!("UPDATE {BLOCKS_TABLE} SET mark = ?2 WHERE name = ?1"), params![name, mark])?;
     Ok(())
+}
+
+/// A pausa entre duas tentativas de trocar o diário de um banco.
+const JOURNAL_RETRY_PAUSE: Duration = Duration::from_millis(5);
+
+/// Passa ao `WAL` o diário do banco aberto em `conn` e devolve o modo em que
+/// ele ficou. Num arquivo recém-criado, a troca pede a trava do banco inteiro,
+/// e o SQLite devolve ocupado sem passar pela espera de trava quando outra
+/// abertura troca o diário ao mesmo tempo: a troca se repete enquanto o banco
+/// estiver ocupado, até vencer `wait`, e só então o ocupado sobe. Vale para o
+/// mapa e para o banco dos recibos.
+pub(crate) fn journal_to_wal(conn: &Connection, wait: Duration) -> Result<String> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
+            Err(err) if err.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) && Instant::now() < deadline => {
+                std::thread::sleep(JOURNAL_RETRY_PAUSE);
+            }
+            done => return Ok(done?),
+        }
+    }
 }
 
 /// Põe `block` em dia, quando a versão gravada falta ou difere da do
@@ -525,6 +546,33 @@ mod tests {
     /// O modo de diário que a conexão `conn` vê no arquivo do mapa.
     fn journal_of(conn: &Connection) -> String {
         conn.pragma_query_value(None, "journal_mode", |row| row.get(0)).unwrap()
+    }
+
+    /// Duas aberturas ao mesmo tempo de um mapa que ainda não existe terminam
+    /// as duas, rodada após rodada: a troca do diário para o `WAL` no arquivo
+    /// recém-criado espera a vez, em vez de voltar com o banco travado. O
+    /// bloco refeito fica o de uma abertura só.
+    #[test]
+    fn two_openings_of_a_new_map_at_the_same_time_both_finish() {
+        for round in 0..12 {
+            let dir = tempdir().unwrap();
+            let start = Barrier::new(2);
+            let failures: Vec<String> = std::thread::scope(|scope| {
+                let openings: Vec<_> = (0..2)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            start.wait();
+                            MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, NOTES_V1]).map(drop).map_err(|err| err.to_string())
+                        })
+                    })
+                    .collect();
+                openings.into_iter().filter_map(|opening| opening.join().unwrap().err()).collect()
+            });
+            assert!(failures.is_empty(), "round {round}: both openings finish: {failures:?}");
+            let db = MapDb::open(&map_in(dir.path()), dir.path(), &[]).unwrap();
+            assert_eq!(journal_of(db.conn()), "wal", "round {round}");
+            assert_eq!(rows(&db, "SELECT name FROM decls"), vec!["from code v1"], "round {round}: one rebuild");
+        }
     }
 
     #[test]

@@ -473,6 +473,43 @@ fn two_passes_at_the_same_time_write_the_meaning_vectors_of_a_single_pass() {
     }
 }
 
+/// Dois processos do scan largados juntos sobre uma pasta de mapa ainda vazia
+/// saem os dois com sucesso, rodada após rodada, e o mapa fica o de uma
+/// passada só: a abertura do mapa novo espera a vez da outra, em vez de uma
+/// passada cair inteira com o banco travado. Num projeto em TypeScript.
+#[test]
+fn two_passes_at_the_same_time_over_a_new_map_folder_both_finish_with_the_map_of_one() {
+    let temp = project(
+        "scan-two-new-maps-",
+        &[
+            ("src/orders.ts", "export function placeOrder(total: number): number {\n  return total * 2;\n}\n"),
+            ("src/shipping.ts", "import { placeOrder } from './orders';\nexport class ParcelShipper {\n  ship(weight: number): number {\n    return placeOrder(weight) + 1;\n  }\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let single = tempfile::tempdir().unwrap();
+    let (expected, _) = model::scan(dir, single.path(), &[]);
+    for round in 0..6 {
+        let folder = tempfile::tempdir().unwrap();
+        let map = model::path_in(folder.path());
+        let passes: Vec<_> = (0..2)
+            .map(|_| {
+                Command::new(env!("CARGO_BIN_EXE_scan"))
+                    .args(["scan", dir.to_str().unwrap(), "--out", map.to_str().unwrap(), "--json"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("run scan")
+            })
+            .collect();
+        for pass in passes {
+            let run = pass.wait_with_output().unwrap();
+            assert!(run.status.success(), "round {round}: both passes finish: {}", String::from_utf8_lossy(&run.stderr));
+        }
+        assert_eq!(model::read(folder.path()), expected, "round {round}: the map of two passes is the map of one");
+    }
+}
+
 /// O índice de busca do mapa em `out`, tabela por tabela, como o banco o
 /// guarda: cada forma de cada campo de cada documento, o tamanho dos campos,
 /// os números de cada nível, os nomes da tabela trigram, as declarações com o

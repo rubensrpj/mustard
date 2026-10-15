@@ -76,10 +76,9 @@ fn open(root: &Path, write: bool) -> Result<Connection, String> {
         // No `WAL`, quem lê não espera quem grava, e cada gravação confirma o
         // disco uma vez só. O modo fica gravado no arquivo, e o banco de antes
         // passa a ele na primeira gravação; o disco que não guarda o `WAL`
-        // deixa o banco no diário que já tinha, que também vale.
-        connection
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
+        // deixa o banco no diário que já tinha, que também vale. A troca no
+        // banco recém-criado espera a vez de outra gravação que a faz junto.
+        crate::io::map_db::journal_to_wal(&connection, WAIT).map_err(|e| e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, spec TEXT NOT NULL, dispatch INTEGER NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS receipts_scope ON receipts(spec,dispatch,observed_at);").map_err(|e|e.to_string())?;
     }
     Ok(connection)
@@ -450,6 +449,35 @@ mod tests {
         holder.join().unwrap();
         let (id, _) = written.unwrap();
         assert_eq!(read(&root, &id).unwrap().call, "call-during-another-write");
+    }
+    /// Os dois primeiros recibos de um projeto, gravados ao mesmo tempo,
+    /// entram os dois, rodada após rodada: a troca do diário no banco
+    /// recém-criado espera a vez da outra gravação.
+    #[test]
+    fn the_first_two_receipts_recorded_at_the_same_time_are_both_kept() {
+        for round in 0..12 {
+            let dir = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(2);
+            let written: Vec<Result<String, String>> = std::thread::scope(|scope| {
+                let writers: Vec<_> = ["first-call", "second-call"]
+                    .into_iter()
+                    .map(|call| {
+                        let (root, start) = (dir.path(), &start);
+                        scope.spawn(move || {
+                            let mut each = receipt();
+                            each.call = call.into();
+                            start.wait();
+                            record(root, &each).map(|(id, _)| id)
+                        })
+                    })
+                    .collect();
+                writers.into_iter().map(|writer| writer.join().unwrap()).collect()
+            });
+            for id in written {
+                let id = id.unwrap_or_else(|err| panic!("round {round}: both receipts are recorded: {err}"));
+                assert!(read(dir.path(), &id).is_ok(), "round {round}");
+            }
+        }
     }
     #[test]
     fn a_receipt_reads_while_another_write_holds_a_store_from_the_rollback_journal() {
