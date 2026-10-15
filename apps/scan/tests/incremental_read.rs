@@ -386,6 +386,33 @@ fn a_native_pass_leaves_no_code_vector_for_the_next_search_to_compute() {
     assert_eq!(mustard_core::io::code_vectors::fill_at(&out, dir).unwrap(), Some(0), "nothing left for the search");
 }
 
+/// A passada que relê um arquivo calcula o vetor de código só da declaração
+/// cujo texto mudou: a outra do mesmo arquivo, que só desceu de linha, e a do
+/// arquivo que a chama guardam o vetor que já tinham. Num projeto em
+/// TypeScript.
+#[test]
+fn a_pass_that_rereads_a_file_computes_code_vectors_only_for_the_declarations_whose_text_changed() {
+    let temp = project(
+        "scan-native-vector-reuse-",
+        &[
+            ("src/alpha.ts", "export function alphaStart(): number {\n  return 1;\n}\n\nexport function alphaEnd(): number {\n  return 9;\n}\n"),
+            ("src/beta.ts", "import { alphaEnd } from './alpha';\n\nexport function betaRun(): number {\n  return alphaEnd() + 1;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    let first = native_pass(dir, &out);
+    assert_eq!(first["vectors"], json!(3), "{first}");
+
+    write(dir, "src/alpha.ts", "export function alphaStart(): number {\n  const base = 1;\n  return base + 1;\n}\n\nexport function alphaEnd(): number {\n  return 9;\n}\n");
+    let second = native_pass(dir, &out);
+    assert_eq!(second["read"], json!(["src/alpha.ts"]), "{second}");
+    assert_eq!(second["vectors"], json!(1), "only alphaStart changed its text: {second}");
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    let kept: i64 = conn.query_row("SELECT count(*) FROM code_vectors v JOIN knowledge_symbols s ON s.id = v.id AND s.sha256 = v.sha256", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, 3, "every declaration still has a current vector");
+}
+
 /// O índice de busca do mapa em `out`, tabela por tabela, como o banco o
 /// guarda: cada forma de cada campo de cada documento, o tamanho dos campos,
 /// os números de cada nível, os nomes da tabela trigram, as declarações com o
