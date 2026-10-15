@@ -76,9 +76,18 @@ pub(crate) struct Segment {
     /// the program, in order: `while pgrep x` is `["while"]`, `do sleep 1` is
     /// `["do"]`. A wrapper or an assignment in between is skipped, not kept.
     pub leading: Vec<String>,
+    /// Os invólucros pulados antes do programa, pelo nome e na ordem:
+    /// `rtk grep x` dá `["rtk"]`, `xargs -n1 echo` dá `["xargs"]`.
+    pub wrappers: Vec<String>,
     /// `true` when the command hands its output to the next one through a
     /// pipe (`|` or `|&`).
     pub piped: bool,
+    /// A profundidade do comando: `0` na própria linha, e mais um para cada
+    /// `$(…)`, crases, `<(…)`, `${…}`, `$((…))`, `bash -c "…"`, `eval` ou
+    /// `find -exec` em volta dele. Os comandos de dentro de um comando vêm
+    /// logo depois dele, mais fundos; os do corpo de um heredoc vêm depois do
+    /// último comando da linha do heredoc.
+    pub depth: usize,
 }
 
 impl Segment {
@@ -574,7 +583,7 @@ fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
     let Pending { words, redirects, inner, piped } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let segment = Segment { piped, ..simple_command(words, redirects) };
+        let segment = Segment { piped, depth, ..simple_command(words, redirects) };
         let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
@@ -590,7 +599,8 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
     // `command_start` can name an index past the last word (a wrapper's own
     // options run out with none of its own left, `function` with nothing
     // after it): `skip` reads past the end fine, but slicing does not.
-    let start = command_start(&words).min(words.len());
+    let (start, wrappers) = command_start(&words);
+    let start = start.min(words.len());
     let leading = words[..start]
         .iter()
         .filter(|w| w.is_plain() && STRUCTURE_WORDS.contains(&w.text.as_str()))
@@ -598,14 +608,15 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
         .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects, leading, piped: false }
+    Segment { program, args: rest.collect(), redirects, leading, wrappers, piped: false, depth: 0 }
 }
 
 /// Where the command really starts: past the structure words, a function
 /// definition's head, the `NAME=value` assignments and the wrappers with
-/// their options.
-fn command_start(words: &[Word]) -> usize {
+/// their options. Junto, os nomes dos invólucros pulados, na ordem.
+fn command_start(words: &[Word]) -> (usize, Vec<String>) {
     let mut i = 0;
+    let mut wrappers = Vec::new();
     while let Some(w) = words.get(i) {
         if (w.is_plain() && STRUCTURE_WORDS.contains(&w.text.as_str())) || is_assignment(w) {
             i += 1;
@@ -616,11 +627,14 @@ fn command_start(words: &[Word]) -> usize {
             continue;
         }
         match wrapper_end(words, i) {
-            Some(next) if next > i => i = next,
+            Some(next) if next > i => {
+                wrappers.push(base_name(&w.text).to_string());
+                i = next;
+            }
             _ => break,
         }
     }
-    i
+    (i, wrappers)
 }
 
 /// `NAME=value` (or `NAME+=value`), with the name written plain.
@@ -734,7 +748,7 @@ fn find_actions(args: &[Word], depth: usize) -> Vec<Segment> {
         if words.is_empty() {
             continue;
         }
-        let action = simple_command(words, Vec::new());
+        let action = Segment { depth: depth + 1, ..simple_command(words, Vec::new()) };
         let nested = run_by(&action, depth + 1);
         out.push(action);
         out.extend(nested);

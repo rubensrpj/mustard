@@ -21,6 +21,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "workbranch",
     "base",
     "command_guard",
+    "runtime_output",
     "install_lock",
     "clarity",
     "gate",
@@ -475,6 +476,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
              limit, and read the result before moving on."
         }
+        // A recusa do comando que passa a resposta do Mustard por script,
+        // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`).
+        // `{command}` vem do chamador: o comando recusado, encurtado.
+        ("runtime_output.scripted", Locale::PtBr) => {
+            "Comando barrado: ele passa a resposta do Mustard por script, filtro ou corte.\nComando: \
+             {command}\nA resposta do Mustard se lê inteira, e nada dela passa por script, filtro ou \
+             corte. Rode o comando do Mustard sozinho. Para ler só uma parte, use `mustard-rt run read \
+             <bloco> --term <termo>`. Se a resposta for grande, grave num arquivo com `> arquivo` e leia \
+             o arquivo por partes. Se o Mustard não traz o recorte de que você precisa, isso vira um \
+             pedido, não um corte."
+        }
+        ("runtime_output.scripted", Locale::EnUs) => {
+            "Command blocked: it runs the Mustard answer through a script, a filter or a cut.\nCommand: \
+             {command}\nThe Mustard answer is read whole, and none of it goes through a script, a filter \
+             or a cut. Run the Mustard command alone. To read only one part, use `mustard-rt run read \
+             <block> --term <term>`. When the answer is long, save it to a file with `> file` and read \
+             the file in parts. When Mustard does not give the part you need, that becomes a request, \
+             not a cut."
+        }
         // A trava de instalação (`apps/rt/src/hooks/session/prompt_entry.rs`):
         // um comando `/mustard:` num projeto sem `mustard.json` na raiz. Sem
         // esse arquivo o idioma do projeto ainda não é conhecido, então o
@@ -582,8 +602,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            75,
-            0x6619_c0db_87fa_0f10,
+            76,
+            0x8c1c_5a94_6ed4_e93c,
         );
     }
 
@@ -719,6 +739,7 @@ mod tests {
             ("command_guard.delete_base", &["{branch}"][..]),
             ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
             ("command_guard.waiting_loop", &["{command}"][..]),
+            ("runtime_output.scripted", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

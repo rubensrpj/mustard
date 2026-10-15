@@ -3,6 +3,7 @@ mod config_read;
 pub(crate) mod lex;
 pub(crate) mod reading;
 pub(crate) mod rtk_swap;
+mod runtime_output;
 mod safety;
 pub(crate) mod waiting;
 mod windows_redirect;

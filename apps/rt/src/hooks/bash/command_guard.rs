@@ -1,9 +1,14 @@
 //! `command_guard` — a trava de comandos, no `PreToolUse` do Bash.
 //!
 //! O comando é lido uma vez, como o terminal o parte ([`lex`]), e passa por
-//! quatro conferências, nesta ordem:
+//! cinco conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
+//! - [`runtime_output`] — recusa o comando que passa a resposta do Mustard
+//!   por script, filtro ou corte (`| python3`, `| grep`, `| head`, `| cut`,
+//!   `| sed`, `$(mustard-rt …)` entregue a um deles), na conversa principal e
+//!   nos agentes: a resposta se lê inteira. Gravar num arquivo (`>`, `>>`),
+//!   juntar os erros (`2>&1`) e dobrar as linhas (`| fold`) passam;
 //! - [`reading`] — recusa leituras que expõem a chave; a recusa de um leitor
 //!   simples traz pronto o comando que lê o arquivo com a chave escondida;
 //! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
@@ -33,7 +38,7 @@
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 
-use super::{lex, reading, safety, waiting, windows_redirect};
+use super::{lex, reading, runtime_output, safety, waiting, windows_redirect};
 
 /// A trava de comandos do Bash.
 pub struct CommandGuard;
@@ -81,6 +86,10 @@ impl CommandGuard {
         if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {
             return Ok(verdict);
         }
+        let lang = ctx.config.language().text_or_default();
+        if let Some(verdict) = runtime_output::bash_runtime_output(&segments, &cmd, lang) {
+            return Ok(verdict);
+        }
         // A cópia do rtk só é procurada quando a troca vai acontecer: shell do
         // host, projeto com mustard.json e a opção `rtk` ligada.
         let root = std::path::Path::new(&ctx.project_dir);
@@ -89,7 +98,6 @@ impl CommandGuard {
             .flatten();
         let runner = mustard_core::platform::code_tools::MachineRunner::new(&std::env::var("PATH").unwrap_or_default()).at(root);
         let isolate = |verdict| super::workspace_scope::isolate(input, ctx, verdict, host_shell, rtk.as_deref().map(|copy| (copy, &runner)));
-        let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             // A recusa vence a troca que outro gancho faça no mesmo comando; uma
             // troca feita aqui poderia perder para a dele. Quando o formato
@@ -111,7 +119,7 @@ impl CommandGuard {
 }
 
 impl Check for CommandGuard {
-    /// Roda as quatro conferências no `PreToolUse` do Bash; qualquer outro
+    /// Roda as cinco conferências no `PreToolUse` do Bash; qualquer outro
     /// evento ou ferramenta passa.
     ///
     /// A trava dos comandos que destroem trabalho não tem modo: ela sempre
@@ -185,7 +193,7 @@ mod tests {
         }
     }
 
-    /// Comando comum passa: a trava tem só as três conferências, e ler ou
+    /// Comando comum passa: a trava tem só as cinco conferências, e ler ou
     /// buscar pelo terminal não é uma delas.
     #[test]
     fn ordinary_commands_pass_the_chain() {
