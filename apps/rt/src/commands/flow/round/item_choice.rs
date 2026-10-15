@@ -20,9 +20,8 @@ use std::time::Instant;
 use mustard_core::domain::map_filter::FilterError;
 use mustard_core::domain::spec_events::{BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::wave_prompt::{Candidates, Choice, candidates, item_title};
-use serde_json::{Map, json};
 
-use crate::commands::spec_events::conversation::record_measured_call;
+use crate::shared::jev::{ITEMS_CALL, record_jev_call};
 use crate::shared::judgement::{BoardItem, BoardTask, ItemsBoard, ItemsJudged, WaveJudge};
 
 /// Quem julga os itens de uma onda: uma chamada com o quadro dela
@@ -42,6 +41,16 @@ pub(super) fn choose_items(start: &Path, spec: &str, log: &SpecLog, ready: &[u64
     }
     let judge = jev.map(|jev| move |board: &ItemsBoard| jev.judge_items(board));
     choose_with(start, spec, log, ready, judge.as_ref().map(|judge| judge as &JudgeItems<'_>))
+}
+
+/// Se a escolha dos itens pergunta ao Jev nesta rodada: com o Jev `jev`, ou,
+/// nos testes, com o de mentira instalado, como em [`choose_items`].
+pub(super) fn asks_jev(jev: Option<&dyn WaveJudge>) -> bool {
+    #[cfg(test)]
+    if fake::installed().is_some() {
+        return true;
+    }
+    jev.is_some()
 }
 
 /// [`choose_items`] com quem julga (`judge`) já escolhido.
@@ -78,7 +87,7 @@ fn choose_with(start: &Path, spec: &str, log: &SpecLog, ready: &[u64], judge: Op
     for ((wave, found, _), (called, answer)) in asked.iter().zip(&answers) {
         let choice = answer.as_ref().ok().map(|judged| Choice::by_chances(found, &judged.chances));
         let changed = choice.as_ref().map_or(0, |choice| choice.removed.len() + choice.added.len());
-        record_call(start, spec, (found.ids().len(), changed), *called, answer);
+        record_jev_call(start, spec, ITEMS_CALL, *called, Some((found.ids().len(), changed)), answer.as_ref().map(|judged| &judged.usage));
         if let Some(choice) = choice {
             choices.insert(*wave, choice);
         }
@@ -99,36 +108,6 @@ fn board_of(log: &SpecLog, wave: u64, found: &Candidates<'_>) -> ItemsBoard {
     let mut items: Vec<BoardItem> = found.carried.iter().chain(&found.unlinked).map(shown).collect();
     items.sort_by_key(|item| item.id);
     ItemsBoard { tasks, items }
-}
-
-/// Grava o evento `call` da escolha dos itens, como a busca grava o dela:
-/// quantos itens foram ao Jev e quantos mudaram no pedido (`asked`,
-/// `changed`) e, na resposta, o tempo, os tokens, o custo e o
-/// modelo; na falha, o motivo dela no nome do filtro (`jev:<motivo>`).
-fn record_call(start: &Path, spec: &str, (asked, changed): (usize, usize), called: Instant, answer: &Result<ItemsJudged, FilterError>) {
-    let mut measured = Map::new();
-    measured.insert("candidates".to_string(), json!(asked));
-    measured.insert("returned".to_string(), json!(changed));
-    match answer {
-        Ok(judged) => {
-            measured.insert("filter".to_string(), json!("jev"));
-            measured.insert("filter_ms".to_string(), json!(judged.usage.millis));
-            if !judged.usage.incomplete {
-                measured.insert("tokens".to_string(), json!(judged.usage.input_tokens));
-                measured.insert("cost_micro_usd".to_string(), json!(judged.usage.cost_micro_usd));
-            }
-            measured.insert("requests".to_string(), json!(judged.usage.requests));
-            if !judged.usage.model.is_empty() {
-                measured.insert("model".to_string(), json!(judged.usage.model));
-            }
-        }
-        Err(error) => {
-            measured.insert("filter".to_string(), json!(format!("jev:{}", error.reason())));
-            measured.insert("filter_ms".to_string(), json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)));
-        }
-    }
-    let report = json!({ "ok": true, "spec": spec });
-    let _ = record_measured_call(start, "wave items", Some(spec), None, called, &report, measured);
 }
 
 /// O Jev de mentira dos testes da biblioteca: a rodada dos testes nunca chama o
@@ -176,7 +155,12 @@ pub(crate) mod fake {
 
     /// O Jev de mentira que recusa toda chamada.
     pub(crate) fn refusing() -> Installed {
-        let answer: Arc<Answer> = Arc::new(|_: &ItemsBoard| Err(FilterError::Refused { status: 529 }));
+        refusing_with(529)
+    }
+
+    /// O Jev de mentira que recusa toda chamada com o código HTTP `status`.
+    pub(crate) fn refusing_with(status: u16) -> Installed {
+        let answer: Arc<Answer> = Arc::new(move |_: &ItemsBoard| Err(FilterError::Refused { status }));
         INSTALLED.with(|installed| *installed.borrow_mut() = Some(answer));
         Installed
     }

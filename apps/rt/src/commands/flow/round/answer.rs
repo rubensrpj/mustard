@@ -970,6 +970,12 @@ pub(super) fn run_entered_round(
             warnings.push(json!({ "reason": "bad-setting", "key": setting.key, "hint": setting.message }));
         }
     }
+    // A chamada ao Jev que falhou nesta rodada sai numa linha, com o motivo.
+    // Sem Jev para a montagem (a mesma configuração do procedimento e da
+    // triagem) nem para os itens, nenhuma chamada saiu: a procura nem relê a
+    // spec.
+    let jev_asked = jev.is_some() || super::item_choice::asks_jev(context_jev.filter.as_deref());
+    warnings.extend(super::jev_failure::warning(root, &path, &log_on_entry, jev_asked, session, lang));
 
     // O sinal de vida: a onda em andamento, viva, sem nenhuma ação gravada
     // (pelo observador da cópia, ou, sem ela, a hora do próprio envio) há mais

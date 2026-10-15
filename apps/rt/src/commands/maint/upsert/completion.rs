@@ -1,16 +1,22 @@
 //! Verify the installed project, rather than treating files written as success.
 //! No remote model, app build, tests, publication or host restart at this door.
+//! O único pedido ao serviço é a lista de modelos do Jev com a chave do
+//! projeto: não leva texto, e a resposta diz se o serviço aceita a chave.
 use std::{path::Path,time::Duration};
 use mustard_core::ProjectConfig;
 use mustard_core::platform::code_tools::{Budget,ToolRunner,RunOutcome};
 use serde_json::{Value,json};
+use crate::shared::jev::KeyCheck;
 use super::Report;
 
+/// A maior espera pela lista de modelos do serviço.
+const KEY_CHECK_WAIT:Duration=Duration::from_secs(10);
+
 pub(super) fn finish(root:&Path,report:&Report,runner:&impl ToolRunner,left:Duration)->Value {
-    finish_with_install(root,report,runner,left,mustard_core::platform::harness::installed_plugin())
+    finish_with_install(root,report,runner,left,mustard_core::platform::harness::installed_plugin(),&crate::shared::jev::service_url())
 }
 
-fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Duration,plugin:Option<mustard_core::platform::harness::InstalledPlugin>)->Value {
+fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Duration,plugin:Option<mustard_core::platform::harness::InstalledPlugin>,jev_url:&str)->Value {
     let budget=Budget::start(runner,left);
     let scan=report.scan.as_ref().unwrap_or(&Value::Null);
     let config=ProjectConfig::load(root);
@@ -46,8 +52,22 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
         crate::commands::flow::round::local_file_ignored(root,".claude/settings.local.json")
             .then(||settings.as_ref()?.get("env")?.get(key_env)?.as_str().map(str::to_string)).flatten()
     });
-    let key_ready=!key_required || mustard_core::io::jev_gate::find_key(root,&config,key).is_ok();
-    checks.push(check("jev-configuration",key_ready,"configure an untracked key or TYPESAFE_API_KEY; no provider call was made"));
+    // A chave presente é conferida uma vez, dentro do prazo da instalação: a
+    // recusa deixa a configuração não pronta, e a falta de resposta a deixa
+    // sem conferência, nunca conferida.
+    let loaded=key_required.then(||crate::shared::jev::key_in(root,&config,key).ok()).flatten();
+    let provider=loaded.as_ref().map(|loaded| {
+        budget.within(KEY_CHECK_WAIT,|limit|crate::shared::jev::check_key(&loaded.key,jev_url,limit)).unwrap_or(KeyCheck::Unchecked("timeout"))
+    });
+    let (key_ready,remedy)=match (&provider,key_required) {
+        (_,false) => (true,String::new()),
+        (None,true) => (false,"configure an untracked key or TYPESAFE_API_KEY; no provider call was made".to_string()),
+        // Sem crédito, a chave vale: o remédio é crédito, não outra chave.
+        (Some(KeyCheck::Refused(reason @ "no_credit")),true) => (false,format!("the provider accepted the key but the account has no credit ({reason}); add credit to the account")),
+        (Some(KeyCheck::Refused(reason)),true) => (false,format!("the provider refused the key ({reason}); configure a valid untracked key or TYPESAFE_API_KEY")),
+        (Some(_),true) => (true,String::new()),
+    };
+    checks.push(check("jev-configuration",key_ready,&remedy));
     let project_ready=checks.iter().all(|check|check["ready"]==true);
     let host_version=plugin.as_ref().is_some_and(|plugin|plugin.version==expected &&
         std::fs::read_to_string(plugin.dir.join(".claude-plugin/plugin.json")).ok().and_then(|raw|serde_json::from_str::<Value>(&raw).ok()).is_some_and(|doc|doc["version"]==expected));
@@ -60,8 +80,13 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
     let mut receipt=json!({"schema_version":1,"version":expected,"at":chrono::Utc::now().to_rfc3339(),
         "complete":project_ready && host_ready,"project_ready":project_ready,"host_ready":host_ready,
         "checks":checks,"scan":{"ok":scan["ok"],"files":scan["files"],"read":scan["read"],"reason":scan["reason"],"error":scan["error"]},
-        "vectors_enabled":config.ai_vectors_enabled(),"jev_requested":key_required,"provider_verified":false,
+        "vectors_enabled":config.ai_vectors_enabled(),"jev_requested":key_required,"provider_verified":provider==Some(KeyCheck::Verified),
         "restart_required":report.plugin_refresh.restart.is_some()});
+    match provider {
+        Some(KeyCheck::Refused(reason)) => receipt["provider_refusal"]=json!(reason),
+        Some(KeyCheck::Unchecked(reason)) => receipt["provider_unchecked"]=json!(reason),
+        _ => {}
+    }
     let saved=serde_json::to_vec(&receipt).is_ok_and(|bytes|mustard_core::io::fs::write_atomic(root.join(".claude/mustard/installation.json"),&bytes).is_ok());
     if !saved {receipt["complete"]=json!(false);receipt["receipt_saved"]=json!(false);}
     receipt
@@ -154,11 +179,129 @@ mod tests {
         assert!(std::process::Command::new("git").args(["init","-q"]).current_dir(root).status().unwrap().success());
         let project=mustard_core::platform::project_seed::upsert_project(root,Some(&mustard_core::harness_version()),mustard_core::platform::project_seed::InstallMode::Private).unwrap();
         let report=Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,local_files_found:None,installation:None,scan:Some(json!({"ok":false,"reason":"missing-scan"}))};
-        let result=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(1),None);
+        let result=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(1),None,"http://127.0.0.1:9/v1/systemone");
         assert_eq!(result["complete"],false);
         assert_eq!(result["host_ready"],false);
         assert!(result["checks"].as_array().unwrap().iter().any(|check|check["component"]=="scan" && check["ready"]==false));
         assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(root.join(".claude/mustard/installation.json")).unwrap()).unwrap()["complete"],false);
         assert!(!root.join(".claude/grain.db").exists());
+    }
+
+    /// Um serviço em 127.0.0.1 que responde `status` à primeira conexão e
+    /// devolve a linha do pedido e se ele trouxe corpo.
+    fn models_service(status:u16)->(String,std::sync::mpsc::Receiver<(String,bool)>) {
+        use std::io::{BufRead,BufReader,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/v1/systemone",listener.local_addr().unwrap());
+        let (tx,rx)=std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((stream,_))=listener.accept() else {return};
+            let mut reader=BufReader::new(&stream);
+            let mut first=String::new();
+            let _=reader.read_line(&mut first);
+            let mut body=false;
+            loop {
+                let mut line=String::new();
+                if reader.read_line(&mut line).unwrap_or(0)==0 || line=="\r\n" {break;}
+                let lower=line.to_ascii_lowercase();
+                body|=(lower.starts_with("content-length:") && lower.trim_end()!="content-length: 0") || lower.starts_with("transfer-encoding:");
+            }
+            let mut stream=&stream;
+            let _=write!(stream,"HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _=tx.send((first.trim_end().to_string(),body));
+        });
+        (url,rx)
+    }
+
+    /// O projeto instalado em `root` com a busca pelo Jev e a chave no
+    /// `mustard.json`, e o relatório da instalação dele.
+    fn keyed_install(root:&Path)->Report {
+        assert!(std::process::Command::new("git").args(["init","-q"]).current_dir(root).status().unwrap().success());
+        let project=mustard_core::platform::project_seed::upsert_project(root,Some(&mustard_core::harness_version()),mustard_core::platform::project_seed::InstallMode::Private).unwrap();
+        std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":true},"judgement":{"search":{"filter":"jev"}},"jev":{"key":"sk-installed"}}).to_string()).unwrap();
+        Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,local_files_found:None,installation:None,scan:None}
+    }
+
+    fn jev(receipt:&Value)->Value {
+        receipt["checks"].as_array().unwrap().iter().find(|check|check["component"]=="jev-configuration").cloned().unwrap()
+    }
+
+    /// Com a chave presente, a instalação lista os modelos do serviço, sem
+    /// mandar texto: a chave recusada (401) grava `key_refused` e deixa a
+    /// configuração do Jev não pronta; a conta sem crédito (402) também, com
+    /// o remédio de pôr crédito, não o de trocar a chave; a aceita grava a
+    /// chave como conferida; o erro do serviço (503) e a falta de quem
+    /// responda deixam a chave sem conferência, cada um com a sua palavra.
+    #[test]
+    fn a_present_key_is_checked_on_the_provider_model_list() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let report=keyed_install(root);
+
+        let (url,seen)=models_service(401);
+        let refused=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url);
+        let (request,body)=seen.recv_timeout(Duration::from_secs(10)).expect("the installation lists the models with the key");
+        assert_eq!(request,"GET /v1/models HTTP/1.1");
+        assert!(!body,"the check sends no text");
+        assert_eq!(refused["provider_verified"],false,"{refused}");
+        assert_eq!(refused["provider_refusal"],"key_refused","{refused}");
+        assert_eq!(jev(&refused)["ready"],false,"{refused}");
+        let saved:Value=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/installation.json")).unwrap()).unwrap();
+        assert_eq!(saved["provider_refusal"],"key_refused");
+
+        let (url,_seen)=models_service(402);
+        let broke=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url);
+        assert_eq!(broke["provider_refusal"],"no_credit","{broke}");
+        assert_eq!(jev(&broke)["ready"],false,"{broke}");
+        let remedy=jev(&broke)["remedy"].as_str().unwrap_or_default().to_string();
+        assert!(remedy.contains("add credit"),"{broke}");
+        assert!(!remedy.contains("configure a valid"),"no credit is not a key to change: {broke}");
+
+        let (url,_seen)=models_service(503);
+        let failing=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url);
+        assert_eq!(failing["provider_verified"],false,"{failing}");
+        assert_eq!(failing["provider_unchecked"],"service_error","{failing}");
+        assert_eq!(failing.get("provider_refusal"),None,"{failing}");
+        assert_eq!(jev(&failing)["ready"],true,"a failing service does not refuse a present key: {failing}");
+
+        let (url,_seen)=models_service(200);
+        let verified=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url);
+        assert_eq!(verified["provider_verified"],true,"{verified}");
+        assert_eq!(jev(&verified)["ready"],true,"{verified}");
+
+        let silent=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/v1/systemone",silent.local_addr().unwrap());
+        drop(silent);
+        let unchecked=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url);
+        assert_eq!(unchecked["provider_verified"],false,"{unchecked}");
+        assert_eq!(unchecked["provider_unchecked"],"network","{unchecked}");
+        assert_eq!(jev(&unchecked)["ready"],true,"an unanswered check does not refuse a present key: {unchecked}");
+    }
+
+    /// O serviço que aceita a conexão e nunca responde não prende a
+    /// instalação: com orçamento de sobra, ela volta no prazo da conferência
+    /// (10 s), com a chave sem conferência por tempo esgotado.
+    #[test]
+    fn a_silent_provider_does_not_hold_the_installation_past_the_check_wait() {
+        use std::io::Read;
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/v1/systemone",listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream,_))=listener.accept() else {return};
+            let mut buffer=[0u8;1024];
+            while stream.read(&mut buffer).is_ok_and(|read|read>0) {}
+        });
+        let (tx,rx)=std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir=tempfile::tempdir().unwrap();
+            let report=keyed_install(dir.path());
+            let started=std::time::Instant::now();
+            let receipt=finish_with_install(dir.path(),&report,&MissingPrograms,Duration::from_secs(60),None,&url);
+            let _=tx.send((started.elapsed(),receipt));
+        });
+        let (took,receipt)=rx.recv_timeout(KEY_CHECK_WAIT+Duration::from_secs(20)).expect("the installation returns within the check wait");
+        assert!(took<KEY_CHECK_WAIT+Duration::from_secs(2),"the check waited {took:?}");
+        assert_eq!(receipt["provider_verified"],false,"{receipt}");
+        assert_eq!(receipt["provider_unchecked"],"timeout","{receipt}");
+        assert_eq!(jev(&receipt)["ready"],true,"{receipt}");
     }
 }

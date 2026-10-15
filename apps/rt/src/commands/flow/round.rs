@@ -138,6 +138,7 @@ mod finish_check;
 mod fixes;
 mod imports_check;
 pub(crate) mod item_choice;
+mod jev_failure;
 mod keep;
 mod leftovers;
 mod lost_commit;

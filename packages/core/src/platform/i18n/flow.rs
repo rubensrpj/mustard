@@ -1219,6 +1219,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Nothing to dispatch and nothing in flight, but the backlog still holds tasks {tasks}, stuck: \
              none has every dependency delivered and covers an item. Show the user what holds them before closing."
         }
+        // O aviso da rodada: uma chamada dela ao Jev falhou, e a rodada seguiu
+        // sem ele. O remédio sai pelo motivo da falha.
+        ("round.jev_failed", Locale::PtBr) => {
+            "O Jev falhou nesta rodada ({reason}), e a rodada seguiu sem ele, pelas regras nativas. {remedy}"
+        }
+        ("round.jev_failed", Locale::EnUs) => {
+            "Jev failed in this round ({reason}), and the round went on without it, by the native rules. {remedy}"
+        }
+        ("round.jev_remedy_key", Locale::PtBr) => "O serviço recusou a chave: configure uma chave válida.",
+        ("round.jev_remedy_key", Locale::EnUs) => "The service refused the key: configure a valid key.",
+        ("round.jev_remedy_credit", Locale::PtBr) => {
+            "A conta do serviço está sem crédito: ponha crédito nela; a chave vale, e trocá-la não resolve."
+        }
+        ("round.jev_remedy_credit", Locale::EnUs) => {
+            "The service account has no credit: add credit to it; the key is valid, and changing it does not help."
+        }
+        ("round.jev_remedy_size", Locale::PtBr) => {
+            "A pergunta passou do teto de tamanho e nem saiu; a chave e o crédito não estão em causa."
+        }
+        ("round.jev_remedy_size", Locale::EnUs) => {
+            "The question went over the size cap and was never sent; the key and the credit are not at fault."
+        }
+        ("round.jev_remedy_wait", Locale::PtBr) => {
+            "O serviço não deu resposta útil desta vez: lento, ocupado, fora de alcance ou com erro. A rodada \
+             seguinte pergunta de novo. A chave e o crédito não estão em causa."
+        }
+        ("round.jev_remedy_wait", Locale::EnUs) => {
+            "The service gave no usable answer this time: slow, busy, unreachable or failing. The next round \
+             asks again. The key and the credit are not at fault."
+        }
         ("round.task_without_covers", Locale::PtBr) => {
             "As tarefas {tasks} do backlog não cobrem item nenhum (`covers`). A onda leva como critérios os \
              itens que as tarefas dela cobrem. Por isso elas ficam sem onda, e as que dependem delas esperam. \
@@ -1896,7 +1926,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 261, 0xb758_e951_7daf_2145);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 266, 0x41cb_2dde_801c_7b81);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2141,6 +2171,11 @@ mod tests {
             ("round.backlog_needs_planning", &["{tasks}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
+            ("round.jev_failed", &["{reason}", "{remedy}"][..]),
+            ("round.jev_remedy_key", &[][..]),
+            ("round.jev_remedy_credit", &[][..]),
+            ("round.jev_remedy_size", &[][..]),
+            ("round.jev_remedy_wait", &[][..]),
             ("round.agents_refreshed", &["{files}"][..]),
             ("round.agents_not_refreshed", &["{detail}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),

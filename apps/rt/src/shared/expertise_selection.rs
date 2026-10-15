@@ -1,7 +1,7 @@
 //! One bounded batch for unresolved procedure choices. Native scopes,
 //! source/rule validity and review requirements always precede the model.
 use super::{
-    jev::{JEV_MODEL, JevFilter},
+    jev::{EXPERTISE_CALL, JEV_MODEL, JevFilter},
     secret::without_secrets,
 };
 use mustard_core::{
@@ -22,9 +22,7 @@ pub(crate) fn select(
 ) -> BTreeMap<u64, Selection> {
     let filter = JevFilter::for_orchestration(root, spec);
     select_with(root, log, waves, &|payload| {
-        filter
-            .as_ref()
-            .and_then(|f| f.choose_orchestration(payload).ok())
+        filter.as_ref()?.choose_recorded(root, spec, EXPERTISE_CALL, payload)
     })
 }
 
@@ -88,10 +86,8 @@ fn select_with(
         return plans;
     }
     let payload=json!({"model":JEV_MODEL,"state":{"revision":"expertise-choice-v2","groups":groups},"questions":questions}).to_string();
-    // Keep preparation bounded; an unusually large catalogue uses native fit.
-    if payload.len() > 48_000 {
-        return plans;
-    }
+    // A pergunta grande demais não sai, e o catálogo fica com a escolha
+    // nativa: o teto e o registro dele moram em quem pergunta.
     let Some(doc) = invoke(&payload) else {
         return plans;
     };

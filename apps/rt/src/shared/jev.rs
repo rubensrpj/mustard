@@ -11,6 +11,12 @@
 //! missing usage remains unknown. No secret or response body enters metrics.
 
 mod attempts;
+mod call_record;
+mod key_check;
+mod orchestration;
+
+pub(crate) use call_record::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TRIAGE_CALL, record_jev_call};
+pub(crate) use key_check::{KeyCheck, check_key, service_url};
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
 use crate::shared::judgement::{Board, BoardTask, ItemsBoard, ItemsJudged, Judged, WaveJudge};
@@ -220,11 +226,7 @@ impl JevFilter {
     /// [`JEV_URL`], ou o que [`URL_ENV`] diz. O saldo é controlado pelo serviço.
     #[must_use]
     pub fn new(root: &Path, key: JevKey) -> Self {
-        let url = std::env::var(URL_ENV).ok().map(|url| url.trim().to_string()).filter(|url| !url.is_empty());
-        Self {
-            cache: Some(mustard_core::io::spec_events::spec_root(root).join(".claude/judgements")),
-            ..Self::at(key, url.as_deref().unwrap_or(JEV_URL))
-        }
+        Self { cache: Some(mustard_core::io::spec_events::spec_root(root).join(".claude/judgements")), ..Self::at(key, &service_url()) }
     }
 
     fn at(key: JevKey, endpoint: &str) -> Self {

@@ -23,11 +23,11 @@ use super::queue::{
 use super::report::backlog_return;
 use super::stops::waves_stuck;
 use super::summary_wave::summary_waves;
-use crate::commands::spec_events::conversation::record_measured_call;
 use crate::commands::spec_events::write::{RecordCheck, record};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::shared::dag::{BacklogTask, CLASH_FROM, Reserved, files_cross, pack_by_affinity, pack_by_kind, sets_cross, touches_whole_tree};
+use crate::shared::jev::{ASSEMBLY_CALL, record_jev_call};
 use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
 
 /// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
@@ -383,9 +383,12 @@ pub(crate) fn dispatch_backlog(
             chosen.push((batch, summary));
         }
     }
+    // A chamada da montagem fica gravada, com quantas tarefas foram ao Jev e
+    // quantas saíram em onda; na falha, com o motivo, e a montagem seguiu
+    // pelo arquivo.
     if let Some((asked, called, answer)) = &judging {
         let returned = chosen.iter().filter(|(_, summary)| summary.is_none()).map(|(batch, _)| batch.tasks.len()).sum();
-        record_assembly(start, spec, (*asked, returned), *called, answer);
+        record_jev_call(start, spec, ASSEMBLY_CALL, *called, Some((*asked, returned)), answer.as_ref().map(|judged| &judged.usage));
     }
 
     // Attach a ready, small cleanup to the last functional batch when local
@@ -579,37 +582,6 @@ fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[Back
         })
         .collect();
     Board { running, backlog }
-}
-
-/// Grava o evento `call` da montagem pelo Jev, como a busca grava o dela:
-/// quantas tarefas foram ao Jev e quantas saíram em onda (`asked`,
-/// `returned`) e, na resposta, o tempo, os tokens, o custo e o modelo; na
-/// falha, o motivo dela no nome do filtro (`jev:<motivo>`), e a montagem
-/// seguiu pelo arquivo. `called` é a hora da chamada.
-fn record_assembly(start: &Path, spec: &str, (asked, returned): (usize, usize), called: Instant, answer: &Result<Judged, FilterError>) {
-    let mut measured = Map::new();
-    measured.insert("candidates".to_string(), json!(asked));
-    measured.insert("returned".to_string(), json!(returned));
-    match answer {
-        Ok(judged) => {
-            measured.insert("filter".to_string(), json!("jev"));
-            measured.insert("filter_ms".to_string(), json!(judged.usage.millis));
-            if !judged.usage.incomplete {
-                measured.insert("tokens".to_string(), json!(judged.usage.input_tokens));
-                measured.insert("cost_micro_usd".to_string(), json!(judged.usage.cost_micro_usd));
-            }
-            measured.insert("requests".to_string(), json!(judged.usage.requests));
-            if !judged.usage.model.is_empty() {
-                measured.insert("model".to_string(), json!(judged.usage.model));
-            }
-        }
-        Err(error) => {
-            measured.insert("filter".to_string(), json!(format!("jev:{}", error.reason())));
-            measured.insert("filter_ms".to_string(), json!(u64::try_from(called.elapsed().as_millis()).unwrap_or(u64::MAX)));
-        }
-    }
-    let report = json!({ "ok": true, "spec": spec });
-    let _ = record_measured_call(start, "wave assembly", Some(spec), None, called, &report, measured);
 }
 
 /// As ondas do plano que reservam os arquivos delas contra o backlog: as que
