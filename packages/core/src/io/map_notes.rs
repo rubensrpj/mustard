@@ -112,6 +112,27 @@ pub struct Note {
 ///
 /// Sem o mapa, com ele ilegível ou quando a gravação falha.
 pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Result<Note, MapRefusal> {
+    let note = record(model, root, new)?;
+    // Os vetores de sentido se refazem só das declarações cujo texto mudou; se
+    // não se refazem agora, o scan seguinte os refaz.
+    let _ = map_meaning::fill_at(model, root);
+    Ok(note)
+}
+
+/// Grava cada nota de `notes` como [`write`], com as mesmas recusas, e
+/// devolve, na mesma ordem, a nota gravada ou a recusa de cada uma. A recusa
+/// de uma não impede as outras. Os vetores de sentido se refazem uma vez só,
+/// depois da última, e só quando alguma ficou gravada.
+pub fn write_all(model: &Path, root: &Path, notes: &[NewNote<'_>]) -> Vec<std::result::Result<Note, MapRefusal>> {
+    let written: Vec<_> = notes.iter().map(|new| record(model, root, new)).collect();
+    if written.iter().any(std::result::Result::is_ok) {
+        let _ = map_meaning::fill_at(model, root);
+    }
+    written
+}
+
+/// A gravação de [`write`] sem refazer os vetores de sentido.
+fn record(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Result<Note, MapRefusal> {
     let file = clean_path(new.file);
     let name = new.name.trim().to_string();
     let text = new.text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -169,10 +190,6 @@ pub fn write(model: &Path, root: &Path, new: &NewNote<'_>) -> std::result::Resul
         Ok(())
     })
     .map_err(unreadable)?;
-    drop(db);
-    // Os vetores de sentido se refazem só das declarações cujo texto mudou; se
-    // não se refazem agora, o scan seguinte os refaz.
-    let _ = map_meaning::fill_at(model, root);
     Ok(note)
 }
 
@@ -670,6 +687,33 @@ mod tests {
         let in_search: Vec<String> =
             fresh(opened(&dir).conn(), Some(&["src/pay.rs"])).unwrap().into_iter().map(|note| note.name).collect();
         assert_eq!(in_search, ["charge"]);
+    }
+
+    /// A gravação de várias frases grava as das funções de arquivo em dia e
+    /// recusa a do arquivo mudado depois do mapa, sem gravar nada dela; a
+    /// recusa de uma não impede as outras, e as gravadas valem na busca.
+    #[test]
+    fn a_batch_writes_the_current_notes_and_refuses_the_one_of_a_changed_file() {
+        let dir = saved("ids-1");
+        save_payments(&dir, "2", "scan 1");
+        std::fs::write(dir.path().join("src/ids.rs"), "fn changed() {}\n").unwrap();
+        let model = model_path(dir.path());
+        let batch = [
+            note_of("src/pay.rs", "charge", "Cobra o cliente."),
+            note_of("src/ids.rs", "check_digits", NOTE),
+            note_of("src/pay.rs", "refund", "Devolve o dinheiro do cliente."),
+        ];
+        let written = write_all(&model, dir.path(), &batch);
+        let names: Vec<&str> = written.iter().filter_map(|note| note.as_ref().ok()).map(|note| note.name.as_str()).collect();
+        assert_eq!(names, ["charge", "refund"]);
+        assert!(
+            matches!(&written[1], Err(MapRefusal::MapUnreadable { detail }) if detail.starts_with("note-source-changed")),
+            "{:?}",
+            written[1]
+        );
+        assert_eq!(count(&dir, "SELECT count(*) FROM notes"), 2);
+        let fresh_names: Vec<String> = fresh(opened(&dir).conn(), None).unwrap().into_iter().map(|note| note.name).collect();
+        assert_eq!(fresh_names, ["charge", "refund"]);
     }
 
     /// O arquivo cujo texto analisado não é JSON recusa a nota como o que o

@@ -209,7 +209,13 @@ pub enum ScanCmd {
     /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
     /// file, or declaration, in business words, so the search finds it by
     /// them; it stays valid until the file changes, and `slice` shows it, as
-    /// stale once the file changed). Reads `.claude/grain.db`;
+    /// stale once the file changed), `notes-package [--limit <chars>]
+    /// [--changed-since <commit>]` (the functions without a current sentence,
+    /// stale ones first, then those of files changed since the commit, each
+    /// with its text, within the analysis prompt ceiling), or `notes-write
+    /// --json '[{"file","name","text"}]'` (writes the sentences the analysis
+    /// agent returned, answering the written and the refused, with the
+    /// reason). Reads `.claude/grain.db`;
     /// prints JSON and exits 1 on a refusal.
     #[command(display_order = 16)]
     Map {
@@ -272,6 +278,15 @@ pub enum ScanCmd {
         /// paragraph only.
         #[arg(long)]
         pr: Option<u32>,
+        /// The character ceiling of the `notes-package` package.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// The commit since which `notes-package` takes files as changed.
+        #[arg(long)]
+        changed_since: Option<String>,
+        /// The sentences `notes-write` writes: `[{"file","name","text"}]`.
+        #[arg(long)]
+        json: Option<String>,
         /// Any directory inside the project. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -351,6 +366,9 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         said,
         name,
         pr,
+        limit,
+        changed_since,
+        json,
         root,
     } = cmd
     else {
@@ -377,6 +395,9 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         name,
         pr,
         session: crate::shared::spec_state::session_from_env(),
+        limit,
+        changed_since,
+        json,
     }
 }
 

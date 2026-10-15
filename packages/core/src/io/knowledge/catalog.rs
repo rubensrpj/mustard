@@ -339,17 +339,16 @@ pub(super) fn exact_name(root: &Path, options: &Query<'_>) -> std::result::Resul
 /// As declarações que a pergunta cita pelo nome: cada palavra dela escrita
 /// como nome de código ([`cited_names`]) igual ao nome de uma declaração
 /// do mapa, sem distinguir maiúsculas, a grafia exata antes. A palavra que só
-/// a maiúscula faz nome exige a mesma grafia: `Mustard` numa frase não cita a
-/// constante `MUSTARD`. O nome com mais homônimos que as vagas da resposta não
-/// conta: ele não diz qual declaração a pergunta quer, e encheria a resposta.
-/// O nome de menos homônimos vem antes; no empate, o que a pergunta escreve
-/// primeiro.
-pub(super) fn named(root: &Path, options: &Query<'_>) -> std::result::Result<Vec<String>, MapRefusal> {
+/// a maiúscula faz nome exige a mesma grafia: `Backoff` numa frase não cita a
+/// constante `BACKOFF`. O nome com mais homônimos que `slots`, as vagas que a
+/// resposta deixa às declarações fora da reserva das relações, não conta: ele
+/// não diz qual declaração a pergunta quer, e entraria pela metade. O nome de
+/// menos homônimos vem antes; no empate, o que a pergunta escreve primeiro.
+pub(super) fn named(root: &Path, options: &Query<'_>, slots: usize) -> std::result::Result<Vec<String>, MapRefusal> {
     let words = cited_names(options.text);
     if options.all || words.is_empty() {
         return Ok(Vec::new());
     }
-    let slots = options.limit.clamp(1, 50);
     let fetch = i64::try_from(slots + 1).unwrap_or(i64::MAX);
     let db = store::open_existing(&store::model_path(root))?;
     let mut statement = db

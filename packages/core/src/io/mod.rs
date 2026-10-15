@@ -24,6 +24,7 @@ pub mod knowledge;
 pub mod expertise;
 pub mod code_search;
 mod map_notes_fresh;
+pub mod map_notes_package;
 pub mod map_lineage;
 mod map_check;
 mod map_grouped;

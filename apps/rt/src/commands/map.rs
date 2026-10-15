@@ -39,7 +39,12 @@
 //!   sentido do arquivo, ou da declaração, em palavras de negócio, para a
 //!   busca achar o trecho por elas; a nota da spec atual entra no lugar da que
 //!   o trecho já tinha, e vale enquanto o arquivo não mudar. O `slice` mostra a
-//!   nota da declaração, dita velha quando o arquivo mudou depois dela.
+//!   nota da declaração, dita velha quando o arquivo mudou depois dela;
+//! - `notes-package [--limit <caracteres>] [--changed-since <commit>]`: o
+//!   pacote das funções sem frase em dia para o agente de análise, as de nota
+//!   velha primeiro, depois as dos arquivos mudados, cada uma com o trecho;
+//! - `notes-write --json '[{"file","name","text"}]'`: grava as frases que o
+//!   agente devolveu, e diz as gravadas e as recusadas, com o motivo.
 //!
 //! A regra mora em `mustard_core::domain::project_map`, e a leitura do banco
 //! na porta `mustard_core::io::project_map`; a busca lê o índice de palavras
@@ -74,6 +79,8 @@ use crate::shared::config_key::Walk;
 use crate::shared::search_door::{self as door, Assemble, Numbers, first_warning, jev};
 use crate::shared::triage_view;
 
+mod notes;
+
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Question {
@@ -88,6 +95,8 @@ pub enum Question {
     Dump,
     Audit,
     Note,
+    NotesPackage,
+    NotesWrite,
 }
 
 impl Question {
@@ -104,6 +113,8 @@ impl Question {
             Self::Dump => "dump",
             Self::Audit => "audit",
             Self::Note => "note",
+            Self::NotesPackage => "notes-package",
+            Self::NotesWrite => "notes-write",
         }
     }
 }
@@ -146,6 +157,12 @@ pub struct MapOpts {
     pub pr: Option<u32>,
     /// A sessão de quem pergunta, que guarda os avisos já dados.
     pub session: Option<String>,
+    /// O teto de caracteres do pacote de `notes-package`.
+    pub limit: Option<usize>,
+    /// O commit desde o qual `notes-package` dá os arquivos por mudados.
+    pub changed_since: Option<String>,
+    /// As frases que `notes-write` grava, como JSON.
+    pub json: Option<String>,
 }
 
 fn refused(refusal: &MapRefusal, lang: Locale) -> Value {
@@ -216,7 +233,10 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
 /// as partes de um arquivo, o trecho de uma declaração, quem a usa, quem
 /// importa o arquivo e os testes dele não o leem, e não esperam a gravação.
 fn reads_specs(question: Question) -> bool {
-    !matches!(question, Question::Summary | Question::Slice | Question::Users | Question::Importers | Question::Tests)
+    !matches!(
+        question,
+        Question::Summary | Question::Slice | Question::Users | Question::Importers | Question::Tests | Question::NotesPackage | Question::NotesWrite
+    )
 }
 
 /// Quanto a pergunta ao mapa espera a passada que o põe em dia, o mesmo prazo
@@ -376,6 +396,8 @@ fn answer_from(
         Question::Dump => dump(root),
         Question::Audit => mustard_core::io::knowledge::audit::run(root),
         Question::Note => note(opts, root, read),
+        Question::NotesPackage => notes::package(opts, root),
+        Question::NotesWrite => notes::write(opts, root, lang, read),
     }
 }
 
@@ -1050,6 +1072,9 @@ mod tests {
             name: None,
             pr: None,
             session: None,
+            limit: None,
+            changed_since: None,
+            json: None,
         }
     }
 
