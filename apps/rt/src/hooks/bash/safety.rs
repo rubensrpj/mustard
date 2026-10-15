@@ -561,11 +561,16 @@ mod tests {
         ]);
     }
 
-    /// The part of the allowed way that matters, whatever the rest of its
-    /// catalogue text says: the command that checks the path before deleting.
+    /// O trecho do caminho permitido que importa, diga o que disser o resto do
+    /// texto do catálogo: o comando que confere o caminho antes de apagar.
     const ALLOWED_COMMAND: &str = "mustard-rt run clean --path";
 
-    /// The refusal the hook gives for `cmd`.
+    /// O mesmo comando sem o começo `mustard-rt run`. Um aviso que cite só essa
+    /// forma curta já aponta para o caminho permitido, e o aviso que não a cita
+    /// também não cita a forma longa.
+    const ALLOWED_COMMAND_SHORT: &str = "clean --path";
+
+    /// A recusa que o gancho dá para `cmd`.
     fn refusal_of(cmd: &str, ctx: &Ctx) -> String {
         match bash_safety(&segments(cmd), cmd, ctx) {
             Some(Verdict::Deny { reason }) => reason,
@@ -573,23 +578,44 @@ mod tests {
         }
     }
 
-    /// The catalogue texts in `lang` a refusal of a folder deleted by force is
-    /// made of: the fixed parts of the refusal, the reason and the allowed way.
-    fn forced_delete_texts(lang: SupportedLocale) -> Vec<&'static str> {
-        let fixed = translate("command_guard.deny", lang).split("{reason}").flat_map(|part| part.split("{command}"));
-        fixed
-            .chain([
-                translate("command_guard.rm_recursive_force", lang),
-                translate("command_guard.rm_recursive_force_instead", lang),
-            ])
-            .filter(|text| !text.is_empty())
-            .collect()
+    /// Os textos do catálogo em `lang` de que é feita a recusa de uma pasta
+    /// apagada à força, na ordem em que a recusa os mostra: a parte fixa antes
+    /// do motivo, o motivo, a parte fixa antes do comando, o caminho permitido
+    /// e a parte fixa do fim.
+    fn forced_delete_texts(lang: SupportedLocale) -> [&'static str; 5] {
+        let deny = translate("command_guard.deny", lang);
+        let (opening, rest) = deny.split_once("{reason}").expect("the refusal has a slot for the reason");
+        let (middle, closing) = rest.split_once("{command}").expect("the command slot follows the reason slot");
+        [
+            opening,
+            translate("command_guard.rm_recursive_force", lang),
+            middle,
+            translate("command_guard.rm_recursive_force_instead", lang),
+            closing,
+        ]
     }
 
-    /// The refusal is made of the catalogue texts of the language
-    /// `language.text` declares (`pt-BR` when none is), never of the other
-    /// language's, and its allowed way names the command that checks the path.
-    /// An integration branch is named in the reason.
+    /// Confere que a recusa de `cmd`, uma pasta apagada à força, traz as partes
+    /// em `lang` em posições crescentes: a parte fixa do começo, o motivo, a
+    /// parte fixa antes do comando, o comando com o caminho permitido na linha
+    /// logo abaixo e a parte fixa do fim. Cada parte é procurada depois do fim
+    /// da anterior, e a recusa com o motivo e o comando trocados de lugar cai.
+    fn assert_forced_delete_refusal(refusal: &str, cmd: &str, lang: SupportedLocale) {
+        let [opening, reason, middle, allowed, closing] = forced_delete_texts(lang);
+        let command_then_allowed = format!("{}\n{allowed}", truncate(cmd, 120));
+        let mut from = 0;
+        for part in [opening, reason, middle, command_then_allowed.as_str(), closing] {
+            match refusal[from..].find(part) {
+                Some(at) => from += at + part.len(),
+                None => panic!("{lang:?} {cmd}: {part:?} missing after byte {from}: {refusal}"),
+            }
+        }
+    }
+
+    /// A recusa é feita dos textos do catálogo da língua que `language.text`
+    /// declara (`pt-BR` quando nenhuma é declarada), na ordem do aviso, nunca
+    /// com os da outra língua, e o caminho permitido cita o comando que confere
+    /// o caminho. O motivo nomeia a branch de integração.
     #[test]
     fn the_refusal_is_written_in_the_project_language() {
         let cmd = "rm -rf pasta";
@@ -601,10 +627,8 @@ mod tests {
         ] {
             ctx.config.language.text = declared.map(str::to_string);
             let refusal = refusal_of(cmd, &ctx);
-            for text in forced_delete_texts(lang) {
-                assert!(refusal.contains(text), "{lang:?} lacks {text:?}: {refusal}");
-            }
-            for text in forced_delete_texts(other) {
+            assert_forced_delete_refusal(&refusal, cmd, lang);
+            for text in forced_delete_texts(other).into_iter().filter(|text| !text.is_empty()) {
                 assert!(!refusal.contains(text), "{lang:?} holds the {other:?} {text:?}: {refusal}");
             }
             assert!(refusal.contains(ALLOWED_COMMAND), "{lang:?}: {refusal}");
@@ -615,24 +639,19 @@ mod tests {
         }
     }
 
-    /// The refusal of a folder deleted by force, in any spelling and in both
-    /// languages, carries the catalogue's allowed way on the line right after
-    /// the command. Every other danger is refused without naming the command
-    /// of the allowed way: it does not do their job.
+    /// A recusa de uma pasta apagada à força, em qualquer grafia e nas duas
+    /// línguas, traz as partes na ordem do aviso, com o caminho permitido do
+    /// catálogo na linha logo abaixo do comando. Todo outro perigo é recusado
+    /// sem citar o comando do caminho permitido, nem na forma curta: ele não
+    /// faz o trabalho desses perigos.
     #[test]
     fn only_the_forced_folder_delete_points_to_the_allowed_way() {
         let mut ctx = Ctx::for_test(String::new(), None);
         ctx.config.git.flow.insert("*".to_string(), "develop".to_string());
         for (language, lang) in [("pt-BR", SupportedLocale::PtBr), ("en-US", SupportedLocale::EnUs)] {
             ctx.config.language.text = Some(language.to_string());
-            let allowed = translate("command_guard.rm_recursive_force_instead", lang);
             for cmd in ["rm -rf /tmp/copia", "rm -r -f build", "rm --recursive --force target", "bash -c \"rm -fr x\""] {
-                let refusal = refusal_of(cmd, &ctx);
-                let command_then_allowed = format!("{}\n{allowed}", truncate(cmd, 120));
-                assert!(
-                    refusal.contains(&command_then_allowed),
-                    "{language} {cmd}: the allowed way follows the command: {refusal}"
-                );
+                assert_forced_delete_refusal(&refusal_of(cmd, &ctx), cmd, lang);
             }
             for cmd in [
                 "git push --force",
@@ -643,7 +662,7 @@ mod tests {
                 "git branch -D develop",
             ] {
                 let refusal = refusal_of(cmd, &ctx);
-                assert!(!refusal.contains(ALLOWED_COMMAND), "{language} {cmd}: {refusal}");
+                assert!(!refusal.contains(ALLOWED_COMMAND_SHORT), "{language} {cmd}: {refusal}");
             }
         }
     }

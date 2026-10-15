@@ -16,8 +16,7 @@ Só implemente a onda. Leia inteiro cada item pelo comando de "Como ler cada ite
 - Siga as skills do pedido. Sem skill, siga o exemplo indicado ou o arquivo vizinho.
 - Consulte `mustard-rt run knowledge --query "<dúvida>" --purpose implement`. Se já leu, entregue a conclusão em `knowledge`; não delegue leitura repetida.
 - Grave um passo (`run write step`, mesmo --root e --spec) ao provar critério e ao terminar tarefa, com o número da onda no `wave`, o código dela no `item` e o resumo no `text`. O resultado traz, com a marca [Mustard], se você segue ou entrega. O sinal chega aos 75% da janela do modelo; sem janela conhecida, é entrada inicial + resumos herdados + 150 mil tokens de trabalho. Ao sinal, termine a tarefa atual, testes mínimos e resumo; não comece outra.
-- Critério que muda comportamento ganha um teste da regra e números combinados; nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e efeito medido, sem teste novo nem leitor de configuração.
-- Prove o vermelho cortando o caminho do usuário (comando/hook), não só um helper; observe falhar e desfaça. Agrupe cortes independentes numa execução; o corte que mexe no mesmo trecho de outro vai sozinho.
+- Critério que muda comportamento ganha um teste da regra e números combinados; nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pelos testes existentes do trecho e efeito medido, sem teste novo nem leitor de configuração.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
 - Rode cada comando de dentro da cópia.
 - Parta da evidência do pedido: objetivo, itens, regras, trechos e testes candidatos; as regras obrigatórias valem mesmo com `omitClaudeMd`.
@@ -31,7 +30,7 @@ Só implemente a onda. Leia inteiro cada item pelo comando de "Como ler cada ite
   - `run map note "<frase>" --file <arquivo> --name <nome>`: após ler, registre sentido.
 - Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Reaproveite corpos completos. Leia a faixa pertinente e expanda se faltar contexto; sem coordenadas, `Read` com `offset`/`limit` após o resumo. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal; reduza idas ao modelo.
-- Durante o trabalho, rode só os testes do que mudou. A rodada executa o build e as provas pertinentes antes do commit. A suíte inteira e o lint ficam na validação final da spec.
+- Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte. A rodada executa o build e as provas pertinentes antes do commit; a suíte inteira, o lint e a prova de ponta a ponta ficam no fechamento.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos: um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor, troque de branch, use o stash nem edite `spec.*`, `mustard.json` ou `.claude/`. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
 - Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; o nome de teste segue o idioma do código.
@@ -47,7 +46,7 @@ Estado externo: só leitura autorizada; resumo é histórico. Recibos: `run pane
 Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --spec: gravação obrigatória.
 {"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}
 
-- `text`: no idioma do texto, até 8.000 caracteres: uma frase por arquivo; teste e vermelho de cada critério; decisões fora do pedido; pendências e motivos.
+- `text`: no idioma do texto, até 8.000 caracteres: uma frase por arquivo; teste de cada critério e o comando que o rodou; decisões fora do pedido; pendências e motivos.
 - `commit`: o que a onda fez, sem código, até 45 caracteres (60 no título).
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando novo>"}]`.
 - Item combinado: `"agreed":[{"item":"<código>","met":true}]`, um por item. Sem tarefa da onda para realizá-lo, `met:true` confirma que a mudança preserva a regra. Quebra ou tarefa não feita: `{"item":"<código>","met":false,"text":"<o que falta>"}`; vira tarefa no backlog, salvo cobertura pendente existente.

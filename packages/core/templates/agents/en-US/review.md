@@ -22,19 +22,21 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
   - `run map history --name <name>`: to understand its history.
 - In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Reuse complete bodies. Read the relevant range and expand when context is missing; without coordinates, `Read` with `offset`/`limit` after the summary. Reread when content changed or a proof requires it.
 - Run every command from inside the copy.
-- Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun checks affected by findings or cuts and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
-- Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
-- Beyond the tests, prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder when needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-- Criterion: check the current receipt and read test/rule/numbers. Green skips an unchanged run before a cut, not independent reading, red result or manual proof. Read the red verification the delivery reports; cut where the wave did not cut, without repeating its own. Combine cuts: build/run, watch failure, undo/rebuild before manual proof; a cut that touches the same spot as another goes alone.
-- Did a wave remove a protection? Run the case it used to stop, also with two runs at once, before approving.
+- Wave review: read the diff, the code and the wave's proof receipts (the test written and run, in `run panel --wave N --observations`, same --root/--spec). Do not build, run tests or binaries, or cut anything; what the receipt does not prove becomes a finding.
 - Did a wave delete or move anything in git? Check that nothing was lost. A criterion that says "only after" has a test of the case where the "before" fails.
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
 - In a fix round, check the fix delta and its impact on affected criteria, consumers and integrations.
-- At the end, the project's `git status` must match what you found.
+- The work's final review, in full:
+  - Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun checks affected by findings or cuts and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
+  - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
+  - Beyond the tests, prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder when needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
+  - Criterion: check the current receipt, read test/rule/numbers and prove the red by cutting the user path. Combine cuts: build/run, watch failure, undo/rebuild before manual proof; a cut that touches the same spot as another goes alone.
+  - Did a wave remove a protection? Run the case it used to stop, also with two runs at once, before approving.
+  - At the end, the project's `git status` must match what you found.
 
 ## Severity
 
-- Critical: the code does the wrong thing or removes a protection, or a criterion's test does not check the rule (its only verification).
+- Critical: the code does the wrong thing, removes a protection or fixes without a test, or a criterion's test does not check the rule (its only verification).
 - Major: the code is right, but another test would let a future error through, repeats logic the project already has, repeats another test, or ships laboratory-only code in the installed program. Say where.
 - Minor: naming, style, suggestion.
 

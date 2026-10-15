@@ -1921,7 +1921,7 @@ mod tests {
             "Não comite e não use `git add`: o commit é da rodada.",
             "Ache e leia o código pelo mapa, cada comando na sua hora",
             "Não releia o arquivo depois de editar",
-            "Durante o trabalho, rode só os testes do que mudou.",
+            "Compile e rode só a prova da tarefa e dos critérios da onda",
             "A suíte inteira e o lint são da rodada",
             "Nunca mande compilação ou teste para segundo plano",
         ] {
@@ -2991,40 +2991,6 @@ mod tests {
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.work", Locale::EnUs));
         assert!(rules.contains("`/repo/copia-1`") && !rules.contains("target/copias"), "{rules}");
-    }
-
-    /// Os textos dos agentes, que cada agente carrega uma vez, exigem o teste
-    /// de cada critério nascendo vermelho pelo caminho que o usuário usa, e
-    /// não só pela função auxiliar, com a entrega dizendo como a prova foi
-    /// feita; o do revisor manda rodar a prova gravada, ler as provas do
-    /// vermelho da entrega e cortar onde a onda não cortou, sem repetir os
-    /// cortes dela. A parte fixa dos pedidos não repete nada disso.
-    #[test]
-    fn the_agent_texts_ask_for_the_red_proof_by_the_real_path_and_the_review_skips_the_waves_cuts() {
-        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        for (lang, wave, review) in [
-            (
-                Locale::PtBr,
-                ["Prove o vermelho", "comando/hook", "não só um helper", "teste e vermelho de cada critério"],
-                ["confira o recibo vigente", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
-            ),
-            (
-                Locale::EnUs,
-                ["Prove the red", "command/hook", "not only a helper", "each criterion's test and red verification"],
-                ["check the current receipt", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
-            ),
-        ] {
-            let agents = crate::platform::seeds::agent_texts(lang);
-            let request = write(&material(&log, 1), lang);
-            let pairs = wave
-                .iter()
-                .map(|said| (said, agents[0].1, request.as_str()))
-                .chain(review.iter().map(|said| (said, agents[1].1, translate("prompt.final.fixed", lang))));
-            for (said, agent, fixed) in pairs {
-                assert!(agent.contains(said), "{lang:?}: {said}: {agent}");
-                assert!(!fixed.contains(said), "{lang:?} repeats {said}");
-            }
-        }
     }
 
     fn direction(from: &str, to: &str, along: usize, against: usize) -> Direction {

@@ -1,7 +1,8 @@
 //! `mustard-rt run spend` — o gasto de cada dia, contado pelas conversas e
 //! mostrado numa página.
 //!
-//! Sem argumento, conta e guarda dias fechados e mostra o resumo local de hoje.
+//! Sem argumento, conta e guarda os dias fechados da máquina e do histórico do
+//! projeto e mostra o resumo local de hoje.
 //! Só `--publish` ou `--republish` prepara e publica um snapshot estático. `--url`
 //! registra uma URL confirmada. Nenhum hook inicia essa operação.
 //!
@@ -77,11 +78,11 @@ fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Re
         ledger.open_day=Some(machine.today.clone());
         ledger.measured_at=Some(chrono::Utc::now().to_rfc3339());
     })?;
+    let project = close_project(config, &opts.root, &machine.today, lang);
     if !opts.publish && !opts.republish {
         let ledger = store::load(dir)?;
-        return Ok(
-            json!({"ok":true,"counted":counted,"summary":summarize(&ledger.rows,&open,&machine.today),"published":false}),
-        );
+        return Ok(json!({"ok":true,"counted":counted,"counted_through":ledger.counted_through,"project":project,
+            "summary":summarize(&ledger.rows,&open,&machine.today),"published":false}));
     }
     let ledger = store::update(dir, |ledger| ledger.clone())?;
     let rows=ledger.rows.iter().chain(&open).map(|row| {
@@ -106,6 +107,8 @@ fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Re
         crate::report::public_spend_snapshot,
     );
     answer["counted"] = counted;
+    answer["counted_through"] = json!(ledger.counted_through);
+    answer["project"] = project;
     if answer["published"] == true {
         // Static snapshots have no remote document versions/copy cursor.
         let url = answer["remote_url"].as_str().ok_or_else(|| Refusal::Io {
@@ -127,6 +130,18 @@ fn count_missing(dir: &Path, config: &Path, today: &str) -> Result<Value, Refusa
     let counted = rows.len();
     store::update(dir, |ledger| ledger.record_counted(&range, rows))?;
     Ok(json!({ "first": range.first, "last": range.last, "rows": counted }))
+}
+
+/// Fecha os dias passados que faltam no histórico do projeto de `root`, o
+/// mesmo que a medição do projeto e o painel leem: sem isso o dia de ontem só
+/// entrava nele quando o painel abria o consumo. A falha fica na resposta,
+/// com a razão, sem desfazer a conta da máquina.
+fn close_project(config: &Path, root: &Path, today: &str, lang: Locale) -> Value {
+    match store::close_project_history(config, root, today) {
+        Ok(Some(through)) => json!({ "ok": true, "counted_through": through }),
+        Ok(None) => json!({ "ok": true, "recorded": false, "reason": "project-not-initialized" }),
+        Err(refusal) => json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) }),
+    }
 }
 
 /// Grava o endereço da página.
@@ -211,6 +226,44 @@ mod tests {
 
     fn database(answer: &Value) -> Value {
         serde_json::from_slice(&fs::read(answer["database"].as_str().unwrap()).unwrap()).unwrap()
+    }
+
+    /// O comando fecha também os dias passados do histórico do projeto, e não
+    /// só os da máquina: três dias com 100, 874 e 50 ações fecham, os dois
+    /// primeiros contam, e a segunda chamada ainda diz até onde a conta fechou.
+    #[test]
+    fn the_command_closes_the_past_days_of_the_project_history_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = machine(dir.path(), "2026-10-14");
+        let root = project(dir.path(), "loja", "en-US");
+        let busy = [("2026-10-11", 100), ("2026-10-12", 874), ("2026-10-13", 50)];
+        let lines: Vec<String> = busy
+            .iter()
+            .map(|(day, actions)| {
+                let tools: Vec<Value> = (0..*actions)
+                    .map(|n| json!({"type": "tool_use", "id": format!("{day}-{n}"), "name": "Bash", "input": {"command": "ls"}}))
+                    .collect();
+                json!({"timestamp": format!("{day}T15:00:00Z"), "cwd": root.to_string_lossy(), "message": {
+                    "id": format!("m-{day}"), "usage": {"input_tokens": 10, "output_tokens": 0}, "content": tools}})
+                .to_string()
+            })
+            .collect();
+        let folder = dir.path().join("config/projects/p");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("s1.jsonl"), lines.join("\n")).unwrap();
+        let local = SpendOpts { publish: false, ..opts(&root) };
+
+        let first = spend_at(&local, &machine);
+        assert_eq!((first["counted_through"].clone(), first["project"].clone()),
+            (json!("2026-10-13"), json!({"ok": true, "counted_through": "2026-10-13"})), "{first}");
+        let history = store::load(&store::project_history_dir(&root)).unwrap();
+        let closed: Vec<_> = history.rows.iter().map(|row| (row.day.as_str(), row.actions)).collect();
+        assert_eq!(closed, [("2026-10-11", 100), ("2026-10-12", 874), ("2026-10-13", 50)]);
+        let counted: Vec<_> = history.rows.iter().filter(|row| row.actions >= mustard_core::domain::spend::MIN_ACTIONS).map(|row| row.day.as_str()).collect();
+        assert_eq!(counted, ["2026-10-11", "2026-10-12"]);
+
+        let again = spend_at(&local, &machine);
+        assert_eq!((again["counted"].clone(), again["counted_through"].clone()), (Value::Null, json!("2026-10-13")), "{again}");
     }
 
     #[test]

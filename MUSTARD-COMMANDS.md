@@ -155,6 +155,10 @@ no JSON não configura a autenticação.
   publica o Markdown solicitado, com título inicial `# Título`, no layout comum.
   O conteúdo pode ser uma análise ou resumo para gestores. O modelo raciocina
   sobre o conteúdo quando necessário; formatação e envio são do binário.
+- `mustard-rt run spend` fecha os dias passados que faltam, na conta da máquina
+  e no histórico do projeto de `--root` (`project`). `counted` é só o que esta
+  chamada fechou (`null` quando nada faltava); `counted_through` diz até que dia
+  a conta da máquina está fechada.
 - `mustard-rt run spend --publish` publica o consumo agregado da máquina. Esse
   pedido explícito inclui os nomes dos projetos e os valores por dia.
 - Só `published:true` com `remote_url` confirma uma página pronta. Se `pending:true`,
