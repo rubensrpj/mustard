@@ -76,6 +76,17 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             );
         }
     }
+    // An implementation search for a pattern: its hit lines come first, every
+    // one of them, and a file the pattern did not hit is left out.
+    let pattern: BTreeSet<&str> = context["pattern_files"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let shown = |file: &str| pattern.is_empty() || pattern.contains(file);
+    let hit_card = |card: &Value| !pattern.is_empty() && card["shows_pattern_hit"] == true;
+    let mut ordered: Vec<&Value> = cards.iter().filter(|card| hit_card(card)).collect();
+    let files: Vec<&str> = cards.iter().filter(|card| hit_card(card)).filter_map(|card| card["source"]["file"].as_str()).collect();
+    ordered.sort_by_key(|card| files.iter().position(|file| card["source"]["file"] == *file));
+    let hit_cards = ordered.len();
+    ordered.extend(cards.iter().filter(|card| !hit_card(card)));
+    let mut lead = None;
     let mut previous = "";
     let mut test_files = BTreeSet::new();
     let mut ranges = BTreeMap::<&str, Vec<String>>::new();
@@ -83,8 +94,14 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     let mut deferred = BTreeMap::<&str, usize>::new();
     let mut visible_ids = BTreeSet::new();
     let mut source_view = super::source_view::View::default();
-    for card in cards {
+    for (at, card) in ordered.into_iter().enumerate() {
+        if at == hit_cards && !pattern.is_empty() {
+            pattern_lines(&mut text, context, live);
+            lead = Some(std::mem::take(&mut text));
+            previous = "";
+        }
         let file = card["source"]["file"].as_str()?;
+        if !shown(file) {continue;}
         let start = card["source"]["line"].as_u64()?;
         let end = card["source"]["end_line"].as_u64()?;
         if card["reused_delivery"] == true {
@@ -172,6 +189,10 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             text.push_str("# Parse coverage partial or unknown.\n");
         }
     }
+    if lead.is_none() && !pattern.is_empty() {
+        pattern_lines(&mut text, context, live);
+        lead = Some(std::mem::take(&mut text));
+    }
     // Static dependencies need a destination, not every full signature before
     // the agent has chosen to investigate it. Keep names and exact ranges in
     // the same navigable representation as the other expandable references.
@@ -179,7 +200,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         .filter(|reference| reference["initial_reference"] == true)
     {
         let id=reference["id"].as_str().unwrap_or_default();
-        if !visible_ids.insert(id) {continue;}
+        if !shown(reference["source"]["file"].as_str()?) || !visible_ids.insert(id) {continue;}
         ranges.entry(reference["source"]["file"].as_str()?).or_default().push(format!("{} {}-{}",
             reference["name"].as_str().unwrap_or_default(),reference["source"]["line"],reference["source"]["end_line"]));
     }
@@ -191,8 +212,9 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         );
         if let Some(tests)=test_ranges.get(file) {let _=writeln!(text,"# Test-only ranges: {}",tests.join("; "));}
     }
-    graph(&mut text,context);
-    for test in context["chain"]["test_mentions"].as_array().into_iter().flatten() {
+    graph(&mut text,context,&shown);
+    for test in context["chain"]["test_mentions"].as_array().into_iter().flatten()
+        .filter(|test|shown(test["source"]["file"].as_str().unwrap_or_default())) {
         let _=writeln!(text,"@ {}\n{} | {}\n# Associated test mention; coverage/execution unverified.",
             test["source"]["file"].as_str().unwrap_or_default(),test["source"]["line"],test["text"].as_str().unwrap_or_default());
     }
@@ -217,6 +239,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         if edge["via"]=="outgoing" && edge["distance"]==1 && edge["resolution"]=="unique-static-target"
             && context["chain"]["steps"].as_array().into_iter().flatten().any(|step|
                 step["operation"]=="unique-static-dependency" && step["from"]==edge["from"] && step["to"]==edge["to"]) {continue;}
+        if !["from","to"].iter().all(|end|shown(declared_file(edge[*end].as_str().unwrap_or_default()))) {continue;}
         let _ = writeln!(
             text,
             "# static relation: {} -> {} ({}, runtime order unknown)",
@@ -225,7 +248,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             edge["via"].as_str().unwrap_or_default()
         );
     }
-    for resource in resources.into_iter().flatten() {
+    for resource in resources.into_iter().flatten().filter(|resource|shown(resource["source"]["file"].as_str().unwrap_or_default())) {
         let _ = writeln!(
             text,
             "@ {}:{}-{} (verbatim resource; behavior unverified)\n{}",
@@ -238,25 +261,10 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     if context["static_references_partial"] == true {
         text.push_str("# Additional static target references omitted; expand an exact symbol.\n");
     }
-    let mut previous_native = "";
-    for item in context["native_lines"]["lines"].as_array().into_iter().flatten() {
-        let file = item["source"]["file"].as_str().unwrap_or_default();
-        if previous_native != file {
-            let _ = writeln!(text, "@ {file}\n# Pattern hits not shown above:");
-            previous_native = file;
-        }
-        let _ = writeln!(text, "{} | {}", item["source"]["line"], item["text"].as_str().unwrap_or_default());
-    }
-    if let Some(omitted) = context["native_lines"]["omitted"].as_u64().filter(|n| *n > 0) {
-        let _ = writeln!(text, "# Gap: {omitted} other pattern hits not shown; repeat with purpose=locate.");
-    }
-    for item in live.into_iter().flatten() {
-        let _ = writeln!(
-            text,
-            "@ {} (current source without an indexed symbol)\n{}",
-            item["source"]["file"].as_str().unwrap_or_default(),
-            item["excerpt"]["text"].as_str().unwrap_or_default()
-        );
+    if pattern.is_empty() {pattern_lines(&mut text, context, live);}
+    let left_out = left_out(context, &pattern);
+    if left_out > 0 {
+        let _ = writeln!(text, "# Files without pattern hits left out: {left_out}; expand an exact symbol to follow its links.");
     }
     for note in context["interpretations"].as_array().into_iter().flatten() {
         let _ = writeln!(
@@ -281,12 +289,60 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         }
     }
     text.push_str("# Partial evidence; static links/tests are candidates. Expand before inferring absence.\n");
-    let text=coalesce_files(text,context);
+    // Hits keep their own section: merging a file's later references into it
+    // would put them before the next file's hits.
+    let text=match lead {
+        Some(lead)=>coalesce_files(lead,context)+&coalesce_files(text,context),
+        None=>coalesce_files(text,context),
+    };
     Some(Presentation {
         stdout: text.into_bytes(),
         representation: "current-task-evidence",
         owner_ranges: cards.len(),
     })
+}
+
+/// Pattern hits no excerpt shows, and hit lines of files without an indexed
+/// symbol, under their file.
+fn pattern_lines(text: &mut String, context: &Value, live: Option<&Vec<Value>>) {
+    let mut previous = "";
+    let mut listed = BTreeSet::new();
+    for item in context["native_lines"]["lines"].as_array().into_iter().flatten() {
+        let file = item["source"]["file"].as_str().unwrap_or_default();
+        if previous != file {
+            let _ = writeln!(text, "@ {file}\n# Pattern hits not shown above:");
+            previous = file;
+        }
+        listed.insert((file, item["source"]["line"].as_u64()));
+        let _ = writeln!(text, "{} | {}", item["source"]["line"], item["text"].as_str().unwrap_or_default());
+    }
+    if let Some(omitted) = context["native_lines"]["omitted"].as_u64().filter(|n| *n > 0) {
+        let _ = writeln!(text, "# Gap: {omitted} other pattern hits not shown; repeat with purpose=locate.");
+    }
+    for item in live.into_iter().flatten() {
+        let file = item["source"]["file"].as_str().unwrap_or_default();
+        if !context["pattern_files"].is_null() && listed.contains(&(file, item["source"]["line"].as_u64())) {continue;}
+        let _ = writeln!(
+            text,
+            "@ {file} (current source without an indexed symbol)\n{}",
+            item["excerpt"]["text"].as_str().unwrap_or_default()
+        );
+    }
+}
+
+/// The file of a declaration id written as `file:line:name`.
+fn declared_file(id: &str) -> &str {
+    id.rsplitn(3, ':').nth(2).unwrap_or_default()
+}
+
+/// How many files the evidence links to that the pattern did not hit.
+fn left_out(context: &Value, pattern: &BTreeSet<&str>) -> usize {
+    if pattern.is_empty() {return 0;}
+    let sources = [("cards", "source"), ("static_references", "source"), ("resources", "source")].into_iter()
+        .flat_map(|(key, source)| context[key].as_array().into_iter().flatten().map(move |item| &item[source]))
+        .chain(["steps", "relations"].into_iter().flat_map(|key| context["chain"][key].as_array().into_iter().flatten().map(|item| &item["target_source"])))
+        .chain(context["chain"]["test_mentions"].as_array().into_iter().flatten().map(|item| &item["source"]));
+    sources.filter_map(|source| source["file"].as_str()).filter(|file| !pattern.contains(file)).collect::<BTreeSet<_>>().len()
 }
 
 /// Keep one path header per source file. Only known, indexed headers qualify;
@@ -333,9 +389,10 @@ fn coalesce_files(text:String,context:&Value)->String {
 
 /// Group repeated paths and provenance labels without removing graph records.
 /// These are source references, never a claim of runtime execution order.
-fn graph(text:&mut String,context:&Value) {
+fn graph(text:&mut String,context:&Value,shown:&dyn Fn(&str)->bool) {
     let mut steps=BTreeMap::<&str,Vec<String>>::new();
-    for step in context["chain"]["steps"].as_array().into_iter().flatten() {
+    for step in context["chain"]["steps"].as_array().into_iter().flatten()
+        .filter(|step|shown(step["target_source"]["file"].as_str().unwrap_or_default())) {
         let from=step["from"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
         let to=step["to"].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
         steps.entry(step["target_source"]["file"].as_str().unwrap_or_default()).or_default().push(format!(
@@ -343,7 +400,8 @@ fn graph(text:&mut String,context:&Value) {
     }
     for (file,records) in steps {let _=writeln!(text,"@ {file}\n# Native follow-up: {} [static; effects unverified]",records.join("; "));}
     let mut relations=BTreeMap::<(&str,&str),Vec<String>>::new();
-    for relation in context["chain"]["relations"].as_array().into_iter().flatten() {
+    for relation in context["chain"]["relations"].as_array().into_iter().flatten()
+        .filter(|relation|shown(relation["target_source"]["file"].as_str().unwrap_or_default())) {
         let name=|key|relation[key].as_str().unwrap_or_default().rsplit(':').next().unwrap_or_default();
         relations.entry((relation["relation"].as_str().unwrap_or_default(),relation["resolution"].as_str().unwrap_or_default())).or_default()
             .push(format!("{} -> {}",name("from"),name("to")));
@@ -370,6 +428,30 @@ mod graph_tests {
         context["navigation"]["paths"][0]["resolution"]=serde_json::json!("unique-static-target");
         context["navigation"]["paths"][0]["distance"]=serde_json::json!(2);
         assert!(render(&context).contains("# static relation:"));
+    }
+    #[test]
+    fn pattern_hits_come_before_every_reference_and_files_without_hits_stay_out() {
+        let context=serde_json::json!({"status":"current-task-evidence","written_clues":{"covered_slots":1},"pattern_files":["a.ts","c.ts"],"cards":[
+            {"id":"b.ts:5:helper","name":"helper","source":{"file":"b.ts","line":5,"end_line":5},"initial_source_excerpt":true,"parse_complete":true,
+                "source_excerpt":{"text":"5 | export function helper() { return 2; }","truncated":false}},
+            {"id":"a.ts:9:other","name":"other","source":{"file":"a.ts","line":9,"end_line":10},"initial_reference":true},
+            {"id":"a.ts:2:entry","name":"entry","source":{"file":"a.ts","line":2,"end_line":2},"initial_source_excerpt":true,"shows_pattern_hit":true,"parse_complete":true,
+                "source_excerpt":{"text":"2 | export function quartzEntry() { return helper(); }","truncated":false}}],
+            "static_references":[{"id":"b.ts:8:util","name":"util","initial_reference":true,"source":{"file":"b.ts","line":8,"end_line":9}}],
+            "chain":{"steps":[{"operation":"unique-static-dependency","from":"a.ts:2:entry","to":"b.ts:5:helper","call_source":{"line":2},"target_source":{"file":"b.ts","line":5,"end_line":5}}]},
+            "navigation":{"paths":[{"from":"a.ts:2:entry","to":"b.ts:5:helper","via":"caller","distance":1,"resolution":"ambiguous"}]},
+            "resources":[{"source":{"file":"docs/x.md","line":1,"end_line":1},"text":"quartz notes"}],
+            "native_lines":{"lines":[{"source":{"file":"c.ts","line":7,"end_line":7},"text":"quartzEntry();"}],"omitted":0}});
+        let request=Request{tool:"rg".into(),input:serde_json::json!({"args":["quartzEntry","."]}),intent:"recover the quartz snapshot".into(),
+            purpose:crate::domain::knowledge::investigation::Purpose::Implement,choose:false};
+        let answer=Answer{report:serde_json::json!({"task_context":context}),stdout:vec![],stderr:vec![],exit_code:0};
+        let view=String::from_utf8(agent(&answer,&request).unwrap().stdout).unwrap();
+        let reference=view.find("# References").expect("the hit file keeps its references");
+        for hit in ["2 | export function quartzEntry()","7 | quartzEntry();"] {
+            assert!(view.find(hit).is_some_and(|at|at<reference),"{hit}: {view}");
+        }
+        assert!(!view.contains("b.ts") && !view.contains("docs/x.md") && !view.contains("helper() { return 2"),"{view}");
+        assert!(view.contains("# Files without pattern hits left out: 2;"),"{view}");
     }
     #[test]
     fn file_coalescing_keeps_source_context_references_and_global_gaps() {
@@ -406,7 +488,7 @@ mod graph_tests {
             {"from":"a:3:second","to":"b:20:write","call_source":{"line":4},"target_source":{"file":"long/nested/file.rs","line":20,"end_line":25}}],
             "relations":[{"from":"a:1:first","to":"b:10:read","relation":"caller","resolution":"ambiguous"},
                 {"from":"a:3:second","to":"b:20:write","relation":"caller","resolution":"unique-static-target"}]}});
-        let mut view=String::new();graph(&mut view,&context);
+        let mut view=String::new();graph(&mut view,&context,&|_|true);
         assert_eq!(view.matches("long/nested/file.rs").count(),1);
         for record in ["first:2 -> read 10-15","second:4 -> write 20-25","caller [ambiguous; runtime unverified]: first -> read","caller [unique-static-target; runtime unverified]: second -> write"] {assert!(view.contains(record),"{view}");}
     }

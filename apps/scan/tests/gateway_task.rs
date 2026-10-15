@@ -371,7 +371,7 @@ fn newly_discovered_source_without_git_is_live_evidence_and_never_borrows_an_old
 }
 
 #[test]
-fn task_source_comes_only_from_hit_files_or_their_links_and_hits_outside_declarations_stay() {
+fn task_source_comes_only_from_hit_files_and_hits_outside_declarations_stay() {
     let dir = fixture();
     let root = dir.path();
     std::fs::write(
@@ -398,8 +398,8 @@ fn task_source_comes_only_from_hit_files_or_their_links_and_hits_outside_declara
     let answer = run(root, &req, None);
     let view =
         String::from_utf8(code_search::presentation::agent(&answer, &req, root).stdout).unwrap();
-    // The hit's owner calls restore: a linked declaration keeps its body.
-    assert!(view.contains("let quartz_snapshot=2"), "{view}");
+    // The hit's owner calls restore in a file without hits: left out.
+    assert!(!view.contains("let quartz_snapshot=2"), "{view}");
     // Same words, no hit and no link: a range at most, never source lines.
     assert!(!view.contains("archive_body_sentinel"), "{view}");
     assert!(!view.contains("live_sentinel"), "{view}");

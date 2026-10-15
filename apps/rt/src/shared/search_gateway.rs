@@ -700,6 +700,57 @@ mod tests {
         assert!(std::fs::read_to_string(&log).unwrap().starts_with("scan\n"), "the search asked for the pass");
     }
 
+    /// A busca de implementação de um padrão traz primeiro todas as linhas
+    /// que casam, mesmo além de 64, e nada de arquivo onde o padrão não casa:
+    /// nem a função chamada noutro arquivo, nem a de palavras parecidas.
+    #[test]
+    fn an_implementation_search_answers_with_every_pattern_hit_first_and_no_file_without_hits() {
+        use mustard_core::domain::knowledge::investigation::Purpose;
+        let real = Scan::locate();
+        assert!(
+            real.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("mustard.json"), r#"{"ai":{"vectors":false}}"#).unwrap();
+        std::fs::write(project.join("src/entry.ts"), "import { recoverSnapshot } from \"./store\";\nexport function quartzEntry(): number {\n  return recoverSnapshot();\n}\n").unwrap();
+        std::fs::write(project.join("src/store.ts"), "/** Recover the quartz snapshot. */\nexport function recoverSnapshot(): number {\n  const storeBodySentinel = 2;\n  return storeBodySentinel;\n}\n").unwrap();
+        std::fs::write(project.join("src/noise.ts"), "/** Recover the quartz snapshot from the archive. */\nexport function archiveRecover(): number {\n  const noiseBodySentinel = 4;\n  return noiseBodySentinel;\n}\n").unwrap();
+        let rows: String = (0..150).map(|at| format!("  \"quartzEntry {at}\",\n")).collect();
+        std::fs::write(project.join("src/table.ts"), format!("export const quartzTable = [\n{rows}];\n")).unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
+        assert!(git.success());
+        real.scan(&project, &mustard_core::io::project_map::model_path(&project)).expect("the real scan writes the map");
+        let request = Request {
+            tool: "rg".into(),
+            input: json!({"args":["-n","quartzEntry","src"]}),
+            intent: "recover the quartz snapshot".into(),
+            purpose: Purpose::Implement,
+            choose: false,
+        };
+        let answer = answer(&project, &request).expect("the search answers");
+        let view = mustard_core::io::code_search::presentation::agent(&answer, &request, &project);
+        let text = String::from_utf8(view.stdout).unwrap();
+        assert_eq!(view.representation, "current-task-evidence", "{text}");
+        let first_reference = text
+            .match_indices('\n')
+            .map(|(at, _)| at + 1)
+            .find(|at| ["# References", "# Native follow-up", "# static relation", "# Deferred"].iter().any(|mark| text[*at..].starts_with(mark)))
+            .unwrap_or(text.len());
+        let native = String::from_utf8_lossy(&answer.stdout).into_owned();
+        let hits: Vec<_> = native.lines().filter_map(|row| row.split_once(':')).filter_map(|(_, rest)| rest.split_once(':')).collect();
+        assert_eq!(hits.len(), 151, "{native}");
+        for (line, body) in hits {
+            let at = text.find(&format!("\n{line} | {body}\n")).unwrap_or_else(|| panic!("hit {line} left out: {text}"));
+            assert!(at < first_reference, "hit {line} after a reference: {text}");
+        }
+        for absent in ["src/store.ts", "storeBodySentinel", "src/noise.ts", "noiseBodySentinel"] {
+            assert!(!text.contains(absent), "{absent}: {text}");
+        }
+    }
+
     #[test]
     fn gateway_reads_apply_the_existing_secret_and_config_guards() {
         let dir = tempfile::tempdir().unwrap();

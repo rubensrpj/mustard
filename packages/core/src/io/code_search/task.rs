@@ -74,6 +74,12 @@ pub(super) fn investigate(
     // Owners of the pattern's own hits, before question words add others.
     let native_owners: BTreeSet<String> = seeds.iter().cloned().collect();
     let native_files: BTreeSet<String> = native_hits.iter().map(|hit| hit.0.clone()).collect();
+    // An implementation search for a pattern answers with the pattern's own
+    // lines: every hit, and only files with hits. A file listing has no lines.
+    let listing = request.tool == "Glob"
+        || request.input["args"].as_array().is_some_and(|args| args.iter().any(|arg| arg == "--files"));
+    let pattern_files: BTreeSet<String> =
+        if request.purpose == Purpose::Implement && !listing { native_files.clone() } else { BTreeSet::new() };
     let complementary=super::discovery::probe(root,tree,request,&scope,&mut seeds);
     let opts = Query {
         text: if scope.clues.trim().is_empty() {
@@ -396,13 +402,27 @@ pub(super) fn investigate(
         if item["initial_source_excerpt"]==true && !linked_here {
             item["initial_source_excerpt"]=json!(false);item["initial_reference"]=json!(true);
         }
+        // Not shown at all: the delivery ledger must not count it as read.
+        if !pattern_files.is_empty() && item["source"]["file"].as_str().is_none_or(|file|!pattern_files.contains(file)) {
+            item["initial_source_excerpt"]=json!(false);item["initial_reference"]=json!(false);
+        }
     }
     if let Some(mentions)=report["chain"]["test_mentions"].as_array_mut() {
         mentions.retain(|test|test["source"]["file"].as_str().is_some_and(|file|native_files.contains(file))
             || test["symbol"].as_str().is_some_and(|id|native_owners.contains(id)));
     }
     report["cards"] = json!(chained_items);
-    report["native_lines"] = native_lines(tree,&native_hits,&report["cards"]);
+    report["native_lines"] = native_lines(tree,&native_hits,&report["cards"],if pattern_files.is_empty() {64} else {usize::MAX});
+    if !pattern_files.is_empty() {
+        let hits:BTreeSet<(&str,u64)>=native_hits.iter().map(|(file,line,_)|(file.as_str(),*line)).collect();
+        for item in report["cards"].as_array_mut().into_iter().flatten().filter(|item|item["initial_source_excerpt"]==true) {
+            let file=item["source"]["file"].as_str().unwrap_or_default().to_string();
+            let shows=item["source_excerpt"]["text"].as_str().unwrap_or_default().lines()
+                .filter_map(super::source_view::row).any(|(line,_)|hits.contains(&(file.as_str(),line)));
+            item["shows_pattern_hit"]=json!(shows);
+        }
+        report["pattern_files"]=json!(pattern_files);
+    }
     for item in report["cards"].as_array_mut().into_iter().flatten() {
         let missing:Vec<_>=item["source_excerpt"]["missing_ranges"].as_array().into_iter().flatten().map(|range|
             json!({"tool":"Read","input":{"file_path":item["source"]["file"],"offset":range["line"],
@@ -471,11 +491,10 @@ pub(super) fn investigate(
 }
 
 /// Pattern hits no delivered excerpt shows (top-level script code, an owner
-/// listed only as a range) keep their current lines. Smaller files go first,
-/// so a short file never loses its hits to a large one; the rest is counted,
-/// never dropped silently.
-fn native_lines(tree: &Path, hits: &[(String, u64, String)], cards: &Value) -> Value {
-    const LIMIT: usize = 64;
+/// listed only as a range) keep their current lines, up to `limit`. Smaller
+/// files go first, so a short file never loses its hits to a large one; the
+/// rest is counted, never dropped silently.
+fn native_lines(tree: &Path, hits: &[(String, u64, String)], cards: &Value, limit: usize) -> Value {
     let Ok(registry) = crate::domain::knowledge::resources::Registry::load() else {
         return json!({"lines":[],"omitted":hits.len()});
     };
@@ -502,7 +521,7 @@ fn native_lines(tree: &Path, hits: &[(String, u64, String)], cards: &Value) -> V
     for (text, file, mut rows) in sources {
         rows.sort_unstable();
         rows.dedup();
-        let Some(text) = text.filter(|_| lines.len() + rows.len() <= LIMIT) else {
+        let Some(text) = text.filter(|_| lines.len().saturating_add(rows.len()) <= limit) else {
             omitted += rows.len();
             continue;
         };
