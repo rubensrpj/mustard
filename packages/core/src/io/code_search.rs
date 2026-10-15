@@ -386,7 +386,9 @@ fn grep_result(request: &Request, stdout: &[u8]) -> Result<Value, String> {
     })
 }
 
-fn occurrences(
+/// The lines an executed search found, as the path from `tree`, the line and
+/// its text. Only coordinate output (`file:line:text`) and listed files count.
+pub fn occurrences(
     tree: &Path,
     cwd: &Path,
     request: &Request,

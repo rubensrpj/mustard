@@ -99,8 +99,10 @@ use crate::io::map_order;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock};
 use crate::platform::error::Result;
 
+mod owners;
 mod refresh;
 
+pub use owners::{line_owners, LineOwner, MapFile, OwnedLines};
 pub(crate) use refresh::{documents_of, refresh_files, replace_files};
 
 

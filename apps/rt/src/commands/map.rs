@@ -79,7 +79,9 @@ use crate::shared::config_key::Walk;
 use crate::shared::search_door::{self as door, Assemble, Numbers, first_warning, jev};
 use crate::shared::triage_view;
 
+mod grep_answer;
 mod notes;
+mod refreshing;
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -221,7 +223,7 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
             remember(opts, &project.root, &project.languages, &report);
             report
         }
-        Err(refusal) => refused(&refusal, lang),
+        Err(refusal) => refreshing::refused(&refusal, lang, running.get()),
     };
     if running.get() {
         report["refreshing"] = json!(mustard_core::translate("map.refreshing", lang));
@@ -245,7 +247,8 @@ fn reads_specs(question: Question) -> bool {
 const REFRESH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Compatibility spelling of the source-first gateway. No scan or remote
-/// filter is required to execute a literal search.
+/// filter is required to execute a literal search. The report carries the
+/// text answer by the map that the command prints.
 fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
     if let Err(refusal)=required(Some(&grep.pattern),Question::Search,"<pattern>") {
         return refused(&refusal,mustard_core::ProjectConfig::load(&opts.root).language().text_or_default());
@@ -257,9 +260,9 @@ fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
     argv.extend(["-e".into(),grep.pattern.clone(),"--".into(),grep.folder.as_deref().unwrap_or(Path::new(".")).to_string_lossy().into_owned()]);
     let result=mustard_core::domain::code_search::Request::native(&argv).and_then(|mut request|{
         request.intent=opts.intent.as_deref().or(opts.described.as_deref()).unwrap_or_default().into();
-        crate::shared::search_gateway::answer(&opts.root,&request)
+        crate::shared::search_gateway::answer(&opts.root,&request).map(|answer|(request,answer))
     });
-    match result {Ok(answer)=>answer.report,Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
+    match result {Ok((request,answer))=>grep_answer::answered(&opts.root,&request,answer),Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
 }
 
 /// Guarda no glossário do mapa o que a resposta entregou à sessão de quem
@@ -1892,8 +1895,10 @@ mod tests {
     /// responde a linha nova; sem nada mudado, o scan não roda.
     /// Com a passada do mapa ainda em segundo plano, a pergunta não espera:
     /// responde com o mapa de antes e diz que ele segue em atualização. O
-    /// arquivo que o mapa não tem é recusado na hora; a passada que acabou não
-    /// deixa aviso.
+    /// arquivo que o mapa não tem é recusado na hora, e a recusa manda repetir
+    /// a pergunta, e não rodar o scan, que leria o projeto ao mesmo tempo que
+    /// a passada; sem a passada, a mesma recusa manda rodar o scan. A passada
+    /// que acabou não deixa aviso.
     #[test]
     fn a_question_while_the_map_refreshes_answers_from_the_previous_map() {
         let dir = project_with_map();
@@ -1908,13 +1913,27 @@ mod tests {
         };
         let no_trace = |_: &Path, _: &Path, _: &str, _: usize| panic!("these questions never read a history");
 
+        // Um arquivo novo, que a passada em segundo plano ainda está lendo.
+        let checkout = root.join("web/src/checkout.ts");
+        std::fs::create_dir_all(checkout.parent().unwrap()).unwrap();
+        std::fs::write(&checkout, "export function payOrder(total: number): number {\n  return total;\n}\n").unwrap();
         let mut slice = ask(root, Question::Slice);
-        slice.file = Some("packages/core/src/domain/pay.rs".to_string());
-        slice.name = Some("Payment".to_string());
+        slice.file = Some("web/src/checkout.ts".to_string());
+        slice.name = Some("payOrder".to_string());
         let report = map_at(&slice, &mine, &no_trace);
         assert_eq!(report["reason"], json!("unknown-file"), "{report}");
         assert_eq!(report["refreshing"], json!(mustard_core::translate("map.refreshing", Locale::PtBr)), "{report}");
+        assert_eq!(report["hint"], json!(mustard_core::translate("map.refused_while_refreshing", Locale::PtBr)), "{report}");
         assert_eq!(calls.get(), 1);
+
+        busy.set(false);
+        let report = map_at(&slice, &mine, &no_trace);
+        assert_eq!(report["reason"], json!("unknown-file"), "{report}");
+        let scan_hint = MapRefusal::UnknownFile { file: "web/src/checkout.ts".to_string() }.message(Locale::PtBr);
+        assert_eq!(report["hint"], json!(scan_hint), "{report}");
+        assert!(scan_hint.contains("mustard-rt run scan"), "{scan_hint}");
+        assert!(report.get("refreshing").is_none(), "{report}");
+        busy.set(true);
 
         let mut summary = ask(root, Question::Summary);
         summary.file = Some("packages/core/src/pay.rs".to_string());

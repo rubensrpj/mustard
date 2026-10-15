@@ -114,7 +114,7 @@ pub(crate) fn conversation_answer(root: &Path, request: &Request, view: Vec<u8>,
 /// inteira, com o recibo da entrega de `token`. A maior sai cortada por
 /// [`fit_conversation`] e sem o recibo: ele confirmaria a entrega de trechos
 /// que ficaram de fora, e a busca seguinte os daria como já vistos.
-fn conversation_output(mut output: Vec<u8>, token: Option<&str>, cap: usize, rest: impl FnOnce() -> String) -> Vec<u8> {
+pub(crate) fn conversation_output(mut output: Vec<u8>, token: Option<&str>, cap: usize, rest: impl FnOnce() -> String) -> Vec<u8> {
     if output.len() > cap {
         return fit_conversation(&output, cap, &rest());
     }
@@ -179,7 +179,7 @@ fn fit_conversation(output: &[u8], cap: usize, rest: &str) -> Vec<u8> {
 /// nativa com `--raw`, que entrega os bytes exatos dela, gravada num arquivo.
 /// O pedido que não tem busca nativa, como a leitura de um arquivo, se repete
 /// menor.
-fn rest_line(root: &Path, request: &Request) -> String {
+pub(crate) fn rest_line(root: &Path, request: &Request) -> String {
     let Ok((tool, args)) = mustard_core::io::code_search::arguments(request) else {
         return "# Rest: repeat the request with a smaller range or limit.\n".into();
     };
