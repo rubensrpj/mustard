@@ -973,7 +973,9 @@ fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
 
 /// O molde da onda e o do revisor, nos dois idiomas, mandam procurar código
 /// pela porta, com o padrão original e a intenção em campos distintos.
-/// O scan enriquece a pesquisa executada, sem apagar suas ocorrências.
+/// O scan enriquece a pesquisa executada, sem apagar suas ocorrências. A
+/// busca literal aparece como a finalidade `--purpose locate` da busca, nunca
+/// como um comando `locate`, que o programa não reconhece.
 #[test]
 fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_recovery() {
     for (lang, literal, command, uncertain) in [
@@ -994,6 +996,9 @@ fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_r
                 assert!(line.contains("run search") || line.contains("run knowledge"),"literal patterns belong to the search gateway; explicit questions may retrieve knowledge: {line}");
             }
             assert!(agent.contains("run search") && agent.contains("--purpose"),"{lang} {name}: task-oriented evidence must be available");
+            // A busca literal é a finalidade `locate` da busca; não existe comando `run locate`.
+            assert!(agent.contains("`--purpose locate`"), "{lang} {name}: literal lookup must name the search purpose");
+            assert!(!agent.contains("`locate`:"), "{lang} {name}: literal lookup must not read as a command");
         }
     }
 }

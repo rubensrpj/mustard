@@ -14,7 +14,7 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 - Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or edit `.claude/`/`mustard.json`. Do not close `.claude/pending/`.
 - Current summaries map files/commits/criteria. Confirm in diff/code, including consumers/contracts/omissions; faulty summaries exclude no areas.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run search --shell-output --intent "<specific question to verify>" --purpose validate -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: literal lookup. Do not repeat the spec in intent. For native Bash, the description `mustard:validate: <question>` carries purpose to the hook.
+  - `mustard-rt run search --shell-output --intent "<specific question to verify>" --purpose validate -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. Literal lookup: `--purpose locate`. Do not repeat the spec in intent. For native Bash, the description `mustard:validate: <question>` carries purpose to the hook.
   - `run map summary --file <file>`: before opening a file.
   - `run map slice --file <file> --name <name>`: read only the declaration.
   - `run map users --name <name>`: who uses the declaration.

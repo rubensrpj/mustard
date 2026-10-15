@@ -21,7 +21,7 @@ Implement only this wave. Read each item with the command under "How to read eac
 - Run every command from inside the copy.
 - Start with request evidence: goal, items, rules, excerpts and candidate tests; mandatory rules apply even with `omitClaudeMd`.
 - Use map commands when location or current evidence is missing, without repeating discovery already delivered:
-  - `mustard-rt run search --shell-output --intent "<specific question for this change>" --purpose implement -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. `locate`: literal lookup. Do not repeat the spec in intent. For native Bash, the description `mustard:implement: <question>` carries purpose to the hook.
+  - `mustard-rt run search --shell-output --intent "<specific question for this change>" --purpose implement -- rg -n "<pattern>" .`: current evidence; expand incomplete ranges. Literal lookup: `--purpose locate`. Do not repeat the spec in intent. For native Bash, the description `mustard:implement: <question>` carries purpose to the hook.
   - `run map summary --file <file>`: before opening a file.
   - `run map slice --file <file> --name <name>`: read only the declaration.
   - `run map users --name <name>`: before changing a declaration.

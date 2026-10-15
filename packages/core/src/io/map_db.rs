@@ -179,14 +179,7 @@ impl MapDb {
     /// ninguém marcou depois que ele nasceu ou foi refeito; `None` quando o
     /// bloco falta.
     pub fn mark(&self, name: &str) -> Result<Option<String>> {
-        if !table_exists(&self.conn, BLOCKS_TABLE)? {
-            return Ok(None);
-        }
-        let mark = self
-            .conn
-            .query_row(&format!("SELECT mark FROM {BLOCKS_TABLE} WHERE name = ?1"), params![name], |row| row.get(0))
-            .optional()?;
-        Ok(mark)
+        mark_of(&self.conn, name)
     }
 
     /// A porta de toda gravação: `write` roda numa transação só, que pega a
@@ -198,6 +191,16 @@ impl MapDb {
         tx.commit()?;
         Ok(value)
     }
+}
+
+/// A marca do bloco `name` lida pela conexão `conn`, como [`MapDb::mark`]:
+/// serve também dentro da transação da gravação, já com a trava.
+pub(crate) fn mark_of(conn: &Connection, name: &str) -> Result<Option<String>> {
+    if !table_exists(conn, BLOCKS_TABLE)? {
+        return Ok(None);
+    }
+    let mark = conn.query_row(&format!("SELECT mark FROM {BLOCKS_TABLE} WHERE name = ?1"), params![name], |row| row.get(0)).optional()?;
+    Ok(mark)
 }
 
 /// Marca o bloco `name` como enchido por `mark`, dentro da transação da

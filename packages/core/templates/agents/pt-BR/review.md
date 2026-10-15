@@ -14,7 +14,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 - Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor, troque branch ou edite `.claude/`/`mustard.json`. Não feche `.claude/pending/`.
 - Resumos vigentes orientam arquivos/commits/critérios. Confirme no diff/código, incluindo consumidores, contratos e omissões; resumo falho não exclui áreas.
 - Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
-  - `mustard-rt run search --shell-output --intent "<pergunta específica a conferir>" --purpose validate -- rg -n "<padrão>" .`: trechos; expanda se incompletos. `locate`: busca literal. Não repita a spec na intenção. Em Bash nativo, a descrição `mustard:validate: <pergunta>` leva a finalidade ao hook.
+  - `mustard-rt run search --shell-output --intent "<pergunta específica a conferir>" --purpose validate -- rg -n "<padrão>" .`: trechos; expanda se incompletos. Busca literal: `--purpose locate`. Não repita a spec na intenção. Em Bash nativo, a descrição `mustard:validate: <pergunta>` leva a finalidade ao hook.
   - `run map summary --file <arquivo>`: antes de abrir arquivo.
   - `run map slice --file <arquivo> --name <nome>`: leia só a declaração.
   - `run map users --name <nome>`: quem usa a declaração.

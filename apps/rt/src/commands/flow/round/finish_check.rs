@@ -14,6 +14,7 @@ use mustard_core::io::sha256::Sha256;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::tree_state::tree_state;
 use mustard_core::platform::git;
+use mustard_core::platform::i18n::Locale;
 use serde_json::{json, Map, Value};
 
 use super::answer::{ref_shown, RoundRefusal};
@@ -101,25 +102,47 @@ fn step_task(item: Option<&Value>, codes: &BTreeMap<u64, String>) -> String {
     ref_shown(item, codes).trim().to_string()
 }
 
+/// O aviso do passo da onda `wave` que aponta `item`, quando ele não é
+/// tarefa com que a onda saiu nem critério dela: o passo grava assim mesmo,
+/// mas não conta como término de tarefa, e o aviso lista os códigos das
+/// tarefas da onda. Passo sem item, ou de onda sem tarefa enviada, não avisa.
+fn stray_step_warning(log: &SpecLog, wave: u64, item: &str, tasks: &[(String, &SpecEvent)], lang: Locale) -> Option<String> {
+    if item.is_empty() || tasks.is_empty() || tasks.iter().any(|(code, _)| code == item) {
+        return None;
+    }
+    let codes = log.codes();
+    if log.wave_criteria(wave).iter().any(|crit| codes.get(&crit.id).is_some_and(|code| code == item) || crit.id.to_string() == item) {
+        return None;
+    }
+    let listed = tasks.iter().map(|(code, _)| code.as_str()).collect::<Vec<_>>().join(", ");
+    Some(match lang {
+        Locale::PtBr => format!(
+            "O passo aponta `{item}`, que não é tarefa nem critério da onda {wave}: ele foi gravado, mas não conta como término de tarefa. Tarefas da onda: {listed}. Grave o passo de novo com o código da tarefa no `item`."
+        ),
+        Locale::EnUs => format!(
+            "The step points to `{item}`, which is neither a task nor a criterion of wave {wave}: it was recorded, but does not count as a task end. Wave tasks: {listed}. Record the step again with the task code in `item`."
+        ),
+    })
+}
+
 /// Põe no passo `draft` da spec `spec`, do projeto `root`, as impressões da
 /// cópia da onda dele — a da cópia inteira e a de cada arquivo das tarefas
 /// —, quando ele é o passo de término de uma tarefa com que a onda saiu. O
 /// que vier nos campos de quem grava sai sempre: a impressão é da gravação.
 /// A cópia limpa, a que não se lê e o passo de um critério ficam sem os
 /// campos; a impressão por arquivo fica de fora também quando nenhum arquivo
-/// das tarefas mudou.
-pub(crate) fn mark_step_copy(root: &Path, spec: &str, draft: &mut Map<String, Value>) {
+/// das tarefas mudou. Devolve o aviso, no idioma `lang`, do passo cujo item
+/// não é tarefa nem critério da onda ([`stray_step_warning`]).
+pub(crate) fn mark_step_copy(root: &Path, spec: &str, draft: &mut Map<String, Value>, lang: Locale) -> Option<String> {
     draft.remove(COPY_STATE_FIELD);
     draft.remove(COPY_FILES_FIELD);
-    let Some(wave) = draft.get("wave").and_then(Value::as_u64) else { return };
-    let Some(log) = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
-        return;
-    };
+    let wave = draft.get("wave").and_then(Value::as_u64)?;
+    let log = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten())?;
     let codes = log.codes();
     let item = step_task(draft.get("item"), &codes);
     let tasks = wave_tasks(&log, wave, &codes);
     if !tasks.iter().any(|(code, _)| *code == item) {
-        return;
+        return stray_step_warning(&log, wave, &item, &tasks, lang);
     }
     if let Some(state) = copy_state_now(&log, wave).filter(|state| !state.is_empty()) {
         draft.insert(COPY_STATE_FIELD.into(), json!(state));
@@ -127,6 +150,7 @@ pub(crate) fn mark_step_copy(root: &Path, spec: &str, draft: &mut Map<String, Va
     if let Some(files) = copy_files_now(&log, wave, &tasks).filter(|files| !files.is_empty()) {
         draft.insert(COPY_FILES_FIELD.into(), json!(files));
     }
+    None
 }
 
 /// Os códigos que os campos `fields` de uma entrega citam em `undone`, como o
@@ -326,6 +350,43 @@ mod tests {
 
         let criterion = step(root, "MSTD-CRIT-0001", json!({}));
         assert_eq!((criterion.get(COPY_STATE_FIELD), criterion.get(COPY_FILES_FIELD)), (None, None), "a criterion step is no task end: {criterion}");
+    }
+
+    /// O passo cujo item não é tarefa nem critério da onda grava, com um aviso
+    /// que lista os códigos das tarefas da onda, pelo código ou pelo número
+    /// solto; o passo de uma tarefa da onda, pelo código ou pelo número dela,
+    /// e o de um critério da onda gravam sem aviso.
+    #[test]
+    fn a_step_whose_item_is_no_task_nor_criterion_of_the_wave_warns_with_the_wave_tasks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        two_task_wave(root);
+        let warnings = |item: Value| {
+            let wrote = write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                event_type: "step".into(),
+                json: json!({"wave": 1, "item": item, "text": "A tarefa ficou pronta."}).to_string(),
+            });
+            assert_eq!(wrote["ok"], json!(true), "the step is recorded anyway: {wrote}");
+            wrote.get("warnings").cloned().unwrap_or(json!([]))
+        };
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let other = codes.values().find(|code| !code.contains("-TASK-") && !code.contains("-CRIT-")).cloned().expect("an item of another kind");
+        for stray in [json!(188), json!(other)] {
+            let warned = warnings(stray.clone());
+            let text = warned[0].as_str().unwrap_or_else(|| panic!("a stray step warns: {warned}"));
+            let shown = stray.as_str().map_or_else(|| stray.to_string(), str::to_string);
+            assert!(text.contains(&format!("`{shown}`")), "{text}");
+            assert!(text.contains("MSTD-TASK-0001, MSTD-TASK-0002"), "the warning lists the wave tasks: {text}");
+        }
+
+        let task_id = codes.into_iter().find(|(_, code)| code == "MSTD-TASK-0002").map(|(id, _)| id).unwrap();
+        for fine in [json!("MSTD-TASK-0001"), json!(task_id), json!("MSTD-CRIT-0001")] {
+            assert_eq!(warnings(fine.clone()), json!([]), "no warning for {fine}");
+        }
     }
 
     /// A tarefa devolvida como não feita, com a cópia mudada depois do último

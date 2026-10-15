@@ -548,6 +548,8 @@ pub(crate) const DB_BLOCKS: [Block; 18] =
 
 #[cfg(test)]
 mod block_formats;
+#[cfg(test)]
+mod concurrent_saves;
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -659,6 +661,8 @@ fn stored_part(model: &Path, pick: Pick, cards: bool) -> std::result::Result<Sto
     let reading = db.conn().unchecked_transaction().map_err(|err| unreadable(err.into()))?;
     let stamp = map_revision::stamp(&reading).map_err(unreadable)?;
     let json = map_text(&reading, pick, cards).map_err(unreadable)?;
+    #[cfg(test)]
+    concurrent_saves::after_the_map_text();
     let marks = block_marks(&db)?;
     drop(reading);
     Ok(StoredMap { json, marks, stamp })
@@ -2107,7 +2111,7 @@ fn save_rows(model: &Path, fresh: Fresh<'_>, mark: &str, languages: Option<&Lang
         remove(model)?;
     }
     let mut db = open(model)?;
-    match plan(&db, fresh, mark)? {
+    match plan(db.conn(), fresh, mark)? {
         Some(planned) => commit(&mut db, planned, mark, languages),
         None => Ok(None),
     }
@@ -2117,9 +2121,17 @@ fn save_rows(model: &Path, fresh: Fresh<'_>, mark: &str, languages: Option<&Lang
 struct Planned<'b> {
     /// Cada bloco que se regrava, com o que muda em cada tabela dele.
     changed: Vec<BlockWrite<'b>>,
-    /// Na gravação que parte de um mapa anterior, o carimbo do banco de que
-    /// o plano partiu: as linhas que ele troca pelo número só valem nele.
-    since: Option<&'b str>,
+    /// O carimbo do banco de que o plano partiu, lido antes de tudo: as
+    /// linhas que ele troca pelo número e as tabelas que ele deixa como
+    /// estão só valem nele.
+    stamp: String,
+    /// Se a gravação parte de um mapa anterior ([`Fresh::Since`]): com o
+    /// banco mudado, ela não se refaz e quem a chamou grava inteiro.
+    since: bool,
+    /// Na gravação de linhas prontas, as linhas inteiras de cada bloco que já
+    /// tinha a marca: com o banco mudado, o plano delas se refaz com a trava.
+    /// O bloco sem a marca se regrava inteiro, o que vale em qualquer banco.
+    kept: Vec<(&'b MapBlock, BlockRows)>,
 }
 
 /// Cada bloco que o plano confere, com as linhas dele quando já vêm prontas.
@@ -2137,43 +2149,73 @@ type Since<'b> = (&'b Value, Lines<'b>, &'b str);
 /// ([`changes_since`]). `None` quando o mapa anterior não é mais o que o
 /// banco guarda, ou quando um bloco sem a marca regravaria inteiras as
 /// linhas por arquivo, com o que a leitura dele deixou no banco.
-fn plan<'b>(db: &MapDb, fresh: Fresh<'b>, mark: &str) -> Result<Option<Planned<'b>>> {
+fn plan<'b>(conn: &Connection, fresh: Fresh<'b>, mark: &str) -> Result<Option<Planned<'b>>> {
+    // O carimbo vem antes de toda linha lida: a gravação que cair no meio do
+    // plano muda o carimbo que o commit confere com a trava.
+    let stamp = map_revision::stamp(conn)?;
     let (blocks, since): (PlannedBlocks<'b>, Option<Since<'b>>) = match fresh {
         Fresh::Rows(blocks) => (blocks.into_iter().map(|(block, rows)| (block, Some(rows))).collect(), None),
-        Fresh::Since { map, previous, stamp } => {
-            if map_revision::stamp(db.conn())? != stamp {
+        Fresh::Since { map, previous, stamp: read } => {
+            if stamp != read {
                 return Ok(None);
             }
-            (BLOCKS.iter().map(|block| (block, None)).collect(), Some((map, Lines::of(map, previous)?, stamp)))
+            (BLOCKS.iter().map(|block| (block, None)).collect(), Some((map, Lines::of(map, previous)?, read)))
         }
     };
     let per_file = |table: &Table| matches!(table.place, Place::Files | Place::Decls);
     let mut changed: Vec<BlockWrite<'b>> = Vec::new();
+    let mut kept = Vec::new();
     for (block, mut tables) in blocks {
-        let marked = db.mark(block.name())?.as_deref() == Some(mark);
+        let marked = map_db::mark_of(conn, block.name())?.as_deref() == Some(mark);
         if since.is_some() && !marked && block.tables.iter().any(per_file) {
             return Ok(None);
         }
         let mut writes = Vec::new();
         for (at, table) in block.tables.iter().enumerate() {
             let write = match &since {
-                Some((_, lines, _)) if marked && per_file(table) => changes_since(db.conn(), table, lines.of_place(table.place))?,
+                Some((_, lines, _)) if marked && per_file(table) => changes_since(conn, table, lines.of_place(table.place))?,
                 _ => {
                     let fresh_rows = match (tables.as_mut(), &since) {
                         (Some(tables), _) => tables.get_mut(at).map(std::mem::take).unwrap_or_default(),
                         (None, Some((map, _, _))) => rows(table, map).map_err(Error::Parse)?,
                         (None, None) => Vec::new(),
                     };
-                    if marked { stored_changes(db.conn(), table, fresh_rows)? } else { Some(TableWrite::Whole(fresh_rows)) }
+                    if marked {
+                        let write = stored_changes(conn, table, &fresh_rows)?;
+                        // As linhas voltam ao bloco, para o plano se refazer.
+                        if let Some(slot) = tables.as_mut().and_then(|tables| tables.get_mut(at)) {
+                            *slot = fresh_rows;
+                        }
+                        write
+                    } else {
+                        Some(TableWrite::Whole(fresh_rows))
+                    }
                 }
             };
             writes.extend(write.map(|write| (table, write)));
+        }
+        if marked && let Some(tables) = tables {
+            kept.push((block, tables));
         }
         if !marked || !writes.is_empty() {
             changed.push((block, writes));
         }
     }
-    Ok(Some(Planned { changed, since: since.map(|(_, _, stamp)| stamp) }))
+    Ok(Some(Planned { changed, stamp, since: since.is_some(), kept }))
+}
+
+/// O que `planned`, de linhas prontas, muda no banco quando outra gravação
+/// passou depois que ele se planejou: o bloco que se regrava inteiro fica
+/// como estava, e o de cada bloco que já tinha a marca se refaz pela conexão
+/// `conn`, já com a trava.
+fn replanned<'b>(conn: &Connection, planned: Planned<'b>, mark: &str) -> Result<Vec<BlockWrite<'b>>> {
+    let Planned { changed, kept, .. } = planned;
+    let names: Vec<&str> = kept.iter().map(|(block, _)| block.name()).collect();
+    let mut changed: Vec<BlockWrite<'b>> = changed.into_iter().filter(|(block, _)| !names.contains(&block.name())).collect();
+    if let Some(again) = plan(conn, Fresh::Rows(kept), mark)? {
+        changed.extend(again.changed);
+    }
+    Ok(changed)
 }
 
 /// Grava o que `planned` muda, com a marca `mark`, numa transação só.
@@ -2184,10 +2226,12 @@ fn plan<'b>(db: &MapDb, fresh: Fresh<'b>, mark: &str) -> Result<Option<Planned<'
 /// ele se refaz inteiro. Sem as línguas, fica sem línguas, e a primeira busca
 /// o refaz nas dela. O catálogo dos símbolos segue a mesma conta. Devolve
 /// se gravou; `None`, sem gravar, quando o plano parte de um mapa anterior e
-/// outra gravação passou pelo banco depois que ele se planejou.
+/// outra gravação passou pelo banco depois que ele se planejou. Com linhas
+/// prontas, essa gravação refaz o plano já com a trava.
 fn commit(db: &mut MapDb, planned: Planned<'_>, mark: &str, languages: Option<&Languages>) -> Result<Option<bool>> {
-    let Planned { changed, since } = planned;
-    if changed.is_empty() {
+    // Sem nada a mudar no banco de que o plano partiu, a gravação vale nele
+    // mesmo, sem a trava.
+    if planned.changed.is_empty() && map_revision::stamp(db.conn())? == planned.stamp {
         // A newly declared derived block can be empty even when the scanner's
         // source blocks are unchanged. Fill it once without rereading source.
         let profile:Option<String>=db.conn().query_row("SELECT payload FROM project_profile LIMIT 1",[],|row|row.get(0)).ok();
@@ -2196,21 +2240,27 @@ fn commit(db: &mut MapDb, planned: Planned<'_>, mark: &str, languages: Option<&L
         if stale { db.write(|conn| sync_project_profile(conn))?; }
         return Ok(Some(false));
     }
-    let touched = |names: &[&str]| changed.iter().any(|(block, _)| names.contains(&block.name()));
-    let indexed = touched(&INDEXED_FROM.map(MapBlock::name));
-    // A história da base muda os títulos dos commits de cada documento: o
-    // índice se refaz inteiro.
-    let searched = if touched(&[HISTORY.name()]) { None } else { changed_paths(&changed, &SEARCHED) };
-    let searched: Option<Vec<&str>> = searched.as_ref().map(|paths| paths.iter().map(String::as_str).collect());
-    let catalogued = changed_paths(&changed, &[&DECLS]);
     db.write(|tx| {
         // Conferido já com a trava: a gravação que caiu entre o plano e ela
-        // deixaria fora do lugar as linhas que ele troca pelo número.
-        if let Some(stamp) = since
-            && map_revision::stamp(tx)? != stamp
-        {
+        // deixaria fora do lugar as linhas que ele troca pelo número, e com
+        // o conteúdo dela as tabelas que ele deixa como estão.
+        let changed = if map_revision::stamp(tx)? == planned.stamp {
+            planned.changed
+        } else if planned.since {
             return Ok(None);
+        } else {
+            replanned(tx, planned, mark)?
+        };
+        if changed.is_empty() {
+            return Ok(Some(false));
         }
+        let touched = |names: &[&str]| changed.iter().any(|(block, _)| names.contains(&block.name()));
+        let indexed = touched(&INDEXED_FROM.map(MapBlock::name));
+        // A história da base muda os títulos dos commits de cada documento: o
+        // índice se refaz inteiro.
+        let searched = if touched(&[HISTORY.name()]) { None } else { changed_paths(&changed, &SEARCHED) };
+        let searched: Option<Vec<&str>> = searched.as_ref().map(|paths| paths.iter().map(String::as_str).collect());
+        let catalogued = changed_paths(&changed, &[&DECLS]);
         // Os documentos que os arquivos mudados tinham, lidos antes de as
         // linhas deles mudarem de número.
         let stale = match (&searched, languages) {
@@ -2258,12 +2308,12 @@ fn commit(db: &mut MapDb, planned: Planned<'_>, mark: &str, languages: Option<&L
 
 /// O que muda na tabela `table`, de bloco marcado, das linhas gravadas para
 /// `fresh`; `None` quando nada mudou.
-fn stored_changes(conn: &Connection, table: &Table, fresh: Vec<Row>) -> Result<Option<TableWrite>> {
+fn stored_changes(conn: &Connection, table: &Table, fresh: &[Row]) -> Result<Option<TableWrite>> {
     let stored = numbered_rows_in(conn, table)?;
     Ok(match table.place {
         Place::Files | Place::Decls => row_changes(&stored, fresh)?,
         Place::One | Place::List { .. } => {
-            if stored.iter().map(|(_, row)| row).ne(fresh.iter()) { Some(TableWrite::Whole(fresh)) } else { None }
+            if stored.iter().map(|(_, row)| row).ne(fresh.iter()) { Some(TableWrite::Whole(fresh.to_vec())) } else { None }
         }
     })
 }
@@ -2334,13 +2384,13 @@ fn split_rows(stored: &[(i64, &Sql)], owners: &[&Sql], mut changed: impl FnMut(u
 /// O que muda numa tabela de linhas por arquivo, das linhas gravadas
 /// `stored`, cada uma com o número dela, para `fresh` ([`split_rows`]);
 /// `None` quando nada mudou.
-fn row_changes(stored: &[(i64, Row)], mut fresh: Vec<Row>) -> Result<Option<TableWrite>> {
+fn row_changes(stored: &[(i64, Row)], fresh: &[Row]) -> Result<Option<TableWrite>> {
     let split = {
         let stored_owners: Vec<(i64, &Sql)> = stored.iter().map(|(id, row)| (*id, row_owner(row))).collect();
         let owners: Vec<&Sql> = fresh.iter().map(row_owner).collect();
         split_rows(&stored_owners, &owners, |at, _| Ok((stored[at].1 != fresh[at]).then(|| fresh[at].clone())))?
     };
-    let tail = fresh.split_off(split.at);
+    let tail = fresh[split.at..].to_vec();
     Ok(split.with_tail(tail))
 }
 
@@ -2422,7 +2472,7 @@ fn changes_since(conn: &Connection, table: &Table, lines: &[Line<'_>]) -> Result
     let merged = |line: &Line<'_>, kept: &[bool], stored: Option<&Row>| -> Result<Row> {
         table.columns.iter().zip(kept).enumerate().map(|(index, (column, &kept))| match stored {
             Some(row) if kept => Ok(row[index].clone()),
-            _ => cell(table, column, find(if column.cell == Cell::Owner { line.module } else { line.item }, column.key)).map_err(Error::Parse),
+            _ => column_cell(table, column, line.item, line.module).map_err(Error::Parse),
         }).collect()
     };
     let name = quoted(table.name);
@@ -2570,10 +2620,7 @@ fn rows(table: &Table, map: &Value) -> std::result::Result<Vec<Row>, String> {
         table
             .columns
             .iter()
-            .map(|column| {
-                let from = if column.cell == Cell::Owner { owner } else { item };
-                cell(table, column, find(from, column.key))
-            })
+            .map(|column| column_cell(table, column, item, owner))
             .collect()
     };
     match table.place {
@@ -2593,6 +2640,12 @@ fn rows(table: &Table, map: &Value) -> std::result::Result<Vec<Row>, String> {
             Ok(out)
         }
     }
+}
+
+/// A célula da coluna `column` de `table` na linha que sai do item `item`,
+/// cujo dono é `owner`: a coluna do dono vem dele, as outras do item.
+fn column_cell(table: &Table, column: &Column, item: &Value, owner: &Value) -> std::result::Result<Sql, String> {
+    cell(table, column, find(if column.cell == Cell::Owner { owner } else { item }, column.key))
 }
 
 /// O valor no caminho `key` a partir de `value`; o próprio valor com o
@@ -2714,7 +2767,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// As línguas de um projeto com o texto em português e o código em inglês.
-    fn languages() -> Languages {
+    pub(super) fn languages() -> Languages {
         Languages::new(["pt-BR", "en-US"])
     }
 
@@ -2790,7 +2843,7 @@ mod tests {
     /// guarda — entre elas as que o scan antigo gravava e o banco deixou de
     /// guardar: as camadas, os pontos de registro e as dependências de cada
     /// projeto.
-    fn scan_map() -> Value {
+    pub(super) fn scan_map() -> Value {
         json!({
             "root": "/proj",
             "languages": [{"language": "rust", "files": 2, "loc": 30}],
@@ -3011,7 +3064,7 @@ mod tests {
     /// cartões, a primeira declaração do quinto ganha um uso, o segundo e o
     /// sexto ganham uma medida de qualidade e um arquivo novo entra depois do
     /// segundo.
-    fn carded_map(changed: bool) -> Value {
+    pub(super) fn carded_map(changed: bool) -> Value {
         let mut modules: Vec<Value> = (0..6)
             .map(|at| {
                 let mut names = vec![format!("unit{at}Alpha"), format!("unit{at}Beta")];
@@ -3047,7 +3100,7 @@ mod tests {
     /// O mapa como a passada que relê o terceiro arquivo e lê o novo o grava:
     /// só esses dois trazem os cartões, refeitos, e os outros vêm da leitura
     /// do mapa, que os deixou no banco.
-    fn as_saved_by_the_pass(mut map: Value) -> Value {
+    pub(super) fn as_saved_by_the_pass(mut map: Value) -> Value {
         for module in map["modules"].as_array_mut().unwrap() {
             if !["src/m02.ts", "src/m01x.ts"].contains(&module["path"].as_str().unwrap()) {
                 module["analysis"]["knowledge"].as_object_mut().unwrap().remove("cards");
@@ -3119,8 +3172,8 @@ mod tests {
         second_map["modules"][0]["quality"] = json!({"lines": 4});
 
         let (mut first, mut second) = (open(&model).unwrap(), open(&model).unwrap());
-        let first_plan = plan(&first, Fresh::Since { map: &first_map, previous: &before, stamp: &previous.stamp }, "scan 1").unwrap().unwrap();
-        let second_plan = plan(&second, Fresh::Since { map: &second_map, previous: &before, stamp: &previous.stamp }, "scan 1").unwrap().unwrap();
+        let first_plan = plan(first.conn(), Fresh::Since { map: &first_map, previous: &before, stamp: &previous.stamp }, "scan 1").unwrap().unwrap();
+        let second_plan = plan(second.conn(), Fresh::Since { map: &second_map, previous: &before, stamp: &previous.stamp }, "scan 1").unwrap().unwrap();
         assert_eq!(commit(&mut first, first_plan, "scan 1", Some(&languages())).unwrap(), Some(true));
         let written = read_stored_at(&model).unwrap().json;
         assert_eq!(commit(&mut second, second_plan, "scan 1", Some(&languages())).unwrap(), None);

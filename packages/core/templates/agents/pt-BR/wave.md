@@ -21,7 +21,7 @@ Só implemente a onda. Leia inteiro cada item pelo comando de "Como ler cada ite
 - Rode cada comando de dentro da cópia.
 - Parta da evidência do pedido: objetivo, itens, regras, trechos e testes candidatos; as regras obrigatórias valem mesmo com `omitClaudeMd`.
 - Use os comandos do mapa quando a localização ou evidência atual faltar, sem repetir descoberta já entregue:
-  - `mustard-rt run search --shell-output --intent "<pergunta específica para esta mudança>" --purpose implement -- rg -n "<padrão>" .`: trechos; expanda se incompletos. `locate`: busca literal. Não repita a spec na intenção. Em Bash nativo, a descrição `mustard:implement: <pergunta>` leva a finalidade ao hook.
+  - `mustard-rt run search --shell-output --intent "<pergunta específica para esta mudança>" --purpose implement -- rg -n "<padrão>" .`: trechos; expanda se incompletos. Busca literal: `--purpose locate`. Não repita a spec na intenção. Em Bash nativo, a descrição `mustard:implement: <pergunta>` leva a finalidade ao hook.
   - `run map summary --file <arquivo>`: antes de abrir arquivo.
   - `run map slice --file <arquivo> --name <nome>`: leia só a declaração.
   - `run map users --name <nome>`: antes de mudar declaração.
