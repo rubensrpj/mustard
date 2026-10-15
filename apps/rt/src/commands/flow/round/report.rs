@@ -1894,8 +1894,7 @@ mod tests {
     /// sem gravar a entrega, não tem lote para cortar: a linha de consumo dela
     /// não some. A rodada avisa que a onda terminou sem gravar a entrega, não
     /// grava entrega nenhuma e a tarefa fica na onda. Só roda no Linux: fora
-    /// dele nenhum processo é dado como morto, e o pedido sem o par de
-    /// processo conta como de Claude Code aberto.
+    /// dele nenhum processo é dado como morto.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_usage_line_of_a_hand_drawn_wave_whose_claude_closed_is_reported_and_not_dropped() {
@@ -1920,9 +1919,9 @@ mod tests {
             json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/a.rs"}], "depends_on": [],
                 "origin": said}),
         );
-        // O pedido segue aberto e sem o par de processo do Claude Code: no
-        // Linux ele conta como fechado.
+        // O pedido segue aberto, com o Claude Code que o mandou já fechado.
         seed_send(root, 1);
+        orphan_the_send(root, 1);
         let log = store::read(&path).unwrap().unwrap();
         assert!(!backlog_wave(&log, 1), "the wave is drawn by hand, not formed from the backlog");
         assert!(open_sends(&log).contains_key(&1) && !waves_in_progress(&log).contains_key(&1));
@@ -2091,7 +2090,7 @@ mod tests {
     /// trava por arquivo não confunde este pedido, já em andamento, com um
     /// que ainda espera a vaga do arquivo, nem a limpeza de órfã mexe nele.
     fn seed_send_with_copy(root: &Path, n: u64, copy: &str) {
-        let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+        let (claude_pid, claude_started) = crate::commands::flow::stuck::this_process();
         crate::shared::spec_state::seed_event(
             root,
             "x",

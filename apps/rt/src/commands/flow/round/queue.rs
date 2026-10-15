@@ -320,19 +320,45 @@ pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>)
     Some(draft)
 }
 
-/// `true` quando o processo do Claude Code que mandou o envio `sent` ainda
-/// está aberto: o par gravado (`claude_pid`, `claude_started`) segue vivo. Um
-/// envio sem o par — de versão antiga, ou gravado fora do Linux — conta como
-/// fechado; fora do Linux, onde nada é dado como órfão, conta como aberto:
-/// quem decide aí é a pausa que o orquestrador manda.
-fn claude_still_here(log: &SpecLog, sent: u64) -> bool {
+/// O campo do envio gravado quando nenhum hospedeiro foi reconhecido por
+/// trás da rodada: é ele que separa o envio de agora, sem o par, do envio de
+/// versão antiga, também sem o par.
+const NO_HOST_PROCESS: &str = "no_host_process";
+
+/// Os campos que dizem, no envio, qual hospedeiro o mandou: o par
+/// (`claude_pid`, `claude_started`) do hospedeiro reconhecido
+/// ([`crate::commands::flow::stuck::sender_process`]) ou, sem nenhum, a marca
+/// [`NO_HOST_PROCESS`]. [`host_still_here`] lê de volta o que sai daqui.
+pub(super) fn sender_fields(sender: Option<(u32, u64)>) -> Map<String, Value> {
+    let mut fields = Map::new();
+    if let Some((pid, started)) = sender {
+        fields.insert("claude_pid".into(), json!(pid));
+        fields.insert("claude_started".into(), json!(started));
+    } else {
+        fields.insert(NO_HOST_PROCESS.into(), json!(true));
+    }
+    fields
+}
+
+/// `true` quando o hospedeiro — o Claude Code ou o Codex — que mandou o envio
+/// `sent` ainda está aberto: o par gravado (`claude_pid`, `claude_started`)
+/// segue vivo. O envio sem o par nunca conta como fechado: sem hospedeiro
+/// reconhecido, a rodada não tem como saber, e quem decide é a pausa que o
+/// orquestrador manda. A exceção é o envio de versão antiga sem o par, que só
+/// o Claude Code mandava: com o campo `host` dizendo `claude` e sem a marca
+/// [`NO_HOST_PROCESS`], ele segue a regra de antes — fechado no Linux, aberto
+/// fora dele.
+fn host_still_here(log: &SpecLog, sent: u64) -> bool {
     let Some(event) = log.get(sent) else {
         return false;
     };
     match (event.int("claude_pid"), event.int("claude_started")) {
         #[allow(clippy::cast_possible_truncation)]
         (Some(pid), Some(started)) => crate::commands::flow::stuck::process_alive(pid as u32, started),
-        _ => cfg!(not(target_os = "linux")),
+        _ => {
+            let older_claude_send = event.str_field("host") == Some("claude") && event.fields.get(NO_HOST_PROCESS).is_none();
+            !older_claude_send || cfg!(not(target_os = "linux"))
+        }
     }
 }
 
@@ -346,7 +372,7 @@ fn claude_still_here(log: &SpecLog, sent: u64) -> bool {
 /// de cada onda leem o andamento daqui, e só daqui.
 pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
     let returned = waves_returned(log);
-    open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && claude_still_here(log, *sent)).collect()
+    open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && host_still_here(log, *sent)).collect()
 }
 
 /// As ondas órfãs, cada uma com o número do pedido dela: as com pedido aberto
@@ -356,7 +382,7 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// a cópia guarda o que ele entregou até a rodada o assumir.
 pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
     let returned = waves_returned(log);
-    open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && !claude_still_here(log, *sent)).collect()
+    open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && !host_still_here(log, *sent)).collect()
 }
 
 /// As ondas que esperam um agente novo, cada uma com o arquivo do trecho de
@@ -375,7 +401,7 @@ pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -
     let sends = log.last_by_wave("send");
     waves_returned(log)
         .into_iter()
-        .filter(|n| sends.get(n).is_some_and(|sent| rejected_unclaimed(log, *n, *sent) || !claude_still_here(log, *sent)))
+        .filter(|n| sends.get(n).is_some_and(|sent| rejected_unclaimed(log, *n, *sent) || !host_still_here(log, *sent)))
         .filter_map(|n| super::fixes::fix_file(root, spec, log, n).filter(|file| file.is_file()).map(|file| (n, file)))
         .collect()
 }
@@ -1093,6 +1119,42 @@ mod tests {
         let next = shown(&mustard_core::io::wave_prompt::slot_path(root, "x", 1));
         assert_eq!(sent_copy(root, 2), next, "a órfã segura a vaga a, e a onda 2 vai para a b: {second}");
         assert_eq!(sent_copy(root, 1), copy_path, "a órfã volta na mesma vaga: {second}");
+    }
+
+    /// O envio que saiu sem hospedeiro reconhecido por trás da rodada — um
+    /// hospedeiro fora da lista, um script, a linha de comando — nunca dá a
+    /// onda como órfã: a rodada seguinte não a reenvia, e ela segue em
+    /// andamento até quem conduz pausá-la. O envio de versão antiga sem o par
+    /// segue a regra de antes só quando diz que veio do Claude Code: esse é
+    /// órfão e sai de novo; o do Codex, não. O projeto é em TypeScript.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_send_without_a_recognized_host_is_never_orphaned() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/app.ts"], &[]), (2, &["src/b.ts"], &[]), (3, &["src/c.ts"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        for (wave, host, without_host) in [(1, "claude", true), (2, "claude", false), (3, "codex", false)] {
+            let log = store::read(&path).unwrap().unwrap();
+            let fields = if without_host { sender_fields(None) } else { Map::new() };
+            let mut draft = send_revision(&log, wave, fields).expect("the send of the wave");
+            draft.remove("claude_pid");
+            draft.remove("claude_started");
+            if !without_host {
+                draft.remove(NO_HOST_PROCESS);
+            }
+            draft.insert("host".into(), json!(host));
+            store::write_at(&path, "send", draft, &[], &at).unwrap();
+        }
+
+        let second = round(root, "x", None);
+        assert_eq!(waves_in(&second, "dispatch"), vec![2], "só a órfã de versão antiga do Claude Code sai de novo: {second}");
+        let running = waves_in_progress(&store::read(&path).unwrap().unwrap());
+        assert!(running.contains_key(&1) && running.contains_key(&3), "{running:?}: {second}");
     }
 
     /// A onda que já entregou não é despachada de novo, mesmo sem pedido
@@ -3073,7 +3135,7 @@ mod tests {
     /// Um pedido aberto da onda `n`, com o processo deste teste por trás: a
     /// onda está em andamento.
     pub(crate) fn seed_running(root: &Path, n: u64) {
-        let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+        let (claude_pid, claude_started) = crate::commands::flow::stuck::this_process();
         crate::shared::spec_state::seed_event(
             root,
             "x",

@@ -89,8 +89,7 @@ pub(crate) fn observe(root: &Path, host: &str, event: &str, input: &HookInput) {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| json!({"host":host,"events":{},"tool_failures":0}));
     value["at"] = json!(chrono::Utc::now().to_rfc3339());
-    let (pid, started) = crate::commands::flow::stuck::sender_process();
-    if pid != std::process::id() {
+    if let Some((pid, started)) = crate::commands::flow::stuck::sender_process() {
         value["host_pid"] = json!(pid);
         value["host_started"] = json!(started);
     }

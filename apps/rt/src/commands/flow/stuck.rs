@@ -205,58 +205,67 @@ fn stat_of(pid: u32) -> Option<(u32, u64)> {
 }
 
 /// `true` quando um processo com este nome (`/proc/<pid>/comm`), este
-/// executável (`/proc/<pid>/exe`) e esta linha de comando é um Claude Code. A
-/// lista é fechada, uma entrada por jeito de instalar o Claude Code: o binário
-/// nativo, de nome `claude`; o aplicativo de desktop, cujo executável mora na
-/// pasta `ccd-cli` e leva a versão por nome; e o pacote npm
-/// `@anthropic-ai/claude-code`, que o `node` roda. O nome sozinho não basta:
-/// no aplicativo de desktop ele é a versão, e nada nele diz `claude`. Foi
-/// assim que a rodada gravou, no lugar do Claude Code, o processo dela mesma,
-/// que morre em seguida, e o gancho do despacho barrou toda onda como órfã.
-pub(crate) fn is_claude_code(comm: &str, exe: &str, cmdline: &str) -> bool {
-    comm.trim() == "claude"
+/// executável (`/proc/<pid>/exe`) e esta linha de comando é o hospedeiro do
+/// assistente: o Claude Code ou o Codex. A lista é fechada, uma entrada por
+/// jeito de instalar cada um. Do Claude Code: o binário nativo, de nome
+/// `claude`; o aplicativo de desktop, cujo executável mora na pasta `ccd-cli`
+/// e leva a versão por nome; e o pacote npm `@anthropic-ai/claude-code`, que o
+/// `node` roda. Do Codex: o binário nativo, de nome `codex`, e o pacote npm
+/// `@openai/codex`, que o `node` roda. O nome sozinho não basta: no aplicativo
+/// de desktop ele é a versão, e nada nele diz `claude`.
+pub(crate) fn is_host_process(comm: &str, exe: &str, cmdline: &str) -> bool {
+    matches!(comm.trim(), "claude" | "codex")
         || Path::new(exe).parent().and_then(Path::file_name).is_some_and(|folder| folder == "ccd-cli")
         || cmdline.contains("@anthropic-ai/claude-code/")
+        || cmdline.contains("@openai/codex/")
 }
 
-/// O processo que responde por este envio, com o número e a hora de início —
-/// o par que [`process_alive`] confere depois. Sobe pelos pais em `/proc` até
-/// achar um Claude Code ([`is_claude_code`]) e devolve esse, com um limite de
-/// 64 subidas para nunca entrar em laço. Sem nenhum pai Claude Code — uma
-/// rodada tocada por um script, por um teste ou pela linha de comando —,
-/// devolve o processo atual, que é quem manda a onda ali. O envio nunca sai
-/// sem o par: quem lê depois compara um processo com o relógio, em vez de ler
-/// ausência de dado como prova de morte.
+/// O hospedeiro ([`is_host_process`]) que responde por este envio, com o
+/// número e a hora de início — o par que [`process_alive`] confere depois.
+/// `None` quando nenhum pai do processo atual é um hospedeiro reconhecido:
+/// uma rodada tocada por um script, por um teste, pela linha de comando ou
+/// por um hospedeiro fora da lista. O envio sai então sem o par, e a rodada
+/// não dá a onda como órfã por isso; quem conduz decide pela pausa. Gravar o
+/// processo atual no lugar seria gravar um processo que morre em seguida, e
+/// toda onda viraria órfã na rodada seguinte.
 #[cfg(target_os = "linux")]
-pub(crate) fn sender_process() -> (u32, u64) {
-    let mut pid = std::process::id();
+pub(crate) fn sender_process() -> Option<(u32, u64)> {
+    host_process_above(std::process::id())
+}
+
+/// Fora do Linux não há `/proc`: nenhum hospedeiro é reconhecido, e o envio
+/// sai sem o par.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn sender_process() -> Option<(u32, u64)> {
+    None
+}
+
+/// O primeiro hospedeiro ([`is_host_process`]) subindo de `pid` pelos pais em
+/// `/proc`, o próprio `pid` incluído, com um limite de 64 subidas para nunca
+/// entrar em laço. `None` sem nenhum.
+#[cfg(target_os = "linux")]
+fn host_process_above(mut pid: u32) -> Option<(u32, u64)> {
     for _ in 0..64 {
-        let Some((ppid, starttime)) = stat_of(pid) else { break };
+        let (ppid, starttime) = stat_of(pid)?;
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         let exe = std::fs::read_link(format!("/proc/{pid}/exe")).map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
         let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if is_claude_code(&comm, &exe, &cmdline) {
-            return (pid, starttime);
+        if is_host_process(&comm, &exe, &cmdline) {
+            return Some((pid, starttime));
         }
         if ppid == 0 || ppid == pid {
-            break;
+            return None;
         }
         pid = ppid;
     }
-    this_process()
-}
-
-/// Fora do Linux não há `/proc`: o envio leva o processo atual, e lá
-/// [`process_alive`] não confere nenhum dos dois números.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn sender_process() -> (u32, u64) {
-    this_process()
+    None
 }
 
 /// O número e a hora de início do processo atual — o par de quem está
-/// rodando agora. Serve ao envio sem Claude Code por cima e aos testes, que
-/// assim não dependem de quem lançou a suíte.
-#[cfg(target_os = "linux")]
+/// rodando agora, vivo até o fim do teste: os testes o gravam como o
+/// hospedeiro aberto de um envio, e assim não dependem de quem lançou a
+/// suíte.
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn this_process() -> (u32, u64) {
     let pid = std::process::id();
     (pid, stat_of(pid).map_or(0, |(_, starttime)| starttime))
@@ -264,7 +273,7 @@ pub(crate) fn this_process() -> (u32, u64) {
 
 /// Fora do Linux, sem `/proc`, a hora de início não é legível: vai zerada, e
 /// [`process_alive`] não olha para ela.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(test, not(target_os = "linux")))]
 pub(crate) fn this_process() -> (u32, u64) {
     (std::process::id(), 0)
 }
@@ -317,16 +326,28 @@ mod tests {
     /// o servidor do aplicativo de desktop e o shell que roda o comando não.
     #[test]
     fn the_desktop_app_cli_counts_as_the_claude_code_process() {
-        assert!(is_claude_code("claude\n", "/home/x/.local/bin/claude", "claude\0"));
-        assert!(is_claude_code(
+        assert!(is_host_process("claude\n", "/home/x/.local/bin/claude", "claude\0"));
+        assert!(is_host_process(
             "2.1.295-8b2928c\n",
             "/home/x/.claude/remote/ccd-cli/2.1.295-8b2928c330c4",
             "/home/x/.claude/remote/ccd-cli/2.1.295-8b2928c330c4\0--output-format\0stream-json\0"
         ));
-        assert!(is_claude_code("node\n", "/usr/bin/node", "node\0/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js\0"));
-        assert!(!is_claude_code("server\n", "/home/x/.claude/remote/srv/abc/server", "/home/x/.claude/remote/srv/abc/server\0--serve\0"));
-        assert!(!is_claude_code("zsh\n", "/usr/bin/zsh", "zsh\0-c\0mustard-rt run round\0"));
-        assert!(!is_claude_code("", "", ""));
+        assert!(is_host_process("node\n", "/usr/bin/node", "node\0/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js\0"));
+        assert!(!is_host_process("server\n", "/home/x/.claude/remote/srv/abc/server", "/home/x/.claude/remote/srv/abc/server\0--serve\0"));
+        assert!(!is_host_process("zsh\n", "/usr/bin/zsh", "zsh\0-c\0mustard-rt run round\0"));
+        assert!(!is_host_process("", "", ""));
+    }
+
+    /// Os dois jeitos de instalar o Codex contam como o hospedeiro: o binário
+    /// nativo, de nome `codex`, e o pacote npm `@openai/codex`, que o `node`
+    /// roda. O shell que roda um comando com a palavra `codex` e o programa
+    /// de nome só parecido não contam.
+    #[test]
+    fn a_codex_process_counts_as_the_host_process() {
+        assert!(is_host_process("codex\n", "/home/x/.local/bin/codex", "codex\0"));
+        assert!(is_host_process("node\n", "/usr/bin/node", "node\0/usr/lib/node_modules/@openai/codex/bin/codex.js\0"));
+        assert!(!is_host_process("zsh\n", "/usr/bin/zsh", "zsh\0-c\0codex exec 'mustard-rt run round'\0"));
+        assert!(!is_host_process("codex-helper\n", "/usr/bin/codex-helper", "codex-helper\0"));
     }
 
     fn spawn(cmd: &mut Command) -> Child {
@@ -697,17 +718,15 @@ mod tests {
         assert_eq!(first, second, "the same live process keeps the same start time");
     }
 
-    /// Sem achar nenhum pai de nome `claude`, ou achando um, nunca entra em
-    /// laço e sempre devolve um processo vivo: com pai `claude`, ele; sem
-    /// nenhum, o processo atual. Vale rodando por baixo do Claude Code e
-    /// rodando solto, e é o que faz a suíte não mudar de resultado conforme
-    /// quem a lançou.
+    /// Sem hospedeiro acima — subindo do primeiro processo do sistema, que
+    /// não tem pai —, nenhum processo responde pelo envio; e a busca a partir
+    /// do processo atual nunca devolve ele mesmo, que morre em seguida: ou um
+    /// hospedeiro vivo, ou nada. Vale rodando por baixo de um hospedeiro e
+    /// rodando solto.
     #[test]
-    fn the_sender_process_is_always_a_living_one() {
-        let (pid, started) = sender_process();
-        assert!(process_alive(pid, started), "the sender process must still be running");
-        let (own_pid, own_started) = this_process();
-        assert_eq!(own_pid, std::process::id(), "this_process reports the running process");
-        assert!(process_alive(own_pid, own_started), "the running process is alive");
+    fn without_a_host_above_no_process_answers_for_the_send() {
+        assert_eq!(host_process_above(1), None);
+        let found = sender_process();
+        assert!(found.is_none_or(|(pid, started)| pid != std::process::id() && process_alive(pid, started)), "{found:?}");
     }
 }

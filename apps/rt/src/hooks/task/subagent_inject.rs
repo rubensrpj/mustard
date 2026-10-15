@@ -224,20 +224,25 @@ fn supplemental_instructions(sent: &str, canonical: &str) -> String {
 /// O trecho de conserto da onda `wave` da spec `spec` que espera um agente
 /// novo ([`crate::commands::flow::round::waves_awaiting_new_agent`]) — o da
 /// conferência que recusou a volta, ou o motivo de quem a reprovou —, com o
-/// despacho dele gravado: o envio da onda ganha uma versão com o Claude Code
+/// despacho dele gravado: o envio da onda ganha uma versão com o hospedeiro
 /// atual ([`crate::commands::flow::stuck::sender_process`]), e outro despacho
-/// é barrado enquanto esse Claude Code segue aberto; fechado também ele, a
-/// onda volta a aceitar um agente novo. A versão guarda o lugar em que o envio
-/// despachou a onda, então a onda segue voltada e o trecho segue valendo. Ler,
-/// conferir e gravar correm com a trava do arquivo de eventos presa: de dois
-/// despachos na mesma resposta, só um passa. Nada sem a gravação feita.
+/// é barrado enquanto esse hospedeiro segue aberto; fechado também ele, a
+/// onda volta a aceitar um agente novo. Sem hospedeiro reconhecido, a versão
+/// sai sem ele, e a onda segue aceitando um agente novo, como antes do
+/// despacho. A versão guarda o lugar em que o envio despachou a onda, então a
+/// onda segue voltada e o trecho segue valendo. Ler, conferir e gravar correm
+/// com a trava do arquivo de eventos presa: de dois despachos na mesma
+/// resposta, só um passa. Nada sem a gravação feita.
 fn new_agent_fix(root: &Path, spec: &str, wave: u64, instruction: &str, lang: Locale) -> Option<String> {
     let path = store::spec_file(root, spec).ok()?;
     let taken = store::with_locked_writer(&path, |locked| {
         let file = crate::commands::flow::round::waves_awaiting_new_agent(root, spec, locked.log()).remove(&wave)?;
         let fix = std::fs::read_to_string(file).ok()?;
-        let (pid, started) = crate::commands::flow::stuck::sender_process();
-        let mut extra = json!({"claude_pid": pid, "claude_started": started}).as_object().cloned()?;
+        let mut extra = serde_json::Map::new();
+        if let Some((pid, started)) = crate::commands::flow::stuck::sender_process() {
+            extra.insert("claude_pid".into(), json!(pid));
+            extra.insert("claude_started".into(), json!(started));
+        }
         if !instruction.is_empty() {
             let sent = locked.log().last_by_wave("send").get(&wave).and_then(|id| locked.log().get(*id))?;
             extra.extend(supplement_fields(sent.str_field("text")?, instruction, lang));
@@ -581,7 +586,7 @@ mod tests {
             root:root.into(), spec:Some("x".into()), report:None,
         }, None);
         assert_eq!(out["ok"], true, "{out}");
-        let (pid, started) = crate::commands::flow::stuck::sender_process();
+        let (pid, started) = crate::commands::flow::stuck::this_process();
         crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave":1,"role":"wave","text":assembled(root),"lines":1,"chars":8,"mustard":"0","author":"binary","claude_pid":pid,"claude_started":started}));
         let canonical = crate::commands::flow::round::wave_dispatch(root, "x", 1, Locale::PtBr);
         let instruction = "Use taskset -c 0-3 for the declared Jest command.";
@@ -879,7 +884,7 @@ mod tests {
     fn a_refused_wave_whose_sender_is_open_still_refuses_a_new_agent() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (pid, started) = crate::commands::flow::stuck::sender_process();
+        let (pid, started) = crate::commands::flow::stuck::this_process();
         let (fix, refused) = refused_wave(root, pid, started);
         std::fs::write(&fix, format!("{SECTION}\n")).unwrap();
         let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);

@@ -840,13 +840,19 @@ pub const TYPES: &[TypeSpec] = &[
             // entrega de uma onda que parou. Enquanto a onda deste envio não
             // entrega, o resumo está em uso; entregue a onda, está usado.
             opt("summary", Kind::Int),
-            // O processo do Claude Code que mandou este envio — o número e a
-            // hora de início que `/proc` contava então, para um número
-            // reaproveitado não enganar. Sem o par, num envio de versão
-            // antiga ou fora do Linux, a rodada não sabe dizer se ele segue
-            // aberto.
+            // O processo do hospedeiro — o Claude Code ou o Codex — que mandou
+            // este envio: o número e a hora de início que `/proc` contava
+            // então, para um número reaproveitado não enganar. Sem o par, a
+            // rodada não sabe dizer se ele segue aberto, e não dá a onda como
+            // órfã; só o envio de versão antiga do Claude Code sem o par segue
+            // a regra de antes.
             opt("claude_pid", Kind::Int),
             opt("claude_started", Kind::Int),
+            // A marca do envio que saiu sem hospedeiro reconhecido por trás
+            // da rodada — um script, um teste, a linha de comando ou um
+            // hospedeiro fora da lista —, e por isso sem o par: é o que o
+            // separa do envio de versão antiga, também sem o par.
+            opt("no_host_process", Kind::Bool),
             // A reprovação de quem conduz a obra: a volta da onda que ele
             // reprovou, pelo número (`delivered`), e o motivo dele (`reason`).
             // Enquanto essa volta for a última da onda, ela fica fora do

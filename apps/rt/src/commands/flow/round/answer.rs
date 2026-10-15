@@ -21,8 +21,8 @@ use super::commit::git_lock;
 use super::fixes::{new_agents_named, sweep_fixes};
 use super::item_choice::choose_items;
 use super::queue::{
-    backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves, sent_items,
-    silent_minutes, waves_in_progress, waves_returned,
+    backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves, sender_fields,
+    sent_items, silent_minutes, waves_in_progress, waves_returned,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
@@ -801,11 +801,12 @@ pub(super) fn run_entered_round(
     // que a resposta usa para achar o último passo dela e a hora do envio.
     let mut in_flight: BTreeMap<u64, (String, u64)> =
         running.iter().map(|(wave, sent)| (*wave, (codes.get(sent).cloned().unwrap_or_else(|| sent.to_string()), *sent))).collect();
-    // O processo por trás desta rodada — o Claude Code que a chamou ou, sem
-    // um por cima, ela mesma: gravado em todo envio, novo ou reenviado, para
-    // a rodada seguinte saber se aquele ainda está aberto.
-    let (claude_pid, claude_started) = crate::shared::host_observation::caller_process(root, caller.session)
-        .unwrap_or_else(crate::commands::flow::stuck::sender_process);
+    // O hospedeiro por trás desta rodada — o Claude Code ou o Codex que a
+    // chamou —, gravado em todo envio, novo ou reenviado, para a rodada
+    // seguinte saber se ele ainda está aberto. Sem hospedeiro reconhecido, o
+    // envio sai sem ele, e a onda não vira órfã por isso.
+    let sender = crate::shared::host_observation::caller_process(root, caller.session)
+        .or_else(crate::commands::flow::stuck::sender_process);
     for wave in &next {
         let Some(prompt) = built.iter().find(|p| p.wave == *wave) else {
             continue;
@@ -853,8 +854,7 @@ pub(super) fn run_entered_round(
         if let Some(copy) = flight.copies.get(wave) {
             draft.insert("copy".into(), json!(copy.path));
         }
-        draft.insert("claude_pid".into(), json!(claude_pid));
-        draft.insert("claude_started".into(), json!(claude_started));
+        draft.extend(sender_fields(sender));
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
@@ -950,8 +950,7 @@ pub(super) fn run_entered_round(
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));
         draft.insert("resends".into(), json!(previous));
-        draft.insert("claude_pid".into(), json!(claude_pid));
-        draft.insert("claude_started".into(), json!(claude_started));
+        draft.extend(sender_fields(sender));
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
@@ -1993,7 +1992,7 @@ mod tests {
         let first_prompt = request_at(&first, 0);
 
         let path = store::spec_file(root, "x").unwrap();
-        let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+        let (claude_pid, claude_started) = crate::commands::flow::stuck::this_process();
         let (draft2, draft3, draft4) = {
             let log = store::read(&path).unwrap().unwrap();
             let sent_of = |wave: u64| -> Value { resend_draft(log.visible().into_iter().find(|e| e.wave() == Some(wave) && e.event_type == "send").unwrap()) };
@@ -2130,7 +2129,7 @@ mod tests {
         let shared = recorded_copy(&log, 2).map(|copy| copy.path).expect("a cópia da onda 2");
         let mut draft = resend_draft(sent_of(1));
         draft["copy"] = json!(shared);
-        let (claude_pid, claude_started) = if alive { crate::commands::flow::stuck::sender_process() } else { closed_process() };
+        let (claude_pid, claude_started) = if alive { crate::commands::flow::stuck::this_process() } else { closed_process() };
         draft["claude_pid"] = json!(claude_pid);
         draft["claude_started"] = json!(claude_started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2752,7 +2751,7 @@ mod tests {
             }
             // A outra rodada termina o despacho: grava o envio da onda com a
             // vaga que preparou, por um Claude Code vivo, e solta a trava.
-            let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+            let (claude_pid, claude_started) = crate::commands::flow::stuck::this_process();
             crate::shared::spec_state::seed_event(
                 root,
                 "x",
