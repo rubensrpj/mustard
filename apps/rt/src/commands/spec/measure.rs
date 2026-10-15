@@ -1,8 +1,9 @@
 //! `mustard-rt run measure` — o gasto do Claude no projeto antes e depois da
 //! marca de uma versão do Mustard.
 //!
-//! Sem `--since`, a marca é a última que o início de sessão gravou no
-//! projeto; com ele, o instante dado, em RFC 3339 ou `AAAA-MM-DD` (a
+//! Sem `--since`, a marca é a primeira que o início de sessão gravou no
+//! projeto com o número publicado da última
+//! (`mustard_core::domain::measure::counted_mark`); com ele, o instante dado, em RFC 3339 ou `AAAA-MM-DD` (a
 //! meia-noite do dia no fuso do gasto). A conta mora em
 //! `mustard_core::domain::measure`, sobre as linhas de dia que
 //! `mustard_core::io::spend` dá ao projeto, pela mesma soma da página do
@@ -19,7 +20,7 @@ mod searches;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use mustard_core::domain::measure::{measure, Mark, Measurement, Side, Verdict, MIN_DAYS};
+use mustard_core::domain::measure::{counted_mark, measure, Measurement, Side, Verdict, MIN_DAYS};
 use mustard_core::domain::spend::{day_of, day_start, next_day, Range, MIN_ACTIONS};
 use mustard_core::io::{measure as marks, spend as store};
 use mustard_core::platform::harness::claude_config_dir;
@@ -61,7 +62,7 @@ fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value,
     let mark = match opts.since.as_deref().map(since) {
         Some(Err(hint)) => return (json!({ "ok": false, "reason": "not-an-instant", "hint": hint }), Vec::new()),
         Some(Ok(at)) => Some((json!({ "version": null, "at": at.to_rfc3339() }), at)),
-        None => marks::marks(&opts.root).pop().and_then(|mark: Mark| {
+        None => counted_mark(&marks::marks(&opts.root)).and_then(|mark| {
             let at = DateTime::parse_from_rfc3339(&mark.at).ok()?.with_timezone(&Utc);
             Some((json!(mark), at))
         }),
