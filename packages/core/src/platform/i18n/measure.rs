@@ -23,10 +23,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The measurement starts at the next session, when this Mustard version leaves its mark on this project."
         }
         ("measure.not_used_yet", Locale::PtBr) => {
-            "Esta versão ainda não foi usada neste projeto. A coluna de antes já está pronta."
+            "Nenhum dia depois da marca foi contado ainda. O dia da marca, {mark_day}, fica fora da conta. O \
+             primeiro que pode contar é {first_day}. Um dia entra quando fecha com {min_actions} ações ou mais. \
+             A coluna de antes já está pronta."
         }
         ("measure.not_used_yet", Locale::EnUs) => {
-            "This version has not been used in this project yet. The before column is already ready."
+            "No day after the mark has been counted yet. The mark's day, {mark_day}, stays out of the count. The \
+             first one that can count is {first_day}. A day comes in once it closes with {min_actions} actions or \
+             more. The before column is already ready."
         }
         ("measure.too_early", Locale::PtBr) => {
             "Ainda não dá para dizer. São {before_days} dias contados antes e {after_days} depois, e o mínimo \
@@ -114,7 +118,7 @@ mod tests {
             include_str!("measure.rs"),
             super::PREFIXES,
             27,
-            0x82f7_9484_f401_f6a4,
+            0x88cf_4129_af13_e5f5,
         );
     }
 }
