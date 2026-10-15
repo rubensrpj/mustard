@@ -136,6 +136,7 @@ pub(crate) use dependencies::prepare as prepare_copy_dependencies;
 mod environment;
 mod finish_check;
 mod fixes;
+mod handoff;
 mod imports_check;
 pub(crate) mod item_choice;
 mod jev_failure;

@@ -1,6 +1,8 @@
 ---
 name: refazer-gancho
 description: Refazer um hook do Mustard alinhando contrato, registro, despacho e integração com o host.
+paths:
+  - apps/rt/src/hooks/**
 ---
 # Refazer um hook
 

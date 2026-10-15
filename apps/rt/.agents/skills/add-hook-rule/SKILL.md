@@ -1,6 +1,8 @@
 ---
 name: add-hook-rule
 description: Acrescentar uma regra a um hook existente preservando autorização, comportamento e integração do veredito.
+paths:
+  - apps/rt/src/hooks/**
 ---
 # Acrescentar uma regra
 

@@ -21,7 +21,6 @@ pub mod plan;
 pub mod reopen;
 pub mod resume;
 pub mod round;
-pub(crate) mod skill_search;
 pub(crate) mod stuck;
 pub(crate) mod validation;
 

@@ -26,9 +26,10 @@
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; item combinado de uma onda que nenhuma tarefa cobre — menos
 //! o marcado como "não vira código", que traz o motivo na linha dele, e o do
-//! projeto, que vale sempre; contrato que nenhum critério cita; tarefa que
-//! podia nomear uma skill; e o comando de compilar ou de testar que o
-//! `mustard.json` ainda não declara, com o campo a preencher.
+//! projeto, que vale sempre; contrato que nenhum critério cita; e o comando
+//! de compilar ou de testar que o `mustard.json` ainda não declara, com o
+//! campo a preencher. A skill não se sugere por palavras: a que declara as
+//! pastas que atende entra no pedido da onda que mexe nelas.
 //!
 //! O plano não confere onda: a onda é um lote que o binário forma na hora de
 //! despachar, e não um desenho do plano. Não há aviso de ondas que dividem
@@ -56,7 +57,6 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
-use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::MapRefusal;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
@@ -68,7 +68,6 @@ use mustard_core::io::wave_prompt::{Flight, WavePrompt, prompts};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::skill_search::{best_skill, skills_on_disk};
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
@@ -98,8 +97,6 @@ enum PlanFinding {
     ContractWithoutCriterion { code: String },
     /// Uma tarefa que mexe em código e não diz em que arquivo mexe.
     TaskWithoutFile { task: String },
-    /// Uma tarefa sem skill para a qual já existe uma skill que serve.
-    TaskCouldNameASkill { task: String, skill: String },
     /// O comando de compilar ou de testar que o projeto ainda não declarou
     /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
     CommandNotDeclared { field: &'static str },
@@ -117,7 +114,6 @@ impl PlanFinding {
             Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
-            | Self::TaskCouldNameASkill { .. }
             | Self::CommandNotDeclared { .. } => false,
         }
     }
@@ -138,7 +134,6 @@ impl PlanFinding {
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
-            Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
             Self::CommandNotDeclared { .. } => "command-not-declared".into(),
         }
     }
@@ -163,7 +158,6 @@ impl PlanFinding {
             Self::ItemWithoutTask { code } => fill("plan.item_without_task", &[("{code}", code.clone())]),
             Self::ContractWithoutCriterion { code } => fill("plan.contract_without_criterion", &[("{code}", code.clone())]),
             Self::TaskWithoutFile { task } => fill("plan.task_without_file", &[("{task}", task.clone())]),
-            Self::TaskCouldNameASkill { task, skill } => fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())]),
             Self::CommandNotDeclared { field } => fill("plan.command_not_declared", &[("{field}", (*field).to_string())]),
         }
     }
@@ -312,7 +306,6 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     let mut out: Vec<PlanFinding> = Vec::new();
     let codes = log.codes();
     let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
-    let languages = Languages::of_project(root);
 
     // Nenhum ponto do levantamento aberto.
     let open = open_points(log);
@@ -409,20 +402,6 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
             }
         }
     }
-    // A skill é escolhida pela tarefa: a tarefa que não nomeia skill ganha o
-    // nome da que já existe e serve. Como as outras conferências das
-    // tarefas, esta olha só as ondas que ainda vêm.
-    let on_disk = skills_on_disk(root, &tasks);
-    for task in &ahead {
-        if task.str_field("skill").is_some_and(|s| !s.trim().is_empty()) {
-            continue;
-        }
-        let text = task.str_field("text").unwrap_or_default();
-        if let Some(name) = best_skill(&on_disk, text, &languages) {
-            out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
-        }
-    }
-
     // A prova de cada critério é o comando que a rodada e o fechamento
     // rodam: a que não roda, liga comandos por `;`, é uma busca sem `!` ou
     // cita um alvo de teste ou um caminho que o projeto não tem, nem uma
@@ -954,46 +933,6 @@ mod tests {
         }
     }
 
-    /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
-    /// serve para ela.
-    #[test]
-    fn the_plan_names_the_skill_that_serves() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        let skill = root.join(".claude/skills/add-run-command");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: add-run-command\ndescription: Use quando for preciso adicionar um comando \
-             de execução novo, com os registros, a recusa nos dois idiomas e os testes.\n---\n\nPassos.\n",
-        )
-        .unwrap();
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(
-            root,
-            Some("x"),
-            "task",
-            json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
-            "files": [{"path": "src/a.rs"}], "origin": said}),
-        );
-        write(
-            root,
-            Some("x"),
-            "task",
-            json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
-            "files": [{"path": "src/b.rs"}], "origin": said}),
-        );
-
-        let report = plan(root, "x");
-        let named: Vec<&Value> =
-            report["warnings"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter(|f| f["reason"] == json!("task-could-name-a-skill")).collect();
-        assert_eq!(named.len(), 1, "só a tarefa sem skill recebe o nome: {report}");
-        let hint = named[0]["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("MSTD-TASK-0001") && hint.contains("add-run-command"), "{hint}");
-    }
-
     /// Os achados de um motivo, pela mensagem, num dos campos da resposta.
     fn hints_of(report: &Value, field: &str, reason: &str) -> Vec<String> {
         report[field]
@@ -1004,48 +943,6 @@ mod tests {
             .filter(|f| f["reason"] == json!(reason))
             .filter_map(|f| f["hint"].as_str().map(str::to_string))
             .collect()
-    }
-
-    /// O aviso de que uma tarefa podia nomear uma skill olha só as ondas que
-    /// ainda vêm: a mesma tarefa sem skill avisa na onda sem registro de
-    /// entrega e se cala na onda entregue.
-    #[test]
-    fn the_skill_warning_looks_only_at_the_waves_still_to_come() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        let skill = root.join(".claude/skills/add-run-command");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: add-run-command\ndescription: Use quando for preciso adicionar um comando \
-             de execução novo, com os registros, a recusa nos dois idiomas e os testes.\n---\n\nPassos.\n",
-        )
-        .unwrap();
-        for n in [1, 2] {
-            write(
-                root,
-                Some("x"),
-                "wave",
-                json!({"n": n, "text": "Os comandos de execução novos.",
-                "criteria": [crit], "done_when": "passa", "origin": said}),
-            );
-            write(
-                root,
-                Some("x"),
-                "task",
-                json!({"wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
-                "files": [{"path": "src/a.rs"}], "origin": said}),
-            );
-        }
-        let record = write(root, Some("x"), "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
-        assert_eq!(record["ok"], json!(true), "{record}");
-
-        let report = plan(root, "x");
-        let named = hints_of(&report, "warnings", "task-could-name-a-skill");
-        assert_eq!(named.len(), 1, "só a onda que ainda vem avisa: {report}");
-        assert!(named[0].contains("MSTD-TASK-0002"), "{named:?}");
     }
 
     /// A tarefa de onda que já tem registro de entrega não é conferida: o

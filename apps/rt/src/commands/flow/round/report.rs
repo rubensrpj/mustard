@@ -145,6 +145,9 @@ pub(crate) struct Taken {
     /// usuário, e a que uma conferência da própria volta recusou. O aviso de
     /// cada uma já vai em `warnings`.
     pub waiting: Vec<HeldReturn>,
+    /// A compilação depois do commit refez o programa da branch, e saiu
+    /// verde: o despacho que vem a seguir passa ao programa novo.
+    pub program_rebuilt: bool,
 }
 
 /// Assume o que voltou de uma rodada: a volta que cada onda gravou na spec
@@ -254,7 +257,7 @@ pub(crate) fn take_report_with_mine(
 impl Taken {
     /// Nada assumido: só as ondas que pausaram, que a rodada reenvia.
     fn only_paused(paused: Vec<u64>) -> Self {
-        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new() }
+        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), program_rebuilt: false }
     }
 }
 
@@ -414,9 +417,9 @@ fn take_returns(
         reset_committed_copies(root, log, &committed, &files);
     }
     drop(held_lock);
-    // O mapa acompanha o commit, antes de a onda seguinte pedir a sugestão de
-    // skill e de arquivos parecidos: sem isso, ela apontaria o que este
-    // commit acabou de apagar.
+    // O mapa acompanha o commit, antes de a onda seguinte montar o pedido:
+    // sem isso, ele apontaria o que este commit acabou de apagar.
+    let mut program_rebuilt = false;
     if commit.is_some() {
         let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "scan", false);
         if refresh_map(root, mine) {
@@ -442,6 +445,7 @@ fn take_returns(
             timing.skipped();
         } else if rebuilt.is_none() {
             timing.passed();
+            program_rebuilt = true;
         }
         drop(timing);
         warnings.extend(rebuilt);
@@ -459,7 +463,7 @@ fn take_returns(
             warnings.push(usage_missing(wave, lang));
         }
     }
-    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused, waiting: refused })
+    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused, waiting: refused, program_rebuilt })
 }
 
 /// O envio que despachou a onda `wave` por último, na posição em que a onda

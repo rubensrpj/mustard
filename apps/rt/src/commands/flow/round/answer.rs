@@ -584,9 +584,17 @@ pub(super) fn run_entered_round(
     // despacha. Sem volta e sem linha a assumir, nada é juntado, e a rodada
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held } =
+    let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held, program_rebuilt } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)
             .map_err(|refused| new_agents_named(refused, root, &spec, &log, lang))?;
+    // O commit refez o programa que roda esta rodada: o despacho passa ao
+    // programa novo, e esta rodada não solta onda nenhuma.
+    let rebuilt_program = if program_rebuilt { super::handoff::running_build(root) } else { None };
+    if let Some(answer) =
+        super::handoff::dispatch_by_new_program(&opts.root, &spec, program_rebuilt, !paused.is_empty(), rebuilt_program, &super::handoff::run_program)
+    {
+        return Ok(super::handoff::joined(&recorded, &formatted, commit.as_ref(), &warnings, answer));
+    }
 
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a

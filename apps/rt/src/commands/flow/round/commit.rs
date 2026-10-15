@@ -1401,8 +1401,8 @@ mod tests {
     /// Num projeto TypeScript com a compilação declarada vermelha, a onda
     /// revisada volta com uma prova nova do critério que não passa. A rodada
     /// junta e comita sem compilar nem rodar a prova, e não grava etapa de
-    /// compilação nem de prova; o fechamento roda o critério, grava a etapa
-    /// dele e recusa pela prova que caiu.
+    /// compilação nem de prova; com a compilação já verde, o fechamento roda
+    /// o critério, grava a etapa dele e recusa pela prova que caiu.
     #[cfg(unix)]
     #[test]
     fn a_reviewed_round_commits_without_building_or_proving_and_the_close_still_proves() {
@@ -1430,6 +1430,9 @@ mod tests {
         };
         assert_eq!(stages("delivery"), Vec::<String>::new(), "the round runs no build and no proof: {out}");
 
+        // A compilação vermelha travaria o fechamento antes do critério.
+        let green = json!({"buildCommand": "true", "lintCommand": "true", "testCommand": "true"});
+        std::fs::write(root.join("mustard.json"), green.to_string()).unwrap();
         let closed = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
             root: root.into(),
             spec: Some("x".into()),

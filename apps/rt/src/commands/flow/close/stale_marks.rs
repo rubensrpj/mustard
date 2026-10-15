@@ -21,12 +21,13 @@ use crate::commands::spec_events::write::record;
 
 /// Os motivos das marcas que reabriam toda onda do plano sem prova: o lint, a
 /// suíte e a análise de declarações sem uso do fechamento, que hoje só
-/// reabrem a onda cujo arquivo a saída cita. A marca do critério que falhou
-/// aponta as ondas que o cobrem, e não sai daqui.
-const UNPROVEN_REASONS: [&str; 3] = ["lint-failed", "suite-failed", "final-new-unused"];
+/// reabrem a onda cujo arquivo a saída cita. A compilação do fechamento segue
+/// a mesma leitura. A marca do critério que falhou aponta as ondas que o
+/// cobrem, e não sai daqui.
+const UNPROVEN_REASONS: [&str; 4] = ["build-failed", "lint-failed", "suite-failed", "final-new-unused"];
 
-/// Solta cada onda com o conserto pendente cuja reprovação é uma marca do
-/// lint, da suíte ou da análise de declarações sem uso do fechamento e cuja
+/// Solta cada onda com o conserto pendente cuja reprovação é uma marca da
+/// compilação, do lint, da suíte ou da análise de declarações sem uso do fechamento e cuja
 /// saída gravada não cita arquivo que a obra mudou e que a onda declarou ou
 /// entregou. A soltura é uma marca nova, do binário, com o resultado
 /// `released`, a mesma impressão e o mesmo motivo da reprovação e o texto que
@@ -90,6 +91,7 @@ mod tests {
     fn old_mark(root: &Path, wave: u64, reason: &str, output: &str) {
         let (command, output) = ("cargo clippy".to_string(), output.to_string());
         let failure = match reason {
+            "build-failed" => CloseRefusal::BuildFailed { command, output, no_wave: None },
             "suite-failed" => CloseRefusal::SuiteFailed { command, output, no_wave: None },
             "lint-failed" => CloseRefusal::LintFailed { command, output, no_wave: None },
             "final-new-unused" => CloseRefusal::NewUnused { text: output, no_wave: None },
@@ -152,6 +154,22 @@ mod tests {
         let next = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
         assert_eq!(next["dispatch"].as_array().map(Vec::len).unwrap_or_default(), 0, "{next}");
         assert_eq!(next["command"], json!("mustard-rt run close --spec x"), "{next}");
+    }
+
+    /// A marca da compilação do fechamento segue a mesma leitura: a que cita
+    /// só um arquivo TypeScript que o projeto não tem sai solta, com a mesma
+    /// impressão e o mesmo motivo, e o fechamento compila de novo.
+    #[test]
+    fn a_build_mark_without_a_cited_wave_file_is_released() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 1);
+        branched_from_dev(root);
+        old_mark(root, 1, "build-failed", "web/fora.ts(1,8): error TS2304: Cannot find name 'x'.");
+
+        let refused = close_with(root, &json!({"buildCommand": "echo build >> rodou"}));
+        assert_eq!(std::fs::read_to_string(root.join("rodou")).unwrap_or_default(), "build\n", "{refused}");
+        assert_eq!(released(&log_of(root)), vec![(1, Some("build-failed"), Some(BEFORE), Some("binary"))], "{refused}");
     }
 
     /// A marca cuja saída cita um arquivo que a branch mudou e que a onda

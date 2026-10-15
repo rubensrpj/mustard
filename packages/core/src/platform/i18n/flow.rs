@@ -272,6 +272,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The verification of criterion {code} names the test {name}, which appears in no file of the \
              project. Write that test or record the criterion's new version with the right name, and close again."
         }
+        ("close.build_failed", Locale::PtBr) => {
+            "A compilação do projeto (`{command}`), rodada em ambiente limpo como o servidor a roda, \
+             não passou, e a spec não fechou: {output}"
+        }
+        ("close.build_failed", Locale::EnUs) => {
+            "The project build (`{command}`), run in a clean environment the way the server runs it, \
+             did not pass, and the spec did not close: {output}"
+        }
         ("close.lint_failed", Locale::PtBr) => "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}",
         ("close.lint_failed", Locale::EnUs) => "The project lint (`{command}`) did not pass, and the spec did not close: {output}",
         ("close.suite_failed", Locale::PtBr) => {
@@ -1917,7 +1925,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 267, 0xf731_23c4_e2f4_dee6);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 268, 0x1f32_2227_ffce_4f3b);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2020,6 +2028,7 @@ mod tests {
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
+            ("close.build_failed", &["{command}", "{output}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
             ("close.cited_outside", &["{files}"][..]),

@@ -107,8 +107,9 @@ pub enum FlowCmd {
     /// grava o envio com o pedido exato e marca a spec como em execução na
     /// primeira rodada. Com a entrega que uma onda gravou na spec, primeiro
     /// assume a volta e grava o veredito da revisão, formata só os arquivos
-    /// da rodada, executa build/provas pertinentes e faz o commit, e então
-    /// despacha as dependentes liberadas. Lint/suíte geral ficam para fechar.
+    /// da rodada e faz o commit, sem compilar nem rodar prova, e então
+    /// despacha as dependentes liberadas. A compilação, o lint, a suíte e as
+    /// provas ficam para o fechamento.
     /// Nenhuma etapa da rodada publica uma página externa.
     #[command(display_order = 3)]
     Round {
@@ -156,10 +157,10 @@ pub enum FlowCmd {
     /// Fecha uma spec: grava o que voltou da última rodada, confere se a obra
     /// terminou (nenhuma onda sem commit, nenhuma reprovada sem o conserto e
     /// nenhum pedido do usuário sem onda que o entregue), roda em ambiente
-    /// limpo o lint e a suíte que o `mustard.json` declara e cada critério uma
-    /// vez, gravando a execução de cada um, e então grava a fase fechada,
-    /// solta a spec da sessão e prepara a cópia para o banco de dados das
-    /// páginas. Toda obra, mesmo a de uma onda só, recebe antes o pedido do
+    /// limpo a compilação, o lint e a suíte que o `mustard.json` declara e
+    /// cada critério uma vez, gravando a execução de cada um, e então grava a
+    /// fase fechada, solta a spec da sessão e prepara a cópia para o banco de
+    /// dados das páginas. Toda obra, mesmo a de uma onda só, recebe antes o pedido do
     /// agente de teste dedicado, numa cópia que o fechamento cria e apaga, e
     /// só fecha com a linha dele aprovada.
     #[command(display_order = 4)]

@@ -14,7 +14,7 @@
 //! conferência acontece — a skill que cita um caminho que não existe ou passa
 //! do tamanho máximo é recusada — e porque o "quando usar" da linha sai da
 //! descrição do frontmatter. O caminho recomendado é o absoluto, no projeto
-//! principal: a pasta das skills fica fora do git e não chega à cópia da
+//! principal: a pasta `.claude/skills` costuma ficar fora do git e não chegar à cópia da
 //! onda. A skill cujo arquivo citado mudou no git depois do arquivo dela sai
 //! marcada como a revisar.
 
@@ -955,8 +955,9 @@ fn skill_file(name: &str) -> String {
 /// último, na raiz do projeto: a skill mora no subprojeto em que a tarefa
 /// mexe. Devolve o texto, que a conferência lê, e o caminho absoluto do
 /// arquivo no projeto principal, que é o que o pedido recomenda: a pasta das
-/// skills fica fora do git, então a cópia da onda não a tem, e o agente só a
-/// abre de primeira pelo projeto principal.
+/// skills pode ficar fora do git, e então a cópia da onda não a tem: o agente a
+/// abre de primeira pelo projeto principal. A que mora numa pasta do git, como
+/// `.agents/skills`, também entra pelo caminho do projeto principal.
 fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, PathBuf)> {
     for folder in skill_folders(root, files) {
       for directory in [".claude/skills", ".agents/skills"] {
@@ -1458,6 +1459,46 @@ mod tests {
             assert!(!built[0].text.contains(hidden), "{}", built[0].text);
         }
         assert!(built[0].bad_skills.is_empty());
+    }
+
+    /// As skills de desenvolvimento deste repositório, como estão no git,
+    /// chegam ao pedido pelas pastas que declaram: a onda que mexe num gancho
+    /// recebe as duas de gancho, a que mexe num comando recebe a de comando,
+    /// e a que mexe no scan não recebe nenhuma — sem a tarefa nomear skill.
+    #[test]
+    fn the_repository_skills_reach_the_wave_by_the_folders_they_declare() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let names = ["add-hook-rule", "add-run-command", "refazer-gancho"];
+        for name in names {
+            let text = std::fs::read_to_string(repository.join("apps/rt/.agents/skills").join(name).join("SKILL.md")).unwrap();
+            for cited in cited_paths(&text) {
+                let cited = root.join(cited);
+                std::fs::create_dir_all(cited.parent().unwrap()).unwrap();
+                std::fs::write(cited, "").unwrap();
+            }
+            let folder = root.join("apps/rt/.agents/skills").join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("SKILL.md"), text).unwrap();
+        }
+        let log = log_of(&[
+            ("wave", json!({"n":1,"text":"Gancho","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":1,"text":"Mexer no gancho","files":[{"path":"apps/rt/src/hooks/task/end_of_turn_check.rs"}]})),
+            ("wave", json!({"n":2,"text":"Comando","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":2,"text":"Mexer no comando","files":[{"path":"apps/rt/src/commands/flow/plan.rs"}]})),
+            ("wave", json!({"n":3,"text":"Scan","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":3,"text":"Mexer no scan","files":[{"path":"apps/scan/src/main.rs"}]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let received = |wave: u64| -> Vec<&str> {
+            let prompt = built.iter().find(|prompt| prompt.wave == wave).unwrap();
+            assert!(prompt.bad_skills.is_empty(), "{:?}", prompt.bad_skills);
+            names.into_iter().filter(|name| prompt.text.contains(&format!(".agents/skills/{name}/SKILL.md"))).collect()
+        };
+        assert_eq!(received(1), ["add-hook-rule", "refazer-gancho"]);
+        assert_eq!(received(2), ["add-run-command"]);
+        assert!(received(3).is_empty());
     }
 
     /// Um item revisto entra na lista do pedido só na versão nova, com o

@@ -73,7 +73,7 @@ pub(crate) fn build_changed_command(target: &Path, files: &[String]) -> String {
 }
 
 /// O programa compilado da pasta `target`, esteja ele em disco ou não.
-fn program_in(target: &Path) -> PathBuf {
+pub(crate) fn program_in(target: &Path) -> PathBuf {
     target.join("mustard-dev").join(if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" })
 }
 

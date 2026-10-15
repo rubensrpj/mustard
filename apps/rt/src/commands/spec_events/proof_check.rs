@@ -350,6 +350,10 @@ const PATTERN_FIRST: &[&str] = &["grep", "egrep", "fgrep", "rg", "ag", "ack", "s
 /// o assunto do comando, e não algo que precisa existir antes dele.
 const PATH_SUBJECT: &[&str] = &["test", "[", "[[", "mkdir", "touch", "tee", "cp", "mv", "ln", "rm", "install", "rsync"];
 
+/// Os programas que só escrevem o texto que recebem: a palavra com barra que
+/// eles citam é texto, e não caminho.
+const TEXT_ONLY: &[&str] = &["echo", "printf"];
+
 /// As opções que mandam a ferramenta trabalhar noutra pasta: o caminho
 /// relativo do comando que as traz deixa de ser relativo à raiz.
 const ELSEWHERE: &[&str] = &[
@@ -398,8 +402,9 @@ fn declared(path: &str, created: &BTreeSet<String>) -> bool {
 /// (`created`), em qualquer ferramenta: o comando que roda com um arquivo de
 /// teste que não existe falha só quando a onda o roda, ou passa sem provar
 /// nada. O `cd` muda a pasta de que os caminhos seguintes partem; o comando
-/// que trabalha noutra pasta ([`ELSEWHERE`]) e o que tem o caminho como
-/// assunto ([`PATH_SUBJECT`]) ficam sem conferência; o `git` só tem os
+/// que trabalha noutra pasta ([`ELSEWHERE`]), o que tem o caminho como
+/// assunto ([`PATH_SUBJECT`]) e o que só escreve texto ([`TEXT_ONLY`]) ficam
+/// sem conferência; o `git` só tem os
 /// caminhos depois de `--`; e o primeiro argumento de uma busca é o padrão.
 /// Depois de um `cd` que não se segue (`cd -`, `cd ~`), nada mais é conferido.
 fn missing_path(root: &Path, all: &[Piece], created: &BTreeSet<String>) -> Option<Refusal> {
@@ -409,7 +414,7 @@ fn missing_path(root: &Path, all: &[Piece], created: &BTreeSet<String>) -> Optio
         let (at, _) = program_at(&words);
         let Some(&program) = words.get(at) else { continue };
         let args = &words[at + 1..];
-        if PATH_SUBJECT.contains(&program) || args.iter().any(|arg| ELSEWHERE.contains(&arg.split('=').next().unwrap_or(arg))) {
+        if PATH_SUBJECT.contains(&program) || TEXT_ONLY.contains(&program) || args.iter().any(|arg| ELSEWHERE.contains(&arg.split('=').next().unwrap_or(arg))) {
             continue;
         }
         let mut cited: Vec<&str> = Vec::new();
@@ -718,8 +723,8 @@ mod tests {
     /// depois de um `cd`. O caminho que existe passa, e o que a tarefa
     /// declara criar também. O padrão de uma busca, o argumento do `git`
     /// antes de `--`, o pacote com escopo, o comando que trabalha noutra
-    /// pasta, o que tem o caminho como assunto e o redirecionamento ficam sem
-    /// conferência.
+    /// pasta, o que tem o caminho como assunto, o texto que o `echo` e o
+    /// `printf` escrevem e o redirecionamento ficam sem conferência.
     #[test]
     fn a_path_the_project_lacks_is_refused_in_any_tool() {
         let web = tempfile::tempdir().unwrap();
@@ -772,6 +777,8 @@ mod tests {
             "npx vitest run > out/log.txt",
             "cargo test -j 2 -p web --lib -- flow::plan",
             "cd - && npx vitest run src/gone.test.ts",
+            "echo ok x/pkg 0.002s && echo ok x/outro",
+            "printf 'src/gone.ts\\n'",
         ] {
             assert_eq!(defect(fine), None, "{fine}");
         }
