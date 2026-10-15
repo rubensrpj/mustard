@@ -175,8 +175,6 @@ pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 
-use crate::shared::spec_state::DiskSpecState;
-use mustard_core::domain::spec_state::SpecState;
 use serde_json::{Value, json};
 
 use crate::commands::spec_events;
@@ -273,41 +271,10 @@ pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
 pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    let name = opts.spec.clone().or_else(|| DiskSpecState::new(&opts.root).active(caller.session));
-    let read_log = || {
-        name.as_deref()
-            .and_then(|name| mustard_core::io::spec_events::spec_file(&project.root, name).ok())
-            .and_then(|path| mustard_core::io::spec_events::read(&path).ok().flatten())
-    };
-    let before = read_log().and_then(|log| log.events.last().map(|event| event.id)).unwrap_or(0);
-    let mut report = match answer::run_round(opts, &project.root, lang, caller) {
+    match answer::run_round(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
-    };
-    if let Some(log) = read_log() {
-        let records: Vec<_> = log
-            .events
-            .iter()
-            .filter(|event| {
-                event.id > before
-                    && event.event_type == "stage_run"
-                    && matches!(event.str_field("stage"), Some("build" | "criterion-proof" | "criterion-proofs"))
-            })
-            .map(|event| {
-                json!({"stage":event.str_field("stage"),"result":event.str_field("result"),"exit":event.fields.get("exit"),
-                "ms":event.int("ms"),"criterion":event.int("criterion"),"waves":event.ints("waves"),"reused":event.fields.get("reused"),
-                "command":event.str_field("command").map(crate::shared::secret::without_secrets)})
-            })
-            .collect();
-        if !records.is_empty() {
-            let executed = records.iter().filter(|record| record["stage"] == "criterion-proof" && record["reused"] != true).count();
-            let reused = records.iter().filter(|record| record["stage"] == "criterion-proof" && record["reused"] == true).count();
-            report["validation"] = json!({"scope":"this-round","executed_proofs":executed,"reused_proof_receipts":reused,
-                "more_records":records.len().saturating_sub(16),"records":records.into_iter().take(16).collect::<Vec<_>>(),
-                "details":format!("mustard-rt run panel --section usage --spec {}",name.as_deref().unwrap_or_default())});
-        }
     }
-    report
 }
 
 /// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em

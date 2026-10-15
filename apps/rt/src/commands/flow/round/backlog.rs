@@ -20,8 +20,8 @@ use serde_json::{Map, Value, json};
 
 use super::leftovers::is_cleanup;
 use super::queue::{
-    backlog_left, backlog_left_without, backlog_population, backlog_ready_without, covers_nothing, open_sends, outgoing, task_revision, waves_done,
-    waves_in_progress,
+    backlog_left, backlog_left_without, backlog_population, backlog_ready_without, covers_nothing, open_sends, outgoing, task_revision,
+    tasks_not_delivered, waves_done, waves_in_progress,
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
@@ -353,6 +353,9 @@ pub(crate) fn dispatch_backlog(
     let mut next_n = log.last_wave_number();
     let mut formed = Vec::new();
     let mut numbered: BTreeSet<u64> = BTreeSet::new();
+    // As tarefas ainda abertas: as do backlog, as dos lotes montados agora e
+    // as das ondas planejadas que não terminaram.
+    let open = tasks_not_delivered(log, &BTreeSet::new());
     for (batch, summary) in &chosen {
         next_n += 1;
         let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
@@ -361,8 +364,12 @@ pub(crate) fn dispatch_backlog(
         // ela nomeia ou pela compilação; a que nasce do item combinado sem
         // onda dona (o backlog da revisão final) cobre o item, que não tem
         // prova — o texto de quem marcou o item sem atender é o que diz
-        // quando a onda entrega.
-        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks, &commands);
+        // quando a onda entrega. A prova do item que outra tarefa aberta,
+        // fora deste lote, ainda cobre fica de fora: ela vai à onda da
+        // última tarefa aberta dele, e o fechamento roda todas.
+        let waiting: BTreeSet<u64> =
+            open.iter().filter(|id| !batch.tasks.contains(id)).filter_map(|id| log.get(*id)).flat_map(|task| task.ints("covers")).collect();
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks, &commands, &waiting);
         let draft = json!({
             "n": next_n,
             "text": fields.text,

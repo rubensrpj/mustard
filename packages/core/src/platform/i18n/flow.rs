@@ -649,8 +649,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              platform records for this session. Its usage did not reach the page, but the delivery \
              was written anyway."
         }
-        ("round.build_failed", Locale::PtBr) => "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}",
-        ("round.build_failed", Locale::EnUs) => "The main repository did not build with `{command}`, and the round committed nothing: {output}",
         // A suíte e o lint que o projeto declara, rodados pela rodada no
         // repositório principal antes do commit, com o fim da saída.
         ("round.tests_failed", Locale::PtBr) => {
@@ -791,33 +789,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.after_wave.unused_test", Locale::EnUs) => {
             "`{file}` line {line} is a test that only calls `{name}`, new code with no use outside tests. \
              Remove the test along with it."
-        }
-        ("round.criterion_proof_failed", Locale::PtBr) => {
-            "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
-             `{command}` — {output}"
-        }
-        ("round.criterion_proof_failed", Locale::EnUs) => {
-            "Criterion {code}'s verification did not run or did not pass, and the round committed nothing: \
-             `{command}` — {output}"
-        }
-        // As duas recusas abaixo só dizem o que a verificação fez: o passo de
-        // quem conduz vem logo depois delas, e é mandar a onda de volta ao
-        // agente que a fez.
-        ("round.criterion_ran_no_test", Locale::PtBr) => {
-            "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
-             {count} testes. A rodada não comitou nada."
-        }
-        ("round.criterion_ran_no_test", Locale::EnUs) => {
-            "The verification of criterion {code} came out green without running any test: `{command}` says \
-             it ran {count} tests. The round committed nothing."
-        }
-        ("round.criterion_missing_test", Locale::PtBr) => {
-            "A verificação do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
-             projeto. A rodada não comitou nada."
-        }
-        ("round.criterion_missing_test", Locale::EnUs) => {
-            "The verification of criterion {code} names the test {name}, which appears in no file of the \
-             project. The round committed nothing."
         }
         ("round.development_build_failed", Locale::PtBr) => {
             "O commit saiu, mas a versão em construção do Mustard não compilou, e a sessão segue no \
@@ -1143,12 +1114,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Rejection preserves the copy and sends the reason to a new agent. Usage comes from conversations, never typed numbers. Commits use the delivery’s `commit`."
         }
         ("round.report.checks", Locale::PtBr) => {
-            "A rodada valida o build e as provas pertinentes antes do commit. O fechamento valida \
-             o lint e a suíte completa da spec. Não rode a suíte completa nem lint por conta própria."
+            "A rodada junta e comita sem compilar nem rodar prova. O fechamento compila e valida \
+             o lint, a suíte completa e os critérios da spec. Não rode a suíte completa nem lint por conta própria."
         }
         ("round.report.checks", Locale::EnUs) => {
-            "The round validates the build and pertinent proofs before the commit. Closing validates \
-             lint and the full spec suite. Do not run the full suite or lint on your own."
+            "The round joins and commits without building or running proofs. Closing builds and validates \
+             lint, the full suite and the spec criteria. Do not run the full suite or lint on your own."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1946,7 +1917,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 271, 0xfdf2_db8a_e124_ee71);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 267, 0xf731_23c4_e2f4_dee6);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2124,7 +2095,6 @@ mod tests {
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
-            ("round.build_failed", &["{command}", "{output}"][..]),
             ("round.tests_failed", &["{command}", "{output}"][..]),
             ("round.lint_failed", &["{command}", "{output}"][..]),
             ("round.after_wave.limit", &["{waves}", "{max}"][..]),
@@ -2139,9 +2109,6 @@ mod tests {
             ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused_test", &["{file}", "{line}", "{name}"][..]),
-            ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
-            ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
-            ("round.criterion_missing_test", &["{code}", "{name}"][..]),
             ("round.development_build_failed", &["{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.proof_missing_test", &["{code}", "{name}"][..]),

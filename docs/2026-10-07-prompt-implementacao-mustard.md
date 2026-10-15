@@ -42,7 +42,7 @@ Foi feita inspeção de código e do delta entre `05e1b1f2` e `18ef6eed`: 68 arq
 
 | Ponto confirmado na base | Consequência para implementar |
 | --- | --- |
-| `round/report.rs::take_returns` chama `checks::ensure_checks_pass`; esta executa build, lint e suíte antes do commit. `close.rs::machine` volta a executar lint, suíte e provas | O contrato novo ainda não está implementado. Separar a política de execução por fase; reaproveitar o executor existente |
+| `round/report.rs::take_returns` junta e comita sem compilar nem rodar prova. `close.rs::machine` executa lint, suíte e provas | A política de execução já é separada por fase: a prova é da onda, e o fechamento prova. Reaproveitar o executor existente |
 | `qa_run::ProofRun` já informa `ms`; `close` grava `criterion_run`; o laço de comandos de `checks` não persiste uma medição por etapa | Instrumentar o processo completo, inclusive falhas, sem criar outro executor de shell |
 | `removed_check::dead_code` combina `lost_last_use` e `never_used`; já reconhece algumas rotas, contratos e usos textuais | Separar finalidades e fase. Não mover a detecção de último uso junto com a de código novo sem uso |
 | `report::check_return` exige `open_sends`; `fixes::fix_file` depende de uma volta ainda não assumida | Conserto de falha detectada no fechamento precisa de autorização/despacho próprio. Retirar a exigência de envio aberto globalmente permitiria entregas avulsas |

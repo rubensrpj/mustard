@@ -177,25 +177,6 @@ impl Work {
             .collect();
         Self { changed: branch_files(root, log), waves }
     }
-
-    /// Junta o que a onda `wave` mudou e a branch ainda não leva — a volta que
-    /// a rodada juntou no disco, antes do commit —: os arquivos `files` contam
-    /// como mudados pela obra e como da onda.
-    pub(super) fn pending(&mut self, wave: u64, files: &[String]) {
-        let at = match self.waves.iter().position(|(n, _)| *n == wave) {
-            Some(at) => at,
-            None => {
-                self.waves.push((wave, Vec::new()));
-                self.waves.len() - 1
-            }
-        };
-        for file in files {
-            push_path(&mut self.waves[at].1, file);
-            if let Some(path) = project_path(file) {
-                self.changed.insert(path);
-            }
-        }
-    }
 }
 
 /// O caminho `file` relativo à raiz, com `/`, sem `./` na frente nem bordas
@@ -622,11 +603,6 @@ pub(super) fn receipt(root: &Path, spec: &str, key: &str) -> Result<(), Refusal>
 
 pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun) -> Result<(), Refusal> {
     record_run_fields(root, spec, phase, stage, command, out, Map::new())
-}
-
-pub(super) fn record_criterion(root: &Path, spec: &str, criterion: u64, waves: &[u64], command: &str, out: &ProofRun) -> Result<(), Refusal> {
-    let fields = serde_json::Map::from_iter([("criterion".into(), json!(criterion)), ("waves".into(), json!(waves))]);
-    record_run_fields(root, spec, "delivery", "criterion-proof", command, out, fields)
 }
 
 #[allow(clippy::too_many_arguments)]

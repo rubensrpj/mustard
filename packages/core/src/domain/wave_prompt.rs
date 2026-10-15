@@ -1046,8 +1046,15 @@ pub struct BacklogFields {
 /// `log` a prova de cada item que elas cobrem, com os comandos que o projeto
 /// declara em `commands`: o de teste reconhece a prova citada no relato de
 /// um pedido, e o de compilação é a prova do pedido que não nomeia nenhuma.
+///
+/// A prova de um item entra só na onda da última tarefa aberta dele: o item
+/// que outra tarefa ainda aberta, fora deste lote, também cobre (`waiting`,
+/// por qualquer versão do item) continua entre os itens do lote, mas a prova
+/// dele fica de fora — ela depende do que essa outra tarefa ainda vai
+/// entregar, e esta onda não consegue fazê-la passar. O fechamento roda a
+/// prova de todo item de qualquer jeito.
 #[must_use]
-pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands) -> BacklogFields {
+pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, waiting: &BTreeSet<u64>) -> BacklogFields {
     let mut criteria: BTreeSet<u64> = BTreeSet::new();
     let mut titles: Vec<String> = Vec::new();
     for task in tasks {
@@ -1055,8 +1062,11 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands) 
         titles.extend(item_title(task));
     }
     let criteria: Vec<u64> = criteria.into_iter().collect();
+    let codes = log.codes();
+    let waiting_codes: BTreeSet<&String> = waiting.iter().filter_map(|id| codes.get(id)).collect();
+    let waits = |id: u64| waiting.contains(&id) || codes.get(&id).is_some_and(|code| waiting_codes.contains(code));
     let mut proofs: Vec<String> = Vec::new();
-    for item in criteria.iter().filter_map(|id| log.get(*id)) {
+    for item in criteria.iter().filter(|id| !waits(**id)).filter_map(|id| log.get(*id)) {
         let own: Vec<String> = match item.str_field("proof") {
             Some(proof) => vec![proof.trim().to_string()],
             None if item.event_type == "request" => {
@@ -1833,9 +1843,35 @@ mod tests {
             ("criterion", json!({"proof":"cargo test --doc"})),
             ("task", json!({"title":"Complete reader", "covers":[1,2,3,4]})),
         ]);
-        let fields = backlog_fields(&log, &[log.get(5).unwrap()], &Commands::default());
+        let fields = backlog_fields(&log, &[log.get(5).unwrap()], &Commands::default(), &BTreeSet::new());
         assert_eq!(fields.criteria, [1,2,3,4]);
         assert_eq!(fields.done_when, "cargo test --locked && cargo test --doc");
+    }
+
+    /// Num projeto TypeScript, duas tarefas cobrem o critério da soma, e uma
+    /// delas cobre também o da tipagem. A onda cuja tarefa divide a soma com
+    /// outra tarefa ainda aberta fora do lote leva só a prova da tipagem, e o
+    /// critério da soma segue entre os dela; a onda da última tarefa aberta
+    /// da soma leva a prova dela. Com todo item à espera, o pronto-quando são
+    /// os títulos.
+    #[test]
+    fn a_proof_goes_only_to_the_wave_of_the_last_open_task_of_its_item() {
+        let log = log(&[
+            ("criterion", json!({"proof": "npm test -- soma"})),
+            ("criterion", json!({"proof": "npx tsc --noEmit"})),
+            ("task", json!({"title": "Somar com sinal", "covers": [1, 2]})),
+            ("task", json!({"title": "Somar o total", "covers": [1]})),
+        ]);
+        let shared = BTreeSet::from([1]);
+        let first = backlog_fields(&log, &[log.get(3).unwrap()], &Commands::default(), &shared);
+        assert_eq!(first.criteria, [1, 2], "o critério à espera segue coberto");
+        assert_eq!(first.done_when, "npx tsc --noEmit");
+
+        let last = backlog_fields(&log, &[log.get(4).unwrap()], &Commands::default(), &BTreeSet::new());
+        assert_eq!(last.done_when, "npm test -- soma");
+
+        let all_waiting = backlog_fields(&log, &[log.get(4).unwrap()], &Commands::default(), &shared);
+        assert_eq!(all_waiting.done_when, "Somar o total", "sem prova possível, os títulos");
     }
 
     /// O pedido sem prova fica pronto pela prova que o relato dele nomeia
@@ -1854,7 +1890,7 @@ mod tests {
             ("task", json!({"title": "Nome", "covers": [3]})),
         ]);
         let declared = Commands { build: Some("npx tsc --noEmit".into()), test: Some("npm test --silent".into()), ..Commands::default() };
-        let done = |task: u64, commands: &Commands| backlog_fields(&log, &[log.get(task).unwrap()], commands).done_when;
+        let done = |task: u64, commands: &Commands| backlog_fields(&log, &[log.get(task).unwrap()], commands, &BTreeSet::new()).done_when;
         assert_eq!(done(4, &declared), "npm test -- soma && npm run lint");
         assert_eq!(done(5, &declared), "npm test -- total");
         assert_eq!(done(6, &declared), "npx tsc --noEmit");
@@ -1892,12 +1928,12 @@ mod tests {
         let visible = log.visible();
         let (titled, old, covering) = (visible[1], visible[2], visible[3]);
 
-        let unproven = backlog_fields(&log, &[titled, old], &Commands::default());
+        let unproven = backlog_fields(&log, &[titled, old], &Commands::default(), &BTreeSet::new());
         assert!(unproven.criteria.is_empty());
         assert_eq!(unproven.text, "Somar o total; Mostrar o total na página.");
         assert_eq!(unproven.done_when, unproven.text, "sem prova, o pronto-quando são os títulos");
 
-        let proven = backlog_fields(&log, &[covering], &Commands::default());
+        let proven = backlog_fields(&log, &[covering], &Commands::default(), &BTreeSet::new());
         assert_eq!(proven.criteria, [1]);
         assert_eq!(proven.text, "Conferir a soma");
         assert_eq!(proven.done_when, "cargo test -p soma");

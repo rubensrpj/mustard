@@ -34,26 +34,6 @@ pub(super) fn fix_rounds_done(waves: &[WaveReport], wave: u64) -> usize {
     waves.iter().find(|w| w.wave == wave).map_or(0, |w| w.returns.len().saturating_sub(1))
 }
 
-/// As ondas `waves` a quem volta o conserto de uma recusa antes do commit,
-/// separadas pelo teto de rodadas de conserto ([`MAX_FIX_ROUNDS`], contadas
-/// por [`fix_rounds_done`] em `reports`): primeiro as que já passaram por
-/// todas, que vão ao usuário, depois as que ainda voltam ao agente delas.
-pub(super) fn split_at_fix_limit(waves: &[u64], reports: &[WaveReport]) -> (Vec<u64>, Vec<u64>) {
-    waves.iter().partition(|wave| fix_rounds_done(reports, **wave) >= MAX_FIX_ROUNDS)
-}
-
-/// A recusa que para a rodada no teto de rodadas de conserto, com a pergunta
-/// da conferência depois da onda ao usuário: as ondas `stuck` já passaram por
-/// todas e vão a ele, e não ao agente. `refused` é a recusa do que caiu, já
-/// sem elas, e `fixes` leva o trecho de conserto de cada outra onda, que
-/// ainda volta ao agente dela.
-pub(super) fn fix_limit_refusal(stuck: &[u64], refused: &str, fixes: Vec<(u64, String)>, lang: Locale) -> RoundRefusal {
-    let names: Vec<String> = stuck.iter().map(u64::to_string).collect();
-    let fill = |key: &str| translate(key, lang).replace("{waves}", &names.join(", ")).replace("{max}", &MAX_FIX_ROUNDS.to_string());
-    let text = format!("{}\n\n{refused}", fill("round.after_wave.limit"));
-    RoundRefusal::AfterWave { text, question: Some(fill("round.after_wave.question")), fixes }
-}
-
 /// As ondas paradas pelo limite de consertos, na resposta da rodada: cada uma
 /// com a pergunta ao usuário e os vereditos que a pararam, por inteiro — é com
 /// eles que o usuário decide —, e o texto que manda fazer cada pergunta.

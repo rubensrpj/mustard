@@ -126,26 +126,6 @@ pub(crate) enum RoundRefusal {
     RejectedCommitted { wave: u64, sha: String },
     /// O git recusou o commit.
     Git { detail: String },
-    /// Um comando que o projeto declara — a compilação, o lint ou a suíte
-    /// inteira ([`super::checks::Check`]) — caiu no repositório principal
-    /// antes do commit da rodada, com o comando, o fim da saída e as ondas a
-    /// quem o conserto volta: nada foi comitado.
-    CheckFailed(Box<super::checks::CheckFailure>),
-    /// A prova de um critério que as ondas deste relatório cobrem não
-    /// executou ou não passou: nada foi comitado.
-    CriterionProofFailed { code: String, command: String, output: String },
-    /// A prova de um critério que as ondas deste relatório cobrem saiu verde
-    /// sem rodar teste nenhum, com o número que a saída disse: nada foi
-    /// comitado.
-    CriterionRanNoTest { code: String, command: String, tests: u64 },
-    /// A prova de um critério que as ondas deste relatório cobrem saiu verde
-    /// citando um teste que não existe no projeto, com o nome que faltou:
-    /// nada foi comitado.
-    CriterionMissingTest { code: String, name: String },
-    /// Uma das três recusas da prova de critério acima, com as ondas da
-    /// rodada que cobrem o critério: o conserto volta ao agente de cada uma
-    /// ([`super::fixes::CriterionFix`]).
-    CriterionFix(Box<super::fixes::CriterionFix>),
     /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
     /// gravar o envio, com o tamanho medido e o teto.
     TokenCap { wave: u64, tokens: u64 },
@@ -186,11 +166,6 @@ impl RoundRefusal {
             Self::RejectedWithoutReturn { .. } => "round-rejected-without-return".into(),
             Self::RejectedCommitted { .. } => "round-rejected-committed".into(),
             Self::Git { .. } => "git-refused".into(),
-            Self::CheckFailed(failure) => failure.check.reason().into(),
-            Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
-            Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
-            Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
-            Self::CriterionFix(fix) => fix.refused.reason(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
             Self::AfterWave { question, .. } => {
                 if question.is_some() {
@@ -259,16 +234,7 @@ impl RoundRefusal {
             Self::RejectedWithoutReturn { wave } => fill("round.rejected_without_return", &[("{wave}", wave.to_string())]),
             Self::RejectedCommitted { wave, sha } => fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())]),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
-            Self::CheckFailed(failure) => failure.message(lang),
             Self::PreparationRequired(detail) => detail["hint"].as_str().unwrap_or_default().into(),
-            Self::CriterionProofFailed { code, command, output } => {
-                fill("round.criterion_proof_failed", &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())])
-            }
-            Self::CriterionRanNoTest { code, command, tests } => {
-                fill("round.criterion_ran_no_test", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
-            }
-            Self::CriterionMissingTest { code, name } => fill("round.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())]),
-            Self::CriterionFix(fix) => fix.message(lang),
             Self::TokenCap { wave, tokens } => token_cap_message(*wave, *tokens, lang).unwrap_or_default(),
             Self::AfterWave { text, .. } => text.clone(),
         }
