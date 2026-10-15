@@ -718,7 +718,10 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
-    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases, max_same_name);
+    // A passada que releu só o que mudou resolve de novo só as chamadas que
+    // podem ter mudado com isso, e fica com o resto do mapa anterior.
+    let relink = previous.filter(|_| !full).map(|model| graph::Previous { model, read: &ing.read });
+    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases, max_same_name, relink);
     // Cada tipo com os membros dele e cada método com o do contrato que ele
     // cumpre, refeitos do projeto inteiro como as ligações acima.
     graph::link_members(&mut modules);

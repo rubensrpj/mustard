@@ -863,3 +863,144 @@ fn rereading_one_file_rebuilds_only_the_cards_whose_inputs_changed() {
     assert_eq!(third["enriched"], json!(2), "{third}");
     same_as_a_full_pass(dir);
 }
+
+/// O uso que nenhum arquivo escreve, plantado numa declaração do mapa: só a
+/// passada que resolve de novo as chamadas que a alcançam o tira.
+const GHOST_USE: &str = "src/ghost.ts:9:ghost";
+
+/// Os usos que o mapa gravado dá à declaração `name` de `file`.
+fn uses_in_the_map(dir: &Path, file: &str, name: &str) -> Vec<Value> {
+    let map = model::read(&map_folder(dir));
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(file)).expect("o arquivo está no mapa");
+    let decl = module["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!(name)).expect("a declaração está no mapa");
+    decl["used_by"].as_array().cloned().unwrap_or_default()
+}
+
+/// Planta o uso falso na declaração `name` de `file` (`plant`) ou o tira,
+/// pelo porto, com a marca guardada.
+fn ghost_use(dir: &Path, file: &str, name: &str, plant: bool) {
+    model::edit_keeping_the_mark(&map_folder(dir), |map| {
+        let module = map["modules"].as_array_mut().unwrap().iter_mut().find(|m| m["path"] == json!(file)).unwrap();
+        let decl = module["declarations"].as_array_mut().unwrap().iter_mut().find(|d| d["name"] == json!(name)).unwrap();
+        let decl = decl.as_object_mut().unwrap();
+        let uses = decl.entry("used_by").or_insert(json!([])).as_array_mut().unwrap();
+        uses.retain(|site| *site != json!(GHOST_USE));
+        if plant {
+            uses.push(json!(GHOST_USE));
+        }
+        // A lista vazia não se grava, como na passada do scan.
+        if uses.is_empty() {
+            decl.remove("used_by");
+        }
+    });
+}
+
+/// A passada que relê um arquivo resolve de novo só as chamadas que podem
+/// mudar com ele, e o mapa sai o da leitura inteira, com a função do arquivo
+/// lido que só desceu de linha e a que trocou de nome. O uso plantado na
+/// declaração que nenhuma chamada do arquivo lido alcança fica; a declaração
+/// que muda de tipo tem as chamadas dela resolvidas de novo, e o uso plantado
+/// sai. Num projeto em TypeScript.
+#[test]
+fn a_pass_that_rereads_one_file_resolves_again_only_the_calls_that_can_change() {
+    let temp = project(
+        "scan-relink-",
+        &[
+            ("src/alpha.ts", "export function alpha(): number {\n  return 1;\n}\n"),
+            ("src/beta.ts", "import { alpha } from './alpha';\nexport function beta(): number {\n  return alpha();\n}\n"),
+            ("src/gamma.ts", "export function gamma(): number {\n  return 2;\n}\nexport function delta(): number {\n  return 3;\n}\n"),
+            ("src/uses.ts", "import { gamma, delta } from './gamma';\nexport function both(): number {\n  return gamma() + delta();\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    let gamma = |body: u32| {
+        format!("// topo\n\nexport function gamma(): number {{\n  return {body};\n}}\nexport function epsilon(): number {{\n  return 3;\n}}\n")
+    };
+    write(dir, "src/gamma.ts", &gamma(20));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/gamma.ts"])), "{second}");
+    assert_eq!(uses_in_the_map(dir, "src/gamma.ts", "gamma"), [json!("src/uses.ts:3:both")]);
+    same_as_a_full_pass(dir);
+
+    // O uso plantado só sai da declaração cujas chamadas se resolvem de novo.
+    // O cartão de conhecimento da declaração o guarda, e por isso o mapa só se
+    // compara com o da leitura inteira depois que ela muda.
+    ghost_use(dir, "src/alpha.ts", "alpha", true);
+    write(dir, "src/gamma.ts", &gamma(30));
+    assert_eq!(scan(dir, &[])["read"], json!(["src/gamma.ts"]));
+    assert_eq!(
+        uses_in_the_map(dir, "src/alpha.ts", "alpha"),
+        [json!("src/beta.ts:3:beta"), json!(GHOST_USE)],
+        "the calls that reach alpha were not resolved again"
+    );
+
+    write(dir, "src/alpha.ts", "export const alpha = 1;\n");
+    assert_eq!(scan(dir, &[])["full"], json!(false));
+    assert!(!uses_in_the_map(dir, "src/alpha.ts", "alpha").contains(&json!(GHOST_USE)), "a declaration that changed kind is linked again");
+    same_as_a_full_pass(dir);
+}
+
+/// O contexto com o campo `config`, do tipo `field_type`.
+fn csharp_context(field_type: &str) -> String {
+    format!("namespace Loja;\n\npublic class Ctx\n{{\n    public {field_type} config;\n}}\n")
+}
+
+/// O campo que troca de tipo no arquivo relido leva a chamada lida por ele
+/// noutro arquivo (`_ctx.config.Lingua()`) ao método do tipo novo, como na
+/// leitura inteira: o arquivo que escreve a chamada não muda, e o nome
+/// chamado também não. Num projeto em C#.
+#[test]
+fn a_field_that_changes_type_in_the_reread_file_takes_the_call_read_through_it_to_the_new_type() {
+    let reader = "namespace Loja;\n\npublic class Leitor\n{\n    private readonly Ctx _ctx;\n\n    public int Ler()\n    {\n        return _ctx.config.Lingua();\n    }\n}\n";
+    let temp = project(
+        "scan-field-type-",
+        &[
+            ("src/Config.cs", "namespace Loja;\n\npublic class Config\n{\n    public int Lingua() { return 1; }\n}\n"),
+            ("src/Outra.cs", "namespace Loja;\n\npublic class Outra\n{\n    public int Lingua() { return 0; }\n}\n"),
+            ("src/Ctx.cs", &csharp_context("Config")),
+            ("src/Leitor.cs", reader),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let call = json!("src/Leitor.cs:9:Ler");
+    assert_eq!(uses_in_the_map(dir, "src/Config.cs", "Lingua"), [call.clone()]);
+
+    write(dir, "src/Ctx.cs", &csharp_context("Outra"));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/Ctx.cs"])), "{second}");
+    assert_eq!(uses_in_the_map(dir, "src/Outra.cs", "Lingua"), [call], "the call follows the new type of the field");
+    assert!(uses_in_the_map(dir, "src/Config.cs", "Lingua").is_empty(), "the old type keeps no use");
+    same_as_a_full_pass(dir);
+}
+
+/// Nove funções `comum` e dois arquivos que a chamam sem importar nenhuma:
+/// cada chamada alcança as nove, acima do teto do nome comum, e só se conta.
+/// Reler um dos chamadores conta a chamada dele uma vez só, como na leitura
+/// inteira. Num projeto em TypeScript.
+#[test]
+fn rereading_one_caller_counts_its_common_call_once() {
+    let caller = |name: &str| format!("export function {name}(): number {{\n  return comum();\n}}\n");
+    let mut files: Vec<(String, String)> =
+        (1..=9).map(|n| (format!("src/m{n}.ts"), format!("export function comum(): number {{\n  return {n};\n}}\n"))).collect();
+    files.push(("src/a.ts".to_string(), caller("a")));
+    files.push(("src/b.ts".to_string(), caller("b")));
+    let files: Vec<(&str, &str)> = files.iter().map(|(rel, body)| (rel.as_str(), body.as_str())).collect();
+    let temp = project("scan-common-calls-", &files);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let common_calls = || -> Value {
+        let map = model::read(&map_folder(dir));
+        let m1 = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/m1.ts")).unwrap();
+        m1["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("comum")).unwrap()["common_calls"].clone()
+    };
+    assert_eq!(common_calls(), json!(2));
+
+    write(dir, "src/a.ts", &format!("// o primeiro chamador\n{}", caller("a")));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/a.ts"])), "{second}");
+    assert_eq!(common_calls(), json!(2), "the reread caller's call is counted once");
+    same_as_a_full_pass(dir);
+}
