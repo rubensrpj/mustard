@@ -2,7 +2,7 @@
 //! volta sem mudança — fazem, cada uma, uma pergunta ao Jev com teto de
 //! tamanho. Toda pergunta que sai, e a que o teto segura, vira um evento
 //! `call` na spec pelo mesmo registro das outras chamadas da rodada
-//! ([`record_jev_call`]). Sem resposta, a escolha fica a nativa.
+//! ([`record_jev_calls`]). Sem resposta, a escolha fica a nativa.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use mustard_core::domain::map_filter::FilterUsage;
 use serde_json::Value;
 
-use super::call_record::record_jev_call;
+use super::call_record::record_jev_calls;
 use super::{JevFilter, cost_micro_usd, model_of, request_count, unknown_usage};
 
 impl JevFilter {
@@ -32,15 +32,19 @@ impl JevFilter {
     }
 
     /// [`Self::choose_recorded_within`] para os pedidos `payloads`, que saem
-    /// ao mesmo tempo, com uma chamada gravada por pedido. As respostas voltam
-    /// na ordem dos pedidos; um pedido acima do teto do serviço segura todos,
-    /// e a falha de um é a falha de todos.
+    /// ao mesmo tempo, com uma chamada por pedido, todas numa gravação só na
+    /// spec ([`record_jev_calls`]). As respostas voltam na ordem dos pedidos;
+    /// um pedido acima do teto do serviço segura todos, e a falha de um é a
+    /// falha de todos.
     pub(crate) fn choose_all_recorded_within(&self, root: &Path, spec: &str, command: &str, payloads: &[String], wait: Duration) -> Option<Vec<Value>> {
         let called = Instant::now();
         let answer = self.choose_orchestration(payloads, wait);
         match &answer {
-            Ok(docs) => docs.iter().for_each(|doc| record_jev_call(root, spec, command, called, None, Ok(&usage_of(doc, called)))),
-            Err(error) => payloads.iter().for_each(|_| record_jev_call(root, spec, command, called, None, Err(error))),
+            Ok(docs) => {
+                let usages: Vec<FilterUsage> = docs.iter().map(|doc| usage_of(doc, called)).collect();
+                record_jev_calls(root, spec, command, called, &usages.iter().map(Ok).collect::<Vec<_>>());
+            }
+            Err(error) => record_jev_calls(root, spec, command, called, &vec![Err(error); payloads.len()]),
         }
         answer.ok()
     }

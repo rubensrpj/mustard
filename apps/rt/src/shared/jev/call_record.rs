@@ -12,7 +12,7 @@ use std::time::Instant;
 use mustard_core::domain::map_filter::{FilterError, FilterUsage};
 use serde_json::{Map, Value, json};
 
-use crate::commands::spec_events::conversation::record_measured_call;
+use crate::commands::spec_events::conversation::{record_measured_call, record_measured_calls};
 
 /// O nome que a montagem das ondas grava.
 pub(crate) const ASSEMBLY_CALL: &str = "wave assembly";
@@ -42,14 +42,30 @@ pub(crate) fn record_jev_call(
     counts: Option<(usize, usize)>,
     answer: Result<&FilterUsage, &FilterError>,
 ) {
+    let measured = jev_measure(counts, called, answer);
+    let report = json!({ "ok": true, "spec": spec });
+    let _ = record_measured_call(start, command, Some(spec), None, called, &report, measured);
+}
+
+/// [`record_jev_call`] para as chamadas `command` que saíram juntas em
+/// `called`, uma por resposta ou falha de `answers`, na ordem: todas numa
+/// gravação só na spec ([`record_measured_calls`]).
+pub(crate) fn record_jev_calls(start: &Path, spec: &str, command: &str, called: Instant, answers: &[Result<&FilterUsage, &FilterError>]) {
+    let measured = answers.iter().map(|answer| jev_measure(None, called, *answer)).collect();
+    let _ = record_measured_calls(start, spec, command, called, measured);
+}
+
+/// A medida de uma chamada ao Jev feita em `called`: os candidatos que foram
+/// e os que voltaram, quando quem chama conta (`counts`), e o uso da resposta
+/// ou a falha.
+fn jev_measure(counts: Option<(usize, usize)>, called: Instant, answer: Result<&FilterUsage, &FilterError>) -> Map<String, Value> {
     let mut measured = Map::new();
     if let Some((asked, returned)) = counts {
         measured.insert("candidates".to_string(), json!(asked));
         measured.insert("returned".to_string(), json!(returned));
     }
     measure_filter_call(&mut measured, "jev", called, answer);
-    let report = json!({ "ok": true, "spec": spec });
-    let _ = record_measured_call(start, command, Some(spec), None, called, &report, measured);
+    measured
 }
 
 /// Põe em `measured` a medida da chamada ao filtro `name`, feita em `called`:

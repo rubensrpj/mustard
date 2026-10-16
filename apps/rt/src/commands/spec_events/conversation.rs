@@ -72,6 +72,29 @@ fn record_in_spec(root: &Path, spec: &str, event_type: &str, draft: Map<String, 
     super::write::record(root, spec, event_type, draft, PhaseWriter::Binary).ok().map(|recorded| recorded.written.id)
 }
 
+/// Grava os eventos `drafts`, do tipo `event_type`, na spec `spec`, numa
+/// gravação só: o arquivo de eventos é lido uma vez, com a trava presa até o
+/// último, e cada um passa pelas conferências de [`record_in_spec`]. É tudo
+/// ou nada: a recusa de um volta o arquivo ao que era antes do primeiro. Os
+/// números gravados, na ordem; `None` quando a spec não tem arquivo ou um
+/// deles foi recusado.
+fn record_all_in_spec(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map<String, Value>>) -> Option<Vec<u64>> {
+    use mustard_core::io::spec_events as store;
+    let path = store::spec_file(&store::spec_root(root), spec).ok()?;
+    let held = store::with_locked_writer(&path, |locked| {
+        let before = locked.content().to_string();
+        let recorded: Result<Vec<u64>, _> = drafts
+            .into_iter()
+            .map(|draft| super::write::record_locked(locked, root, spec, event_type, draft, PhaseWriter::Binary).map(|recorded| recorded.written.id))
+            .collect();
+        if recorded.is_err() {
+            let _ = locked.restore(before);
+        }
+        recorded.ok()
+    });
+    held.ok().flatten().flatten()
+}
+
 fn draft(fields: Value) -> Map<String, Value> {
     match fields {
         Value::Object(map) => map,
@@ -339,6 +362,24 @@ fn record_in_call_spec(
         .or_else(|| conversation_spec(root, session));
     if let Some(spec) = &spec { DiskSpecState::new(root).log(spec)?; }
     else if command != "knowledge" { return None; }
+    let fields = call_fields(command, started, report, measured);
+    let Some(spec) = spec else {
+        return mustard_core::io::spec_events::write(&project_operations_path(root),"call",fields,&[]).ok().map(|event|event.id);
+    };
+    let ok = fields.get("result") == Some(&json!("ok"));
+    let reason = fields.get("refusal").and_then(Value::as_str);
+    let argument_failure = !ok && matches!(reason,Some("duplicate-option"|"invalid-arguments"));
+    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search"|"knowledge"|"expertise")) || argument_failure {
+        let path=operations_path(root,&spec)?;
+        return mustard_core::io::spec_events::write(&path,"call",fields,&[]).ok().map(|recorded|recorded.id);
+    }
+    record_in_spec(root, &spec, "call", fields)
+}
+
+/// Os campos de toda chamada `command`, feita em `started`: o autor, o tempo,
+/// o resultado do relatório `report` e, na recusa, a razão dela; depois, os
+/// da medida de quem chamou (`measured`).
+fn call_fields(command: &str, started: Instant, report: &Value, measured: Map<String, Value>) -> Map<String, Value> {
     let ok = report.get("ok").and_then(Value::as_bool) == Some(true);
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut fields = json!({
@@ -353,15 +394,42 @@ fn record_in_call_spec(
     }
     let mut fields = draft(fields);
     fields.extend(measured);
-    let Some(spec) = spec else {
-        return mustard_core::io::spec_events::write(&project_operations_path(root),"call",fields,&[]).ok().map(|event|event.id);
-    };
-    let argument_failure = !ok && matches!(reason,Some("duplicate-option"|"invalid-arguments"));
-    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search"|"knowledge"|"expertise")) || argument_failure {
-        let path=operations_path(root,&spec)?;
-        return mustard_core::io::spec_events::write(&path,"call",fields,&[]).ok().map(|recorded|recorded.id);
+    fields
+}
+
+/// As chamadas `command` que saíram juntas em `started`, da spec `spec`, cada
+/// uma com a medida dela (`measured`), como [`record_measured_call`] grava
+/// uma: todas numa gravação só ([`record_all_in_spec`]). Uma gravação por
+/// chamada lia, conferia e regravava a spec inteira a cada uma, e a triagem
+/// de sessenta tarefas levava minutos. Sem a spec, ou com a gravação
+/// recusada, nenhuma fica nela, e o custo de cada uma que usou o Jev vai para
+/// o arquivo das chamadas soltas da máquina.
+pub(crate) fn record_measured_calls(root: &Path, spec: &str, command: &str, started: Instant, measured: Vec<Map<String, Value>>) -> Option<Vec<u64>> {
+    let report = json!({ "ok": true, "spec": spec });
+    let billed: Vec<(u64, u64)> = measured
+        .iter()
+        .filter_map(|call| {
+            let (tokens, cost) = (call.get("tokens").and_then(Value::as_u64), call.get("cost_micro_usd").and_then(Value::as_u64));
+            (tokens.is_some() || cost.is_some()).then(|| (tokens.unwrap_or(0), cost.unwrap_or(0)))
+        })
+        .collect();
+    let drafts = measured
+        .into_iter()
+        .map(|mut call| {
+            call.entry("invocation").or_insert(json!(false));
+            call_fields(command, started, &report, call)
+        })
+        .collect();
+    let recorded = record_all_in_spec(root, spec, "call", drafts);
+    if recorded.is_none()
+        && !billed.is_empty()
+        && let Some(dir) = spend::machine_dir()
+    {
+        for (tokens, cost) in billed {
+            let _ = spend::record_loose_call(&dir, root, tokens, cost);
+        }
     }
-    record_in_spec(root, &spec, "call", fields)
+    recorded
 }
 
 #[cfg(test)]
@@ -540,6 +608,32 @@ mod tests {
         let missing = mustard_core::domain::spec_events::Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() };
         assert_eq!(refused, Some(missing));
         assert_eq!(event_lines(root, "abertura"), before, "a refusal writes nothing");
+    }
+
+    /// Os eventos gravados juntos vão numa gravação só, tudo ou nada: com o
+    /// terceiro recusado (a resposta sem `reply_to` numa spec que já tem
+    /// mensagem do usuário), os dois primeiros também ficam de fora; sem
+    /// recusa, os três entram, em números seguidos.
+    #[test]
+    fn events_recorded_together_land_in_one_write_or_none() {
+        let dir = project_on("juntas");
+        let root = dir.path();
+        let asked = record_message(root, None, "classifique a lista").expect("message");
+        let answer = |reply: bool| {
+            let mut fields = json!({ "author": "assistant", "text": "Classifiquei." });
+            if reply {
+                fields["reply_to"] = json!(asked);
+            }
+            draft(fields)
+        };
+        let before = event_lines(root, "juntas");
+        assert_eq!(record_all_in_spec(root, "juntas", "response", vec![answer(true), answer(true), answer(false)]), None);
+        assert_eq!(event_lines(root, "juntas"), before, "the refused third leaves the first two out");
+
+        let ids = record_all_in_spec(root, "juntas", "response", vec![answer(true), answer(true), answer(true)]).expect("recorded");
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
+        assert_eq!(event_lines(root, "juntas"), before + 3);
     }
 
     /// A mensagem do usuário e a resposta do fim do turno gravadas ao mesmo
