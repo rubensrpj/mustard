@@ -376,12 +376,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The user accepted the change {code}. Run the round again with the same report."
         }
         ("change.witness.declined", Locale::PtBr) => {
-            "[Mustard] O usuário recusou a mudança {code}: a rodada não segue com ela. Combine com \
-             o usuário o que fazer com a onda."
+            "[Mustard] O usuário recusou a mudança {code}: o plano aprovado fica. Na próxima \
+             rodada, o que a onda mudou entra no commit e as tarefas que ela não fez voltam soltas \
+             ao backlog."
         }
         ("change.witness.declined", Locale::EnUs) => {
-            "[Mustard] The user declined the change {code}: the round does not go on with it. \
-             Agree with the user on what to do with the wave."
+            "[Mustard] The user declined the change {code}: the approved plan stays. In the next \
+             round, what the wave changed goes into the commit and the tasks it did not do return \
+             to the backlog unheld."
         }
         ("change.witness.free_text", Locale::PtBr) => {
             "[Mustard] Nada foi aceito para a mudança {code}: a resposta {selected} não é uma das \
@@ -603,7 +605,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             76,
-            0x8c1c_5a94_6ed4_e93c,
+            0x947f_7ec6_7539_f7a6,
         );
     }
 

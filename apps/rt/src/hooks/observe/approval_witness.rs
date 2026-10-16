@@ -17,10 +17,10 @@
 //!   autor `user` e a testemunha `{question, answer}`, e a testemunha diz ao
 //!   assistente para sugerir `/clear`.
 //! - **a mudança que uma onda propõe e que troca uma decisão do usuário**,
-//!   com "Aceitar" e "Recusar". A rodada para só quando a onda diz que a
-//!   mudança de plano dela troca uma decisão do usuário, e só segue depois do
-//!   clique em "Aceitar" gravado aqui; a mudança que não troca decisão
-//!   nenhuma não pede clique. O enunciado é escrito com as
+//!   com "Aceitar" e "Recusar". A rodada segura a onda que propõe mudar o
+//!   plano até o clique gravado aqui: no "Aceitar", segue com a mudança; no
+//!   "Recusar", segue sem ela — comita o que a onda mudou e devolve as
+//!   tarefas dela soltas ao backlog. O enunciado é escrito com as
 //!   palavras que o usuário entender e nunca é comparado: quem diz qual
 //!   mudança o clique decide é o código no cabeçalho da pergunta, que a
 //!   testemunha guarda ao lado da resposta.

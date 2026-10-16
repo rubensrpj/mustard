@@ -132,7 +132,13 @@ pub enum FlowCmd {
         /// `<PAUSED>`. Para reprovar a volta de uma onda, no lugar da `USAGE`
         /// dela vai a linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
         /// com o motivo: a rodada segura a volta fora do commit, a onda espera
-        /// um agente novo, e o motivo vai a ele.
+        /// um agente novo, e o motivo vai a ele. Para recusar a mudança de
+        /// plano que uma onda propôs, quando a mensagem do usuário já recusa,
+        /// vai a linha `<PLAN_REFUSED>{"wave":1,"reason":"…"}</PLAN_REFUSED>`:
+        /// como o clique em "Recusar", a rodada comita o que a onda mudou e
+        /// devolve as tarefas dela soltas ao backlog. A onda que mudou código
+        /// leva a `REVIEWED` dela na mesma rodada. Aceitar a mudança é só
+        /// pelo clique do usuário.
         /// Código exige revisão prévia por `run review-wave`. Depois de ler
         /// o diff e conferir regras/testes, aceite com
         /// `<REVIEWED>{"wave":1,"fingerprint":"…","note":"…"}</REVIEWED>`.

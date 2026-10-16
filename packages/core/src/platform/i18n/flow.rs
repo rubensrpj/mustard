@@ -889,14 +889,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A onda {wave} propôs mudar o plano aprovado e ficou fora do commit. Leia a entrega e \
              pergunte ao usuário com opções \"{yes}\"/\"{no}\" e cabeçalho {code}, explicando o efeito \
              da mudança. Após o aceite, revise as tarefas pendentes ({tasks}) antes de repetir a \
-             rodada; o clique não resolve acesso nem reescreve tarefa."
+             rodada; o clique não resolve acesso nem reescreve tarefa. Recusar mantém o plano \
+             aprovado. Quando a mensagem do usuário já recusa, use \
+             `<PLAN_REFUSED>{\"wave\":{wave},\"reason\":\"…\"}</PLAN_REFUSED>` no relatório da rodada. \
+             Com ela ou com o \"{no}\", a rodada comita o que a onda mudou, com a `REVIEWED` de \
+             sempre. As tarefas voltam soltas ao backlog. Aceitar é só pelo clique."
         }
         ("round.replan", Locale::EnUs) => {
             "Wave {wave} proposed changing the approved plan and was held outside the commit. Read \
              the delivery and ask the user with options \"{yes}\"/\"{no}\" and header {code}, explaining \
              the effect of the change. After acceptance, revise pending tasks ({tasks}) before \
-             repeating the round; a click does not resolve access or rewrite a task."
+             repeating the round; a click does not resolve access or rewrite a task. Declining keeps \
+             the approved plan. When the user's message already declines, use \
+             `<PLAN_REFUSED>{\"wave\":{wave},\"reason\":\"…\"}</PLAN_REFUSED>` in the round report. \
+             With it or with \"{no}\", the round commits what the wave changed, with the usual \
+             `REVIEWED`. The tasks return to the backlog unheld. Accepting takes the click."
         }
+        ("round.plan_refused.click", Locale::PtBr) => "O usuário recusou a mudança no clique em \"Recusar\".",
+        ("round.plan_refused.click", Locale::EnUs) => "The user declined the change by clicking \"Decline\".",
+        ("round.plan_refused.commit", Locale::PtBr) => "parte feita antes da mudança recusada",
+        ("round.plan_refused.commit", Locale::EnUs) => "work done before the declined change",
         ("round.no_tasks", Locale::PtBr) => "nenhuma",
         ("round.no_tasks", Locale::EnUs) => "none",
         ("round.replan_needs_undone", Locale::PtBr) => {
@@ -1974,7 +1986,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 281, 0x55b6_70a8_2e0a_a375);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 283, 0x8d60_a22c_23f1_3f8e);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2183,6 +2195,8 @@ mod tests {
             ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
             ("round.replan", &["{wave}", "{yes}", "{no}", "{code}", "{tasks}"][..]),
+            ("round.plan_refused.click", &[][..]),
+            ("round.plan_refused.commit", &[][..]),
             ("round.no_tasks", &[][..]),
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),

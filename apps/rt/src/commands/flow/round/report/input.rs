@@ -1,5 +1,5 @@
 //! Parsing the explicit conductor report, without filesystem effects.
-use super::{DELIVERED_LINE, PAUSED_LINE, Report, RoundRefusal, USAGE_LINE, Usage, VERDICT_LINE, rejected_lines};
+use super::{DELIVERED_LINE, PAUSED_LINE, PLAN_REFUSED_LINE, Report, RoundRefusal, USAGE_LINE, Usage, VERDICT_LINE, rejected_lines};
 use serde_json::{Map, Value};
 
 pub(crate) fn tagged<'a>(raw: &'a str, tag: &str) -> Vec<&'a str> {
@@ -25,8 +25,9 @@ pub(crate) fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>
 }
 
 /// As linhas do relatório que o orquestrador passa: a marca de que a onda
-/// terminou (`USAGE`), a pausa (`PAUSED`) e a reprovação de uma volta, com o
-/// motivo (`REJECTED`), como vieram. A entrega e o veredito não
+/// terminou (`USAGE`), a pausa (`PAUSED`), a reprovação de uma volta, com o
+/// motivo (`REJECTED`), e a recusa da mudança de plano de uma onda, com o
+/// motivo (`PLAN_REFUSED`), como vieram. A entrega e o veredito não
 /// vêm aqui: moram na spec, e a linha `DELIVERED` ou `VERDICT` colada no
 /// relatório é recusada. O texto sem nenhuma dessas linhas não se entende. O
 /// resto do texto não é lido.
@@ -46,7 +47,15 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         reviewed.push(super::super::review::Approval { wave, fingerprint: fingerprint.into(), note: note.into() });
     }
     let rejected = rejected_lines(raw)?;
-    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty() && rejected.is_empty() && reviewed.is_empty();
+    let mut plan_refused = Vec::new();
+    for body in tagged(raw, PLAN_REFUSED_LINE) {
+        let (wave, fields) = line_object(body, PLAN_REFUSED_LINE)?;
+        let wave = wave.ok_or(RoundRefusal::LineField { line: PLAN_REFUSED_LINE, field: "wave" })?;
+        let reason = fields.get("reason").and_then(Value::as_str).map(str::trim).filter(|said| !said.is_empty());
+        let reason = reason.ok_or(RoundRefusal::LineField { line: PLAN_REFUSED_LINE, field: "reason" })?;
+        plan_refused.push((wave, reason.to_string()));
+    }
+    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty() && rejected.is_empty() && reviewed.is_empty() && plan_refused.is_empty();
     if unmarked && !raw.trim().is_empty() {
         let shown: String = raw.trim().chars().take(80).collect();
         return Err(RoundRefusal::BadReport { detail: shown });
@@ -66,5 +75,5 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         let wave = wave.ok_or(RoundRefusal::LineField { line: PAUSED_LINE, field: "wave" })?;
         paused.push(wave);
     }
-    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage, rejected, reviewed })
+    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage, rejected, reviewed, plan_refused })
 }

@@ -900,6 +900,11 @@ pub const TYPES: &[TypeSpec] = &[
             // troca. Toda mudança de plano espera aceite; omitir este campo
             // apenas informa que nenhuma decisão específica foi substituída.
             opt("changes_decision", Kind::Text),
+            // A recusa da mudança de plano, que só a rodada grava na entrega
+            // oficial: o motivo, com a mensagem do usuário que a sustenta em
+            // `origin` — o clique em "Recusar" ou, na recusa de quem conduz, a
+            // última mensagem dele. A onda entra no commit sem a mudança.
+            opt("replan_refused", Kind::Text),
             // O código de cada tarefa da onda que o agente não fez. Com a
             // mudança de plano, é obrigatório, vazio quando fez todas; sem
             // ela, ausente quer dizer que fez todas. Cada tarefa citada volta

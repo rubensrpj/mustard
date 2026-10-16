@@ -33,7 +33,7 @@ use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
-use super::stops::{HeldReturn, hold_waiting_changes, tasks_returned, undone_of, undone_returns};
+use super::stops::{HeldReturn, hold_waiting_changes, plan_refusals_point_at_changes, tasks_returned, undone_of, undone_returns};
 use super::usage::{Caller, Usage, measure_usage, usage_missing};
 use super::{fixes::keep_fixes, size_check::in_body};
 use crate::commands::spec_events::write::{RecordCheck, record};
@@ -55,13 +55,29 @@ const PAUSED_LINE: &str = "PAUSED";
 /// agente grava também não é lida para isso: um valor que apareça lá,
 /// digitado pelo agente, não vira consumo.
 const USAGE_LINE: &str = "USAGE";
+/// A linha com que quem conduz a obra recusa a mudança de plano que uma onda
+/// propôs, com o motivo: `<PLAN_REFUSED>{"wave":1,"reason":"…"}</PLAN_REFUSED>`.
+/// Recusar mantém o plano aprovado, e por isso dispensa o clique; aceitar
+/// continua só pelo clique do usuário.
+const PLAN_REFUSED_LINE: &str = "PLAN_REFUSED";
 
 /// A mudança de plano que um agente propõe: a mudança e, quando ela troca uma
 /// decisão do usuário, qual. Toda proposta aguarda aceite antes de entrar;
-/// omitir a decisão não autoriza mudar o plano aprovado.
+/// omitir a decisão não autoriza mudar o plano aprovado. A recusa, pelo clique
+/// do usuário ou pela linha de quem conduz, vem em `refused`.
 pub(crate) struct PlanChange {
     pub change: String,
     pub decision: Option<String>,
+    pub refused: Option<PlanRefusal>,
+}
+
+/// A recusa de uma mudança de plano: o motivo e a mensagem do usuário que a
+/// sustenta — o clique em "Recusar" ou, na recusa de quem conduz, a última
+/// mensagem do usuário. A onda entra no commit com o que mudou, e as tarefas
+/// que ela não fez voltam ao backlog soltas, sem a mudança.
+pub(crate) struct PlanRefusal {
+    pub reason: String,
+    pub origin: Option<u64>,
 }
 
 /// A volta de uma onda, como a rodada a assume.
@@ -126,6 +142,10 @@ pub(crate) struct Report {
     /// segura fora do commit à espera de um agente novo.
     pub rejected: Vec<(u64, String)>,
     pub reviewed: Vec<super::review::Approval>,
+    /// As linhas `PLAN_REFUSED`, cada uma com a onda e o motivo de quem conduz
+    /// a obra: a mudança de plano da onda é recusada como no clique em
+    /// "Recusar".
+    pub plan_refused: Vec<(u64, String)>,
 }
 
 /// O que a rodada fez com um relatório.
@@ -209,7 +229,7 @@ pub(crate) fn take_report_with_mine(
     // ondas com o pedido de antes, mais adiante, em
     // [`super::answer::run_round_with_mine`]. A volta recusada, mesmo
     // sozinha, segue até o aviso dela.
-    if nothing(&report) && refused.is_empty() && report.rejected.is_empty() {
+    if nothing(&report) && refused.is_empty() && report.rejected.is_empty() && report.plan_refused.is_empty() {
         return Ok(Taken::only_paused(report.paused));
     }
     // A volta mora na spec, e duas rodadas ao mesmo tempo leem a mesma: a
@@ -223,6 +243,9 @@ pub(crate) fn take_report_with_mine(
     drop(timing);
     let path = store::spec_file(root, spec).map_err(RoundRefusal::Refused)?;
     let mut fresh = store::read(&path).map_err(RoundRefusal::Refused)?.unwrap_or_else(|| log.clone());
+    // A recusa de quem conduz só vale para a onda cuja volta propõe mudar o
+    // plano: a linha que aponta outra é recusada antes de qualquer gravação.
+    plan_refusals_point_at_changes(&returned_waves(&fresh).0, &report.plan_refused)?;
     // A reprovação de quem conduz a obra é gravada antes de tudo, presa à
     // volta que ela reprova, e a spec é lida de novo: a volta reprovada passa
     // a ser segurada pela mesma leitura que a segura nas rodadas seguintes.
@@ -234,8 +257,10 @@ pub(crate) fn take_report_with_mine(
     let (cut, unreturned) = match_usage(&fresh, &mut report, &waiting)?;
     waiting.extend(unreturned);
     // A onda que diz que o plano dela não funciona espera o clique do usuário
-    // fora do commit, e só ela: as outras voltas seguem.
-    waiting.extend(hold_waiting_changes(&fresh, &mut report.waves));
+    // fora do commit, e só ela: as outras voltas seguem. A mudança recusada
+    // — pelo clique em "Recusar" ou pela linha de quem conduz — não espera:
+    // a onda segue com as outras, sem a mudança.
+    waiting.extend(hold_waiting_changes(&fresh, &mut report.waves, &report.plan_refused, lang));
     if nothing(&report) {
         // A onda de lote cortada não entra no commit: as tarefas dela voltam
         // ao backlog soltas, sem a onda que as levou.
@@ -558,7 +583,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .collect();
     let commit = text("commit");
     // A decisão trocada só vale junto da mudança de plano que a troca.
-    let replan = text("replan").map(|change| PlanChange { change, decision: text("changes_decision") });
+    let replan = text("replan").map(|change| PlanChange { change, decision: text("changes_decision"), refused: None });
     if commit.is_none() && !files.is_empty() && replan.is_none() {
         return Err(missing("commit"));
     }
@@ -990,6 +1015,14 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
                 draft.insert("replan".into(), json!(replan.change));
                 if let Some(decision) = &replan.decision {
                     draft.insert("changes_decision".into(), json!(decision));
+                }
+                // A entrega oficial é o evento da recusa: o motivo, e a
+                // mensagem do usuário que a sustenta em `origin`.
+                if let Some(refusal) = &replan.refused {
+                    draft.insert("replan_refused".into(), json!(refusal.reason));
+                    if let Some(origin) = refusal.origin {
+                        draft.insert("origin".into(), json!(origin));
+                    }
                 }
             }
             if wave == report.wave && !report.undone.is_empty() {
