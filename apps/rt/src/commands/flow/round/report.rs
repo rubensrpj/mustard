@@ -20,7 +20,9 @@ use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use super::agreed::{covered_codes, join_unmet, request_agreed, settle_agreed, settle_wave_agreed};
+use super::agreed::{
+    covered_codes, join_unmet, place_review_unmet, request_agreed, settle_agreed, settle_wave_agreed, unmet_meaning_joins, Unmet,
+};
 use super::answer::RoundRefusal;
 use super::commit::{
     UNMADE_SHA, build_development_version, commit_draft, commit_message, ensure_after_wave, format_round_files, git_lock, head, join_copies, make_commit,
@@ -689,7 +691,7 @@ pub(crate) fn check_return(start: &Path, spec: &str, event_type: &str, draft: &m
     // o veredito final presta de todo o combinado: faltar algum recusa, com
     // os códigos. O pedido sem item combinado não exige o campo.
     let expected = request_agreed(&log, wave);
-    let (_, missing) = settle_agreed(&log, &mut draft.clone(), &expected, "wave", &mut BTreeSet::new(), &BTreeSet::new()).map_err(RoundRefusal::Refused)?;
+    let (_, missing) = settle_agreed(&log, &mut draft.clone(), &expected, &mut BTreeSet::new(), &BTreeSet::new()).map_err(RoundRefusal::Refused)?;
     if !missing.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
     }
@@ -741,10 +743,10 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
 /// por todo o combinado vigente, item a item, em `agreed`: faltar algum, ou a
 /// lista inteira, é veredito malformado, e nada é gravado. O item que não
 /// vem `met:true` força o resultado a reprovado, também quando nenhuma tarefa
-/// nasce, e vira uma tarefa nova no backlog, cobrindo esse item, se nenhuma
-/// tarefa ainda por entregar já o cobre: são essas tarefas que a função
-/// devolve.
-fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<Map<String, Value>>, Refusal> {
+/// nasce, e volta, se nenhuma tarefa ainda por entregar já o cobre, para o
+/// classificador lhe dar destino ([`place_review_unmet`]): são esses itens
+/// que a função devolve.
+fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<Unmet>, Refusal> {
     if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
         for item in criteria.iter_mut() {
             if let Some(reference) = item.get("criterion").cloned() {
@@ -756,7 +758,7 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
         return Ok(Vec::new());
     }
     let mut covered = covered_codes(log, &BTreeSet::new());
-    let (tasks, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), "review", &mut covered, &BTreeSet::new())?;
+    let (items, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), &mut covered, &BTreeSet::new())?;
     if !missing.is_empty() {
         return Err(Refusal::AgreedItemsMissing { missing });
     }
@@ -764,7 +766,7 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
     if unmet {
         draft.insert("result".into(), json!("rejected"));
     }
-    Ok(tasks)
+    Ok(items)
 }
 
 /// O `replaces` do evento oficial que assume as voltas `returns`: o número
@@ -902,9 +904,11 @@ struct CheckedReport {
     /// A versão nova do envio de cada onda cujo consumo a rodada mediu: o
     /// modelo usado, os passos, os tokens ou o consumo de quem despacha.
     sends: Vec<(u64, Rehearsed)>,
-    /// Uma tarefa nova no backlog por item combinado que a revisão final
-    /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
-    agreed_tasks: Vec<Rehearsed>,
+    /// O que cada item combinado que a revisão final marcou `met:false` vira,
+    /// com o tipo do evento: sem onda, para a rodada seguinte formar o lote.
+    /// O item que uma tarefa ainda por entregar já cobre vem como nota, e o
+    /// de mesmo sentido, como versão nova dessa tarefa.
+    agreed_tasks: Vec<(&'static str, Rehearsed)>,
     /// A versão nova de cada tarefa que a onda não fez, com a onda que a
     /// devolveu: sem a onda que a levou, de volta ao backlog.
     undone_tasks: Vec<(u64, Rehearsed)>,
@@ -914,9 +918,10 @@ struct CheckedReport {
     /// lote. O item ou a sobra que uma tarefa ainda por entregar já cobre vem
     /// como nota, e o de mesmo sentido, como versão nova dessa tarefa.
     wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
-    /// Cada tarefa de `wave_tasks` que uma sobra ganhou pelo sentido, pela
-    /// posição nela, com as dos pedidos dessas sobras: a resposta da rodada
-    /// leva o pedido de reescrita de cada uma.
+    /// Cada tarefa que uma sobra ou um item não cumprido ganhou pelo sentido,
+    /// pela posição entre as entradas que a rodada grava, com as dos pedidos
+    /// dessas sobras e os números desses itens: a resposta da rodada leva o
+    /// pedido de reescrita de cada uma.
     meaning_joins: Vec<MeaningJoin>,
 }
 
@@ -951,10 +956,10 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
     // Os critérios citados existem, antes de qualquer gravação.
     let mut verdicts = Vec::new();
-    let mut agreed_tasks: Vec<Map<String, Value>> = Vec::new();
+    let mut review_unmet: Vec<Unmet> = Vec::new();
     for verdict in &report.verdicts {
         let mut draft = verdict.fields.clone();
-        agreed_tasks.extend(settle_verdict(check.log(), &mut draft)?);
+        review_unmet.extend(settle_verdict(check.log(), &mut draft)?);
         // A revisão final não aponta onda: ela responde pelo combinado
         // inteiro, não por uma onda dele. Só a revisão de uma onda usa a
         // última onda do plano quando o veredito não diz qual.
@@ -971,14 +976,19 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
         draft.insert("author".into(), json!("review"));
         verdicts.push((wave, rehearse(&mut check, "verdict", draft)?));
     }
-    let agreed_tasks = agreed_tasks.into_iter().map(|task| rehearse(&mut check, "task", task)).collect::<Result<Vec<_>, _>>()?;
+    // O item que a revisão final não cumpriu passa pelo classificador, como o
+    // da volta de uma onda: a nota, a versão nova de uma tarefa ou a tarefa nova.
+    let (review_events, review_joins) = place_review_unmet(root, spec, check.log(), review_unmet, lang);
+    let agreed_tasks =
+        review_events.into_iter().map(|(kind, draft)| Ok((kind, rehearse(&mut check, kind, draft)?))).collect::<Result<Vec<_>, Refusal>>()?;
+    let mut meaning = unmet_meaning_joins(review_joins, verdicts.len(), verdicts.len());
     // A tarefa que a onda não fez volta ao backlog, sem a onda que a levou,
     // antes das entregas: a leitura das tarefas ainda por entregar já a vê
     // solta, e o item combinado que só ela cobre não vira tarefa nova. O
     // item que a onda não cumpriu entra nessa mesma versão, e também não
     // vira tarefa nova.
     let mut returned = undone_returns(root, spec, check.log(), &report.waves, lang);
-    let unmet = join_unmet(root, spec, check.log(), &report.waves, &mut returned, lang)?;
+    let (unmet, unmet_joins) = join_unmet(root, spec, check.log(), &report.waves, &mut returned, lang)?;
     let mut undone_tasks = Vec::new();
     for (wave, task) in returned {
         undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
@@ -1076,7 +1086,13 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
         })
         .collect();
     let leftovers = leftover_events(root, spec, check.log(), &found, &returning, &reported, &summaries, lang);
-    let meaning_joins = meaning_joins(&leftovers, wave_tasks.len());
+    // As posições das junções pelo sentido entre as entradas que a rodada
+    // grava, na ordem de [`record_reports`]: vereditos, o que a revisão final
+    // deu, as tarefas devolvidas, as entregas e o que os itens e as sobras viram.
+    let returned_from = verdicts.len() + agreed_tasks.len();
+    let work_from = returned_from + undone_tasks.len() + deliveries.len();
+    meaning.extend(unmet_meaning_joins(unmet_joins, returned_from, work_from));
+    meaning.extend(meaning_joins(&leftovers, work_from + wave_tasks.len()));
     let mut rehearsed: Vec<u64> = Vec::new();
     for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
         if !asks.is_empty() {
@@ -1139,7 +1155,7 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins: meaning })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1198,9 +1214,13 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         }
         recorded.push(entry);
     }
-    for task in agreed_tasks {
-        let (id, _) = recording.record("task", task)?;
-        recorded.push(json!({ "type": "task", "id": id }));
+    for (kind, event) in agreed_tasks {
+        let (id, replaces) = recording.record(kind, event)?;
+        let mut entry = json!({ "type": kind, "id": id });
+        if let Some(replaces) = replaces {
+            entry["replaces"] = replaces;
+        }
+        recorded.push(entry);
     }
     for (wave, task) in undone_tasks {
         let (id, _) = recording.record("task", task)?;
@@ -1215,7 +1235,6 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         recorded.push(json!({ "wave": wave, "type": "delivered", "id": id, "text": text,
             "files": files, "proofs": own }));
     }
-    let first = recorded.len();
     for (wave, kind, event) in wave_tasks {
         let (id, replaces) = recording.record(kind, event)?;
         let mut entry = json!({ "wave": wave, "type": kind, "id": id });
@@ -1225,7 +1244,7 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         recorded.push(entry);
     }
     if !meaning_joins.is_empty() {
-        ask_rewrites(&root, &read()?, &meaning_joins, &mut recorded[first..]);
+        ask_rewrites(&root, &read()?, &meaning_joins, &mut recorded);
     }
     for (wave, send) in sends {
         let (id, _) = recording.record("send", send)?;

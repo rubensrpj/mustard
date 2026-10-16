@@ -3,14 +3,15 @@
 //! item não cumprido que vira trabalho no backlog — uma vez só: a tarefa
 //! ainda por entregar que já cobre o item basta, e nenhuma outra nasce, e o
 //! item que a análise da onda tirou do pedido dela não vira tarefa nenhuma.
-//! O item não cumprido de uma volta passa pelo classificador das atividades
-//! ([`task_triage`]), como a sobra, num pedido só por rodada: o que uma
-//! tarefa aberta já cobre vira nota que a aponta; o de mesmo sentido de uma
-//! tarefa aberta entra nela; o novo vira tarefa, no grupo da tarefa de
-//! assunto mais próximo. A tarefa devolvida que nasceu do item o recebe sem
-//! pergunta. Sem leitura confiante, vale a regra nativa: na volta que deixou
-//! tarefas por fazer, o item entra numa delas, na versão que volta ao
-//! backlog; sem tarefa devolvida, nasce como tarefa nova.
+//! O item não cumprido de uma volta e o da revisão final passam pelo
+//! classificador das atividades ([`task_triage`]), como a sobra, num pedido
+//! só por rodada: o que uma tarefa aberta já cobre vira nota que a aponta; o
+//! de mesmo sentido de uma tarefa aberta entra nela, e a tarefa pede a
+//! reescrita ao modelo pequeno da sessão; o novo vira tarefa, no grupo da
+//! tarefa de assunto mais próximo. A tarefa devolvida que nasceu do item o
+//! recebe sem pergunta. Sem leitura confiante, vale a regra nativa: na volta
+//! que deixou tarefas por fazer, o item entra numa delas, na versão que volta
+//! ao backlog; sem tarefa devolvida, nasce como tarefa nova.
 //!
 //! [`task_triage`]: crate::shared::task_triage
 
@@ -22,20 +23,60 @@ use mustard_core::domain::wave_prompt as agreed_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::leftovers::{group_after, GROUP};
+use super::leftovers::{group_after, MeaningJoin, GROUP};
 use super::queue::{backlog_left, task_files, tasks_not_delivered};
 use super::report::{agreed_item_id, backlog_return, dispatched_at, WaveReport};
 use super::stops::append_agent_line;
 use crate::shared::task_triage::{self, Candidate, Destination, Item, Summary};
 
-/// O que [`settle_agreed`] devolve: a tarefa de cada item não cumprido e o
-/// código de cada item esperado que ficou sem resposta.
-pub(super) type SettledAgreed = (Vec<Map<String, Value>>, Vec<String>);
+/// O que [`settle_agreed`] devolve: cada item não cumprido que ainda pede
+/// trabalho e o código de cada item esperado que ficou sem resposta.
+pub(super) type SettledAgreed = (Vec<Unmet>, Vec<String>);
 
 /// Um evento que o item não cumprido de uma volta vira fora da tarefa que ela
 /// devolveu ([`join_unmet`]): a onda que o respondeu, o tipo do evento — a
 /// nota ou a tarefa — e o rascunho.
 pub(super) type UnmetEvent = (u64, &'static str, Map<String, Value>);
+
+/// Cada tarefa que ganhou pelo sentido itens não cumpridos, com o número de
+/// cada item: é ela que pede a reescrita ([`unmet_meaning_joins`]).
+pub(super) type UnmetJoins = Vec<(JoinedAt, Vec<u64>)>;
+
+/// Quem respondeu pelo item não cumprido: a volta de uma onda, pelo número,
+/// ou a revisão final.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum AnsweredBy {
+    Wave(u64),
+    Review,
+}
+
+impl AnsweredBy {
+    /// O autor do que o item vira.
+    fn author(self) -> &'static str {
+        match self {
+            Self::Wave(_) => "wave",
+            Self::Review => "review",
+        }
+    }
+
+    /// O texto `wave_key`, com a onda, ou o `review_key`, da revisão final,
+    /// no idioma `lang`.
+    fn said(self, wave_key: &str, review_key: &str, lang: Locale) -> String {
+        match self {
+            Self::Wave(wave) => translate(wave_key, lang).replace("{wave}", &wave.to_string()),
+            Self::Review => translate(review_key, lang).to_string(),
+        }
+    }
+}
+
+/// Onde está a tarefa que ganhou pelo sentido um item não cumprido: a versão
+/// devolvida, pela posição entre as que voltam ao backlog, ou o evento, pela
+/// posição entre os que os itens viram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum JoinedAt {
+    Returned(usize),
+    Event(usize),
+}
 
 /// Os itens combinados que o pedido da onda `wave` levou: a lista que o envio
 /// que a despachou ([`dispatched_at`]) gravou do que o pedido lia, pela mesma
@@ -107,7 +148,7 @@ fn removed_by_analysis(log: &SpecLog, wave: u64) -> BTreeSet<String> {
 /// próprio item — e os arquivos da tarefa que vai refazê-lo, cada um como
 /// `{"path": …}`: os que o próprio item declara, como a tarefa não cumprida
 /// declara os dela, e depois os que a resposta cita a mais.
-struct Unmet {
+pub(super) struct Unmet {
     id: u64,
     text: String,
     files: Vec<Value>,
@@ -164,31 +205,29 @@ fn declared_paths(event: &SpecEvent) -> impl Iterator<Item = &str> {
 
 /// A resposta `agreed` de uma volta — a entrega de uma onda ou o veredito
 /// final — resolvida contra os itens combinados que ela precisa responder
-/// (`expected`) por [`answered_items`]: cada item que não vem `met:true` e
-/// ainda pede trabalho vira uma tarefa nova no backlog, de autor `author`,
-/// cobrindo o item, com o que a resposta diz que falta e os arquivos do item
-/// e os que ela cita. O item já em `covered` ou em `removed` fica na resposta como veio,
-/// sem tarefa nova; cada tarefa que nasce entra em `covered`. Na volta de uma
-/// onda, o destino do item não cumprido sai de [`join_unmet`], e aqui só se
-/// confere o que ficou sem resposta. Devolve as tarefas novas e o código de
-/// cada item esperado que ficou sem resposta.
+/// (`expected`) por [`answered_items`]: devolve cada item que não vem
+/// `met:true` e ainda pede trabalho, com o que a resposta diz que falta e os
+/// arquivos do item e os que ela cita. O item já em `covered` ou em `removed`
+/// fica na resposta como veio e não volta; cada item devolvido entra em
+/// `covered`. O destino do item não cumprido sai do classificador — o da volta
+/// de uma onda, de [`join_unmet`]; o da revisão final, de
+/// [`place_review_unmet`] —, e aqui só se confere o que ficou sem resposta.
+/// Devolve também o código de cada item esperado que ficou sem resposta.
 pub(super) fn settle_agreed(
     log: &SpecLog,
     draft: &mut Map<String, Value>,
     expected: &[&SpecEvent],
-    author: &str,
     covered: &mut BTreeSet<String>,
     removed: &BTreeSet<String>,
 ) -> Result<SettledAgreed, Refusal> {
     let (answered, unmet) = answered_items(log, draft, covered, removed)?;
-    let tasks = unmet.into_iter().map(|item| unmet_task(item, author)).collect();
     let codes = log.codes();
     let missing = expected
         .iter()
         .filter(|item| !answered.contains(&item.id))
         .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
         .collect();
-    Ok((tasks, missing))
+    Ok((unmet, missing))
 }
 
 /// A tarefa nova que refaz o item não cumprido `item`, de autor `author`: o
@@ -213,11 +252,11 @@ fn listed_ids(task: &Map<String, Value>, key: &str) -> Vec<u64> {
     many.chain(task.get(key).and_then(Value::as_u64)).collect()
 }
 
-/// Põe o item não cumprido `item`, de código `code`, que a volta da onda
-/// `wave` respondeu, na versão `task` de uma tarefa: ela passa a cobrir o
-/// item, ganha os arquivos do item e os que a resposta cita e, na parte do
-/// agente, uma linha com o que falta, no idioma `lang`.
-fn take_unmet(task: &mut Map<String, Value>, wave: u64, code: &str, item: &Unmet, lang: Locale) {
+/// Põe o item não cumprido `item`, de código `code`, por que `by` respondeu,
+/// na versão `task` de uma tarefa: ela passa a cobrir o item, ganha os
+/// arquivos do item e os que a resposta cita e, na parte do agente, uma linha
+/// com quem respondeu e o que falta, no idioma `lang`.
+fn take_unmet(task: &mut Map<String, Value>, by: AnsweredBy, code: &str, item: &Unmet, lang: Locale) {
     let mut covers = listed_ids(task, "covers");
     covers.push(item.id);
     task.insert("covers".into(), json!(covers));
@@ -229,27 +268,27 @@ fn take_unmet(task: &mut Map<String, Value>, wave: u64, code: &str, item: &Unmet
     }
     task.insert("files".into(), json!(paths));
     let said = item.text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let line = translate("round.unmet_joined", lang).replace("{wave}", &wave.to_string()).replace("{code}", code).replace("{text}", &said);
+    let line = by.said("round.unmet_joined", "round.unmet_review_joined", lang).replace("{code}", code).replace("{text}", &said);
     append_agent_line(task, &line);
 }
 
-/// A nota do item não cumprido `item`, de código `code`, que a volta da onda
-/// `wave` respondeu e que o Jev julgou coberto pela tarefa `task`, com a
-/// chance `chance`, no idioma `lang`: o título do item, o texto com a onda, o
-/// código da tarefa e o que falta, e o motivo na parte do agente. O código
+/// A nota do item não cumprido `item`, de código `code`, por que `by`
+/// respondeu e que o Jev julgou coberto pela tarefa `task`, com a chance
+/// `chance`, no idioma `lang`: o título do item, o texto com quem respondeu,
+/// o código da tarefa e o que falta, e o motivo na parte do agente. O código
 /// da tarefa vai no rótulo e na chave de busca: é por ele que a nota a
 /// aponta, sem mudar nada nela.
-fn covered_note(log: &SpecLog, (wave, code, item): (u64, &str, &Unmet), task: &SpecEvent, chance: f64, lang: Locale) -> Map<String, Value> {
+fn covered_note(log: &SpecLog, (by, code, item): (AnsweredBy, &str, &Unmet), task: &SpecEvent, chance: f64, lang: Locale) -> Map<String, Value> {
     let task_code = log.codes().get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
     let said = item.text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let text = translate("round.unmet_covered", lang)
-        .replace("{wave}", &wave.to_string())
+    let text = by
+        .said("round.unmet_covered", "round.unmet_review_covered", lang)
         .replace("{code}", code)
         .replace("{task}", &task_code)
         .replace("{text}", &said);
     let title = log.get(item.id).and_then(|event| event.str_field("title")).unwrap_or(code);
     let reason = translate("round.unmet_judged", lang).replace("{chance}", &format!("{chance:.2}"));
-    let note = json!({ "title": title, "text": text, "keys": [task_code, code], "label": task_code, "agent": reason, "author": "wave" });
+    let note = json!({ "title": title, "text": text, "keys": [task_code, code], "label": task_code, "agent": reason, "author": by.author() });
     note.as_object().cloned().unwrap_or_default()
 }
 
@@ -259,7 +298,7 @@ fn covered_note(log: &SpecLog, (wave, code, item): (u64, &str, &Unmet), task: &S
 /// backlog de cada tarefa não feita, com a onda que a devolveu, na ordem de
 /// `undone`: o item que entra numa delas entra nessa versão
 /// ([`take_unmet`]). Devolve os outros eventos que os itens viram, na ordem
-/// dos itens.
+/// dos itens, e cada tarefa que ganhou itens pelo sentido.
 pub(super) fn join_unmet(
     root: &Path,
     spec: &str,
@@ -267,7 +306,7 @@ pub(super) fn join_unmet(
     waves: &[WaveReport],
     returned: &mut [(u64, Map<String, Value>)],
     lang: Locale,
-) -> Result<Vec<UnmetEvent>, Refusal> {
+) -> Result<(Vec<UnmetEvent>, UnmetJoins), Refusal> {
     join_unmet_with(log, waves, returned, lang, &task_triage::jev_ask(root, spec))
 }
 
@@ -284,22 +323,15 @@ pub(super) fn join_unmet(
 ///
 /// O item de que nasceu uma tarefa devolvida pela mesma volta (`origin`), a
 /// ligação que o pedido da onda mostra, entra nela sem pergunta. Os outros
-/// vão ao Jev num pedido só, contra as tarefas ainda por entregar e as
-/// devolvidas, com o resumo de cada volta que deixou tarefa por fazer: o
-/// coberto vira nota que aponta a tarefa ([`covered_note`]); o de mesmo
-/// sentido entra na tarefa escolhida — na versão devolvida, quando é uma
-/// delas, ou numa versão nova da tarefa do backlog, uma só por tarefa —; o
-/// novo vira tarefa nova ([`unmet_task`]), no grupo da tarefa de assunto mais
-/// próximo ([`group_after`]). Sem leitura confiante, o item entra na primeira
-/// tarefa que a própria volta devolveu e, sem ela, vira tarefa nova sem
-/// grupo.
+/// vão ao classificador ([`place_unmet`]), com o resumo de cada volta que
+/// deixou tarefa por fazer.
 fn join_unmet_with(
     log: &SpecLog,
     waves: &[WaveReport],
     returned: &mut [(u64, Map<String, Value>)],
     lang: Locale,
     ask: &dyn Fn(&str) -> Option<Value>,
-) -> Result<Vec<UnmetEvent>, Refusal> {
+) -> Result<(Vec<UnmetEvent>, UnmetJoins), Refusal> {
     let codes = log.codes();
     let code_of = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
     let returning: BTreeSet<u64> = waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
@@ -311,19 +343,73 @@ fn join_unmet_with(
         let (_, unmet) = answered_items(log, &mut answer, &mut covered, &removed_by_analysis(log, wave.wave))?;
         found.extend(unmet.into_iter().map(|item| (wave.wave, item)));
     }
-    let own = |returned: &[(u64, Map<String, Value>)], wave: u64| -> Vec<usize> { (0..returned.len()).filter(|at| returned[*at].0 == wave).collect() };
     let mut asked: Vec<(u64, Unmet)> = Vec::new();
     for (wave, item) in found {
         let code = code_of(item.id);
-        let born_of = own(returned, wave).into_iter().find(|at| listed_ids(&returned[*at].1, "origin").into_iter().any(|origin| code_of(origin) == code));
+        let born_of = (0..returned.len())
+            .find(|at| returned[*at].0 == wave && listed_ids(&returned[*at].1, "origin").into_iter().any(|origin| code_of(origin) == code));
         match born_of {
-            Some(at) => take_unmet(&mut returned[at].1, wave, &code, &item, lang),
+            Some(at) => take_unmet(&mut returned[at].1, AnsweredBy::Wave(wave), &code, &item, lang),
             None => asked.push((wave, item)),
         }
     }
+    let summaries: Vec<Summary> = waves
+        .iter()
+        .filter(|wave| !wave.undone.is_empty())
+        .map(|wave| Summary { text: wave.delivered.clone(), tasks: wave.undone.iter().filter_map(|(id, _)| log.current(*id).map(|task| task.id)).collect() })
+        .collect();
+    Ok(place_unmet(log, asked, AnsweredBy::Wave, returned, &returning, &summaries, lang, ask))
+}
+
+/// O destino de cada item que a revisão final não cumpriu (`unmet`), pelo
+/// classificador das atividades da spec `spec` de `root`
+/// ([`task_triage::jev_ask`]), contra as tarefas ainda por entregar, como o
+/// da volta de uma onda ([`place_unmet`]), de autor da revisão. Devolve cada
+/// evento que os itens viram, com o tipo, na ordem dos itens, e cada tarefa
+/// que ganhou itens pelo sentido.
+pub(super) fn place_review_unmet(root: &Path, spec: &str, log: &SpecLog, unmet: Vec<Unmet>, lang: Locale) -> (Vec<(&'static str, Map<String, Value>)>, UnmetJoins) {
+    place_review_unmet_with(log, unmet, lang, &task_triage::jev_ask(root, spec))
+}
+
+/// [`place_review_unmet`] com a pergunta ao Jev feita por `ask`.
+fn place_review_unmet_with(
+    log: &SpecLog,
+    unmet: Vec<Unmet>,
+    lang: Locale,
+    ask: &dyn Fn(&str) -> Option<Value>,
+) -> (Vec<(&'static str, Map<String, Value>)>, UnmetJoins) {
+    let asked = unmet.into_iter().map(|item| ((), item)).collect();
+    let (events, joins) = place_unmet(log, asked, |()| AnsweredBy::Review, &mut [], &BTreeSet::new(), &[], lang, ask);
+    (events.into_iter().map(|((), kind, draft)| (kind, draft)).collect(), joins)
+}
+
+/// O destino de cada item não cumprido de `asked`, cada um com a marca de
+/// quem respondeu por ele, que `by` lê: os itens vão ao Jev num pedido só,
+/// contra as tarefas ainda por entregar, fora as das ondas em `returning`, e
+/// as versões devolvidas em `returned`, com os resumos `summaries`. O coberto
+/// vira nota que aponta a tarefa ([`covered_note`]); o de mesmo sentido entra
+/// na tarefa escolhida — na versão devolvida, quando é uma delas, ou numa
+/// versão nova da tarefa do backlog, uma só por tarefa — e a junção volta
+/// para a reescrita ([`JoinedAt`]); o novo vira tarefa nova ([`unmet_task`]),
+/// no grupo da tarefa de assunto mais próximo ([`group_after`]). Sem leitura
+/// confiante, o item da volta de uma onda entra na primeira tarefa que ela
+/// devolveu e, sem ela, vira tarefa nova sem grupo, como o da revisão final.
+#[allow(clippy::too_many_arguments)]
+fn place_unmet<T: Copy>(
+    log: &SpecLog,
+    asked: Vec<(T, Unmet)>,
+    by: impl Fn(T) -> AnsweredBy,
+    returned: &mut [(u64, Map<String, Value>)],
+    returning: &BTreeSet<u64>,
+    summaries: &[Summary],
+    lang: Locale,
+    ask: &dyn Fn(&str) -> Option<Value>,
+) -> (Vec<(T, &'static str, Map<String, Value>)>, UnmetJoins) {
+    let codes = log.codes();
+    let code_of = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
     let back: Vec<u64> = returned.iter().filter_map(|(_, task)| task.get("replaces").and_then(Value::as_u64)).collect();
     let left = backlog_left(log);
-    let open: Vec<&SpecEvent> = tasks_not_delivered(log, &returning).into_iter().chain(back.iter().copied()).filter_map(|id| log.get(id)).collect();
+    let open: Vec<&SpecEvent> = tasks_not_delivered(log, returning).into_iter().chain(back.iter().copied()).filter_map(|id| log.get(id)).collect();
     let candidates: Vec<Candidate> = open
         .iter()
         .map(|task| Candidate {
@@ -343,52 +429,72 @@ fn join_unmet_with(
             files: item.files.iter().filter_map(path_of).collect(),
         })
         .collect();
-    let summaries: Vec<Summary> = waves
-        .iter()
-        .filter(|wave| !wave.undone.is_empty())
-        .map(|wave| Summary { text: wave.delivered.clone(), tasks: wave.undone.iter().filter_map(|(id, _)| log.current(*id).map(|task| task.id)).collect() })
-        .collect();
-    let decided = task_triage::classify_with(&candidates, &items, &summaries, ask);
-    let mut events: Vec<UnmetEvent> = Vec::new();
+    let decided = task_triage::classify_with(&candidates, &items, summaries, ask);
+    let mut events: Vec<(T, &'static str, Map<String, Value>)> = Vec::new();
+    let mut joins: BTreeMap<JoinedAt, Vec<u64>> = BTreeMap::new();
     // A versão nova de cada tarefa do backlog que já recebeu um item, pelo
     // número dela, com a posição em `events`.
     let mut versions: BTreeMap<u64, usize> = BTreeMap::new();
-    for ((wave, item), destination) in asked.into_iter().zip(decided) {
-        let code = code_of(item.id);
+    for ((tag, item), destination) in asked.into_iter().zip(decided) {
+        let (answered, code) = (by(tag), code_of(item.id));
         if let Some(Destination::Covered { task, chance }) = destination
             && let Some(task) = log.get(task)
         {
-            events.push((wave, "note", covered_note(log, (wave, &code, &item), task, chance, lang)));
+            events.push((tag, "note", covered_note(log, (answered, &code, &item), task, chance, lang)));
             continue;
         }
         if let Some(Destination::Join { task, .. }) = destination {
             if let Some(at) = returned.iter().position(|(_, back)| back.get("replaces").and_then(Value::as_u64) == Some(task)) {
-                take_unmet(&mut returned[at].1, wave, &code, &item, lang);
+                take_unmet(&mut returned[at].1, answered, &code, &item, lang);
+                joins.entry(JoinedAt::Returned(at)).or_default().push(item.id);
                 continue;
             }
             if let Some(task) = log.get(task) {
                 let at = *versions.entry(task.id).or_insert_with(|| {
-                    events.push((wave, "task", backlog_return(task)));
+                    events.push((tag, "task", backlog_return(task)));
                     events.len() - 1
                 });
-                take_unmet(&mut events[at].2, wave, &code, &item, lang);
+                take_unmet(&mut events[at].2, answered, &code, &item, lang);
+                joins.entry(JoinedAt::Event(at)).or_default().push(item.id);
                 continue;
             }
         }
         if let Some(Destination::New { near }) = destination {
-            let mut task = unmet_task(item, "wave");
+            let mut task = unmet_task(item, answered.author());
             if let Some(group) = near.and_then(|near| group_after(log, near)) {
                 task.insert(GROUP.into(), group);
             }
-            events.push((wave, "task", task));
+            events.push((tag, "task", task));
             continue;
         }
-        match own(returned, wave).first() {
-            Some(&first) => take_unmet(&mut returned[first].1, wave, &code, &item, lang),
-            None => events.push((wave, "task", unmet_task(item, "wave"))),
+        let first = match answered {
+            AnsweredBy::Wave(wave) => returned.iter().position(|(from, _)| *from == wave),
+            AnsweredBy::Review => None,
+        };
+        match first {
+            Some(first) => take_unmet(&mut returned[first].1, answered, &code, &item, lang),
+            None => events.push((tag, "task", unmet_task(item, answered.author()))),
         }
     }
-    Ok(events)
+    (events, joins.into_iter().collect())
+}
+
+/// As junções pelo sentido `joins` como as das sobras ([`MeaningJoin`]),
+/// pela posição entre as entradas que a rodada grava: a versão devolvida a
+/// partir de `returned_from`, o evento a partir de `events_from`. Os itens
+/// juntados já existem na spec e entram na reescrita pelo número.
+pub(super) fn unmet_meaning_joins(joins: UnmetJoins, returned_from: usize, events_from: usize) -> Vec<MeaningJoin> {
+    joins
+        .into_iter()
+        .map(|(at, items)| MeaningJoin {
+            task: match at {
+                JoinedAt::Returned(at) => returned_from + at,
+                JoinedAt::Event(at) => events_from + at,
+            },
+            requests: Vec::new(),
+            items,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -570,7 +676,7 @@ pub(super) mod tests {
         };
 
         let mut returned = back();
-        let events = join_unmet_with(&log, std::slice::from_ref(&wave), &mut returned, Locale::PtBr, &ask).unwrap();
+        let (events, joins) = join_unmet_with(&log, std::slice::from_ref(&wave), &mut returned, Locale::PtBr, &ask).unwrap();
         let asked = asked.into_inner();
         assert_eq!(asked.len(), 1, "um pedido só ao Jev");
         let payload: Value = serde_json::from_str(&asked[0]).unwrap();
@@ -585,11 +691,80 @@ pub(super) mod tests {
         let line = translate("round.unmet_joined", Locale::PtBr).replace("{wave}", "1").replace("{code}", &codes[&4]).replace("{text}", "Falta o arredondamento.");
         assert_eq!(version.2["agent"], json!(line));
         assert_eq!((born.1, born.2["covers"].clone(), born.2["group"].clone()), ("task", json!([5]), json!({"name": y, "position": 2})), "{born:?}");
+        assert_eq!(joins, [(super::JoinedAt::Event(1), vec![4])], "só a junção pelo sentido volta para a reescrita");
+
+        // Gravados do número 10 em diante, só a versão nova de Y leva o pedido
+        // de reescrita, com Y e o item que já existe como fontes.
+        let dir = tempdir().unwrap();
+        let recorded = events.iter().enumerate().map(|(at, (_, kind, draft))| {
+            let mut line = draft.clone();
+            line.extend([("v".into(), json!(1)), ("id".into(), json!(10 + at)), ("type".into(), json!(kind))]);
+            Value::Object(line)
+        });
+        let after = parse_log(&lines.iter().cloned().chain(recorded).map(|line| line.to_string()).collect::<Vec<_>>().join("\n"));
+        let mut entries: Vec<Value> = events.iter().enumerate().map(|(at, (_, kind, _))| json!({"type": kind, "id": 10 + at})).collect();
+        super::super::leftovers::ask_rewrites(dir.path(), &after, &super::unmet_meaning_joins(joins, 0, 0), &mut entries);
+        let rewrite = &entries[1]["rewrite"];
+        assert_eq!(rewrite["replaces"], json!(11), "{rewrite}");
+        let prompt = rewrite["delegation"]["request"]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains("O preço não arredonda") && prompt.contains("Total arredonda"), "{prompt}");
+        assert!(entries[0].get("rewrite").is_none() && entries[2].get("rewrite").is_none(), "{entries:?}");
 
         let mut returned = back();
         let again = report(2, Vec::new(), vec![unmet(5, "O cupom some de novo.")]);
-        let events = join_unmet_with(&log, &[wave, again], &mut returned, Locale::PtBr, &|_| None).unwrap();
-        assert!(events.is_empty(), "sem Jev, nada nasce fora de T, nem pela segunda volta do mesmo item: {events:?}");
+        let (events, joins) = join_unmet_with(&log, &[wave, again], &mut returned, Locale::PtBr, &|_| None).unwrap();
+        assert!(events.is_empty() && joins.is_empty(), "sem Jev, nada nasce fora de T, nem pela segunda volta do mesmo item: {events:?}");
         assert_eq!(returned[0].1["covers"], json!([6, 3, 4, 5]), "{:?}", returned[0].1);
+    }
+
+    /// A revisão final não cumpre três pedidos, que vão ao Jev num pedido só,
+    /// contra as tarefas X e Y do backlog: o primeiro, que X cobre, vira nota
+    /// que aponta X, de autor da revisão; o segundo entra numa versão nova de
+    /// Y, com a linha da revisão final, e volta para a reescrita; o terceiro
+    /// vira tarefa no grupo de Y. Sem Jev, os três viram tarefa nova, de
+    /// autor da revisão, sem grupo.
+    #[test]
+    fn task_triage_places_each_unmet_item_of_the_final_review() {
+        use mustard_core::domain::spec_events::parse_log;
+        use mustard_core::platform::i18n::{Locale, translate};
+
+        use super::{JoinedAt, Unmet, place_review_unmet_with};
+
+        let lines = [
+            json!({"v":1,"id":1,"type":"task","title":"O carrinho perde o desconto","text":"Ao trocar a quantidade, o desconto some.",
+                "files":[{"path":"src/cart.ts"}],"depends_on":[]}),
+            json!({"v":1,"id":2,"type":"task","title":"O preço não arredonda","text":"O total mostra três casas.",
+                "files":[{"path":"src/price.ts"}],"depends_on":[]}),
+            json!({"v":1,"id":3,"type":"request","title":"Desconto fica com a quantidade","text":"Mudar a quantidade mantém o desconto.","effect":"new_waves"}),
+            json!({"v":1,"id":4,"type":"request","title":"Total arredonda","text":"A soma mostra duas casas.","effect":"new_waves"}),
+            json!({"v":1,"id":5,"type":"request","title":"Cupom sobrevive à recarga","text":"O cupom fica depois de recarregar.","effect":"new_waves"}),
+        ];
+        let log = parse_log(&lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"));
+        let codes = log.codes();
+        let unmet = || {
+            [(3, "O desconto ainda some."), (4, "Falta o arredondamento."), (5, "O cupom some.")]
+                .map(|(id, text)| Unmet { id, text: text.into(), files: vec![json!({"path": "src/total.ts"})] })
+                .into()
+        };
+        let ask = |_: &str| Some(json!({"answers": {"i0": sure("covered:t1"), "i1": sure("join:t2"), "i2": sure("new"), "i2_near": sure("t2")}}));
+
+        let (events, joins) = place_review_unmet_with(&log, unmet(), Locale::PtBr, &ask);
+        let [note, version, born] = events.as_slice() else { panic!("{events:?}") };
+        let covered = translate("round.unmet_review_covered", Locale::PtBr)
+            .replace("{code}", &codes[&3])
+            .replace("{task}", &codes[&1])
+            .replace("{text}", "O desconto ainda some.");
+        assert_eq!((note.0, &note.1["text"], &note.1["author"]), ("note", &json!(covered), &json!("review")), "{note:?}");
+        let line = translate("round.unmet_review_joined", Locale::PtBr).replace("{code}", &codes[&4]).replace("{text}", "Falta o arredondamento.");
+        assert_eq!((version.0, &version.1["replaces"], &version.1["covers"], &version.1["agent"]), ("task", &json!(2), &json!([4]), &json!(line)));
+        assert_eq!((born.0, &born.1["covers"], &born.1["author"]), ("task", &json!([5]), &json!("review")), "{born:?}");
+        assert_eq!(born.1["group"], json!({"name": codes[&2], "position": 2}));
+        assert_eq!(joins, [(JoinedAt::Event(1), vec![4])]);
+
+        let (events, joins) = place_review_unmet_with(&log, unmet(), Locale::PtBr, &|_| None);
+        let shapes: Vec<(&str, &Value, &Value, bool)> =
+            events.iter().map(|(kind, draft)| (*kind, &draft["covers"], &draft["author"], draft.contains_key("group"))).collect();
+        assert_eq!(shapes, [("task", &json!([3]), &json!("review"), false), ("task", &json!([4]), &json!("review"), false), ("task", &json!([5]), &json!("review"), false)]);
+        assert!(joins.is_empty());
     }
 }

@@ -153,11 +153,13 @@ pub(super) struct LeftoverEvent {
 }
 
 /// Uma tarefa que ganhou versão nova porque o classificador juntou a ela
-/// sobras de mesmo sentido: a posição da versão entre as entradas que a
-/// rodada grava, e a dos pedidos dessas sobras.
+/// sobras ou itens não cumpridos de mesmo sentido: a posição da versão entre
+/// as entradas que a rodada grava, a dos pedidos dessas sobras e o número de
+/// cada item que já existe na spec.
 pub(super) struct MeaningJoin {
     pub(super) task: usize,
     pub(super) requests: Vec<usize>,
+    pub(super) items: Vec<u64>,
 }
 
 /// As tarefas de `events` que o classificador juntou pelo sentido, com as
@@ -169,7 +171,11 @@ pub(super) fn meaning_joins(events: &[LeftoverEvent], offset: usize) -> Vec<Mean
         .iter()
         .enumerate()
         .filter(|(_, event)| !event.by_meaning.is_empty())
-        .map(|(at, event)| MeaningJoin { task: offset + at, requests: event.by_meaning.iter().map(|request| offset + request).collect() })
+        .map(|(at, event)| MeaningJoin {
+            task: offset + at,
+            requests: event.by_meaning.iter().map(|request| offset + request).collect(),
+            items: Vec::new(),
+        })
         .collect()
 }
 
@@ -177,16 +183,16 @@ pub(super) fn meaning_joins(events: &[LeftoverEvent], offset: usize) -> Vec<Mean
 /// agente de análise da própria sessão ([`task_triage::rewrite_request`]),
 /// em `rewrite`, como a gravação e a reorganização da lista já fazem. A
 /// versão nova, lida em `log`, é a tarefa que recebe, e cada pedido das
-/// sobras juntadas a ela, o que entra nela. `entries` são as entradas que a
-/// rodada gravou, nas posições de `joins`, cada uma com o número do evento
-/// em `id`.
+/// sobras e cada item não cumprido juntados a ela, o que entra nela.
+/// `entries` são as entradas que a rodada gravou, nas posições de `joins`,
+/// cada uma com o número do evento em `id`.
 pub(super) fn ask_rewrites(root: &Path, log: &SpecLog, joins: &[MeaningJoin], entries: &mut [Value]) {
     let codes = log.codes();
     let id_at = |entries: &[Value], at: usize| entries.get(at).and_then(|entry| entry["id"].as_u64());
     let source = |id: u64| log.get(id).map(|event| task_triage::rewrite_source(codes.get(&id).cloned().unwrap_or_else(|| id.to_string()), &event.fields));
     for join in joins {
         let Some(version) = id_at(entries, join.task) else { continue };
-        let joined: Vec<u64> = join.requests.iter().filter_map(|at| id_at(entries, *at)).collect();
+        let joined: Vec<u64> = join.requests.iter().filter_map(|at| id_at(entries, *at)).chain(join.items.iter().copied()).collect();
         let sources = std::iter::once(version).chain(joined).filter_map(source).collect();
         let request = task_triage::rewrite_request(root, version, sources);
         if let Some(entry) = entries.get_mut(join.task) {

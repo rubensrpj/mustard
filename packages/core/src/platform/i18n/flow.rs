@@ -1002,6 +1002,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.unmet_covered", Locale::EnUs) => {
             "Item not met when wave {wave} came back — {code}, which task {task}, still to deliver, already covers: {text}"
         }
+        ("round.unmet_review_joined", Locale::PtBr) => "Item não cumprido na revisão final — {code}: {text}",
+        ("round.unmet_review_joined", Locale::EnUs) => "Item not met in the final review — {code}: {text}",
+        ("round.unmet_review_covered", Locale::PtBr) => {
+            "Item não cumprido na revisão final — {code}, que a tarefa {task}, ainda por entregar, já cobre: {text}"
+        }
+        ("round.unmet_review_covered", Locale::EnUs) => {
+            "Item not met in the final review — {code}, which task {task}, still to deliver, already covers: {text}"
+        }
         ("round.unmet_judged", Locale::PtBr) => {
             "O Jev julgou que terminar a tarefa termina o que o item pede, com chance {chance}; por isso ele não \
              virou tarefa nova."
@@ -2028,7 +2036,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 288, 0xb904_7231_e5c9_d9d3);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 290, 0x2d4d_7a40_c697_f051);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2253,6 +2261,8 @@ mod tests {
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.unmet_covered", &["{wave}", "{code}", "{task}", "{text}"][..]),
+            ("round.unmet_review_joined", &["{code}", "{text}"][..]),
+            ("round.unmet_review_covered", &["{code}", "{task}", "{text}"][..]),
             ("round.unmet_judged", &["{chance}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
