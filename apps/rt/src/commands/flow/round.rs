@@ -170,7 +170,7 @@ mod closed_process;
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
 /// espera o clique e as ondas paradas no limite de consertos, o bloco de
 /// retomada as conta.
-pub(crate) use stops::{change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
+pub(crate) use stops::{append_agent_line, change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
 
 pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 

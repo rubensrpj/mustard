@@ -309,6 +309,28 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Reorganiza a lista aberta pelo classificador das atividades, numa
+    /// chamada ao Jev: os grupos de mesmo sentido (a primeira tarefa de cada
+    /// grupo fica), as tarefas que uma entrega feita já cobre e a ordem dos
+    /// assuntos por valor (o que destrava mais tarefas ou o usuário, o pedido
+    /// urgente, o que corta gasto; no empate, o de resultado mais rápido).
+    /// Sem `--apply`, não grava nada e responde curto. A tarefa presa em onda
+    /// no ar fica de fora, com aviso; sem Jev, a lista fica como está.
+    #[command(display_order = 41)]
+    Triage {
+        /// A spec cuja lista aberta é reorganizada. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Grava, sob a trava e tudo ou nada, a versão nova da primeira
+        /// tarefa de cada grupo, com o trabalho das outras, e remove as outras
+        /// e as cobertas, com o motivo. A resposta traz, para cada versão
+        /// nova, o pedido ao agente de análise da sessão que escreve o texto.
+        #[arg(long)]
+        apply: bool,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Despacha um comando `run` da família do fluxo: roda o passo e responde
@@ -366,6 +388,10 @@ pub fn dispatch(cmd: FlowCmd) {
         FlowCmd::Reopen { reason, fix, spec, root } => {
             let opts = flow::reopen::ReopenOpts { root, spec, reason, fix };
             flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts), false);
+        }
+        FlowCmd::Triage { spec, apply, root } => {
+            let opts = flow::triage::TriageOpts { root, spec, apply };
+            flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
         FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
             let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };

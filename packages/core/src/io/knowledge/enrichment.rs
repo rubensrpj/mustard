@@ -18,7 +18,7 @@ const EVIDENCE_BYTES: usize = 12_000;
 const EXCERPT_BYTES: usize = 4_000;
 
 mod session;
-pub use session::{SessionReceipt, cancel_session, complete_session, prepare_session};
+pub use session::{RewriteSource, SessionReceipt, cancel_session, complete_session, prepare_rewrite, prepare_session};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GenerationRequest {

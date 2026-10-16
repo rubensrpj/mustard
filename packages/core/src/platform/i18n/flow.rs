@@ -27,6 +27,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "stuck",
     "conversation_size",
     "wave_prompt",
+    "triage",
 ];
 
 /// Os comandos do mapa que os textos do catálogo citam para achar e ler o
@@ -997,6 +998,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.leftover_priority", Locale::PtBr) => "Sobra da onda {wave}: erro achado na obra sai antes das tarefas antigas.",
         ("round.leftover_priority", Locale::EnUs) => "Leftover from wave {wave}: an error found in the work goes before the old tasks.",
+        ("triage.same_work_open", Locale::PtBr) => {
+            "A tarefa aberta {task} — {title} tem o mesmo sentido: nada foi gravado. Grave a versão nova dela, com `replaces` {task}, juntando esta atividade; o pedido em `rewrite` dá o texto. Se for outro trabalho, grave de novo com `distinct` e o motivo."
+        }
+        ("triage.same_work_open", Locale::EnUs) => {
+            "The open task {task} — {title} has the same meaning: nothing was recorded. Record its new version, with `replaces` {task}, joining this activity; the request in `rewrite` gives the text. If it is other work, record again with `distinct` and the reason."
+        }
+        ("triage.same_work_covered", Locale::PtBr) => {
+            "A tarefa aberta {task} — {title} já cobre esta atividade: terminá-la a termina, e nada foi gravado. Se for outro trabalho, grave de novo com `distinct` e o motivo."
+        }
+        ("triage.same_work_covered", Locale::EnUs) => {
+            "The open task {task} — {title} already covers this activity: finishing it finishes this one, and nothing was recorded. If it is other work, record again with `distinct` and the reason."
+        }
+        ("triage.no_jev", Locale::PtBr) => "Sem leitura do Jev, a lista fica como está, na ordem nativa: nada foi agrupado.",
+        ("triage.no_jev", Locale::EnUs) => "Without a Jev reading, the list stays as it is, in the native order: nothing was grouped.",
+        ("triage.held", Locale::PtBr) => "Ficam de fora as tarefas presas em onda no ar: {tasks}.",
+        ("triage.held", Locale::EnUs) => "Tasks held by a wave in flight stay out: {tasks}.",
+        ("triage.joined_line", Locale::PtBr) => "Junta {code} — {title}: {text}",
+        ("triage.joined_line", Locale::EnUs) => "Joins {code} — {title}: {text}",
+        ("triage.removed_joined", Locale::PtBr) => "Mesmo sentido de {code}, que recebe este trabalho na versão nova.",
+        ("triage.removed_joined", Locale::EnUs) => "Same meaning as {code}, which takes this work in its new version.",
+        ("triage.removed_covered", Locale::PtBr) => "Já coberta pela entrega de {code}.",
+        ("triage.removed_covered", Locale::EnUs) => "Already covered by the delivery of {code}.",
+        ("triage.next_dry", Locale::PtBr) => "Nada foi gravado. Confira os grupos, as saídas e a ordem; para gravar, rode de novo com `--apply`.",
+        ("triage.next_dry", Locale::EnUs) => "Nothing was recorded. Check the groups, the exits and the order; to record, run again with `--apply`.",
+        ("triage.next_applied", Locale::PtBr) => {
+            "Gravado. Delegue cada pedido de `rewrite` ao agente de análise da sessão e grave a versão nova que o recibo devolve."
+        }
+        ("triage.next_applied", Locale::EnUs) => {
+            "Recorded. Delegate each `rewrite` request to the session's analysis agent and record the new version its receipt returns."
+        }
         ("round.leftover_repeated", Locale::PtBr) => {
             "Sobra da onda {wave} que repete a tarefa {task}, ainda por entregar: {detail}"
         }
@@ -1943,7 +1974,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 272, 0x006b_5c88_5397_0aa4);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 281, 0x55b6_70a8_2e0a_a375);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2167,6 +2198,12 @@ mod tests {
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_priority", &["{wave}"][..]),
+            ("triage.same_work_open", &["{task}", "{title}"][..]),
+            ("triage.same_work_covered", &["{task}", "{title}"][..]),
+            ("triage.held", &["{tasks}"][..]),
+            ("triage.joined_line", &["{code}", "{title}", "{text}"][..]),
+            ("triage.removed_joined", &["{code}"][..]),
+            ("triage.removed_covered", &["{code}"][..]),
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),

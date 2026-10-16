@@ -6,8 +6,9 @@
 //! ao levantamento de novo com o motivo gravado; e o `plan`, que monta o
 //! pedido de cada onda, confere o plano e leva a spec do levantamento para o
 //! plano; e o `round`, a rodada de ondas, que despacha, grava o que voltou,
-//! formata e faz o commit. Cada passo responde por [`answer()`], que grava a
-//! chamada na spec antes de imprimir.
+//! formata e faz o commit; e o `triage`, que reorganiza a lista aberta pelo
+//! classificador das atividades. Cada passo responde por [`answer()`], que
+//! grava a chamada na spec antes de imprimir.
 
 pub mod answer;
 pub mod cli;
@@ -22,6 +23,7 @@ pub mod reopen;
 pub mod resume;
 pub mod round;
 pub(crate) mod stuck;
+pub mod triage;
 pub(crate) mod validation;
 
 use std::path::Path;

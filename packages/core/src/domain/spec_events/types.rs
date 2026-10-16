@@ -356,6 +356,10 @@ const TITLE: Field = opt("title", Kind::Text);
 /// markdown curto. O `text` fica com o porquê, para o usuário. Opcional no
 /// tipo pelo mesmo motivo do título.
 const AGENT: Field = opt("agent", Kind::Text);
+/// Por que a tarefa ou o pedido novo é outro trabalho, embora o classificador
+/// das atividades o dê como o mesmo de uma tarefa aberta: com o motivo, a
+/// gravação passa e o guarda no evento.
+const DISTINCT: Field = opt("distinct", Kind::Text);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 /// As ondas donas de um item combinado, além das ondas das tarefas que o
 /// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
@@ -750,6 +754,11 @@ pub const TYPES: &[TypeSpec] = &[
             // tarefa aberta, e a onda de um resumo leva de carona as tarefas
             // prontas do grupo dele. Ausente é tarefa sem grupo.
             opt("group", Kind::Object),
+            // O motivo de quem grava uma tarefa nova que o classificador das
+            // atividades daria como o mesmo trabalho de uma aberta: com ele,
+            // a gravação passa sem perguntar e o motivo fica no evento.
+            // Ausente, a tarefa nova passa pelo classificador.
+            DISTINCT,
             // O par de papéis cuja direção de importação esta tarefa muda,
             // por pedido formal do usuário: a conferência depois da onda
             // libera a importação entre os dois só nos arquivos desta
@@ -984,7 +993,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Anotações.
     ty(
         "request", "REQ", Block::Notes, true,
-        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT],
+        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT, DISTINCT],
     ),
     ty("deferred", "DEFER", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
     ty(

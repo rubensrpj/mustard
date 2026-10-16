@@ -213,7 +213,9 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::proof_check::{created_files, proof_defect, relative_path};
-use crate::commands::flow::round::{backlog_return, waves_left_without_tasks};
+use crate::commands::flow::round::queue::{task_files, tasks_not_delivered};
+use crate::commands::flow::round::{backlog_left, backlog_return, waves_left_without_tasks};
+use crate::shared::task_triage::{self, Candidate, Destination, Item};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -299,8 +301,17 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 
 /// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
 /// `copy`, a gravação feita prepara a cópia da página para o banco dela.
-/// Nunca entra em pânico.
+/// A tarefa e o pedido novos passam antes pelo classificador das atividades,
+/// com a pergunta ao Jev da orquestração ([`same_work_open`]). Nunca entra em
+/// pânico.
 pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
+    write_triaged(opts, copy, &|root, spec, payload| task_triage::jev_ask(root, spec)(payload))
+}
+
+/// [`write_at_with`] com a pergunta ao classificador feita por `ask`, que
+/// recebe a raiz do projeto, a spec e o pedido, e devolve a resposta do Jev
+/// ou `None` sem ele.
+fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -> Option<Value>) -> Value {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -350,6 +361,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     }
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
+    }
+    if let Some(refusal) = same_work_open(&project.root, spec, event_type, &draft, lang, &|payload| ask(&project.root, spec, payload)) {
+        return refusal;
     }
     // O passo de término de uma tarefa guarda a impressão da cópia da onda,
     // que a entrega compara com a cópia dela na hora de entregar.
@@ -449,6 +463,69 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
         }
         Err(refusal) => refuse(refusal),
     }
+}
+
+/// A recusa da tarefa ou do pedido novo, do assistente ou do plano, que o
+/// classificador das atividades ([`task_triage::classify_with`]), com a
+/// pergunta feita por `ask`, dá como o mesmo trabalho de uma tarefa ainda por
+/// entregar da spec `spec` de `root`: a coberta (terminar a tarefa termina a
+/// atividade) ou a de mesmo sentido, que entra nela. A recusa
+/// (`same-work-open`) nomeia a tarefa, no idioma `lang`, e manda gravar a
+/// versão nova dela; na junção, traz em `rewrite` o pedido ao agente de
+/// análise da sessão, que escreve o texto da versão nova. A versão nova
+/// (`replaces`), a gravação com o motivo em `distinct`, a spec sem tarefa por
+/// entregar e a leitura sem confiança, ou sem Jev, gravam como sempre: `None`.
+fn same_work_open(
+    root: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: &Map<String, Value>,
+    lang: Locale,
+    ask: &dyn Fn(&str) -> Option<Value>,
+) -> Option<Value> {
+    if !matches!(event_type, "task" | "request") || draft.contains_key("replaces") || draft.contains_key("distinct") {
+        return None;
+    }
+    let log = store::read(&store::spec_file(root, spec).ok()?).ok()??;
+    let joinable = backlog_left(&log);
+    let open: Vec<&SpecEvent> = tasks_not_delivered(&log, &BTreeSet::new()).into_iter().filter_map(|id| log.get(id)).collect();
+    if open.is_empty() {
+        return None;
+    }
+    let candidates: Vec<Candidate> = open
+        .iter()
+        .map(|task| Candidate {
+            id: task.id,
+            title: task.str_field("title").unwrap_or_default(),
+            text: task.str_field("text").unwrap_or_default(),
+            files: task_files(task),
+            joinable: joinable.contains(&task.id),
+        })
+        .collect();
+    let said = |name: &str| draft.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    let files = draft
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
+        .map(str::to_string)
+        .collect();
+    let item = Item { title: said("title"), text: said("text"), files };
+    let (task, key, joins) = match task_triage::classify_with(&candidates, &[item], &[], ask).into_iter().next().flatten()? {
+        Destination::Covered { task, .. } => (task, "triage.same_work_covered", false),
+        Destination::Join { task, .. } => (task, "triage.same_work_open", true),
+        Destination::New { .. } => return None,
+    };
+    let event = log.get(task)?;
+    let code = log.codes().get(&task).cloned().unwrap_or_else(|| task.to_string());
+    let hint = translate(key, lang).replace("{task}", &code).replace("{title}", event.str_field("title").unwrap_or_default());
+    let mut out = json!({ "ok": false, "reason": "same-work-open", "hint": hint, "task": code, "id": task });
+    if joins {
+        let sources = vec![task_triage::rewrite_source(code, &event.fields), task_triage::rewrite_source(event_type.to_string(), draft)];
+        out["rewrite"] = task_triage::rewrite_request(root, task, sources);
+    }
+    Some(out)
 }
 
 /// Para os testes: grava como a produção grava. A mensagem do usuário chega
@@ -1733,6 +1810,99 @@ mod tests {
 
     fn write(root: &std::path::Path, event_type: &str, json: &str) -> Value {
         write_to(root, Some("teste"), event_type, json)
+    }
+
+    /// A spec com o pedido da subtração e uma tarefa aberta que o cobre, em
+    /// `src/calc.ts`. Devolve a mensagem do usuário, o pedido e a tarefa.
+    fn subtraction_backlog(root: &std::path::Path) -> (u64, u64, u64) {
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let request = json!({"title": "Subtração", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
+            "agent": "- conferir pelo teste", "origin": asked});
+        let request = write(root, "request", &request.to_string())["id"].as_u64().unwrap();
+        let task = json!({"title": "Subtrair", "text": "Subtrair dois números.", "agent": "- subtrair", "files": [{"path": "src/calc.ts"}],
+            "depends_on": [], "covers": [request], "origin": asked});
+        let task = write(root, "task", &task.to_string());
+        assert_eq!(task["ok"], json!(true), "{task}");
+        (asked, request, task["id"].as_u64().unwrap())
+    }
+
+    /// A leitura confiante do Jev, com a escolha `choice`, para a pergunta
+    /// da atividade gravada.
+    fn triaged(choice: &str) -> Value {
+        json!({"answers": {"i0": {"choice": choice, "confidence": 0.95, "probabilities": {choice: 0.93, "new": 0.04}}}})
+    }
+
+    /// A tarefa nova que o Jev, confiante, dá como o mesmo sentido da aberta
+    /// é recusada nomeando a aberta, e nada se grava; com `distinct`, ela grava
+    /// sem perguntar e guarda o motivo; sem Jev, grava como sempre.
+    #[test]
+    fn backlog_triage_refuses_a_task_with_the_meaning_of_an_open_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (asked, request, open) = subtraction_backlog(root);
+        let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let opts = |draft: &Value| WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: draft.to_string() };
+        let events = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().events.len();
+        let before = events();
+
+        let refused = write_triaged(&opts(&again), false, &|_, _, _| Some(triaged(&format!("join:t{open}"))));
+        assert_eq!(refused["reason"], json!("same-work-open"), "{refused}");
+        assert_eq!(refused["task"], json!("MSTD-TASK-0001"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("MSTD-TASK-0001 — Subtrair"), "{refused}");
+        assert_eq!(events(), before, "nothing is recorded");
+
+        let mut distinct = again.clone();
+        distinct["distinct"] = json!("Outra conta: tira um número do outro.");
+        let recorded = write_triaged(&opts(&distinct), false, &|_, _, _| panic!("a distinct write asks nothing"));
+        assert_eq!(recorded["ok"], json!(true), "{recorded}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let id = recorded["id"].as_u64().unwrap();
+        assert_eq!(log.get(id).and_then(|event| event.str_field("distinct")), Some("Outra conta: tira um número do outro."));
+
+        let plain = write_triaged(&opts(&again), false, &|_, _, _| None);
+        assert_eq!(plain["ok"], json!(true), "without Jev the task is recorded: {plain}");
+    }
+
+    /// Na junção, a recusa traz o pedido ao agente de análise da sessão, no
+    /// modelo pequeno da família do anfitrião, com a tarefa e a atividade
+    /// como fontes; o recibo devolve o título, o texto e a parte do agente
+    /// juntos, e a versão nova que quem conduz grava com eles substitui a
+    /// tarefa.
+    #[test]
+    fn backlog_triage_join_hands_the_text_to_the_session_small_model() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (asked, request, open) = subtraction_backlog(root);
+        let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: again.to_string() };
+        let refused = write_triaged(&opts, false, &|_, _, _| Some(triaged(&format!("join:t{open}"))));
+        let delegation = &refused["rewrite"]["delegation"];
+        let family = if delegation["host"] == json!("claude") { "haiku" } else { "luna" };
+        assert_eq!(delegation["model_family"], json!(family), "{refused}");
+        assert_eq!(delegation["preferred_agent"], json!("mustard-analysis"), "{refused}");
+        let prompt = delegation["request"]["prompt"].as_str().unwrap();
+        assert!(prompt.contains("Subtrair dois números.") && prompt.contains("Tirar um número do outro."), "{prompt}");
+
+        let receipt = mustard_core::io::knowledge::enrichment::SessionReceipt {
+            request_id: refused["rewrite"]["request_id"].as_str().unwrap().to_string(),
+            model: "inherit".into(),
+            effort: None,
+            result: json!({"title": "Subtrair de dois jeitos", "text": "Subtrair dois números e tirar um do outro.", "agent": "- subtrair\n- tirar"}),
+            input_tokens: None,
+            output_tokens: None,
+        };
+        let done = mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
+        let rewrite = &done["rewrite"];
+        assert_eq!(rewrite["replaces"], json!(open), "{done}");
+        let version = json!({"replaces": rewrite["replaces"], "title": rewrite["title"], "text": rewrite["text"], "agent": rewrite["agent"],
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let recorded = write(root, "task", &version.to_string());
+        assert_eq!(recorded["ok"], json!(true), "{recorded}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.current(open).and_then(|task| task.str_field("title")), Some("Subtrair de dois jeitos"));
     }
 
     #[test]

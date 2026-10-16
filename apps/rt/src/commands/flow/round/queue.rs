@@ -619,7 +619,7 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
 
 /// Os arquivos que uma tarefa declara: cada item de `files` é o caminho, seja
 /// como texto solto ou como `{"path": ...}`.
-pub(super) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
+pub(crate) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
     task.fields
         .get("files")
         .and_then(Value::as_array)

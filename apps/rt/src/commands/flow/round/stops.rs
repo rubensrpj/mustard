@@ -434,7 +434,7 @@ fn undone_return(task: &SpecEvent, wave: u64, change: Option<&str>, lang: Locale
 /// uma tarefa: como item da lista, quando a parte termina numa; como
 /// parágrafo novo, quando termina em texto corrido; sozinha, quando a parte
 /// está vazia ou falta.
-pub(super) fn append_agent_line(draft: &mut Map<String, Value>, line: &str) {
+pub(crate) fn append_agent_line(draft: &mut Map<String, Value>, line: &str) {
     let before = draft.get("agent").and_then(Value::as_str).map(str::trim_end).filter(|text| !text.is_empty());
     let agent = match before {
         Some(text) if text.lines().last().is_some_and(|last| last.trim_start().starts_with("- ")) => {
