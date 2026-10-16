@@ -1022,8 +1022,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("triage.same_work_covered", Locale::EnUs) => {
             "The open task {task} — {title} already covers this activity: finishing it finishes this one, and nothing was recorded. If it is other work, record again with `distinct` and the reason."
         }
-        ("triage.no_jev", Locale::PtBr) => "Sem leitura do Jev, a lista fica como está, na ordem nativa: nada foi agrupado.",
-        ("triage.no_jev", Locale::EnUs) => "Without a Jev reading, the list stays as it is, in the native order: nothing was grouped.",
+        ("triage.too_large", Locale::PtBr) => {
+            "O pedido de {task} ao Jev passa do teto do serviço mesmo só com a tarefa: nenhum pedido saiu, e a lista fica como está."
+        }
+        ("triage.too_large", Locale::EnUs) => {
+            "The Jev request for {task} exceeds the service limit even with the task alone: no request was sent, and the list stays as it is."
+        }
+        ("triage.no_answer", Locale::PtBr) => {
+            "O Jev não respondeu aos {requests} pedidos da reorganização (sem Jev ligado, falha do serviço ou prazo vencido): a lista fica como está."
+        }
+        ("triage.no_answer", Locale::EnUs) => {
+            "The Jev did not answer the {requests} reorganization requests (no Jev enabled, a service failure or the deadline passed): the list stays as it is."
+        }
+        ("triage.unconfident", Locale::PtBr) => {
+            "Só {confident} de {total} tarefas tiveram leitura confiante do Jev; a resposta em dúvida não junta nem tira tarefa."
+        }
+        ("triage.unconfident", Locale::EnUs) => {
+            "Only {confident} of {total} tasks got a confident Jev reading; an unsure answer neither joins nor removes a task."
+        }
         ("triage.held", Locale::PtBr) => "Classificadas, mas fora da gravação, as tarefas de onda com agente trabalhando: {tasks}.",
         ("triage.held", Locale::EnUs) => "Classified but left out of the write, the tasks of a wave whose agent is still working: {tasks}.",
         ("triage.joined_line", Locale::PtBr) => "Junta {code} — {title}: {text}",
@@ -1998,7 +2014,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 284, 0xb0fc_e0a8_3acb_499b);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 286, 0xfd02_44f3_29ea_7c03);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2228,6 +2244,9 @@ mod tests {
             ("triage.same_work_open", &["{task}", "{title}"][..]),
             ("triage.same_work_covered", &["{task}", "{title}"][..]),
             ("triage.held", &["{tasks}"][..]),
+            ("triage.too_large", &["{task}"][..]),
+            ("triage.no_answer", &["{requests}"][..]),
+            ("triage.unconfident", &["{confident}", "{total}"][..]),
             ("triage.joined_line", &["{code}", "{title}", "{text}"][..]),
             ("triage.removed_joined", &["{code}"][..]),
             ("triage.removed_covered", &["{code}"][..]),

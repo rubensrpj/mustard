@@ -7,23 +7,19 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mustard_core::domain::map_filter::{FilterError, FilterUsage};
+use mustard_core::domain::map_filter::FilterUsage;
 use serde_json::Value;
 
 use super::call_record::record_jev_call;
-use super::{JevFilter, cost_micro_usd, model_of, request_count, tokens_of, unknown_usage};
-
-/// O maior pedido de uma escolha da orquestração, em bytes: acima dele a
-/// pergunta não sai, e a escolha fica a nativa.
-pub(crate) const MAX_PAYLOAD_BYTES: usize = 48_000;
+use super::{JevFilter, cost_micro_usd, model_of, request_count, unknown_usage};
 
 impl JevFilter {
     /// A resposta do Jev à pergunta `payload`, com a chamada gravada como
-    /// `command` na spec `spec` de `root`. O pedido acima do teto não sai e é
-    /// gravado como grande demais; a falha do serviço é gravada com o motivo.
-    /// `None` em toda falha: quem chama segue pela escolha nativa. A resposta
-    /// é esperada pelo prazo de toda chamada, o de quem espera no meio de um
-    /// gancho.
+    /// `command` na spec `spec` de `root`. O pedido acima do teto do serviço
+    /// ([`super::validate_wire_size`]) não sai e é gravado como grande demais;
+    /// a falha do serviço é gravada com o motivo. `None` em toda falha: quem
+    /// chama segue pela escolha nativa. A resposta é esperada pelo prazo de
+    /// toda chamada, o de quem espera no meio de um gancho.
     pub(crate) fn choose_recorded(&self, root: &Path, spec: &str, command: &str, payload: &str) -> Option<Value> {
         self.choose_recorded_within(root, spec, command, payload, self.timeouts.response)
     }
@@ -32,14 +28,20 @@ impl JevFilter {
     /// pergunta que ninguém espera no meio de um gancho, mas que é grande o
     /// bastante para o Jev levar mais que o prazo de toda chamada.
     pub(crate) fn choose_recorded_within(&self, root: &Path, spec: &str, command: &str, payload: &str, wait: Duration) -> Option<Value> {
+        self.choose_all_recorded_within(root, spec, command, &[payload.to_string()], wait)?.into_iter().next()
+    }
+
+    /// [`Self::choose_recorded_within`] para os pedidos `payloads`, que saem
+    /// ao mesmo tempo, com uma chamada gravada por pedido. As respostas voltam
+    /// na ordem dos pedidos; um pedido acima do teto do serviço segura todos,
+    /// e a falha de um é a falha de todos.
+    pub(crate) fn choose_all_recorded_within(&self, root: &Path, spec: &str, command: &str, payloads: &[String], wait: Duration) -> Option<Vec<Value>> {
         let called = Instant::now();
-        let answer = if payload.len() > MAX_PAYLOAD_BYTES {
-            Err(FilterError::TooLarge { estimated_tokens: tokens_of(payload.chars().count()) })
-        } else {
-            self.choose_orchestration(payload, wait)
-        };
-        let usage = answer.as_ref().map(|doc| usage_of(doc, called));
-        record_jev_call(root, spec, command, called, None, usage.as_ref().map_err(|error| *error));
+        let answer = self.choose_orchestration(payloads, wait);
+        match &answer {
+            Ok(docs) => docs.iter().for_each(|doc| record_jev_call(root, spec, command, called, None, Ok(&usage_of(doc, called)))),
+            Err(error) => payloads.iter().for_each(|_| record_jev_call(root, spec, command, called, None, Err(error))),
+        }
         answer.ok()
     }
 }
@@ -131,7 +133,7 @@ mod tests {
         assert_eq!(recorded[0]["filter"], json!("jev:no_credit"), "{recorded:?}");
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-        let oversized = format!(r#"{{"state":"{}"}}"#, "a".repeat(MAX_PAYLOAD_BYTES));
+        let oversized = format!(r#"{{"state":"{}","questions":{{}}}}"#, "a".repeat(300_000));
         assert_eq!(filter.choose_recorded(root, "x", TRIAGE_CALL, &oversized), None);
         let recorded = calls(root, TRIAGE_CALL);
         assert_eq!(recorded.len(), 1, "{recorded:?}");
@@ -150,17 +152,19 @@ mod tests {
         let root = dir.path();
         crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}")]);
         assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
-        let sure = |choice: &str| json!({ "choice": choice, "confidence": 0.95, "probabilities": { choice: 0.93, "none": 0.04 } });
         let value = json!({ "type": "score", "score": 2.0, "probabilities": { "0": 0.05, "1": 0.1, "2": 0.8, "3": 0.05 } });
-        let answer = json!({ "answers": { "t1_value": value, "t2_same": sure("t1"), "t2_value": value } });
+        let answer = json!({ "answers": { "value": value, "same_t1": { "type": "noul", "noul": 0.93 } } });
         let (url, count) = serving(Duration::from_millis(600), 200, answer.to_string());
         let mut filter = JevFilter::at(JevKey("sk-test".to_string()), &url);
         filter.timeouts.response = Duration::from_millis(150);
         let task = |id: u64, title: &'static str| Candidate { id, title, text: "", files: BTreeSet::from(["src/resume.ts".to_string()]), joinable: true };
         let open = [task(1, "Retomada lista as ondas no ar"), task(2, "Retomada diz se o agente de cada onda vive")];
 
-        let backlog = triage_backlog_with(&open, &[], &|payload| filter.choose_recorded_within(root, "x", TASK_TRIAGE_CALL, payload, Duration::from_secs(5)));
-        assert_eq!(backlog.map(|triage| triage.groups), Some(vec![vec![1, 2]]));
+        let languages = mustard_core::domain::normalize::Languages::new(["pt-BR"]);
+        let backlog = triage_backlog_with(&open, &[], &languages, &|payloads| {
+            filter.choose_all_recorded_within(root, "x", TASK_TRIAGE_CALL, payloads, Duration::from_secs(5))
+        });
+        assert_eq!(backlog.map(|triage| triage.groups), Ok(vec![vec![1, 2]]));
 
         let item = Item { title: "Retomada avisa a onda sem agente".into(), text: String::new(), files: BTreeSet::from(["src/resume.ts".to_string()]) };
         let destinations = classify_with(&open, &[item], &[], &|payload| filter.choose_recorded(root, "x", TASK_TRIAGE_CALL, payload));
@@ -168,7 +172,7 @@ mod tests {
 
         let recorded = calls(root, TASK_TRIAGE_CALL);
         let filters: Vec<&Value> = recorded.iter().map(|call| &call["filter"]).collect();
-        assert_eq!(filters, [&json!("jev"), &json!("jev:timeout")], "{recorded:?}");
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(filters, [&json!("jev"), &json!("jev"), &json!("jev:timeout")], "one call per backlog request: {recorded:?}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

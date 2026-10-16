@@ -17,7 +17,6 @@ mod orchestration;
 
 pub(crate) use call_record::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
-pub(crate) use orchestration::MAX_PAYLOAD_BYTES;
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
 use crate::shared::judgement::{Board, BoardTask, ItemsBoard, ItemsJudged, Judged, WaveJudge};
@@ -199,11 +198,12 @@ impl JevFilter {
         let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); Some(filter)
     }
 
-    /// A escolha da orquestração para `payload`, esperando a resposta até `wait`.
-    pub(crate) fn choose_orchestration(&self, payload: &str, wait: Duration) -> Result<Value,FilterError> {
-        validate_wire_size(payload)?;
-        self.send_all_for(&[payload.to_string()],Instant::now()+wait,Purpose::WavePlanning)?
-            .into_iter().next().ok_or_else(||FilterError::Unreadable("missing orchestration choice".into()))
+    /// As escolhas da orquestração para `payloads`, pedidas ao mesmo tempo e
+    /// esperadas até `wait`, na ordem dos pedidos.
+    pub(crate) fn choose_orchestration(&self, payloads: &[String], wait: Duration) -> Result<Vec<Value>,FilterError> {
+        for payload in payloads { validate_wire_size(payload)?; }
+        let docs=self.send_all_for(payloads,Instant::now()+wait,Purpose::WavePlanning)?;
+        if docs.len()==payloads.len() { Ok(docs) } else { Err(FilterError::Unreadable("missing orchestration choice".into())) }
     }
 
     /// Knowledge uses the same authorization, cache and attempt ledger
@@ -584,7 +584,7 @@ struct Batch {
 
 /// Check the actual serialized request, including repeated binary questions.
 /// Packing estimates are insufficient when a different primitive is used.
-fn validate_wire_size(payload: &str) -> Result<(), FilterError> {
+pub(crate) fn validate_wire_size(payload: &str) -> Result<(), FilterError> {
     let document: Value = serde_json::from_str(payload).map_err(|_| FilterError::Unreadable("invalid request".into()))?;
     let state = document["state"].as_str().map_or_else(|| document["state"].to_string().chars().count(), |s| s.chars().count());
     let longest = document["questions"]

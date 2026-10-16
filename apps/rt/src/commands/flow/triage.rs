@@ -1,7 +1,8 @@
 //! `mustard-rt run triage --spec <spec>` — reorganiza a lista aberta da spec
 //! pelo classificador das atividades ([`task_triage::triage_backlog_with`]),
-//! numa chamada só ao Jev: os grupos de mesmo sentido, as tarefas que uma
-//! entrega já cobre e a ordem dos assuntos por valor.
+//! em quantos pedidos ao Jev couberem no teto, todos ao mesmo tempo: os
+//! grupos de mesmo sentido, as tarefas que uma entrega já cobre e a ordem dos
+//! assuntos por valor.
 //!
 //! Sem `--apply`, nada é gravado, e a resposta é curta: os grupos com mais de
 //! uma tarefa (a primeira fica), as saídas com o motivo e a ordem. Com
@@ -18,12 +19,15 @@
 //! lançado depois do envio e com sinal de vida recente — fica de fora da
 //! gravação, com aviso. A onda solta que ninguém lançou não segura tarefa
 //! nenhuma. A resposta diz quantas foram
-//! classificadas e quantas ficaram de fora da gravação. Sem leitura do Jev, a
-//! lista fica como está, com aviso.
+//! classificadas, quantas ficaram de fora da gravação, quantos pedidos foram
+//! ao Jev e quantas tarefas tiveram leitura confiante. Sem leitura do Jev, a
+//! lista fica como está, e o aviso diz o motivo: o pedido grande demais, o
+//! Jev sem resposta ou a leitura sem confiança.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::io::spec_events as store;
@@ -47,12 +51,13 @@ pub struct TriageOpts {
 /// O relatório do `run triage`, com a pergunta ao Jev da orquestração, que
 /// espera a resposta o prazo da lista inteira.
 pub(crate) fn triage_at(opts: &TriageOpts) -> Value {
-    triage_with(opts, session_from_env().as_deref(), &|root, spec, payload| task_triage::backlog_jev_ask(root, spec)(payload))
+    triage_with(opts, session_from_env().as_deref(), &|root, spec, payloads| task_triage::backlog_jev_ask(root, spec)(payloads))
 }
 
 /// [`triage_at`] com a sessão recebida e a pergunta feita por `ask`, que
-/// recebe a raiz do projeto, a spec e o pedido.
-fn triage_with(opts: &TriageOpts, session: Option<&str>, ask: &dyn Fn(&Path, &str, &str) -> Option<Value>) -> Value {
+/// recebe a raiz do projeto, a spec e os pedidos, e devolve as respostas na
+/// ordem deles.
+fn triage_with(opts: &TriageOpts, session: Option<&str>, ask: &dyn Fn(&Path, &str, &[String]) -> Option<Vec<Value>>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
     let refuse = |refusal: &Refusal| spec_events::refused(refusal, lang);
@@ -101,11 +106,16 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, ask: &dyn Fn(&Path, &st
         let tasks: Vec<String> = held.iter().map(|id| code(*id)).collect();
         warnings.push(translate("triage.held", lang).replace("{tasks}", &tasks.join(", ")));
     }
-    let Some(triage) = task_triage::triage_backlog_with(&open, &done, &|payload| ask(&project.root, &spec, payload)) else {
-        warnings.push(translate("triage.no_jev", lang).to_string());
-        let order: Vec<String> = open.iter().map(|task| code(task.id)).collect();
-        return json!({ "ok": true, "spec": spec, "applied": false, "classified": open.len(), "kept_out": held.len(), "groups": [],
-            "covered": [], "order": order, "warnings": warnings });
+    let languages = Languages::of_project(&project.root);
+    let outcome = task_triage::triage_backlog_with(&open, &done, &languages, &|payloads| ask(&project.root, &spec, payloads));
+    warnings.extend(task_triage::backlog_warning(&outcome, open.len(), lang, &code));
+    let triage = match outcome {
+        Ok(triage) => triage,
+        Err(miss) => {
+            let order: Vec<String> = open.iter().map(|task| code(task.id)).collect();
+            return json!({ "ok": true, "spec": spec, "applied": false, "classified": open.len(), "kept_out": held.len(), "miss": miss.reason(),
+                "confident": 0, "groups": [], "covered": [], "order": order, "warnings": warnings });
+        }
     };
     let groups: Vec<Value> =
         triage.groups.iter().filter(|group| group.len() > 1).map(|group| json!({ "keep": code(group[0]), "join": group[1..].iter().map(|id| code(*id)).collect::<Vec<_>>() })).collect();
@@ -115,8 +125,8 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, ask: &dyn Fn(&Path, &st
         .map(|(task, by)| json!({ "task": code(*task), "reason": translate("triage.removed_covered", lang).replace("{code}", &code(*by)) }))
         .collect();
     let order: Vec<String> = triage.groups.iter().map(|group| code(group[0])).collect();
-    let mut report = json!({ "ok": true, "spec": spec, "applied": false, "classified": open.len(), "kept_out": held.len(), "groups": groups,
-        "covered": covered, "order": order });
+    let mut report = json!({ "ok": true, "spec": spec, "applied": false, "classified": open.len(), "kept_out": held.len(),
+        "requests": triage.requests, "confident": triage.confident, "groups": groups, "covered": covered, "order": order });
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
     }
@@ -238,10 +248,6 @@ mod tests {
     use super::*;
     use crate::commands::spec_events::write::{record, record_open};
 
-    fn sure(choice: &str) -> Value {
-        json!({ "choice": choice, "confidence": 0.95, "probabilities": { choice: 0.93, "runner-up": 0.04 } })
-    }
-
     /// Uma spec aberta com as tarefas `tasks` no backlog, na ordem: o
     /// título, o arquivo e as posições das anteriores de que cada uma
     /// depende. Devolve os números.
@@ -264,11 +270,36 @@ mod tests {
         store::read(&store::spec_file(dir, "x").unwrap()).unwrap().unwrap()
     }
 
-    /// O Jev confiante em que cada tarefa de `same` tem o mesmo sentido da
-    /// anterior apontada.
-    fn grouped(same: &[(u64, u64)]) -> Value {
-        let answers: Map<String, Value> = same.iter().map(|(task, earlier)| (format!("t{task}_same"), sure(&format!("t{earlier}")))).collect();
-        json!({ "answers": answers })
+    /// O Jev confiante em que cada tarefa de `same`, achada pelo título no
+    /// estado do pedido, é o mesmo trabalho que a anterior apontada, com um
+    /// não claro nas outras perguntas e a nota 1 de valor. Os títulos vêm das
+    /// tarefas da spec de `root`.
+    fn grouped(root: &Path, same: &[(u64, u64)]) -> impl Fn(&Path, &str, &[String]) -> Option<Vec<Value>> + use<> {
+        let titles: std::collections::BTreeMap<String, u64> = log_of(root)
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task")
+            .map(|e| (e.str_field("title").unwrap_or_default().to_string(), e.id))
+            .collect();
+        let same = same.to_vec();
+        move |_, _, payloads| {
+            let answer = |payload: &String| {
+                let doc: Value = serde_json::from_str(payload).unwrap();
+                let task = titles.get(doc["state"]["task"]["title"].as_str().unwrap_or_default()).copied();
+                let answers: Map<String, Value> = doc["questions"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(|key| {
+                        let yes = same.iter().any(|(on, earlier)| Some(*on) == task && *key == format!("same_t{earlier}"));
+                        let said = if key == "value" { json!({ "type": "score", "score": 1.0, "probabilities": { "1": 0.9 } }) } else { json!({ "type": "noul", "noul": if yes { 0.93 } else { 0.05 } }) };
+                        (key.clone(), said)
+                    })
+                    .collect();
+                json!({ "answers": answers })
+            };
+            Some(payloads.iter().map(answer).collect())
+        }
     }
 
     /// Quatro tarefas reais da lista de 16/10: a retomada que lista as ondas
@@ -289,15 +320,15 @@ mod tests {
             ("O commit leva título e corpo", "apps/rt/src/commands/flow/round/commit.rs", &[]),
         ]);
         let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
-        let answer = grouped(&[(ids[2], ids[0])]);
+        let answer = grouped(root, &[(ids[2], ids[0])]);
         let events = log_of(root).events.len();
 
-        let shown = triage_with(&opts(false), None, &|_, _, _| Some(answer.clone()));
+        let shown = triage_with(&opts(false), None, &answer);
         assert_eq!(shown["groups"], json!([{ "keep": "MSTD-TASK-0001", "join": ["MSTD-TASK-0003"] }]), "{shown}");
         assert_eq!(shown["order"].as_array().map(Vec::len), Some(3), "{shown}");
         assert_eq!(log_of(root).events.len(), events, "nothing is recorded without --apply");
 
-        let applied = triage_with(&opts(true), None, &|_, _, _| Some(answer.clone()));
+        let applied = triage_with(&opts(true), None, &answer);
         assert_eq!(applied["applied"], json!(true), "{applied}");
         let log = log_of(root);
         let visible: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "task").collect();
@@ -353,22 +384,20 @@ mod tests {
                 seed("delivered", back);
             }
         }
-        let answer = grouped(&[(ids[1], ids[0]), (ids[2], ids[0]), (ids[3], ids[0]), (ids[5], ids[0])]);
+        let answer = grouped(root, &[(ids[1], ids[0]), (ids[2], ids[0]), (ids[3], ids[0]), (ids[5], ids[0])]);
         let asked = std::cell::RefCell::new(Vec::new());
-        let ask = |_: &Path, _: &str, payload: &str| {
-            asked.borrow_mut().push(serde_json::from_str::<Value>(payload).unwrap());
-            Some(answer.clone())
+        let ask = |root: &Path, spec: &str, payloads: &[String]| {
+            asked.borrow_mut().extend(payloads.iter().map(|payload| serde_json::from_str::<Value>(payload).unwrap()));
+            answer(root, spec, payloads)
         };
         let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
 
         let shown = triage_with(&opts(false), None, &ask);
-        let state = asked.borrow()[0]["state"].clone();
-        let mut open: Vec<String> = state["tasks"].as_object().unwrap().keys().cloned().collect();
-        open.sort();
-        let mut expected: Vec<String> = [ids[0], ids[1], ids[2], ids[3], ids[5]].iter().map(|id| format!("t{id}")).collect();
-        expected.sort();
-        assert_eq!(open, expected, "every unfinished task goes to the classifier: {shown}");
-        assert!(state["delivered"].get(format!("d{}", ids[4])).is_some(), "the returned wave counts as delivered: {state}");
+        let titles = |ids: &[u64]| -> BTreeSet<String> { ids.iter().map(|id| log_of(root).get(*id).unwrap().str_field("title").unwrap().to_string()).collect() };
+        let open: BTreeSet<String> = asked.borrow().iter().map(|doc| doc["state"]["task"]["title"].as_str().unwrap().to_string()).collect();
+        assert_eq!(open, titles(&[ids[0], ids[1], ids[2], ids[3], ids[5]]), "every unfinished task goes to the classifier: {shown}");
+        let delivery = format!("done_d{}", ids[4]);
+        assert!(asked.borrow().iter().any(|doc| doc["questions"].get(&delivery).is_some()), "the returned wave counts as delivered: {shown}");
         assert_eq!((shown["classified"].clone(), shown["kept_out"].clone()), (json!(5), json!(1)), "{shown}");
         assert!(shown["warnings"][0].as_str().is_some_and(|said| said.contains("MSTD-TASK-0004")), "{shown}");
 
@@ -401,10 +430,10 @@ mod tests {
             ("A busca lê o mapa sem esperar", "apps/rt/src/commands/map.rs", &[2]),
             ("A busca responde o que foi pedido", "apps/rt/src/commands/search_cli.rs", &[3]),
         ]);
-        let answer = grouped(&[(ids[1], ids[0]), (ids[4], ids[2])]);
+        let answer = grouped(root, &[(ids[1], ids[0]), (ids[4], ids[2])]);
         let events = log_of(root).events.len();
         let opts = TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply: true };
-        let refused = triage_with(&opts, None, &|_, _, _| Some(answer.clone()));
+        let refused = triage_with(&opts, None, &answer);
         assert_eq!(refused["reason"], json!("task-dependency-cycle"), "{refused}");
         assert_eq!(log_of(root).events.len(), events, "a refusal in the middle records nothing");
     }
