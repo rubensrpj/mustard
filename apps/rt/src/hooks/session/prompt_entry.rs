@@ -14,7 +14,10 @@
 //!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
 //!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
 //!    plano, a volta de um subagente) não é mensagem de ninguém e não é
-//!    gravado.
+//!    gravado. A mensagem dita antes de a spec existir, a do turno da
+//!    abertura inclusive, quem grava é a abertura (`run open`), lida da
+//!    conversa da sessão com o mesmo filtro do aviso; daqui saem só as
+//!    seguintes, sem repetir nenhuma.
 //! 3. **A correção.** A regra de escrita mora no estilo de resposta, dita uma
 //!    vez, e uma mensagem comum não coloca texto nenhum na conversa: repetida
 //!    em toda mensagem, a lembrança empurrava a resposta a encolher. Só depois

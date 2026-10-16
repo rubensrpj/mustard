@@ -21,6 +21,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::shared::typed_messages::text_of;
+
 /// O tamanho de cada pedaço lido de trás para a frente.
 const CHUNK: u64 = 64 * 1024;
 
@@ -125,13 +127,6 @@ fn read_line(line: &[u8]) -> Option<Ending> {
     }
 }
 
-/// O texto de um bloco, quando é um bloco de texto com algo escrito.
-fn text_of(block: &Value) -> Option<&str> {
-    if block.get("type").and_then(Value::as_str) != Some("text") {
-        return None;
-    }
-    block.get("text").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
-}
 
 #[cfg(test)]
 mod tests {

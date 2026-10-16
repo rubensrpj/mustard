@@ -1438,18 +1438,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              have them."
         }
         ("open.next_goal", Locale::PtBr) => {
-            "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta. O objetivo da spec é uma frase que diz o que ele pediu: a dele, ou a \
-             que você sugeriu e ele aprovou. Grave-o como o primeiro `context`, com `origin` na \
-             mensagem dele. O card, os critérios de aceite e os documentos antigos que vierem junto \
-             vão logo depois, como `context`, com o mesmo `origin`."
+            "A spec {spec} nasceu na branch {branch}. As mensagens que o usuário digitou antes da \
+             abertura já estão nela, como mensagens dele, com os números em `earlier_messages`. Faça \
+             ao usuário a pergunta de `question` e espere a resposta. O objetivo da spec é uma frase \
+             que diz o que ele pediu: a dele, ou a que você sugeriu e ele aprovou. Grave-o como o \
+             primeiro `context`, com `origin` na mensagem em que ele fez o pedido, mesmo que seja \
+             uma das de antes. O card, os critérios de aceite e os documentos antigos que vierem \
+             junto vão logo depois, como `context`, com o mesmo `origin`."
+        }
+        ("open.earlier_messages_missing", Locale::PtBr) => {
+            "A conversa desta sessão não foi achada, e as mensagens que o usuário digitou antes da \
+             abertura ficaram fora da spec. O `origin` do objetivo vai na resposta dele à pergunta."
+        }
+        ("open.earlier_messages_missing", Locale::EnUs) => {
+            "This session's conversation was not found, and the messages the user typed before the \
+             opening stayed out of the spec. The goal's `origin` goes on their answer to the question."
         }
         ("open.next_goal", Locale::EnUs) => {
-            "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer. The spec's goal is one sentence saying what they asked for: theirs, \
-             or the one you suggested and they approved. Record it as the first `context`, with \
-             `origin` on their message. The card, the acceptance criteria and the old documents that \
-             come along go right after it, as `context`, with the same `origin`."
+            "Spec {spec} was born on branch {branch}. The messages the user typed before the opening \
+             are already in it, as their messages, with the numbers in `earlier_messages`. Ask the \
+             user the question in `question` and wait for the answer. The spec's goal is one sentence \
+             saying what they asked for: theirs, or the one you suggested and they approved. Record \
+             it as the first `context`, with `origin` on the message where they made the request, \
+             even when it is one of the earlier ones. The card, the acceptance criteria and the old \
+             documents that come along go right after it, as `context`, with the same `origin`."
         }
         ("open.no_flow", Locale::PtBr) => {
             "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
@@ -1986,7 +1998,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 283, 0x4d0a_23b3_2753_a79f);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 284, 0xb0fc_e0a8_3acb_499b);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2000,6 +2012,7 @@ mod tests {
             ("open.confirm_name", &["{asked}", "{adjusted}"][..]),
             ("open.ask_goal", &[][..]),
             ("open.next_goal", &["{spec}", "{branch}"][..]),
+            ("open.earlier_messages_missing", &[][..]),
             ("open.no_flow", &[][..]),
             ("open.map_warning", &["{detail}"][..]),
             ("open.kind_invalid", &["{kind}"][..]),

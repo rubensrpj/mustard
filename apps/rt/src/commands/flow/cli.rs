@@ -349,7 +349,8 @@ pub fn dispatch(cmd: FlowCmd) {
             flow::answer("evidence",&root,spec.as_deref(),started,&report, false);
         }
         FlowCmd::Open { kind, name, base, pending, root } => {
-            let opts = flow::open::OpenOpts { root, kind, name, base, pending };
+            let session = crate::shared::spec_state::session_from_env();
+            let opts = flow::open::OpenOpts { root, kind, name, base, pending, session };
             let named = opts.name.clone();
             flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts), false);
         }

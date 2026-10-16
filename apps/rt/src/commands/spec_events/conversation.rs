@@ -102,6 +102,21 @@ pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> 
     record_user_message(root, session, json!({ "author": "user", "text": text }))
 }
 
+/// As mensagens que o usuário digitou antes de a spec `spec` nascer, gravadas
+/// nela em ordem, como o gancho grava a mensagem do turno: autor usuário,
+/// gravadas pelo programa e sem os segredos. Quem chama é a abertura, logo
+/// depois do nascimento, quando a spec ainda não tem mensagem nenhuma; as
+/// mensagens seguintes ficam com o gancho. Devolve os números gravados.
+pub(crate) fn record_earlier_messages(root: &Path, spec: &str, texts: &[String]) -> Vec<u64> {
+    texts
+        .iter()
+        .filter(|text| !text.trim().is_empty())
+        .filter_map(|text| {
+            record_in_spec(root, spec, "message", draft(json!({ "author": "user", "text": without_secrets(text) })))
+        })
+        .collect()
+}
+
 /// A resposta do usuário a uma pergunta de gesto, com a testemunha: a
 /// pergunta, a opção que ele clicou e, quando a pergunta decide uma mudança,
 /// o código dela ao lado da resposta. É o registro que o fluxo lê como o
