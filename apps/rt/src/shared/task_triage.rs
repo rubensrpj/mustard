@@ -17,6 +17,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
 use mustard_core::io::knowledge::enrichment::{RewriteSource, prepare_rewrite};
 use serde_json::{Map, Value, json};
@@ -93,6 +94,18 @@ pub(crate) fn shares_area(own: &BTreeSet<String>, files: &BTreeSet<String>) -> b
 pub(crate) fn jev_ask<'a>(root: &'a Path, spec: &'a str) -> impl Fn(&str) -> Option<Value> + 'a {
     let filter = JevFilter::for_orchestration(root, spec);
     move |payload| filter.as_ref()?.choose_recorded(root, spec, TASK_TRIAGE_CALL, payload)
+}
+
+/// Quanto a reorganização da lista aberta espera o Jev. Ela pergunta sobre a
+/// lista inteira de uma vez, e ninguém a espera no meio de um gancho: com 61
+/// tarefas, a resposta passou dos dez segundos de toda chamada.
+pub(crate) const BACKLOG_WAIT: Duration = Duration::from_secs(60);
+
+/// A pergunta de [`jev_ask`] para a reorganização da lista aberta
+/// ([`triage_backlog_with`]), com a resposta esperada até [`BACKLOG_WAIT`].
+pub(crate) fn backlog_jev_ask<'a>(root: &'a Path, spec: &'a str) -> impl Fn(&str) -> Option<Value> + 'a {
+    let filter = JevFilter::for_orchestration(root, spec);
+    move |payload| filter.as_ref()?.choose_recorded_within(root, spec, TASK_TRIAGE_CALL, payload, BACKLOG_WAIT)
 }
 
 /// O destino de cada atividade de `items`, na ordem, com a pergunta feita

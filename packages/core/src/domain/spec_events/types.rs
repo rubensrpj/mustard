@@ -873,6 +873,11 @@ pub const TYPES: &[TypeSpec] = &[
             // o processo da própria rodada, e esse par não diz se o
             // hospedeiro segue aberto.
             opt("host_pair", Kind::Bool),
+            // A marca da versão que o gancho do despacho grava quando lança o
+            // agente da onda: só a onda lançada, com sinal de vida recente,
+            // conta como onda com agente trabalhando. O envio novo da rodada
+            // sai sem ela.
+            opt("agent_launched", Kind::Bool),
             // A reprovação de quem conduz a obra: a volta da onda que ele
             // reprovou, pelo número (`delivered`), e o motivo dele (`reason`).
             // Enquanto essa volta for a última da onda, ela fica fora do

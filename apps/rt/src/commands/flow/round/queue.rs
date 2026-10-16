@@ -380,6 +380,45 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
     open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && host_still_here(log, *sent)).collect()
 }
 
+/// O campo da versão do envio que o gancho do despacho grava quando lança o
+/// agente da onda. A versão nova do envio leva os campos da anterior, e o
+/// envio novo da rodada (o despacho e o reenvio) começa sem ele: o campo diz
+/// que o agente saiu depois do envio que despachou a onda.
+const AGENT_LAUNCHED: &str = "agent_launched";
+
+/// Os campos da versão do envio que marca o agente da onda lançado
+/// ([`AGENT_LAUNCHED`]); [`agent_launched`] lê de volta o que sai daqui.
+pub(crate) fn launch_fields() -> Map<String, Value> {
+    Map::from_iter([(AGENT_LAUNCHED.to_string(), json!(true))])
+}
+
+/// `true` quando o envio `sent` já tem o agente da onda lançado depois do
+/// despacho ([`launch_fields`]).
+pub(crate) fn agent_launched(log: &SpecLog, sent: u64) -> bool {
+    log.get(sent).is_some_and(|event| event.fields.get(AGENT_LAUNCHED) == Some(&json!(true)))
+}
+
+/// Os minutos sem sinal de vida a partir dos quais a onda conta como calada:
+/// o mesmo prazo do aviso `wave-silent` da rodada.
+pub(crate) const SILENT_AFTER_MINUTES: i64 = 40;
+
+/// As ondas com agente trabalhando, cada uma com o número do pedido dela: as
+/// em andamento ([`waves_in_progress`]) cujo agente foi lançado depois do
+/// envio ([`agent_launched`]) e deu sinal de vida há menos de
+/// [`SILENT_AFTER_MINUTES`] ([`silent_minutes`]). A onda que a rodada soltou e
+/// ninguém lançou segue em andamento, e a retomada e a rodada a listam assim,
+/// mas o processo vivo do condutor não diz que um agente a trabalha; a calada
+/// além do prazo também não. A reorganização da lista lê daqui quais tarefas
+/// não pode regravar.
+pub(crate) fn waves_with_live_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, u64> {
+    waves_in_progress(log)
+        .into_iter()
+        .filter(|(wave, sent)| {
+            agent_launched(log, *sent) && silent_minutes(root, spec, *wave, log, *sent).is_some_and(|minutes| minutes < SILENT_AFTER_MINUTES)
+        })
+        .collect()
+}
+
 /// As ondas órfãs, cada uma com o número do pedido dela: as com pedido aberto
 /// ([`open_sends`]) cujo Claude Code já fechou. A rodada as reenvia com o
 /// mesmo pedido de antes, na cópia que volta limpa ao commit atual. A onda
@@ -2469,6 +2508,47 @@ mod tests {
         std::fs::write(&alive, at(-120)).unwrap();
         let older = silent_minutes(root, "x", 1, &log, sent).unwrap();
         assert!((0..=1).contains(&older), "o sinal de uma onda anterior não conta: {older}");
+    }
+
+    /// As duas ondas que a rodada soltou seguem em andamento, mas nenhuma
+    /// conta como onda com agente trabalhando só porque o processo do
+    /// condutor vive. A onda 1 passa a contar quando o despacho do agente
+    /// dela, pelo gancho, grava o lançamento, com o sinal de vida recente. A
+    /// onda 2, lançada há uma hora e calada desde então, não conta.
+    #[test]
+    fn a_wave_sent_without_an_agent_is_not_live() {
+        use crate::hooks::task::subagent_inject::SubagentInject;
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["web/a.ts"], &[]), (2, &["web/b.ts"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+        let live = || waves_with_live_agent(root, "x", &spec_now(root)).into_keys().collect::<Vec<u64>>();
+        assert_eq!(waves_in_progress(&spec_now(root)).into_keys().collect::<Vec<u64>>(), vec![1, 2], "both sent waves stay listed");
+        assert_eq!(live(), Vec::<u64>::new(), "no agent was launched");
+
+        let first = out["dispatch"].as_array().unwrap().iter().find(|d| d["wave"] == json!(1)).unwrap()["read"].as_str().unwrap().to_string();
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let input = HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("Agent".to_string()),
+            tool_input: json!({ "prompt": format!("{title}\n\n{first}"), "subagent_type": "mustard-wave", "description": "onda" }),
+            ..HookInput::default()
+        };
+        let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
+        ctx.config = mustard_core::ProjectConfig::load(root);
+        let verdict = SubagentInject.evaluate(&input, &ctx).unwrap();
+        assert!(!matches!(verdict, Verdict::Deny { .. }), "{verdict:?}");
+        assert_eq!(live(), vec![1], "the launched wave with a recent signal is live");
+
+        let log = spec_now(root);
+        let draft = send_revision(&log, 2, launch_fields()).unwrap();
+        let hour_ago = (chrono::Local::now() - chrono::Duration::minutes(60)).format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        store::write_at(&store::spec_file(root, "x").unwrap(), "send", draft, &[], &hour_ago).unwrap();
+        let log = spec_now(root);
+        assert!(agent_launched(&log, log.last_by_wave("send")[&2]), "wave 2 was launched");
+        assert_eq!(live(), vec![1], "the launched wave silent for an hour is not live");
     }
 
     /// O agente do envio da onda 1 deu o último sinal de vida há 6 minutos, e

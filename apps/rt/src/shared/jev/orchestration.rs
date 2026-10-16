@@ -5,7 +5,7 @@
 //! ([`record_jev_call`]). Sem resposta, a escolha fica a nativa.
 
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::{FilterError, FilterUsage};
 use serde_json::Value;
@@ -21,13 +21,22 @@ impl JevFilter {
     /// A resposta do Jev à pergunta `payload`, com a chamada gravada como
     /// `command` na spec `spec` de `root`. O pedido acima do teto não sai e é
     /// gravado como grande demais; a falha do serviço é gravada com o motivo.
-    /// `None` em toda falha: quem chama segue pela escolha nativa.
+    /// `None` em toda falha: quem chama segue pela escolha nativa. A resposta
+    /// é esperada pelo prazo de toda chamada, o de quem espera no meio de um
+    /// gancho.
     pub(crate) fn choose_recorded(&self, root: &Path, spec: &str, command: &str, payload: &str) -> Option<Value> {
+        self.choose_recorded_within(root, spec, command, payload, self.timeouts.response)
+    }
+
+    /// [`Self::choose_recorded`] com a resposta esperada até `wait`: a
+    /// pergunta que ninguém espera no meio de um gancho, mas que é grande o
+    /// bastante para o Jev levar mais que o prazo de toda chamada.
+    pub(crate) fn choose_recorded_within(&self, root: &Path, spec: &str, command: &str, payload: &str, wait: Duration) -> Option<Value> {
         let called = Instant::now();
         let answer = if payload.len() > MAX_PAYLOAD_BYTES {
             Err(FilterError::TooLarge { estimated_tokens: tokens_of(payload.chars().count()) })
         } else {
-            self.choose_orchestration(payload)
+            self.choose_orchestration(payload, wait)
         };
         let usage = answer.as_ref().map(|doc| usage_of(doc, called));
         record_jev_call(root, spec, command, called, None, usage.as_ref().map_err(|error| *error));
@@ -56,12 +65,21 @@ mod tests {
     use mustard_core::io::spec_events as store;
     use serde_json::{Map, json};
 
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::shared::jev::{EXPERTISE_CALL, JevKey, TRIAGE_CALL};
+    use crate::shared::jev::{EXPERTISE_CALL, JevKey, TASK_TRIAGE_CALL, TRIAGE_CALL};
+    use crate::shared::task_triage::{Candidate, Item, classify_with, triage_backlog_with};
 
     /// Um serviço em 127.0.0.1 que responde `status` a todo pedido e conta
     /// quantos chegaram.
     fn answering(status: u16) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        serving(Duration::ZERO, status, String::new())
+    }
+
+    /// Um serviço em 127.0.0.1 que responde `status` com `body` a todo pedido,
+    /// `delay` depois de lê-lo, um pedido por vez, e conta quantos chegaram.
+    fn serving(delay: Duration, status: u16, body: String) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -80,10 +98,11 @@ mod tests {
                         length = value.trim().parse().unwrap_or(0);
                     }
                 }
-                let mut body = vec![0; length];
-                let _ = std::io::Read::read_exact(&mut reader, &mut body);
+                let mut request = vec![0; length];
+                let _ = std::io::Read::read_exact(&mut reader, &mut request);
+                std::thread::sleep(delay);
                 let mut stream = &stream;
-                let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             }
         });
         (url, count)
@@ -118,5 +137,38 @@ mod tests {
         assert_eq!(recorded.len(), 1, "{recorded:?}");
         assert_eq!(recorded[0]["filter"], json!("jev:too_large"), "{recorded:?}");
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "the oversized question never leaves");
+    }
+
+    /// O serviço responde depois do prazo de toda chamada e antes do prazo da
+    /// reorganização da lista aberta (os dois encurtados): a reorganização
+    /// recebe a resposta e junta as duas tarefas; a classificação de uma
+    /// tarefa a gravar, com o prazo de toda chamada, fica sem resposta e grava
+    /// a falha por prazo.
+    #[test]
+    fn backlog_triage_waits_longer_than_a_hook_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}")]);
+        assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let sure = |choice: &str| json!({ "choice": choice, "confidence": 0.95, "probabilities": { choice: 0.93, "none": 0.04 } });
+        let value = json!({ "type": "score", "score": 2.0, "probabilities": { "0": 0.05, "1": 0.1, "2": 0.8, "3": 0.05 } });
+        let answer = json!({ "answers": { "t1_value": value, "t2_same": sure("t1"), "t2_value": value } });
+        let (url, count) = serving(Duration::from_millis(600), 200, answer.to_string());
+        let mut filter = JevFilter::at(JevKey("sk-test".to_string()), &url);
+        filter.timeouts.response = Duration::from_millis(150);
+        let task = |id: u64, title: &'static str| Candidate { id, title, text: "", files: BTreeSet::from(["src/resume.ts".to_string()]), joinable: true };
+        let open = [task(1, "Retomada lista as ondas no ar"), task(2, "Retomada diz se o agente de cada onda vive")];
+
+        let backlog = triage_backlog_with(&open, &[], &|payload| filter.choose_recorded_within(root, "x", TASK_TRIAGE_CALL, payload, Duration::from_secs(5)));
+        assert_eq!(backlog.map(|triage| triage.groups), Some(vec![vec![1, 2]]));
+
+        let item = Item { title: "Retomada avisa a onda sem agente".into(), text: String::new(), files: BTreeSet::from(["src/resume.ts".to_string()]) };
+        let destinations = classify_with(&open, &[item], &[], &|payload| filter.choose_recorded(root, "x", TASK_TRIAGE_CALL, payload));
+        assert_eq!(destinations, vec![None]);
+
+        let recorded = calls(root, TASK_TRIAGE_CALL);
+        let filters: Vec<&Value> = recorded.iter().map(|call| &call["filter"]).collect();
+        assert_eq!(filters, [&json!("jev"), &json!("jev:timeout")], "{recorded:?}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

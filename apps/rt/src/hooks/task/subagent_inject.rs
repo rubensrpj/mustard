@@ -16,7 +16,10 @@
 //! do Mustard que abre com o título do pedido de uma onda sai só com o que a
 //! rodada monta para ela: o título e o comando que lê o pedido. O texto a
 //! mais do condutor é gravado no pedido antes do despacho; falha nessa
-//! gravação impede o envio. O suplemento não muda escopo nem regras. O
+//! gravação impede o envio. O despacho da onda em andamento, pelo título ou
+//! pelo bilhete, grava também no envio dela que o agente foi lançado: só a
+//! onda lançada conta como onda com agente trabalhando, e a falha nessa
+//! gravação também impede o envio. O suplemento não muda escopo nem regras. O
 //! despacho que já é esse texto passa como veio, e o título de uma onda que a
 //! spec não tem em andamento é barrado com o motivo. A exceção é a onda cuja
 //! volta a rodada recusou depois de o Claude Code que a mandou fechar, levando
@@ -154,6 +157,9 @@ fn wave_dispatch(input: &HookInput, start: &Path, spec: &str, wave: u64, host: f
     };
     let text = crate::commands::flow::round::wave_dispatch(&project.root, spec, wave, lang);
     if crate::commands::flow::round::waves_in_progress(&log).contains_key(&wave) {
+        if !record_launch(&project.root, spec, wave) {
+            return launch_failure(lang);
+        }
         let recorded = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|event| event.str_field("text"));
         let base = recorded.filter(|request| dispatch_prompt(input).starts_with(request.trim_end())).unwrap_or(&text);
         let extra = supplemental_instructions(dispatch_prompt(input), base);
@@ -203,6 +209,35 @@ fn record_supplement(root: &Path, spec: &str, wave: u64, extra: &str, lang: Loca
         record_locked(locked, root, spec, "send", draft, PhaseWriter::Binary).ok()?;
         Some(())
     }), Ok(Some(Some(()))))
+}
+
+/// Grava que o agente da onda `wave` da spec `spec` foi lançado: o envio dela
+/// ganha uma versão com [`crate::commands::flow::round::queue::launch_fields`],
+/// e só então a onda conta como onda com agente trabalhando
+/// ([`crate::commands::flow::round::queue::waves_with_live_agent`]). Ler,
+/// conferir e gravar correm com a trava do arquivo de eventos presa. A onda
+/// que não está em andamento, ou cujo envio já marca o lançamento, não grava
+/// nada. `false` só quando a gravação falha.
+fn record_launch(root: &Path, spec: &str, wave: u64) -> bool {
+    use crate::commands::flow::round::queue::{agent_launched, launch_fields};
+    let Ok(path) = store::spec_file(root, spec) else { return false };
+    let written = store::with_locked_writer(&path, |locked| {
+        let Some(sent) = crate::commands::flow::round::waves_in_progress(locked.log()).get(&wave).copied() else { return Some(()) };
+        if agent_launched(locked.log(), sent) {
+            return Some(());
+        }
+        let draft = crate::commands::flow::round::send_revision(locked.log(), wave, launch_fields())?;
+        record_locked(locked, root, spec, "send", draft, PhaseWriter::Binary).ok()?;
+        Some(())
+    });
+    matches!(written, Ok(Some(Some(()))))
+}
+
+fn launch_failure(lang: Locale) -> Verdict {
+    Verdict::Deny { reason: match lang {
+        Locale::PtBr => "[Mustard] O envio não saiu: não consegui gravar no pedido da onda que o agente dela foi lançado. Despache de novo.".into(),
+        Locale::EnUs => "[Mustard] Sending stopped: the launch of the wave's agent could not be recorded in its request. Dispatch it again.".into(),
+    }}
 }
 
 fn supplement_failure(lang: Locale) -> Verdict {
@@ -445,7 +480,9 @@ impl Check for SubagentInject {
         if !supplemental_instructions(dispatch_prompt(input), "").is_empty() {
             return Ok(wave_dispatch(input, Path::new(&root), &spec, wave, crate::commands::flow::stuck::sender_process));
         }
+        let project = crate::commands::spec_events::project(Path::new(&root));
         Ok(match assemble(Path::new(&root), &spec, wave) {
+            Ok(_) if !record_launch(&project.root, &spec, wave) => launch_failure(project.lang),
             Ok(text) => with_prompt(input, text),
             Err(reason) => Verdict::Deny { reason },
         })

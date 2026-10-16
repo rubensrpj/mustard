@@ -199,9 +199,10 @@ impl JevFilter {
         let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); Some(filter)
     }
 
-    pub(crate) fn choose_orchestration(&self, payload: &str) -> Result<Value,FilterError> {
+    /// A escolha da orquestração para `payload`, esperando a resposta até `wait`.
+    pub(crate) fn choose_orchestration(&self, payload: &str, wait: Duration) -> Result<Value,FilterError> {
         validate_wire_size(payload)?;
-        self.send_all_for(&[payload.to_string()],Instant::now()+self.timeouts.response,Purpose::WavePlanning)?
+        self.send_all_for(&[payload.to_string()],Instant::now()+wait,Purpose::WavePlanning)?
             .into_iter().next().ok_or_else(||FilterError::Unreadable("missing orchestration choice".into()))
     }
 
