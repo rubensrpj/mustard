@@ -7,8 +7,12 @@
 //!   documento, molde, script), com o arquivo e a linha. O nome que continua
 //!   declarado noutro lugar não conta pelo texto: ali o texto pode citar a
 //!   outra declaração, e o mapa de depois já liga cada chamada a ela. A spec
-//!   (`.claude/spec/`), o registro de mudanças do projeto e o histórico do
-//!   git ficam de fora: são registro do que aconteceu. Só se procura o nome
+//!   (`.claude/spec/`), o registro de mudanças do projeto, o registro datado
+//!   (o documento cujo nome começa pela data e a pasta de evidências,
+//!   [`is_dated_record`]) e o histórico do git ficam de fora: são registro do
+//!   que aconteceu, e reescrevê-los adulteraria o que valia naquele dia. A
+//!   mesma busca, sem eles, decide se o nome de uma declaração sem uso ainda
+//!   está escrito noutro lugar. Só se procura o nome
 //!   que não se confunde com uma palavra da prosa ([`distinctive`]). O nome de
 //!   um arquivo tirado, que não tem declaração, conta pelo texto em qualquer
 //!   lugar, com o desconto da prosa só no comentário. O mesmo nome de uma
@@ -106,6 +110,10 @@ const DOCUMENT_EXTENSIONS: &[&str] = &["md", "txt", "rst", "adoc"];
 
 /// A pasta que guarda os moldes de um projeto.
 const MOLD_FOLDER: &str = "templates";
+
+/// A pasta que guarda os registros de evidência de um projeto, em qualquer
+/// profundidade.
+const EVIDENCE_FOLDER: &str = "docs/evidence/";
 
 /// Os achados dos restos, dos órfãos e do código novo sem uso de cada onda de
 /// `maps`, procurando o texto em `root`, já com a junção no disco.
@@ -578,7 +586,8 @@ fn created(root: &Path, maps: &AfterWave) -> Vec<String> {
 
 /// Cada lugar que cita `name` como palavra inteira, com o arquivo, a linha e
 /// o texto dela: nos arquivos que o git rastreia em `root` e nos criados
-/// (`created`). A spec e o registro de mudanças ficam de fora.
+/// (`created`). A spec, o registro de mudanças e o registro datado
+/// ([`is_dated_record`]) ficam de fora.
 fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize, String)> {
     fn grep<'a>(name: &'a str, untracked: &[&'a str], paths: &[&'a str]) -> Vec<&'a str> {
         let head = ["-c", "core.quotePath=false", "grep"];
@@ -596,7 +605,7 @@ fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize, Str
             let (Some(file), Some(Ok(at))) = (parts.next(), parts.next().map(str::parse)) else {
                 continue;
             };
-            if !is_change_log(file) {
+            if !is_change_log(file) && !is_dated_record(file) {
                 found.insert((file.to_string(), at, parts.next().unwrap_or_default().to_string()));
             }
         }
@@ -609,6 +618,26 @@ fn is_change_log(path: &str) -> bool {
     let name = file_name(path).to_lowercase();
     let (stem, extension) = name.rsplit_once('.').unwrap_or((name.as_str(), ""));
     CHANGE_LOGS.contains(&stem) && (extension.is_empty() || DOCUMENT_EXTENSIONS.contains(&extension))
+}
+
+/// `path` guarda o que valia num dia: o documento de texto
+/// ([`DOCUMENT_EXTENSIONS`]) cujo nome começa pela data
+/// (`docs/2026-10-12-fechamento.md`), em qualquer pasta, e todo arquivo da
+/// pasta de evidências ([`EVIDENCE_FOLDER`]), de qualquer extensão.
+fn is_dated_record(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let name = file_name(&lower);
+    let extension = name.rsplit_once('.').map_or("", |(_, extension)| extension);
+    let dated = DOCUMENT_EXTENSIONS.contains(&extension) && starts_with_date(name);
+    dated || lower.starts_with(EVIDENCE_FOLDER) || lower.contains(&format!("/{EVIDENCE_FOLDER}"))
+}
+
+/// O nome começa por uma data `AAAA-MM-DD` que não segue em outro dígito:
+/// `2026-10-12-fechamento.md`, `2026-10-12.md`.
+fn starts_with_date(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let date = bytes.iter().take(10).enumerate().all(|(at, b)| if at == 4 || at == 7 { *b == b'-' } else { b.is_ascii_digit() });
+    bytes.len() > 10 && date && !bytes[10].is_ascii_digit()
 }
 
 #[cfg(test)]
@@ -1706,29 +1735,37 @@ mod tests {
         },
     ];
 
+    /// Um repositório em `root` com os arquivos `files` comitados.
+    fn committed(root: &Path, files: &[(&str, &str)]) {
+        for (path, text) in files {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), text).unwrap();
+        }
+        git_at(root, &["init", "-q"]);
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "base"]);
+    }
+
+    /// O mapa que o scan de verdade grava de `root` no arquivo `out`.
+    fn real_map(root: &Path, out: &Path) -> ProjectMap {
+        let scan = mustard_core::Scan::locate();
+        assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
+        scan.scan(root, out).expect("the scan writes the map");
+        mustard_core::io::project_map::read_at(out).expect("the map reads back")
+    }
+
     /// A análise final do código que a onda 1 pôs em `file`: o texto `base`
     /// comitado, `added` escrito depois dele, `closing` no fim dos dois, e os
     /// dois mapas do scan de verdade, o da base e o de depois, sem saída de
     /// compilador nenhuma; com os achados, o mapa de depois.
     fn final_by_the_real_scan(NewCode { file, base, closing, .. }: &NewCode, added: &str) -> (Vec<Finding>, ProjectMap) {
-        let scan = mustard_core::Scan::locate();
-        assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-rt`");
         let dir = tempdir().unwrap();
         let maps = tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
-        std::fs::write(root.join(file), format!("{base}{closing}")).unwrap();
-        git_at(root, &["init", "-q"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "base"]);
-        let mapped = |name: &str| {
-            let out = maps.path().join(name);
-            scan.scan(root, &out).expect("the scan writes the map");
-            mustard_core::io::project_map::read_at(&out).expect("the map reads back")
-        };
-        let before = mapped("base.db");
+        committed(root, &[(file, &format!("{base}{closing}"))]);
+        let before = real_map(root, &maps.path().join("base.db"));
         std::fs::write(root.join(file), format!("{base}{added}{closing}")).unwrap();
-        let after = mapped("after.db");
+        let after = real_map(root, &maps.path().join("after.db"));
         let findings = final_findings(root, &AfterWave { base: before, after: after.clone(), changed: vec![(1, vec![(*file).into()])] }, Locale::PtBr, &[]);
         (findings, after)
     }
@@ -1757,6 +1794,60 @@ mod tests {
                 assert!(findings.iter().all(|f| !f.refuses), "{file} `{name}`: {:?}", findings.iter().map(|f| &f.text).collect::<Vec<_>>());
                 assert!(findings.iter().any(|f| f.text.contains(&format!("`{name}` em `{file}`"))), "{file} `{name}`: the warning stays");
             }
+        }
+    }
+
+    #[test]
+    fn removed_name_check_skips_dated_records() {
+        let dir = tempdir().unwrap();
+        let maps = tempdir().unwrap();
+        let root = dir.path();
+        // A onda tira `oldTotal` de `web/math.ts` e apaga `web/legacy.ts`. O
+        // documento datado e o registro de evidência citam os dois como o que
+        // valia naquele dia; o guia de comandos e o guia da pasta de
+        // documentos citam do mesmo jeito.
+        let cites = "A onda tirou `oldTotal` e `web/legacy.ts`.\n";
+        let files = [
+            ("web/math.ts", "export function runSum(): number {\n  return oldTotal();\n}\n\nfunction oldTotal(): number {\n  return 1;\n}\n"),
+            ("web/legacy.ts", "export function legacyRun(): number {\n  return 2;\n}\n"),
+            ("docs/2026-10-12-closing.md", cites),
+            ("docs/evidence/2026-10-13-validation.json", "{\"removed\": [\"math::oldTotal\", \"web/legacy.ts\"]}\n"),
+            ("MUSTARD-COMMANDS.md", cites),
+            ("docs/guide.md", cites),
+        ];
+        committed(root, &files);
+        let base = real_map(root, &maps.path().join("base.db"));
+        std::fs::write(root.join("web/math.ts"), "export function runSum(): number {\n  return 1;\n}\n").unwrap();
+        std::fs::remove_file(root.join("web/legacy.ts")).unwrap();
+        let after = real_map(root, &maps.path().join("after.db"));
+        let changed = vec![(1, vec!["web/math.ts".to_string(), "web/legacy.ts".to_string()])];
+        let found = findings(root, &AfterWave { base, after, changed }, Locale::PtBr);
+        let mut refused: Vec<&str> = found.iter().filter(|f| f.refuses).map(|f| f.text.as_str()).collect();
+        refused.sort_unstable();
+        let expected = [
+            "`MUSTARD-COMMANDS.md` linha 1 ainda cita `legacy.ts`, que a onda tirou de `web/legacy.ts`",
+            "`MUSTARD-COMMANDS.md` linha 1 ainda cita `oldTotal`, que a onda tirou de `web/math.ts`",
+            "`docs/guide.md` linha 1 ainda cita `legacy.ts`, que a onda tirou de `web/legacy.ts`",
+            "`docs/guide.md` linha 1 ainda cita `oldTotal`, que a onda tirou de `web/math.ts`",
+        ];
+        assert_eq!(refused.len(), expected.len(), "{refused:#?}");
+        for (said, wanted) in refused.iter().zip(expected) {
+            assert!(said.contains(wanted), "{wanted}: {refused:#?}");
+        }
+        // (caminho, guarda o que valia num dia)
+        let cases = [
+            ("docs/2026-10-12-closing.md", true),
+            ("notes/2026-10-12.txt", true),
+            ("packages/web/docs/evidence/run.log", true),
+            ("Docs/Evidence/2026-10-13.json", true),
+            ("docs/20261-10-12-closing.md", false),
+            ("docs/2026-10-123-closing.md", false),
+            ("migrations/2026-10-12-add-orders.sql", false),
+            ("src/evidence/check.ts", false),
+            ("docs/guide.md", false),
+        ];
+        for (path, dated) in cases {
+            assert_eq!(is_dated_record(path), dated, "{path}");
         }
     }
 }
