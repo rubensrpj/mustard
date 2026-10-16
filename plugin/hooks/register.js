@@ -500,7 +500,7 @@ export function register(on) {
       yield {kind:'text',index:0,text:answer};
       return {turnId:e.turnId,index:e.index,answer,toolUses:[],stopReason:'end_turn',usage:null};
     }
-    const result=yield* next(analysis?{...e,model:'haiku',effort:'medium'}:e);
+    const result=yield* next(analysis?{...e,effort:'medium'}:e);
     if(analysis)analysis.input=fullAnalysisInput(result.usage);
     if(result.usage)await recordMeasurement($,hostReceipt(e,result));
     requestRefresh($);return result;
