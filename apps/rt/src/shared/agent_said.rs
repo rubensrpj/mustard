@@ -17,7 +17,7 @@
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -31,7 +31,8 @@ const SCAN_LIMIT: u64 = 4 * 1024 * 1024;
 /// Code o guarda em `<pasta da conversa principal>/*/subagents/`, e a pasta do
 /// meio nem sempre é a que leva o nome da conversa principal. `None` quando
 /// o nome não é um nome de arquivo simples ou quando nenhuma pasta o tem.
-pub(crate) fn subagent_transcript(main: &Path, name: &str) -> Option<PathBuf> {
+#[cfg(test)]
+pub(crate) fn subagent_transcript(main: &Path, name: &str) -> Option<std::path::PathBuf> {
     if name.is_empty() || Path::new(name).file_name() != Some(std::ffi::OsStr::new(name)) {
         return None;
     }

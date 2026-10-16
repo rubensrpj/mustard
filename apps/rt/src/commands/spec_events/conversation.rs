@@ -21,6 +21,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, last_user_message};
 use mustard_core::domain::survey;
 use mustard_core::io::spend;
@@ -126,18 +127,51 @@ pub(crate) fn record_witnessed_message(root: &Path, session: Option<&str>, text:
 /// acha a resposta que respondeu. A resposta que a regra das pendências
 /// barrou também passa por aqui, e o complemento que o bloqueio pediu vem
 /// depois dela, ligado à mesma mensagem. A resposta que repete um segredo é
-/// gravada sem ele, como a mensagem.
+/// gravada sem ele, como a mensagem. A fala já gravada antes de um clique não
+/// se repete: com o mesmo texto da última resposta, sem diferença de espaços,
+/// e só com mensagens testemunhadas depois dela, nada é gravado.
 pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
+    reply(root, session, text, |after| !after.is_empty() && after.iter().all(|message| message.fields.contains_key("witness")))
+}
+
+/// A fala do assistente no turno de uma pergunta com opções, lida da conversa
+/// antes de gravar o clique: ela só viraria resposta no fim do turno, e quem
+/// lê a última resposta antes do clique precisa dela já gravada. Nada é
+/// gravado quando a última resposta já tem o mesmo texto, sem diferença de
+/// espaços.
+pub(crate) fn record_said_before_click(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
+    reply(root, session, text, |_| true)
+}
+
+/// Grava a resposta `text`, ligada à última mensagem do usuário, a menos que
+/// a última resposta gravada tenha o mesmo texto, sem diferença de espaços,
+/// e `repeated` diga, pelas mensagens gravadas depois dela, que é a mesma
+/// fala.
+fn reply(root: &Path, session: Option<&str>, text: &str, repeated: impl FnOnce(&[&SpecEvent]) -> bool) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
     let spec = conversation_spec(root, session)?;
     let log = DiskSpecState::new(root).log(&spec)?;
-    let mut fields = json!({ "author": "assistant", "text": without_secrets(text) });
+    let text = without_secrets(text);
+    if messages_after_the_same_response(&log, &text).is_some_and(|after| repeated(&after)) {
+        return None;
+    }
+    let mut fields = json!({ "author": "assistant", "text": text });
     if let Some(asked) = last_user_message(&log) {
         fields["reply_to"] = json!(asked.id);
     }
     record_in_spec(root, &spec, "response", draft(fields))
+}
+
+/// As mensagens gravadas depois da última resposta de `log`, quando ela tem
+/// o texto `text`, sem diferença de espaços; `None` quando não tem, ou não há
+/// resposta.
+fn messages_after_the_same_response<'a>(log: &'a SpecLog, text: &str) -> Option<Vec<&'a SpecEvent>> {
+    let events = log.visible();
+    let at = events.iter().rposition(|event| event.event_type == "response")?;
+    let same = events[at].str_field("text").is_some_and(|last| last.split_whitespace().eq(text.split_whitespace()));
+    same.then(|| events[at + 1..].iter().copied().filter(|event| event.event_type == "message").collect())
 }
 
 /// Um gancho barrou ou avisou: quem, o quê, em que ferramenta (ou evento) e

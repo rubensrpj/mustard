@@ -995,6 +995,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_repeated", Locale::EnUs) => {
             "Leftover from wave {wave} that repeats task {task}, still to deliver: {detail}"
         }
+        ("round.leftover_judged", Locale::PtBr) => {
+            "O Jev julgou que a sobra descreve o mesmo trabalho da tarefa, com chance {chance}; por isso ela \
+             não virou tarefa nova."
+        }
+        ("round.leftover_judged", Locale::EnUs) => {
+            "Jev judged that the leftover describes the same work as the task, with chance {chance}; so it did \
+             not become a new task."
+        }
+        ("round.leftover_marked", Locale::PtBr) => "Sobra da onda {wave}: {title}",
+        ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
         ("round.wave_left_without_tasks", Locale::PtBr) => {
             "A onda {wave} saiu do ar por ficar sem tarefa: o pedido {send} segue sem volta, e nenhuma tarefa viva \
              aponta a onda. A fila, a retomada e a rodada deixam de listá-la."
@@ -2148,6 +2158,8 @@ mod tests {
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
+            ("round.leftover_judged", &["{chance}"][..]),
+            ("round.leftover_marked", &["{wave}", "{title}"][..]),
             ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
             ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),

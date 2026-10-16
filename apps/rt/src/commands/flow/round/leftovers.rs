@@ -386,11 +386,7 @@ fn repeated_note(log: &SpecLog, wave: u64, leftover: &Leftover, task: &SpecEvent
 /// julgou e a chance `chance` de ser o mesmo trabalho —, no idioma `lang`.
 fn judged_note(log: &SpecLog, wave: u64, leftover: &Leftover, task: &SpecEvent, chance: f64, lang: Locale) -> Map<String, Value> {
     let mut note = repeated_note(log, wave, leftover, task, lang);
-    let chance = format!("{chance:.2}");
-    let reason = match lang {
-        Locale::PtBr => format!("O Jev julgou que a sobra descreve o mesmo trabalho da tarefa, com chance {chance}; por isso ela não virou tarefa nova."),
-        Locale::EnUs => format!("Jev judged that the leftover describes the same work as the task, with chance {chance}; so it did not become a new task."),
-    };
+    let reason = translate("round.leftover_judged", lang).replace("{chance}", &format!("{chance:.2}"));
     note.insert("agent".into(), json!(reason));
     note
 }
@@ -400,10 +396,7 @@ fn judged_note(log: &SpecLog, wave: u64, leftover: &Leftover, task: &SpecEvent, 
 /// idioma `lang`. É ele que o pedido da onda da tarefa mostra no que ela
 /// atende, e o agente vê que a tarefa ganhou esse trabalho.
 fn marked_title(wave: u64, title: &str, lang: Locale) -> String {
-    match lang {
-        Locale::PtBr => format!("Sobra da onda {wave}: {title}"),
-        Locale::EnUs => format!("Leftover from wave {wave}: {title}"),
-    }
+    translate("round.leftover_marked", lang).replace("{wave}", &wave.to_string()).replace("{title}", title)
 }
 
 /// O pedido que a sobra `leftover` vira: o título e o relato dela, para

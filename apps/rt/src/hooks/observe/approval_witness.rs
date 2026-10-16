@@ -27,7 +27,9 @@
 //! - **a confirmação do objetivo sugerido**, com o cabeçalho `MustardGoal` e
 //!   "Confirmar objetivo" e "Ajustar objetivo". O clique conta na pergunta
 //!   com o objetivo inteiro, ou na pergunta curta quando a última resposta
-//!   do assistente gravada antes do clique mostrou o objetivo inteiro.
+//!   do assistente gravada antes do clique mostrou o objetivo inteiro. A
+//!   fala do mesmo turno da pergunta, que só viraria resposta no fim dele, é
+//!   lida da conversa e gravada como resposta antes do clique.
 //!
 //! ## A resposta de cada pergunta
 //!
@@ -95,8 +97,9 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use crate::commands::flow::round::change_code_of;
-use crate::commands::spec_events::conversation::{record_message, record_witnessed_message};
+use crate::commands::spec_events::conversation::{record_message, record_said_before_click, record_witnessed_message};
 use crate::hooks::write::write_gate::say;
+use crate::shared::agent_said::last_said;
 use crate::shared::spec_state::DiskSpecState;
 
 /// A testemunha dos gestos de aprovação, no `PostToolUse` da pergunta com
@@ -514,6 +517,14 @@ impl Check for ApprovalWitness {
                 continue;
             };
             let witness = clicked(&item.labels, &offered);
+            // O objetivo mostrado no mesmo turno da pergunta só viraria
+            // resposta no fim do turno: lida da conversa, a fala é gravada
+            // antes do clique, que a regra do objetivo compara com ela.
+            if matches!(gesture.keyed, Keyed::Goal) && witness.is_some() {
+                if let Some(transcript) = input.transcript_path() {
+                    record_said_before_click(Path::new(&root), session, &last_said(Path::new(transcript)));
+                }
+            }
             // O código da mudança fica ao lado da resposta: é por ele, e não
             // pela frase mostrada, que a rodada reconhece o "sim".
             let change = Some(slot.as_str()).filter(|code| !code.is_empty() && matches!(gesture.keyed, Keyed::Options(_)));
@@ -638,6 +649,80 @@ mod tests {
         }
         assert!(status["hint"].as_str().unwrap().contains("objetivo inteiro"), "{status}");
         assert!(english["hint"].as_str().unwrap().contains("whole goal"), "{english}");
+    }
+
+    /// A conversa do Claude Code em `folder`: a mensagem do usuário, a fala
+    /// `shown` do assistente e, na mesma vez dele, o uso da pergunta.
+    fn transcript_showing(folder: &Path, shown: &str) -> std::path::PathBuf {
+        let file = folder.join("session.jsonl");
+        let lines = [
+            json!({"type": "user", "message": {"role": "user", "content": "ok, use esse objetivo"}}),
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": shown}]}}),
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "AskUserQuestion", "input": {}}
+            ]}}),
+        ];
+        std::fs::write(&file, lines.map(|line| line.to_string()).join("\n") + "\n").unwrap();
+        file
+    }
+
+    /// [`short_goal_question`] respondida com "Confirmar objetivo", com a
+    /// conversa em `transcript`, como o harness entrega.
+    fn short_goal_click_in(transcript: &Path) -> HookInput {
+        let mut input = short_goal_question("Confirmar objetivo");
+        input.raw["transcript_path"] = json!(transcript.to_string_lossy());
+        input
+    }
+
+    /// Os textos das respostas gravadas na spec `x`, em ordem.
+    fn responses(root: &Path) -> Vec<String> {
+        let log = DiskSpecState::new(root).log("x").unwrap();
+        log.visible().into_iter().filter(|e| e.event_type == "response").filter_map(|e| e.str_field("text").map(str::to_string)).collect()
+    }
+
+    /// O objetivo mostrado no mesmo turno da pergunta curta ainda não virou
+    /// resposta na hora do clique: lido da conversa, ele é gravado antes da
+    /// testemunha, e o clique conta. Um segundo clique não grava a fala de
+    /// novo.
+    #[test]
+    fn goal_approval_reads_the_goal_shown_in_the_same_turn_from_the_transcript() {
+        if ambient_override() {
+            return;
+        }
+        let (dir, said) = suggested_goal();
+        let root = dir.path();
+        assistant_said(root, "Vou confirmar com você.", said);
+        let shown = format!("O objetivo é:\n\n{GOAL}\n\nConfirma?");
+        let notes = tempdir().unwrap();
+        let input = short_goal_click_in(&transcript_showing(notes.path(), &shown));
+        assert!(matches!(witness(root, &input), Verdict::Inject { .. }));
+        let status = goal_status(root, Locale::PtBr);
+        assert_eq!(status["confirmed"], true, "{status}");
+        assert_eq!(responses(root), ["Vou confirmar com você.".to_string(), shown.clone()]);
+        witness(root, &input);
+        assert_eq!(responses(root), ["Vou confirmar com você.".to_string(), shown]);
+    }
+
+    /// A resposta do fim do turno que repete a fala gravada antes do clique,
+    /// só com o clique depois dela, não é gravada de novo; com uma mensagem do
+    /// usuário sem testemunha depois dela, é.
+    #[test]
+    fn goal_approval_end_of_turn_does_not_repeat_the_speech_recorded_before_the_click() {
+        if ambient_override() {
+            return;
+        }
+        let (dir, _) = suggested_goal();
+        let root = dir.path();
+        let shown = format!("O objetivo é: {GOAL}");
+        let notes = tempdir().unwrap();
+        witness(root, &short_goal_click_in(&transcript_showing(notes.path(), &shown)));
+        assert_eq!(responses(root), [shown.clone()]);
+        let end_of_turn = format!("O objetivo é:\n{GOAL}\n");
+        assert_eq!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn), None);
+        assert_eq!(responses(root), [shown.clone()]);
+        record_message(root, Some(SESSION), "e agora?");
+        assert!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn).is_some());
+        assert_eq!(responses(root).len(), 2);
     }
 
     /// Uma variável `MUSTARD_ACTIVE_SPEC` herdada responde antes da sessão.

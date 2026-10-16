@@ -51,7 +51,6 @@ pub(crate) mod tool_observations;
 
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
 /// conversa; nunca texto do usuário.
-#[cfg(test)]
 pub mod agent_said;
 pub mod branch_state;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
