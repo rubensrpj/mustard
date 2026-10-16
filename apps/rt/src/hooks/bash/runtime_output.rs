@@ -149,6 +149,27 @@ mod tests {
         }
     }
 
+    /// A resposta do Mustard que sai de um grupo, entre parênteses, entre
+    /// chaves ou de um laço, e vai por `|` a um filtro é recusada na conversa
+    /// principal e nos agentes. Com `||` depois do grupo, o filtro não recebe
+    /// a resposta, e o comando passa.
+    #[test]
+    fn a_runtime_answer_piped_out_of_a_group_is_refused() {
+        for cmd in [
+            "(mustard-rt run panel) | grep x",
+            "(mustard-rt run resume; mustard-rt run panel) 2>&1 | head -5",
+            "{ mustard-rt run panel; } | grep x",
+            "for s in 1 2; do mustard-rt run read request-$s; done | tail -1",
+        ] {
+            for agent in [false, true] {
+                let verdict = guard(cmd, agent);
+                assert!(matches!(verdict, Verdict::Deny { .. }), "{cmd} (agent: {agent}) must be refused, got {verdict:?}");
+            }
+        }
+        let verdict = guard("(mustard-rt run panel) || grep x notas.txt", false);
+        assert!(!matches!(verdict, Verdict::Deny { .. }), "the `||` must pass, got {verdict:?}");
+    }
+
     /// Gravar a resposta num arquivo, com ou sem os erros juntos, e dobrar as
     /// linhas com `fold` são o jeito de ler por partes uma resposta grande:
     /// passam.
