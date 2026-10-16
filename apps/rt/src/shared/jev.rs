@@ -15,7 +15,7 @@ mod call_record;
 mod key_check;
 mod orchestration;
 
-pub(crate) use call_record::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
+pub(crate) use call_record::{ASSEMBLY_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};

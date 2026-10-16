@@ -797,20 +797,16 @@ fn expertise_session_review_export_and_reuse_work_through_the_cli_for_both_hosts
         assert_eq!(drafted["draft_result"]["active"],false);
         let name=drafted["draft_result"]["name"].as_str().unwrap();
         assert!(name.starts_with("restore-backup-"));
-        let before=run(&["--prepare","--host",host,"--file","backup.rs"]);
-        assert!(before["selection"]["preferred_agent"].is_null(),"unreviewed prose cannot become an executor");
+        let agent=format!("mustard-{name}");
+        assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"unreviewed prose cannot become an executor");
         let review=format!("{name}:{}",drafted["draft_result"]["fingerprint"].as_str().unwrap());
         run(&["--review",&review]);
-        let active=run(&["--prepare","--host",host,"--query","restore backup","--file","backup.rs"]);
-        let agent=format!("mustard-{name}");
-        assert_eq!(active["selection"]["preferred_agent"],agent);
+        run(&["--export",name,"--host",host]);
         assert!(mustard_core::io::expertise::is_agent(root,&agent,host));
         let reused=run(&args);assert_eq!(reused["cached"],true);assert_eq!(reused["session_model_calls"],0);
-        let exported=run(&["--prepare","--host",host,"--file","backup.rs"]);
-        assert_eq!(exported["exports"][0]["changed"],0);
+        assert_eq!(run(&["--export",name,"--host",host])["changed"],0);
         fs::write(root.join("AGENTS.md"),"Use the current schema contract.\n").unwrap();
         assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"changed rules withdraw the previously reviewed executor");
-        assert!(run(&["--prepare","--host",host,"--file","backup.rs"])["selection"]["preferred_agent"].is_null());
     }
 }
 

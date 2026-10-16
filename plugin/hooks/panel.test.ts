@@ -64,11 +64,14 @@ test('a lost pane reference does not prevent a fresh Desktop opening',async ($,o
   await pane.press({key:'close'});
 });
 
-test('wave specialization distinguishes delivery from independent reading evidence',()=>{
-  const content=waveText({expertise:{source:'jev-cache',reason:'fit',preferred_agent:'mustard-database',profiles:['database'],pending_review:[],uncovered_files:[]},
-    skills:[{name:'database',path:'.claude/skills/database/SKILL.md',read_confirmed:null}]},'Perfil',false);
-  expect(content).toContain('mustard-database');expect(content).toContain('database');
-  expect(content).toContain('sem confirmação independente');expect(content).toContain('Critério da escolha');
+test('wave agent view shows the fixed agent and skills without an old procedure choice',()=>{
+  const content=waveText({request_recorded:true,executor_requested:'wave',
+    expertise:{source:'jev-cache',preferred_agent:'mustard-database',profiles:['database']},
+    skills:[{name:'contract',path:'.claude/skills/contract/SKILL.md',read_confirmed:null}]},'Perfil',false);
+  expect(content).toContain('wave');expect(content).toContain('contract');
+  expect(content).toContain('sem confirmação independente');
+  expect(content).not.toContain('mustard-database');expect(content).not.toContain('Critério da escolha');
+  expect(waveText({request_recorded:false},'Perfil',true)).toContain('No request has been sent');
 });
 
 test('reopening recreates the host pane and history recovery waits for Usage',async ($,on)=>{

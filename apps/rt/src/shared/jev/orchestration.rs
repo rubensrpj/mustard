@@ -74,7 +74,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::shared::jev::{EXPERTISE_CALL, JevKey, TASK_TRIAGE_CALL, TRIAGE_CALL};
+    use crate::shared::jev::{JevKey, TASK_TRIAGE_CALL, TRIAGE_CALL};
     use crate::shared::task_triage::{Candidate, Item, classify_with, triage_backlog_with};
 
     /// Um serviço em 127.0.0.1 que responde `status` a todo pedido e conta
@@ -131,8 +131,8 @@ mod tests {
         let (url, count) = answering(402);
         let filter = JevFilter::at(JevKey("sk-test".to_string()), &url);
 
-        assert_eq!(filter.choose_recorded(root, "x", EXPERTISE_CALL, r#"{"model":"jev"}"#), None);
-        let recorded = calls(root, EXPERTISE_CALL);
+        assert_eq!(filter.choose_recorded(root, "x", TASK_TRIAGE_CALL, r#"{"model":"jev"}"#), None);
+        let recorded = calls(root, TASK_TRIAGE_CALL);
         assert_eq!(recorded.len(), 1, "{recorded:?}");
         assert_eq!(recorded[0]["filter"], json!("jev:no_credit"), "{recorded:?}");
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);

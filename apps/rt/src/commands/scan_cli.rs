@@ -37,17 +37,11 @@ pub enum ScanCmd {
         /// Export an active profile's skill and agent to the selected host.
         #[arg(long)]
         export: Option<String>,
-        /// Reuse and export current profiles for the task; list stale drafts.
-        #[arg(long, conflicts_with_all = ["sync", "record", "review", "export"])]
-        prepare: bool,
-        /// Deliberately use current native guidance instead of a stale procedure.
-        #[arg(long,requires="query",conflicts_with_all=["sync","record","review","export","prepare","prepare_session","complete_session"])]
-        native: bool,
         /// Prepare a missing procedure using a native subagent of this session.
-        #[arg(long, value_parser = ["claude", "codex"], requires = "query", conflicts_with_all = ["sync", "record", "review", "export", "prepare", "complete_session"])]
+        #[arg(long, value_parser = ["claude", "codex"], requires = "query", conflicts_with_all = ["sync", "record", "review", "export", "complete_session"])]
         prepare_session: Option<String>,
         /// Store the native analysis as a draft procedure, never self-approve.
-        #[arg(long, requires = "query", conflicts_with_all = ["sync", "record", "review", "export", "prepare"])]
+        #[arg(long, requires = "query", conflicts_with_all = ["sync", "record", "review", "export"])]
         complete_session: Option<PathBuf>,
         #[arg(long)]
         query: Option<String>,
@@ -297,8 +291,8 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Expertise { root, sync, record, review, export, prepare, native, prepare_session, complete_session, query, host, file } =>
-            super::expertise::run(&root, sync, record.as_deref(), review.as_deref(), export.as_deref(), prepare,native,
+        ScanCmd::Expertise { root, sync, record, review, export, prepare_session, complete_session, query, host, file } =>
+            super::expertise::run(&root, sync, record.as_deref(), review.as_deref(), export.as_deref(),
                 prepare_session.as_deref(), complete_session.as_deref(), query.as_deref(), &host, &file),
         ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
         }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,

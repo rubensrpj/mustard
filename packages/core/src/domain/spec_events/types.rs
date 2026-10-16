@@ -817,6 +817,8 @@ pub const TYPES: &[TypeSpec] = &[
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
+            // A escolha do procedimento por área: só o envio antigo a traz, e
+            // nada mais a lê nem a grava.
             opt("expertise", Kind::Object),
             opt("host", Kind::Text),
             // O modelo e o esforço pedidos para o agente, no envio; o que ele

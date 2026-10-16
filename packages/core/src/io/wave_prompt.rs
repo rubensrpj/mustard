@@ -85,8 +85,6 @@ pub struct WavePrompt {
     /// no padrão. A montagem não tem sessão: quem despacha o pedido decide
     /// onde o aviso sai e quantas vezes.
     pub bad_settings: Vec<BadSetting>,
-    /// Current task-scoped selection; requested agent is not host discovery.
-    pub expertise: crate::io::expertise::workflow::Selection,
     pub skills: Vec<Value>,
 }
 
@@ -106,7 +104,6 @@ pub struct BadSetting {
 pub struct Flight {
     /// Actual caller host; a persisted send remains authoritative on replay.
     pub host: Option<String>,
-    pub specializations: BTreeMap<u64, crate::io::expertise::workflow::Selection>,
     /// As ondas em andamento — a rodada conta também as que saem junto nela.
     /// O pedido de cada onda lista as outras, com os arquivos delas.
     pub running: BTreeSet<u64>,
@@ -763,12 +760,6 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let tree = execution.copy.as_ref().map_or(root, |copy| Path::new(&copy.path));
     let prepared = prepared::for_tasks(root, tree, &of_type("task"));
     let files = wave_files(log, wave);
-    let stored = context.flight.specializations.get(&wave).cloned().or_else(|| {
-        log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id))
-            .and_then(|send|send.fields.get("expertise"))
-            .and_then(|value|serde_json::from_value::<crate::io::expertise::workflow::Selection>(value.clone()).ok())
-    });
-    let expertise = crate::io::expertise::workflow::restore_for_task(root,&files,&crate::io::expertise::workflow::wave_task(log,wave),stored.as_ref());
     // Explicit skills and scoped skills of the touched area. The latter
     // must survive native-tool interception and ignored worktree files.
     let mut named = skills_named(log, wave);
@@ -820,22 +811,6 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     for (name, text, file) in scoped_skills(root, &files) {
         if !chosen.iter().any(|(_, source)| source.as_ref().is_some_and(|(_, path)| path == &file)) {
             chosen.push((name, Some((text, file))));
-        }
-    }
-    // Reviewed procedures complement explicit project skills. One existing
-    // skill cannot suppress a selected specialization for another concern.
-    // Native navigation stays in the index and is never exported as a skill.
-    {
-        let host = context.flight.host.as_deref()
-            .or_else(|| log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|send| send.str_field("host")))
-            .filter(|host| ["claude", "codex"].contains(host)).unwrap_or("claude");
-        for name in &expertise.profiles {
-            if let Ok(out) = crate::io::expertise::export(root,name,host)
-                && let Some(path) = out["skill"].as_str()
-                && let Ok(text) = std::fs::read_to_string(root.join(path))
-                && !chosen.iter().any(|(_, source)| source.as_ref().is_some_and(|(_, file)| file == &root.join(path))) {
-                chosen.push((format!("mustard-{name}"),Some((text,root.join(path)))));
-            }
         }
     }
     for (name, source) in &chosen {
@@ -909,7 +884,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let model = material.execution.requested_model().to_string();
     let effort = material.execution.requested_effort().to_string();
     let listed = wave_prompt::listed(&material);
-    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new(), expertise, skills }
+    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new(), skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -988,8 +963,6 @@ fn skill_folders(root: &Path, files: &[String]) -> Vec<PathBuf> {
     }
     folders
 }
-
-pub fn has_scoped_skill(root:&Path,files:&[String])->bool { !scoped_skills(root,files).is_empty() }
 
 fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)> {
     let mut found = Vec::new();
@@ -1288,40 +1261,6 @@ mod tests {
         crate::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
-    #[test]
-    fn automatic_profile_export_uses_the_dispatch_host_and_replays_it() {
-        use crate::domain::knowledge::Source;
-        use crate::io::expertise::{self,Profile};
-        for host in ["codex","claude"] {
-            let dir=tempdir().unwrap();let root=dir.path();
-            let text="fn save() {}\n";
-            std::fs::write(root.join("store.rs"),text).unwrap();
-            write_map(root,&json!({"modules":[]}));
-            let mut hash=crate::io::sha256::Sha256::new();hash.update(text.as_bytes());
-            let profile=Profile {name:"database".into(),description:"Persist data with current storage examples for database tasks.".into(),paths:vec!["store.rs".into()],procedure:"Inspect the current transaction boundaries and reuse the existing helpers.".into(),sources:vec![Source {file:"store.rs".into(),line:1,end_line:1,sha256:hash.hex_digest()}],origin:"authored".into(),reviewed:None,rule_context:None};
-            expertise::record(root,&profile).unwrap();
-            expertise::review(root,&profile.name,&expertise::review_fingerprint(root,&profile)).unwrap();
-            let events=[("wave",json!({"n":1,"text":"Persist data","criteria":[],"done_when":"tests pass"})),("task",json!({"wave":1,"title":"Persist data","agent":"Persist the change","files":[{"path":"store.rs"}]})),("send",json!({"wave":1,"host":host}))];
-            let log=log_of(&events);
-            let flight=Flight {host:Some(host.into()),..Flight::default()};
-            let built=prompts(root,"test",&log,Locale::EnUs,&flight);
-            assert_eq!(built.len(),1);
-            assert!(!built[0].skills.is_empty());
-            for skill in &built[0].skills {
-                let bytes = std::fs::read(skill["path"].as_str().unwrap()).unwrap();
-                let mut hash = crate::io::sha256::Sha256::new(); hash.update(&bytes);
-                assert_eq!(skill["sha"], hash.hex_digest());
-            }
-            if host=="codex" {assert_eq!(built[0].model,"inherit");assert_eq!(built[0].effort,"inherit");}
-            let folder=if host=="codex" {".codex/agents"} else {".claude/agents"};
-            assert!(root.join(folder).join(if host=="codex" {"mustard-database.toml"} else {"mustard-database.md"}).is_file());
-            let other=if host=="codex" {".claude/agents/mustard-database.md"} else {".codex/agents/mustard-database.toml"};
-            assert!(!root.join(other).exists());
-            let replay=prompts(root,"test",&log,Locale::EnUs,&Flight::default());
-            assert_eq!(replay[0].skills,built[0].skills);
-        }
-    }
-
     /// O caminho do arquivo da skill como o pedido o escreve: absoluto, no
     /// projeto principal `root`, com barras normais.
     fn skill_path_in(root: &Path, subproject: &str, name: &str) -> String {
@@ -1398,41 +1337,6 @@ mod tests {
         assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("skills/subtrair/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
-    }
-
-    #[test]
-    fn reviewed_specialization_complements_an_explicit_project_skill() {
-        use crate::io::expertise::{self, Profile};
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let source = "fn read() {}\n";
-        std::fs::write(root.join("store.rs"), source).unwrap();
-        let mut hash = crate::io::sha256::Sha256::new();
-        hash.update(source.as_bytes());
-        let sha = hash.hex_digest();
-        write_map(root, &json!({"modules":[{"path":"store.rs","language":"rust",
-            "analysis":{"content_sha256":sha},"declarations":[{"name":"read","kind":"function","line":1,"end_line":1}]}]}));
-        let profile = Profile { name:"database".into(),description:"Use when updating storage transactions.".into(),
-            paths:vec!["store.rs".into()],procedure:"Reuse the current transaction boundary; inspect store.rs:1 before changing it.".into(),
-            sources:vec![crate::domain::knowledge::Source {file:"store.rs".into(),line:1,end_line:1,sha256:sha}],
-            origin:"authored".into(),reviewed:None,rule_context:None };
-        let draft=expertise::record(root,&profile).unwrap();
-        expertise::review(root,"database",draft["fingerprint"].as_str().unwrap()).unwrap();
-        write_skill(root,"","project-contract","---\nname: project-contract\ndescription: Project validation procedure.\n---\n\nInspect store.rs:1 before changing storage.\n");
-        let log=log_of(&[
-            ("wave",json!({"n":1,"text":"Update storage","criteria":[],"done_when":"Verified"})),
-            ("task",json!({"wave":1,"text":"Update transaction","skill":"project-contract","files":[{"path":"store.rs"}]})),
-        ]);
-        for host in ["claude","codex"] {
-            let flight=Flight {host:Some(host.into()),..Default::default()};
-            let built=prompts(root,"storage-change",&log,Locale::EnUs,&flight).remove(0);
-            assert!(built.bad_skills.is_empty(),"{:?}",built.bad_skills);
-            let names:Vec<_>=built.skills.iter().filter_map(|skill| skill["name"].as_str()).collect();
-            assert!(names.contains(&"project-contract"),"{names:?}");
-            assert!(names.contains(&"mustard-database"),"{names:?}");
-            assert_eq!(names.iter().filter(|name|**name=="mustard-database").count(),1);
-            assert!(!built.text.contains(&profile.procedure),"progressive disclosure retains references, not repeated skill bodies");
-        }
     }
 
     #[test]

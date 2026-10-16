@@ -20,9 +20,6 @@ pub(crate) const ASSEMBLY_CALL: &str = "wave assembly";
 /// O nome que a escolha dos itens do pedido grava.
 pub(crate) const ITEMS_CALL: &str = "wave items";
 
-/// O nome que a escolha do procedimento de cada onda grava.
-pub(crate) const EXPERTISE_CALL: &str = "wave expertise";
-
 /// O nome que a triagem da volta sem mudança grava.
 pub(crate) const TRIAGE_CALL: &str = "return triage";
 

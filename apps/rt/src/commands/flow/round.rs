@@ -830,20 +830,21 @@ mod tests {
         assert_eq!(log.visible().into_iter().filter(|event|event.event_type=="send").count(),1,"retry does not dispatch twice");
     }
 
-    /// An unreviewed procedure on the wave's files neither holds the wave
-    /// nor rides along: the round response carries no area profile, no
-    /// preferred agent, no agent choice and no preparation invitation.
+    /// A reviewed procedure whose scope and text match the wave's TypeScript
+    /// task reaches neither the send nor the request: the send keeps no
+    /// procedure choice, its skills leave the procedure out, and the round
+    /// response carries no area profile, agent choice nor preparation.
     #[test]
-    fn the_round_response_carries_no_area_profile_nor_preparation() {
-        use mustard_core::io::expertise::{self,Profile,workflow};
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();approved(root,"x",&[(1,&["src/a.rs"],&[])]);
+    fn a_reviewed_area_procedure_reaches_neither_the_send_nor_the_request() {
+        use mustard_core::io::expertise::{self,Profile};
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();approved(root,"x",&[(1,&["src/a.ts"],&[])]);
         mustard_core::io::project_map::write_text(root,"{\"modules\":[]}").unwrap();
-        let path=mustard_core::io::spec_events::spec_file(root,"x").unwrap();
-        let log=mustard_core::io::spec_events::read(&path).unwrap().unwrap();let query=workflow::wave_task(&log,1);
-        let source=mustard_core::domain::knowledge::Source {file:"src/a.rs".into(),line:1,end_line:1,
-            sha256:mustard_core::io::observations::digest(&std::fs::read(root.join("src/a.rs")).unwrap())};
-        expertise::record(root,&Profile {name:"task-procedure".into(),description:query.chars().take(300).collect(),
-            paths:vec!["src/a.rs".into()],procedure:query.clone(),sources:vec![source],origin:"authored".into(),reviewed:None,rule_context:None}).unwrap();
+        let source=mustard_core::domain::knowledge::Source {file:"src/a.ts".into(),line:1,end_line:1,
+            sha256:mustard_core::io::observations::digest(&std::fs::read(root.join("src/a.ts")).unwrap())};
+        let task="Tarefa da onda 1.".to_string();
+        let draft=expertise::record(root,&Profile {name:"task-procedure".into(),description:task.clone(),
+            paths:vec!["src/a.ts".into()],procedure:task,sources:vec![source],origin:"authored".into(),reviewed:None,rule_context:None}).unwrap();
+        assert_eq!(expertise::review(root,"task-procedure",draft["fingerprint"].as_str().unwrap()).unwrap()["active"],true);
         let answer=round(root,"x",None);assert_eq!(answer["ok"],true,"{answer}");
         assert_eq!(answer["dispatch"][0]["wave"],1,"{answer}");
         for field in ["expertise","preferred_agent","agent_selection"] {
@@ -852,6 +853,11 @@ mod tests {
         for field in ["specialization_preparation","preparation_held","preparation_next"] {
             assert!(answer.get(field).is_none(),"{field}: {answer}");
         }
+        let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,"x").unwrap()).unwrap().unwrap();
+        let send=log.visible().into_iter().find(|event|event.event_type=="send").unwrap();
+        assert!(send.fields.get("expertise").is_none(),"{:?}",send.fields);
+        assert!(!send.fields["skills"].to_string().contains("task-procedure"),"{}",send.fields["skills"]);
+        assert!(!send.str_field("text").unwrap().contains("task-procedure"));
     }
 
 }

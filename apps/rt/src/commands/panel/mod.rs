@@ -110,8 +110,7 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
             "tokens":measured.and_then(|u|u["tokens"].as_u64()).or_else(||sent.and_then(|e|e.int("tokens"))),
             "model":measured.and_then(|u|u["model_used"].as_str()).or_else(||sent.and_then(|e|e.str_field("model_used"))),
             "usage_breakdown":measured.and_then(|u|u.get("usage_breakdown")).or_else(||sent.and_then(|e|e.fields.get("usage_breakdown"))),
-            "configured_model":sent.and_then(|e|e.str_field("model")),"effort":sent.and_then(|e|e.str_field("effort")),
-            "expertise":sent.and_then(|e|e.fields.get("expertise"))})
+            "configured_model":sent.and_then(|e|e.str_field("model")),"effort":sent.and_then(|e|e.str_field("effort"))})
         })
         .collect();
     // Conductor usage is cumulative and repeated on wave sends. Take it once.
@@ -308,7 +307,6 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
     safe_value(json!({"spec":name,"wave":wave,"plan":planned.map(|event| &event.fields),
         "user_input":user_input,"request":sent.and_then(|event|event.str_field("text")),
         "request_recorded":sent.is_some(),"sent_at":sent.map(|event|event.at()),
-        "expertise":sent.and_then(|event|event.fields.get("expertise")),
         "skills":skills,
         "executor_requested":sent.and_then(|event|event.str_field("agent")),
         "delivery":received.map(|event|&event.fields),"delivery_integrated":received.is_some_and(|event|visible.iter().any(|current|current.id==event.id)),

@@ -111,9 +111,6 @@ fn native_sync_learns_roles_reuses_and_updates_without_model_calls() {
     let first = sync(root).unwrap(); assert_eq!(first["native_profiles"], 1); assert_eq!(first["model_calls"], 0);
     assert_eq!(sync(root).unwrap()["changed"], 0);
     let selected = selected(root, &["area1/storage.service.rs".into()]); assert_eq!(selected.len(), 1);
-    let prepared=workflow::prepare(root,&["area1/storage.service.rs".into()],"claude",None,"native").unwrap();
-    assert_eq!(prepared["exports"].as_array().unwrap().len(),0,"navigation is already available in the index; no generic skill pollution");
-    assert!(prepared["selection"]["preferred_agent"].is_null());
     fs::write_atomic(root.join("area0/storage.service.rs"), b"fn changed() {}\n").unwrap();
     assert!(!active(root, &selected[0]));
     // Sync withdraws that stale example and preserves the other current ones.

@@ -759,9 +759,8 @@ pub(super) fn run_entered_round(
     // não está em andamento, como no gancho que monta o mesmo pedido.
     let orphans = orphaned_waves(&log);
     let away = running.keys().chain(orphans.keys()).chain(&next).copied().collect();
-    let specializations = crate::shared::expertise_selection::select(root,&spec,&log,&next);
     let host = crate::shared::host_observation::caller_host(root, caller.session);
-    let flight = Flight { host: Some(host.into()), running: away, copies, choices, specializations };
+    let flight = Flight { host: Some(host.into()), running: away, copies, choices };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -796,7 +795,6 @@ pub(super) fn run_entered_round(
         // enviado.
         let agent = prompt.agent.clone();
         draft.insert("agent".into(), json!(agent));
-        draft.insert("expertise".into(), json!(prompt.expertise));
         draft.insert("skills".into(), json!(prompt.skills));
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("model".into(), json!(prompt.model));
@@ -904,13 +902,12 @@ pub(super) fn run_entered_round(
         }
         // A escolha dos itens do pedido (`analysis`) também: o pedido que
         // volta é o que ela montou, e a entrega e a releitura dele a leem.
-        for field in ["skills","expertise","analysis"] {if let Some(value)=prior.fields.get(field) {draft.insert(field.into(),value.clone());}}
+        for field in ["skills","analysis"] {if let Some(value)=prior.fields.get(field) {draft.insert(field.into(),value.clone());}}
         draft.insert("host".into(), json!(host));
         if migrated && let Some(prompt) = current {
             draft.insert("model".into(), json!(prompt.model));
             draft.insert("effort".into(), json!(prompt.effort));
             draft.insert("skills".into(), json!(prompt.skills));
-            draft.insert("expertise".into(), json!(prompt.expertise));
         }
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));

@@ -1,6 +1,6 @@
 //! A falha do Jev na rodada. A montagem das ondas, a escolha dos itens do
-//! pedido, a do procedimento de cada onda, a triagem das voltas e o
-//! classificador das atividades seguem sem o Jev quando ele falha, e cada uma grava a chamada com o motivo
+//! pedido, a triagem das voltas e o classificador das atividades seguem sem
+//! o Jev quando ele falha, e cada uma grava a chamada com o motivo
 //! (`jev:<motivo>`). A rodada lê as chamadas que gravou e diz numa linha, uma
 //! vez por sessão, que o Jev falhou e por quê: sem isso a falha ficava só no
 //! registro, e a rodada seguia calada.
@@ -12,12 +12,12 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
-use crate::shared::jev::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL};
+use crate::shared::jev::{ASSEMBLY_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL};
 
 /// Os comandos que a rodada grava quando chama o Jev: a montagem das ondas,
-/// a escolha dos itens, a do procedimento, a triagem das voltas e o
-/// classificador das atividades.
-const ROUND_CALLS: [&str; 5] = [ASSEMBLY_CALL, ITEMS_CALL, EXPERTISE_CALL, TRIAGE_CALL, TASK_TRIAGE_CALL];
+/// a escolha dos itens, a triagem das voltas e o classificador das
+/// atividades.
+const ROUND_CALLS: [&str; 4] = [ASSEMBLY_CALL, ITEMS_CALL, TRIAGE_CALL, TASK_TRIAGE_CALL];
 
 /// A marca da sessão que já ouviu o aviso.
 const MARK: &str = "round.jev_failed";
