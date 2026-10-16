@@ -16,8 +16,10 @@
 //! tarefa é essa, que ganha uma linha a mais e passa a cobrir o pedido. A
 //! sobra que entra numa tarefa que já existe dá o pedido com a marca da
 //! sobra no título, e o pedido da onda dessa tarefa a mostra no que ela
-//! atende. A que repete outra sobra da mesma volta vira só uma linha na
-//! tarefa que a primeira ganhou. A tarefa da sobra sai com a prioridade da
+//! atende. A tarefa que ganha versão nova pelo sentido sai na resposta da
+//! rodada com o pedido de reescrita ao modelo pequeno da sessão, como na
+//! gravação e na reorganização da lista. A que repete outra sobra da mesma
+//! volta vira só uma linha na tarefa que a primeira ganhou. A tarefa da sobra sai com a prioridade da
 //! sobra, porque erro achado na obra vai à frente da fila.
 //! Os arquivos da sobra são os que ela
 //! declara em `files`; sem a lista, os que o detalhe cita. A sobra sem
@@ -138,12 +140,59 @@ pub(super) fn is_cleanup(task: &SpecEvent) -> bool {
 /// Um evento que as sobras da volta viram, com a onda que a apontou e o tipo
 /// dele. `asks` são os pedidos que a tarefa passa a cobrir, pela posição de
 /// cada um na mesma lista: o número de um pedido só existe depois que ele é
-/// gravado, e todos vêm antes das tarefas.
+/// gravado, e todos vêm antes das tarefas. `by_meaning` são, entre eles, os
+/// pedidos das sobras que o classificador juntou à tarefa pelo sentido: com
+/// algum, a resposta da rodada pede a reescrita da versão nova
+/// ([`MeaningJoin`]).
 pub(super) struct LeftoverEvent {
     pub(super) wave: u64,
     pub(super) kind: &'static str,
     pub(super) draft: Map<String, Value>,
     pub(super) asks: Vec<usize>,
+    pub(super) by_meaning: Vec<usize>,
+}
+
+/// Uma tarefa que ganhou versão nova porque o classificador juntou a ela
+/// sobras de mesmo sentido: a posição da versão entre as entradas que a
+/// rodada grava, e a dos pedidos dessas sobras.
+pub(super) struct MeaningJoin {
+    pub(super) task: usize,
+    pub(super) requests: Vec<usize>,
+}
+
+/// As tarefas de `events` que o classificador juntou pelo sentido, com as
+/// posições contadas a partir de `offset`, a da primeira entre as entradas
+/// que a rodada grava. A junção pelos mesmos arquivos não entra: sem leitura
+/// confiante do Jev, a tarefa fica com a linha da seção, sem reescrita.
+pub(super) fn meaning_joins(events: &[LeftoverEvent], offset: usize) -> Vec<MeaningJoin> {
+    events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| !event.by_meaning.is_empty())
+        .map(|(at, event)| MeaningJoin { task: offset + at, requests: event.by_meaning.iter().map(|request| offset + request).collect() })
+        .collect()
+}
+
+/// Leva à entrada gravada de cada tarefa de `joins` o pedido de reescrita ao
+/// agente de análise da própria sessão ([`task_triage::rewrite_request`]),
+/// em `rewrite`, como a gravação e a reorganização da lista já fazem. A
+/// versão nova, lida em `log`, é a tarefa que recebe, e cada pedido das
+/// sobras juntadas a ela, o que entra nela. `entries` são as entradas que a
+/// rodada gravou, nas posições de `joins`, cada uma com o número do evento
+/// em `id`.
+pub(super) fn ask_rewrites(root: &Path, log: &SpecLog, joins: &[MeaningJoin], entries: &mut [Value]) {
+    let codes = log.codes();
+    let id_at = |entries: &[Value], at: usize| entries.get(at).and_then(|entry| entry["id"].as_u64());
+    let source = |id: u64| log.get(id).map(|event| task_triage::rewrite_source(codes.get(&id).cloned().unwrap_or_else(|| id.to_string()), &event.fields));
+    for join in joins {
+        let Some(version) = id_at(entries, join.task) else { continue };
+        let joined: Vec<u64> = join.requests.iter().filter_map(|at| id_at(entries, *at)).collect();
+        let sources = std::iter::once(version).chain(joined).filter_map(source).collect();
+        let request = task_triage::rewrite_request(root, version, sources);
+        if let Some(entry) = entries.get_mut(join.task) {
+            entry["rewrite"] = request;
+        }
+    }
 }
 
 /// Os eventos que as sobras `found` viram, cada uma com a onda que a apontou:
@@ -156,7 +205,8 @@ pub(super) struct LeftoverEvent {
 /// gravada na spec `spec` e os resumos `summaries` da volta no
 /// estado: a coberta vira a nota com o motivo ([`judged_note`]); a de mesmo
 /// sentido entra na tarefa escolhida, numa versão nova com a sobra na seção
-/// do erro da volta ([`join`]); a nova vira tarefa nova ([`leftover_task`]),
+/// do erro da volta ([`join`]), que guarda o pedido dela em `by_meaning`
+/// para a reescrita ([`ask_rewrites`]); a nova vira tarefa nova ([`leftover_task`]),
 /// no grupo da tarefa mais próxima. A que repete uma sobra anterior desta
 /// volta — os mesmos arquivos e o mesmo título ou o mesmo detalhe — vira só
 /// uma linha na tarefa que aquela ganhou, sem pedido novo. Sem leitura
@@ -247,14 +297,14 @@ fn leftover_events_with(
     let mut asked: Vec<(BTreeSet<String>, &Leftover, usize)> = Vec::new();
     for (position, (&(wave, leftover), files)) in found.iter().zip(files_of).enumerate() {
         if let Some(task) = exact[position] {
-            work.push(LeftoverEvent { wave, kind: NOTE, draft: repeated_note(log, wave, leftover, task, lang), asks: Vec::new() });
+            work.push(event(wave, NOTE, repeated_note(log, wave, leftover, task, lang)));
             continue;
         }
         let destination = decided.get(&position).copied();
         if let Some(Destination::Covered { task, chance }) = destination
             && let Some(task) = log.get(task)
         {
-            work.push(LeftoverEvent { wave, kind: NOTE, draft: judged_note(log, wave, leftover, task, chance, lang), asks: Vec::new() });
+            work.push(event(wave, NOTE, judged_note(log, wave, leftover, task, chance, lang)));
             continue;
         }
         if let Some(&(_, _, at)) =
@@ -264,12 +314,12 @@ fn leftover_events_with(
             continue;
         }
         let request = requests.len();
-        requests.push(LeftoverEvent { wave, kind: REQUEST, draft: leftover_request(leftover, &files, delivered.get(&wave).copied()), asks: Vec::new() });
+        requests.push(event(wave, REQUEST, leftover_request(leftover, &files, delivered.get(&wave).copied())));
         let (at, section) = match destination {
             Some(Destination::Join { task, .. }) => (
                 log.get(task).map(|task| {
                     *joined.entry(task.id).or_insert_with(|| {
-                        work.push(LeftoverEvent { wave, kind: TASK, draft: backlog_return(task), asks: Vec::new() });
+                        work.push(event(wave, TASK, backlog_return(task)));
                         work.len() - 1
                     })
                 }),
@@ -280,7 +330,7 @@ fn leftover_events_with(
             None => match open.iter().find(|(_, own)| files.is_subset(own)) {
                 Some((task, _)) => (
                     Some(*joined.entry(task.id).or_insert_with(|| {
-                        work.push(LeftoverEvent { wave, kind: TASK, draft: backlog_return(task), asks: Vec::new() });
+                        work.push(event(wave, TASK, backlog_return(task)));
                         work.len() - 1
                     })),
                     JOINED_ON_FILES,
@@ -292,6 +342,9 @@ fn leftover_events_with(
             Some(at) => {
                 join(&mut work[at].draft, wave, leftover, &files, section, lang);
                 work[at].asks.push(request);
+                if section == JOINED_BY_MEANING {
+                    work[at].by_meaning.push(request);
+                }
                 requests[request].draft.insert("title".into(), json!(marked_title(wave, &leftover.title, lang)));
                 at
             }
@@ -305,7 +358,7 @@ fn leftover_events_with(
                 {
                     task.insert(GROUP.into(), group);
                 }
-                work.push(LeftoverEvent { wave, kind: TASK, draft: task, asks: vec![request] });
+                work.push(LeftoverEvent { asks: vec![request], ..event(wave, TASK, task) });
                 work.len() - 1
             }
         };
@@ -313,6 +366,12 @@ fn leftover_events_with(
     }
     requests.extend(work);
     requests
+}
+
+/// O evento `kind` da sobra apontada pela onda `wave`, com o rascunho
+/// `draft`, que ainda não cobre pedido nenhum.
+fn event(wave: u64, kind: &'static str, draft: Map<String, Value>) -> LeftoverEvent {
+    LeftoverEvent { wave, kind, draft, asks: Vec::new(), by_meaning: Vec::new() }
 }
 
 /// `true` quando a sobra `leftover`, com os arquivos `files`, repete o
@@ -862,18 +921,35 @@ mod tests {
     /// mesmo sentido de Y; e uma que X já cobre. A primeira vira tarefa nova,
     /// com a prioridade da sobra e o grupo de Y, sem entrar em X; a segunda
     /// entra em Y, na seção do erro da volta, com o arquivo dela; a terceira
-    /// vira nota com o motivo. Sem Jev, a primeira volta à regra dos mesmos
-    /// arquivos e entra em X.
+    /// vira nota com o motivo. Gravadas, só a entrada da versão nova de Y
+    /// leva o pedido de reescrita, com Y e a sobra como fontes. Sem Jev, a
+    /// primeira volta à regra dos mesmos arquivos e entra em X, e nenhuma
+    /// entrada leva o pedido.
     #[test]
     fn task_triage_places_each_leftover_by_meaning_not_by_files() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let log = log_of(&[
+        let open = [
             json!({"v":1,"id":1,"type":"task","title":"O carrinho perde o desconto","text":"Ao trocar a quantidade, o desconto some.",
                 "files":[{"path":"src/cart.ts"}],"depends_on":[]}),
             json!({"v":1,"id":2,"type":"task","title":"O preço não arredonda","text":"O total mostra três casas.",
                 "files":[{"path":"src/price.ts"}],"depends_on":[]}),
-        ]);
+        ];
+        let log = log_of(&open);
+        // As entradas que a rodada grava dos eventos, do número 10 em diante,
+        // depois de levar o pedido de reescrita a cada tarefa juntada pelo
+        // sentido.
+        let answered = |events: &[LeftoverEvent]| {
+            let lines = events.iter().enumerate().map(|(at, event)| {
+                let mut line = event.draft.clone();
+                line.extend([("v".into(), json!(1)), ("id".into(), json!(10 + at)), ("type".into(), json!(event.kind))]);
+                Value::Object(line)
+            });
+            let after = log_of(&open.iter().cloned().chain(lines).collect::<Vec<_>>());
+            let mut entries: Vec<Value> = events.iter().enumerate().map(|(at, event)| json!({"type": event.kind, "id": 10 + at})).collect();
+            ask_rewrites(root, &after, &meaning_joins(events, 0), &mut entries);
+            entries
+        };
         let other = declared("O carrinho não salva o cupom", "O cupom some ao recarregar.", &["src/cart.ts"]);
         let same = declared("O total não arredonda", "A soma mostra três casas.", &["src/total.ts"]);
         let covered = declared("Desconto zera quando a quantidade muda", "Mudar a quantidade apaga o desconto.", &["src/cart.ts"]);
@@ -903,15 +979,28 @@ mod tests {
         assert_eq!(y.draft.get(FILES), Some(&json!([{"path": "src/price.ts"}, {"path": "src/total.ts"}])));
         assert_eq!(y.draft.get(PRIORITY), Some(&json!(priority)));
         assert_eq!(y.asks, [1], "Y cobre só o pedido da sobra");
+        assert_eq!(y.by_meaning, [1], "Y ganhou a sobra pelo sentido");
         let notes = of_kind(&events, NOTE);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].draft.get("label"), Some(&json!(log.codes()[&1].clone())));
         assert!(notes[0].draft.get("agent").and_then(Value::as_str).is_some_and(|reason| reason.contains("0.93")));
 
+        let entries = answered(&events);
+        let at_y = events.iter().position(|event| event.draft.get("replaces") == Some(&json!(2))).unwrap();
+        let rewrite = &entries[at_y]["rewrite"];
+        assert_eq!(rewrite["replaces"], json!(10 + at_y), "a reescrita substitui a versão nova de Y: {rewrite}");
+        assert!(rewrite["request_id"].is_string() && rewrite["delegation"]["model_family"].is_string(), "{rewrite}");
+        let prompt = rewrite["delegation"]["request"]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains("O preço não arredonda") && prompt.contains(&marked_title(1, "O total não arredonda", Locale::PtBr)), "{prompt}");
+        let others: Vec<&Value> = entries.iter().enumerate().filter(|(at, _)| *at != at_y).map(|(_, entry)| entry).collect();
+        assert!(others.iter().all(|entry| entry.get("rewrite").is_none()), "só a junção pelo sentido pede a reescrita: {entries:?}");
+
         let without = leftover_events_with(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr, &|_| None);
         let x = of_kind(&without, TASK).into_iter().find(|task| task.draft.get("replaces") == Some(&json!(1))).unwrap();
         let on_files = translate("round.leftover_joined", Locale::PtBr).replace("{wave}", "1").replace("{title}", "O carrinho não salva o cupom");
         assert!(x.draft.get("agent").and_then(Value::as_str).is_some_and(|agent| agent.starts_with(on_files.split("{detail}").next().unwrap())), "{:?}", x.draft);
+        let entries = answered(&without);
+        assert!(entries.iter().all(|entry| entry.get("rewrite").is_none()), "a junção pelos mesmos arquivos não pede reescrita: {entries:?}");
     }
 
     /// A sobra que entra numa tarefa aberta dá o pedido com a marca da sobra

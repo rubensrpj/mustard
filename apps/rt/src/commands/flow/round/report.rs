@@ -28,7 +28,7 @@ use super::commit::{
 };
 use super::copy_check::check_against_copies;
 use super::finish_check::unfinished_work;
-use super::leftovers::{Leftover, LeftoverEvent, leftover_events, leftovers_of};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
@@ -913,6 +913,10 @@ struct CheckedReport {
     /// do evento: também sem onda própria, para a rodada seguinte formar o
     /// lote. A sobra que repete uma tarefa ainda por entregar vem como nota.
     wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
+    /// Cada tarefa de `wave_tasks` que uma sobra ganhou pelo sentido, pela
+    /// posição nela, com as dos pedidos dessas sobras: a resposta da rodada
+    /// leva o pedido de reescrita de cada uma.
+    meaning_joins: Vec<MeaningJoin>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -1073,8 +1077,9 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
         .into_iter()
         .map(|(wave, kind, draft)| Ok((wave, kind, rehearse(&mut check, kind, draft)?)))
         .collect::<Result<Vec<_>, Refusal>>()?;
+    let meaning_joins = meaning_joins(&leftovers, wave_tasks.len());
     let mut rehearsed: Vec<u64> = Vec::new();
-    for LeftoverEvent { wave, kind, mut draft, asks } in leftovers {
+    for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
         if !asks.is_empty() {
             let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
             for id in asks.iter().filter_map(|at| rehearsed.get(*at).copied()) {
@@ -1135,7 +1140,7 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1177,10 +1182,12 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// andar. Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
-/// resposta da rodada, sem ir ler a spec.
+/// resposta da rodada, sem ir ler a spec. A entrada da tarefa que uma sobra
+/// ganhou pelo sentido leva o pedido de reescrita dela ([`ask_rewrites`]).
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks } = checked;
-    let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
+    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins } = checked;
+    let root = crate::commands::spec_events::project(start).root;
+    let path = store::spec_file(&root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recording = Recording::new(start, spec);
     let mut recorded = Vec::new();
@@ -1209,6 +1216,7 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         recorded.push(json!({ "wave": wave, "type": "delivered", "id": id, "text": text,
             "files": files, "proofs": own }));
     }
+    let first = recorded.len();
     for (wave, kind, event) in wave_tasks {
         let (id, replaces) = recording.record(kind, event)?;
         let mut entry = json!({ "wave": wave, "type": kind, "id": id });
@@ -1216,6 +1224,9 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
             entry["replaces"] = replaces;
         }
         recorded.push(entry);
+    }
+    if !meaning_joins.is_empty() {
+        ask_rewrites(&root, &read()?, &meaning_joins, &mut recorded[first..]);
     }
     for (wave, send) in sends {
         let (id, _) = recording.record("send", send)?;
