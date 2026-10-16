@@ -145,6 +145,7 @@ mod leftovers;
 mod lost_commit;
 mod planning;
 pub(crate) use planning::needs_planning;
+pub(crate) use leftovers::is_cleanup;
 pub(crate) mod queue;
 mod read_check;
 mod rehearsal;

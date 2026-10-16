@@ -662,11 +662,26 @@ pub(super) fn run_entered_round(
     }
     let jev = waves_jev.filter.as_deref();
     let judge = jev.map(|jev| move |board: &Board| jev.judge_backlog(board));
+    // O classificador forma as ondas da lista antes da montagem: com a
+    // leitura do modelo pequeno da sessão pronta, as ondas se gravam e a
+    // montagem as solta inteiras; sem ela, o pedido vai ao condutor, e nenhuma
+    // onda nova sai da lista nesta rodada, para nenhuma tarefa sair sem passar
+    // por ele.
+    let forming = crate::commands::flow::triage::form_for_round(&opts.root, &spec, session);
+    let locked = if forming.applied {
+        store::read(&path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
+    } else {
+        locked
+    };
     // O motivo exato de cada tarefa pronta que a montagem deixou de fora vai
     // ao `held` da resposta, no fim da rodada.
-    let assembled = dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), judge.as_ref().map(|judge| judge as &Judge<'_>))
-        .map_err(RoundRefusal::Refused)?
-        .1;
+    let assembled = if forming.pending.is_some() {
+        BTreeMap::new()
+    } else {
+        dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), judge.as_ref().map(|judge| judge as &Judge<'_>))
+            .map_err(RoundRefusal::Refused)?
+            .1
+    };
     // A tarefa do backlog que não cobre item nenhum não forma onda: a rodada
     // a nomeia, porque ela fica no backlog e segura o fechamento.
     let uncovered = backlog_uncovered(&locked);
@@ -1065,6 +1080,13 @@ pub(super) fn run_entered_round(
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
+    let then = match &forming.pending {
+        Some(pending) => {
+            out["formation"] = pending["grouping"].clone();
+            [translate("round.formation_pending", lang).to_string(), then].into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" ")
+        }
+        None => then,
+    };
     end_answer(root, &spec, &mut out, &then, lang);
     if let Some(command) = command {
         out["command"] = json!(command);

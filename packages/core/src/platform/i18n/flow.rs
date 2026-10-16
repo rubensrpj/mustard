@@ -1044,23 +1044,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("triage.same_work_covered", Locale::EnUs) => {
             "The open task {task} — {title} already covers this activity: finishing it finishes this one, and nothing was recorded. If it is other work, record again with `distinct` and the reason."
         }
-        ("triage.too_large", Locale::PtBr) => {
-            "O pedido de {task} ao Jev passa do teto do serviço mesmo só com a tarefa: nenhum pedido saiu, e a lista fica como está."
+        ("triage.next_grouping", Locale::PtBr) => {
+            "O modelo pequeno da sessão ainda não leu esta lista. Entregue o pedido de `grouping` ao agente de análise da sessão, mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>` e rode `run triage` de novo: o Jev ordena cada assunto, e a resposta mostra a lista antes de qualquer gravação."
         }
-        ("triage.too_large", Locale::EnUs) => {
-            "The Jev request for {task} exceeds the service limit even with the task alone: no request was sent, and the list stays as it is."
+        ("triage.next_grouping", Locale::EnUs) => {
+            "The session's small model has not read this list yet. Hand the `grouping` request to the session's analysis agent, send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>` and run `run triage` again: the Jev orders each subject, and the answer shows the list before anything is recorded."
         }
-        ("triage.no_answer", Locale::PtBr) => {
-            "O Jev não respondeu aos {requests} pedidos da reorganização (sem Jev ligado, falha do serviço ou prazo vencido): a lista fica como está."
+        ("round.formation_pending", Locale::PtBr) => {
+            "O classificador espera a leitura da lista para formar as próximas ondas: entregue o pedido de `formation` ao agente de análise da sessão, mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>` e rode a rodada de novo. Até lá, nenhuma onda nova sai da lista."
         }
-        ("triage.no_answer", Locale::EnUs) => {
-            "The Jev did not answer the {requests} reorganization requests (no Jev enabled, a service failure or the deadline passed): the list stays as it is."
+        ("round.formation_pending", Locale::EnUs) => {
+            "The classifier waits for the reading of the list to form the next waves: hand the `formation` request to the session's analysis agent, send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>` and run the round again. Until then, no new wave leaves the list."
         }
-        ("triage.unconfident", Locale::PtBr) => {
-            "Só {confident} de {total} tarefas tiveram leitura confiante do Jev; a resposta em dúvida não junta nem tira tarefa."
+        ("triage.wave_too_big", Locale::PtBr) => {
+            "A onda \"{objective}\" lê {tokens} tokens de arquivos, acima do limite de uma onda: o agente entrega uma parte e devolve o resumo para a próxima."
         }
-        ("triage.unconfident", Locale::EnUs) => {
-            "Only {confident} of {total} tasks got a confident Jev reading; an unsure answer neither joins nor removes a task."
+        ("triage.wave_too_big", Locale::EnUs) => {
+            "The wave \"{objective}\" reads {tokens} tokens of files, above the limit of one wave: the agent delivers a part and returns the summary for the next one."
+        }
+        ("triage.order_unanswered", Locale::PtBr) => {
+            "{missing} de {requests} pedidos de ordem ao Jev ficaram sem resposta usável; esses assuntos ficam na ordem do modelo pequeno da sessão."
+        }
+        ("triage.order_unanswered", Locale::EnUs) => {
+            "{missing} of {requests} order requests to the Jev got no usable answer; those subjects keep the order of the session's small model."
         }
         ("triage.held", Locale::PtBr) => "Classificadas, mas fora da gravação, as tarefas de onda com agente trabalhando: {tasks}.",
         ("triage.held", Locale::EnUs) => "Classified but left out of the write, the tasks of a wave whose agent is still working: {tasks}.",
@@ -1068,10 +1074,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("triage.joined_line", Locale::EnUs) => "Joins {code} — {title}: {text}",
         ("triage.removed_joined", Locale::PtBr) => "Mesmo sentido de {code}, que recebe este trabalho na versão nova.",
         ("triage.removed_joined", Locale::EnUs) => "Same meaning as {code}, which takes this work in its new version.",
-        ("triage.removed_covered", Locale::PtBr) => "Já coberta pela entrega de {code}.",
-        ("triage.removed_covered", Locale::EnUs) => "Already covered by the delivery of {code}.",
-        ("triage.next_dry", Locale::PtBr) => "Nada foi gravado. Confira os grupos, as saídas e a ordem; para gravar, rode de novo com `--apply`.",
-        ("triage.next_dry", Locale::EnUs) => "Nothing was recorded. Check the groups, the exits and the order; to record, run again with `--apply`.",
+        ("triage.next_dry", Locale::PtBr) => "Nada foi gravado. Confira os assuntos, a ordem e as junções; para gravar, rode de novo com `--apply`.",
+        ("triage.next_dry", Locale::EnUs) => "Nothing was recorded. Check the subjects, the order and the merges; to record, run again with `--apply`.",
         ("triage.next_applied", Locale::PtBr) => {
             "Gravado. Delegue cada pedido de `rewrite` ao agente de análise da sessão e grave a versão nova que o recibo devolve."
         }
@@ -2036,7 +2040,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 290, 0x2d4d_7a40_c697_f051);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 290, 0x8525_b8d6_fb00_f822);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2270,12 +2274,10 @@ mod tests {
             ("triage.same_work_open", &["{task}", "{title}"][..]),
             ("triage.same_work_covered", &["{task}", "{title}"][..]),
             ("triage.held", &["{tasks}"][..]),
-            ("triage.too_large", &["{task}"][..]),
-            ("triage.no_answer", &["{requests}"][..]),
-            ("triage.unconfident", &["{confident}", "{total}"][..]),
+            ("triage.order_unanswered", &["{missing}", "{requests}"][..]),
+            ("triage.wave_too_big", &["{objective}", "{tokens}"][..]),
             ("triage.joined_line", &["{code}", "{title}", "{text}"][..]),
             ("triage.removed_joined", &["{code}"][..]),
-            ("triage.removed_covered", &["{code}"][..]),
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),

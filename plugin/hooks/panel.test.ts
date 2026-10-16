@@ -4,7 +4,9 @@ import {analysisSpawn,analysisTool,fullAnalysisInput} from './analysis-policy.js
 
 test('analysis stays in an isolated Haiku session and counts cache in its input budget',()=>{
   expect(analysisSpawn({subagentType:'mustard-analysis',fork:true,prompt:'bounded'}).deny).toContain('isolated');
-  expect(analysisSpawn({subagentType:'mustard:mustard-analysis',fork:false,prompt:'bounded',model:'opus'}).model).toBe('haiku');
+  expect(analysisSpawn({subagentType:'mustard:mustard-analysis',fork:false,prompt:'bounded',model:'opus'}).deny).toContain('small model');
+  expect(analysisSpawn({subagentType:'mustard-analysis',fork:false,prompt:'bounded'}).model).toBeUndefined();
+  expect(analysisSpawn({subagentType:'mustard-analysis',fork:false,prompt:'bounded',model:'haiku'}).model).toBe('haiku');
   expect(analysisSpawn({subagentType:'mustard-wave',fork:false,prompt:'task',model:'sonnet'}).model).toBe('sonnet');
   expect(fullAnalysisInput({input_tokens:1000,cache_read_input_tokens:87000,cache_creation_input_tokens:2000})).toBe(90000);
   expect(fullAnalysisInput({input_tokens:1000})).toBeNull();

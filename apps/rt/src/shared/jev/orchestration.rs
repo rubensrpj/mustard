@@ -75,7 +75,7 @@ mod tests {
 
     use super::*;
     use crate::shared::jev::{JevKey, TASK_TRIAGE_CALL, TRIAGE_CALL};
-    use crate::shared::task_triage::{Candidate, Item, classify_with, triage_backlog_with};
+    use crate::shared::task_triage::{Candidate, Item, OrderedSubject, classify_with, order_backlog_with};
 
     /// Um serviço em 127.0.0.1 que responde `status` a todo pedido e conta
     /// quantos chegaram.
@@ -156,19 +156,19 @@ mod tests {
         let root = dir.path();
         crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}")]);
         assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
-        let value = json!({ "type": "score", "score": 2.0, "probabilities": { "0": 0.05, "1": 0.1, "2": 0.8, "3": 0.05 } });
-        let answer = json!({ "answers": { "value": value, "same_t1": { "type": "noul", "noul": 0.93 }, "subject_t1": { "type": "noul", "noul": 0.9 } } });
+        let level = |level: f64| json!({ "type": "score", "score": level, "probabilities": { (level as u8).to_string(): 0.8 } });
+        let answer = json!({ "answers": { "value_t1": level(1.0), "complexity_t1": level(2.0), "value_t2": level(3.0), "complexity_t2": level(0.0) } });
         let (url, count) = serving(Duration::from_millis(600), 200, answer.to_string());
         let mut filter = JevFilter::at(JevKey("sk-test".to_string()), &url);
         filter.timeouts.response = Duration::from_millis(150);
         let task = |id: u64, title: &'static str| Candidate { id, title, text: "", files: BTreeSet::from(["src/resume.ts".to_string()]), joinable: true };
         let open = [task(1, "Retomada lista as ondas no ar"), task(2, "Retomada diz se o agente de cada onda vive")];
 
-        let languages = mustard_core::domain::normalize::Languages::new(["pt-BR"]);
-        let backlog = triage_backlog_with(&open, &[], &languages, &|payloads| {
+        let subject = OrderedSubject { name: "Retomada".into(), tasks: vec![(1, vec![]), (2, vec![])] };
+        let backlog = order_backlog_with(&open, vec![subject], &Default::default(), &|payloads| {
             filter.choose_all_recorded_within(root, "x", TASK_TRIAGE_CALL, payloads, Duration::from_secs(5))
         });
-        assert_eq!(backlog.map(|triage| triage.groups), Ok(vec![vec![1, 2]]));
+        assert_eq!((backlog.subjects[0].tasks.clone(), backlog.unanswered), (vec![(2, vec![]), (1, vec![])], 0));
 
         let item = Item { title: "Retomada avisa a onda sem agente".into(), text: String::new(), files: BTreeSet::from(["src/resume.ts".to_string()]) };
         let destinations = classify_with(&open, &[item], &[], &|payload| filter.choose_recorded(root, "x", TASK_TRIAGE_CALL, payload));
@@ -176,7 +176,7 @@ mod tests {
 
         let recorded = calls(root, TASK_TRIAGE_CALL);
         let filters: Vec<&Value> = recorded.iter().map(|call| &call["filter"]).collect();
-        assert_eq!(filters, [&json!("jev"), &json!("jev"), &json!("jev:timeout")], "one call per backlog request: {recorded:?}");
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(filters, [&json!("jev"), &json!("jev:timeout")], "one call for the subject of two tasks: {recorded:?}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

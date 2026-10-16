@@ -25,7 +25,7 @@ use super::queue::{
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
-use super::summary_wave::summary_waves;
+use super::summary_wave::{group_waves, summary_waves};
 use crate::commands::spec_events::write::{RecordCheck, record};
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_affinity, pack_by_kind, sets_cross, touches_whole_tree};
@@ -228,6 +228,13 @@ pub(crate) fn dispatch_backlog(
     // Cada resumo que ainda vale vira a base de uma onda, antes de qualquer outra;
     // as tarefas dessas ondas ficam fora do resto da montagem, saiam elas
     // agora ou esperem a vez: a que saísse noutra onda perderia o resumo.
+    // Antes delas, cada onda que o classificador formou sai inteira, com as
+    // tarefas na posição que ele deu e, como base, o resumo que deixou alguma
+    // delas; o resumo só forma onda própria com as tarefas que nenhuma onda do
+    // classificador levou, e o resto vai à montagem de sempre.
+    let by_group = group_waves(log, &order, &population);
+    let grouped: BTreeSet<u64> = by_group.iter().flat_map(|(batch, _)| batch.tasks.iter().copied()).collect();
+    let order: Vec<u64> = order.into_iter().filter(|id| !grouped.contains(id)).collect();
     let by_summary = summary_waves(log, &order, &population);
     let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
     let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
@@ -284,7 +291,11 @@ pub(crate) fn dispatch_backlog(
         }
     };
     let batches: Vec<(Batch<u64>, Option<u64>)> =
-        by_summary.into_iter().map(|wave| (wave.batch, Some(wave.summary))).chain(batches.into_iter().map(|batch| (batch, None))).collect();
+        by_group
+            .into_iter()
+            .chain(by_summary.into_iter().map(|wave| (wave.batch, Some(wave.summary))))
+            .chain(batches.into_iter().map(|batch| (batch, None)))
+            .collect();
     // Cada lote ocupa uma vaga, na ordem de prioridade, divida ele arquivo
     // com outro lote, com uma onda em andamento ou com ninguém: o que não
     // cabe nas vagas fica no backlog e entra na montagem da rodada em que uma

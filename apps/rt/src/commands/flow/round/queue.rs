@@ -735,7 +735,7 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 /// dependências resolvidas para a versão vigente, os arquivos que declara,
 /// se já está feita — a onda dela está entre as entregues e aprovadas
 /// (`done_waves`) — e se traz a marca de prioridade.
-pub(super) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
+pub(crate) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
     let visible=log.visible();
     let current=log.current_versions();

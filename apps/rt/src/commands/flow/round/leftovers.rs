@@ -133,7 +133,7 @@ pub(super) fn leftovers_of(items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
 
 /// `true` quando a tarefa é limpeza: nasceu de uma sobra que o agente marcou
 /// assim. É a leitura única de "é limpeza", e a fila da rodada lê só daqui.
-pub(super) fn is_cleanup(task: &SpecEvent) -> bool {
+pub(crate) fn is_cleanup(task: &SpecEvent) -> bool {
     task.fields.get(CLEANUP) == Some(&Value::Bool(true))
 }
 

@@ -69,6 +69,51 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
     out
 }
 
+/// As ondas que o classificador formou: as tarefas prontas de `ready` que
+/// gravam o mesmo grupo ([`GROUP`], pelo nome de [`group_name`]) saem juntas,
+/// na posição que ele deu a cada uma, com os arquivos de `population`; os
+/// grupos, na ordem da primeira tarefa pronta de cada um. Cada onda leva como
+/// base o resumo que ainda vale e que deixou alguma tarefa dela: um resumo
+/// que deixou tarefas de vários objetivos vai com cada uma dessas ondas. A
+/// tarefa com o curinga da árvore inteira não entra: ela sai sozinha.
+pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<(Batch<u64>, Option<u64>)> {
+    let live = log.live_summaries();
+    let files_of = |id: u64| population.iter().find(|task| task.id == id).map(|task| &task.files);
+    let mut groups: Vec<(String, Vec<(u64, u64)>)> = Vec::new();
+    for &id in ready {
+        let Some(task) = log.get(id) else { continue };
+        let Some(group) = task.fields.get(GROUP) else { continue };
+        if files_of(id).is_some_and(|files| touches_whole_tree(files)) {
+            continue;
+        }
+        let name = group_name(log, task);
+        let position = group.get("position").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX);
+        match groups.iter_mut().find(|(known, _)| *known == name) {
+            Some((_, tasks)) => tasks.push((position, id)),
+            None => groups.push((name, vec![(position, id)])),
+        }
+    }
+    // O grupo que leva o código de uma tarefa é o grupo dela: a tarefa, que
+    // não grava grupo, vai na mesma onda, na frente.
+    for &id in ready {
+        let Some(task) = log.get(id).filter(|task| !task.fields.contains_key(GROUP)) else { continue };
+        let name = group_name(log, task);
+        if let Some((_, tasks)) = groups.iter_mut().find(|(known, _)| *known == name) {
+            tasks.push((0, id));
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, mut tasks)| {
+            tasks.sort_unstable();
+            let tasks: Vec<u64> = tasks.into_iter().map(|(_, id)| id).collect();
+            let files = tasks.iter().flat_map(|id| files_of(*id).into_iter().flatten().cloned()).collect();
+            let base = live.iter().find(|(_, left)| tasks.iter().any(|id| left.contains(id))).map(|(summary, _)| summary.id);
+            (Batch { tasks, files }, base)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -332,5 +377,43 @@ mod tests {
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![one], "only the task of its own summary");
         assert_eq!(wave_order(root, 2), vec![two], "it leaves with its own summary");
+    }
+
+    /// As tarefas prontas que gravam a mesma onda do classificador saem
+    /// juntas, na posição que ele deu; a sem grupo fica para a montagem de
+    /// sempre, e cada onda leva os arquivos das tarefas dela.
+    #[test]
+    fn the_waves_the_classifier_formed_leave_whole_in_its_order() {
+        let task = |id: u64, file: &str, group: Option<(&str, u64)>| {
+            let mut line = json!({ "v": 1, "id": id, "type": "task", "title": format!("t{id}"), "files": [{ "path": file }], "depends_on": [] });
+            if let Some((name, position)) = group {
+                line["group"] = json!({ "name": name, "position": position });
+            }
+            line.to_string()
+        };
+        let lines = [
+            task(1, "web/auth/token.ts", Some(("A sessão renova o token", 2))),
+            task(2, "web/cart/total.ts", None),
+            task(3, "web/auth/session.ts", Some(("A sessão renova o token", 1))),
+            task(4, "web/report/export.ts", Some(("A exportação grava um arquivo limpo", 1))),
+        ];
+        let log = mustard_core::domain::spec_events::parse_log(&lines.join("\n"));
+        let population: Vec<crate::shared::dag::BacklogTask<u64>> = log
+            .visible()
+            .into_iter()
+            .map(|event| crate::shared::dag::BacklogTask {
+                id: event.id,
+                depends_on: std::collections::BTreeSet::new(),
+                files: super::super::queue::task_files(event),
+                done: false,
+                blocked: false,
+                priority: false,
+            })
+            .collect();
+        let waves = super::group_waves(&log, &[1, 2, 3, 4], &population);
+        let tasks: Vec<Vec<u64>> = waves.iter().map(|(wave, _)| wave.tasks.clone()).collect();
+        assert_eq!(tasks, [vec![3, 1], vec![4]]);
+        assert!(waves[0].0.files.contains("web/auth/token.ts") && waves[0].0.files.contains("web/auth/session.ts"), "{:?}", waves[0]);
+        assert_eq!((waves[0].1, waves[1].1), (None, None), "no summary is live in this log");
     }
 }
