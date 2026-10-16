@@ -496,7 +496,7 @@ pub(super) fn group_name(log: &SpecLog, task: &SpecEvent) -> String {
 /// O grupo da tarefa nova que fica no assunto da tarefa `near`: o nome do
 /// grupo dela e a posição depois da última tarefa ainda viva do grupo — a de
 /// referência sem grupo gravado conta como a primeira.
-fn group_after(log: &SpecLog, near: u64) -> Option<Value> {
+pub(super) fn group_after(log: &SpecLog, near: u64) -> Option<Value> {
     let reference = log.get(near)?;
     let name = group_name(log, reference);
     let position = |task: &SpecEvent| task.fields.get(GROUP).and_then(|group| group.get("position")).and_then(Value::as_u64).unwrap_or(1);

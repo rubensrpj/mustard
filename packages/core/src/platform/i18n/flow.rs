@@ -996,6 +996,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
         ("round.unmet_joined", Locale::PtBr) => "Item não cumprido na volta da onda {wave} — {code}: {text}",
         ("round.unmet_joined", Locale::EnUs) => "Item not met when wave {wave} came back — {code}: {text}",
+        ("round.unmet_covered", Locale::PtBr) => {
+            "Item não cumprido na volta da onda {wave} — {code}, que a tarefa {task}, ainda por entregar, já cobre: {text}"
+        }
+        ("round.unmet_covered", Locale::EnUs) => {
+            "Item not met when wave {wave} came back — {code}, which task {task}, still to deliver, already covers: {text}"
+        }
+        ("round.unmet_judged", Locale::PtBr) => {
+            "O Jev julgou que terminar a tarefa termina o que o item pede, com chance {chance}; por isso ele não \
+             virou tarefa nova."
+        }
+        ("round.unmet_judged", Locale::EnUs) => {
+            "Jev judged that finishing the task finishes what the item asks, with chance {chance}; so it did not \
+             become a new task."
+        }
         ("round.leftover_joined", Locale::PtBr) => {
             concat!("Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
         }
@@ -2014,7 +2028,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 286, 0xfd02_44f3_29ea_7c03);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 288, 0xb904_7231_e5c9_d9d3);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2238,6 +2252,8 @@ mod tests {
             ("round.rejected_committed", &["{wave}", "{sha}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
+            ("round.unmet_covered", &["{wave}", "{code}", "{task}", "{text}"][..]),
+            ("round.unmet_judged", &["{chance}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_priority", &["{wave}"][..]),

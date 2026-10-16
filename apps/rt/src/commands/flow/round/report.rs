@@ -911,7 +911,8 @@ struct CheckedReport {
     /// Uma tarefa nova no backlog por item combinado que a entrega de uma
     /// onda marcou `met:false` e por sobra, com a onda que a apontou e o tipo
     /// do evento: também sem onda própria, para a rodada seguinte formar o
-    /// lote. A sobra que repete uma tarefa ainda por entregar vem como nota.
+    /// lote. O item ou a sobra que uma tarefa ainda por entregar já cobre vem
+    /// como nota, e o de mesmo sentido, como versão nova dessa tarefa.
     wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
     /// Cada tarefa de `wave_tasks` que uma sobra ganhou pelo sentido, pela
     /// posição nela, com as dos pedidos dessas sobras: a resposta da rodada
@@ -977,10 +978,17 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // item que a onda não cumpriu entra nessa mesma versão, e também não
     // vira tarefa nova.
     let mut returned = undone_returns(root, spec, check.log(), &report.waves, lang);
-    join_unmet(check.log(), &report.waves, &mut returned, lang)?;
+    let unmet = join_unmet(root, spec, check.log(), &report.waves, &mut returned, lang)?;
     let mut undone_tasks = Vec::new();
     for (wave, task) in returned {
         undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
+    }
+    // O que os itens não cumpridos viram fora das tarefas devolvidas — a
+    // nota, a versão nova de uma tarefa do backlog e a tarefa nova — passa
+    // pelo ensaio antes das sobras, que então leem a versão nova.
+    let mut wave_tasks = Vec::new();
+    for (wave, kind, draft) in unmet {
+        wave_tasks.push((wave, kind, rehearse(&mut check, kind, draft)?));
     }
     // A entrega oficial de cada onda aponta em `replaces` todas as voltas
     // dela desde o envio que a despachou: nenhuma volta velha fica esperando
@@ -989,10 +997,6 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // A entrega oficial de cada onda que voltou, pelo número do ensaio: é a
     // origem do pedido de cada sobra dela.
     let mut reported: BTreeMap<u64, u64> = BTreeMap::new();
-    let mut wave_tasks = Vec::new();
-    // Os itens que uma tarefa nascida nesta mesma rodada já cobre: a volta
-    // seguinte não cria outra para eles.
-    let mut covered_now: BTreeSet<String> = BTreeSet::new();
     for report in &report.waves {
         for wave in std::iter::once(report.wave).chain(report.fixes.iter().copied()) {
             let mut draft = Map::new();
@@ -1039,13 +1043,12 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
                 draft.insert("replaces".into(), returns);
             }
             // A resposta pelo combinado do pedido fica na entrega oficial,
-            // com cada item pelo número; o item não cumprido vira tarefa
-            // quando ainda pede trabalho ([`settle_wave_agreed`]). A falta de
+            // com cada item pelo número ([`settle_wave_agreed`]); o destino
+            // do item não cumprido já saiu de [`join_unmet`]. A falta de
             // resposta já foi recusada na gravação da volta.
             if wave == report.wave && !report.agreed.is_empty() {
                 draft.insert("agreed".into(), json!(report.agreed));
-                let tasks = settle_wave_agreed(check.log(), report, &mut draft, &mut covered_now)?;
-                wave_tasks.extend(tasks.into_iter().map(|task| (wave, "task", task)));
+                settle_wave_agreed(check.log(), &mut draft)?;
             }
             draft.insert("author".into(), json!("wave"));
             let delivered = rehearse(&mut check, "delivered", draft)?;
@@ -1073,10 +1076,6 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
         })
         .collect();
     let leftovers = leftover_events(root, spec, check.log(), &found, &returning, &reported, &summaries, lang);
-    let mut wave_tasks = wave_tasks
-        .into_iter()
-        .map(|(wave, kind, draft)| Ok((wave, kind, rehearse(&mut check, kind, draft)?)))
-        .collect::<Result<Vec<_>, Refusal>>()?;
     let meaning_joins = meaning_joins(&leftovers, wave_tasks.len());
     let mut rehearsed: Vec<u64> = Vec::new();
     for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
