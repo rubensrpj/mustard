@@ -427,12 +427,23 @@ fn rejected_unclaimed(log: &SpecLog, wave: u64, sent: u64) -> bool {
 /// que pede novo plano sem o clique do usuário, a que uma conferência da
 /// própria volta segurou, ou a que a junção segurou por conflito.
 pub(crate) fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
+    pending_returns(log).filter_map(SpecEvent::wave).collect()
+}
+
+/// As ondas que voltaram ([`waves_returned`]) sem pedir mudança de plano: o
+/// trabalho delas está entregue e só espera a rodada assumi-lo. A que pede
+/// mudança espera a resposta do usuário, e as tarefas dela seguem por fazer.
+pub(crate) fn waves_returned_without_replan(log: &SpecLog) -> BTreeSet<u64> {
+    pending_returns(log).filter(|e| e.str_field("replan").is_none_or(|change| change.trim().is_empty())).filter_map(SpecEvent::wave).collect()
+}
+
+/// A entrega que o agente gravou depois do envio que despachou a onda dela e
+/// que nenhuma rodada assumiu ainda, uma por onda.
+fn pending_returns(log: &SpecLog) -> impl Iterator<Item = &SpecEvent> + '_ {
     let dispatched = log.last_dispatch_by_wave();
     log.unassumed_returns()
         .into_iter()
-        .filter(|e| e.event_type == "delivered")
-        .filter_map(|e| e.wave().filter(|n| e.id > dispatched.get(n).copied().unwrap_or_default()))
-        .collect()
+        .filter(move |e| e.event_type == "delivered" && e.wave().is_some_and(|n| e.id > dispatched.get(&n).copied().unwrap_or_default()))
 }
 
 /// A onda `n` é de lote — o binário a formou a partir do backlog, com autor

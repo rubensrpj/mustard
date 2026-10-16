@@ -1024,8 +1024,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("triage.no_jev", Locale::PtBr) => "Sem leitura do Jev, a lista fica como está, na ordem nativa: nada foi agrupado.",
         ("triage.no_jev", Locale::EnUs) => "Without a Jev reading, the list stays as it is, in the native order: nothing was grouped.",
-        ("triage.held", Locale::PtBr) => "Ficam de fora as tarefas presas em onda no ar: {tasks}.",
-        ("triage.held", Locale::EnUs) => "Tasks held by a wave in flight stay out: {tasks}.",
+        ("triage.held", Locale::PtBr) => "Classificadas, mas fora da gravação, as tarefas de onda com agente trabalhando: {tasks}.",
+        ("triage.held", Locale::EnUs) => "Classified but left out of the write, the tasks of a wave whose agent is still working: {tasks}.",
         ("triage.joined_line", Locale::PtBr) => "Junta {code} — {title}: {text}",
         ("triage.joined_line", Locale::EnUs) => "Joins {code} — {title}: {text}",
         ("triage.removed_joined", Locale::PtBr) => "Mesmo sentido de {code}, que recebe este trabalho na versão nova.",
@@ -1986,7 +1986,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 283, 0x8d60_a22c_23f1_3f8e);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 283, 0x4d0a_23b3_2753_a79f);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
