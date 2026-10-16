@@ -1,6 +1,6 @@
 //! O registro de cada chamada da rodada ao Jev. A montagem das ondas, a
-//! escolha dos itens do pedido, a do procedimento de cada onda e a triagem da
-//! volta sem mudança gravam, cada uma, um evento `call` na spec, do jeito que
+//! escolha dos itens do pedido, a do procedimento de cada onda, a triagem da
+//! volta sem mudança e o classificador das atividades gravam, cada uma, um evento `call` na spec, do jeito que
 //! a busca grava o dela: na resposta, o tempo, os tokens, o custo e o modelo;
 //! na falha, o motivo no nome do filtro (`jev:<motivo>`) e o tempo até ela. A
 //! rodada lê esses eventos pelo nome de cada chamada para dizer que o Jev
@@ -25,6 +25,10 @@ pub(crate) const EXPERTISE_CALL: &str = "wave expertise";
 
 /// O nome que a triagem da volta sem mudança grava.
 pub(crate) const TRIAGE_CALL: &str = "return triage";
+
+/// O nome que o classificador das atividades da rodada grava: a sobra da
+/// volta e a mudança de plano aceita.
+pub(crate) const TASK_TRIAGE_CALL: &str = "task triage";
 
 /// Grava o evento `call` da chamada `command` ao Jev, feita em `called`, na
 /// spec `spec` de `start`. `counts` leva, quando quem chama conta, quantos

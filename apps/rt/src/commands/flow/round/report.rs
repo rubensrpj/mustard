@@ -37,6 +37,7 @@ use super::stops::{HeldReturn, hold_waiting_changes, tasks_returned, undone_of, 
 use super::usage::{Caller, Usage, measure_usage, usage_missing};
 use super::{fixes::keep_fixes, size_check::in_body};
 use crate::commands::spec_events::write::{RecordCheck, record};
+use crate::shared::task_triage::Summary;
 
 /// A linha da entrega que o agente de onda devolvia colada no relatório: a
 /// entrega mora na spec, e a linha que ainda chega é recusada.
@@ -946,7 +947,7 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // solta, e o item combinado que só ela cobre não vira tarefa nova. O
     // item que a onda não cumpriu entra nessa mesma versão, e também não
     // vira tarefa nova.
-    let mut returned = undone_returns(check.log(), &report.waves, lang);
+    let mut returned = undone_returns(root, spec, check.log(), &report.waves, lang);
     join_unmet(check.log(), &report.waves, &mut returned, lang)?;
     let mut undone_tasks = Vec::new();
     for (wave, task) in returned {
@@ -1023,7 +1024,18 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
     // verdade troca cada um pelo dela.
     let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
-    let leftovers = leftover_events(root, spec, check.log(), &found, &returning, &reported, lang);
+    // O resumo de cada volta que deixou tarefa por fazer vai ao classificador
+    // com as tarefas que ele acompanha, pela versão que acabou de voltar.
+    let summaries: Vec<Summary> = report
+        .waves
+        .iter()
+        .filter(|wave| !wave.undone.is_empty())
+        .map(|wave| Summary {
+            text: wave.delivered.clone(),
+            tasks: wave.undone.iter().filter_map(|(id, _)| check.log().current(*id).map(|task| task.id)).collect(),
+        })
+        .collect();
+    let leftovers = leftover_events(root, spec, check.log(), &found, &returning, &reported, &summaries, lang);
     let mut wave_tasks = wave_tasks
         .into_iter()
         .map(|(wave, kind, draft)| Ok((wave, kind, rehearse(&mut check, kind, draft)?)))
@@ -4199,11 +4211,13 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             .collect();
         let titles: Vec<&str> = tasks.iter().filter_map(|t| t.fields["title"].as_str()).collect();
         assert_eq!(titles, ["O log não gira", "O nome da variável confunde", "A leitura para sem o índice", "a busca ignora ACENTO"], "{out}");
+        let priority = translate("round.leftover_priority", Locale::PtBr).replace("{wave}", "1");
         for task in &tasks {
             assert_eq!(task.wave(), None, "a tarefa fica no backlog, sem onda: {:?}", task.fields);
             assert_eq!(task.fields["depends_on"], json!([]), "{:?}", task.fields);
             assert_eq!(task.fields["author"], json!("wave"), "{:?}", task.fields);
             assert!(!task.fields.contains_key("kind"), "o `kind` da volta fica de fora: {:?}", task.fields);
+            assert_eq!(task.fields.get("priority"), Some(&json!(priority)), "a sobra vai à frente da fila: {:?}", task.fields);
         }
         assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro."), "{:?}", tasks[1].fields);
         assert_eq!(tasks[2].fields["text"], json!(cites), "{:?}", tasks[2].fields);
@@ -4246,7 +4260,9 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             .collect();
         assert_eq!(tasks.len(), 2, "{out}");
         assert_eq!(tasks[0].fields.get("cleanup"), Some(&json!(true)), "{:?}", tasks[0].fields);
+        assert!(!tasks[0].fields.contains_key("priority"), "a limpeza sai por último: {:?}", tasks[0].fields);
         assert!(!tasks[1].fields.contains_key("cleanup"), "{:?}", tasks[1].fields);
+        assert!(tasks[1].fields.get("priority").and_then(Value::as_str).is_some_and(|said| !said.is_empty()), "{:?}", tasks[1].fields);
     }
 
     /// A marca de limpeza que não é sim nem não, e a lista de arquivos que

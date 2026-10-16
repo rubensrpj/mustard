@@ -989,6 +989,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_joined", Locale::EnUs) => {
             concat!("Leftover from wave {wave}, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
         }
+        ("round.leftover_classified", Locale::PtBr) => {
+            concat!("Erro da volta da onda {wave} — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("round.leftover_classified", Locale::EnUs) => {
+            concat!("Error from wave {wave}'s return — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("round.leftover_priority", Locale::PtBr) => "Sobra da onda {wave}: erro achado na obra sai antes das tarefas antigas.",
+        ("round.leftover_priority", Locale::EnUs) => "Leftover from wave {wave}: an error found in the work goes before the old tasks.",
         ("round.leftover_repeated", Locale::PtBr) => {
             "Sobra da onda {wave} que repete a tarefa {task}, ainda por entregar: {detail}"
         }
@@ -1935,7 +1943,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 268, 0x1f32_2227_ffce_4f3b);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 272, 0x006b_5c88_5397_0aa4);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2157,6 +2165,8 @@ mod tests {
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
+            ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
+            ("round.leftover_priority", &["{wave}"][..]),
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),

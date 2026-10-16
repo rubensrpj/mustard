@@ -744,6 +744,12 @@ pub const TYPES: &[TypeSpec] = &[
             // gravação recusa, como todo texto opcional vazio
             // (`check::check_field`). Ausente é tarefa comum.
             opt("priority", Kind::Text),
+            // O grupo de assunto da tarefa: `name`, o nome do grupo, e
+            // `position`, a ordem dela no grupo. O classificador das
+            // atividades o grava na tarefa nova que fica no assunto de uma
+            // tarefa aberta, e a onda de um resumo leva de carona as tarefas
+            // prontas do grupo dele. Ausente é tarefa sem grupo.
+            opt("group", Kind::Object),
             // O par de papéis cuja direção de importação esta tarefa muda,
             // por pedido formal do usuário: a conferência depois da onda
             // libera a importação entre os dois só nos arquivos desta

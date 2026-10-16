@@ -97,6 +97,9 @@ pub mod prompt;
 /// O texto do catálogo com as vagas preenchidas.
 pub mod say;
 pub mod spec_state;
+/// O classificador das atividades que a rodada grava: coberta, junta a uma
+/// tarefa aberta de mesmo sentido ou nova, perto do assunto dela.
+pub(crate) mod task_triage;
 /// O tamanho que a montagem espera de cada tarefa do backlog, em tokens de
 /// conversa do agente, e o teto de cada onda.
 pub mod task_size;

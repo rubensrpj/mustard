@@ -191,6 +191,37 @@ fn held_by_change<'a>(change: &str, undone: &'a [(u64, String)]) -> Vec<&'a str>
     if cited.is_empty() { all.collect() } else { cited }
 }
 
+/// Os códigos das tarefas de `undone`, lidas em `log`, que recebem a mudança
+/// de plano `change`: as que ela cita pelo código; sem citação, a que o
+/// classificador das atividades escolhe entre elas, por `ask`; sem escolha
+/// confiante, a primeira da lista, a que o agente parou. Nunca a onda
+/// inteira: a mudança que não cita tarefa não vai a quem ela não trata.
+fn change_targets<'a>(log: &SpecLog, change: &str, undone: &'a [(u64, String)], ask: &dyn Fn(&str) -> Option<Value>) -> Vec<&'a str> {
+    use crate::shared::task_triage::{Candidate, Destination, Item, classify_with};
+    let cited: Vec<&str> = undone.iter().map(|(_, code)| code.as_str()).filter(|code| cites(change, code)).collect();
+    let Some(first) = undone.first().filter(|_| cited.is_empty()) else {
+        return cited;
+    };
+    let candidates: Vec<Candidate> = undone
+        .iter()
+        .filter_map(|(id, _)| log.get(*id))
+        .map(|task| Candidate {
+            id: task.id,
+            title: task.str_field("title").unwrap_or_default(),
+            text: task.str_field("text").unwrap_or_default(),
+            files: super::queue::task_files(task),
+            joinable: true,
+        })
+        .collect();
+    let item = Item { title: String::new(), text: change.trim().to_string(), files: BTreeSet::new() };
+    let chosen = classify_with(&candidates, &[item], &[], ask).into_iter().next().flatten().and_then(|destination| match destination {
+        Destination::Covered { task, .. } | Destination::Join { task, .. } => Some(task),
+        Destination::New { near } => near,
+    });
+    let target = chosen.and_then(|id| undone.iter().find(|(own, _)| *own == id)).unwrap_or(first);
+    vec![target.1.as_str()]
+}
+
 /// `text` traz `code` como palavra inteira: sem letra, algarismo, hífen ou
 /// sublinhado colado antes ou depois dele.
 fn cites(text: &str, code: &str) -> bool {
@@ -418,13 +449,19 @@ pub(super) fn append_agent_line(draft: &mut Map<String, Value>, line: &str) {
 /// A versão nova de cada tarefa que as voltas `waves` não fizeram, com a
 /// onda que a devolveu, lida em `log`: a volta ao backlog de
 /// [`undone_return`]. O impedimento da volta trava todas; a mudança de plano,
-/// só as que ela trava ([`held_by_change`]).
-pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<(u64, Map<String, Value>)> {
+/// só as que a recebem ([`change_targets`]), com o classificador das
+/// atividades da spec `spec` de `root`.
+pub(super) fn undone_returns(root: &Path, spec: &str, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<(u64, Map<String, Value>)> {
+    undone_returns_with(log, waves, lang, &crate::shared::task_triage::jev_ask(root, spec))
+}
+
+/// [`undone_returns`] com a pergunta ao classificador feita por `ask`.
+fn undone_returns_with(log: &SpecLog, waves: &[WaveReport], lang: Locale, ask: &dyn Fn(&str) -> Option<Value>) -> Vec<(u64, Map<String, Value>)> {
     let mut out = Vec::new();
     for wave in waves {
         let impediment = wave.returns.last().and_then(|id| log.get(*id)).and_then(|event| event.str_field("blocked_by"));
         let change = wave.replan.as_ref().map(|plan| plan.change.as_str());
-        let held = change.map(|change| held_by_change(change, &wave.undone)).unwrap_or_default();
+        let held = change.map(|change| change_targets(log, change, &wave.undone, ask)).unwrap_or_default();
         for (id, code) in &wave.undone {
             let Some(task) = log.get(*id) else {
                 continue;
@@ -1466,5 +1503,26 @@ mod tests {
             assert_eq!(draft.get("agent"), Some(&json!(agent)), "return {wave}: {draft:?}");
             current = store::write(&path, "task", draft, &[]).unwrap().id;
         }
+    }
+
+    /// Numa onda que deixou A, B e C por fazer, a mudança de plano aceita que
+    /// cita só A vai só a A, sem perguntar ao Jev; a que não cita tarefa vai
+    /// só à que o classificador escolhe, e, sem escolha confiante, só à
+    /// primeira: nunca às três.
+    #[test]
+    fn task_triage_sends_a_plan_change_only_to_the_tasks_it_concerns() {
+        let log = mustard_core::domain::spec_events::parse_log(
+            &(1..=3)
+                .map(|id| json!({"v":1,"id":id,"type":"task","title":format!("T{id}"),"text":"t","files":[{"path":"src/a.rs"}],"depends_on":[]}).to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let undone: Vec<(u64, String)> = (1..=3).map(|id| (id, log.codes()[&id].clone())).collect();
+        let (a, b) = (undone[0].1.as_str(), undone[1].1.as_str());
+        let cited = format!("A {a} precisa de outra forma.");
+        assert_eq!(change_targets(&log, &cited, &undone, &|_| panic!("a citação basta")), [a]);
+        let chosen = |_: &str| Some(json!({"answers": {"i0": {"choice": "join:t2", "confidence": 0.9, "probabilities": {"join:t2": 0.9, "new": 0.05}}}}));
+        assert_eq!(change_targets(&log, "O plano precisa de outra ordem.", &undone, &chosen), [b]);
+        assert_eq!(change_targets(&log, "O plano precisa de outra ordem.", &undone, &|_| None), [a]);
     }
 }

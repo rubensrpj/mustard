@@ -15,12 +15,9 @@ mod call_record;
 mod key_check;
 mod orchestration;
 
-pub(crate) use call_record::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
+pub(crate) use call_record::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
-
-/// O nome que a pergunta da rodada grava quando quer saber se uma sobra da
-/// volta repete uma tarefa aberta com outra redação.
-pub(crate) const LEFTOVER_CALL: &str = "leftover repeats";
+pub(crate) use orchestration::MAX_PAYLOAD_BYTES;
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
 use crate::shared::judgement::{Board, BoardTask, ItemsBoard, ItemsJudged, Judged, WaveJudge};
@@ -71,7 +68,7 @@ const MAX_REQUEST_TOKENS: u64 = 64_000;
 const REQUEST_TOKENS: u64 = 28_000;
 
 /// Quantas opções cabem numa pergunta de escolha do serviço.
-const MAX_CHOICES: usize = 255;
+pub(crate) const MAX_CHOICES: usize = 255;
 
 /// Os caracteres que cada opção pesa na pergunta de escolha, o id com as
 /// aspas e a vírgula, com folga.

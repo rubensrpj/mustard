@@ -15,7 +15,7 @@ use super::{JevFilter, cost_micro_usd, model_of, request_count, tokens_of, unkno
 
 /// O maior pedido de uma escolha da orquestração, em bytes: acima dele a
 /// pergunta não sai, e a escolha fica a nativa.
-const MAX_PAYLOAD_BYTES: usize = 48_000;
+pub(crate) const MAX_PAYLOAD_BYTES: usize = 48_000;
 
 impl JevFilter {
     /// A resposta do Jev à pergunta `payload`, com a chamada gravada como

@@ -1,7 +1,8 @@
 //! As ondas que continuam um resumo: a cada resumo que ainda vale
 //! ([`SpecLog::live_summaries`]), a montagem forma primeiro uma onda com as
 //! tarefas dele que estão prontas no backlog e as do backlog pronto que
-//! dividem arquivo com elas. O resumo acompanha cada tarefa que deixou até
+//! dividem arquivo com elas ou que o classificador pôs no grupo de assunto
+//! delas. O resumo acompanha cada tarefa que deixou até
 //! ela ser entregue, em quantas ondas ela sair. Uma onda leva no máximo um
 //! resumo, e as tarefas dela não entram em outra onda da mesma montagem,
 //! saia ela agora ou espere uma vaga.
@@ -10,6 +11,7 @@ use std::collections::BTreeSet;
 
 use mustard_core::domain::spec_events::SpecLog;
 
+use super::leftovers::{GROUP, group_name};
 use crate::shared::dag::{BacklogTask, Batch, sets_cross, touches_whole_tree};
 
 /// Uma onda formada a partir de um resumo que ainda vale.
@@ -25,7 +27,8 @@ pub(super) struct SummaryWave {
 /// `ready` é o backlog pronto, na ordem de prontidão, e `population` traz os
 /// arquivos de cada tarefa. De cada resumo entram as tarefas que ele
 /// acompanha e que estão prontas, e as prontas que dividem arquivo com elas,
-/// direto; a tarefa com o curinga da árvore inteira nunca entra de carona, nem
+/// direto, ou que gravam o grupo de assunto de uma delas ([`group_name`]),
+/// mesmo sem arquivo em comum; a tarefa com o curinga da árvore inteira nunca entra de carona, nem
 /// a que outro resumo acompanha, que sai na onda dele. Uma tarefa só vai a um
 /// resumo, e o resumo sem nenhuma tarefa pronta não forma onda.
 pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<SummaryWave> {
@@ -43,9 +46,15 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
         for id in &base {
             batch.files.extend(files_of(*id).into_iter().flatten().cloned());
         }
+        let groups: BTreeSet<String> = base.iter().filter_map(|id| log.get(*id)).map(|task| group_name(log, task)).collect();
+        let in_group = |id: u64| {
+            log.get(id).is_some_and(|task| task.fields.contains_key(GROUP) && groups.contains(&group_name(log, task)))
+        };
         if !touches_whole_tree(&batch.files) {
             let sharing = |id: &u64| {
-                !taken.contains(id) && !carried.contains(id) && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && sets_cross(files, &batch.files))
+                !taken.contains(id)
+                    && !carried.contains(id)
+                    && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && (sets_cross(files, &batch.files) || in_group(*id)))
             };
             let along: Vec<u64> = ready.iter().copied().filter(sharing).collect();
             for id in &along {
@@ -152,6 +161,33 @@ mod tests {
         assert_eq!(wave_order(root, 1), vec![id(left), id(along)], "a que divide arquivo vai de carona");
         assert_eq!(wave_order(root, 2), vec![id(chained)], "a da corrente sai na sua onda");
         assert_eq!(wave_order(root, 3), vec![id(apart)], "a sem relação sai à parte");
+    }
+
+    /// A tarefa pronta que o classificador pôs no grupo de assunto de uma das
+    /// que o resumo deixou vai na onda dele, sem arquivo em comum; a pronta
+    /// sem grupo e sem arquivo em comum sai à parte.
+    #[test]
+    fn task_triage_group_rides_along_with_the_summary_without_a_shared_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+        let code = spec_now(root).codes()[&left].clone();
+        let grouped = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Mexer no cinco, do mesmo assunto.", "files": [{"path": "src/e.rs"}], "depends_on": [],
+            "covers": [crit], "origin": said, "group": {"name": code, "position": 2}}),
+        ));
+        let apart = backlog_task_on(root, said, crit, "Mexer no quatro.", &["src/d.rs"]);
+        stopped_with(root, &[left]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
+        let id = |task: u64| log.current(task).unwrap().id;
+        assert_eq!(wave_order(root, 1), vec![id(left), id(grouped)], "a do mesmo grupo vai de carona");
+        assert_eq!(wave_order(root, 2), vec![id(apart)], "a sem grupo sai à parte");
     }
 
     /// O resumo que divide arquivo com uma onda em andamento sai ao lado

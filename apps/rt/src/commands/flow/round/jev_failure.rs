@@ -1,6 +1,6 @@
 //! A falha do Jev na rodada. A montagem das ondas, a escolha dos itens do
-//! pedido, a do procedimento de cada onda e a triagem das voltas seguem sem o
-//! Jev quando ele falha, e cada uma grava a chamada com o motivo
+//! pedido, a do procedimento de cada onda, a triagem das voltas e o
+//! classificador das atividades seguem sem o Jev quando ele falha, e cada uma grava a chamada com o motivo
 //! (`jev:<motivo>`). A rodada lê as chamadas que gravou e diz numa linha, uma
 //! vez por sessão, que o Jev falhou e por quê: sem isso a falha ficava só no
 //! registro, e a rodada seguia calada.
@@ -12,11 +12,12 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
-use crate::shared::jev::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TRIAGE_CALL};
+use crate::shared::jev::{ASSEMBLY_CALL, EXPERTISE_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL};
 
 /// Os comandos que a rodada grava quando chama o Jev: a montagem das ondas,
-/// a escolha dos itens, a do procedimento e a triagem das voltas.
-const ROUND_CALLS: [&str; 4] = [ASSEMBLY_CALL, ITEMS_CALL, EXPERTISE_CALL, TRIAGE_CALL];
+/// a escolha dos itens, a do procedimento, a triagem das voltas e o
+/// classificador das atividades.
+const ROUND_CALLS: [&str; 5] = [ASSEMBLY_CALL, ITEMS_CALL, EXPERTISE_CALL, TRIAGE_CALL, TASK_TRIAGE_CALL];
 
 /// A marca da sessão que já ouviu o aviso.
 const MARK: &str = "round.jev_failed";
@@ -74,7 +75,7 @@ mod tests {
     use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use crate::shared::jev::{ITEMS_CALL, record_jev_call};
+    use crate::shared::jev::{ITEMS_CALL, TASK_TRIAGE_CALL, record_jev_call};
 
     use super::super::item_choice::fake;
     use super::super::tests::{approved_with, id_of, write};
@@ -164,5 +165,21 @@ mod tests {
 
         assert!(super::warning(root, &path, &on_entry, true, None, Locale::PtBr).is_some(), "the failure is there to read");
         assert_eq!(super::warning(root, &path, &on_entry, false, None, Locale::PtBr), None);
+    }
+
+    /// A falha gravada do classificador das atividades vira o aviso
+    /// `jev-failed` da rodada, com o motivo.
+    #[test]
+    fn task_triage_failure_warns_the_round() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[], |_| {});
+        let path = store::spec_file(root, "x").unwrap();
+        let on_entry = store::read(&path).unwrap().unwrap();
+        record_jev_call(root, "x", TASK_TRIAGE_CALL, Instant::now(), None, Err(&FilterError::Refused { status: 402 }));
+
+        let warned = super::warning(root, &path, &on_entry, true, None, Locale::PtBr).expect("the failure warns");
+        assert_eq!(warned["reason"], json!("jev-failed"));
+        assert_eq!(warned["failure"], json!("no_credit"));
     }
 }
