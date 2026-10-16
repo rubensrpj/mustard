@@ -157,7 +157,7 @@ mod tests {
         crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}")]);
         assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
         let value = json!({ "type": "score", "score": 2.0, "probabilities": { "0": 0.05, "1": 0.1, "2": 0.8, "3": 0.05 } });
-        let answer = json!({ "answers": { "value": value, "same_t1": { "type": "noul", "noul": 0.93 }, "together_t1": { "type": "noul", "noul": 0.9 } } });
+        let answer = json!({ "answers": { "value": value, "same_t1": { "type": "noul", "noul": 0.93 }, "subject_t1": { "type": "noul", "noul": 0.9 } } });
         let (url, count) = serving(Duration::from_millis(600), 200, answer.to_string());
         let mut filter = JevFilter::at(JevKey("sk-test".to_string()), &url);
         filter.timeouts.response = Duration::from_millis(150);

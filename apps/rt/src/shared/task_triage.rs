@@ -201,31 +201,60 @@ const BACKLOG_SHOWN: usize = 400;
 /// espelho de [`CONFIDENT_FROM`].
 const CLEAR_NO_UNTIL: f64 = 0.2;
 
+/// Um lado do critério de uma pergunta de sim ou não: o que vale, e os
+/// exemplos que marcam a fronteira, quando a pergunta precisa deles.
+struct Side {
+    what: &'static str,
+    examples: &'static [&'static str],
+}
+
+impl Side {
+    /// O lado como vai ao Jev: o que vale e, quando há, os exemplos.
+    fn criterion(&self) -> Value {
+        let mut side = json!({ "what": self.what });
+        if !self.examples.is_empty() {
+            side["examples"] = json!(self.examples);
+        }
+        side
+    }
+}
+
 /// Uma pergunta de sim ou não sobre uma candidata parecida: o começo do nome
 /// dela, a frase e o que vale o sim e o não.
 struct PairQuestion {
     prefix: &'static str,
     question: &'static str,
-    yes: &'static str,
-    no: &'static str,
+    yes: Side,
+    no: Side,
 }
 
 /// As perguntas de cada aberta anterior parecida, que vai em
-/// `potential_duplicate`, uma por julgamento: a mesma mudança, e as duas
-/// partes de um assunto que saem melhor juntas. Cada critério fala só da
-/// própria pergunta, porque o Jev lê a pergunta ao pé da letra.
+/// `potential_duplicate`, uma condição por pergunta: a mesma mudança, e o
+/// mesmo assunto — a mesma função do programa ou o mesmo problema. Cada
+/// critério fala só da própria pergunta, porque o Jev lê a pergunta ao pé da
+/// letra; os exemplos do mesmo assunto marcam a fronteira, porque dividir
+/// arquivo ou palavra não basta.
 const EARLIER_QUESTIONS: [PairQuestion; 2] = [
     PairQuestion {
         prefix: "same",
         question: "Do `task` and `potential_duplicate` ask for the same change?",
-        yes: "Both ask for the same change, even with other wording or other files",
-        no: "They ask for different changes; same files alone never make the same change",
+        yes: Side { what: "Both ask for the same change, even with other wording or other files", examples: &[] },
+        no: Side { what: "They ask for different changes; same files alone never make the same change", examples: &[] },
     },
     PairQuestion {
-        prefix: "together",
-        question: "Are `task` and `potential_duplicate` two pieces of one subject that one agent delivers best in a single task?",
-        yes: "Both are pieces of one subject, and one agent delivers them best in a single task, even on other files",
-        no: "Different subjects, or pieces best delivered apart; same files alone never make one subject",
+        prefix: "subject",
+        question: "Do `task` and `potential_duplicate` change the same feature or fix the same problem of the program?",
+        yes: Side {
+            what: "Both change the same feature or fix the same problem, even with other wording or other files",
+            examples: &[
+                "Login fails after the token expires / Refresh the token before the session ends",
+                "Report export keeps the column order / Report export writes the header row once",
+            ],
+        },
+        no: Side {
+            what: "They change different features or fix different problems; sharing a file, a folder or a word is not enough",
+            examples: &["Search ignores accents / Search waits for the index lock", "Cart total rounds the discount / Cart page shows the user avatar"],
+        },
     },
 ];
 
@@ -233,8 +262,8 @@ const EARLIER_QUESTIONS: [PairQuestion; 2] = [
 const DONE_QUESTIONS: [PairQuestion; 1] = [PairQuestion {
     prefix: "done",
     question: "Does `delivery` already do what `task` asks?",
-    yes: "The delivered work already does what the task asks",
-    no: "The task still asks for something the delivery does not do",
+    yes: Side { what: "The delivered work already does what the task asks", examples: &[] },
+    no: Side { what: "The task still asks for something the delivery does not do", examples: &[] },
 }];
 
 /// A regra que vai com toda pergunta da lista aberta.
@@ -342,8 +371,8 @@ fn similar_tasks(open: &[&Candidate], done: &[&Candidate], languages: &Languages
 /// anteriores e contra as entregues `done`, com as palavras nas línguas
 /// `languages`, pelos pedidos que `invoke` manda juntos, um por tarefa: o
 /// estado é só a tarefa, e cada candidata parecida ([`similar_tasks`]) vai em
-/// perguntas de sim ou não — duas por aberta anterior, a mesma mudança e as
-/// partes de um assunto que saem juntas, e uma por entrega —, com a nota de
+/// perguntas de sim ou não — duas por aberta anterior, a mesma mudança e o
+/// mesmo assunto, e uma por entrega —, com a nota de
 /// valor no mesmo pedido. Conta o sim a partir de [`CONFIDENT_FROM`] de
 /// qualquer pergunta da candidata e, entre várias, o maior: a tarefa de
 /// mesmo sentido de uma anterior entra no grupo dela — a igual a uma que é
@@ -439,7 +468,7 @@ fn questions_of(similar: Similar) -> &'static [PairQuestion] {
 }
 
 /// O nome da pergunta `asked` sobre a candidata `similar`: `same_t<n>` e
-/// `together_t<n>` para a aberta anterior, `done_d<n>` para a entregue.
+/// `subject_t<n>` para a aberta anterior, `done_d<n>` para a entregue.
 fn question_key(asked: &PairQuestion, similar: Similar, open: &[&Candidate], done: &[&Candidate]) -> String {
     match similar {
         Similar::Earlier(before) => format!("{}_t{}", asked.prefix, open[before].id),
@@ -462,7 +491,7 @@ fn backlog_request(task: &Candidate, open: &[&Candidate], done: &[&Candidate], s
         };
         for asked in questions_of(candidate) {
             let instructions = json!({ field: shown(other), "question": asked.question, "rule": EVIDENCE_RULE });
-            let criteria = json!({ "true": asked.yes, "false": asked.no });
+            let criteria = json!({ "true": asked.yes.criterion(), "false": asked.no.criterion() });
             questions.insert(question_key(asked, candidate, open, done), json!({ "type": "noul", "instructions": instructions, "criteria": criteria }));
         }
     }
@@ -664,11 +693,11 @@ mod tests {
 
     /// Três abertas da mesma pasta e trinta entregues com as palavras todas
     /// da terceira: o pedido da terceira pergunta pelas duas abertas, cada
-    /// uma pela mesma mudança e pelas partes de um assunto, e por cinco
-    /// entregues só. O sim de 0,9 às partes de um assunto junta, com o não de
-    /// 0,1 à mesma mudança; com 0,5 à mesma mudança também junta, e a leitura
-    /// segue confiante; a candidata com 0,5 às partes de um assunto e um não
-    /// claro à mesma mudança deixa a tarefa sem leitura confiante.
+    /// uma pela mesma mudança e pelo mesmo assunto, e por cinco entregues só.
+    /// O sim de 0,9 ao mesmo assunto junta, com o não de 0,1 à mesma mudança;
+    /// com 0,5 à mesma mudança também junta, e a leitura segue confiante; a
+    /// candidata com 0,5 ao mesmo assunto e um não claro à mesma mudança
+    /// deixa a tarefa sem leitura confiante.
     #[test]
     fn backlog_triage_asks_open_pairs_before_deliveries() {
         let open = [
@@ -682,22 +711,63 @@ mod tests {
         let asked = std::cell::RefCell::new(Vec::new());
         let triage = triage_backlog_with(&open, &done, &languages, &|payloads| {
             asked.borrow_mut().extend(payloads.iter().map(|payload| serde_json::from_str::<Value>(payload).unwrap()));
-            Some(backlog_answers(payloads, &[(2, "together_t1", 0.9), (2, "same_t1", 0.1)]))
+            Some(backlog_answers(payloads, &[(2, "subject_t1", 0.9), (2, "same_t1", 0.1)]))
         })
         .unwrap();
         let asked = asked.into_inner();
         let third: Vec<&str> = asked[2]["questions"].as_object().unwrap().keys().map(String::as_str).collect();
         let mut earlier: Vec<&str> = third.iter().copied().filter(|key| key.ends_with("_t1") || key.ends_with("_t2")).collect();
         earlier.sort_unstable();
-        assert_eq!(earlier, ["same_t1", "same_t2", "together_t1", "together_t2"], "{third:?}");
+        assert_eq!(earlier, ["same_t1", "same_t2", "subject_t1", "subject_t2"], "{third:?}");
         assert_eq!(third.iter().filter(|key| key.starts_with("done_d")).count(), MAX_DELIVERIES, "{third:?}");
         assert_eq!((triage.groups, triage.confident), (vec![vec![2], vec![1, 3]], 3));
 
         let unsure = triage_backlog_with(&open, &done, &languages, &|payloads| {
-            Some(backlog_answers(payloads, &[(2, "together_t1", 0.9), (2, "same_t1", 0.5), (1, "together_t1", 0.5)]))
+            Some(backlog_answers(payloads, &[(2, "subject_t1", 0.9), (2, "same_t1", 0.5), (1, "subject_t1", 0.5)]))
         })
         .unwrap();
         assert_eq!((unsure.groups, unsure.confident), (vec![vec![2], vec![1, 3]], 2));
+    }
+
+    /// A pergunta do mesmo assunto leva uma condição só, e cada lado do
+    /// critério leva o que vale e dois exemplos; a da mesma mudança e a da
+    /// entrega levam o próprio texto no mesmo formato, sem exemplos.
+    #[test]
+    fn backlog_triage_sends_a_definition_and_two_examples_on_each_side_of_the_subject_question() {
+        let open = [
+            candidate(1, "A exportação mantém a ordem das colunas", "web/report/export.ts", true),
+            candidate(2, "A exportação grava o cabeçalho uma vez", "web/report/header.ts", true),
+        ];
+        let done = [candidate(9, "A exportação grava o rodapé", "web/report/footer.ts", false)];
+        let languages = Languages::new(["pt-BR"]);
+        let asked = std::cell::RefCell::new(Vec::new());
+        triage_backlog_with(&open, &done, &languages, &|payloads| {
+            asked.borrow_mut().extend(payloads.iter().map(|payload| serde_json::from_str::<Value>(payload).unwrap()));
+            Some(backlog_answers(payloads, &[]))
+        })
+        .unwrap();
+        let asked = asked.into_inner();
+        let questions = &asked[1]["questions"];
+        let subject = &questions["subject_t1"];
+        assert_eq!(
+            subject["instructions"]["question"],
+            json!("Do `task` and `potential_duplicate` change the same feature or fix the same problem of the program?"),
+            "{subject}"
+        );
+        for side in ["true", "false"] {
+            let criterion = &subject["criteria"][side];
+            assert!(criterion["what"].as_str().is_some_and(|what| !what.is_empty()), "{side}: {criterion}");
+            let examples = criterion["examples"].as_array().unwrap_or_else(|| panic!("{side}: {criterion}"));
+            assert_eq!(examples.len(), 2, "{side}: {criterion}");
+            assert!(examples.iter().all(|example| example.as_str().is_some_and(|said| said.contains(" / "))), "{side}: {criterion}");
+        }
+        for key in ["same_t1", "done_d9"] {
+            for side in ["true", "false"] {
+                let criterion = &questions[key]["criteria"][side];
+                assert!(criterion["what"].as_str().is_some_and(|what| !what.is_empty()), "{key} {side}: {criterion}");
+                assert!(criterion.get("examples").is_none(), "{key} {side}: {criterion}");
+            }
+        }
     }
 
     /// Com tarefas demais para o teto do pedido, as que dividem pasta com a
