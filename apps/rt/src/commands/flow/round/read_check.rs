@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{BlockQuery, SpecLog};
 use serde_json::Value;
 
 /// O nome com que a leitura registra o pedido de uma onda (`request-<onda>`)
@@ -51,6 +51,30 @@ pub(crate) fn unread_items(log: &SpecLog, sent: u64, request: &str) -> Vec<Strin
         .filter_map(|e| e.str_field("item"))
         .collect();
     listed.iter().filter_map(Value::as_str).filter(|item| !read.contains(item)).map(str::to_string).collect()
+}
+
+/// Tira de `unread` o que só as tarefas devolvidas em `undone` pedem: o código
+/// da tarefa e os itens que só ela atende, o que ela cobre e a mensagem de onde
+/// nasceu. A leitura é das tarefas feitas: o que uma tarefa feita também
+/// atende, e o que vale para a onda toda (regras, decisões e lições), segue
+/// cobrado.
+pub(super) fn without_undone(log: &SpecLog, wave: u64, undone: &[String], unread: Vec<String>) -> Vec<String> {
+    if undone.is_empty() {
+        return unread;
+    }
+    let codes = log.codes();
+    let code_of = |id: u64| codes.get(&id).cloned();
+    let mut returned: BTreeSet<String> = undone.iter().cloned().collect();
+    let mut kept: BTreeSet<String> = BTreeSet::new();
+    for task in log.block(BlockQuery::Wave(wave)).iter().filter(|e| e.event_type == "task") {
+        let attended = task.ints("covers").into_iter().chain(task.int("origin")).filter_map(code_of);
+        if code_of(task.id).is_some_and(|code| undone.contains(&code)) {
+            returned.extend(attended);
+        } else {
+            kept.extend(attended);
+        }
+    }
+    unread.into_iter().filter(|item| !returned.contains(item) || kept.contains(item)).collect()
 }
 
 #[cfg(test)]
@@ -101,6 +125,36 @@ mod tests {
 
         let fresh = send(root, &items, None);
         assert_eq!(unread(root, fresh), items, "a new request starts the reading over");
+    }
+
+    /// A tarefa devolvida em `undone` não cobra leitura: nem o código dela, nem
+    /// o que só ela atende. O que a tarefa feita também atende e o que vale
+    /// para a onda toda seguem cobrados.
+    #[test]
+    fn the_reading_of_a_returned_task_is_not_charged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let seed = |event_type: &str, body: serde_json::Value| seed_event(root, "x", event_type, body);
+        let shared = seed("message", json!({"author": "user", "text": "o plano"}));
+        let own_done = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": shared}));
+        let own_back = seed("criterion", json!({"when": "c", "then": "d", "proof": "p", "form": "ubiquitous", "origin": shared}));
+        let only_back = seed("message", json!({"author": "user", "text": "outro pedido"}));
+        seed("wave", json!({"n": 1, "text": "Onda.", "criteria": [own_done, own_back], "done_when": "x", "origin": shared}));
+        let task = |title: &str, covers: u64, origin: u64| {
+            seed("task", json!({"wave": 1, "title": title, "text": "Fazer.", "agent": "Fazer.", "covers": [covers],
+                "files": [{"path": format!("src/{title}.ts")}], "origin": origin}))
+        };
+        let done = task("feita", own_done, shared);
+        let back = task("devolvida", own_back, only_back);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let code = |id: u64| codes.get(&id).cloned().unwrap();
+        let unread: Vec<String> = [done, back, own_done, own_back, shared, only_back].iter().map(|id| code(*id)).chain(["MSTD-RULE-0001".to_string()]).collect();
+
+        let left = without_undone(&log, 1, &[code(back)], unread.clone());
+        let expected: Vec<String> = [done, own_done, shared].iter().map(|id| code(*id)).chain(["MSTD-RULE-0001".to_string()]).collect();
+        assert_eq!(left, expected, "only the reading of the done task and of the whole wave stays");
+        assert_eq!(without_undone(&log, 1, &[], unread.clone()), unread, "nothing returned, everything charged");
     }
 
     /// O pedido da revisão final tem o nome dele, distinto do de toda onda.

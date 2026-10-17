@@ -32,7 +32,7 @@ use super::copy_check::check_against_copies;
 use super::finish_check::{proof_older_than_files, unfinished_work};
 use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
-use super::read_check::{request_name, unread_items};
+use super::read_check::{request_name, unread_items, without_undone};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
 use super::stops::{HeldReturn, hold_waiting_changes, plan_refusals_point_at_changes, tasks_returned, undone_of, undone_returns};
@@ -698,8 +698,10 @@ pub(crate) fn check_return(start: &Path, spec: &str, event_type: &str, draft: &m
         return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
     }
     // E de ter lido cada item que o pedido lista: o pedido de antes desta
-    // conferência não grava a lista, e a onda dele não é cobrada.
-    let unread = unread_items(&log, sent, &request_name(Some(wave)));
+    // conferência não grava a lista, e a onda dele não é cobrada. A leitura é
+    // das tarefas feitas: o que só as devolvidas em `undone` pedem não conta.
+    let undone: Vec<String> = report.undone.iter().map(|(_, code)| code.clone()).collect();
+    let unread = without_undone(&log, wave, &undone, unread_items(&log, sent, &request_name(Some(wave))));
     if !unread.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryReadMissing { wave, missing: unread }));
     }
