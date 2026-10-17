@@ -144,6 +144,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              read each item\" in the request; `lesson-<number>` is the lesson of that number. Then record \
              the delivery again. Nothing was written."
         }
+        ("spec_events.delivery_proof_older_than_file", Locale::PtBr) => {
+            "A entrega da onda {wave} foi recusada: {files} mudou depois do último passo de término de \
+             tarefa, e a prova verde desse passo não cobre o que vai no commit. Rode a prova da tarefa de \
+             novo e, com ela verde, grave o passo da tarefa com `run write step`. Depois grave a entrega \
+             de novo. Nada foi gravado."
+        }
+        ("spec_events.delivery_proof_older_than_file", Locale::EnUs) => {
+            "The delivery of wave {wave} was refused: {files} changed after the last task-end step, and \
+             the green proof of that step does not cover what goes into the commit. Run the task's proof \
+             again and, once it is green, record the task's step with `run write step`. Then record the \
+             delivery again. Nothing was written."
+        }
         ("spec_events.verdict_read_missing", Locale::PtBr) => {
             "O veredito foi recusado: o pedido da revisão lista item que ainda não foi lido, e faltou \
              {missing}. Leia cada um de dentro da cópia do revisor. Use o comando de \"Como ler cada \
@@ -994,8 +1006,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            126,
-            0x4db1_a50b_d4d3_064c,
+            127,
+            0x82a4_fc37_8d32_87ec,
         );
     }
 
@@ -1026,6 +1038,7 @@ mod tests {
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.delivery_proof_older_than_file", &["{wave}", "{files}"][..]),
             ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),

@@ -190,6 +190,12 @@ pub enum Refusal {
     /// Nada é gravado, e a mensagem nomeia cada item não lido e manda lê-lo de
     /// dentro da cópia.
     DeliveryReadMissing { wave: u64, missing: Vec<String> },
+    /// A entrega da onda `wave` com arquivos entregues, `files`, que a cópia
+    /// tem diferentes do que o último passo de término de tarefa guardou: o
+    /// passo marca a prova verde, e o arquivo mudado depois dele iria ao
+    /// commit sem prova que o cubra. Nada é gravado, e a mensagem nomeia cada
+    /// arquivo e manda rodar a prova e gravar o passo de novo.
+    DeliveryProofOlderThanFile { wave: u64, files: Vec<String> },
     /// O veredito da revisão final sem a leitura, registrada, de algum item
     /// que o pedido dela lista: o código do item. Nada é gravado, e a
     /// mensagem nomeia cada item não lido e manda lê-lo de dentro da cópia do
@@ -378,6 +384,7 @@ impl Refusal {
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::DeliveryReadMissing { .. } => "delivery-read-missing",
+            Self::DeliveryProofOlderThanFile { .. } => "delivery-proof-older-than-file",
             Self::VerdictReadMissing { .. } => "verdict-read-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
@@ -657,6 +664,10 @@ impl Refusal {
             Self::DeliveryReadMissing { wave, missing } => fill(
                 "spec_events.delivery_read_missing",
                 &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
+            ),
+            Self::DeliveryProofOlderThanFile { wave, files } => fill(
+                "spec_events.delivery_proof_older_than_file",
+                &[("{wave}", wave.to_string()), ("{files}", files.join(", "))],
             ),
             Self::VerdictReadMissing { missing } => {
                 fill("spec_events.verdict_read_missing", &[("{missing}", missing.join(", "))])

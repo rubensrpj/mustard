@@ -1351,6 +1351,15 @@ fn a_credit_refusal_keeps_round_planning_and_context_native_and_records_the_fail
     assert!(rows.iter().all(|row| row["status"] == 402 && row["attempt"] == 1 && row["error"] == "no_credit"));
     assert!(rows.iter().any(|row| row["purpose"] == "wave-planning"));
     assert!(rows.iter().any(|row| row["purpose"] == "context"));
+    // O programa compilado avisa a falha pela trava de produção, sem o Jev
+    // de mentira dos testes da biblioteca: com o motivo e o remédio de crédito.
+    let warned: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().filter(|warning| warning["reason"] == "jev-failed").collect();
+    assert_eq!(warned.len(), 1, "{out}");
+    assert_eq!(warned[0]["failure"], "no_credit", "{out}");
+    let hint = translate("round.jev_failed", Locale::PtBr)
+        .replace("{reason}", "no_credit")
+        .replace("{remedy}", translate("round.jev_remedy_credit", Locale::PtBr));
+    assert_eq!(warned[0]["hint"], json!(hint), "{out}");
 }
 
 /// O arquivo que a tarefa das provas da reprovação cria.

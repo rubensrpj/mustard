@@ -22,6 +22,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "base",
     "command_guard",
     "runtime_output",
+    "tool_observations",
     "install_lock",
     "clarity",
     "gate",
@@ -497,6 +498,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the file in parts. When Mustard does not give the part you need, that becomes a request, \
              not a cut."
         }
+        // O aviso depois do executor de teste ou de compilação cujo resumo o
+        // pipe escondeu (`apps/rt/src/shared/tool_observations.rs`). `{command}`
+        // vem do chamador: o executor escrito sem o pipe.
+        ("tool_observations.summary_hidden", Locale::PtBr) => {
+            "O resumo do executor não chegou à saída. O pipe o escondeu, e o host recebe o código \
+             de saída do último programa. Este resultado não prova que o executor passou. O recibo \
+             dele fica sem veredito. Para provar, rode sem o pipe: `{command}`"
+        }
+        ("tool_observations.summary_hidden", Locale::EnUs) => {
+            "The runner summary did not reach the output. The pipe hid it, and the host gets the \
+             exit code of the last program. This result does not prove that the runner passed. Its \
+             receipt has no verdict. To prove it, run it without the pipe: `{command}`"
+        }
         // A trava de instalação (`apps/rt/src/hooks/session/prompt_entry.rs`):
         // um comando `/mustard:` num projeto sem `mustard.json` na raiz. Sem
         // esse arquivo o idioma do projeto ainda não é conhecido, então o
@@ -604,8 +618,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            76,
-            0x947f_7ec6_7539_f7a6,
+            77,
+            0x918a_381e_f538_a844,
         );
     }
 
@@ -742,6 +756,7 @@ mod tests {
             ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
             ("command_guard.waiting_loop", &["{command}"][..]),
             ("runtime_output.scripted", &["{command}"][..]),
+            ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

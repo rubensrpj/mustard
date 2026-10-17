@@ -74,12 +74,15 @@ pub(super) fn investigate(
     // Owners of the pattern's own hits, before question words add others.
     let native_owners: BTreeSet<String> = seeds.iter().cloned().collect();
     let native_files: BTreeSet<String> = native_hits.iter().map(|hit| hit.0.clone()).collect();
-    // An implementation search for a pattern answers with the pattern's own
-    // lines: every hit, and only files with hits. A file listing has no lines.
+    // An implementation search for a pattern, or any search whose scope is
+    // exactly the files it hit (the named file), answers with the pattern's
+    // own lines: every hit, and only files with hits. A file listing has no
+    // lines.
     let listing = request.tool == "Glob"
         || request.input["args"].as_array().is_some_and(|args| args.iter().any(|arg| arg == "--files"));
+    let named = !native_files.is_empty() && scope.files == native_files;
     let pattern_files: BTreeSet<String> =
-        if request.purpose == Purpose::Implement && !listing { native_files.clone() } else { BTreeSet::new() };
+        if (request.purpose == Purpose::Implement || named) && !listing { native_files.clone() } else { BTreeSet::new() };
     let complementary=super::discovery::probe(root,tree,request,&scope,&mut seeds);
     let opts = Query {
         text: if scope.clues.trim().is_empty() {

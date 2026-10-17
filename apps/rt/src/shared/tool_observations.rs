@@ -10,6 +10,26 @@ use mustard_core::{
 use serde_json::Value;
 use std::path::Path;
 
+mod run_summary;
+
+/// O aviso que o agente lê depois de um executor cujo resumo o pipe escondeu:
+/// o recibo dele não prova como a execução acabou, e o mesmo executor sem o
+/// pipe prova. `None` quando a saída mostra como ele acabou, ou quando o
+/// código de saída já diz que falhou.
+pub(crate) fn hidden_summary_note(input: &HookInput, lang: mustard_core::SupportedLocale) -> Option<String> {
+    if input.tool_name.as_deref() != Some("Bash") {
+        return None;
+    }
+    let command = input.tool_input.get("command").and_then(Value::as_str)?;
+    let response = input.raw.get("tool_response")?;
+    if response.get("exit_code").or_else(|| response.get("exitCode")).and_then(Value::as_i64).is_some_and(|code| code != 0) {
+        return None;
+    }
+    (run_summary::read(command, response)? == run_summary::Summary::Hidden).then(|| {
+        super::say::say("tool_observations.summary_hidden", lang, &[("{command}", &run_summary::without_pipe(command))])
+    })
+}
+
 pub(crate) fn capture(
     root: &Path,
     host: &str,
@@ -112,6 +132,10 @@ pub(crate) fn capture(
     if output.len() > 2_000_000 {
         return None;
     }
+    let exit_code = response.get("exit_code").or_else(|| response.get("exitCode")).and_then(Value::as_i64);
+    // Sem o código de saída do executor (o host não manda, ou o pipe entrega
+    // só o do último programa), o resumo dele na saída decide o recibo.
+    let summary = (event == "PostToolUse").then(|| run_summary::read(command, response)).flatten();
     let receipt = Receipt {
         version: 1,
         spec,
@@ -128,25 +152,20 @@ pub(crate) fn capture(
         source: kept_source(&super::secret::without_secrets(command)),
         input_sha256: observations::digest(command.as_bytes()),
         output_sha256: observations::digest(&output),
-        exit_code: response
-            .get("exit_code")
-            .or_else(|| response.get("exitCode"))
-            .and_then(Value::as_i64),
+        exit_code,
         result_status: if event == "PostToolUseFailure" {
             if input.raw.get("is_interrupt") == Some(&Value::Bool(true)) {
                 "interrupted"
             } else {
                 "failed"
             }
-        } else if response
-            .get("exit_code")
-            .or_else(|| response.get("exitCode"))
-            .and_then(Value::as_i64)
-            .is_some_and(|code| code != 0)
+        } else if exit_code.is_some_and(|code| code != 0)
             || response.get("isError").or_else(|| response.get("is_error"))
                 == Some(&Value::Bool(true))
         {
             "failed"
+        } else if let Some(summary) = summary {
+            summary.status()
         } else {
             "returned"
         }
@@ -325,6 +344,39 @@ pub(crate) fn list(root: &Path, spec: &str, dispatch: Option<u64>) -> Vec<Value>
         let page = list(root, "x", Some(0));
         let shown = page[0]["source"].as_str().unwrap();
         assert_eq!(shown, format!("{}…", written.chars().take(80).collect::<String>()), "{shown}");
+    }
+
+    /// Sem o código de saída, o resumo do executor decide o recibo: o verde
+    /// passa e o vermelho falha. O pipe que tira o resumo deixa o recibo sem
+    /// veredito, e o gancho manda rodar o executor sem o pipe.
+    #[test]
+    fn a_runner_summary_decides_the_receipt_when_the_host_sends_no_exit_code() {
+        use mustard_core::domain::model::contract::{Trigger, Verdict};
+        let dir = bound_project();
+        let root = dir.path();
+        let piped = "cargo test -j 1 -p mustard-rt --lib -- tool_observations 2>&1 | grep -E \"test result|FAILED\"";
+        let grep_ok = "cd /c && rtk cargo test -p x --lib -- 'a b' 2>&1 | grep ok";
+        let answered = |command: &str, call: &str, stdout: &str| HookInput {
+            hook_event_name: Some("PostToolUse".into()),
+            raw: json!({"tool_use_id": call, "tool_response": {"stdout": stdout, "stderr": "", "interrupted": false, "isImage": false}}),
+            ..ran(command, "", root)
+        };
+        let green = answered(piped, "green", "test result: ok. 30 passed; 0 failed; 0 ignored");
+        let red = answered(piped, "red", "test result: FAILED. 29 passed; 1 failed");
+        let hidden = answered(grep_ok, "hidden", "test a ... ok\ntest b ... ok");
+        for input in [&green, &red, &hidden] {
+            assert_eq!(capture(root, "claude", "PostToolUse", input), Some(Ok(())));
+        }
+        let mut statuses: Vec<_> = list(root, "x", Some(0)).iter().map(|row| (row["result_status"].clone(), row["exit_code"].clone())).collect();
+        statuses.sort_by_key(|(status, _)| status.to_string());
+        assert_eq!(statuses, [(json!("failed"), Value::Null), (json!("passed"), Value::Null), (json!("summary-hidden"), Value::Null)]);
+        let note = |input: &HookInput| match crate::dispatch::run_event(Trigger::from_event_name("PostToolUse"), input).verdict {
+            Verdict::Inject { context } => Some(context),
+            _ => None,
+        };
+        let told = note(&hidden).expect("the hidden summary is told");
+        assert!(told.contains("`cargo test -p x --lib -- 'a b'`"), "{told}");
+        assert_eq!(note(&green), None);
     }
 
     #[test]

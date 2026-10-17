@@ -21,6 +21,10 @@ pub struct Receipt {
     pub input_sha256: String,
     pub output_sha256: String,
     pub exit_code: Option<i64>,
+    /// Como a chamada acabou. `returned`, `failed` ou `interrupted` vêm do
+    /// host. Sem o código de saída, o resumo do executor de teste ou de
+    /// compilação decide: `passed`, `failed`, ou `summary-hidden` quando o
+    /// pipe tirou o resumo da saída. A leitura de um arquivo dá `succeeded`.
     pub result_status: String,
     pub observed_at: String,
 }

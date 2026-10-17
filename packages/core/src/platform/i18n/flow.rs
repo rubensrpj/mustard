@@ -1331,6 +1331,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.jev_remedy_key", Locale::PtBr) => "O serviço recusou a chave: configure uma chave válida.",
         ("round.jev_remedy_key", Locale::EnUs) => "The service refused the key: configure a valid key.",
+        ("round.jev_remedy_missing_key", Locale::PtBr) => "O projeto não tem chave do Jev: configure uma para a rodada perguntar a ele.",
+        ("round.jev_remedy_missing_key", Locale::EnUs) => "The project has no Jev key: configure one for the round to ask it.",
+        ("round.jev_remedy_key_in_git", Locale::PtBr) => {
+            "A chave do Jev está num arquivo que o git guarda e não vale: tire o arquivo do git e troque a chave."
+        }
+        ("round.jev_remedy_key_in_git", Locale::EnUs) => {
+            "The Jev key is in a file git tracks and does not count: take the file out of git and change the key."
+        }
         ("round.jev_remedy_credit", Locale::PtBr) => {
             "A conta do serviço está sem crédito: ponha crédito nela; a chave vale, e trocá-la não resolve."
         }
@@ -2040,7 +2048,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 290, 0x8525_b8d6_fb00_f822);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 292, 0x7fab_d7eb_8513_8ac2);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2307,6 +2315,8 @@ mod tests {
             ("round.task_without_covers", &["{tasks}"][..]),
             ("round.jev_failed", &["{reason}", "{remedy}"][..]),
             ("round.jev_remedy_key", &[][..]),
+            ("round.jev_remedy_missing_key", &[][..]),
+            ("round.jev_remedy_key_in_git", &[][..]),
             ("round.jev_remedy_credit", &[][..]),
             ("round.jev_remedy_size", &[][..]),
             ("round.jev_remedy_wait", &[][..]),

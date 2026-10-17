@@ -15,6 +15,19 @@ pub fn requested(request: &Request) -> bool {
     )
 }
 
+/// O estado da pergunta por símbolo ou rastro que o mapa com bloco a pôr em
+/// dia ([`crate::io::project_map::needs_block_update`]) deixou sem resposta.
+/// Abrir esse mapa refaria o bloco, que é da passada do scan, e com ela
+/// rodando cada abertura esperaria a trava dela: a operação responde sem o
+/// mapa, pede a passada e se repete quando ela acaba.
+pub const MAP_OUTDATED: &str = "map-block-outdated";
+
+/// Se a resposta de [`execute`] ficou sem o mapa, à espera da passada.
+#[must_use]
+pub fn awaits_pass(answer: &Answer) -> bool {
+    answer.report["result"]["status"] == MAP_OUTDATED
+}
+
 pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Result<Answer, String> {
     request.validate()?;
     let supplied = text(&request.input, "file_path")?;
@@ -33,6 +46,7 @@ pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Resul
     let registry = Registry::load()?;
     let source = knowledge::investigation::safe_read(&tree, &file, &registry)
         .ok_or("search-source-excluded-or-unreadable")?;
+    let outdated = crate::io::project_map::needs_block_update(&crate::io::project_map::model_path(root));
     let mut result = match request.tool.as_str() {
         "Structure" => {
             fields(&request.input, &["file_path", "query"])?;
@@ -106,7 +120,7 @@ pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Resul
             }
             result
         }
-        "Symbol" | "Trace" => {
+        "Symbol" | "Trace" => 'symbol: {
             fields(
                 &request.input,
                 &[
@@ -134,6 +148,11 @@ pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Resul
                 "both" => Direction::Both,
                 _ => return Err("search-invalid-direction".into()),
             };
+            if outdated {
+                break 'symbol json!({"symbol":symbol,"cards":[],"paths":[],"status":MAP_OUTDATED,
+                    "reason":"the scan pass rebuilds the map block this question reads; ask again when the map refresh ends",
+                    "meaning":"static connections; not execution order or proven data flow"});
+            }
             let query = Query {
                 text: "",
                 file: None,
@@ -208,7 +227,11 @@ pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Resul
     let hits = current_hits(&tree, &result)?;
     let learning = knowledge::observations::record(root, &tree, &hits)
         .unwrap_or_else(|reason| json!({"status":"not-stored","reason":reason}));
-    result["owners"] = owners(root, &tree, &hits);
+    result["owners"] = if outdated {
+        json!({"status":MAP_OUTDATED,"symbols":[]})
+    } else {
+        owners(root, &tree, &hits)
+    };
     let stdout = result.to_string().into_bytes();
     Ok(Answer {
         report: json!({"schema_version":1,"ok":true,"tool":request.tool,"result":result,

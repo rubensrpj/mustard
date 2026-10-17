@@ -34,12 +34,16 @@ fn failure_since(now: &SpecLog, on_entry: &SpecLog) -> Option<String> {
 }
 
 /// O que fazer diante da falha de motivo `reason`: a chave recusada pede
-/// outra chave; a falta de crédito, crédito, e não outra chave; a pergunta
-/// grande demais nem saiu; o resto (tempo esgotado, serviço ocupado, rede,
-/// erro ou resposta ilegível) passa sem mexer na chave nem no crédito.
+/// outra chave; a chave que falta pede uma; a chave num arquivo que o git
+/// guarda pede tirá-la de lá; a falta de crédito, crédito, e não outra chave;
+/// a pergunta grande demais nem saiu; o resto (tempo esgotado, serviço
+/// ocupado, rede, erro ou resposta ilegível) passa sem mexer na chave nem no
+/// crédito.
 fn remedy_key(reason: &str) -> &'static str {
     match reason {
-        "key_refused" | "missing_key" | "key_in_git" => "round.jev_remedy_key",
+        "key_refused" => "round.jev_remedy_key",
+        "missing_key" => "round.jev_remedy_missing_key",
+        "key_in_git" => "round.jev_remedy_key_in_git",
         "no_credit" => "round.jev_remedy_credit",
         "too_large" => "round.jev_remedy_size",
         _ => "round.jev_remedy_wait",
@@ -181,5 +185,19 @@ mod tests {
         let warned = super::warning(root, &path, &on_entry, true, None, Locale::PtBr).expect("the failure warns");
         assert_eq!(warned["reason"], json!("jev-failed"));
         assert_eq!(warned["failure"], json!("no_credit"));
+    }
+
+    /// A chave que falta e a chave num arquivo que o git guarda têm remédio
+    /// próprio, nos dois idiomas, diferente do da chave que o serviço recusou.
+    #[test]
+    fn a_missing_key_and_a_key_in_git_get_their_own_remedy() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let refused = translate(super::remedy_key("key_refused"), lang);
+            let missing = translate(super::remedy_key("missing_key"), lang);
+            let in_git = translate(super::remedy_key("key_in_git"), lang);
+            assert_eq!((missing, in_git), (translate("round.jev_remedy_missing_key", lang), translate("round.jev_remedy_key_in_git", lang)));
+            assert!(missing != refused && in_git != refused && missing != in_git, "{}", lang.as_str());
+            assert!(in_git.contains("git"), "{}: {in_git}", lang.as_str());
+        }
     }
 }

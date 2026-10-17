@@ -29,7 +29,7 @@ use super::commit::{
     record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file, write_joined,
 };
 use super::copy_check::check_against_copies;
-use super::finish_check::unfinished_work;
+use super::finish_check::{proof_older_than_files, unfinished_work};
 use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::read_check::{request_name, unread_items};
@@ -627,7 +627,9 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
 /// linha de comando; cada item combinado que o pedido da onda levou tem
 /// resposta em `agreed` ([`request_agreed`]); o agente leu o pedido; e a
 /// volta não devolve trabalho começado nem dá tarefa por feita sem o passo
-/// de término dela ([`unfinished_work`]). Passando, a volta ganha
+/// de término dela ([`unfinished_work`]); e nenhum arquivo entregue mudou
+/// depois do último passo de término, o da prova verde
+/// ([`proof_older_than_files`]). Passando, a volta ganha
 /// `returned` e o autor da onda, e os arquivos ficam relativos ao
 /// repositório. A conferência que depende de
 /// juntar a cópia fica na rodada. Sem o número da onda, nada aqui é
@@ -705,6 +707,8 @@ pub(crate) fn check_return(start: &Path, spec: &str, event_type: &str, draft: &m
     // com a cópia mudada depois do último passo de término, e a tarefa dada
     // como feita sem o passo dela, recusam.
     unfinished_work(&log, sent, &report, draft)?;
+    // E de não levar ao commit arquivo mudado depois da prova verde.
+    proof_older_than_files(&log, sent, &report)?;
     if draft.contains_key("files") {
         draft.insert("files".into(), json!(report.files));
     }
@@ -2467,9 +2471,9 @@ mod tests {
         assert_eq!(delivered_count(root), 1);
     }
 
-    /// A entrega roda a compilação e as provas pertinentes. O lint ou a suíte
-    /// declarados que caem ficam para o fechamento, que recusa com a saída
-    /// deles sem desfazer a entrega já integrada. A saída que não cita arquivo
+    /// A rodada junta a entrega e comita sem compilar nem rodar prova. O lint
+    /// ou a suíte declarados que caem ficam para o fechamento, que recusa com
+    /// a saída deles sem desfazer a entrega já integrada. A saída que não cita arquivo
     /// nenhum não reabre onda: a recusa diz isso, e nenhuma reprovação é
     /// gravada.
     #[cfg(unix)]

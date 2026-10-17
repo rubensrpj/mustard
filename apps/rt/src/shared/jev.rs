@@ -19,7 +19,7 @@ pub(crate) use call_record::{ASSEMBLY_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
-use crate::shared::judgement::{Board, BoardTask, ItemsBoard, ItemsJudged, Judged, WaveJudge};
+use crate::shared::judgement::{Board, BoardTask, BoardWave, ItemsBoard, ItemsJudged, Judged, WaveJudge};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write as _};
 use std::io::ErrorKind;
@@ -920,6 +920,11 @@ fn encode_board(state: Value, questions: Map<String, Value>) -> Result<String, F
     validate_wire_size(&payload)?;
     Ok(payload)
 }
+/// Os pedidos da montagem: um por tarefa do backlog, com o tipo e o tamanho
+/// dela, e, por onda em andamento, os de choque com as tarefas que se ligam a
+/// ela, em lotes que cabem no teto do serviço ([`interference_payloads`]).
+/// Cada resposta traz as chaves das próprias perguntas, e quem junta as
+/// respostas lê cada tarefa pela chave dela, na ordem do backlog.
 fn backlog_payloads(board: &Board) -> Result<Vec<String>, FilterError> {
     let mut payloads = Vec::new();
     for task in &board.backlog {
@@ -929,19 +934,51 @@ fn backlog_payloads(board: &Board) -> Result<Vec<String>, FilterError> {
     }
     for wave in &board.running {
         let plausible = board.backlog.iter().filter(|task| wave.tasks.iter().any(|other| related_tasks(task, other))).cloned().collect::<Vec<_>>();
-        if plausible.is_empty() {
-            continue;
-        }
-        let running = wave.tasks.iter().filter(|other| plausible.iter().any(|task| related_tasks(task, other))).cloned().collect();
-        let pair = Board { backlog: plausible, running: vec![crate::shared::judgement::BoardWave { n: wave.n, tasks: running }] };
-        let (mut state, mut questions) = board_parts(&pair);
-        questions.retain(|key, _| key.starts_with("blk_"));
-        if let Some(definition) = state["definition"].as_object_mut() {
-            definition.remove("kinds");
-        }
-        payloads.push(encode_board(state, questions)?);
+        payloads.extend(interference_payloads(wave, plausible)?);
     }
     Ok(payloads)
+}
+
+/// Os pedidos de choque da onda em andamento `wave` com as tarefas do backlog
+/// que se ligam a ela (`plausible`), na ordem delas: cada lote leva tarefas
+/// enquanto o pedido cabe no teto do serviço ([`validate_wire_size`]), e a
+/// tarefa que passaria dele abre o lote seguinte. O pedido grande demais só
+/// sobra quando o lote de uma tarefa sozinha já passa do teto.
+fn interference_payloads(wave: &BoardWave, plausible: Vec<BoardTask>) -> Result<Vec<String>, FilterError> {
+    let mut payloads = Vec::new();
+    let mut lot: Vec<BoardTask> = Vec::new();
+    let mut fitting: Option<String> = None;
+    for task in plausible {
+        lot.push(task);
+        match interference_payload(wave, &lot) {
+            Ok(payload) => fitting = Some(payload),
+            Err(FilterError::TooLarge { estimated_tokens }) => {
+                let (Some(closed), Some(task)) = (fitting.take(), lot.pop()) else {
+                    return Err(FilterError::TooLarge { estimated_tokens });
+                };
+                payloads.push(closed);
+                lot = vec![task];
+                fitting = Some(interference_payload(wave, &lot)?);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    payloads.extend(fitting);
+    Ok(payloads)
+}
+
+/// O pedido de choque da onda `wave` com as tarefas `lot`: o estado leva só
+/// as tarefas da onda que se ligam a alguma delas, sem a lista de tipos, e só
+/// as perguntas de choque.
+fn interference_payload(wave: &BoardWave, lot: &[BoardTask]) -> Result<String, FilterError> {
+    let running = wave.tasks.iter().filter(|other| lot.iter().any(|task| related_tasks(task, other))).cloned().collect();
+    let pair = Board { backlog: lot.to_vec(), running: vec![BoardWave { n: wave.n, tasks: running }] };
+    let (mut state, mut questions) = board_parts(&pair);
+    questions.retain(|key, _| key.starts_with("blk_"));
+    if let Some(definition) = state["definition"].as_object_mut() {
+        definition.remove("kinds");
+    }
+    encode_board(state, questions)
 }
 /// Only shared files, a known directory, or explicit dependencies justify a
 /// semantic interference question. Two absent parents are not a relation.
@@ -1197,7 +1234,7 @@ fn read_item_chances(doc: &Value, ids: &[u64], into: &mut BTreeMap<u64, f64>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::judgement::{BoardItem, BoardWave};
+    use crate::shared::judgement::BoardItem;
     use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -2352,10 +2389,11 @@ mod tests {
         })
     }
 
-    /// O backlog inteiro vai numa chamada só, com o modelo fixo, o estado
-    /// com a definição, a onda em andamento e o backlog, e as perguntas de
-    /// tipo, de tamanho e de bloqueio juntas; a resposta vira o julgamento de
-    /// cada tarefa, com os tokens, o custo e o modelo.
+    /// Cada tarefa do backlog vai num pedido, com as perguntas de tipo e de
+    /// tamanho, e o choque com a onda em andamento vai noutro, com o estado da
+    /// definição, da onda e do backlog; todos com o modelo fixo. As respostas
+    /// juntas viram o julgamento de cada tarefa, com os tokens, o custo e o
+    /// modelo.
     #[test]
     fn profiles_and_plausible_interference_are_separate_requests() {
         let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));
@@ -2462,7 +2500,72 @@ mod tests {
         assert!(sent.contains("Fix the login."), "the rest of the text still goes");
     }
 
-    // -- os itens do pedido julgados para uma onda ------------------------------
+    /// A resposta a cada pergunta que o pedido `body` traz: defeito certo, de
+    /// tamanho 1, com 0,3 de chance de choque.
+    fn every_question_answered(body: &Value) -> Value {
+        let answers: Map<String, Value> = body["questions"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(key, _)| {
+                let answer = match key.split('_').next() {
+                    Some("tipo") => json!({
+                        "choice": "defect",
+                        "probabilities": {"defect": 0.9, "feature": 0.04, "text_fix": 0.02, "remove_unused": 0.02, "test_cleanup": 0.02},
+                        "confidence": 0.9,
+                    }),
+                    Some("tam") => json!({"score": 1.0, "probabilities": {"1": 0.9}}),
+                    _ => json!({"noul": 0.3}),
+                };
+                (key.clone(), answer)
+            })
+            .collect();
+        json!({"answers": answers, "usage": {"input_tokens": 100}})
+    }
+
+    /// Quarenta tarefas vizinhas de uma onda em andamento passam do teto numa
+    /// pergunta de choque só: a montagem as reparte em lotes, cada pedido
+    /// dentro do teto, cada tarefa perguntada uma vez, e o julgamento volta
+    /// inteiro. Quando a onda em andamento já passa do teto com uma tarefa
+    /// só, nada sai, e o pedido fica grande demais.
+    #[test]
+    fn an_interference_question_above_the_cap_goes_out_in_lots_that_fit() {
+        let service = FakeService::start(|_, body| Reply::json(200, &every_question_answered(body)));
+        let backlog: Vec<BoardTask> = (100..140)
+            .map(|id| {
+                let file = format!("module/t{id}.ts");
+                BoardTask { text: format!("Text of task {id}. {}", "word ".repeat(600)), ..board_task(id, &[file.as_str()]) }
+            })
+            .collect();
+        let mut board = Board { running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.ts"])] }], backlog };
+        let whole = interference_payload(&board.running[0], &board.backlog);
+        assert!(matches!(whole, Err(FilterError::TooLarge { .. })), "one question for the whole backlog passes the cap");
+
+        let judged = service.filter().judge_backlog(&board).unwrap();
+        let received = service.received();
+        let lots: Vec<&Received> =
+            received.iter().filter(|request| request.body["questions"].as_object().unwrap().keys().any(|key| key.starts_with("blk_"))).collect();
+        assert!(lots.len() > 1, "{} interference requests", lots.len());
+        assert_eq!(received.len(), 40 + lots.len(), "one profile per task and the interference lots");
+        for request in &received {
+            let sent = request.body.to_string();
+            assert!(validate_wire_size(&sent).is_ok(), "{} chars", sent.len());
+        }
+        let mut asked: Vec<String> = lots.iter().flat_map(|request| request.body["questions"].as_object().unwrap().keys().cloned()).collect();
+        asked.sort_unstable();
+        let mut expected: Vec<String> = (100..140).map(|id| format!("blk_w7_t{id}")).collect();
+        expected.sort_unstable();
+        assert_eq!(asked, expected, "every task is asked once");
+        let read: Vec<(TaskKind, f64)> = judged.tasks.values().map(|judgement| (judgement.kind, judgement.clash)).collect();
+        assert_eq!(read, vec![(TaskKind::Defect, 0.3); 40], "every task comes back judged");
+
+        board.running[0].tasks[0].text = "word ".repeat(19_000);
+        let error = service.filter().judge_backlog(&board).unwrap_err();
+        assert!(matches!(error, FilterError::TooLarge { .. }), "{error:?}");
+        assert_eq!(service.received().len(), received.len(), "nothing more is sent");
+    }
+
+    // --os itens do pedido julgados para uma onda ------------------------------
 
     fn board_item(id: u64) -> BoardItem {
         BoardItem { id, title: format!("Item {id}"), text: format!("Text of item {id}.") }

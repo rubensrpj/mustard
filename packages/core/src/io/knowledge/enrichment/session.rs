@@ -379,10 +379,10 @@ pub fn prepare_grouping(
         hash.update(&serde_json::to_vec(&(&digests, summaries, max_waves, host, model)).map_err(|e| e.to_string())?);
         hash.hex_digest()
     };
-    if let Some(id) = formed_requests(&folder).get(&input_key).filter(|id| folder.join(format!("{id}.grouping.json")).exists()) {
-        if let Some(prepared) = std::fs::read(folder.join(format!("{id}.json"))).ok().and_then(|bytes| serde_json::from_slice::<PreparedGrouping>(&bytes).ok()) {
-            return Ok(grouping_answer(id, &prepared, &resolution));
-        }
+    if let Some(id) = formed_requests(&folder).get(&input_key).filter(|id| folder.join(format!("{id}.grouping.json")).exists())
+        && let Some(prepared) = std::fs::read(folder.join(format!("{id}.json"))).ok().and_then(|bytes| serde_json::from_slice::<PreparedGrouping>(&bytes).ok())
+    {
+        return Ok(grouping_answer(id, &prepared, &resolution));
     }
     // Every task goes with its text, cut to fit: the small model of each
     // request starts from nothing, so no earlier reading stands in for it.

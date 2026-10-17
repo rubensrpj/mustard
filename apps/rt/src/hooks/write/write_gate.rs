@@ -254,7 +254,13 @@ impl Check for WriteGate {
 /// contexto e devolve a primeira resposta.
 pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) -> Verdict {
     if ctx.trigger == Some(Trigger::PostToolUse) {
-        return crate::shared::search_output::after_search(input, ctx);
+        let verdict = crate::shared::search_output::after_search(input, ctx);
+        if matches!(verdict, Verdict::Allow)
+            && let Some(context) = crate::shared::tool_observations::hidden_summary_note(input, ctx.config.language().text_or_default())
+        {
+            return Verdict::Inject { context };
+        }
+        return verdict;
     }
     if ctx.trigger != Some(Trigger::PreToolUse) {
         return Verdict::Allow;

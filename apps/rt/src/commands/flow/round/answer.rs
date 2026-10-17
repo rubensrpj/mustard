@@ -341,7 +341,7 @@ fn last_step(log: &SpecLog, wave: u64, sent: u64, codes: &BTreeMap<u64, String>)
 }
 
 /// Os minutos desde o evento `at`. `None` sem hora legível.
-fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
+pub(crate) fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
     let raw = log.get(at)?.at().to_string();
     let at = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
     let now = chrono::Local::now().with_timezone(at.offset());
