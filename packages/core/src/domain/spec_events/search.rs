@@ -1,12 +1,12 @@
 //! A busca: o campo `search` de cada linha, calculado só pelo binário, e os
 //! eventos que um termo acha.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
 use crate::domain::normalize::{plain_words, Languages, Normalizer};
-use crate::domain::search::SearchIndex;
+use crate::domain::search::{bm25f, Fields, Posting, SearchIndex};
 use crate::platform::i18n::{translate, Locale};
 
 use super::read::{parse_object, wave_of};
@@ -172,6 +172,107 @@ pub fn refresh_search_lines(content: &str) -> (String, usize) {
         .collect::<Vec<_>>()
         .join("\n");
     (body, changed)
+}
+
+/// Os tipos que a procura por texto nunca olha: registros que o programa grava
+/// sozinho, sem conversa nem decisão dentro. Cada um tem a leitura dele.
+pub const NOT_SEARCHED: &[&str] = &[
+    "injection", "hook", "call", "state", "publish", "copy", "send", "step", "tracking", "criterion_run", "stage_run",
+    "validation_failure", "skill", "work_type", "remove", "purge",
+];
+
+/// O peso de cada campo na nota da procura: o título, o texto e o resto (a
+/// parte do agente, as palavras-chave, o tipo, a onda e os arquivos citados).
+const FIELD_WEIGHTS: [f64; 3] = [3.0, 1.0, 0.5];
+
+/// Um item que a procura achou: quantas palavras da pergunta ele tem e a nota.
+#[derive(Debug, Clone, Copy)]
+pub struct Ranked<'a> {
+    pub event: &'a SpecEvent,
+    pub matched: usize,
+    pub score: f64,
+}
+
+/// O que a procura achou: quantas palavras a pergunta tem, fora as de ligação,
+/// e os itens com pelo menos uma delas, os que têm todas primeiro.
+#[derive(Debug, Clone, Default)]
+pub struct Ranking<'a> {
+    pub words: usize,
+    pub items: Vec<Ranked<'a>>,
+}
+
+impl Ranking<'_> {
+    /// Quantos itens têm todas as palavras da pergunta.
+    #[must_use]
+    pub fn complete(&self) -> usize {
+        self.items.iter().filter(|item| item.matched == self.words).count()
+    }
+}
+
+/// Os três campos da nota de um evento, em texto: o título, o texto e o resto.
+fn field_texts(event: &SpecEvent) -> [String; 3] {
+    let title = event.str_field("title").unwrap_or_default().to_string();
+    let text = event.str_field("text").unwrap_or_default().to_string();
+    let mut rest: Vec<String> = event.str_field("agent").map(str::to_string).into_iter().collect();
+    if let Some(keys) = event.fields.get("keys").and_then(Value::as_array) {
+        rest.extend(keys.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    rest.extend(event.str_field("label").map(str::to_string));
+    if type_spec(&event.event_type).is_some() {
+        let key = format!("page.type.{}", event.event_type);
+        rest.push(translate(&key, Locale::PtBr).to_string());
+        rest.push(translate(&key, Locale::EnUs).to_string());
+    }
+    if let Some(n) = event.wave() {
+        rest.push(format!("{} {n} {} {n}", translate("page.type.wave", Locale::PtBr), translate("page.type.wave", Locale::EnUs)));
+    }
+    rest.extend(cited_paths(&event.fields).into_iter().map(str::to_string));
+    [title, text, rest.join(" ")]
+}
+
+/// A procura por texto em `events`, nas línguas `languages`. As palavras de
+/// ligação saem da pergunta e cada palavra casa pela raiz. A nota é o BM25F
+/// da busca do mapa, com o título acima do texto e o texto acima do resto. Os
+/// itens com todas as palavras vêm primeiro; depois, os com mais palavras; no
+/// empate de nota, o mais novo. Entra só item com pelo menos uma palavra.
+#[must_use]
+pub fn ranked_by<'a>(events: Vec<&'a SpecEvent>, term: &str, languages: &Languages) -> Ranking<'a> {
+    let mut normalizer = Normalizer::new(languages);
+    let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
+    let query: Vec<Vec<String>> = normalizer.query(term).into_iter().filter(|word| !word.is_empty() && seen.insert(word.clone())).collect();
+    if query.is_empty() || events.is_empty() {
+        return Ranking { words: query.len(), items: Vec::new() };
+    }
+    let docs: Vec<[Vec<Vec<String>>; 3]> = events.iter().map(|event| field_texts(event).map(|text| normalizer.forms(&text))).collect();
+    let mut postings: HashMap<&str, Vec<Posting>> = HashMap::new();
+    let mut total_len = [0u64; 3];
+    for (doc, fields) in docs.iter().enumerate() {
+        for (field, words) in fields.iter().enumerate() {
+            let field_len = words.len() as u64;
+            total_len[field] += field_len;
+            for word in words {
+                let forms: BTreeSet<&str> = word.iter().map(String::as_str).collect();
+                for form in forms {
+                    postings.entry(form).or_default().push(Posting { doc: doc as i64, field, field_len });
+                }
+            }
+        }
+    }
+    let n = docs.len();
+    let fields = Fields { docs: n, avg_len: total_len.iter().map(|len| *len as f64 / n as f64).collect(), weights: FIELD_WEIGHTS.to_vec() };
+    let words: Vec<Vec<Vec<Posting>>> =
+        query.iter().map(|word| word.iter().map(|form| postings.get(form.as_str()).cloned().unwrap_or_default()).collect()).collect();
+    let has: Vec<HashSet<i64>> = words.iter().map(|forms| forms.iter().flatten().map(|posting| posting.doc).collect()).collect();
+    let mut items: Vec<Ranked<'a>> = bm25f(&words, &fields)
+        .into_iter()
+        .filter_map(|(doc, score)| {
+            let event = *events.get(usize::try_from(doc).ok()?)?;
+            let matched = has.iter().filter(|docs| docs.contains(&doc)).count();
+            Some(Ranked { event, matched, score })
+        })
+        .collect();
+    items.sort_by(|a, b| b.matched.cmp(&a.matched).then(b.score.total_cmp(&a.score)).then(b.event.id.cmp(&a.event.id)));
+    Ranking { words: query.len(), items }
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ An item recorded in the spec has three parts, because the agent reads it without
 
 ## When the user asks questions
 
-Answer each question by the number the user used, in the order of explaining. If you were wrong, say "I was wrong" and what is right. Close with a single proposal and one yes-or-no question.
+A question about text the user pasted is answered from that text, without hunting for where it came from. Answer each question by the number the user used, in the order of explaining. If you were wrong, say "I was wrong" and what is right. Close with a single proposal and one yes-or-no question.
 
 ## A status or assessment answer
 

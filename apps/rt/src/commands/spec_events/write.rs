@@ -3497,10 +3497,10 @@ mod tests {
         let mut rule = whole_rule(said);
         rule["title"] = json!("Proteger o diretório de cache");
         rule["agent"] = json!("- o gancho fica na sentinela do comando");
-        let wanted = by_model(root, "rule", &rule)["id"].clone();
+        let wanted = by_model(root, "rule", &rule)["code"].as_str().expect("the code").to_string();
         let other = json!({"title": "Relatório em português", "text": "O relatório sai em português.", "keys": ["idioma"],
             "example": "e", "origin": said, "agent": "- conferir o idioma"});
-        let other = by_model(root, "rule", &other)["id"].clone();
+        let other = by_model(root, "rule", &other)["code"].as_str().expect("the code").to_string();
         for term in ["diretório", "sentinela"] {
             let read = super::super::read::read_at(&super::super::read::ReadOpts {
                 root: root.to_path_buf(),
@@ -3509,9 +3509,9 @@ mod tests {
                 term: Some(term.into()),
             })
             .expect("the agreed block reads");
-            let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
-            let ids: Vec<Value> = read["events"].as_array().expect("events").iter().map(|e| e["id"].clone()).collect();
-            assert!(ids.contains(&wanted) && !ids.contains(&other), "{term}: {read}");
+            // A busca por termo responde em texto, uma linha por item.
+            let codes: Vec<&str> = read.lines().filter_map(|line| line.split_whitespace().next()).collect();
+            assert!(codes.contains(&wanted.as_str()) && !codes.contains(&other.as_str()), "{term}: {read}");
         }
     }
 

@@ -46,7 +46,7 @@ O item gravado na spec tem três partes, porque o agente o lê sem a conversa:
 
 ## Quando o usuário faz perguntas
 
-Responda cada pergunta pelo número que ele usou, na ordem de explicar. Se errou, diga "errei" e o que é o certo. Feche com uma proposta só e uma pergunta de sim ou não.
+Pergunta sobre um texto que o usuário colou se responde pelo próprio texto, sem procurar a origem dele. Responda cada pergunta pelo número que ele usou, na ordem de explicar. Se errou, diga "errei" e o que é o certo. Feche com uma proposta só e uma pergunta de sim ou não.
 
 ## Resposta de estado ou de avaliação
 

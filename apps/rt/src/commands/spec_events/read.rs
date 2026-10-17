@@ -109,11 +109,13 @@ use mustard_core::ClaudePaths;
 use mustard_core::domain::lessons::kept;
 use mustard_core::domain::mustard_id;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, Hidden, ReadQuery, Refusal, SpecEvent, SpecLog, calls_command, found_by, shown_line};
+use mustard_core::domain::spec_events::{
+    Block, BlockQuery, EventRef, Hidden, NOT_SEARCHED, ReadQuery, Refusal, SpecEvent, SpecLog, calls_command, found_by, shown_line,
+};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{final_review, lesson_bank, request_items};
-use mustard_core::platform::i18n::Locale;
+use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::read_record::{self, Request};
@@ -183,7 +185,13 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
         ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
         ReadQuery::ReviewPreview => return Ok(final_review(&project.root, &spec, &log, lang).text),
         ReadQuery::Dispatch(wave) => {
-            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view);
+            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view, lang);
+            // De dentro da cópia, a leitura da onda sai em texto, um bloco por
+            // item.
+            if item_view == Shown::Agent {
+                note_reading(&project.root, &spec, session, request.as_ref(), Some(wave), &listed, started);
+                return Ok(lines.join("\n\n"));
+            }
             read = listed;
             only_wave = Some(wave);
             lines
@@ -216,6 +224,9 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
                 BlockQuery::Block(Block::Waves | Block::Metrics) => Shown::Plan,
                 _ => Shown::Whole,
             };
+            if let Some(text) = text_search(&log, &codes, query, term, &project, &spec) {
+                return Ok(text);
+            }
             let found = found_by(log.block(query), term, &codes, &project.languages);
             let found = if query == BlockQuery::Block(Block::State) { latest_copies(found) } else { found };
             found.into_iter().map(|e| shown_with_code(e, &codes, shown)).collect()
@@ -233,6 +244,25 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
     note_reading(&project.root, &spec, session, request.as_ref(), only_wave, &read, started);
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &extra, &warnings))
+}
+
+/// A busca por texto num bloco de conteúdo: a mesma procura do `run find`,
+/// com o bloco como filtro de tipos, em texto. O estado, o painel, o código de
+/// um item e o nome de um comando seguem pela leitura de sempre.
+fn text_search(log: &SpecLog, codes: &BTreeMap<u64, String>, query: BlockQuery, term: &str, project: &super::Project, spec: &str) -> Option<String> {
+    let term = term.trim();
+    let content = matches!(query, BlockQuery::Block(block) if !matches!(block, Block::State | Block::Metrics));
+    if term.is_empty() || !content || codes.values().any(|code| code.eq_ignore_ascii_case(term)) {
+        return None;
+    }
+    let block = log.block(query);
+    if block.iter().any(|event| calls_command(event, term)) {
+        return None;
+    }
+    let pool: Vec<&SpecEvent> = block.into_iter().filter(|event| !NOT_SEARCHED.contains(&event.event_type.as_str())).collect();
+    let asked = super::find::Asked { spec, term, show_type: true, lang: project.lang, languages: &project.languages };
+    let root = project.root.clone();
+    Some(super::find::found_text(log, codes, pool, &asked, &move |spec, payload| super::find::ask_jev(&root, spec, payload)))
 }
 
 /// Do estado, só a cópia mais nova de cada página: cada rodada grava uma
@@ -617,6 +647,7 @@ fn dispatch_lines(
     codes: &BTreeMap<u64, String>,
     languages: &Languages,
     shown: Shown,
+    lang: Locale,
 ) -> (Vec<String>, Vec<String>) {
     if !log.planned_waves().contains(&wave) {
         return (Vec::new(), Vec::new());
@@ -632,9 +663,87 @@ fn dispatch_lines(
         .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
         .chain(lessons.iter().map(|lesson| format!("lesson-{}", lesson.id)))
         .collect();
-    let mut lines: Vec<String> = items.into_iter().map(|e| shown_with_code(e, codes, shown)).collect();
-    lines.extend(lessons.into_iter().map(|lesson| shown_line(&lesson.fields)));
+    // De dentro da cópia, cada item é um bloco de texto ([`agent_block`]).
+    let agent = shown == Shown::Agent;
+    let mut lines: Vec<String> = items.into_iter().map(|e| if agent { agent_block(e, codes, lang) } else { shown_with_code(e, codes, shown) }).collect();
+    lines.extend(lessons.into_iter().map(|lesson| if agent { lesson_block(lesson, lang) } else { shown_line(&lesson.fields) }));
     (lines, read)
+}
+
+/// Os campos que o bloco de um item na leitura da onda nunca mostra: as
+/// marcas do binário, os números que ligam um item a outro e o que o bloco já
+/// mostra à parte.
+const BLOCK_OMITTED: &[&str] = &[
+    "v", "id", "code", "at", "author", "keys", "search", "type", "title", "replaces", "origin", "covers", "label", "text", "agent",
+    "example", "every_wave", "files",
+];
+
+/// Um trecho colado maior que isto, em bytes, vira aviso na leitura da onda.
+const PASTE_MAX: usize = 1024;
+
+/// O bloco de um item na leitura da onda de dentro da cópia, em texto: o
+/// título e o código e, embaixo, a parte do agente, com os arquivos que o item
+/// declara. Sem parte do agente, o texto; sem texto, os outros campos, um por
+/// linha. A mensagem do usuário leva o dia, com o trecho colado grande trocado
+/// pelo aviso de onde lê-lo. A parte do usuário e o exemplo vêm pelo código.
+fn agent_block(item: &SpecEvent, codes: &BTreeMap<u64, String>, lang: Locale) -> String {
+    let code = codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string());
+    if item.event_type == "message" {
+        let day = super::find::day_of(item.at()).unwrap_or_default();
+        let text = without_long_paste(item.str_field("text").unwrap_or_default(), &code, lang);
+        return format!("## {} | {day} | {code}\n{text}", translate("spec_events.find_user_message", lang));
+    }
+    let title = item.str_field("title").filter(|t| !t.trim().is_empty()).map_or_else(|| super::find::type_word(&item.event_type, lang), str::to_string);
+    let body = match item.str_field("agent").filter(|agent| !agent.trim().is_empty()).or_else(|| item.str_field("text")) {
+        Some(body) => body.to_string(),
+        None => item
+            .fields
+            .iter()
+            .filter(|(key, _)| !BLOCK_OMITTED.contains(&key.as_str()))
+            .map(|(key, value)| format!("{key}: {}", value.as_str().map_or_else(|| value.to_string(), str::to_string)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    let mut block = format!("## {title} | {code}\n{body}");
+    let files: Vec<&str> = item
+        .fields
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
+        .collect();
+    if !files.is_empty() {
+        block.push('\n');
+        block.push_str(&translate("spec_events.find_files", lang).replace("{files}", &files.join(", ")));
+    }
+    block
+}
+
+/// A lição na leitura da onda: o número dela no banco e o texto.
+fn lesson_block(lesson: &SpecEvent, lang: Locale) -> String {
+    format!("## {} {}\n{}", translate("spec_events.find_lesson", lang), lesson.id, lesson.str_field("text").unwrap_or_default())
+}
+
+/// O texto com cada trecho colado maior que [`PASTE_MAX`] trocado pelo aviso
+/// de onde lê-lo inteiro.
+fn without_long_paste(text: &str, code: &str, lang: Locale) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<pasted_content") {
+        let Some(close) = rest[start..].find("</pasted_content").map(|at| start + at) else { break };
+        let end = rest[close..].find('>').map_or(rest.len(), |at| close + at + 1);
+        out.push_str(&rest[..start]);
+        if end - start > PASTE_MAX {
+            let kb = (end - start).div_ceil(1024).to_string();
+            out.push_str(&translate("spec_events.find_pasted", lang).replace("{kb}", &kb).replace("{code}", code));
+        } else {
+            out.push_str(&rest[start..end]);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// O bloco `lessons`: fora da spec, no banco do projeto. `--term` é o número
@@ -852,9 +961,9 @@ mod tests {
         let root = dir.path();
         put(root, "message", json!({"author": "user", "text": "apagando a pasta"}));
         put(root, "message", json!({"author": "user", "text": "outro assunto"}));
-        let got = events(&read_at(&opts(root, "conversation", Some("apagar"))).unwrap());
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0]["text"], json!("apagando a pasta"));
+        let got = read_at(&opts(root, "conversation", Some("apagar"))).unwrap();
+        assert_eq!(got.lines().count(), 1, "{got}");
+        assert!(got.starts_with("MSTD-MSG-0001 | ") && got.ends_with("apagando a pasta"), "one text line per item: {got}");
     }
 
     /// Com a língua do texto em espanhol, a busca na spec corta as palavras
@@ -867,14 +976,14 @@ mod tests {
         std::fs::write(root.join("mustard.json"), r#"{"language": {"text": "es-ES"}}"#).unwrap();
         put(root, "message", json!({"author": "user", "text": "sigue corriendo la prueba"}));
         put(root, "message", json!({"author": "user", "text": "otro asunto"}));
-        let got = events(&read_at(&opts(root, "conversation", Some("correr"))).unwrap());
-        assert_eq!(got.len(), 1, "{got:?}");
-        assert_eq!(got[0]["text"], json!("sigue corriendo la prueba"));
+        let got = read_at(&opts(root, "conversation", Some("correr"))).unwrap();
+        assert_eq!(got.lines().count(), 1, "{got}");
+        assert!(got.ends_with("sigue corriendo la prueba"), "{got}");
     }
 
-    /// Uma frase inteira não exige que o item tenha todas as palavras: a
-    /// leitura devolve o que a nota acha, do mais forte para o menos forte,
-    /// onde a exigência de todas as palavras não devolvia nada.
+    /// Uma frase que nenhum item tem inteira ainda devolve o que a nota acha,
+    /// do mais forte para o menos forte, marcado como parcial; sem Jev, uma
+    /// linha diz que ele ficou fora.
     #[test]
     fn a_whole_phrase_brings_the_strongest_items_first_instead_of_nothing() {
         let dir = tempdir().unwrap();
@@ -886,11 +995,13 @@ mod tests {
         put_rule("O levantamento pergunta o tipo de trabalho.", "levantamento");
 
         let phrase = "a rodada formata os arquivos dela antes do commit da onda";
-        let got = events(&read_at(&opts(root, "agreed", Some(phrase))).unwrap());
-        assert!(!got.is_empty(), "the phrase finds something: {got:?}");
-        let found: Vec<u64> = got.iter().filter_map(|e| e["id"].as_u64()).collect();
-        assert_eq!(found.first(), Some(&strong), "the strongest comes first: {got:?}");
-        assert!(found.contains(&weak), "a partial match still comes: {got:?}");
+        let got = read_at(&opts(root, "agreed", Some(phrase))).unwrap();
+        let code = |id: u64| format!("MSTD-RULE-{:04}", id - said);
+        let lines: Vec<&str> = got.lines().collect();
+        assert!(lines.len() >= 3, "the phrase finds something: {got}");
+        assert!(lines[0].starts_with(&code(strong)), "the strongest comes first: {got}");
+        assert!(lines.iter().any(|line| line.starts_with(&code(weak)) && line.contains(" | ")), "a partial match still comes: {got}");
+        assert!(lines.last().is_some_and(|line| line.starts_with("Jev ")), "without Jev, a line says so: {got}");
     }
 
     #[test]
@@ -1623,18 +1734,19 @@ mod tests {
         assert!(message.get("v").is_none(), "{message}");
     }
 
-    /// A leitura do pedido inteiro, `dispatch-<n>`, vem sem as marcas nem as
-    /// palavras de busca de dentro da cópia, em cada item que lista, e inteira
-    /// de fora dela.
+    /// De dentro da cópia de um pedido aberto, a leitura da onda sai em texto:
+    /// um bloco por item, com o título e o código e, embaixo, só a parte do
+    /// agente; a parte do usuário e o exemplo ficam para a leitura do item. De
+    /// fora da cópia, a linha vem inteira.
     #[test]
-    fn the_dispatch_read_from_inside_the_copy_comes_without_the_stamps_and_the_search_words() {
+    fn the_dispatch_read_from_inside_the_copy_comes_as_text_with_the_title_and_the_agent_part() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (copy, _) = open_request(root);
         put(
             root,
             "rule",
-            json!({"title": "Global", "text": "Vale para tudo.", "agent": "d", "keys": ["global"], "example": "e", "origin": 1,
+            json!({"title": "Global", "text": "Vale para tudo.", "agent": "Conferir o mapa antes.", "keys": ["global"], "example": "Um exemplo longo.", "origin": 1,
             "applies_to": {"files": ["**"]}}),
         );
 
@@ -1643,17 +1755,28 @@ mod tests {
         assert!(outside.iter().all(|e| e.get("v").is_some() && e.get("at").is_some()), "{outside:?}");
         assert!(outside.iter().any(|e| e.get("keys").is_some()), "{outside:?}");
 
-        let inside = events(&read_from(root, &copy, "dispatch-1", None));
-        assert_eq!(inside.len(), outside.len(), "{inside:?}");
-        for event in &inside {
-            // A mensagem do usuário guarda o `at` e o `author`.
-            let kept: &[&str] = if event["type"] == json!("message") { &["at", "author"] } else { &[] };
-            for key in STAMPS.iter().filter(|key| !kept.contains(key)) {
-                assert!(event.get(*key).is_none(), "{key} left out of {event}");
-            }
-            assert!(event["code"].is_string() && event["type"].is_string(), "{event}");
+        let inside = read_from(root, &copy, "dispatch-1", None);
+        assert!(!inside.contains('{'), "the copy reads text, not JSON: {inside}");
+        let heads = inside.lines().filter(|line| line.starts_with("## ")).count();
+        assert_eq!(heads, outside.len(), "one block per item: {inside}");
+        let global = outside.iter().find(|e| e["title"] == json!("Global")).and_then(|e| e["code"].as_str()).expect("the global rule").to_string();
+        assert!(inside.contains(&format!("## Global | {global}\nConferir o mapa antes.")), "{inside}");
+        assert!(!inside.contains("Vale para tudo.") && !inside.contains("Um exemplo longo."), "the user part and the example stay out: {inside}");
+        assert!(inside.lines().any(|line| line.starts_with("## ") && line.contains(" | MSTD-MSG-")), "the user message keeps its block: {inside}");
+        for key in STAMPS {
+            assert!(!inside.contains(&format!("\"{key}\"")), "{key} left out: {inside}");
         }
-        assert!(inside.iter().any(|e| e["type"] == json!("message") && e["author"] == json!("user")), "{inside:?}");
+    }
+
+    /// Na leitura da onda de dentro da cópia, o trecho colado maior que 1 KB
+    /// numa mensagem do usuário vira o aviso de onde lê-lo; o pequeno fica.
+    #[test]
+    fn a_long_pasted_text_becomes_a_pointer_to_the_item() {
+        let lang = Locale::PtBr;
+        let small = "veja <pasted_content id=\"a\">curto</pasted_content id=\"a\"> fim";
+        assert_eq!(without_long_paste(small, "MSTD-MSG-0001", lang), small);
+        let long = format!("antes <pasted_content id=\"b\">{}</pasted_content id=\"b\"> depois", "x".repeat(3000));
+        assert_eq!(without_long_paste(&long, "MSTD-MSG-0002", lang), "antes [texto colado, 3 kB: leia por item-MSTD-MSG-0002] depois");
     }
 
     /// O painel sem termo vem sem o texto do envio, da injeção e da entrega,

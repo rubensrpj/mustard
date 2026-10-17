@@ -30,6 +30,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.unknown_type", Locale::EnUs) => {
             "The spec file has no {type} event type. Nothing was written. Accepted types: {types}."
         }
+        // A procura na spec (`run find`) e a leitura de uma onda de dentro da
+        // cópia, que saem em texto.
+        ("spec_events.find_more", Locale::PtBr) => "{shown} de {total}. Use mais uma palavra ou o filtro por tipo.",
+        ("spec_events.find_more", Locale::EnUs) => "{shown} of {total}. Add a word or the type filter.",
+        ("spec_events.find_none", Locale::PtBr) => "Não achei.",
+        ("spec_events.find_none", Locale::EnUs) => "Nothing found.",
+        ("spec_events.find_jev_off", Locale::PtBr) => "Jev fora: {reason}.",
+        ("spec_events.find_jev_off", Locale::EnUs) => "Jev off: {reason}.",
+        ("spec_events.find_no_key", Locale::PtBr) => "sem chave",
+        ("spec_events.find_no_key", Locale::EnUs) => "no key",
+        ("spec_events.find_no_answer", Locale::PtBr) => "sem resposta",
+        ("spec_events.find_no_answer", Locale::EnUs) => "no answer",
+        ("spec_events.find_partial", Locale::PtBr) => "parcial",
+        ("spec_events.find_partial", Locale::EnUs) => "partial",
+        ("spec_events.find_user_message", Locale::PtBr) => "Mensagem do usuário",
+        ("spec_events.find_user_message", Locale::EnUs) => "User message",
+        ("spec_events.find_lesson", Locale::PtBr) => "Lição",
+        ("spec_events.find_lesson", Locale::EnUs) => "Lesson",
+        ("spec_events.find_pasted", Locale::PtBr) => "[texto colado, {kb} kB: leia por item-{code}]",
+        ("spec_events.find_pasted", Locale::EnUs) => "[pasted text, {kb} kB: read item-{code}]",
+        ("spec_events.find_files", Locale::PtBr) => "Arquivos: {files}",
+        ("spec_events.find_files", Locale::EnUs) => "Files: {files}",
         ("spec_events.missing_field", Locale::PtBr) => {
             "Campos obrigatórios do evento {type} que faltaram ou vieram vazios: {field}. Nada foi \
              gravado."
@@ -1006,8 +1028,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            127,
-            0x82a4_fc37_8d32_87ec,
+            137,
+            0x4006_1fef_f143_11b6,
         );
     }
 
@@ -1018,6 +1040,16 @@ mod tests {
         for (key, slots) in [
             ("spec_events.not_an_object", &["{detail}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
+            ("spec_events.find_more", &["{shown}", "{total}"][..]),
+            ("spec_events.find_none", &[][..]),
+            ("spec_events.find_jev_off", &["{reason}"][..]),
+            ("spec_events.find_no_key", &[][..]),
+            ("spec_events.find_no_answer", &[][..]),
+            ("spec_events.find_partial", &[][..]),
+            ("spec_events.find_user_message", &[][..]),
+            ("spec_events.find_lesson", &[][..]),
+            ("spec_events.find_pasted", &["{kb}", "{code}"][..]),
+            ("spec_events.find_files", &["{files}"][..]),
             ("spec_events.missing_field", &["{type}", "{field}"][..]),
             ("spec_events.task_declaration_missing", &["{missing}"][..]),
             ("spec_events.task_declaration_what", &[][..]),

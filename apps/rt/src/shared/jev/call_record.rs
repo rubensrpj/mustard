@@ -27,6 +27,9 @@ pub(crate) const TRIAGE_CALL: &str = "return triage";
 /// volta e a mudança de plano aceita.
 pub(crate) const TASK_TRIAGE_CALL: &str = "task triage";
 
+/// O nome que a procura na spec grava quando a palavra fica em dúvida.
+pub(crate) const FIND_CALL: &str = "spec find";
+
 /// Grava o evento `call` da chamada `command` ao Jev, feita em `called`, na
 /// spec `spec` de `start`. `counts` leva, quando quem chama conta, quantos
 /// candidatos foram ao Jev e quantos voltaram (`candidates`, `returned`);
